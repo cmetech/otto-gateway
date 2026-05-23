@@ -129,14 +129,44 @@ type promptCapabilitiesWire struct {
 	EmbeddedContext bool `json:"embeddedContext"`
 }
 
+// mcpServer is the wire element type for the session/new params.mcpServers[] array.
+// Phase 1.1 has no MCP server fields; this empty struct exists so the wire frame
+// can ship an explicit `[]` (not `null`) per D-10 — older kiro-cli versions may
+// treat a missing or null mcpServers as an error. Phase 8+ may grow the type.
+type mcpServer struct{}
+
 // sessionNewParams is the params payload for session/new.
+// Phase 1.1 D-10: include mcpServers as an explicit empty array on the wire
+// (initialised via make([]mcpServer, 0) at the call site so json.Marshal renders
+// `[]` instead of `null`).
 type sessionNewParams struct {
-	CWD string `json:"cwd"`
+	CWD        string      `json:"cwd"`
+	MCPServers []mcpServer `json:"mcpServers"`
 }
 
 // sessionNewResult is the result from session/new.
+// Phase 1.1 D-11: accept both `sessionId` and `id` (older kiro-cli versions used
+// `id`); NewSession picks whichever is non-empty via firstNonEmpty.
+// Phase 1.1 D-12: surface result.models.availableModels[] via the canonical
+// ModelInfo type so callers see {ID, Name}.
 type sessionNewResult struct {
-	SessionID string `json:"sessionId"`
+	SessionID string                 `json:"sessionId"`
+	ID        string                 `json:"id"`
+	Models    sessionNewResultModels `json:"models"`
+}
+
+// sessionNewResultModels carries the `models` envelope returned by session/new.
+type sessionNewResultModels struct {
+	AvailableModels []sessionNewResultModelEntry `json:"availableModels"`
+	CurrentModelID  string                       `json:"currentModelId"`
+}
+
+// sessionNewResultModelEntry carries a single available-model entry on the wire.
+// Wire field is `modelId` (per acp_wire_shapes.md §2), not `id`. Maps to
+// canonical.ModelInfo{ID: ModelID, Name: Name} inside NewSession.
+type sessionNewResultModelEntry struct {
+	ModelID string `json:"modelId"`
+	Name    string `json:"name"`
 }
 
 // setModelParams is the params payload for session/set_model.
@@ -147,13 +177,27 @@ type setModelParams struct {
 
 // promptParams is the params payload for session/prompt.
 //
-// CR-05 fix: Blocks is typed as []wireBlock (not []canonical.Block). The
-// canonical type encodes via Go's default reflect encoder, which produces a
-// shape kiro-cli cannot parse. translateBlocks (in translate.go) converts the
+// CR-05 fix: the block slice is typed as []wireBlock (not []canonical.Block).
+// The canonical type encodes via Go's default reflect encoder, which produces
+// a shape kiro-cli cannot parse. translateBlocks (in translate.go) converts the
 // caller's canonical slice to the wire shape just before the send.
+//
+// Phase 1.1 D-13: ship BOTH `prompt` AND `content` carrying the same translated
+// slice. The Node implementation does this at acp-ollama-server.js:296-303
+// because older kiro-cli versions read the old field name. Keep both fields —
+// do not collapse to one. JSON marshal of two []wireBlock fields pointing at
+// the same slice serialises each as its own array (no aliasing on the wire).
 type promptParams struct {
 	SessionID string      `json:"sessionId"`
-	Blocks    []wireBlock `json:"blocks"`
+	Prompt    []wireBlock `json:"prompt"`
+	Content   []wireBlock `json:"content"`
+}
+
+// promptResult is the result envelope returned by the session/prompt call.
+// Phase 1.1 D-07: parse `stopReason` from the wire and surface it as
+// canonical.StopReason on Stream.Result() via FinalResult.StopReason.
+type promptResult struct {
+	StopReason string `json:"stopReason"`
 }
 
 // cancelParams is the params payload for session/cancel notification.
@@ -498,8 +542,14 @@ func (c *Client) Initialize(ctx context.Context) error {
 	}
 }
 
-// NewSession sends session/new with the given working directory and returns the session ID.
-// ACP-03.
+// NewSession sends session/new with the given working directory and returns the
+// session ID. ACP-03.
+//
+// Phase 1.1 D-10: params include mcpServers as an explicit empty array.
+// Phase 1.1 D-11: accept either result.sessionId or result.id (kiro-cli versions
+// vary); errors if both are empty.
+// Phase 1.1 D-12: populate c.models from result.models.availableModels under
+// c.stateMu — callers read via the AvailableModels() accessor.
 func (c *Client) NewSession(ctx context.Context, cwd string) (string, error) {
 	id := c.nextID.Add(1)
 	respCh := c.disp.register(id)
@@ -509,7 +559,10 @@ func (c *Client) NewSession(ctx context.Context, cwd string) (string, error) {
 		JSONRPC: "2.0",
 		ID:      id,
 		Method:  "session/new",
-		Params:  sessionNewParams{CWD: cwd},
+		Params: sessionNewParams{
+			CWD:        cwd,
+			MCPServers: make([]mcpServer, 0),
+		},
 	}); err != nil {
 		return "", err
 	}
@@ -524,11 +577,30 @@ func (c *Client) NewSession(ctx context.Context, cwd string) (string, error) {
 			}
 			return "", fmt.Errorf("acp: session/new: rpc error %d: %s", frame.Error.Code, frame.Error.Message)
 		}
-		var result sessionNewResult
-		if err := json.Unmarshal(frame.Result, &result); err != nil {
+		var r sessionNewResult
+		if err := json.Unmarshal(frame.Result, &r); err != nil {
 			return "", fmt.Errorf("acp: session/new result: %w", err)
 		}
-		return result.SessionID, nil
+		sid := firstNonEmpty(r.SessionID, r.ID)
+		if sid == "" {
+			return "", fmt.Errorf("acp: session/new result: missing sessionId and id")
+		}
+		// D-12: translate availableModels into canonical.ModelInfo and store
+		// under stateMu. A nil/empty source produces a nil destination.
+		var models []canonical.ModelInfo
+		if n := len(r.Models.AvailableModels); n > 0 {
+			models = make([]canonical.ModelInfo, 0, n)
+			for _, entry := range r.Models.AvailableModels {
+				models = append(models, canonical.ModelInfo{
+					ID:   entry.ModelID,
+					Name: entry.Name,
+				})
+			}
+		}
+		c.stateMu.Lock()
+		c.models = models
+		c.stateMu.Unlock()
+		return sid, nil
 	}
 }
 
@@ -609,14 +681,17 @@ func (c *Client) Prompt(ctx context.Context, sessionID string, blocks []canonica
 	c.activeStream = stream
 	c.streamMu.Unlock()
 
+	// Translate once; ship the same slice on both `prompt` and `content` per
+	// D-13 (defensive duplicate for older kiro-cli versions).
+	wire := translateBlocks(blocks)
 	if err := c.send(ctx, id, rpcRequest{
 		JSONRPC: "2.0",
 		ID:      id,
 		Method:  "session/prompt",
 		// CR-05 fix: convert canonical.Block slice to wire shape so kiro-cli
-		// receives {"type":"text","content":"..."} rather than the Go default
+		// receives {"type":"text","text":"..."} rather than the Go default
 		// discriminated-struct encoding.
-		Params: promptParams{SessionID: sessionID, Blocks: translateBlocks(blocks)},
+		Params: promptParams{SessionID: sessionID, Prompt: wire, Content: wire},
 	}); err != nil {
 		c.streamMu.Lock()
 		c.activeStream = nil
@@ -652,11 +727,24 @@ func (c *Client) Prompt(ctx context.Context, sessionID string, blocks []canonica
 		// subprocess exit. Clear activeStream BEFORE closing so any late
 		// session/update notification falls through to the "unknown session" Warn
 		// log rather than racing with a closed channel.
+		//
+		// Phase 1.1 D-07: parse result.stopReason (forward-compat: unknown wire
+		// values map to StopUnknown via parseStopReason — do NOT fail the prompt
+		// over an unrecognised stop reason). Pass the parsed value into close()
+		// where stream.go merges it onto the FinalResult that push() has been
+		// updating with ChunkCount.
+		var r promptResult
+		if len(frame.Result) > 0 {
+			if err := json.Unmarshal(frame.Result, &r); err != nil {
+				c.cfg.Logger.Warn("acp: prompt result parse failed", "err", err)
+			}
+		}
+		stop := parseStopReason(r.StopReason)
 		s := stream
 		c.streamMu.Lock()
 		c.activeStream = nil
 		c.streamMu.Unlock()
-		s.close(nil, nil)
+		s.close(&FinalResult{StopReason: stop}, nil)
 		return s, nil
 	}
 }

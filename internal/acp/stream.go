@@ -15,6 +15,11 @@ type FinalResult struct {
 	SessionID string
 	// ChunkCount is the number of canonical.Chunk values pushed to Chunks.
 	ChunkCount int
+	// StopReason carries the agent's stop reason from the session/prompt
+	// response. Zero value canonical.StopUnknown indicates an abrupt close
+	// (readLoop teardown), an unknown wire value (D-02 forward-compat), or
+	// that the response was never read.
+	StopReason canonical.StopReason
 }
 
 // Stream is the handle returned by Client.Prompt.
@@ -67,13 +72,27 @@ func (s *Stream) push(ctx context.Context, ch canonical.Chunk) error {
 	}
 }
 
-// close finalises the stream: stores result and err, then closes both channels.
+// close finalises the stream: merges any provided FinalResult fields onto the
+// stream's existing result (which was initialised in newStream and updated by
+// push during the stream lifetime), stores err, and closes both channels.
 // Idempotent — safe to call multiple times via sync.Once.
+//
+// Phase 1.1 D-07 merge semantics: rather than replacing s.result with the
+// caller-supplied pointer (which would discard the SessionID set in newStream
+// and the ChunkCount accumulated inside push), copy ONLY the non-zero fields
+// from result onto the existing s.result. Today only StopReason flows in via
+// this path — the existing readLoop teardown path calls close(nil, err), and
+// the Prompt happy path calls close(&FinalResult{StopReason: stop}, nil).
 func (s *Stream) close(result *FinalResult, err error) {
 	s.closeOnce.Do(func() {
 		s.mu.Lock()
-		if result != nil {
-			s.result = result
+		if s.result == nil {
+			// Defensive — newStream always allocates, but guard so the merge
+			// below doesn't crash on a hypothetical future caller.
+			s.result = &FinalResult{}
+		}
+		if result != nil && result.StopReason != canonical.StopUnknown {
+			s.result.StopReason = result.StopReason
 		}
 		s.err = err
 		s.mu.Unlock()

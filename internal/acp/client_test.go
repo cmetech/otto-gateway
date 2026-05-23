@@ -564,6 +564,246 @@ func TestInitialize_CapturesPromptCapabilities(t *testing.T) {
 	})
 }
 
+// TestNewSession_PopulatesAvailableModels verifies the Plan 1.1-03 D-12
+// contract: NewSession parses result.models.availableModels[] into
+// []canonical.ModelInfo and surfaces the slice via AvailableModels().
+func TestNewSession_PopulatesAvailableModels(t *testing.T) {
+	mock := newMockRWC()
+	cfg := newTestConfig(t)
+
+	c := NewWithConn(mock, cfg)
+	defer func() {
+		mock.serverClose()
+		_ = c.Close()
+		goleak.VerifyNone(t)
+	}()
+
+	// Responder for session/new — returns sessionId AND an availableModels array.
+	serveErr := make(chan error, 1)
+	go func() {
+		line, err := readLineFromPipe(mock.serverRead)
+		if err != nil {
+			serveErr <- fmt.Errorf("read session/new: %w", err)
+			return
+		}
+		var req map[string]any
+		if err := json.Unmarshal(line, &req); err != nil {
+			serveErr <- fmt.Errorf("unmarshal session/new: %w", err)
+			return
+		}
+		if err := mock.serverWriteJSON(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      req["id"],
+			"result": map[string]any{
+				"sessionId": "sess-1",
+				"models": map[string]any{
+					"availableModels": []map[string]any{
+						{"modelId": "claude-sonnet-4-7", "name": "Claude Sonnet 4.7"},
+						{"modelId": "gpt-4o", "name": "GPT-4o"},
+					},
+					"currentModelId": "auto",
+				},
+			},
+		}); err != nil {
+			serveErr <- fmt.Errorf("write response: %w", err)
+			return
+		}
+		serveErr <- nil
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	sid, err := c.NewSession(ctx, "/tmp")
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	if err := <-serveErr; err != nil {
+		t.Fatalf("responder: %v", err)
+	}
+	if sid != "sess-1" {
+		t.Errorf("sessionID: got %q, want %q", sid, "sess-1")
+	}
+	got := c.AvailableModels()
+	want := []canonical.ModelInfo{
+		{ID: "claude-sonnet-4-7", Name: "Claude Sonnet 4.7"},
+		{ID: "gpt-4o", Name: "GPT-4o"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("AvailableModels: got %+v, want %+v", got, want)
+	}
+}
+
+// TestNewSession_FallsBackToResultID locks the D-11 fallback contract:
+// when the result envelope carries `id` instead of `sessionId`, NewSession
+// returns that id rather than erroring.
+func TestNewSession_FallsBackToResultID(t *testing.T) {
+	mock := newMockRWC()
+	cfg := newTestConfig(t)
+
+	c := NewWithConn(mock, cfg)
+	defer func() {
+		mock.serverClose()
+		_ = c.Close()
+		goleak.VerifyNone(t)
+	}()
+
+	serveErr := make(chan error, 1)
+	go func() {
+		line, err := readLineFromPipe(mock.serverRead)
+		if err != nil {
+			serveErr <- fmt.Errorf("read session/new: %w", err)
+			return
+		}
+		var req map[string]any
+		if err := json.Unmarshal(line, &req); err != nil {
+			serveErr <- fmt.Errorf("unmarshal session/new: %w", err)
+			return
+		}
+		// Note: no `sessionId` field — only `id`.
+		if err := mock.serverWriteJSON(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      req["id"],
+			"result": map[string]any{
+				"id": "sess-fallback",
+			},
+		}); err != nil {
+			serveErr <- fmt.Errorf("write response: %w", err)
+			return
+		}
+		serveErr <- nil
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	sid, err := c.NewSession(ctx, "/tmp")
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	if err := <-serveErr; err != nil {
+		t.Fatalf("responder: %v", err)
+	}
+	if sid != "sess-fallback" {
+		t.Errorf("sessionID: got %q, want %q", sid, "sess-fallback")
+	}
+	// No models array was sent — accessor must still return nil.
+	if models := c.AvailableModels(); models != nil {
+		t.Errorf("AvailableModels (no models in result): got %+v, want nil", models)
+	}
+}
+
+// TestPrompt_SurfacesStopReason verifies D-07 + D-02: Prompt parses
+// result.stopReason and surfaces it through Stream.Result().StopReason.
+// Two sub-tests cover the known-string happy path and the unknown-string
+// forward-compat path.
+func TestPrompt_SurfacesStopReason(t *testing.T) {
+	t.Run("end_turn_maps_to_StopEndTurn", func(t *testing.T) {
+		runPromptStopReasonScenario(t, "end_turn", canonical.StopEndTurn)
+	})
+	t.Run("unknown_stop_reason_maps_to_StopUnknown", func(t *testing.T) {
+		runPromptStopReasonScenario(t, "banana", canonical.StopUnknown)
+	})
+}
+
+// runPromptStopReasonScenario drives a full initialize → session/new →
+// session/prompt dialogue against a mockRWC and asserts the parsed StopReason
+// matches expectations. Used by TestPrompt_SurfacesStopReason's two sub-tests.
+func runPromptStopReasonScenario(t *testing.T, wireStop string, want canonical.StopReason) {
+	t.Helper()
+
+	mock := newMockRWC()
+	cfg := newTestConfig(t)
+
+	c := NewWithConn(mock, cfg)
+	defer func() {
+		mock.serverClose()
+		_ = c.Close()
+		goleak.VerifyNone(t)
+	}()
+
+	// Scripted responder: initialize → session/new → session/prompt, in order.
+	serveErr := make(chan error, 1)
+	go func() {
+		for _, step := range []string{"initialize", "session/new", "session/prompt"} {
+			line, err := readLineFromPipe(mock.serverRead)
+			if err != nil {
+				serveErr <- fmt.Errorf("read %s: %w", step, err)
+				return
+			}
+			var req map[string]any
+			if err := json.Unmarshal(line, &req); err != nil {
+				serveErr <- fmt.Errorf("unmarshal %s: %w", step, err)
+				return
+			}
+			gotMethod, _ := req["method"].(string)
+			if gotMethod != step {
+				serveErr <- fmt.Errorf("expected method %q, got %q", step, gotMethod)
+				return
+			}
+			var result map[string]any
+			switch step {
+			case "initialize":
+				result = map[string]any{}
+			case "session/new":
+				result = map[string]any{"sessionId": "sess-1"}
+			case "session/prompt":
+				result = map[string]any{"stopReason": wireStop}
+			}
+			if err := mock.serverWriteJSON(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      req["id"],
+				"result":  result,
+			}); err != nil {
+				serveErr <- fmt.Errorf("write %s response: %w", step, err)
+				return
+			}
+		}
+		serveErr <- nil
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := c.Initialize(ctx); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	sid, err := c.NewSession(ctx, "/tmp")
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	stream, err := c.Prompt(ctx, sid, []canonical.Block{
+		{Kind: canonical.BlockKindText, Text: &canonical.TextBlock{Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+
+	// Drain Chunks (fake sends no chunks; channel closes when Prompt closes
+	// the stream). Track the count so the for-range body isn't empty per
+	// revive's empty-block lint, even though the value itself is unused.
+	var drained int
+	for range stream.Chunks {
+		drained++
+	}
+	_ = drained
+
+	result, err := stream.Result()
+	if err != nil {
+		t.Fatalf("stream.Result: %v", err)
+	}
+	if result == nil {
+		t.Fatal("stream.Result returned nil FinalResult")
+	}
+	if result.StopReason != want {
+		t.Errorf("StopReason: got %v, want %v (wire string %q)", result.StopReason, want, wireStop)
+	}
+
+	if err := <-serveErr; err != nil {
+		t.Fatalf("responder: %v", err)
+	}
+}
+
 // readLineFromPipe reads one newline-terminated line from r.
 func readLineFromPipe(r io.Reader) ([]byte, error) {
 	return readLineFromPipeWithTimeout(r, 5*time.Second)
