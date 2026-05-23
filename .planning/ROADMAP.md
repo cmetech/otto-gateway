@@ -83,7 +83,7 @@ Plans:
   5. `session/request_permission` is handled as a REQUEST (responds to the original frame `id` with `{result:{optionId:"allow_always", granted:true}}`); the separate `session/grant_permission` request path from Phase 1 is removed.
   6. New integration test in `internal/acp/integration_test.go`: gated on real `kiro-cli` (D-17 pattern); spawns the subprocess, completes `Initialize → NewSession → Prompt("hi")`, drains `stream.Chunks`, asserts at least one `ChunkKindText` chunk arrives with non-empty content, asserts `Stream.Result()` returns with a non-error `StopReason` (typically `StopEndTurn`). `goleak.VerifyNone(t)` passes. **This is the verification gate that unblocks Phase 2.**
 
-**Plans:** 2/5 plans executed
+**Plans:** 3/5 plans executed
 
 Plans:
 **Wave 1**
@@ -96,7 +96,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 01.1-03-PLAN.md — Session/new + prompt wire shape + stop reason: mcpServers:[] (D-10), sessionId/id fallback (D-11), extract availableModels (D-12), promptParams Prompt+Content defensive duplicate (D-13), wireBlock new fields with resource_link Name path.Base fallback (D-14, D-04), parseStopReason helper + Stream.Result returns StopReason (D-02, D-07). Paired with whitebox tests for parseStopReason, translateBlock resource_link Name fallback, and Prompt round-trip surfacing StopReason via Stream.Result.
+- [x] 01.1-03-PLAN.md — Session/new + prompt wire shape + stop reason: mcpServers:[] (D-10), sessionId/id fallback (D-11), extract availableModels (D-12), promptParams Prompt+Content defensive duplicate (D-13), wireBlock new fields with resource_link Name path.Base fallback (D-14, D-04), parseStopReason helper + Stream.Result returns StopReason (D-02, D-07). Paired with whitebox tests for parseStopReason, translateBlock resource_link Name fallback, and Prompt round-trip surfacing StopReason via Stream.Result.
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
@@ -263,7 +263,7 @@ Phases execute in numeric order: 1 → 1.1 → 2 → 3 → 3.1 → 4 → 5 → 6
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Foundations | 5/5 | Complete   | 2026-05-23 |
-| 1.1. ACP Wire Alignment (INSERTED) | 2/5 | In Progress|  |
+| 1.1. ACP Wire Alignment (INSERTED) | 3/5 | In Progress|  |
 | 2. Ollama End-to-End | 0/TBD | Not started | - |
 | 3. OpenAI Surface | 0/TBD | Not started | - |
 | 4. Streaming | 0/TBD | Not started | - |
