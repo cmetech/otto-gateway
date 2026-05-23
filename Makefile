@@ -8,7 +8,7 @@ VERSION     ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo 
 LDFLAGS     := -s -w -X loop24-gateway/internal/version.Version=$(VERSION)
 BUILD_DIR   := bin
 
-.PHONY: all build run test test-race lint fmt tidy clean cross ci start stop status help
+.PHONY: all build run test test-race lint fmt tidy clean cross ci arch-lint start stop status help
 
 all: lint test build ## Lint, test, and build for the host platform
 
@@ -52,7 +52,10 @@ cross-windows-amd64:
 	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 \
 		go build -ldflags="$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY)-windows-amd64.exe $(PKG)
 
-ci: lint test-race ## Full CI gate (lint + race-tests + vuln scan)
+arch-lint: ## Check architecture boundaries (requires go-arch-lint@v1.15.0)
+	$(shell go env GOPATH)/bin/go-arch-lint check --project-path .
+
+ci: lint test-race arch-lint ## Full CI gate (lint + race-tests + govulncheck + arch-lint)
 	$(shell go env GOPATH)/bin/govulncheck ./...
 
 start: ## Start gateway in background (wrapper script)
