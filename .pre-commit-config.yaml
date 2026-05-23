@@ -1,0 +1,34 @@
+# Pre-commit hooks for loop24-gateway.
+# Install once: `pre-commit install`. Runs on every `git commit`.
+# Aligns with the layered CI pipeline from docs/briefs/go_port_brief.md §3.12.
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-merge-conflict
+      - id: check-yaml
+      - id: check-json
+      - id: check-added-large-files
+        args: [--maxkb=2048]
+
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.18.4
+    hooks:
+      - id: gitleaks
+
+  - repo: https://github.com/golangci/golangci-lint
+    rev: v1.62.2
+    hooks:
+      - id: golangci-lint
+
+  - repo: local
+    hooks:
+      - id: go-mod-tidy
+        name: go mod tidy
+        language: system
+        entry: bash -c 'go mod tidy && git diff --exit-code go.mod go.sum'
+        pass_filenames: false
+        files: ^(go\.mod|go\.sum|.*\.go)$

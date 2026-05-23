@@ -1,0 +1,34 @@
+# Binaries
+/bin/
+/dist/
+loop24-gateway
+loop24-gateway.exe
+
+# Build / test output
+*.test
+*.out
+coverage.*
+
+# Go workspace files (local only)
+go.work
+go.work.sum
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+*_creds*
+private.*
+
+# Editor / OS noise
+.vscode/
+.idea/
+.DS_Store
+
+# Caches / temp
+tmp/
+.tmp/
+**/temp/
+
+# Local Claude / Kiro state (skills + commands are versioned; runtime state is not)
+.claude/settings.local.json
