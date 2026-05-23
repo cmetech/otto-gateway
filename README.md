@@ -4,7 +4,7 @@ A Go-based LLM gateway that proxies requests from OpenAI- and
 Ollama-compatible clients to a pool of `kiro-cli` ACP worker
 subprocesses, with a configurable guardrails chain in between.
 
-![Loop24 Gateway architecture overview](docs/architecture/architecture-overview.png)
+![Loop24 Gateway architecture overview — three API surfaces](docs/architecture/architecture-overview.jpg)
 
 ## Status
 
