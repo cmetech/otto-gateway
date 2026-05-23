@@ -538,7 +538,7 @@ func (c *Client) Initialize(ctx context.Context) error {
 		return fmt.Errorf("acp: initialize: %w", ctx.Err())
 	case frame := <-respCh:
 		if frame.Error != nil {
-			if frame.Error.Code == -32099 {
+			if frame.Error.Code == closeSentinelCode {
 				return ErrClientClosed
 			}
 			return fmt.Errorf("acp: initialize: rpc error %d: %s", frame.Error.Code, frame.Error.Message)
@@ -594,7 +594,7 @@ func (c *Client) NewSession(ctx context.Context, cwd string) (string, error) {
 		return "", fmt.Errorf("acp: session/new: %w", ctx.Err())
 	case frame := <-respCh:
 		if frame.Error != nil {
-			if frame.Error.Code == -32099 {
+			if frame.Error.Code == closeSentinelCode {
 				return "", ErrClientClosed
 			}
 			return "", fmt.Errorf("acp: session/new: rpc error %d: %s", frame.Error.Code, frame.Error.Message)
@@ -647,7 +647,7 @@ func (c *Client) Ping(ctx context.Context) error {
 		return fmt.Errorf("acp: ping: %w", ctx.Err())
 	case frame := <-respCh:
 		if frame.Error != nil {
-			if frame.Error.Code == -32099 {
+			if frame.Error.Code == closeSentinelCode {
 				return ErrClientClosed
 			}
 			// kiro-cli may respond with method-not-found; treat as non-fatal.
@@ -678,7 +678,7 @@ func (c *Client) SetModel(ctx context.Context, sessionID, modelID string) error 
 		return fmt.Errorf("acp: session/set_model: %w", ctx.Err())
 	case frame := <-respCh:
 		if frame.Error != nil {
-			if frame.Error.Code == -32099 {
+			if frame.Error.Code == closeSentinelCode {
 				return ErrClientClosed
 			}
 			return fmt.Errorf("acp: session/set_model: rpc error %d: %s", frame.Error.Code, frame.Error.Message)
@@ -765,7 +765,7 @@ func (c *Client) Prompt(ctx context.Context, sessionID string, blocks []canonica
 			c.streamMu.Lock()
 			c.activeStream = nil
 			c.streamMu.Unlock()
-			if frame.Error.Code == -32099 {
+			if frame.Error.Code == closeSentinelCode {
 				return nil, ErrClientClosed
 			}
 			return nil, fmt.Errorf("acp: prompt: rpc error %d: %s", frame.Error.Code, frame.Error.Message)

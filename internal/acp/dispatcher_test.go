@@ -255,7 +255,7 @@ func TestDispatcherDrainAll(t *testing.T) {
 	for _, ch := range []<-chan rpcFrame{ch1, ch2} {
 		select {
 		case f := <-ch:
-			if f.Error == nil || f.Error.Code != -32099 {
+			if f.Error == nil || f.Error.Code != closeSentinelCode {
 				t.Errorf("expected sentinel error frame, got %+v", f)
 			}
 		default:

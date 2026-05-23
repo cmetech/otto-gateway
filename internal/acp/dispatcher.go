@@ -40,6 +40,16 @@ type rpcError struct {
 	Message string `json:"message"`
 }
 
+// closeSentinelCode is the JSON-RPC error code drainAll() stamps on the
+// sentinel frame delivered to every in-flight caller when the client is
+// closing. Sits inside the JSON-RPC 2.0 §5.1 server-defined error range
+// (-32000 to -32099) so it cannot collide with the reserved Parse/Invalid/
+// Method/etc. codes. We pick -32099 (the most-negative end of the range)
+// to leave the higher slots free for real server-emitted errors. WR-06:
+// previously a literal in six places; centralising under one name removes
+// the typo risk and gives the close-sentinel its own grep-able identity.
+const closeSentinelCode = -32099
+
 // dispatcher correlates JSON-RPC response frames with waiting callers.
 // It routes:
 //   - nil-ID frames (notifications) → onNotif callback
@@ -138,7 +148,7 @@ func (d *dispatcher) drainAll(err error) {
 	defer d.mu.Unlock()
 	for id, ch := range d.pending {
 		select {
-		case ch <- rpcFrame{Error: &rpcError{Code: -32099, Message: err.Error()}}:
+		case ch <- rpcFrame{Error: &rpcError{Code: closeSentinelCode, Message: err.Error()}}:
 		default:
 			// Channel already has a frame (route() beat us) or caller is gone — drop safely.
 		}
