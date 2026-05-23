@@ -1,0 +1,41 @@
+# .gitattributes — line ending and binary file handling for loop24-gateway.
+#
+# Why this exists: developers work on macOS + Windows laptops (see DEVELOPERS.md).
+# Without per-pattern normalization, Windows Git's core.autocrlf=true silently
+# converts .sh and Makefile to CRLF on checkout, which breaks bash interpreter
+# lookup, gofmt, and tab-significant Makefiles.
+
+# Default: detect text vs binary; normalize text to LF in repo, render
+# platform-native on checkout.
+* text=auto
+
+# Shell scripts MUST stay LF — bash refuses CRLF in shebang parsing.
+*.sh text eol=lf
+
+# PowerShell: leave to auto. PowerShell handles either; platform-native is
+# friendliest (Windows checkout → CRLF, macOS/Linux → LF).
+
+# Go: gofmt enforces LF. Pin it so a CRLF commit can't sneak through.
+*.go text eol=lf
+go.mod text eol=lf
+go.sum text eol=lf
+
+# Make is tab-significant and brittle on CRLF.
+Makefile text eol=lf
+
+# Config formats: LF in repo (some parsers are strict, CI tools historically
+# broke on CRLF).
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+.editorconfig text eol=lf
+.golangci.yml text eol=lf
+.pre-commit-config.yaml text eol=lf
+
+# Binary assets — never normalize.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
