@@ -83,7 +83,7 @@ Plans:
   5. `session/request_permission` is handled as a REQUEST (responds to the original frame `id` with `{result:{optionId:"allow_always", granted:true}}`); the separate `session/grant_permission` request path from Phase 1 is removed.
   6. New integration test in `internal/acp/integration_test.go`: gated on real `kiro-cli` (D-17 pattern); spawns the subprocess, completes `Initialize → NewSession → Prompt("hi")`, drains `stream.Chunks`, asserts at least one `ChunkKindText` chunk arrives with non-empty content, asserts `Stream.Result()` returns with a non-error `StopReason` (typically `StopEndTurn`). `goleak.VerifyNone(t)` passes. **This is the verification gate that unblocks Phase 2.**
 
-**Plans:** 1/5 plans executed
+**Plans:** 2/5 plans executed
 
 Plans:
 **Wave 1**
@@ -92,7 +92,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 01.1-02-PLAN.md — Initialize handshake + accessors: spec-compliant initializeParams (D-08), capture agentCapabilities.promptCapabilities (D-09), add stateMu + caps + models fields (D-06), PromptCapabilities() + AvailableModels() accessors (D-05). Paired with whitebox test that asserts the capture via the fake-conn pattern.
+- [x] 01.1-02-PLAN.md — Initialize handshake + accessors: spec-compliant initializeParams (D-08), capture agentCapabilities.promptCapabilities (D-09), add stateMu + caps + models fields (D-06), PromptCapabilities() + AvailableModels() accessors (D-05). Paired with whitebox test that asserts the capture via the fake-conn pattern.
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
@@ -263,7 +263,7 @@ Phases execute in numeric order: 1 → 1.1 → 2 → 3 → 3.1 → 4 → 5 → 6
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Foundations | 5/5 | Complete   | 2026-05-23 |
-| 1.1. ACP Wire Alignment (INSERTED) | 1/5 | In Progress|  |
+| 1.1. ACP Wire Alignment (INSERTED) | 2/5 | In Progress|  |
 | 2. Ollama End-to-End | 0/TBD | Not started | - |
 | 3. OpenAI Surface | 0/TBD | Not started | - |
 | 4. Streaming | 0/TBD | Not started | - |
