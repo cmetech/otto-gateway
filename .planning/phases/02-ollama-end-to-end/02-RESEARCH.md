@@ -1478,32 +1478,32 @@ HTTP status codes:
 **These assumptions should be confirmed by the user during plan-phase review** — especially
 A4 (think:true handling) which directly affects Phase 2's adapter scope.
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Engine ACPClient interface shape: 4-method interface vs WithSlot callback**
    - What we know: D-03 says "NewSession + SetModel + Prompt + Cancel" interface.
    - What's unclear: A literal 4-method interface forces the engine to manage slot acquire/release manually, which is leak-prone (forgot defer). A `WithSlot(ctx, fn(slot) error) error` callback shape always releases.
-   - Recommendation: implement the 4-method interface as the public contract (D-03 verbatim), but internally on the pool side use `WithSlot` semantics so acquire/release is paired correctly. Or: planner decides on `WithSlot` and updates D-03's wording — the interface name in D-03 is the docs source, not load-bearing on its exact methods.
+   - Recommendation: RESOLVED: implement the 4-method interface as the public contract (D-03 verbatim), but internally on the pool side use `WithSlot` semantics so acquire/release is paired correctly. Or: planner decides on `WithSlot` and updates D-03's wording — the interface name in D-03 is the docs source, not load-bearing on its exact methods.
 
 2. **think:true handling in `/api/chat` — Phase 2 or Phase 6 problem?**
    - What we know: Ollama `think:true` requests should surface `message.thinking` content; canonical has `ChunkKindThought`.
    - What's unclear: does LangFlow ever send `think:true`?
-   - Recommendation: implement minimum support — if `think:true`, include aggregated thought chunks in `message.thinking`. Cost is ~5 LOC. Skipping it risks LangFlow breaking when a flow enables thinking.
+   - Recommendation: RESOLVED: implement minimum support — if `think:true`, include aggregated thought chunks in `message.thinking`. Cost is ~5 LOC. Skipping it risks LangFlow breaking when a flow enables thinking.
 
 3. **Single-package per concern: where does `auth` live?**
    - What we know: CONTEXT.md mentions `auth.Bearer(token)` and `auth.IPAllowlist(cidrs)`.
    - What's unclear: package boundary. `internal/auth`? `internal/server/auth`? `internal/middleware/auth`?
-   - Recommendation: `internal/auth` as a peer package. Keeps middleware separable, and Phase 8 will need to import auth logic from the engine hook layer too.
+   - Recommendation: RESOLVED: `internal/auth` as a peer package. Keeps middleware separable, and Phase 8 will need to import auth logic from the engine hook layer too.
 
 4. **Stub endpoint stream:true / stream:false default**
    - What we know: Node's `/api/pull` defaults to `stream:true` when client omits the field.
    - What's unclear: do LangFlow's actual pull invocations always set `stream:false`?
-   - Recommendation: mirror Node exactly (default `stream:true`). If the SURF-05 verification fails, switch to `stream:false` default. Cost of being wrong: one config flip.
+   - Recommendation: RESOLVED: mirror Node exactly (default `stream:true`). If the SURF-05 verification fails, switch to `stream:false` default. Cost of being wrong: one config flip.
 
 5. **Model catalog refresh policy**
    - What we know: D-13 says catalog captured once at warmup, requires restart to refresh.
    - What's unclear: kiro-cli versions vary in their model availability over time; restart-only is a real operator papercut.
-   - Recommendation: keep restart-only for Phase 2 (D-13 is explicit). Document as a known limitation in `/health` output (perhaps `models_captured_at` timestamp). Phase 5 or later may add a `/health/agents`-driven refresh.
+   - Recommendation: RESOLVED: keep restart-only for Phase 2 (D-13 is explicit). Document as a known limitation in `/health` output (perhaps `models_captured_at` timestamp). Phase 5 or later may add a `/health/agents`-driven refresh.
 
 ## Environment Availability
 
