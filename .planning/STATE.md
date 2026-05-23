@@ -4,8 +4,8 @@ milestone: v1.5
 milestone_name: milestone
 status: executing
 stopped_at: Phase 1.1 context gathered
-last_updated: "2026-05-23T21:55:16.074Z"
-last_activity: 2026-05-23 -- Phase 1.1 planning complete
+last_updated: "2026-05-23T22:10:37.544Z"
+last_activity: 2026-05-23 -- Phase 01.1 execution started
 progress:
   total_phases: 11
   completed_phases: 1
@@ -21,15 +21,15 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-23)
 
 **Core value:** All three API surfaces (OpenAI for Pi SDK, Ollama for LangFlow, Anthropic for loop24-client/GSD Pi) serve their respective clients without those clients knowing kiro-cli exists, with one place to enforce policy.
-**Current focus:** Phase 1.1 — ACP Wire Alignment (urgent insert; unblocks Phase 2)
+**Current focus:** Phase 01.1 — acp-wire-alignment
 
 ## Current Position
 
-Phase: 1.1
-Plan: Not started
-Status: Ready to execute
+Phase: 01.1 (acp-wire-alignment) — EXECUTING
+Plan: 1 of 5
+Status: Executing Phase 01.1
 Next: /gsd-discuss-phase 1.1 → /gsd-plan-phase 1.1 → /gsd-execute-phase 1.1 → /gsd-plan-phase 2
-Last activity: 2026-05-23 -- Phase 1.1 planning complete
+Last activity: 2026-05-23 -- Phase 01.1 execution started
 
 Progress: [░░░░░░░░░░] 0%
 
