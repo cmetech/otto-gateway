@@ -242,10 +242,10 @@ type Client struct {
 	framer *framer
 	disp   *dispatcher
 
-	wg         sync.WaitGroup
-	clientCtx  context.Context    // the client-lifetime context; cancelled by Close()
-	cancel     context.CancelFunc
-	closeOnce  sync.Once
+	wg        sync.WaitGroup
+	clientCtx context.Context // the client-lifetime context; cancelled by Close()
+	cancel    context.CancelFunc
+	closeOnce sync.Once
 
 	// Subprocess path (New constructor).
 	stdin io.WriteCloser
@@ -940,14 +940,48 @@ func (c *Client) Close() error {
 		c.wg.Wait()
 
 		// 5. cmd.Wait() — reap the subprocess (only if we spawned it).
+		//
+		// WR-03 (Phase 1.1 review): the cancel() call in step 1 propagates to
+		// exec.CommandContext which sends SIGKILL to the subprocess. The
+		// subsequent Wait() then surfaces an *exec.ExitError reporting
+		// "signal: killed" — that's our own teardown, not an external fault,
+		// and surfacing it to every Close() caller forces them to log-and-
+		// ignore (which every test in this package does). Filter the expected
+		// "killed by our cancel" signal here so Close() returns nil on the
+		// happy teardown path; only genuinely unexpected exit errors flow
+		// through to firstErr.
 		if c.cmd != nil {
 			if err := c.cmd.Wait(); err != nil && firstErr == nil {
-				// Ignore "signal: killed" — that's expected when context kills the process.
-				firstErr = fmt.Errorf("acp: cmd wait: %w", err)
+				if !isExpectedTeardownExit(err) {
+					firstErr = fmt.Errorf("acp: cmd wait: %w", err)
+				} else {
+					c.cfg.Logger.Debug("acp: cmd exited via context cancellation (expected)", "err", err)
+				}
 			}
 		}
 	})
 	return firstErr
+}
+
+// isExpectedTeardownExit reports whether err from cmd.Wait() is the result of
+// our own context cancellation (subprocess killed by signal) rather than an
+// independent subprocess failure. We treat any exit that reports the process
+// as not having exited normally (signaled) as expected teardown — the cancel
+// in Close() step 1 SIGKILLs the process via exec.CommandContext, and an
+// ExitError with ProcessState.Exited()==false is the signal-driven termination
+// path. Genuinely-failed subprocess exits (non-zero exit status from a regular
+// exit) still propagate to firstErr so callers can diagnose them.
+func isExpectedTeardownExit(err error) bool {
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		return false
+	}
+	if exitErr.ProcessState == nil {
+		return false
+	}
+	// Exited()==false means the process was terminated by a signal (or
+	// stopped); that's the SIGKILL path we expect on Close.
+	return !exitErr.Exited()
 }
 
 // PromptCapabilities returns the agent's prompt capabilities captured during
