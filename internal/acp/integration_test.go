@@ -151,6 +151,108 @@ func TestIntegration_FakeACP_ChunkTranslation(t *testing.T) {
 	goleak.VerifyNone(t)
 }
 
+// TestIntegration_FakeACP_PromptChunkDelivery proves SC#4 end-to-end:
+// a Prompt() call registers an active stream, the fake server emits
+// session/update, and a canonical.Chunk with ChunkKindText and Content
+// "hello from fake" arrives on stream.Chunks before stream.Result() returns.
+//
+// This test exercises:
+//   - ACP-05: session/update is translated to a typed canonical.Chunk and
+//     pushed to the active Prompt stream.
+//   - CR-02 fix: the stream is closed when the prompt response frame arrives
+//     (not only on readLoop EOF), so stream.Result() returns without waiting
+//     for the subprocess to exit.
+//
+// Synchronisation is via channels (fake.permissionGranted, stream.Chunks,
+// resultDone) and a 10-second context timeout — no time.Sleep is used.
+func TestIntegration_FakeACP_PromptChunkDelivery(t *testing.T) {
+	fake := newFakeACPServer(t)
+	defer fake.close()
+
+	cfg := acp.Config{
+		Logger:       testutil.Logger(t),
+		Command:      "kiro-cli",
+		Args:         []string{"acp"},
+		PingInterval: 10 * time.Minute, // disable ping during test
+	}
+
+	client := acp.NewWithConn(fake.clientRWC, cfg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := client.Initialize(ctx); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	sessionID, err := client.NewSession(ctx, "/tmp")
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	// Wait for the auto-grant cycle to complete before calling Prompt. The
+	// fake emits session/request_permission proactively after session/new;
+	// the client auto-grants; the fake closes permissionGranted. Synchronising
+	// here avoids a race between the grant send (still in writeCh) and the
+	// subsequent Prompt RPC.
+	select {
+	case <-fake.permissionGranted:
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for permissionGranted before Prompt")
+	}
+
+	// Call Prompt — this registers the active stream in the client. The fake
+	// will emit session/update then the prompt response frame on session/prompt.
+	blocks := []canonical.Block{
+		{Kind: canonical.BlockKindText, Text: &canonical.TextBlock{Content: "hello kiro"}},
+	}
+	stream, err := client.Prompt(ctx, sessionID, blocks)
+	if err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+
+	// Receive the chunk from the stream.
+	var received canonical.Chunk
+	select {
+	case chunk, ok := <-stream.Chunks:
+		if !ok {
+			t.Fatal("stream.Chunks closed before chunk arrived")
+		}
+		received = chunk
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for chunk on stream.Chunks")
+	}
+
+	if received.Kind != canonical.ChunkKindText {
+		t.Errorf("chunk Kind: got %v, want ChunkKindText (%v)", received.Kind, canonical.ChunkKindText)
+	}
+	if received.Text == nil {
+		t.Fatal("chunk.Text is nil")
+	}
+	if received.Text.Content != "hello from fake" {
+		t.Errorf("chunk.Text.Content: got %q, want %q", received.Text.Content, "hello from fake")
+	}
+	t.Logf("received chunk: Kind=%v Content=%q", received.Kind, received.Text.Content)
+
+	// Verify stream.Result() returns (CR-02 fix: stream closed on prompt response).
+	resultDone := make(chan struct{})
+	go func() {
+		_, _ = stream.Result()
+		close(resultDone)
+	}()
+	select {
+	case <-resultDone:
+		t.Log("stream.Result() returned — CR-02 fix confirmed")
+	case <-ctx.Done():
+		t.Fatal("stream.Result() blocked after prompt response — CR-02 fix did not apply")
+	}
+
+	if err := client.Close(); err != nil {
+		t.Logf("client.Close (minor error expected): %v", err)
+	}
+	goleak.VerifyNone(t)
+}
+
 // TestIntegration_FakeACP_PingWorks verifies that Ping succeeds against the fake server.
 func TestIntegration_FakeACP_PingWorks(t *testing.T) {
 	fake := newFakeACPServer(t)

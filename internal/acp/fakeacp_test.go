@@ -57,6 +57,7 @@ type fakeACPServer struct {
 //  3. Respond to ping
 //  4. After session/new response: emit session/request_permission
 //  5. On receiving grant_permission: emit session/update with type "text", content "hello from fake"
+//  6. On receiving session/prompt: emit session/update (content "hello from fake") then a prompt response frame
 func newFakeACPServer(t *testing.T) *fakeACPServer {
 	t.Helper()
 
@@ -177,6 +178,37 @@ func (f *fakeACPServer) serve(t *testing.T) {
 				return
 			}
 			close(f.updateEmitted)
+
+		case "session/prompt":
+			// SC#4 / CR-02 integration: emit a session/update chunk FIRST,
+			// then the prompt response frame. The chunk exercises the active
+			// stream path (ACP-05); the response frame exercises CR-02's fix
+			// (Prompt success arm closes the stream so Result() returns).
+			if id == nil {
+				continue
+			}
+			chunkNotif := map[string]any{
+				"jsonrpc": "2.0",
+				"method":  "session/update",
+				"params": map[string]any{
+					"sessionId": "test-session-id",
+					"type":      "text",
+					"content":   "hello from fake",
+				},
+			}
+			if err := f.writeJSON(chunkNotif); err != nil {
+				t.Logf("fakeACP: write session/update: %v", err)
+				return
+			}
+			resp := map[string]any{
+				"jsonrpc": "2.0",
+				"id":      *id,
+				"result":  map[string]any{},
+			}
+			if err := f.writeJSON(resp); err != nil {
+				t.Logf("fakeACP: write session/prompt response: %v", err)
+				return
+			}
 
 		case "ping":
 			if id == nil {
