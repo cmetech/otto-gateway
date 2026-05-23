@@ -46,7 +46,13 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. `make test-race` runs `go test -race ./...` and passes; `govulncheck` runs clean in CI.
   4. A standalone integration test spawns `kiro-cli acp`, completes JSON-RPC `initialize` + `session/new`, sends a `ping`, auto-grants a `session/request_permission`, and translates a `session/update` into a typed chunk — all without leaking goroutines or hanging on subprocess exit.
   5. Pre-commit hooks (`gitleaks`, `golangci-lint`, `go mod tidy`) are installed and block bad commits locally.
-**Plans:** TBD
+**Plans:** 4 plans
+
+Plans:
+- [ ] 01-01-PLAN.md — Walking skeleton: canonical+config+version+testutil packages, chi HTTP server, GET /health (D-12), GET /api/version, middleware chain, wrapper scripts, Makefile extensions
+- [ ] 01-02-PLAN.md — ACP client core: framer+dispatcher+client+translate+stream, all unit and integration tests, goleak gate, main.go wired with acp.New
+- [ ] 01-03-PLAN.md — Trust gates: go-arch-lint install (SUS checkpoint), .go-arch-lint.yml scaffold, make ci (lint+test-race+govulncheck), pre-commit run --all-files verification
+- [ ] 01-04-PLAN.md — Docs: docs/operating.md (PID/log locations, env overrides, status computation) + README Running section
 
 ### Phase 2: Ollama End-to-End
 **Goal:** The first true end-to-end vertical slice — an existing LangFlow flow pointing at `http://localhost:11434/api/chat` reaches a real `kiro-cli` subprocess through the gateway and gets back a correct Ollama-shaped response. Establishes the canonical-engine / adapter pattern that every other surface phase builds on.
@@ -159,7 +165,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundations | 0/TBD | Not started | - |
+| 1. Foundations | 0/4 | Not started | - |
 | 2. Ollama End-to-End | 0/TBD | Not started | - |
 | 3. OpenAI Surface | 0/TBD | Not started | - |
 | 4. Streaming | 0/TBD | Not started | - |
