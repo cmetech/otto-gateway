@@ -25,7 +25,7 @@ adapter-over-canonical layout (brief §3.13) and trust-gate suite (brief
 Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Foundations** - Scaffold, trust-gate suite, ACP JSON-RPC client over `kiro-cli` stdio (completed 2026-05-23)
-- [ ] **Phase 1.1: ACP Wire Alignment** *(INSERTED)* - Fix 10 Phase 1 wire-shape defects vs the working Node impl + live ACP spec; add real-kiro `session/prompt` round-trip integration test
+- [x] **Phase 1.1: ACP Wire Alignment** *(INSERTED)* - Fix 10 Phase 1 wire-shape defects vs the working Node impl + live ACP spec; add real-kiro `session/prompt` round-trip integration test (completed 2026-05-23)
 - [ ] **Phase 2: Ollama End-to-End** - First runnable slice — LangFlow `POST /api/chat` reaches real `kiro-cli`
 - [ ] **Phase 3: OpenAI Surface** - Pi-SDK `POST /v1/chat/completions` shares the same canonical engine
 - [ ] **Phase 3.1: Anthropic Surface** *(INSERTED)* - loop24-client (GSD Pi) `POST /v1/messages` with Anthropic SSE shares the same canonical engine
@@ -83,7 +83,7 @@ Plans:
   5. `session/request_permission` is handled as a REQUEST (responds to the original frame `id` with `{result:{optionId:"allow_always", granted:true}}`); the separate `session/grant_permission` request path from Phase 1 is removed.
   6. New integration test in `internal/acp/integration_test.go`: gated on real `kiro-cli` (D-17 pattern); spawns the subprocess, completes `Initialize → NewSession → Prompt("hi")`, drains `stream.Chunks`, asserts at least one `ChunkKindText` chunk arrives with non-empty content, asserts `Stream.Result()` returns with a non-error `StopReason` (typically `StopEndTurn`). `goleak.VerifyNone(t)` passes. **This is the verification gate that unblocks Phase 2.**
 
-**Plans:** 4/5 plans executed
+**Plans:** 5/5 plans complete
 
 Plans:
 **Wave 1**
@@ -104,7 +104,7 @@ Plans:
 
 **Wave 5** *(blocked on Wave 4 completion — Phase 2 unblock gate)*
 
-- [ ] 01.1-05-PLAN.md — Real-kiro round-trip integration test (D-24): TestIntegration_RealKiroCLI_PromptRoundTrip runs Initialize → NewSession → Prompt(hi) → drain chunks → Result against real kiro-cli 2.4.1; asserts PromptCapabilities non-zero, AvailableModels non-empty, ≥1 ChunkKindText with non-empty content, StopReason is non-error (typically StopEndTurn). Includes a blocking human-verify checkpoint that confirms the test passed against the local kiro-cli — **this is the Phase 2 unblock signal**.
+- [x] 01.1-05-PLAN.md — Real-kiro round-trip integration test (D-24): TestIntegration_RealKiroCLI_PromptRoundTrip runs Initialize → NewSession → Prompt(hi) → drain chunks → Result against real kiro-cli 2.4.1; asserts PromptCapabilities non-zero, AvailableModels non-empty, ≥1 ChunkKindText with non-empty content, StopReason is non-error (typically StopEndTurn). Includes a blocking human-verify checkpoint that confirms the test passed against the local kiro-cli — **this is the Phase 2 unblock signal**.
 
 **Canonical ref:** `docs/reference/acp_wire_shapes.md` (created during Phase 2 discuss) is the authoritative spec for the 10 wire-shape defects and the target shapes.
 
@@ -282,7 +282,7 @@ Phases execute in numeric order: 1 → 1.1 → 2 → 3 → 3.1 → 4 → 5 → 6
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Foundations | 5/5 | Complete   | 2026-05-23 |
-| 1.1. ACP Wire Alignment (INSERTED) | 4/5 | In Progress|  |
+| 1.1. ACP Wire Alignment (INSERTED) | 5/5 | Complete   | 2026-05-23 |
 | 2. Ollama End-to-End | 0/TBD | Not started | - |
 | 3. OpenAI Surface | 0/TBD | Not started | - |
 | 4. Streaming | 0/TBD | Not started | - |
