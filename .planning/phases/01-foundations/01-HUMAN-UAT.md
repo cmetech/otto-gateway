@@ -1,20 +1,21 @@
 ---
-status: partial
+status: resolved
 phase: 01-foundations
 source: [01-VERIFICATION.md]
 started: 2026-05-23T18:50:00Z
-updated: 2026-05-23T18:50:00Z
+updated: 2026-05-23T19:45:00Z
+resolved_by: 01-05-PLAN.md (gap-closure)
 ---
 
 ## Current Test
 
-[user chose gap closure 2026-05-23 — see `## Gaps` section below; closure plan to be created via /gsd-plan-phase 01 --gaps]
+[resolved 2026-05-23 — gap-closure plan 01-05 landed all five correctness fixes plus the SC#4 integration test; re-verification returned status=passed]
 
 ## Tests
 
 ### 1. Verify integration test proves `session/update` translation onto `Stream.Chunks` channel
 expected: An integration test calls `Prompt()`, receives `session/update` from the fake server, and a `canonical.Chunk` with `ChunkKindText` and `Content "hello from fake"` arrives on `stream.Chunks` before the stream closes.
-result: gap_closure_required — user opted to fix CR-01/02/03/05 + WR-02 + add this integration test in a Phase 1 gap-closure plan rather than deferring to Phase 2
+result: passed — TestIntegration_FakeACP_PromptChunkDelivery (internal/acp/integration_test.go:168-254) lands a typed canonical.Chunk on stream.Chunks and stream.Result() returns; PASS under race detector with goleak.VerifyNone
 
 why_human: |
   SC#4 (ROADMAP.md) says "translates a session/update into a typed chunk." The existing
@@ -50,8 +51,8 @@ Recommended path forward: Phase 2's PLAN.md should open a gap-closure task block
 ## Summary
 
 total: 1
-passed: 0
-issues: 1
+passed: 1
+issues: 0
 pending: 0
 skipped: 0
 blocked: 0
@@ -60,14 +61,16 @@ blocked: 0
 
 - id: phase-1-acp-correctness-gap
   source: 01-REVIEW.md + 01-VERIFICATION.md (SC#4 partial)
+  status: resolved
+  resolved_by: 01-05-PLAN.md (commits cfaa9d0, ec46b45, 91dbf2b)
+  resolved_date: 2026-05-23
   items:
-    - CR-01: dispatcher.drainAll blocking-send deadlock — change to non-blocking send (one line)
-    - CR-02: Stream.Result() deadlock — close stream on prompt response, not only on readLoop EOF
-    - CR-03: readLoop death not propagated — `defer c.cancel()` at top of readLoop
-    - CR-05: canonical.Block has no JSON tags / MarshalJSON — add translateBlock mirror in internal/acp (or proper Block marshalling)
-    - WR-02: handleNotification permission-grant uses `default: drop` — block on send (remove default arm)
-    - SC#4 integration test: add end-to-end test where Prompt() → activeStream → typed canonical.Chunk lands on Stream.Chunks before stream closes (depends on CR-02 + CR-05 being fixed first)
+    - CR-01: RESOLVED — dispatcher.drainAll uses non-blocking select with default arm (dispatcher.go:89-100)
+    - CR-02: RESOLVED — Prompt success arm closes stream before return (client.go:570-580)
+    - CR-03: RESOLVED — readLoop has `defer c.cancel()` (client.go:260)
+    - CR-05: RESOLVED — internal/acp/translate.go adds wireBlock + translateBlock + translateBlocks; canonical/chunk.go untouched (D-04 preserved)
+    - WR-02: RESOLVED — grant_permission select has no default drop arm (client.go:627-631)
+    - SC#4: RESOLVED — TestIntegration_FakeACP_PromptChunkDelivery passes under race + goleak (integration_test.go:168-254)
   deferred:
-    - CR-04 (permission audit) — belongs to Phase 8 hook chain, not Phase 1
-    - CR-06 (string IDs) — defer until kiro-cli actually emits non-numeric IDs
-  next_action: /gsd-plan-phase 01 --gaps
+    - CR-04 (permission audit) — Phase 8 hook chain
+    - CR-06 (string IDs) — defer until kiro-cli emits non-numeric IDs
