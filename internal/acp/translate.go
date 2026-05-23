@@ -243,18 +243,27 @@ func translateUpdate(u sessionUpdateParams) canonical.Chunk {
 // a session/update body's content field. The wire shape varies:
 //
 //	{"content":{"type":"text","text":"hello"}}  → "hello"
+//	{"content":{"type":"text","text":""}}        → ""        (NOT body.Text)
 //	{"content":"hello"}                          → "hello"
 //	{"text":"hello"}                             → "hello"
 //
 // The probe ignores `content.type` (always "text" when populated) and reads
-// `content.text` directly. A failed probe falls through to the next branch.
+// `content.text` directly. The presence of `content.text` (even when empty)
+// is the load-bearing signal — falling back to `body.text` from a populated
+// content object is wrong (WR-04).
+//
+// WR-04 (Phase 1.1 review): the probe Text field is a *string pointer rather
+// than a plain string so the JSON decoder distinguishes "absent" from
+// "present with empty value". A struct field of type string lands at "" for
+// BOTH cases, so an explicit empty content.text would have leaked through to
+// body.text — surfacing an unrelated value when the wire said "empty".
 func extractContent(body sessionUpdateBody) string {
 	if len(body.Content) > 0 {
 		var probe struct {
-			Text string `json:"text"`
+			Text *string `json:"text"`
 		}
-		if err := json.Unmarshal(body.Content, &probe); err == nil && probe.Text != "" {
-			return probe.Text
+		if err := json.Unmarshal(body.Content, &probe); err == nil && probe.Text != nil {
+			return *probe.Text
 		}
 		var s string
 		if err := json.Unmarshal(body.Content, &s); err == nil {

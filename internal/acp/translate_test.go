@@ -180,6 +180,20 @@ func TestTranslateUpdate_VarianceMatrix(t *testing.T) {
 				Thought: &canonical.ThoughtChunk{Content: "[tool: unknown]\n"},
 			},
 		},
+		{
+			// WR-04: when content is an object that explicitly carries
+			// text:"" (empty), that's the load-bearing value — must NOT
+			// fall through to body.Text. The pre-fix probe (Text string)
+			// could not distinguish absent from present-but-empty, so the
+			// "leaked" body.text from this row would have replaced the
+			// (correct) empty content.text.
+			name:       "empty_content_text_does_not_leak_body_text",
+			paramsJSON: `{"sessionId":"s1","sessionUpdate":"agent_message_chunk","content":{"type":"text","text":""},"text":"leaked"}`,
+			want: canonical.Chunk{
+				Kind: canonical.ChunkKindText,
+				Text: &canonical.TextChunk{Content: ""},
+			},
+		},
 	}
 
 	for _, r := range rows {
