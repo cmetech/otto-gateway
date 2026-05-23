@@ -104,9 +104,14 @@ type setModelParams struct {
 }
 
 // promptParams is the params payload for session/prompt.
+//
+// CR-05 fix: Blocks is typed as []wireBlock (not []canonical.Block). The
+// canonical type encodes via Go's default reflect encoder, which produces a
+// shape kiro-cli cannot parse. translateBlocks (in translate.go) converts the
+// caller's canonical slice to the wire shape just before the send.
 type promptParams struct {
-	SessionID string           `json:"sessionId"`
-	Blocks    []canonical.Block `json:"blocks"`
+	SessionID string      `json:"sessionId"`
+	Blocks    []wireBlock `json:"blocks"`
 }
 
 // cancelParams is the params payload for session/cancel notification.
@@ -528,7 +533,10 @@ func (c *Client) Prompt(ctx context.Context, sessionID string, blocks []canonica
 		JSONRPC: "2.0",
 		ID:      id,
 		Method:  "session/prompt",
-		Params:  promptParams{SessionID: sessionID, Blocks: blocks},
+		// CR-05 fix: convert canonical.Block slice to wire shape so kiro-cli
+		// receives {"type":"text","content":"..."} rather than the Go default
+		// discriminated-struct encoding.
+		Params: promptParams{SessionID: sessionID, Blocks: translateBlocks(blocks)},
 	}); err != nil {
 		c.streamMu.Lock()
 		c.activeStream = nil
