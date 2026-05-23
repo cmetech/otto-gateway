@@ -204,13 +204,38 @@ func TestTranslateUpdate_VarianceMatrix(t *testing.T) {
 			if err := json.Unmarshal([]byte(r.paramsJSON), &parsed); err != nil {
 				t.Fatalf("unmarshal params: %v\nJSON: %s", err, r.paramsJSON)
 			}
-			got := translateUpdate(parsed)
+			got, ok := translateUpdate(nil, parsed)
+			if !ok {
+				t.Fatalf("translateUpdate returned ok=false; want a valid chunk for params: %s", r.paramsJSON)
+			}
 			if !reflect.DeepEqual(got, r.want) {
 				t.Errorf("translateUpdate mismatch\n  got:  %+v (Text=%+v, Thought=%+v, Plan=%+v)\n  want: %+v (Text=%+v, Thought=%+v, Plan=%+v)",
 					got, got.Text, got.Thought, got.Plan,
 					r.want, r.want.Text, r.want.Thought, r.want.Plan)
 			}
 		})
+	}
+}
+
+// TestTranslateUpdate_InnerUnmarshalFailure_DropsNotification locks the WR-05
+// contract: when the wrapped form arrives but params.update is malformed JSON
+// (e.g., a server bug or wire corruption), translateUpdate returns ok=false
+// so the caller drops the notification rather than pushing a phantom empty
+// chunk. The pre-fix code silently swallowed the inner-unmarshal error and
+// emitted ChunkKindText with empty content, which is indistinguishable from
+// a real empty message — invisible failure mode.
+func TestTranslateUpdate_InnerUnmarshalFailure_DropsNotification(t *testing.T) {
+	t.Parallel()
+	// Outer params parse cleanly because Update is json.RawMessage. The
+	// inner re-unmarshal into sessionUpdateBody fails because the JSON
+	// is not an object.
+	parsed := sessionUpdateParams{
+		SessionID: "s1",
+		Update:    json.RawMessage(`"not an object"`),
+	}
+	chunk, ok := translateUpdate(nil, parsed)
+	if ok {
+		t.Errorf("translateUpdate(malformed inner update): ok=true, want false (got chunk %+v)", chunk)
 	}
 }
 

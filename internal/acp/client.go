@@ -883,7 +883,14 @@ func (c *Client) handleNotification(frame rpcFrame) {
 				"method", frame.Method, "err", err)
 			return
 		}
-		chunk := translateUpdate(update)
+		// WR-05: translateUpdate returns ok=false when the inner-update
+		// payload is malformed. Drop the notification rather than push a
+		// phantom empty chunk that the consumer cannot distinguish from a
+		// real empty message.
+		chunk, ok := translateUpdate(c.cfg.Logger, update)
+		if !ok {
+			return
+		}
 
 		// REVIEW FIX (Codex MEDIUM — activeStream invariant):
 		// Acquire the mutex, read activeStream, release. If nil, log Warn and drop.

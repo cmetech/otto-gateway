@@ -3,12 +3,24 @@ package acp
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"path"
 	"strings"
 
 	"loop24-gateway/internal/canonical"
 )
+
+// truncateForLog clips a string to maxLen bytes for safe inclusion in a log
+// line. ACP payloads can be megabytes; logging them in full pollutes operator
+// dashboards and risks dumping secret-bearing prompt content. Used by
+// translateUpdate when reporting malformed inner-update payloads.
+func truncateForLog(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "...(truncated)"
+}
 
 // sessionUpdateParams is the tolerant outer envelope for a session/update,
 // session/notification, or _kiro.dev/session/update notification (D-16, D-17).
@@ -169,15 +181,29 @@ func normalizeUpdateType(s string) string {
 // `tool_call`/`tool_call_chunk`/`tool_call_update` are rendered as thought
 // text in Phase 1.1 per CONTEXT.md `<deferred>` — Phase 6 (TOOL-01, TOOL-03)
 // emits canonical.ToolCallChunk with proper id/title/args.
-func translateUpdate(u sessionUpdateParams) canonical.Chunk {
+//
+// WR-05 (Phase 1.1 review): the return signature is (canonical.Chunk, bool).
+// The bool is true when a chunk should be emitted, false when the caller
+// MUST drop the notification (e.g., malformed inner-update payload). The
+// previous form ignored inner-unmarshal errors and emitted a phantom empty
+// ChunkKindText — invisible noise the consumer could not distinguish from
+// a real empty chunk. Returning ok=false on the parse failure (plus a Debug
+// log via the supplied logger) makes the failure observable and prevents
+// the empty-chunk pollution.
+func translateUpdate(logger *slog.Logger, u sessionUpdateParams) (canonical.Chunk, bool) {
 	var body sessionUpdateBody
 	if len(u.Update) > 0 {
-		// Defensive: if the wrapped form fails to parse, body stays zero-valued
-		// and falls through to the default-text arm with empty content.
-		// handleNotification logs the outer-unmarshal Warn before we ever get
-		// here; the inner-unmarshal failure here is silently tolerated rather
-		// than reported separately (translateUpdate has no logger handle).
-		_ = json.Unmarshal(u.Update, &body)
+		// WR-05: report inner-unmarshal failures rather than silently
+		// dropping them into a zero-valued body. A nil logger is allowed
+		// (some tests supply one, some don't); guard with a nil check.
+		if err := json.Unmarshal(u.Update, &body); err != nil {
+			if logger != nil {
+				logger.Debug("acp: session/update inner-unmarshal failed — dropped",
+					"err", err,
+					"raw", truncateForLog(string(u.Update), 200))
+			}
+			return canonical.Chunk{}, false
+		}
 	} else {
 		body = sessionUpdateBody{
 			SessionUpdate: u.SessionUpdate,
@@ -200,12 +226,12 @@ func translateUpdate(u sessionUpdateParams) canonical.Chunk {
 		return canonical.Chunk{
 			Kind: canonical.ChunkKindText,
 			Text: &canonical.TextChunk{Content: content},
-		}
+		}, true
 	case "agent_thought_chunk":
 		return canonical.Chunk{
 			Kind:    canonical.ChunkKindThought,
 			Thought: &canonical.ThoughtChunk{Content: content},
-		}
+		}, true
 	case "tool_call", "tool_call_chunk":
 		// CONTEXT.md <deferred>: render as thought with [tool: <title>]\n
 		// prefix; Phase 6 emits canonical.ToolCallChunk properly.
@@ -213,19 +239,19 @@ func translateUpdate(u sessionUpdateParams) canonical.Chunk {
 		return canonical.Chunk{
 			Kind:    canonical.ChunkKindThought,
 			Thought: &canonical.ThoughtChunk{Content: fmt.Sprintf("[tool: %s]\n", title)},
-		}
+		}, true
 	case "tool_call_update":
 		// Node behaviour: output ?? content.text — `content` already reflects
 		// the D-18 extraction.
 		return canonical.Chunk{
 			Kind:    canonical.ChunkKindThought,
 			Thought: &canonical.ThoughtChunk{Content: firstNonEmpty(body.Output, content)},
-		}
+		}, true
 	case "plan":
 		return canonical.Chunk{
 			Kind: canonical.ChunkKindPlan,
 			Plan: &canonical.PlanChunk{Content: joinPlanEntries(body.Entries)},
-		}
+		}, true
 	default:
 		// Preserve Phase 1 "fall back to text to avoid data loss" policy
 		// (CONTEXT.md §Claude's Discretion). Unknown discriminators land
@@ -235,7 +261,7 @@ func translateUpdate(u sessionUpdateParams) canonical.Chunk {
 		return canonical.Chunk{
 			Kind: canonical.ChunkKindText,
 			Text: &canonical.TextChunk{Content: content},
-		}
+		}, true
 	}
 }
 
