@@ -1,7 +1,7 @@
 # Requirements: Loop24 Gateway
 
 **Defined:** 2026-05-23
-**Core Value:** Both API surfaces (OpenAI for Pi SDK, Ollama for LangFlow) serve their respective clients without those clients knowing kiro-cli exists, with one place to enforce policy.
+**Core Value:** All three API surfaces (OpenAI for Pi SDK, Ollama for LangFlow, Anthropic for loop24-client / GSD Pi) serve their respective clients without those clients knowing kiro-cli exists, with one place to enforce policy.
 
 ## v1 Requirements
 
@@ -10,20 +10,31 @@ Requirements for initial release. Each maps to roadmap phases (see Traceability)
 ### Surface — Dual API compatibility
 
 - [ ] **SURF-01**: HTTP server binds a single port (default `:11434`) and mounts both API surfaces in one process.
-- [ ] **SURF-02**: `ENABLED_SURFACES` env var (default `openai,ollama`) enables or disables either surface at deploy time. `OPENAI_PATH_PREFIX` (default `/v1`) and `OLLAMA_PATH_PREFIX` (default `/api`) are overridable.
+- [ ] **SURF-02**: `ENABLED_SURFACES` env var (default `openai,ollama,anthropic`) enables or disables any surface at deploy time. `OPENAI_PATH_PREFIX` (default `/v1`), `OLLAMA_PATH_PREFIX` (default `/api`), and `ANTHROPIC_PATH_PREFIX` (default `/v1`) are overridable. OpenAI and Anthropic intentionally share the `/v1` prefix and disambiguate at the endpoint level (`POST /v1/chat/completions` vs `POST /v1/messages`); if a deployment needs them on separate prefixes set `ANTHROPIC_PATH_PREFIX=/anthropic/v1`.
 - [ ] **SURF-03**: `POST /api/chat`, `POST /api/generate`, `GET /api/tags`, `POST /api/show`, `GET /api/ps`, `GET /api/version` are served with Ollama-compatible request/response shapes.
 - [ ] **SURF-04**: `POST /v1/chat/completions`, `POST /v1/completions`, `GET /v1/models` are served with OpenAI-compatible shapes.
 - [ ] **SURF-05**: Existing LangFlow flows pointing at `/api/chat` and `/api/embed` work with zero reconfiguration against this gateway.
 - [ ] **SURF-06**: A Pi-SDK chat CLI configured with an OpenAI provider and `base_url=http://localhost:11434/v1` works end-to-end.
 - [ ] **SURF-07**: Stubs returning success for `POST /api/pull`, `POST /api/push`, `POST /api/create`, `POST /api/copy`, `DELETE /api/delete` (preserves Ollama-client compatibility).
+- [ ] **SURF-08**: `ANTHROPIC_PATH_PREFIX` (default `/v1`) — shares the `/v1` prefix with OpenAI but disambiguates by endpoint (`POST /v1/messages` vs `POST /v1/chat/completions`). When both surfaces are enabled, chi router mounts them under the same prefix without conflict; setting `ANTHROPIC_PATH_PREFIX=/anthropic/v1` moves Anthropic to a separate prefix.
+
+### Surface — Anthropic Messages API
+
+- [ ] **ANTH-01**: `POST /v1/messages` returns Anthropic-compatible JSON: top-level `id`, `type:"message"`, `role:"assistant"`, `model`, `content:[{type:"text",text:"..."}]`, `stop_reason` (`end_turn`/`max_tokens`/`stop_sequence`/`tool_use`), `stop_sequence` (nullable), `usage:{input_tokens,output_tokens,cache_creation_input_tokens?,cache_read_input_tokens?}`.
+- [ ] **ANTH-02**: Streaming emits `text/event-stream` with Anthropic's full event sequence — `message_start` → (`content_block_start` → `content_block_delta` → `content_block_stop`)+ → `message_delta` → `message_stop`, plus periodic `ping` keepalives. Delta types covered: `text_delta`, `thinking_delta`, `signature_delta`, `input_json_delta`. Frames use `event: <name>\ndata: <json>\n\n` shape; the `@anthropic-ai/sdk` `messages.stream()` client must round-trip without modification.
+- [ ] **ANTH-03**: Tool calls round-trip in Anthropic's native shape — outbound `tool_use` blocks carry `input` as a plain JSON object (NOT a JSON-string like OpenAI); inbound `messages[].content` may include `tool_result` blocks with `content` as string or block array. Canonical `ToolCallChunk.Args` (`map[string]any`) is the pivot — adapter/anthropic marshals/unmarshals natively.
+- [ ] **ANTH-04**: Header contract enforced — `anthropic-version` header is required (typical value `2023-06-01`; missing returns canonical `invalid_request_error`); accepts both `x-api-key: <key>` and `Authorization: Bearer <key>` auth modes (loop24-client uses both per provider); `anthropic-beta` headers (`fine-grained-tool-streaming-2025-05-14`, `interleaved-thinking-2025-05-14`, etc.) are accepted and passed through without behavior change at the gateway layer.
+- [ ] **ANTH-05**: System prompt mapping — Anthropic carries `system` at the top level of the request body (string OR array of blocks), not in `messages`. Adapter merges it into the canonical `ChatRequest.System` field (canonical engine sees one shape; adapter/openai and adapter/ollama hoist their own per-format equivalents).
+- [ ] **ANTH-06**: Errors render in Anthropic shape: `{"type":"error","error":{"type":"<error_type>","message":"<...>"}}` where `<error_type>` is one of `invalid_request_error`, `authentication_error`, `permission_error`, `not_found_error`, `request_too_large`, `rate_limit_error`, `api_error`, `overloaded_error`. HTTP status codes match Anthropic's: 400/401/403/404/413/429/500/529.
+- [ ] **ANTH-07**: Thinking content blocks supported in both directions — outbound `thinking` blocks (`{type:"thinking",thinking:"..."}`) and `redacted_thinking` blocks are emitted when the canonical chunk channel yields `ChunkKindThought`; inbound `messages[].content` may include `thinking` blocks (preserved through to kiro-cli).
 
 ### Streaming — NDJSON and SSE
 
 - [ ] **STRM-01**: Ollama `/api/chat` and `/api/generate` default to `stream: true` and emit `application/x-ndjson` with one JSON object per line, final object containing `done: true`.
-- [ ] **STRM-02**: OpenAI `/v1/chat/completions` defaults to streaming and emits `text/event-stream` SSE with `data: ` prefix and `data: [DONE]` terminator.
-- [ ] **STRM-03**: Both surfaces consume the same canonical chunk channel from the engine.
+- [ ] **STRM-02**: OpenAI `/v1/chat/completions` defaults to streaming and emits `text/event-stream` SSE with `data: ` prefix and `data: [DONE]` terminator. Anthropic `/v1/messages` with `stream:true` emits `text/event-stream` SSE with explicit `event:` lines (see ANTH-02) — both SSE shapes are sourced from the same canonical chunk channel; adapter renders the wire shape.
+- [ ] **STRM-03**: All three surfaces consume the same canonical chunk channel from the engine.
 - [ ] **STRM-04**: Client disconnect (HTTP request context canceled) cancels the in-flight `session/prompt` via `session/cancel` over the JSON-RPC channel.
-- [ ] **STRM-05**: Both surfaces also support `stream: false` for single-response JSON.
+- [ ] **STRM-05**: All three surfaces also support `stream: false` (Anthropic: explicit `stream` field, defaults to false on `messages.create`) for single-response JSON.
 
 ### Tools — Tool-call handling and coercion
 
@@ -112,8 +123,9 @@ Deferred to future release. Tracked but not in current roadmap.
 
 ### Additional surfaces
 
-- **SURF-V2-01**: Anthropic-compatible surface (`/anthropic/v1/messages`).
+- ~~**SURF-V2-01**~~: Anthropic-compatible surface (`/v1/messages`). **Promoted to v1 as ANTH-01..07 (Phase 3.1)** — required by loop24-client (GSD Pi CLI) which calls `@anthropic-ai/sdk` via `ANTHROPIC_BASE_URL`.
 - **SURF-V2-02**: Google GenAI-compatible surface (`/genai/v1beta/models/{model}`).
+- **SURF-V2-03**: Anthropic-via-Vertex (`@anthropic-ai/vertex-sdk`) and Anthropic-via-Bedrock (`@aws-sdk/client-bedrock-runtime`) variants. loop24-client supports both, but they require different auth/transport (GCP OAuth, AWS SigV4). Defer until a deployment needs them.
 
 ### Operational
 
@@ -153,6 +165,14 @@ Populated by the roadmapper from `.planning/ROADMAP.md`. Updated as phases compl
 | SURF-05 | Phase 2 | Pending |
 | SURF-06 | Phase 3 | Pending |
 | SURF-07 | Phase 2 | Pending |
+| SURF-08 | Phase 3.1 | Pending |
+| ANTH-01 | Phase 3.1 | Pending |
+| ANTH-02 | Phase 3.1 | Pending |
+| ANTH-03 | Phase 3.1 | Pending |
+| ANTH-04 | Phase 3.1 | Pending |
+| ANTH-05 | Phase 3.1 | Pending |
+| ANTH-06 | Phase 3.1 | Pending |
+| ANTH-07 | Phase 3.1 | Pending |
 | STRM-01 | Phase 4 | Pending |
 | STRM-02 | Phase 4 | Pending |
 | STRM-03 | Phase 4 | Pending |

@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.5
 milestone_name: milestone
-status: ready_to_plan
-stopped_at: Phase 01 complete (5/5) — ready to discuss Phase 2
-last_updated: 2026-05-23T20:00:00.133Z
-last_activity: 2026-05-23 -- Phase 01 execution started
+status: planning
+stopped_at: Phase 1 context gathered
+last_updated: "2026-05-23T20:15:54.112Z"
+last_activity: 2026-05-23
 progress:
-  total_phases: 9
-  completed_phases: 0
+  total_phases: 10
+  completed_phases: 1
   total_plans: 5
   completed_plans: 5
-  percent: 0
+  percent: 10
 ---
 
 # Project State
@@ -54,6 +54,10 @@ Progress: [░░░░░░░░░░] 0%
 *Updated after each plan completion*
 
 ## Accumulated Context
+
+### Roadmap Evolution
+
+- Phase 3.1 inserted after Phase 3: Anthropic Surface — adapter/anthropic for Messages API at /v1/messages with SSE streaming day-one (loop24-client / GSD Pi via ANTHROPIC_BASE_URL). Promotes SURF-V2-01 to v1; adds ANTH-01..07 + SURF-08. (URGENT)
 
 ### Decisions
 

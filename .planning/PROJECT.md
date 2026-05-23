@@ -2,29 +2,33 @@
 
 ## What This Is
 
-Loop24 Gateway is a Go-based LLM gateway that exposes both OpenAI-
-and Ollama-compatible HTTP APIs on a single port and routes every
-inbound request through a configurable guardrails chain to a pool
-of `kiro-cli` ACP worker subprocesses. It replaces an existing
-Node.js Ollama proxy (`../gitlab.rosetta.ericssondevops.com/loop_24/acp_server`)
-with a single statically-linked cross-platform binary that adds an
-OpenAI surface alongside the existing Ollama one. Primary clients
-are a Pi-SDK-based chat CLI (OpenAI shape) and an internal LangFlow
-deployment (Ollama shape).
+Loop24 Gateway is a Go-based LLM gateway that exposes OpenAI-,
+Ollama-, and Anthropic-compatible HTTP APIs on a single port and
+routes every inbound request through a configurable guardrails
+chain to a pool of `kiro-cli` ACP worker subprocesses. It replaces
+an existing Node.js Ollama proxy
+(`../gitlab.rosetta.ericssondevops.com/loop_24/acp_server`) with a
+single statically-linked cross-platform binary that adds OpenAI
+and Anthropic surfaces alongside the existing Ollama one. Primary
+clients are a Pi-SDK-based chat CLI (OpenAI shape), an internal
+LangFlow deployment (Ollama shape), and loop24-client / GSD Pi
+(Anthropic shape, via `ANTHROPIC_BASE_URL`).
 
 ## Core Value
 
-**Both API surfaces serve their respective clients without those
-clients knowing kiro-cli exists, with one place to enforce policy.**
+**All three API surfaces serve their respective clients without
+those clients knowing kiro-cli exists, with one place to enforce
+policy.**
 
 If everything else fails, this must hold: a LangFlow flow pointing
-at `/api/chat` and a Pi-SDK CLI pointing at `/v1/chat/completions`
-both receive correct streamed responses, and any guardrail (auth,
-rate-limit, content moderation, schema validation, audit) defined
-once on the canonical request type applies uniformly to both. The
-gateway being faster than Node and shipping as one binary is bonus —
-the surface compatibility and the single governance surface are
-the load-bearing properties.
+at `/api/chat`, a Pi-SDK CLI pointing at `/v1/chat/completions`,
+and loop24-client with `ANTHROPIC_BASE_URL=http://localhost:11434`
+calling `/v1/messages` all receive correct streamed responses, and
+any guardrail (auth, rate-limit, content moderation, schema
+validation, audit) defined once on the canonical request type
+applies uniformly to all three. The gateway being faster than Node
+and shipping as one binary is bonus — the surface compatibility
+and the single governance surface are the load-bearing properties.
 
 ## Requirements
 
@@ -43,7 +47,9 @@ Surface compatibility:
 - [ ] **REQ-OLLAMA-01**: Existing LangFlow flows pointing at `/api/chat`, `/api/generate`, `/api/embed`, `/api/embeddings`, `/api/tags`, `/api/show`, `/api/ps`, `/api/version` keep working with zero reconfiguration.
 - [ ] **REQ-OPENAI-01**: Pi SDK chat CLI (and any OpenAI-shaped client) can POST `/v1/chat/completions` with `Authorization: Bearer …` and receive an OpenAI-compatible response.
 - [ ] **REQ-OPENAI-02**: `/v1/completions`, `/v1/embeddings`, `/v1/models` are served with OpenAI-compatible shapes.
-- [ ] **REQ-SURFACE-01**: Both surfaces share one process, one port, one pool, one canonical request/response type. `ENABLED_SURFACES` env var disables either at deploy time.
+- [ ] **REQ-ANTHROPIC-01**: loop24-client (`@anthropic-ai/sdk`) configured with `ANTHROPIC_BASE_URL=http://localhost:11434` can POST `/v1/messages` (with `x-api-key` or `Authorization: Bearer`, plus required `anthropic-version`) and receive an Anthropic-compatible response, both non-streaming and via `messages.stream()` SSE.
+- [ ] **REQ-ANTHROPIC-02**: Anthropic tool-use (`tool_use` blocks with object `input`) and `thinking` content blocks round-trip through the canonical engine.
+- [ ] **REQ-SURFACE-01**: All three surfaces share one process, one port, one pool, one canonical request/response type. `ENABLED_SURFACES` env var disables any at deploy time. OpenAI and Anthropic share `/v1` and disambiguate at the endpoint level (`/v1/chat/completions` vs `/v1/messages`).
 
 Behavioral parity with the Node reference (`docs/reference/acp_server_node_reference.md`):
 - [ ] **REQ-STREAM-01**: Ollama paths default to `stream: true` and emit NDJSON (`application/x-ndjson`).
@@ -104,6 +110,7 @@ Trust gates (per `docs/briefs/go_port_brief.md` §3.12 — non-negotiable):
 **Clients.**
 - *Pi SDK* (`https://pi.dev`, `@earendil-works/pi-ai`) — multi-provider LLM harness. Configured to use the OpenAI provider with a custom `base_url`. Open verification item: confirm Pi's exact env var / config key for setting the OpenAI base URL.
 - *LangFlow* — running locally with flows whose model components already point at `http://localhost:11434/api/chat`. Zero reconfiguration required.
+- *loop24-client* / *GSD Pi* (`../loop24-client`, npm `@loop24/client` v1.0.1) — TypeScript Node CLI that calls `@anthropic-ai/sdk` (v0.90.x) and honors `ANTHROPIC_BASE_URL` for transport redirection. Uses both non-streaming `messages.create()` and streaming `messages.stream()` heavily; sends `x-api-key` or `Authorization: Bearer` auth plus the required `anthropic-version` header. Tool-use (`tool_use` content blocks with object `input`) and `thinking` blocks are first-class. Gateway integration verified by setting `ANTHROPIC_BASE_URL=http://localhost:11434` in the client environment.
 
 **First Go project for the author.** Author is senior in JS / Python / shell with some Go familiarity but no greenfield Go experience. This shapes decisions toward stdlib + chi over fasthttp, `log/slog` over zerolog/zap, simple env-var config over viper. AI-assisted development is expected and the trust-gate suite is sized accordingly.
 
@@ -115,6 +122,7 @@ Trust gates (per `docs/briefs/go_port_brief.md` §3.12 — non-negotiable):
 - **Tech stack**: stdlib `net/http` + `chi` for routing — Rejected `fasthttp` (faster but breaks the `http.Handler` ecosystem; not worth it at our throughput).
 - **Compatibility**: Ollama API endpoints and request/response shapes are fixed by existing LangFlow flows. Breaking changes there require a flow migration we're not paying for.
 - **Compatibility**: OpenAI API shapes follow public OpenAI spec for the endpoints we serve. Pi SDK will fail on shape drift.
+- **Compatibility**: Anthropic Messages API shapes follow the public Anthropic spec (`docs.anthropic.com/en/api/messages`) — including SSE event names, content block discriminators, tool-use `input` as object (not string), `anthropic-version` header requirement, and error envelope shape. `@anthropic-ai/sdk` will fail on shape drift; loop24-client uses both `x-api-key` and `Authorization: Bearer` auth paths so both must work.
 - **Distribution**: Single static binary per OS/arch. Cross-compile from macOS dev box must work with vanilla `go build` plus `GOOS`/`GOARCH` env vars. The instant cgo enters the picture (e.g. in-process ONNX), this collapses — explicit decision in `docs/briefs/go_port_brief.md` §3.4 to avoid that.
 - **Performance**: Must not be slower than the Node implementation under concurrent load. Tail latency should improve. Hard numbers: TBD; pre-implementation baseline measurement is in the milestone plan.
 - **Security**: Bearer-token auth + IP allowlist, both env-driven. Same defaults as Node version (no auth if env unset). Subprocess spawn is the highest-risk surface — `gosec` G204 and friends required to flag any tainted-input regressions.
@@ -126,8 +134,9 @@ Trust gates (per `docs/briefs/go_port_brief.md` §3.12 — non-negotiable):
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
 | Go over Rust | Cross-compile triviality is the headline; first systems project for author; embeddings story acceptable via sidecar; Bifrost validates the pattern. Full trade-off in `docs/briefs/go_port_brief.md` §2 and `docs/briefs/rust_port_brief.md`. | — Pending |
-| Dual API surface (OpenAI + Ollama) on one binary | LangFlow already configured for Ollama; Pi SDK uses OpenAI shape. Splitting into two services adds deployment complexity for zero benefit; sharing one engine forces a cleanly separated canonical layer that's strictly better architecture. | — Pending |
-| Adapter-over-canonical layout | `internal/adapter/{ollama,openai}` translate native ↔ canonical; `internal/engine` consumes canonical only. Mirrors Bifrost's `transports/integrations/` pattern. | — Pending |
+| Triple API surface (OpenAI + Ollama + Anthropic) on one binary | LangFlow already configured for Ollama; Pi SDK uses OpenAI shape; loop24-client (GSD Pi) calls `@anthropic-ai/sdk` and supports `ANTHROPIC_BASE_URL` redirection. Splitting into three services adds deployment complexity for zero benefit; sharing one engine forces a cleanly separated canonical layer that's strictly better architecture. Anthropic added 2026-05-23 (this entry supersedes the original OpenAI+Ollama-only decision). | — Pending |
+| Adapter-over-canonical layout | `internal/adapter/{ollama,openai,anthropic}` translate native ↔ canonical; `internal/engine` consumes canonical only. Mirrors Bifrost's `transports/integrations/` pattern. | — Pending |
+| Anthropic surface ships SSE day-one (Phase 3.1, not deferred to Phase 4) | loop24-client's primary call path is `@anthropic-ai/sdk`'s `messages.stream()` — non-streaming `/v1/messages` alone is not a useful integration. Anthropic SSE has a different event structure than OpenAI (`message_start`/`content_block_*`/`message_delta`/`message_stop` instead of `data: <chunk>` + `data: [DONE]`); pushing it into Phase 4 would mean Phase 3.1 ships with no useful client integration. Decision: Phase 3.1 owns Anthropic SSE; Phase 4 retroactively ratifies all three formats off one canonical channel. | — Pending |
 | `PreHook`/`PostHook` plugin chain for guardrails | Hooks on canonical types means one moderation/auth/budget rule covers both surfaces. Bifrost-inspired. Day-one footprint is small (RequestID, Auth, Logging); the seams allow content moderation, schema validation, budget, semantic cache as later additions without rewriting handlers. | — Pending |
 | stdlib `net/http` + `chi` (reject `fasthttp`) | Bifrost uses fasthttp for throughput; our bottleneck is `kiro-cli` subprocess latency, not HTTP parsing. fasthttp breaks `http.Handler` ecosystem (testing, middleware, `r.Context()`). Not worth it for our scale. | — Pending |
 | Trust-gate suite required from day one | AI-assisted development on a first-Go project. Strict `golangci-lint`, `gosec`, `govulncheck`, `-race`, `goleak`, property tests, architectural boundary linting. Derived from "Making AI-Generated Rust Code Trustworthy" (Garcia) adapted to Go tooling. | — Pending |

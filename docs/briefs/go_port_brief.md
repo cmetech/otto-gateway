@@ -193,7 +193,7 @@ without changing the unit file / docker env.
 
 ### 1.5 Clients we need to support
 
-The Go server has two concrete consumers in production:
+The Go server has three concrete consumers in production:
 
 1. **A chat CLI built on Pi SDK** (`@earendil-works/pi-ai`,
    `https://pi.dev`). Pi is a multi-provider LLM harness; pointing
@@ -207,61 +207,107 @@ The Go server has two concrete consumers in production:
    already have model components configured to call
    `http://localhost:11434/api/chat` (Ollama shape). These flows
    must keep working with zero reconfiguration.
+3. **loop24-client / GSD Pi** (`../loop24-client`, npm
+   `@loop24/client` v1.0.1) — a TypeScript Node coding-agent CLI
+   that calls `@anthropic-ai/sdk` (v0.90.x) and honors
+   `ANTHROPIC_BASE_URL` for transport redirection (see
+   `packages/pi-ai/src/providers/anthropic.ts:39`). It uses both
+   non-streaming `messages.create()` and streaming `messages.stream()`
+   heavily, sends `x-api-key` or `Authorization: Bearer` auth plus
+   the required `anthropic-version` header, and treats `tool_use`
+   blocks (with `input` as object, NOT string) and `thinking` blocks
+   as first-class. Routing through the gateway means setting
+   `ANTHROPIC_BASE_URL=http://localhost:11434` in the client env.
+   *Added 2026-05-23 as the third client; the architecture must
+   support this without forking the engine.*
 
 Other clients are not yet committed but the architecture should
 leave room (LangChain Python, Continue.dev, Open WebUI — all of
-which support either Ollama-shape or OpenAI-shape base URLs).
+which support either Ollama-shape, OpenAI-shape, or Anthropic-shape
+base URLs).
 
-### 1.6 Dual API surface (OpenAI + Ollama) — non-negotiable
+### 1.6 Triple API surface (OpenAI + Ollama + Anthropic) — non-negotiable
 
-Both surfaces run on the same server, same port, same process.
+All three surfaces run on the same server, same port, same process.
 This is **not** a "maybe" — it's a hard requirement driven by §1.5.
 
-**Path layout (no collisions):**
+**Path layout (chi routes by endpoint, not just prefix — OpenAI and Anthropic share `/v1`):**
 
 | Surface | Path prefix | Endpoints |
 |---|---|---|
 | **OpenAI** | `/v1/*` | `POST /v1/chat/completions`, `POST /v1/completions`, `POST /v1/embeddings`, `GET /v1/models` |
+| **Anthropic** | `/v1/*` | `POST /v1/messages`, `POST /v1/messages/count_tokens` (deferred) |
 | **Ollama** | `/api/*` | `POST /api/chat`, `POST /api/generate`, `POST /api/embed`, `POST /api/embeddings`, `GET /api/tags`, `POST /api/show`, `GET /api/ps`, `GET /api/version` |
 | **Shared** | `/health/*`, `/v1/sessions/:id` | health probes + stateful session teardown |
 
-**The cost is bounded:** one extra adapter package. Everything below
-the HTTP boundary (pool, session registry, JSON-RPC, embeddings) is
-shared — see §3.13 for the layered shape.
+OpenAI and Anthropic intentionally co-exist under `/v1/*` because both
+spec their canonical paths there and we want zero-config drop-in
+behavior for SDK clients. chi disambiguates by endpoint; if a
+deployment needs them on separate prefixes, set
+`ANTHROPIC_PATH_PREFIX=/anthropic/v1`.
+
+**The cost is bounded:** two extra adapter packages
+(`internal/adapter/openai`, `internal/adapter/anthropic`). Everything
+below the HTTP boundary (pool, session registry, JSON-RPC,
+embeddings) is shared — see §3.13 for the layered shape.
 
 **Where the surfaces actually differ:**
 
-1. **Streaming format.** OpenAI uses SSE (`Content-Type:
-   text/event-stream`, lines prefixed `data:`, terminated by
-   `data: [DONE]`). Ollama uses NDJSON (`Content-Type:
-   application/x-ndjson`, one JSON object per line, final object
-   has `done: true`). One canonical chunk source feeds two
-   streamers.
+1. **Streaming format.** OpenAI uses SSE with line-prefix framing
+   (`Content-Type: text/event-stream`, `data: <chunk>\n\n`,
+   terminated by `data: [DONE]\n\n`). Ollama uses NDJSON
+   (`application/x-ndjson`, one JSON object per line, final object
+   has `done: true`). Anthropic uses SSE with named events
+   (`event: <name>\ndata: <json>\n\n`) — the sequence is
+   `message_start` → (`content_block_start` → `content_block_delta`+
+   → `content_block_stop`)+ → `message_delta` → `message_stop`, with
+   periodic `ping` keepalives. One canonical chunk source feeds
+   three streamers.
 2. **Tool-call argument shape.** OpenAI: `arguments` is a **JSON
-   string**. Ollama: `arguments` is a **plain object**. The
-   `coerceToolCall` logic from the Node version applies to both;
-   each adapter emits the shape its client expects.
-3. **Field name drift.** System prompt placement; image attachments
-   (`content` parts with `image_url` vs top-level `images: [b64]`);
-   output-format (`response_format.json_schema` vs `format`). Each
-   adapter handles its own translation; the canonical internal type
-   is the union of features.
+   string** under `tool_calls[].function.arguments`. Ollama:
+   `arguments` is a **plain object** under
+   `message.tool_calls[].function.arguments`. Anthropic: `input` is
+   a **plain object** under `content[].input` for `tool_use` blocks
+   (same as Ollama, different field path). The `coerceToolCall`
+   logic from the Node version applies to all three; each adapter
+   emits the shape its client expects.
+3. **Field name / placement drift.** System prompt: OpenAI/Ollama in
+   `messages[]` with `role:"system"`; Anthropic at the top-level
+   `system` field (string OR array of blocks). Image attachments:
+   OpenAI `content` parts with `image_url`; Ollama top-level
+   `images: [b64]`; Anthropic `content` blocks with
+   `{type:"image",source:{type:"base64",media_type,data}}`.
+   Output-format: OpenAI `response_format.json_schema`; Ollama
+   `format`; Anthropic via tool-use coercion. Each adapter handles
+   its own translation; the canonical internal type is the union of
+   features.
 4. **Model listing shape.** `/v1/models` returns
    `{ object: "list", data: [...] }`; `/api/tags` returns
-   `{ models: [...] }`. Same underlying list, two render functions.
-5. **Auth conventions.** Both surfaces accept `Authorization: Bearer
-   <token>`; the existing `AUTH_TOKEN` env var applies to both. No
-   per-surface auth split.
+   `{ models: [...] }`; Anthropic's `/v1/models` (if we serve it)
+   returns `{ data: [{id, display_name, ...}], has_more, first_id,
+   last_id }`. Same underlying list, three render functions —
+   though canonical `/v1/models` will collide between OpenAI and
+   Anthropic shapes; deferred for now and routed by `User-Agent`
+   sniff or accept-header negotiation if we ever serve it on
+   Anthropic.
+5. **Auth conventions.** OpenAI/Ollama accept `Authorization: Bearer
+   <token>`; Anthropic accepts both `x-api-key: <key>` AND
+   `Authorization: Bearer <key>` (loop24-client uses both depending
+   on provider — see `loop24-client/packages/pi-ai/src/providers/anthropic.ts:65-72`).
+   The existing `AUTH_TOKEN` env var applies to all three;
+   `anthropic-version` is a required header on the Anthropic surface.
 
 **Configuration:**
 
 ```bash
-ENABLED_SURFACES=openai,ollama   # default: both; can disable either
-OPENAI_PATH_PREFIX=/v1           # default
-OLLAMA_PATH_PREFIX=/api          # default
+ENABLED_SURFACES=openai,ollama,anthropic   # default: all three; can disable any
+OPENAI_PATH_PREFIX=/v1                     # default
+OLLAMA_PATH_PREFIX=/api                    # default
+ANTHROPIC_PATH_PREFIX=/v1                  # default — shares with OpenAI
+ANTHROPIC_VERSION_DEFAULT=2023-06-01       # used when client omits the header (also accept request override)
 ```
 
-Disable one surface in deployments where only one is needed (e.g.
+Disable any surface in deployments where only some are needed (e.g.
 internal Ollama-only environment) without changing code.
 
 ---
@@ -468,6 +514,7 @@ internal/canonical/           # canonical request/response types — engine-faci
 internal/engine/              # consumes canonical, drives pool/registry/ACP
 internal/adapter/ollama/      # Ollama API surface — translates ↔ canonical
 internal/adapter/openai/      # OpenAI API surface — translates ↔ canonical
+internal/adapter/anthropic/   # Anthropic Messages API surface — translates ↔ canonical, includes SSE event-stream renderer
 internal/server/              # HTTP router, middleware, surface mounting
 internal/plugin/              # PreHook/PostHook interface + chain (§3.14)
 internal/config/              # env loading + Config struct
@@ -609,58 +656,88 @@ Source for the underlying philosophy: <https://medium.com/@lagarciag/making-ai-g
 (The article is Rust-specific; this section adapts its principles
 to Go's tooling.)
 
-### 3.13 Adapter layer (OpenAI + Ollama API surfaces)
+### 3.13 Adapter layer (OpenAI + Ollama + Anthropic API surfaces)
 
-The dual-surface requirement (§1.6) means the HTTP layer is split
-in two and the engine layer is shared. This is the canonical LLM
+The triple-surface requirement (§1.6) means the HTTP layer is split
+in three and the engine layer is shared. This is the canonical LLM
 gateway pattern; Bifrost (§3.15) does the same thing at much larger
 scale.
 
 **Shape:**
 
 ```
-                          ┌────────────────────┐
-   Pi SDK ──/v1/chat/completions ───▶│ adapter/openai     │┐
-                          │ native ↔ canonical │
-                          └────────────────────┘│
-                                                 ▼
-                                       ┌──────────────────┐
-                                       │   canonical      │     ┌──────────┐
-                                       │     engine       │────▶│ kiro-cli │
-                                       │ (pool, sessions, │     └──────────┘
-                                       │  embeddings)     │
-                                       └──────────────────┘
-                                                 ▲
-                          ┌────────────────────┐│
-LangFlow ──/api/chat ──────────────▶│ adapter/ollama     │┘
-                          │ native ↔ canonical │
-                          └────────────────────┘
+                                       ┌──────────────────────┐
+   Pi SDK ──POST /v1/chat/completions ─▶│ adapter/openai      │─┐
+                                       │ native ↔ canonical  │ │
+                                       └──────────────────────┘ │
+                                                                 │
+                                       ┌──────────────────────┐ │
+   loop24-client ──POST /v1/messages ──▶│ adapter/anthropic   │─┤
+                                       │ native ↔ canonical  │ │
+                                       │ + SSE event-stream  │ │
+                                       └──────────────────────┘ │
+                                                                 ▼
+                                                       ┌──────────────────┐
+                                                       │   plugin.Chain   │
+                                                       │   (Pre hooks)    │
+                                                       └──────────────────┘
+                                                                 │
+                                                                 ▼
+                                                       ┌──────────────────┐
+                                                       │   canonical      │     ┌──────────┐
+                                                       │     engine       │────▶│ kiro-cli │
+                                                       │ (pool, sessions, │     └──────────┘
+                                                       │  embeddings)     │
+                                                       └──────────────────┘
+                                                                 ▲
+                                                                 │
+                                                       ┌──────────────────┐
+                                                       │   plugin.Chain   │
+                                                       │   (Post hooks)   │
+                                                       └──────────────────┘
+                                                                 ▲
+                                       ┌──────────────────────┐ │
+   LangFlow ──POST /api/chat ──────────▶│ adapter/ollama      │─┘
+                                       │ native ↔ canonical  │
+                                       └──────────────────────┘
 ```
 
 **Canonical types live in `internal/canonical/`.** Roughly:
 
 - `ChatRequest` — model, messages, tools, stream, format, think,
-  images (as []byte after base64 decode), output-format spec.
+  images (as []byte after base64 decode), output-format spec,
+  top-level `System` (hoisted from Anthropic; synthesized from
+  `messages[role==system]` for OpenAI/Ollama), `MaxTokens`
+  (required by Anthropic; optional for others).
 - `ChatChunk` — discriminated union over `Text` / `Thought` /
   `ToolCall` / `Plan`. This already exists conceptually in the
-  Node version's chunk types.
+  Node version's chunk types. `Thought` maps to Anthropic
+  `thinking` blocks and OpenAI/Ollama reasoning fields.
 - `ChatResponse` — assembled message + tool_calls (as canonical
-  shape, not OpenAI-string-arguments or Ollama-object-arguments).
+  shape, not OpenAI-string-arguments / Ollama-object-arguments /
+  Anthropic-tool_use-input). Includes `StopReason` (canonical;
+  rendered per surface: OpenAI `finish_reason`, Anthropic
+  `stop_reason`, Ollama `done_reason`).
 - `EmbedRequest` / `EmbedResponse` — model, inputs, vectors.
 - `Error` — typed error with `Code`, `Message`, `HTTPStatus`,
-  optional `Cause`.
+  optional `Cause`. Rendered per surface: OpenAI
+  `{error:{message,type,code}}`, Anthropic
+  `{type:"error",error:{type,message}}`, Ollama `{error:"..."}`.
 
 **Adapter packages own:**
 
 - Request decoding (wire JSON → canonical, validating shape).
 - Response encoding (canonical → wire JSON, emitting in the
   surface's idiom — JSON-string args for OpenAI, object args for
-  Ollama).
-- Streaming (canonical `ChatChunk` channel → SSE for OpenAI,
-  NDJSON for Ollama).
+  Ollama, object `input` under `tool_use` blocks for Anthropic).
+- Streaming (canonical `ChatChunk` channel → SSE `data:` lines for
+  OpenAI, NDJSON for Ollama, named-event SSE for Anthropic with the
+  `message_start` / `content_block_*` / `message_delta` /
+  `message_stop` sequence and `ping` keepalives).
 - Surface-specific quirks: model-listing endpoint shape,
-  `system` field placement, `images` field placement, response-
-  format spec translation.
+  `system` field placement (top-level for Anthropic, `messages[]`
+  for OpenAI/Ollama), `images` field placement, response-format
+  spec translation, `anthropic-version` header enforcement.
 
 **Adapter packages do NOT own:**
 
@@ -673,15 +750,19 @@ LangFlow ──/api/chat ──────────────▶│ adapte
 **Decisions for the brainstorm:**
 
 1. **Canonical type granularity.** Do we have one `ChatRequest`
-   shared by both surfaces (union of all features), or two
+   shared by all three surfaces (union of all features), or three
    adapter-local request types that converge at an internal
-   `engine.Run(...)` signature? My intuition is a single canonical
-   type — feature drift between OpenAI and Ollama is small and
-   bounded. Discuss.
+   `engine.Run(...)` signature? Intuition: a single canonical type
+   — feature drift between OpenAI / Ollama / Anthropic is bounded
+   (system-prompt placement, max_tokens, tool-arg shape, thinking
+   blocks). The union is small and a single canonical type means a
+   single plugin chain. Discuss.
 2. **Tool call argument shape.** Canonical holds args as
    `map[string]any` (idiomatic Go). OpenAI adapter `json.Marshal`s
-   to a string at the wire; Ollama adapter emits the map directly.
-   Confirm this is the right pivot point.
+   to a string at the wire; Ollama adapter emits the map directly;
+   Anthropic adapter emits the map directly under `tool_use[].input`.
+   The single map is the pivot point that lets one plugin (e.g.
+   `SchemaValidationHook`) cover all three.
 3. **Streaming abstraction.** Bifrost has a `StreamConfig` with
    per-route `ResponseConverter` and `ErrorConverter` callbacks
    on a centralized stream-pump (see

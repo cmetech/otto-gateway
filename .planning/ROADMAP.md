@@ -27,7 +27,8 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 1: Foundations** - Scaffold, trust-gate suite, ACP JSON-RPC client over `kiro-cli` stdio (completed 2026-05-23)
 - [ ] **Phase 2: Ollama End-to-End** - First runnable slice — LangFlow `POST /api/chat` reaches real `kiro-cli`
 - [ ] **Phase 3: OpenAI Surface** - Pi-SDK `POST /v1/chat/completions` shares the same canonical engine
-- [ ] **Phase 4: Streaming** - NDJSON (Ollama) and SSE (OpenAI) off one canonical chunk channel, with disconnect cancellation
+- [ ] **Phase 3.1: Anthropic Surface** *(INSERTED)* - loop24-client (GSD Pi) `POST /v1/messages` with Anthropic SSE shares the same canonical engine
+- [ ] **Phase 4: Streaming** - NDJSON (Ollama) and SSE (OpenAI + Anthropic) off one canonical chunk channel, with disconnect cancellation
 - [ ] **Phase 5: Pool + Stateful Sessions** - Warm `POOL_SIZE` pool plus `X-Session-Id` registry, both visible on `/health/agents`
 - [ ] **Phase 6: Tool-Call Path** - Canonical tool calls rendered per-surface, with `coerceToolCall` for plain-JSON-as-text
 - [ ] **Phase 7: Embeddings** - Local BGE/E5 embeddings on three endpoints, independent of `kiro-cli`
@@ -97,6 +98,26 @@ Plans:
   5. Architectural boundary check passes: `internal/adapter/openai` and `internal/adapter/ollama` import only `internal/canonical` + `internal/plugin`; neither imports `internal/engine`.
 
 **Plans:** TBD
+
+### Phase 3.1: Anthropic Surface (INSERTED)
+
+**Goal:** Bring a third adapter online on the same port, sharing the same canonical engine — loop24-client (GSD Pi CLI) configured with `ANTHROPIC_BASE_URL=http://localhost:11434` completes an end-to-end Messages-API chat against `kiro-cli` and gets back an Anthropic-compatible response, **including SSE streaming day-one** because `@anthropic-ai/sdk`'s `messages.stream()` is the dominant call site in the client. This phase proves the adapter-over-canonical layout supports three surfaces, not just two, and validates that streaming is a first-class concern for the Anthropic shape (it can't be deferred to Phase 4 the way OpenAI/Ollama streaming can).
+**Mode:** mvp
+**Depends on:** Phase 3 (canonical types + plugin chain seams locked by Ollama+OpenAI)
+**Requirements:** ANTH-01, ANTH-02, ANTH-03, ANTH-04, ANTH-05, ANTH-06, ANTH-07, SURF-08
+**Success Criteria** (what must be TRUE):
+
+  1. `curl -X POST http://localhost:11434/v1/messages -H 'x-api-key: …' -H 'anthropic-version: 2023-06-01' -d '{"model":"auto","max_tokens":256,"messages":[{"role":"user","content":"hi"}]}'` returns an Anthropic-compatible JSON response (top-level `id`, `type:"message"`, `role:"assistant"`, `content:[{type:"text",text:"…"}]`, `stop_reason`, `usage`) sourced from the same canonical engine that serves `/api/chat` and `/v1/chat/completions`.
+  2. loop24-client (`../loop24-client`) configured with `ANTHROPIC_BASE_URL=http://localhost:11434` and a valid `ANTHROPIC_API_KEY` completes both a non-streaming `messages.create({stream:false})` AND a streaming `messages.stream({...})` round-trip end-to-end against the gateway, with zero changes to loop24-client code.
+  3. Streaming emits the full Anthropic SSE event sequence: `message_start` → (`content_block_start` → `content_block_delta`+ → `content_block_stop`)+ → `message_delta` → `message_stop`, with `event:` and `data:` framing and `ping` keepalives every ~15s, all sourced from the same `<-chan canonical.Chunk` produced by `engine.Run(ctx, req)`.
+  4. Tool-call requests round-trip: `tool_use` content blocks emitted in canonical shape and rendered with `input` as an object (Anthropic-style, NOT JSON-string like OpenAI); `tool_result` blocks accepted on the inbound side.
+  5. `ENABLED_SURFACES=ollama,openai` (the previous Phase 3 default) disables the Anthropic adapter at boot; `ENABLED_SURFACES=ollama,openai,anthropic` (new default after this phase) enables all three. `internal/adapter/anthropic` imports only `internal/canonical` + `internal/plugin`; the `.go-arch-lint.yml` boundary check passes.
+  6. Header contract enforced: missing `anthropic-version` returns a canonical `invalid_request_error` rendered in Anthropic's `{"type":"error","error":{"type":"…","message":"…"}}` shape; the gateway accepts both `x-api-key` and `Authorization: Bearer …` auth modes (loop24-client uses both depending on provider).
+
+**Plans:** TBD
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 3.1 to break down)
 
 ### Phase 4: Streaming
 

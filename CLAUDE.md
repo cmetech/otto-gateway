@@ -3,27 +3,31 @@
 
 **Loop24 Gateway**
 
-Loop24 Gateway is a Go-based LLM gateway that exposes both OpenAI-
-and Ollama-compatible HTTP APIs on a single port and routes every
-inbound request through a configurable guardrails chain to a pool
-of `kiro-cli` ACP worker subprocesses. It replaces an existing
-Node.js Ollama proxy (`../gitlab.rosetta.ericssondevops.com/loop_24/acp_server`)
-with a single statically-linked cross-platform binary that adds an
-OpenAI surface alongside the existing Ollama one. Primary clients
-are a Pi-SDK-based chat CLI (OpenAI shape) and an internal LangFlow
-deployment (Ollama shape).
+Loop24 Gateway is a Go-based LLM gateway that exposes OpenAI-,
+Ollama-, and Anthropic-compatible HTTP APIs on a single port and
+routes every inbound request through a configurable guardrails
+chain to a pool of `kiro-cli` ACP worker subprocesses. It replaces
+an existing Node.js Ollama proxy
+(`../gitlab.rosetta.ericssondevops.com/loop_24/acp_server`) with a
+single statically-linked cross-platform binary that adds OpenAI
+and Anthropic surfaces alongside the existing Ollama one. Primary
+clients are a Pi-SDK-based chat CLI (OpenAI shape), an internal
+LangFlow deployment (Ollama shape), and loop24-client / GSD Pi
+(Anthropic shape, via `ANTHROPIC_BASE_URL`).
 
-**Core Value:** **Both API surfaces serve their respective clients without those
-clients knowing kiro-cli exists, with one place to enforce policy.**
+**Core Value:** **All three API surfaces serve their respective clients without
+those clients knowing kiro-cli exists, with one place to enforce
+policy.**
 
 If everything else fails, this must hold: a LangFlow flow pointing
-at `/api/chat` and a Pi-SDK CLI pointing at `/v1/chat/completions`
-both receive correct streamed responses, and any guardrail (auth,
-rate-limit, content moderation, schema validation, audit) defined
-once on the canonical request type applies uniformly to both. The
-gateway being faster than Node and shipping as one binary is bonus —
-the surface compatibility and the single governance surface are
-the load-bearing properties.
+at `/api/chat`, a Pi-SDK CLI pointing at `/v1/chat/completions`,
+and loop24-client with `ANTHROPIC_BASE_URL=http://localhost:11434`
+calling `/v1/messages` all receive correct streamed responses, and
+any guardrail (auth, rate-limit, content moderation, schema
+validation, audit) defined once on the canonical request type
+applies uniformly to all three. The gateway being faster than Node
+and shipping as one binary is bonus — the surface compatibility
+and the single governance surface are the load-bearing properties.
 
 ### Constraints
 
@@ -31,6 +35,7 @@ the load-bearing properties.
 - **Tech stack**: stdlib `net/http` + `chi` for routing — Rejected `fasthttp` (faster but breaks the `http.Handler` ecosystem; not worth it at our throughput).
 - **Compatibility**: Ollama API endpoints and request/response shapes are fixed by existing LangFlow flows. Breaking changes there require a flow migration we're not paying for.
 - **Compatibility**: OpenAI API shapes follow public OpenAI spec for the endpoints we serve. Pi SDK will fail on shape drift.
+- **Compatibility**: Anthropic Messages API shapes follow the public Anthropic spec (`docs.anthropic.com/en/api/messages`) — including SSE event names, content block discriminators, tool-use `input` as object (not string), `anthropic-version` header requirement, and error envelope shape. `@anthropic-ai/sdk` will fail on shape drift; loop24-client uses both `x-api-key` and `Authorization: Bearer` auth paths so both must work.
 - **Distribution**: Single static binary per OS/arch. Cross-compile from macOS dev box must work with vanilla `go build` plus `GOOS`/`GOARCH` env vars. The instant cgo enters the picture (e.g. in-process ONNX), this collapses — explicit decision in `docs/briefs/go_port_brief.md` §3.4 to avoid that.
 - **Performance**: Must not be slower than the Node implementation under concurrent load. Tail latency should improve. Hard numbers: TBD; pre-implementation baseline measurement is in the milestone plan.
 - **Security**: Bearer-token auth + IP allowlist, both env-driven. Same defaults as Node version (no auth if env unset). Subprocess spawn is the highest-risk surface — `gosec` G204 and friends required to flag any tainted-input regressions.
