@@ -113,7 +113,7 @@ Plans:
 **Goal:** The first true end-to-end vertical slice — an existing LangFlow flow pointing at `http://localhost:11434/api/chat` reaches a real `kiro-cli` subprocess through the gateway and gets back a correct Ollama-shaped response. Establishes the canonical-engine / adapter pattern that every other surface phase builds on.
 **Mode:** mvp
 **Depends on:** Phase 1.1
-**Requirements:** SURF-01, SURF-03, SURF-05, SURF-07, ACP-07, AUTH-01, AUTH-02, AUTH-03, OBSV-01
+**Requirements:** SURF-01, SURF-03, SURF-05, SURF-07, ACP-07, AUTH-01, AUTH-02, AUTH-03, OBSV-01, POOL-01, POOL-02, POOL-03
 **Success Criteria** (what must be TRUE):
 
   1. `curl -X POST http://localhost:11434/api/chat -d '{"model":"auto","messages":[{"role":"user","content":"hi"}],"stream":false}'` returns an Ollama-compatible JSON response sourced from a real `kiro-cli` subprocess (non-streaming path, single canonical engine call).
@@ -122,7 +122,26 @@ Plans:
   4. Bearer-token auth and IP-allowlist middleware reject unauthorized requests while exempting `/`, `/api/version`, and `/health`.
   5. Per-request `cwd` is derived from longest common parent of `resource_link` block URIs, with `KIRO_CWD` fallback and `X-Working-Dir` header override, verified by handler-level tests.
 
-**Plans:** TBD
+**Plans:** 6 plans
+
+Plans:
+**Wave 1** *(no shared files — run in parallel)*
+
+- [ ] 02-01-PLAN.md — Canonical chat types (D-08/D-09/D-10/D-11): ChatRequest, ChatResponse, Message, ContentPart, ToolCall, ToolSpec, Usage, MessageRole, ContentKind + Wave 0 test scaffold
+- [ ] 02-02-PLAN.md — internal/auth package: Bearer (constant-time compare) + IPAllowlist (netip + XFF + ::ffff: strip) middlewares + tests
+- [ ] 02-03-PLAN.md — config.go extensions: AuthToken, AllowedIPs, PoolSize, OllamaPathPrefix, OpenAIPathPrefix + getEnvStrSliceComma + getEnvInt + parseCIDRs
+
+**Wave 2** *(depends on Wave 1)*
+
+- [ ] 02-04-PLAN.md — internal/engine package: ACPClient + Stream interfaces, PreHook/PostHook seam (D-04), Engine.Run + Engine.Collect, pickCwd (D-16 Windows-safe), buildBlocks (D-02), property + golden + Example tests + goleak gate
+
+**Wave 3** *(depends on Wave 2)*
+
+- [ ] 02-05-PLAN.md — internal/pool package: channel-of-slots Pool satisfying engine.ACPClient (D-06), Warmup (D-07a fail-fast sequential), Models capture from first slot (D-13), Stats for /health, session→slot map with sync.Once-guarded slot release on stream close
+
+**Wave 4** *(depends on Wave 3 — Phase 2 acceptance)*
+
+- [ ] 02-06-PLAN.md — Ollama adapter (wire + render + handlers + stubs + 8 unit-test files) + server wiring (chi sub-router + exempt routes per D-14/AUTH-03) + main.go (pool→engine→ollama→server with Warmup-before-listen per POOL-02) + wrapper scripts + real-kiro integration test + LangFlow zero-reconfig human-verify checkpoint
 
 ### Phase 3: OpenAI Surface
 
