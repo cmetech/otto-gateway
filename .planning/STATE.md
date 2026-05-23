@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v1.5
 milestone_name: milestone
 status: planning
-stopped_at: Phase 1 context gathered
-last_updated: "2026-05-23T20:15:54.112Z"
+stopped_at: Phase 2 context gathered + Phase 1.5 ACP wire alignment surfaced as roadmap insert
+last_updated: "2026-05-23T20:58:12.748Z"
 last_activity: 2026-05-23
 progress:
   total_phases: 10
@@ -95,6 +95,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-05-23T16:42:38.495Z
-Stopped at: Phase 1 context gathered
-Resume file: .planning/phases/01-foundations/01-CONTEXT.md
+Last session: 2026-05-23T20:58:12.743Z
+Stopped at: Phase 2 context gathered + Phase 1.5 ACP wire alignment surfaced as roadmap insert
+Resume file: .planning/phases/02-ollama-end-to-end/02-CONTEXT.md
