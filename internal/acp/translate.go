@@ -1,37 +1,75 @@
 package acp
 
 import (
+	"encoding/json"
+	"fmt"
 	"net/url"
 	"path"
+	"strings"
 
 	"loop24-gateway/internal/canonical"
 )
 
-// sessionUpdateParams holds the deserialized fields from a session/update or
-// _kiro.dev/session/update notification payload.
-// The session/update type field drives the canonical.Chunk variant produced by
-// translateUpdate.
+// sessionUpdateParams is the tolerant outer envelope for a session/update,
+// session/notification, or _kiro.dev/session/update notification (D-16, D-17).
+//
+// Two shapes arrive on the wire:
+//
+//  1. Wrapped form:
+//     `{"sessionId":"...","update":{"sessionUpdate":"agent_message_chunk","content":{"text":"..."}}}`
+//     In this case Update is the raw JSON of the inner body; the flat fields
+//     stay zero-valued.
+//
+//  2. Flat form:
+//     `{"sessionId":"...","sessionUpdate":"agent_message_chunk","content":{"text":"..."}}`
+//     In this case Update is empty and the flat fields hold the payload.
+//
+// translateUpdate re-unmarshals Update into a sessionUpdateBody when non-empty,
+// otherwise copies the flat fields into a sessionUpdateBody. Either path yields
+// one populated body downstream.
 type sessionUpdateParams struct {
-	SessionID string         `json:"sessionId"`
-	Type      string         `json:"type"`
-	Content   string         `json:"content"`
-	ToolName  string         `json:"toolName"`            // populated for type "tool_call"
-	Args      map[string]any `json:"args"`                // populated for type "tool_call"
+	SessionID string          `json:"sessionId"`
+	Update    json.RawMessage `json:"update,omitempty"`
+
+	// Flat fields — used when params is not wrapped under `update`.
+	SessionUpdate string          `json:"sessionUpdate,omitempty"`
+	Type          string          `json:"type,omitempty"`
+	Content       json.RawMessage `json:"content,omitempty"`
+	Text          string          `json:"text,omitempty"`
+	ToolCallID    string          `json:"toolCallId,omitempty"`
+	Title         string          `json:"title,omitempty"`
+	Args          map[string]any  `json:"args,omitempty"`
+	Output        string          `json:"output,omitempty"`
+	Entries       []planEntry     `json:"entries,omitempty"`
+}
+
+// sessionUpdateBody mirrors the inner body of a wrapped session/update
+// notification — i.e., what lives under `params.update` in the wrapped form.
+// Identical to sessionUpdateParams minus SessionID and Update.
+type sessionUpdateBody struct {
+	SessionUpdate string          `json:"sessionUpdate,omitempty"`
+	Type          string          `json:"type,omitempty"`
+	Content       json.RawMessage `json:"content,omitempty"`
+	Text          string          `json:"text,omitempty"`
+	ToolCallID    string          `json:"toolCallId,omitempty"`
+	Title         string          `json:"title,omitempty"`
+	Args          map[string]any  `json:"args,omitempty"`
+	Output        string          `json:"output,omitempty"`
+	Entries       []planEntry     `json:"entries,omitempty"`
+}
+
+// planEntry is a single entry inside a `plan` session/update's entries[] array.
+type planEntry struct {
+	Content string `json:"content,omitempty"`
 }
 
 // permissionParams holds the deserialized fields from a session/request_permission
-// notification. The RequestID is echoed back in the auto-grant response.
+// notification. Phase 1.1 D-20: the gateway responds on the original frame id —
+// the request body itself is no longer load-bearing for the response, but the
+// type is preserved so handleNotification can debug-log the inbound RequestID
+// when DEBUG=1 is set.
 type permissionParams struct {
-	RequestID  string `json:"requestId"`
-}
-
-// TODO(D-20, Plan 04): delete grantParams together with the session/grant_permission send path in client.go.
-// grantParams is the params payload for session/grant_permission requests.
-// NOTE: JSON field "optionId" (lowercase d) — must match the exact wire name.
-type grantParams struct {
 	RequestID string `json:"requestId"`
-	OptionID  string `json:"optionId"` // "allow_always"
-	Granted   bool   `json:"granted"`
 }
 
 // firstNonEmpty returns the first non-empty string from values, or "" if all
@@ -69,45 +107,175 @@ func parseStopReason(s string) canonical.StopReason {
 	}
 }
 
-// translateUpdate converts a raw session/update or _kiro.dev/session/update
-// notification into a typed canonical.Chunk.
+// normalizeUpdateType normalizes a session/update discriminator string to
+// snake_case canonical form per D-19. kiro-cli versions vary: some emit
+// `agent_message_chunk` (snake), others `AgentMessageChunk` (Camel), and the
+// docs sometimes mix `Agent_Message_Chunk` (mixed). One canonical form keeps
+// translateUpdate's switch table flat and readable.
 //
-// Mapping (from ACP protocol reference and RESEARCH.md Canonical Chunk Translation table):
+// Behaviour:
+//   - Empty input → empty output (caller treats as "unknown variant").
+//   - If s already contains at least one underscore: lowercase it as-is.
+//     This covers `agent_message_chunk` and `Agent_Message_Chunk` uniformly.
+//   - Otherwise: CamelCase → snake_case. Walk runes; insert `_` before every
+//     non-leading uppercase ASCII letter and lowercase the rune; non-letter
+//     runes pass through lowercased.
+func normalizeUpdateType(s string) string {
+	if s == "" {
+		return ""
+	}
+	if strings.ContainsRune(s, '_') {
+		return strings.ToLower(s)
+	}
+	var b strings.Builder
+	b.Grow(len(s) + 4)
+	for i, r := range s {
+		if i > 0 && r >= 'A' && r <= 'Z' {
+			b.WriteByte('_')
+		}
+		if r >= 'A' && r <= 'Z' {
+			b.WriteRune(r + ('a' - 'A'))
+		} else {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// translateUpdate converts a deserialized session/update notification payload
+// (in either the wrapped or flat form) into a typed canonical.Chunk per D-16,
+// D-17, D-18, D-19.
 //
-//	"text"      → canonical.ChunkKindText    (Content field)
-//	"thought"   → canonical.ChunkKindThought  (Content field)
-//	"tool_call" → canonical.ChunkKindToolCall (ToolName + Args fields)
-//	"plan"      → canonical.ChunkKindPlan     (Content field)
-//	<unknown>   → canonical.ChunkKindText     (fallback; avoids data loss)
+// Step 1: pick the inner body. If u.Update is non-empty, re-unmarshal it into
+// a sessionUpdateBody. Otherwise copy the flat u.* fields into a body.
+//
+// Step 2: pick the discriminator via firstNonEmpty(body.SessionUpdate,
+// body.Type), then normalise it to snake_case via normalizeUpdateType.
+//
+// Step 3: extract textual content via the D-18 fallback chain:
+// `body.content?.text ?? body.content ?? body.text`.
+//
+// Step 4: switch on the discriminator and build the canonical.Chunk:
+//
+//	agent_message_chunk       → ChunkKindText    (content)
+//	agent_thought_chunk       → ChunkKindThought (content)
+//	tool_call, tool_call_chunk → ChunkKindThought ("[tool: <title>]\n")
+//	tool_call_update          → ChunkKindThought (output ?? content)
+//	plan                       → ChunkKindPlan    (entries joined by \n)
+//	default (incl. empty)     → ChunkKindText    (content) — preserve Phase 1
+//	                            "fall back to text to avoid data loss" policy
+//	                            per CONTEXT.md §Claude's Discretion.
+//
+// `tool_call`/`tool_call_chunk`/`tool_call_update` are rendered as thought
+// text in Phase 1.1 per CONTEXT.md `<deferred>` — Phase 6 (TOOL-01, TOOL-03)
+// emits canonical.ToolCallChunk with proper id/title/args.
 func translateUpdate(u sessionUpdateParams) canonical.Chunk {
-	switch u.Type {
-	case "text":
+	var body sessionUpdateBody
+	if len(u.Update) > 0 {
+		// Defensive: if the wrapped form fails to parse, body stays zero-valued
+		// and falls through to the default-text arm with empty content.
+		// handleNotification logs the outer-unmarshal Warn before we ever get
+		// here; the inner-unmarshal failure here is silently tolerated rather
+		// than reported separately (translateUpdate has no logger handle).
+		_ = json.Unmarshal(u.Update, &body)
+	} else {
+		body = sessionUpdateBody{
+			SessionUpdate: u.SessionUpdate,
+			Type:          u.Type,
+			Content:       u.Content,
+			Text:          u.Text,
+			ToolCallID:    u.ToolCallID,
+			Title:         u.Title,
+			Args:          u.Args,
+			Output:        u.Output,
+			Entries:       u.Entries,
+		}
+	}
+
+	discriminator := normalizeUpdateType(firstNonEmpty(body.SessionUpdate, body.Type))
+	content := extractContent(body)
+
+	switch discriminator {
+	case "agent_message_chunk":
 		return canonical.Chunk{
 			Kind: canonical.ChunkKindText,
-			Text: &canonical.TextChunk{Content: u.Content},
+			Text: &canonical.TextChunk{Content: content},
 		}
-	case "thought":
+	case "agent_thought_chunk":
 		return canonical.Chunk{
 			Kind:    canonical.ChunkKindThought,
-			Thought: &canonical.ThoughtChunk{Content: u.Content},
+			Thought: &canonical.ThoughtChunk{Content: content},
 		}
-	case "tool_call":
+	case "tool_call", "tool_call_chunk":
+		// CONTEXT.md <deferred>: render as thought with [tool: <title>]\n
+		// prefix; Phase 6 emits canonical.ToolCallChunk properly.
+		title := firstNonEmpty(body.Title, "unknown")
 		return canonical.Chunk{
-			Kind:     canonical.ChunkKindToolCall,
-			ToolCall: &canonical.ToolCallChunk{Name: u.ToolName, Args: u.Args},
+			Kind:    canonical.ChunkKindThought,
+			Thought: &canonical.ThoughtChunk{Content: fmt.Sprintf("[tool: %s]\n", title)},
+		}
+	case "tool_call_update":
+		// Node behaviour: output ?? content.text — `content` already reflects
+		// the D-18 extraction.
+		return canonical.Chunk{
+			Kind:    canonical.ChunkKindThought,
+			Thought: &canonical.ThoughtChunk{Content: firstNonEmpty(body.Output, content)},
 		}
 	case "plan":
 		return canonical.Chunk{
 			Kind: canonical.ChunkKindPlan,
-			Plan: &canonical.PlanChunk{Content: u.Content},
+			Plan: &canonical.PlanChunk{Content: joinPlanEntries(body.Entries)},
 		}
 	default:
-		// Unknown type → fallback to text to avoid data loss.
+		// Preserve Phase 1 "fall back to text to avoid data loss" policy
+		// (CONTEXT.md §Claude's Discretion). Unknown discriminators land
+		// here; handleNotification logs a Debug. Empty discriminator with
+		// non-empty `text` (e.g., a notification carrying only `body.text`)
+		// also lands here and surfaces the text.
 		return canonical.Chunk{
 			Kind: canonical.ChunkKindText,
-			Text: &canonical.TextChunk{Content: u.Content},
+			Text: &canonical.TextChunk{Content: content},
 		}
 	}
+}
+
+// extractContent walks the D-18 fallback chain to pull a single string out of
+// a session/update body's content field. The wire shape varies:
+//
+//	{"content":{"type":"text","text":"hello"}}  → "hello"
+//	{"content":"hello"}                          → "hello"
+//	{"text":"hello"}                             → "hello"
+//
+// The probe ignores `content.type` (always "text" when populated) and reads
+// `content.text` directly. A failed probe falls through to the next branch.
+func extractContent(body sessionUpdateBody) string {
+	if len(body.Content) > 0 {
+		var probe struct {
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal(body.Content, &probe); err == nil && probe.Text != "" {
+			return probe.Text
+		}
+		var s string
+		if err := json.Unmarshal(body.Content, &s); err == nil {
+			return s
+		}
+	}
+	return body.Text
+}
+
+// joinPlanEntries concatenates plan entry contents with "\n" separators.
+// A nil or empty slice returns "" so the canonical PlanChunk carries an empty
+// string rather than "\n" or similar artefact.
+func joinPlanEntries(entries []planEntry) string {
+	if len(entries) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(entries))
+	for _, e := range entries {
+		parts = append(parts, e.Content)
+	}
+	return strings.Join(parts, "\n")
 }
 
 // wireBlock is the ACP wire shape for a prompt input block.
@@ -129,12 +297,12 @@ func translateUpdate(u sessionUpdateParams) canonical.Chunk {
 // the canonical.BlockKindImage producer (D-15).
 type wireBlock struct {
 	Type     string `json:"type"`
-	Text     string `json:"text,omitempty"`      // present for type=="text"
-	URI      string `json:"uri,omitempty"`       // present for type=="resource_link"
-	Name     string `json:"name,omitempty"`      // present for type=="resource_link" (REQUIRED by ACP spec)
-	Title    string `json:"title,omitempty"`     // present for type=="resource_link"
-	MIMEType string `json:"mimeType,omitempty"`  // present for type=="image" (Phase 2 populates)
-	Data     string `json:"data,omitempty"`      // present for type=="image" — base64 (Phase 2 populates)
+	Text     string `json:"text,omitempty"`     // present for type=="text"
+	URI      string `json:"uri,omitempty"`      // present for type=="resource_link"
+	Name     string `json:"name,omitempty"`     // present for type=="resource_link" (REQUIRED by ACP spec)
+	Title    string `json:"title,omitempty"`    // present for type=="resource_link"
+	MIMEType string `json:"mimeType,omitempty"` // present for type=="image" (Phase 2 populates)
+	Data     string `json:"data,omitempty"`     // present for type=="image" — base64 (Phase 2 populates)
 }
 
 // translateBlock converts a canonical.Block to the ACP wire shape.

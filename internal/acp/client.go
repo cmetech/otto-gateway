@@ -74,6 +74,23 @@ type rpcNotification struct {
 	Params  any    `json:"params,omitempty"`
 }
 
+// rpcResponse is the outbound JSON-RPC 2.0 response envelope (no method).
+//
+// Phase 1.1 D-20: session/request_permission is RESPONDED to on the original
+// frame id rather than triggering a new `session/grant_permission` request.
+// Without this echo, kiro-cli blocks forever waiting for the response to the
+// id it sent — Phase 2's first tool-using prompt would deadlock.
+//
+// Placed inline next to rpcRequest/rpcNotification per CONTEXT.md §Claude's
+// Discretion: with only three envelope shapes the splitting threshold from
+// PATTERNS.md ("split into rpc.go once there are 3+ envelope shapes") is at
+// the boundary — keep them grouped for now; split if a fourth envelope lands.
+type rpcResponse struct {
+	JSONRPC string `json:"jsonrpc"`
+	ID      uint64 `json:"id"`
+	Result  any    `json:"result"`
+}
+
 // initializeParams is the params payload for the initialize request.
 // Phase 1.1 D-08: spec-compliant shape — adds ProtocolVersion and renames
 // the Capabilities field to ClientCapabilities (with fs + terminal nested
@@ -762,47 +779,64 @@ func (c *Client) Cancel(sessionID string) {
 // Called by the readLoop goroutine for every nil-ID frame.
 //
 // Handles:
-//   - session/request_permission → auto-grant (ACP-04)
-//   - session/update / _kiro.dev/session/update → canonical.Chunk → push to activeStream (ACP-05)
+//   - session/request_permission → RESPOND on the original frame id with
+//     {optionId:"allow_always", granted:true} (Phase 1.1 D-20). The Phase 1
+//     path that sent a new `session/grant_permission` request is removed —
+//     kiro-cli waits for the response to its original id, so sending a new
+//     request id would deadlock the subprocess.
+//   - session/update / session/notification / _kiro.dev/session/update →
+//     canonical.Chunk → push to activeStream (ACP-05). All three method
+//     names are matched explicitly per D-16; discriminator + body variance
+//     is absorbed inside translateUpdate per D-17/D-18/D-19.
 func (c *Client) handleNotification(frame rpcFrame) {
 	switch frame.Method {
 	case "session/request_permission":
-		// CRITICAL: Must auto-grant immediately or kiro-cli blocks forever (ACP-04, Pitfall 1).
-		// T-02-05: auto-grant uses writeCh (not direct framer call) for serialisation.
-		var params permissionParams
-		if err := json.Unmarshal(frame.Params, &params); err != nil {
-			c.cfg.Logger.Warn("acp: malformed permission request", "err", err)
+		// D-20: respond on the original frame id. Without this, kiro-cli
+		// blocks forever waiting for the response — the deadlock unblock for
+		// Phase 2's first tool-using prompt.
+		if frame.ID == nil {
+			// A permission "request" with no id cannot be responded to —
+			// treat as a kiro-cli protocol break and log loudly.
+			c.cfg.Logger.Warn("acp: permission request without id — dropped")
 			return
 		}
-		grantID := c.nextID.Add(1)
-		data, err := json.Marshal(rpcRequest{
+		// Best-effort Debug log of the inbound RequestID (useful when DEBUG=1).
+		// Parse failure does not block the response — the response only needs
+		// the original frame id, which is already in hand.
+		var params permissionParams
+		if err := json.Unmarshal(frame.Params, &params); err == nil && params.RequestID != "" {
+			c.cfg.Logger.Debug("acp: auto-granting permission",
+				"requestId", params.RequestID, "frameId", *frame.ID)
+		}
+		data, err := json.Marshal(rpcResponse{
 			JSONRPC: "2.0",
-			ID:      grantID,
-			Method:  "session/grant_permission",
-			Params: grantParams{
-				RequestID: params.RequestID,
-				OptionID:  "allow_always", // exact wire name — not optionID
-				Granted:   true,
+			ID:      *frame.ID,
+			Result: map[string]any{
+				"optionId": "allow_always",
+				"granted":  true,
 			},
 		})
 		if err != nil {
-			c.cfg.Logger.Warn("acp: marshal grant failed", "err", err)
+			c.cfg.Logger.Warn("acp: marshal permission response failed", "err", err)
 			return
 		}
-		// WR-02 fix: NO default arm. kiro-cli blocks forever if a grant is missed,
-		// so backpressure on writeCh is correct — pausing readLoop briefly is far
-		// better than silently dropping a grant the subprocess is waiting for.
+		// WR-02: NO default arm. kiro-cli blocks forever if the response is
+		// missed, so backpressure on writeCh is correct — pausing the readLoop
+		// briefly is far better than silently dropping a frame the subprocess
+		// is waiting for.
 		select {
 		case c.writeCh <- data:
 		case <-c.clientCtx.Done():
-			// Client closing — drop grant.
+			// Client closing — drop response.
 		}
 
-	case "session/update", "_kiro.dev/session/update":
-		// Translate to canonical.Chunk and push to the active stream (ACP-05).
+	case "session/update", "session/notification", "_kiro.dev/session/update":
+		// D-16: all three method names route to the same tolerant parser.
+		// D-17/D-18/D-19 variance is absorbed inside translateUpdate.
 		var update sessionUpdateParams
 		if err := json.Unmarshal(frame.Params, &update); err != nil {
-			c.cfg.Logger.Warn("acp: malformed session update", "err", err)
+			c.cfg.Logger.Warn("acp: malformed session update",
+				"method", frame.Method, "err", err)
 			return
 		}
 		chunk := translateUpdate(update)
