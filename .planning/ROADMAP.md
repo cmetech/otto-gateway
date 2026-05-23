@@ -83,7 +83,7 @@ Plans:
   5. `session/request_permission` is handled as a REQUEST (responds to the original frame `id` with `{result:{optionId:"allow_always", granted:true}}`); the separate `session/grant_permission` request path from Phase 1 is removed.
   6. New integration test in `internal/acp/integration_test.go`: gated on real `kiro-cli` (D-17 pattern); spawns the subprocess, completes `Initialize → NewSession → Prompt("hi")`, drains `stream.Chunks`, asserts at least one `ChunkKindText` chunk arrives with non-empty content, asserts `Stream.Result()` returns with a non-error `StopReason` (typically `StopEndTurn`). `goleak.VerifyNone(t)` passes. **This is the verification gate that unblocks Phase 2.**
 
-**Plans:** 3/5 plans executed
+**Plans:** 4/5 plans executed
 
 Plans:
 **Wave 1**
@@ -100,7 +100,7 @@ Plans:
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
-- [ ] 01.1-04-PLAN.md — Notification parsing variance + permission RESPONSE + fake-server rewrite: three notification method names (D-16), tolerant sessionUpdateParams with json.RawMessage (D-17), content extraction fallback chain (D-18), normalizeUpdateType + new switch with spec-compliant discriminators (D-19), session/request_permission RESPONSE on original frame id + delete session/grant_permission send path (D-20). Paired with TestTranslateUpdate_VarianceMatrix (D-22), TestNormalizeUpdateType, rewritten fakeacp_test.go with spec-compliant shapes (D-23), consolidated TestIntegration_FakeACP_E2E_MixedVariants (D-23), updated TestAutoGrantPermission. Threat model included (defensive parsing of untrusted JSON from kiro-cli stdout + permission response correctness).
+- [x] 01.1-04-PLAN.md — Notification parsing variance + permission RESPONSE + fake-server rewrite: three notification method names (D-16), tolerant sessionUpdateParams with json.RawMessage (D-17), content extraction fallback chain (D-18), normalizeUpdateType + new switch with spec-compliant discriminators (D-19), session/request_permission RESPONSE on original frame id + delete session/grant_permission send path (D-20). Paired with TestTranslateUpdate_VarianceMatrix (D-22), TestNormalizeUpdateType, rewritten fakeacp_test.go with spec-compliant shapes (D-23), consolidated TestIntegration_FakeACP_E2E_MixedVariants (D-23), updated TestAutoGrantPermission. Threat model included (defensive parsing of untrusted JSON from kiro-cli stdout + permission response correctness).
 
 **Wave 5** *(blocked on Wave 4 completion — Phase 2 unblock gate)*
 
@@ -263,7 +263,7 @@ Phases execute in numeric order: 1 → 1.1 → 2 → 3 → 3.1 → 4 → 5 → 6
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Foundations | 5/5 | Complete   | 2026-05-23 |
-| 1.1. ACP Wire Alignment (INSERTED) | 3/5 | In Progress|  |
+| 1.1. ACP Wire Alignment (INSERTED) | 4/5 | In Progress|  |
 | 2. Ollama End-to-End | 0/TBD | Not started | - |
 | 3. OpenAI Surface | 0/TBD | Not started | - |
 | 4. Streaming | 0/TBD | Not started | - |
