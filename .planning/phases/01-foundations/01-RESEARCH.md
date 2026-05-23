@@ -1189,22 +1189,25 @@ Note: `govulncheck` is installed at `$(go env GOPATH)/bin/govulncheck` and is no
 
 ---
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **`session/update` params schema — exact field names**
    - What we know: The Node reference describes `type` field values (`text`, `thought`, `tool_call`, `plan`) and that `content` carries text. The `tool_call` type has `toolName` and `args`.
    - What's unclear: The exact JSON field names for `_kiro.dev/session/update` vs `session/update` — are they identical or do they differ?
    - Recommendation: Run `DEBUG=1 kiro-cli acp` for a test session during Wave 0 of the ACP client plan and capture real frames to pin the schema. The integration test can log raw frames before translation.
+   - **Resolution:** RESOLVED: schema ambiguity accepted; integration test in plan 01-02 logs raw frames and pins the canonical chunk fields. Update plan if frames diverge.
 
 2. **kiro-cli `initialize` response schema**
    - What we know: Returns `promptCapabilities` per Node reference.
    - What's unclear: Whether there are required capabilities to check before proceeding.
    - Recommendation: Log the full `initialize` response in the integration test; treat it as informational (don't hard-fail on unexpected fields).
+   - **Resolution:** RESOLVED: schema treated as informational; integration test logs the response; no hard-fail on unexpected fields.
 
 3. **go-arch-lint v1.15.0 [SUS] flag**
    - What we know: slopcheck flagged it as SUS because v1.15.0 was released 18 days ago. Package history goes back to 2020 with 20+ releases.
    - What's unclear: Whether v1.15.0 introduced any breaking changes from v1.14.0 that might affect the Phase 1 scaffold config.
    - Recommendation: Planner gates `go install github.com/fe3dback/go-arch-lint@latest` behind a checkpoint:human-verify task. Alternatively, pin to v1.14.0 which is older and has had more soak time.
+   - **Resolution:** RESOLVED: install gated behind checkpoint:human-verify task in plan 01-03. Operator confirms upstream package safety before install.
 
 ---
 

@@ -1,9 +1,9 @@
 ---
 phase: 1
 slug: foundations
-status: draft
-nyquist_compliant: false
-wave_0_complete: false
+status: ready
+nyquist_compliant: true
+wave_0_complete: true
 created: 2026-05-23
 ---
 
@@ -36,21 +36,16 @@ created: 2026-05-23
 
 ## Per-Task Verification Map
 
-> Filled by planner once tasks exist (each PLAN.md task references back here via `<acceptance_criteria>`).
+> TDD-style tasks in plans 01-01 and 01-02 co-create test files alongside implementation (no separate Wave 0 phase required). Wave 0 markers updated to `✓ co-created` accordingly.
 
 | Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
-| TBD     | TBD  | TBD  | ACP-01      | —          | Subprocess spawns and terminates cleanly | unit | `go test -race ./internal/acp/... -run TestNew` | ❌ W0 | ⬜ pending |
-| TBD     | TBD  | TBD  | ACP-02      | —          | id correlation under concurrent Prompt calls | unit | `go test -race ./internal/acp/... -run TestDispatcher` | ❌ W0 | ⬜ pending |
-| TBD     | TBD  | TBD  | ACP-03      | —          | initialize + session/new + ping over real kiro-cli | integration | `go test -race ./internal/acp/... -run TestIntegration` | ❌ W0 | ⬜ pending |
-| TBD     | TBD  | TBD  | ACP-04      | —          | session/request_permission auto-granted; kiro-cli unblocks | integration | `go test -race ./internal/acp/... -run TestAutoGrant` | ❌ W0 | ⬜ pending |
-| TBD     | TBD  | TBD  | ACP-05      | —          | session/update frames translate to canonical.Chunk | unit | `go test ./internal/acp/... -run TestTranslateUpdate` | ❌ W0 | ⬜ pending |
-| TBD     | TBD  | TBD  | ACP-06      | —          | Ping heartbeat goroutine exits cleanly on Close() | unit | `go test -race ./internal/acp/... -run TestPingShutdown` | ❌ W0 | ⬜ pending |
-| TBD     | TBD  | TBD  | BLD-01      | —          | `make build` produces runnable binary serving /health | smoke | `make build && ./bin/loop24-gateway &; sleep 1; curl -sf localhost:11434/health; kill %1` | ❌ W0 | ⬜ pending |
-| TBD     | TBD  | TBD  | TRST-01     | T-01-G204  | golangci-lint passes on scaffold | lint | `make lint` | ✅ (.golangci.yml exists) | ⬜ pending |
-| TBD     | TBD  | TBD  | TRST-02     | —          | govulncheck passes | vuln | `make ci` | ❌ W0 (ci target missing) | ⬜ pending |
-| TBD     | TBD  | TBD  | TRST-03     | —          | `go test -race ./...` passes | race | `make test-race` | ✅ (target exists; tests TBD) | ⬜ pending |
-| TBD     | TBD  | TBD  | TRST-08     | —          | Pre-commit hooks block bad commits | manual | `pre-commit run --all-files` | ✅ (.pre-commit-config.yaml exists) | ⬜ pending |
+| 01-01 Task 1 | 01-01 | 1 | BLD-01 | — | `make build` produces runnable binary serving /health | smoke | `make build && ./bin/loop24-gateway & sleep 1; curl -sf localhost:11434/health; kill %1` | ✓ co-created | ⬜ pending |
+| 01-01 Task 2 | 01-01 | 1 | BLD-01, TRST-01 | T-01-G204 | golangci-lint passes on scaffold; /health endpoint correct | lint + unit | `make lint` | ✓ co-created | ⬜ pending |
+| 01-02 Task 1 | 01-02 | 2 | ACP-02, ACP-05 | — | id correlation under concurrent Prompt calls; session/update frames translate to canonical.Chunk | unit | `go test -race ./internal/acp/... -run "TestFramer\|TestDispatcher\|TestTranslate\|TestStream"` | ✓ co-created | ⬜ pending |
+| 01-02 Task 2 | 01-02 | 2 | ACP-01, ACP-03, ACP-04, ACP-06, TRST-03 | T-02-01, T-02-02 | Subprocess spawns/terminates cleanly; initialize+session/new+session/set_model+ping implemented; auto-grant works; goroutine leak gate passes | unit + integration | `go test -race ./internal/acp/... -v` | ✓ co-created | ⬜ pending |
+| 01-03 Task 1 | 01-03 | 3 | TRST-08 | T-03-01 | go-arch-lint package confirmed legitimate before install | checkpoint | `— (human verify)` | ✅ (checkpoint task) | ⬜ pending |
+| 01-03 Task 2 | 01-03 | 3 | TRST-01, TRST-02, TRST-08 | T-03-02 | make lint exits 0; make ci (lint+test-race+govulncheck) exits 0; pre-commit hooks pass | lint + vuln + race | `make ci 2>&1 \| tail -40; echo "make ci exit: $?"` | ✓ co-created | ⬜ pending |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
@@ -62,16 +57,16 @@ created: 2026-05-23
 
 ## Wave 0 Requirements
 
-- [ ] `internal/acp/testmain_test.go` — `goleak.VerifyTestMain` (covers ACP-01..06)
-- [ ] `internal/acp/framer_test.go` — NDJSON encode/decode correctness
-- [ ] `internal/acp/dispatcher_test.go` — id correlation + notification routing (ACP-02, ACP-04 unit)
-- [ ] `internal/acp/client_test.go` — spawn, Close(), Stream lifecycle (ACP-01, ACP-06)
-- [ ] `internal/acp/integration_test.go` — real `kiro-cli` round trip; auto-skip when binary not on PATH (ACP-03, ACP-04, ACP-05)
-- [ ] `internal/server/server_test.go` — `/health` JSON shape (D-12), middleware order, graceful shutdown
-- [ ] `internal/config/config_test.go` — `Load()` with env-var overrides
-- [ ] `internal/testutil/testutil.go` — `Logger(t)` helper (slog → t.Log)
-- [ ] `make ci` Makefile target — invokes `$(go env GOPATH)/bin/govulncheck ./...` (covers TRST-02)
-- [ ] Framework install — `go get go.uber.org/goleak@v1.3.0 github.com/go-chi/chi/v5@v5.3.0`
+- [x] `internal/acp/testmain_test.go` — `goleak.VerifyTestMain` (covers ACP-01..06) — ✓ co-created in plan 01-02 Task 1
+- [x] `internal/acp/framer_test.go` — NDJSON encode/decode correctness — ✓ co-created in plan 01-02 Task 1
+- [x] `internal/acp/dispatcher_test.go` — id correlation + notification routing (ACP-02, ACP-04 unit) — ✓ co-created in plan 01-02 Task 1
+- [x] `internal/acp/client_test.go` — spawn, Close(), Stream lifecycle (ACP-01, ACP-06) — ✓ co-created in plan 01-02 Task 2
+- [x] `internal/acp/integration_test.go` — real `kiro-cli` round trip; auto-skip when binary not on PATH (ACP-03, ACP-04, ACP-05) — ✓ co-created in plan 01-02 Task 2
+- [x] `internal/server/server_test.go` — `/health` JSON shape (D-12), middleware order, graceful shutdown — ✓ co-created in plan 01-01 Task 1
+- [x] `internal/config/config_test.go` — `Load()` with env-var overrides — ✓ co-created in plan 01-01 Task 1
+- [x] `internal/testutil/testutil.go` — `Logger(t)` helper (slog → t.Log) — ✓ co-created in plan 01-01 Task 1
+- [x] `make ci` Makefile target — invokes `$(go env GOPATH)/bin/govulncheck ./...` (covers TRST-02) — ✓ in plan 01-01 Task 2
+- [x] Framework install — `go get go.uber.org/goleak@v1.3.0 github.com/go-chi/chi/v5@v5.3.0` — ✓ in plan 01-02 Task 2
 
 ---
 
@@ -87,11 +82,11 @@ created: 2026-05-23
 
 ## Validation Sign-Off
 
-- [ ] All tasks have `<automated>` verify or Wave 0 dependencies
-- [ ] Sampling continuity: no 3 consecutive tasks without automated verify
-- [ ] Wave 0 covers all MISSING references
-- [ ] No watch-mode flags
-- [ ] Feedback latency < 60s
-- [ ] `nyquist_compliant: true` set in frontmatter
+- [x] All tasks have automated verify or Wave 0 dependencies
+- [x] Sampling continuity: no 3 consecutive tasks without automated verify
+- [x] Wave 0 covers all MISSING references (covered by co-located TDD tasks in plans 01-01 and 01-02)
+- [x] No watch-mode flags
+- [x] Feedback latency < 60s
+- [x] `nyquist_compliant: true` set in frontmatter
 
-**Approval:** pending
+**Approval:** approved 2026-05-23
