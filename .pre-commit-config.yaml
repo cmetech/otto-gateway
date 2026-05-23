@@ -20,9 +20,14 @@ repos:
       - id: gitleaks
 
   - repo: https://github.com/golangci/golangci-lint
-    rev: v1.62.2
+    rev: v2.12.2
     hooks:
       - id: golangci-lint
+
+  - repo: https://github.com/jumanjihouse/pre-commit-hooks
+    rev: 3.0.0
+    hooks:
+      - id: shellcheck
 
   - repo: local
     hooks:
