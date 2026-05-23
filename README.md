@@ -41,6 +41,36 @@ Layer invariants enforced by the trust-gate config (see brief §3.8):
 - `internal/engine` imports `internal/canonical/pool/acp/embed/plugin`.
 - `internal/canonical` imports nothing else under `internal/`.
 
+## Running
+
+Build the binary first, then use the platform wrapper script:
+
+**macOS / Linux:**
+
+```bash
+make build
+./scripts/loop24 start    # launch in background
+./scripts/loop24 status   # check PID + /health
+./scripts/loop24 stop     # stop gracefully
+```
+
+**Windows (PowerShell):**
+
+```powershell
+make build
+.\scripts\loop24.ps1 start
+.\scripts\loop24.ps1 status
+.\scripts\loop24.ps1 stop
+```
+
+`make start`, `make status`, and `make stop` are Makefile shortcuts
+for the POSIX wrapper on macOS/Linux.
+
+See [docs/operating.md](docs/operating.md) for full reference: PID and
+log file locations, env-var overrides (`LOOP24_BIN`, `LOOP24_PID`,
+`LOOP24_LOG`, `LOOP24_ADDR`), gateway env vars (`HTTP_ADDR`,
+`KIRO_CMD`, `PING_INTERVAL`, …), and how `status` works.
+
 ## Development
 
 ```bash
