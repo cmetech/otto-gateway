@@ -8,13 +8,13 @@ updated: 2026-05-23T18:50:00Z
 
 ## Current Test
 
-[awaiting human testing]
+[user chose gap closure 2026-05-23 — see `## Gaps` section below; closure plan to be created via /gsd-plan-phase 01 --gaps]
 
 ## Tests
 
 ### 1. Verify integration test proves `session/update` translation onto `Stream.Chunks` channel
 expected: An integration test calls `Prompt()`, receives `session/update` from the fake server, and a `canonical.Chunk` with `ChunkKindText` and `Content "hello from fake"` arrives on `stream.Chunks` before the stream closes.
-result: [pending]
+result: gap_closure_required — user opted to fix CR-01/02/03/05 + WR-02 + add this integration test in a Phase 1 gap-closure plan rather than deferring to Phase 2
 
 why_human: |
   SC#4 (ROADMAP.md) says "translates a session/update into a typed chunk." The existing
@@ -51,9 +51,23 @@ Recommended path forward: Phase 2's PLAN.md should open a gap-closure task block
 
 total: 1
 passed: 0
-issues: 0
-pending: 1
+issues: 1
+pending: 0
 skipped: 0
 blocked: 0
 
 ## Gaps
+
+- id: phase-1-acp-correctness-gap
+  source: 01-REVIEW.md + 01-VERIFICATION.md (SC#4 partial)
+  items:
+    - CR-01: dispatcher.drainAll blocking-send deadlock — change to non-blocking send (one line)
+    - CR-02: Stream.Result() deadlock — close stream on prompt response, not only on readLoop EOF
+    - CR-03: readLoop death not propagated — `defer c.cancel()` at top of readLoop
+    - CR-05: canonical.Block has no JSON tags / MarshalJSON — add translateBlock mirror in internal/acp (or proper Block marshalling)
+    - WR-02: handleNotification permission-grant uses `default: drop` — block on send (remove default arm)
+    - SC#4 integration test: add end-to-end test where Prompt() → activeStream → typed canonical.Chunk lands on Stream.Chunks before stream closes (depends on CR-02 + CR-05 being fixed first)
+  deferred:
+    - CR-04 (permission audit) — belongs to Phase 8 hook chain, not Phase 1
+    - CR-06 (string IDs) — defer until kiro-cli actually emits non-numeric IDs
+  next_action: /gsd-plan-phase 01 --gaps
