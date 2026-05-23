@@ -346,36 +346,67 @@ func TestIntegration_RealKiroCLI_PromptRoundTrip(t *testing.T) {
 	}
 
 	// D-24 step (10): Prompt with a single text block.
+	//
+	// WR-01/WR-07 fix: Prompt() blocks until kiro-cli emits its session/prompt
+	// response, which arrives AFTER every session/update for the turn. The
+	// chunks land in Stream.Chunks (a 64-slot buffered channel). If we called
+	// Prompt synchronously and only started draining afterwards, any future
+	// kiro-cli behaviour that emits more than 64 chunks per turn would
+	// deadlock the readLoop indefinitely (the read pipe stalls before
+	// session/prompt response can be delivered). Run Prompt on a goroutine
+	// and drain Chunks on this one — matches the documented contract on
+	// Prompt() / Stream.Chunks.
 	blocks := []canonical.Block{
 		{Kind: canonical.BlockKindText, Text: &canonical.TextBlock{Content: "hi"}},
 	}
-	stream, err := client.Prompt(ctx, sessionID, blocks)
-	if err != nil {
-		t.Fatalf("Prompt: %v", err)
+	type promptOutcome struct {
+		stream *acp.Stream
+		err    error
 	}
-	t.Log("Prompt: returned without deadlock (D-20 fix exercised implicitly)")
+	promptCh := make(chan promptOutcome, 1)
+	go func() {
+		s, err := client.Prompt(ctx, sessionID, blocks)
+		promptCh <- promptOutcome{stream: s, err: err}
+	}()
+
+	// Wait for Prompt to return so we have the Stream handle.
+	var stream *acp.Stream
+	select {
+	case res := <-promptCh:
+		if res.err != nil {
+			t.Fatalf("Prompt: %v", res.err)
+		}
+		stream = res.stream
+	case <-ctx.Done():
+		t.Fatalf("timed out waiting for Prompt to return (ctx: %v)", ctx.Err())
+	}
+	t.Log("Prompt: returned without deadlock (D-20 + WR-01 contract exercised)")
 
 	// D-24 step (11): drain stream.Chunks. Count text chunks with non-empty
-	// content; capture the first for the t.Logf below.
+	// content; capture the first for the t.Logf below. We range over the
+	// channel directly — Prompt has already returned, so close() has run and
+	// every chunk is buffered. WR-07: if a future kiro change emits more
+	// chunks than fit in the buffer, this loop still drains them because
+	// Prompt's close path delivers all pushed chunks before closing the
+	// channel.
 	var textChunks int
 	var firstText string
-	drained := false
-	for !drained {
-		select {
-		case chunk, ok := <-stream.Chunks:
-			if !ok {
-				drained = true
-				break
-			}
+	chunksDone := make(chan struct{})
+	go func() {
+		defer close(chunksDone)
+		for chunk := range stream.Chunks {
 			if chunk.Kind == canonical.ChunkKindText && chunk.Text != nil && chunk.Text.Content != "" {
 				textChunks++
 				if firstText == "" {
 					firstText = chunk.Text.Content
 				}
 			}
-		case <-ctx.Done():
-			t.Fatalf("timed out waiting for chunks (ctx: %v)", ctx.Err())
 		}
+	}()
+	select {
+	case <-chunksDone:
+	case <-ctx.Done():
+		t.Fatalf("timed out draining chunks (ctx: %v)", ctx.Err())
 	}
 	if textChunks == 0 {
 		t.Errorf("no ChunkKindText chunks with non-empty content arrived; the agent never responded with text")

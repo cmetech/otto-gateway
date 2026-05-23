@@ -691,6 +691,32 @@ func (c *Client) SetModel(ctx context.Context, sessionID, modelID string) error 
 // The stream receives session/update chunks via handleNotification until the session
 // signals it is done (prompt response closes the stream).
 // D-03: streaming from day 1.
+//
+// Concurrency contract (Phase 1.1 WR-01): Prompt blocks until the
+// session/prompt response arrives, which kiro-cli does not emit until AFTER
+// every session/update chunk for that turn. The chunks land on the returned
+// Stream.Chunks channel — which has a 64-slot buffer (stream.go:newStream).
+// While that buffer is filling, the readLoop is the sole producer; once it
+// fills, push() blocks on the channel send, which in turn blocks the
+// readLoop, which prevents the session/prompt response from being read.
+//
+// Callers MUST therefore drain Stream.Chunks concurrently with whatever
+// goroutine is waiting on Prompt to return. The recommended pattern:
+//
+//	chunksDone := make(chan struct{})
+//	go func() {
+//	    defer close(chunksDone)
+//	    for chunk := range stream.Chunks { handle(chunk) }
+//	}()
+//	stream, err := client.Prompt(ctx, sid, blocks)
+//	// ... handle err, then ...
+//	<-chunksDone
+//	result, _ := stream.Result()
+//
+// Calling Prompt synchronously and draining Chunks afterward only works when
+// the total chunk count fits in the 64-slot buffer. Any kiro-cli regression
+// that emits more chunks than that will deadlock such a caller until the
+// client context is cancelled. See Stream's godoc for the full rationale.
 func (c *Client) Prompt(ctx context.Context, sessionID string, blocks []canonical.Block) (*Stream, error) {
 	id := c.nextID.Add(1)
 	respCh := c.disp.register(id)

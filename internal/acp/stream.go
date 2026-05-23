@@ -24,13 +24,32 @@ type FinalResult struct {
 
 // Stream is the handle returned by Client.Prompt.
 // Callers range over Chunks to receive translated canonical.Chunk values as they
-// arrive from kiro-cli.  After Chunks is closed, Result() returns the accumulated
+// arrive from kiro-cli. After Chunks is closed, Result() returns the accumulated
 // FinalResult and any terminal error.
 //
 // D-03: streaming channel from day 1 — no buffer-and-return.
+//
+// Concurrency contract (Phase 1.1 WR-01): the readLoop goroutine is the sole
+// producer on Chunks. push() is a BLOCKING send guarded only by the client
+// lifetime context, so a slow consumer of Chunks back-pressures the readLoop
+// — and while the readLoop is blocked, no further frames are read from the
+// subprocess pipe, including the session/prompt response that would close the
+// stream. The internal channel is buffered (64 slots) to absorb short bursts,
+// but if kiro-cli emits more than 64 chunks before the prompt response a
+// non-draining consumer will deadlock until the client context is cancelled.
+//
+// Required usage: callers MUST drain Chunks concurrently with whatever
+// goroutine is waiting on Prompt() to return. The fakeacp integration test
+// (TestIntegration_FakeACP_E2E_MixedVariants) and the real-kiro round-trip
+// test both run Prompt on one goroutine and the Chunks drain on another.
+// Phase 2's HTTP adapters MUST follow the same pattern.
 type Stream struct {
 	// Chunks is the receive-only channel of translated canonical chunks.
 	// The channel is closed when the stream ends (session/update done or error).
+	//
+	// IMPORTANT: callers must drain Chunks concurrently with the goroutine
+	// that called Prompt — see the Stream-type godoc for the deadlock
+	// rationale.
 	Chunks <-chan canonical.Chunk
 
 	chunks chan canonical.Chunk // send side (internal)
