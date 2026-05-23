@@ -1,7 +1,7 @@
 # Phase 2: Ollama End-to-End - Context
 
 **Gathered:** 2026-05-23
-**Status:** Ready for planning — **but blocked on Phase 1.5 (ACP Wire Alignment) being inserted, planned, and executed first.**
+**Status:** Ready for planning — **but blocked on Phase 1.1 (ACP Wire Alignment) being inserted, planned, and executed first.**
 
 <domain>
 ## Phase Boundary
@@ -39,11 +39,11 @@ AUTH-01, AUTH-02, AUTH-03, OBSV-01. **Plus** (shifted from Phase 5):
 POOL-01 (size=1 part), POOL-02 (warmup before listen), POOL-03 (channel
 of free slots).
 
-**Hard dependency on Phase 1.5:** The Phase 1 ACP wire-shape implementation
+**Hard dependency on Phase 1.1:** The Phase 1 ACP wire-shape implementation
 has 10 confirmed defects vs `kiro-cli` 2.4.1 — every byte of
 `session/prompt` would arrive empty, every chunk would be silently
 dropped, and `session/request_permission` would deadlock the subprocess.
-Phase 1.5 (ACP Wire Alignment) closes the gap, adds a real-kiro
+Phase 1.1 (ACP Wire Alignment) closes the gap, adds a real-kiro
 `session/prompt` round-trip integration test, and unblocks Phase 2. See
 `docs/reference/acp_wire_shapes.md` for the full defect list.
 
@@ -182,7 +182,7 @@ Phase 1.5 (ACP Wire Alignment) closes the gap, adds a real-kiro
   / `StopError`), `Usage Usage` (InputTokens, OutputTokens,
   CacheCreationInputTokens, CacheReadInputTokens). Phase 2 populates ID
   + Model + Message.Content[text] + StopReason (mapped from
-  `session/prompt` response's `stopReason` field per Phase 1.5).
+  `session/prompt` response's `stopReason` field per Phase 1.1).
 
 - **D-11: No JSON tags on `canonical` types.** Canonical is wire-agnostic.
   All wire-format translation lives in adapters (`internal/adapter/<surface>/wire.go`).
@@ -201,7 +201,7 @@ Phase 1.5 (ACP Wire Alignment) closes the gap, adds a real-kiro
 
 - **D-13: Model catalog source — capture once at pool warmup.** During
   `pool.Warmup(ctx)`, the first slot's `session/new` response yields
-  `result.models.availableModels[]` (per Phase 1.5 wire-alignment work).
+  `result.models.availableModels[]` (per Phase 1.1 wire-alignment work).
   Pool stores the resulting `[]ModelInfo{ID, Name}` once — same per
   `kiro-cli` install. `/api/tags` returns it in Ollama shape with sensible
   defaults for the metadata kiro doesn't provide (`size:0`, `digest:"sha256:placeholder"`,
@@ -272,7 +272,7 @@ The planner has latitude on:
 
 - `docs/reference/acp_wire_shapes.md` — **MANDATORY.** Authoritative
   ground-truth reference for ACP JSON-RPC wire shapes. Documents 10
-  Phase 1 defects to fix in Phase 1.5 plus the spec-compliant shapes
+  Phase 1 defects to fix in Phase 1.1 plus the spec-compliant shapes
   for `initialize`, `session/new`, `session/prompt`, `session/cancel`,
   every `session/update` notification variant, and the
   `session/request_permission` request/response pattern. Created during
@@ -332,7 +332,7 @@ The planner has latitude on:
   (size=1 part) + POOL-02 + POOL-03 (shifted from Phase 5).
 - `.planning/ROADMAP.md` §"Phase 2: Ollama End-to-End" — phase goal,
   mode (mvp), depends-on, success criteria. **Note: Phase 2's
-  `Depends on` must be updated to "Phase 1.5" after the roadmap edit.**
+  `Depends on` must be updated to "Phase 1.1" after the roadmap edit.**
 - `.planning/STATE.md` — current project state.
 - `.planning/phases/01-foundations/01-CONTEXT.md` — Phase 1 context with
   all D-01..D-23 implementation decisions still in force.
@@ -366,7 +366,7 @@ The planner has latitude on:
 
 - `internal/acp/` — full ACP JSON-RPC client from Phase 1 (`*acp.Client`,
   `acp.New`, `acp.NewWithConn`, `Stream` with `Chunks <-chan canonical.Chunk`).
-  **CAUTION:** Phase 1.5 will fix 10 wire-shape defects in this package
+  **CAUTION:** Phase 1.1 will fix 10 wire-shape defects in this package
   before Phase 2 consumes it. Phase 2's pool wraps the post-1.5 ACP
   client.
 - `internal/canonical/chunk.go` — `Chunk`, `Block`, `TextChunk`,
@@ -375,7 +375,7 @@ The planner has latitude on:
   `ChatResponse`, `Message`, `ContentPart`, `ToolCall`, `ToolSpec`,
   `ToolChoice`, `Format`, `Usage`, `MessageRole`, `ContentKind`,
   `StopReason` per D-08, D-09, D-10. **`canonical.ResourceLinkBlock`
-  needs a `Name string` field added** per Phase 1.5 wire alignment (spec
+  needs a `Name string` field added** per Phase 1.1 wire alignment (spec
   says `name` is REQUIRED).
 - `internal/config/config.go` — `Config.Load()` already reads env vars
   via the `getEnvStr/getEnvBool/getEnvInt/getEnvDuration/getEnvStrSlice`
@@ -476,7 +476,7 @@ The planner has latitude on:
   defensive parsing absorbs the variance.
 - **The fake-server integration test pattern was load-bearing wrong in
   Phase 1.** Our fake emitted what our code expected — implementation-implementation
-  symmetry, not spec compliance. Phase 1.5 fixes the fake and adds a
+  symmetry, not spec compliance. Phase 1.1 fixes the fake and adds a
   real-kiro `session/prompt` round-trip test. Phase 2's adapter-handler
   tests should use a fake engine (controllable `chan canonical.Chunk`),
   not a fake ACP — engine is the seam that the adapter trusts.

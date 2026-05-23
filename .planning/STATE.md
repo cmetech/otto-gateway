@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.5
 milestone_name: milestone
 status: planning
-stopped_at: Phase 2 context gathered + Phase 1.5 ACP wire alignment surfaced as roadmap insert
-last_updated: "2026-05-23T20:58:12.748Z"
+stopped_at: Phase 2 context gathered + Phase 1.1 ACP Wire Alignment inserted into ROADMAP
+last_updated: "2026-05-23T21:00:39.079Z"
 last_activity: 2026-05-23
 progress:
-  total_phases: 10
+  total_phases: 11
   completed_phases: 1
   total_plans: 5
   completed_plans: 5
-  percent: 10
+  percent: 9
 ---
 
 # Project State
@@ -20,14 +20,15 @@ progress:
 
 See: .planning/PROJECT.md (updated 2026-05-23)
 
-**Core value:** Both API surfaces (OpenAI for Pi SDK, Ollama for LangFlow) serve their respective clients without those clients knowing kiro-cli exists, with one place to enforce policy.
-**Current focus:** Phase 2 — ollama end to end
+**Core value:** All three API surfaces (OpenAI for Pi SDK, Ollama for LangFlow, Anthropic for loop24-client/GSD Pi) serve their respective clients without those clients knowing kiro-cli exists, with one place to enforce policy.
+**Current focus:** Phase 1.1 — ACP Wire Alignment (urgent insert; unblocks Phase 2)
 
 ## Current Position
 
-Phase: 2
+Phase: 1.1
 Plan: Not started
-Status: Ready to plan
+Status: Ready to discuss/plan
+Next: /gsd-discuss-phase 1.1 → /gsd-plan-phase 1.1 → /gsd-execute-phase 1.1 → /gsd-plan-phase 2
 Last activity: 2026-05-23
 
 Progress: [░░░░░░░░░░] 0%
@@ -58,6 +59,7 @@ Progress: [░░░░░░░░░░] 0%
 ### Roadmap Evolution
 
 - Phase 3.1 inserted after Phase 3: Anthropic Surface — adapter/anthropic for Messages API at /v1/messages with SSE streaming day-one (loop24-client / GSD Pi via ANTHROPIC_BASE_URL). Promotes SURF-V2-01 to v1; adds ANTH-01..07 + SURF-08. (URGENT)
+- Phase 1.1 inserted after Phase 1: ACP Wire Alignment — fix 10 wire-shape defects discovered during Phase 2 discuss; add real-kiro session/prompt round-trip integration test as Phase 2 unblock gate (URGENT)
 
 ### Decisions
 

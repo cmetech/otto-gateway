@@ -7,7 +7,7 @@
 **Phase:** 2-Ollama End-to-End
 **Areas discussed:** Engine surface shape, ACP concurrency model, Canonical request type, Model catalog source
 
-Plus an in-discussion discovery: ACP wire-shape gaps in Phase 1 code (10 specific defects) that triggered a roadmap edit to insert Phase 1.5: ACP Wire Alignment before Phase 2 plan execution.
+Plus an in-discussion discovery: ACP wire-shape gaps in Phase 1 code (10 specific defects) that triggered a roadmap edit to insert Phase 1.1: ACP Wire Alignment before Phase 2 plan execution.
 
 ---
 
@@ -187,11 +187,11 @@ Captured ground-truth reference: `docs/reference/acp_wire_shapes.md`.
 
 | Option | Description | Selected |
 |--------|-------------|----------|
-| Insert Phase 1.5: ACP Wire Alignment | New phase between 1 and 2; clean Phase 2 starts after | ✓ |
+| Insert Phase 1.1: ACP Wire Alignment | New phase between 1 and 2; clean Phase 2 starts after | ✓ |
 | Wave 0 of Phase 2 | Bundle alignment work into Phase 2's plan; no roadmap edit | |
 | Verification spike first | Capture raw kiro-cli wire frames to confirm reference doc, then re-decide | |
 
-**User's choice:** Insert Phase 1.5: ACP Wire Alignment.
+**User's choice:** Insert Phase 1.1: ACP Wire Alignment.
 **Notes:** Cleanest separation. Phase 2's success criteria stay focused on "first end-to-end vertical slice" instead of mixing Phase 1 cleanup. Mirrors how Phase 3.1 was inserted into ROADMAP.md. Acceptance gate: spec-compliant initialize/session/new/session/prompt round-trip succeeds against real kiro-cli 2.4.1.
 
 ---

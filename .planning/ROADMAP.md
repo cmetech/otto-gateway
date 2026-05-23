@@ -25,6 +25,7 @@ adapter-over-canonical layout (brief §3.13) and trust-gate suite (brief
 Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Foundations** - Scaffold, trust-gate suite, ACP JSON-RPC client over `kiro-cli` stdio (completed 2026-05-23)
+- [ ] **Phase 1.1: ACP Wire Alignment** *(INSERTED)* - Fix 10 Phase 1 wire-shape defects vs the working Node impl + live ACP spec; add real-kiro `session/prompt` round-trip integration test
 - [ ] **Phase 2: Ollama End-to-End** - First runnable slice — LangFlow `POST /api/chat` reaches real `kiro-cli`
 - [ ] **Phase 3: OpenAI Surface** - Pi-SDK `POST /v1/chat/completions` shares the same canonical engine
 - [ ] **Phase 3.1: Anthropic Surface** *(INSERTED)* - loop24-client (GSD Pi) `POST /v1/messages` with Anthropic SSE shares the same canonical engine
@@ -67,11 +68,33 @@ Plans:
 - [x] 01-03-PLAN.md — Trust gates: go-arch-lint install (SUS checkpoint), .go-arch-lint.yml scaffold, make ci (lint+test-race+govulncheck), pre-commit run --all-files verification
 - [x] 01-04-PLAN.md — Docs: docs/operating.md (PID/log locations, env overrides, status computation) + README Running section
 
+### Phase 1.1: ACP Wire Alignment (INSERTED)
+
+**Goal:** Bring the Phase 1 ACP JSON-RPC client into compliance with the live ACP spec and the working Node implementation, so Phase 2 can invoke `session/prompt` against real `kiro-cli` and consume `session/update` notifications without empty prompts, dropped chunks, or permission-grant deadlocks. The phase ships with a real-kiro `session/prompt` round-trip integration test as the verification gate that Phase 1's smoke test stopped short of.
+**Mode:** mvp
+**Depends on:** Phase 1
+**Requirements:** ACP-01, ACP-02, ACP-03, ACP-04, ACP-05 (re-validation against the live spec — no NEW requirements added; this is a correctness/alignment fix). `canonical.ResourceLinkBlock` gains a required `Name` field per ACP spec; `canonical` adds the request/response types from Phase 2's discuss (D-08..D-10) — `canonical.ResourceLinkBlock.Name` is the only Phase-1.1-specific canonical addition needed for the wire-alignment work.
+**Success Criteria** (what must be TRUE):
+
+  1. Spec-compliant `initialize` request: `params` includes `protocolVersion: 1`, `clientInfo`, and `clientCapabilities` (with `fs.{readTextFile,writeTextFile}` + `terminal` flags). Response's `agentCapabilities.promptCapabilities` is captured and accessible to the caller for downstream image/audio/embedded-context gating.
+  2. Spec-compliant `session/new`: params include `mcpServers: []`. Result reading handles both `sessionId` and `id` fallback. The `result.models.availableModels[]` array is extracted and surfaced as `[]canonical.ModelInfo{ID, Name}` accessible via the ACP client API (for Phase 2's `/api/tags` and `/api/show`).
+  3. Spec-compliant `session/prompt`: params field name is `prompt` (with `content` alias sent defensively for older kiro-cli versions). Block wire shape matches the spec: text uses field `text` (not `content`); `resource_link` includes required `name`; `image` block construction is wired (used in Phase 2 for Ollama `images: [b64]` arrays). Result's `stopReason` is parsed and surfaced on `Stream.Result()` as a `canonical.StopReason` enum value.
+  4. Spec-compliant `session/update` consumption: accepts `session/update` OR `session/notification` OR `_kiro.dev/session/update` method names; unwraps `params.update` defensively; reads `sessionUpdate` field (with `type` fallback); handles `agent_message_chunk`, `agent_thought_chunk`, `tool_call`, `tool_call_chunk`, `tool_call_update`, `plan` discriminators (plus CamelCase aliases like `AgentMessageChunk`); content extraction uses `body.content?.text ?? body.content ?? body.text` fallback chain.
+  5. `session/request_permission` is handled as a REQUEST (responds to the original frame `id` with `{result:{optionId:"allow_always", granted:true}}`); the separate `session/grant_permission` request path from Phase 1 is removed.
+  6. New integration test in `internal/acp/integration_test.go`: gated on real `kiro-cli` (D-17 pattern); spawns the subprocess, completes `Initialize → NewSession → Prompt("hi")`, drains `stream.Chunks`, asserts at least one `ChunkKindText` chunk arrives with non-empty content, asserts `Stream.Result()` returns with a non-error `StopReason` (typically `StopEndTurn`). `goleak.VerifyNone(t)` passes. **This is the verification gate that unblocks Phase 2.**
+
+**Plans:** TBD
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 1.1 to break down)
+
+**Canonical ref:** `docs/reference/acp_wire_shapes.md` (created during Phase 2 discuss) is the authoritative spec for the 10 wire-shape defects and the target shapes.
+
 ### Phase 2: Ollama End-to-End
 
 **Goal:** The first true end-to-end vertical slice — an existing LangFlow flow pointing at `http://localhost:11434/api/chat` reaches a real `kiro-cli` subprocess through the gateway and gets back a correct Ollama-shaped response. Establishes the canonical-engine / adapter pattern that every other surface phase builds on.
 **Mode:** mvp
-**Depends on:** Phase 1
+**Depends on:** Phase 1.1
 **Requirements:** SURF-01, SURF-03, SURF-05, SURF-07, ACP-07, AUTH-01, AUTH-02, AUTH-03, OBSV-01
 **Success Criteria** (what must be TRUE):
 
@@ -218,11 +241,12 @@ Plans:
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 9
+Phases execute in numeric order: 1 → 1.1 → 2 → 3 → 3.1 → 4 → 5 → 6 → 7 → 8 → 9
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Foundations | 5/5 | Complete   | 2026-05-23 |
+| 1.1. ACP Wire Alignment (INSERTED) | 0/TBD | Not started | - |
 | 2. Ollama End-to-End | 0/TBD | Not started | - |
 | 3. OpenAI Surface | 0/TBD | Not started | - |
 | 4. Streaming | 0/TBD | Not started | - |
