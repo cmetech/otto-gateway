@@ -1,88 +1,208 @@
-// Whitebox unit tests for translateUpdate (package acp).
-// D-18: whitebox package gives access to unexported types.
+// Whitebox unit tests for translate.go (package acp).
+// D-25: whitebox layout unchanged from Phase 1.
+//
+// Phase 1.1 Plan 04 rewrites the legacy per-variant TestTranslate* tests into
+// a table-driven TestTranslateUpdate_VarianceMatrix (D-22) plus the new
+// TestNormalizeUpdateType (D-19). The Plan 03 TestTranslateBlock_* and
+// TestParseStopReason_MappingTable tests are preserved verbatim — they exercise
+// translateBlock and parseStopReason, not translateUpdate.
 package acp
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
 	"loop24-gateway/internal/canonical"
 )
 
-func TestTranslateText(t *testing.T) {
+// TestNormalizeUpdateType locks the D-19 contract: CamelCase → snake_case,
+// already-snake → lowercased, mixed-Camel-with-underscores → lowercased,
+// empty → empty.
+func TestNormalizeUpdateType(t *testing.T) {
 	t.Parallel()
-	u := sessionUpdateParams{Type: "text", Content: "hello world"}
-	ch := translateUpdate(u)
-	if ch.Kind != canonical.ChunkKindText {
-		t.Fatalf("kind: got %v, want ChunkKindText", ch.Kind)
+	rows := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"empty", "", ""},
+		{"snake_already", "agent_message_chunk", "agent_message_chunk"},
+		{"camel_two_word", "AgentMessageChunk", "agent_message_chunk"},
+		{"camel_three_word", "AgentThoughtChunk", "agent_thought_chunk"},
+		{"snake_with_two_words", "tool_call", "tool_call"},
+		{"camel_three_word_alt", "ToolCallUpdate", "tool_call_update"},
+		{"single_camel_word", "Plan", "plan"},
+		{"mixed_camel_and_underscore", "Agent_Message_Chunk", "agent_message_chunk"},
+		{"already_lower_single_word", "plan", "plan"},
 	}
-	if ch.Text == nil || ch.Text.Content != "hello world" {
-		t.Errorf("Text.Content: got %v, want hello world", ch.Text)
+	for _, r := range rows {
+		r := r
+		t.Run(r.name, func(t *testing.T) {
+			t.Parallel()
+			got := normalizeUpdateType(r.in)
+			if got != r.want {
+				t.Errorf("normalizeUpdateType(%q): got %q, want %q", r.in, got, r.want)
+			}
+		})
 	}
 }
 
-func TestTranslateThought(t *testing.T) {
+// TestTranslateUpdate_VarianceMatrix walks a representative sample of the
+// D-22 cross-product: (body wrap) x (discriminator field) x (discriminator
+// casing) x (content shape) x (update type). Each row supplies a JSON
+// payload representing the `params` of a session/update notification AS IT
+// ARRIVES from the wire, then unmarshals it into sessionUpdateParams and
+// passes the result through translateUpdate. The expected canonical.Chunk
+// is compared via reflect.DeepEqual.
+//
+// Method-name dispatch (D-16) is exercised end-to-end in Task 4's
+// TestIntegration_FakeACP_E2E_MixedVariants — translateUpdate sees the
+// already-parsed body, so the method-name axis collapses here.
+func TestTranslateUpdate_VarianceMatrix(t *testing.T) {
 	t.Parallel()
-	u := sessionUpdateParams{Type: "thought", Content: "reasoning step"}
-	ch := translateUpdate(u)
-	if ch.Kind != canonical.ChunkKindThought {
-		t.Fatalf("kind: got %v, want ChunkKindThought", ch.Kind)
-	}
-	if ch.Thought == nil || ch.Thought.Content != "reasoning step" {
-		t.Errorf("Thought.Content: got %v, want reasoning step", ch.Thought)
-	}
-}
 
-func TestTranslateToolCall(t *testing.T) {
-	t.Parallel()
-	u := sessionUpdateParams{
-		Type:     "tool_call",
-		ToolName: "bash",
-		Args:     map[string]any{"cmd": "ls"},
+	rows := []struct {
+		name       string
+		paramsJSON string
+		want       canonical.Chunk
+	}{
+		{
+			name:       "agent_message_chunk_wrapped_snake_content_obj_text",
+			paramsJSON: `{"sessionId":"s1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hello"}}}`,
+			want: canonical.Chunk{
+				Kind: canonical.ChunkKindText,
+				Text: &canonical.TextChunk{Content: "hello"},
+			},
+		},
+		{
+			name:       "agent_message_chunk_flat_snake_content_string",
+			paramsJSON: `{"sessionId":"s1","sessionUpdate":"agent_message_chunk","content":"hello"}`,
+			want: canonical.Chunk{
+				Kind: canonical.ChunkKindText,
+				Text: &canonical.TextChunk{Content: "hello"},
+			},
+		},
+		{
+			name:       "agent_message_chunk_flat_type_field_body_text",
+			paramsJSON: `{"sessionId":"s1","type":"agent_message_chunk","text":"hello"}`,
+			want: canonical.Chunk{
+				Kind: canonical.ChunkKindText,
+				Text: &canonical.TextChunk{Content: "hello"},
+			},
+		},
+		{
+			name:       "agent_message_chunk_wrapped_camel_content_obj_text",
+			paramsJSON: `{"sessionId":"s1","update":{"sessionUpdate":"AgentMessageChunk","content":{"type":"text","text":"hi"}}}`,
+			want: canonical.Chunk{
+				Kind: canonical.ChunkKindText,
+				Text: &canonical.TextChunk{Content: "hi"},
+			},
+		},
+		{
+			name:       "agent_thought_chunk_wrapped_snake_content_obj_text",
+			paramsJSON: `{"sessionId":"s1","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"thinking"}}}`,
+			want: canonical.Chunk{
+				Kind:    canonical.ChunkKindThought,
+				Thought: &canonical.ThoughtChunk{Content: "thinking"},
+			},
+		},
+		{
+			name:       "agent_thought_chunk_camel_alias",
+			paramsJSON: `{"sessionId":"s1","update":{"sessionUpdate":"AgentThoughtChunk","content":{"type":"text","text":"thinking"}}}`,
+			want: canonical.Chunk{
+				Kind:    canonical.ChunkKindThought,
+				Thought: &canonical.ThoughtChunk{Content: "thinking"},
+			},
+		},
+		{
+			name:       "tool_call_wrapped_snake_with_title",
+			paramsJSON: `{"sessionId":"s1","update":{"sessionUpdate":"tool_call","title":"read_file"}}`,
+			want: canonical.Chunk{
+				Kind:    canonical.ChunkKindThought,
+				Thought: &canonical.ThoughtChunk{Content: "[tool: read_file]\n"},
+			},
+		},
+		{
+			name:       "tool_call_chunk_wrapped_snake_with_title",
+			paramsJSON: `{"sessionId":"s1","update":{"sessionUpdate":"tool_call_chunk","title":"write"}}`,
+			want: canonical.Chunk{
+				Kind:    canonical.ChunkKindThought,
+				Thought: &canonical.ThoughtChunk{Content: "[tool: write]\n"},
+			},
+		},
+		{
+			name:       "tool_call_update_wrapped_snake_output_wins",
+			paramsJSON: `{"sessionId":"s1","update":{"sessionUpdate":"tool_call_update","output":"result data","content":{"type":"text","text":"alt result"}}}`,
+			want: canonical.Chunk{
+				Kind:    canonical.ChunkKindThought,
+				Thought: &canonical.ThoughtChunk{Content: "result data"},
+			},
+		},
+		{
+			name:       "tool_call_update_wrapped_snake_no_output_uses_content_text",
+			paramsJSON: `{"sessionId":"s1","update":{"sessionUpdate":"tool_call_update","content":{"type":"text","text":"alt result"}}}`,
+			want: canonical.Chunk{
+				Kind:    canonical.ChunkKindThought,
+				Thought: &canonical.ThoughtChunk{Content: "alt result"},
+			},
+		},
+		{
+			name:       "plan_wrapped_snake_with_entries",
+			paramsJSON: `{"sessionId":"s1","update":{"sessionUpdate":"plan","entries":[{"content":"Step 1"},{"content":"Step 2"}]}}`,
+			want: canonical.Chunk{
+				Kind: canonical.ChunkKindPlan,
+				Plan: &canonical.PlanChunk{Content: "Step 1\nStep 2"},
+			},
+		},
+		{
+			name:       "plan_wrapped_snake_empty_entries",
+			paramsJSON: `{"sessionId":"s1","update":{"sessionUpdate":"plan","entries":[]}}`,
+			want: canonical.Chunk{
+				Kind: canonical.ChunkKindPlan,
+				Plan: &canonical.PlanChunk{Content: ""},
+			},
+		},
+		{
+			name:       "unknown_discriminator_falls_back_to_text_via_body_text",
+			paramsJSON: `{"sessionId":"s1","sessionUpdate":"banana_chunk","text":"fallback text"}`,
+			want: canonical.Chunk{
+				Kind: canonical.ChunkKindText,
+				Text: &canonical.TextChunk{Content: "fallback text"},
+			},
+		},
+		{
+			name:       "tool_call_without_title_renders_unknown",
+			paramsJSON: `{"sessionId":"s1","update":{"sessionUpdate":"tool_call"}}`,
+			want: canonical.Chunk{
+				Kind:    canonical.ChunkKindThought,
+				Thought: &canonical.ThoughtChunk{Content: "[tool: unknown]\n"},
+			},
+		},
 	}
-	ch := translateUpdate(u)
-	if ch.Kind != canonical.ChunkKindToolCall {
-		t.Fatalf("kind: got %v, want ChunkKindToolCall", ch.Kind)
-	}
-	if ch.ToolCall == nil {
-		t.Fatal("ToolCall is nil")
-	}
-	if ch.ToolCall.Name != "bash" {
-		t.Errorf("ToolCall.Name: got %q, want bash", ch.ToolCall.Name)
-	}
-	if ch.ToolCall.Args["cmd"] != "ls" {
-		t.Errorf("ToolCall.Args[cmd]: got %v, want ls", ch.ToolCall.Args["cmd"])
-	}
-}
 
-func TestTranslatePlan(t *testing.T) {
-	t.Parallel()
-	u := sessionUpdateParams{Type: "plan", Content: "plan content"}
-	ch := translateUpdate(u)
-	if ch.Kind != canonical.ChunkKindPlan {
-		t.Fatalf("kind: got %v, want ChunkKindPlan", ch.Kind)
-	}
-	if ch.Plan == nil || ch.Plan.Content != "plan content" {
-		t.Errorf("Plan.Content: got %v, want plan content", ch.Plan)
-	}
-}
-
-func TestTranslateUnknown(t *testing.T) {
-	t.Parallel()
-	u := sessionUpdateParams{Type: "unknown_type", Content: "data"}
-	ch := translateUpdate(u)
-	// Unknown types fall back to text to avoid data loss.
-	if ch.Kind != canonical.ChunkKindText {
-		t.Errorf("kind: got %v, want ChunkKindText (fallback for unknown)", ch.Kind)
-	}
-	if ch.Text == nil || ch.Text.Content != "data" {
-		t.Errorf("Text.Content fallback: got %v, want data", ch.Text)
+	for _, r := range rows {
+		r := r
+		t.Run(r.name, func(t *testing.T) {
+			t.Parallel()
+			var parsed sessionUpdateParams
+			if err := json.Unmarshal([]byte(r.paramsJSON), &parsed); err != nil {
+				t.Fatalf("unmarshal params: %v\nJSON: %s", err, r.paramsJSON)
+			}
+			got := translateUpdate(parsed)
+			if !reflect.DeepEqual(got, r.want) {
+				t.Errorf("translateUpdate mismatch\n  got:  %+v (Text=%+v, Thought=%+v, Plan=%+v)\n  want: %+v (Text=%+v, Thought=%+v, Plan=%+v)",
+					got, got.Text, got.Thought, got.Plan,
+					r.want, r.want.Text, r.want.Thought, r.want.Plan)
+			}
+		})
 	}
 }
 
 // TestParseStopReason_MappingTable locks the wire-string → canonical.StopReason
 // mapping per D-02. Unknown/empty values map to StopUnknown (forward-compat).
+// Preserved from Plan 03 verbatim — exercises parseStopReason, not translateUpdate.
 func TestParseStopReason_MappingTable(t *testing.T) {
 	t.Parallel()
 	rows := []struct {
@@ -115,6 +235,7 @@ func TestParseStopReason_MappingTable(t *testing.T) {
 // wireBlock and checks the rendered JSON contains "text":"hello" — protects
 // against accidental field-name regressions even if a future struct change
 // keeps the Go field name but swaps the json tag.
+// Preserved from Plan 03.
 func TestTranslateBlock_TextUsesTextField(t *testing.T) {
 	t.Parallel()
 	block := canonical.Block{
@@ -141,6 +262,7 @@ func TestTranslateBlock_TextUsesTextField(t *testing.T) {
 // canonical.ResourceLinkBlock.Name is empty, translateBlock derives a non-empty
 // wire Name via path.Base on the URI's parsed Path. Unparseable URIs stay empty
 // without panic.
+// Preserved from Plan 03.
 func TestTranslateBlock_ResourceLinkNameFallback(t *testing.T) {
 	t.Parallel()
 	rows := []struct {

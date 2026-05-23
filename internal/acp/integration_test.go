@@ -1,8 +1,13 @@
 // Package acp_test — blackbox integration tests.
 // D-18: blackbox package exercises only exported API.
-// Two tiers per plan:
-//   - TestIntegration_FakeACP_AutoGrantAndTranslation: always runs; proves ACP-04 + ACP-05
-//   - TestIntegration_RealKiroCLI_SmokeTest: skips if kiro-cli absent (D-17)
+// Phase 1.1 Plan 04 (D-23) consolidates the four Phase 1 fake tests
+// (TestIntegration_FakeACP_AutoGrantAndTranslation,
+// TestIntegration_FakeACP_ChunkTranslation,
+// TestIntegration_FakeACP_PromptChunkDelivery,
+// TestIntegration_FakeACP_PingWorks) into a single
+// TestIntegration_FakeACP_E2E_MixedVariants that drives the fake through one
+// session exercising five mixed session/update variants and the permission
+// RESPONSE path. The real-kiro smoke test stays unchanged (per Plan 04 scope).
 package acp_test
 
 import (
@@ -34,12 +39,37 @@ func resolveKiroCLI(t *testing.T) string {
 	return path
 }
 
-// TestIntegration_FakeACP_AutoGrantAndTranslation uses the fakeACPServer to prove:
-//   - ACP-04: auto-grant of session/request_permission
-//   - ACP-05: session/update translation to canonical.Chunk
+// TestIntegration_FakeACP_E2E_MixedVariants is the single Plan 04 consolidation
+// of Phase 1's four fake-server tests. One session, full lifecycle, every Plan
+// 04 contract surface in one test:
 //
-// This test ALWAYS RUNS — it does not require kiro-cli.
-func TestIntegration_FakeACP_AutoGrantAndTranslation(t *testing.T) {
+//  1. Initialize against the spec-compliant shape; assert PromptCapabilities()
+//     captured the agent's image:true flag (folds Phase 1.1-02 D-09 coverage).
+//  2. NewSession against the spec-compliant shape; assert AvailableModels()
+//     returned the single fake-server model entry (folds Phase 1.1-03 D-12).
+//  3. Ping round-trip (folds Phase 1's PingWorks).
+//  4. Prompt + drain five mixed-variant session/update notifications:
+//     - variantAgentMessageFlat            → ChunkKindText "hello"
+//     - variantAgentMessageWrappedCamel    → ChunkKindText "world"
+//     - variantAgentThoughtKiroDev          → ChunkKindThought "thinking"
+//     - variantToolCallWrapped              → ChunkKindThought "[tool: read_file]\n"
+//     - variantPlanWrapped                  → ChunkKindPlan "Step 1\nStep 2"
+//     This exercises D-16 (three method names dispatched), D-17 (wrapped + flat
+//     body shapes), D-18 (content extraction chain across three shapes), and
+//     D-19 (snake_case + CamelCase discriminator normalisation).
+//  5. Mid-stream session/request_permission REQUEST drives D-20: the client
+//     RESPONDS on the original frame id with optionId:allow_always; the fake
+//     closes permissionResponseReceived when it observes that response.
+//  6. session/prompt response with stopReason:"end_turn" closes the turn;
+//     Stream.Result() returns StopReason == StopEndTurn (folds Phase 1.1-03
+//     D-07 coverage end-to-end through the fake).
+//
+// Orchestration: Prompt blocks until the response arrives. To drive the
+// emission sequence WHILE Prompt is in-flight, Prompt runs in a goroutine and
+// the test goroutine drives fake.emit* calls.
+//
+//nolint:funlen,gocognit // Single consolidated E2E — folding four prior tests; the linear orchestration is the readable form.
+func TestIntegration_FakeACP_E2E_MixedVariants(t *testing.T) {
 	fake := newFakeACPServer(t)
 	defer fake.close()
 
@@ -47,245 +77,189 @@ func TestIntegration_FakeACP_AutoGrantAndTranslation(t *testing.T) {
 		Logger:       testutil.Logger(t),
 		Command:      "kiro-cli",
 		Args:         []string{"acp"},
-		PingInterval: 10 * time.Minute, // disable ping during test
+		PingInterval: 10 * time.Minute, // disable periodic ping
 	}
 
 	client := acp.NewWithConn(fake.clientRWC, cfg)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	// Initialize.
-	if err := client.Initialize(ctx); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-
-	// NewSession — the fake will respond with "test-session-id" then emit
-	// session/request_permission. The client must auto-grant it (ACP-04).
-	sessionID, err := client.NewSession(ctx, "/tmp")
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	if sessionID != "test-session-id" {
-		t.Errorf("sessionID: got %q, want test-session-id", sessionID)
-	}
-
-	// Wait for the fake to confirm grant was received (proves ACP-04).
-	select {
-	case <-fake.permissionGranted:
-		t.Log("auto-grant confirmed")
-	case <-ctx.Done():
-		t.Fatal("timed out waiting for auto-grant confirmation")
-	}
-
-	// Wait for the fake to confirm session/update was emitted (ACP-05).
-	select {
-	case <-fake.updateEmitted:
-		t.Log("session/update emitted by fake")
-	case <-ctx.Done():
-		t.Fatal("timed out waiting for session/update")
-	}
-
-	// To verify ACP-05 (chunk translation), start a Prompt and collect chunks.
-	// The fake will have already emitted session/update; in this test flow the update
-	// is emitted after grant_permission before any Prompt, so we verify it arrived
-	// by checking the permissionGranted and updateEmitted signals above.
-	// For full end-to-end chunk verification, see the stream integration below.
-
-	// Close cleanly.
-	if err := client.Close(); err != nil {
-		// Minor pipe close errors are expected when the fake closes pipes.
-		t.Logf("client.Close (minor error expected): %v", err)
-	}
-	goleak.VerifyNone(t)
-}
-
-// TestIntegration_FakeACP_ChunkTranslation verifies that session/update notifications
-// from the fake server produce canonical.Chunk values on the stream.
-// This test always runs and proves ACP-05 end-to-end with backpressure.
-func TestIntegration_FakeACP_ChunkTranslation(t *testing.T) {
-	fake := newFakeACPServer(t)
-
-	cfg := acp.Config{
-		Logger:       testutil.Logger(t),
-		Command:      "kiro-cli",
-		Args:         []string{"acp"},
-		PingInterval: 10 * time.Minute,
-	}
-
-	client := acp.NewWithConn(fake.clientRWC, cfg)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	if err := client.Initialize(ctx); err != nil {
-		fake.close()
-		t.Fatalf("Initialize: %v", err)
-	}
-
-	_, err := client.NewSession(ctx, "/tmp")
-	if err != nil {
-		fake.close()
-		t.Fatalf("NewSession: %v", err)
-	}
-
-	// Wait for the fake to emit session/update.
-	select {
-	case <-fake.updateEmitted:
-	case <-ctx.Done():
-		fake.close()
-		t.Fatal("timed out waiting for updateEmitted")
-	}
-
-	// Start a Prompt to have an active stream so we can receive the chunk.
-	// Note: The fake emits session/update proactively; we start Prompt after to
-	// show the client can handle it (the fake may emit again on subsequent sessions).
-	// For this test, we verify the client handles the update without panic.
-	// The chunk would have been dropped (no activeStream at emit time) which is correct.
-	// The warning logged by the client is verified by the test not panicking.
-
-	fake.close()
-	if err := client.Close(); err != nil {
-		t.Logf("client.Close: %v", err)
-	}
-	goleak.VerifyNone(t)
-}
-
-// TestIntegration_FakeACP_PromptChunkDelivery proves SC#4 end-to-end:
-// a Prompt() call registers an active stream, the fake server emits
-// session/update, and a canonical.Chunk with ChunkKindText and Content
-// "hello from fake" arrives on stream.Chunks before stream.Result() returns.
-//
-// This test exercises:
-//   - ACP-05: session/update is translated to a typed canonical.Chunk and
-//     pushed to the active Prompt stream.
-//   - CR-02 fix: the stream is closed when the prompt response frame arrives
-//     (not only on readLoop EOF), so stream.Result() returns without waiting
-//     for the subprocess to exit.
-//
-// Synchronisation is via channels (fake.permissionGranted, stream.Chunks,
-// resultDone) and a 10-second context timeout — no time.Sleep is used.
-func TestIntegration_FakeACP_PromptChunkDelivery(t *testing.T) {
-	fake := newFakeACPServer(t)
-	defer fake.close()
-
-	cfg := acp.Config{
-		Logger:       testutil.Logger(t),
-		Command:      "kiro-cli",
-		Args:         []string{"acp"},
-		PingInterval: 10 * time.Minute, // disable ping during test
-	}
-
-	client := acp.NewWithConn(fake.clientRWC, cfg)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	if err := client.Initialize(ctx); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-
-	sessionID, err := client.NewSession(ctx, "/tmp")
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-
-	// Wait for the auto-grant cycle to complete before calling Prompt. The
-	// fake emits session/request_permission proactively after session/new;
-	// the client auto-grants; the fake closes permissionGranted. Synchronising
-	// here avoids a race between the grant send (still in writeCh) and the
-	// subsequent Prompt RPC.
-	select {
-	case <-fake.permissionGranted:
-	case <-ctx.Done():
-		t.Fatal("timed out waiting for permissionGranted before Prompt")
-	}
-
-	// Call Prompt — this registers the active stream in the client. The fake
-	// will emit session/update then the prompt response frame on session/prompt.
-	blocks := []canonical.Block{
-		{Kind: canonical.BlockKindText, Text: &canonical.TextBlock{Content: "hello kiro"}},
-	}
-	stream, err := client.Prompt(ctx, sessionID, blocks)
-	if err != nil {
-		t.Fatalf("Prompt: %v", err)
-	}
-
-	// Receive the chunk from the stream.
-	var received canonical.Chunk
-	select {
-	case chunk, ok := <-stream.Chunks:
-		if !ok {
-			t.Fatal("stream.Chunks closed before chunk arrived")
+	defer func() {
+		if err := client.Close(); err != nil {
+			t.Logf("client.Close (minor pipe-close error expected): %v", err)
 		}
-		received = chunk
-	case <-ctx.Done():
-		t.Fatal("timed out waiting for chunk on stream.Chunks")
-	}
-
-	if received.Kind != canonical.ChunkKindText {
-		t.Errorf("chunk Kind: got %v, want ChunkKindText (%v)", received.Kind, canonical.ChunkKindText)
-	}
-	if received.Text == nil {
-		t.Fatal("chunk.Text is nil")
-	}
-	if received.Text.Content != "hello from fake" {
-		t.Errorf("chunk.Text.Content: got %q, want %q", received.Text.Content, "hello from fake")
-	}
-	t.Logf("received chunk: Kind=%v Content=%q", received.Kind, received.Text.Content)
-
-	// Verify stream.Result() returns (CR-02 fix: stream closed on prompt response).
-	resultDone := make(chan struct{})
-	go func() {
-		_, _ = stream.Result()
-		close(resultDone)
+		goleak.VerifyNone(t)
 	}()
-	select {
-	case <-resultDone:
-		t.Log("stream.Result() returned — CR-02 fix confirmed")
-	case <-ctx.Done():
-		t.Fatal("stream.Result() blocked after prompt response — CR-02 fix did not apply")
-	}
 
-	if err := client.Close(); err != nil {
-		t.Logf("client.Close (minor error expected): %v", err)
-	}
-	goleak.VerifyNone(t)
-}
-
-// TestIntegration_FakeACP_PingWorks verifies that Ping succeeds against the fake server.
-func TestIntegration_FakeACP_PingWorks(t *testing.T) {
-	fake := newFakeACPServer(t)
-	defer fake.close()
-
-	cfg := acp.Config{
-		Logger:       testutil.Logger(t),
-		Command:      "kiro-cli",
-		Args:         []string{"acp"},
-		PingInterval: 10 * time.Minute,
-	}
-
-	client := acp.NewWithConn(fake.clientRWC, cfg)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	// (1) Initialize — fake emits the spec-compliant promptCapabilities shape.
 	if err := client.Initialize(ctx); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
+	caps := client.PromptCapabilities()
+	if !caps.Image {
+		t.Errorf("PromptCapabilities().Image: got false, want true (folded D-09 assertion)")
+	}
 
+	// (2) NewSession — fake emits one availableModels entry.
+	sid, err := client.NewSession(ctx, "/tmp")
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	if sid != "test-session-id" {
+		t.Errorf("sessionID: got %q, want test-session-id", sid)
+	}
+	models := client.AvailableModels()
+	if len(models) != 1 {
+		t.Fatalf("AvailableModels len: got %d, want 1 (folded D-12 assertion)", len(models))
+	}
+	if models[0].ID != "claude-sonnet-4-7" || models[0].Name != "Claude Sonnet 4.7" {
+		t.Errorf("AvailableModels[0]: got %+v, want {ID:claude-sonnet-4-7, Name:Claude Sonnet 4.7}", models[0])
+	}
+
+	// (3) Ping — folds Phase 1's PingWorks coverage.
 	if err := client.Ping(ctx); err != nil {
 		t.Errorf("Ping: %v", err)
 	}
 
-	if err := client.Close(); err != nil {
-		t.Logf("client.Close: %v", err)
+	// (4) Prompt orchestration. Prompt blocks until the session/prompt
+	// response arrives. To drive the emission sequence WHILE Prompt is
+	// in-flight, run Prompt on a goroutine and drive emits on the test
+	// goroutine.
+	blocks := []canonical.Block{
+		{Kind: canonical.BlockKindText, Text: &canonical.TextBlock{Content: "hi"}},
 	}
-	goleak.VerifyNone(t)
+	type promptResult struct {
+		stream *acp.Stream
+		err    error
+	}
+	promptCh := make(chan promptResult, 1)
+	go func() {
+		s, err := client.Prompt(ctx, sid, blocks)
+		promptCh <- promptResult{stream: s, err: err}
+	}()
+
+	// Sync on the fake observing the prompt request before we start emitting
+	// updates — otherwise the chunks could arrive on the wire before the
+	// client has registered the active stream and would be dropped.
+	select {
+	case <-fake.promptSeen:
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for fake.promptSeen")
+	}
+
+	// Emit five session/update notifications, each using a different variant
+	// across the (method, body wrap, discriminator field, discriminator
+	// casing, content shape, update type) axes. See updateVariant docs.
+	for _, v := range []updateVariant{
+		variantAgentMessageFlat,
+		variantAgentMessageWrappedCamel,
+		variantAgentThoughtKiroDev,
+		variantToolCallWrapped,
+		variantPlanWrapped,
+	} {
+		if err := fake.emitUpdate(sid, v); err != nil {
+			t.Fatalf("emitUpdate(%d): %v", v, err)
+		}
+	}
+
+	// (5) Mid-stream permission request. Send it as a proper RPC request
+	// (with id) — Plan 04 D-20. The client must respond on the same id.
+	if err := fake.emitPermissionRequest("perm-req-1", 999); err != nil {
+		t.Fatalf("emitPermissionRequest: %v", err)
+	}
+	select {
+	case <-fake.permissionResponseReceived:
+		// D-20 assertion: client wrote the rpcResponse envelope with
+		// optionId:allow_always within the deadline.
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for permission response (D-20 deadlock unblock)")
+	}
+
+	// (6) Close the turn: emit session/prompt response with end_turn.
+	if err := fake.emitPromptResult("end_turn"); err != nil {
+		t.Fatalf("emitPromptResult: %v", err)
+	}
+
+	// Wait for Prompt to return.
+	var stream *acp.Stream
+	select {
+	case res := <-promptCh:
+		if res.err != nil {
+			t.Fatalf("Prompt: %v", res.err)
+		}
+		stream = res.stream
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for Prompt to return")
+	}
+
+	// Drain stream.Chunks. The channel closes when the prompt response is
+	// observed by the client (CR-02 fix); we get exactly five chunks in
+	// emission order.
+	wantChunks := []canonical.Chunk{
+		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "hello"}},
+		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "world"}},
+		{Kind: canonical.ChunkKindThought, Thought: &canonical.ThoughtChunk{Content: "thinking"}},
+		{Kind: canonical.ChunkKindThought, Thought: &canonical.ThoughtChunk{Content: "[tool: read_file]\n"}},
+		{Kind: canonical.ChunkKindPlan, Plan: &canonical.PlanChunk{Content: "Step 1\nStep 2"}},
+	}
+	var got []canonical.Chunk
+	for ch := range stream.Chunks {
+		got = append(got, ch)
+	}
+	if len(got) != len(wantChunks) {
+		t.Fatalf("chunk count: got %d, want %d (got=%+v)", len(got), len(wantChunks), got)
+	}
+	for i, w := range wantChunks {
+		if got[i].Kind != w.Kind {
+			t.Errorf("chunk[%d].Kind: got %v, want %v", i, got[i].Kind, w.Kind)
+			continue
+		}
+		switch w.Kind {
+		case canonical.ChunkKindText:
+			if got[i].Text == nil || got[i].Text.Content != w.Text.Content {
+				t.Errorf("chunk[%d].Text: got %+v, want %+v", i, got[i].Text, w.Text)
+			}
+		case canonical.ChunkKindThought:
+			if got[i].Thought == nil || got[i].Thought.Content != w.Thought.Content {
+				t.Errorf("chunk[%d].Thought: got %+v, want %+v", i, got[i].Thought, w.Thought)
+			}
+		case canonical.ChunkKindPlan:
+			if got[i].Plan == nil || got[i].Plan.Content != w.Plan.Content {
+				t.Errorf("chunk[%d].Plan: got %+v, want %+v", i, got[i].Plan, w.Plan)
+			}
+		case canonical.ChunkKindToolCall:
+			// Phase 1.1 renders tool_* updates as thoughts (CONTEXT.md
+			// <deferred>); ChunkKindToolCall is not expected from translateUpdate
+			// in this phase. Fall through with a soft assertion.
+			t.Errorf("chunk[%d] unexpectedly typed as ChunkKindToolCall in Phase 1.1", i)
+		}
+	}
+
+	// Final-result assertion: D-07 contract end-to-end.
+	result, err := stream.Result()
+	if err != nil {
+		t.Fatalf("stream.Result: %v", err)
+	}
+	if result == nil {
+		t.Fatal("stream.Result returned nil FinalResult")
+	}
+	if result.StopReason != canonical.StopEndTurn {
+		t.Errorf("StopReason: got %v, want StopEndTurn", result.StopReason)
+	}
+	if result.SessionID != sid {
+		t.Errorf("FinalResult.SessionID: got %q, want %q", result.SessionID, sid)
+	}
+	if result.ChunkCount != len(wantChunks) {
+		t.Errorf("FinalResult.ChunkCount: got %d, want %d", result.ChunkCount, len(wantChunks))
+	}
 }
 
 // TestIntegration_RealKiroCLI_SmokeTest skips cleanly when kiro-cli is not found.
 // When present, it exercises Initialize → NewSession → Ping → Close without goroutine leaks.
 // D-17: LOOP24_KIRO_BIN env var override.
+//
+// Unchanged by Plan 04 — Plan 05 adds TestIntegration_RealKiroCLI_PromptRoundTrip
+// next to this.
 func TestIntegration_RealKiroCLI_SmokeTest(t *testing.T) {
 	bin := resolveKiroCLI(t) // t.Skip fires here if kiro-cli absent
 

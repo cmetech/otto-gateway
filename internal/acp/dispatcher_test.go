@@ -8,7 +8,8 @@ import (
 	"testing"
 )
 
-// TestDispatcherRoute verifies that a frame with a nil ID goes to onNotif.
+// TestDispatcherRoute verifies that a notification (no id, has method) routes
+// to onNotif.
 func TestDispatcherRoute(t *testing.T) {
 	t.Parallel()
 	notified := make(chan rpcFrame, 1)
@@ -17,20 +18,49 @@ func TestDispatcherRoute(t *testing.T) {
 		onNotif: func(f rpcFrame) { notified <- f },
 	}
 
-	frame := rpcFrame{Method: "session/request_permission"}
+	frame := rpcFrame{Method: "session/update"}
 	d.route(frame)
 
 	select {
 	case got := <-notified:
-		if got.Method != "session/request_permission" {
-			t.Errorf("got method %q, want session/request_permission", got.Method)
+		if got.Method != "session/update" {
+			t.Errorf("got method %q, want session/update", got.Method)
 		}
 	default:
 		t.Error("onNotif was not called for nil-ID frame")
 	}
 }
 
-// TestDispatcherPending verifies register → route delivers the frame to the channel.
+// TestDispatcherRoutes_ServerRequest_ToOnNotif verifies the Plan 04 D-20
+// surface: an inbound frame with BOTH id AND method (a server-to-client
+// request like session/request_permission) routes to onNotif rather than the
+// pending map. Phase 1 incorrectly routed any frame-with-id to pending,
+// silently dropping permission requests and deadlocking kiro-cli.
+func TestDispatcherRoutes_ServerRequest_ToOnNotif(t *testing.T) {
+	t.Parallel()
+	notified := make(chan rpcFrame, 1)
+	d := &dispatcher{
+		pending: make(map[uint64]chan<- rpcFrame),
+		onNotif: func(f rpcFrame) { notified <- f },
+	}
+	id42 := uint64(42)
+	d.route(rpcFrame{ID: &id42, Method: "session/request_permission"})
+
+	select {
+	case got := <-notified:
+		if got.Method != "session/request_permission" {
+			t.Errorf("method: got %q, want session/request_permission", got.Method)
+		}
+		if got.ID == nil || *got.ID != 42 {
+			t.Errorf("ID: got %v, want pointer-to-42 (must be preserved for response echo)", got.ID)
+		}
+	default:
+		t.Error("onNotif was not called for server-initiated request (id + method)")
+	}
+}
+
+// TestDispatcherPending verifies register → route delivers a response frame
+// (id set, method empty per JSON-RPC 2.0) to the channel.
 func TestDispatcherPending(t *testing.T) {
 	t.Parallel()
 	d := &dispatcher{
@@ -42,12 +72,16 @@ func TestDispatcherPending(t *testing.T) {
 	respCh := d.register(id)
 
 	id42 := id
-	d.route(rpcFrame{ID: &id42, Method: "initialize", Result: []byte(`{}`)})
+	// JSON-RPC 2.0 response: id set, NO method, result carries the body.
+	d.route(rpcFrame{ID: &id42, Result: []byte(`{}`)})
 
 	select {
 	case got := <-respCh:
-		if got.Method != "initialize" {
-			t.Errorf("got method %q, want initialize", got.Method)
+		if got.ID == nil || *got.ID != 42 {
+			t.Errorf("got id %v, want pointer-to-42", got.ID)
+		}
+		if string(got.Result) != "{}" {
+			t.Errorf("got result %q, want {}", string(got.Result))
 		}
 	default:
 		t.Error("response was not delivered to the registered channel")
@@ -62,8 +96,8 @@ func TestDispatcherPending(t *testing.T) {
 	}
 }
 
-// TestDispatcherCancel verifies cancel removes the pending entry so a routed frame
-// is silently dropped (not delivered and not a panic).
+// TestDispatcherCancel verifies cancel removes the pending entry so a routed
+// response frame is silently dropped (not delivered and not a panic).
 func TestDispatcherCancel(t *testing.T) {
 	t.Parallel()
 	d := &dispatcher{
@@ -77,7 +111,8 @@ func TestDispatcherCancel(t *testing.T) {
 
 	// Routing after cancel must be a no-op (no panic, no delivery).
 	id99 := id
-	d.route(rpcFrame{ID: &id99, Method: "ping"})
+	// Response shape: id set, no method.
+	d.route(rpcFrame{ID: &id99, Result: []byte(`{}`)})
 	// If we get here without panic, the test passes.
 
 	d.mu.Lock()
@@ -107,14 +142,14 @@ func TestDispatcherConcurrent(t *testing.T) {
 		chans[i] = d.register(uint64(i + 1))
 	}
 
-	// Phase 2: route responses from n goroutines.
+	// Phase 2: route responses from n goroutines (no method — JSON-RPC 2.0 response).
 	for i := 0; i < n; i++ {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
 			//nolint:gosec // G115: idx is bounded by n=10, never overflows uint64
 			id := uint64(idx + 1)
-			d.route(rpcFrame{ID: &id, Method: "resp"})
+			d.route(rpcFrame{ID: &id, Result: []byte(`{}`)})
 		}(i)
 	}
 
@@ -132,8 +167,8 @@ func TestDispatcherConcurrent(t *testing.T) {
 	collectWg.Wait()
 
 	for i, r := range results {
-		if r.Method != "resp" {
-			t.Errorf("goroutine %d: got method %q, want resp", i, r.Method)
+		if r.ID == nil || *r.ID != uint64(i+1) {
+			t.Errorf("goroutine %d: got id %v, want pointer-to-%d", i, r.ID, i+1)
 		}
 	}
 }

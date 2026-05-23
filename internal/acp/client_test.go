@@ -261,49 +261,66 @@ func TestWriterGoroutine(t *testing.T) {
 	goleak.VerifyNone(t)
 }
 
-// TestAutoGrantPermission simulates a session/request_permission notification and
-// verifies that a grant_permission request is written back to the server.
+// TestAutoGrantPermission verifies the Plan 1.1-04 D-20 contract: when the
+// fake server sends a session/request_permission REQUEST (with an id), the
+// client RESPONDS on that same id with an rpcResponse envelope carrying
+// result.optionId == "allow_always" and result.granted == true. The Phase 1
+// grant-permission request path is gone.
 func TestAutoGrantPermission(t *testing.T) {
 	mock := newMockRWC()
 	cfg := newTestConfig(t)
 
 	c := NewWithConn(mock, cfg)
 
-	// Send a session/request_permission notification (nil id).
-	permNotif := map[string]any{
+	// Send a session/request_permission REQUEST (with id 42) — not a
+	// notification. D-20: kiro-cli waits for a response to this id.
+	const permFrameID = float64(42)
+	permReq := map[string]any{
 		"jsonrpc": "2.0",
+		"id":      permFrameID,
 		"method":  "session/request_permission",
 		"params": map[string]any{
 			"requestId":  "req-1",
 			"permission": map[string]any{"type": "shell_exec"},
 		},
 	}
-	if err := mock.serverWriteJSON(permNotif); err != nil {
+	if err := mock.serverWriteJSON(permReq); err != nil {
 		t.Fatalf("serverWriteJSON: %v", err)
 	}
 
-	// The client should write back a grant_permission request.
-	grantLine, err := readLineFromPipeWithTimeout(mock.serverRead, 2*time.Second)
+	// The client should write back an rpcResponse: {jsonrpc, id, result} —
+	// no method field.
+	respLine, err := readLineFromPipeWithTimeout(mock.serverRead, 2*time.Second)
 	if err != nil {
-		t.Fatalf("read grant_permission: %v", err)
+		t.Fatalf("read permission response: %v", err)
 	}
 
-	var grant map[string]any
-	if err := json.Unmarshal(grantLine, &grant); err != nil {
-		t.Fatalf("unmarshal grant: %v", err)
+	var resp map[string]any
+	if err := json.Unmarshal(respLine, &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
 	}
-	if grant["method"] != "session/grant_permission" {
-		t.Errorf("expected session/grant_permission, got %v", grant["method"])
+	// D-20: absence of `method` is the load-bearing assertion — distinguishes
+	// the new response envelope from the legacy grant_permission request.
+	if _, hasMethod := resp["method"]; hasMethod {
+		t.Errorf("response unexpectedly carries method=%v — expected no method on rpcResponse", resp["method"])
 	}
-	params, _ := grant["params"].(map[string]any)
-	if params == nil {
-		t.Fatal("grant params is nil")
+	if resp["jsonrpc"] != "2.0" {
+		t.Errorf("jsonrpc: got %v, want 2.0", resp["jsonrpc"])
 	}
-	if params["optionId"] != "allow_always" {
-		t.Errorf("optionId: got %v, want allow_always", params["optionId"])
+	// JSON numerics decode to float64 in Go's interface{} path.
+	gotID, _ := resp["id"].(float64)
+	if gotID != permFrameID {
+		t.Errorf("response id: got %v, want %v (echoed from inbound request)", resp["id"], permFrameID)
 	}
-	if params["granted"] != true {
-		t.Errorf("granted: got %v, want true", params["granted"])
+	result, _ := resp["result"].(map[string]any)
+	if result == nil {
+		t.Fatal("response.result is missing or not a JSON object")
+	}
+	if result["optionId"] != "allow_always" {
+		t.Errorf("result.optionId: got %v, want allow_always", result["optionId"])
+	}
+	if result["granted"] != true {
+		t.Errorf("result.granted: got %v, want true", result["granted"])
 	}
 
 	mock.serverClose()

@@ -55,13 +55,31 @@ func (d *dispatcher) cancel(id uint64) {
 	d.mu.Unlock()
 }
 
-// route dispatches frame to the appropriate handler.
-// CRITICAL: check ID == nil FIRST. Notifications (session/request_permission,
-// session/update) have no id field. If routed to the pending map they are silently
-// dropped, causing kiro-cli to block forever waiting for session/grant_permission.
+// route dispatches frame to the appropriate handler per JSON-RPC 2.0:
+//
+//   - Notification: no `id`, has `method`. Route to onNotif.
+//   - Server-to-client request (Phase 1.1 D-20): has both `id` AND `method`.
+//     This is kiro-cli initiating a request that needs a response (e.g.,
+//     session/request_permission). Route to onNotif so handleNotification
+//     can build an rpcResponse on the same frame id.
+//   - Response: has `id`, no `method` (carries `result` or `error` instead).
+//     Look up the originating request in the pending map.
+//
+// Why the method check matters: Phase 1 routed every frame-with-id to the
+// pending map, which would silently drop kiro-cli's session/request_permission
+// frame (id is set; nothing is pending) and deadlock the subprocess. D-20
+// fixes this by recognising request frames structurally.
 func (d *dispatcher) route(frame rpcFrame) {
-	if frame.ID == nil {
+	// Server-to-client traffic: any frame with a method field. Includes both
+	// notifications (no id) AND server-initiated requests (id + method).
+	if frame.Method != "" {
 		d.onNotif(frame)
+		return
+	}
+	// Otherwise it's a response to one of our requests — must carry an id.
+	if frame.ID == nil {
+		// Malformed frame (no method AND no id). Drop silently — surfaced via
+		// the read loop's malformed-frame Warn upstream.
 		return
 	}
 	// Lookup and delete must be atomic under the same lock (Pitfall 3).
