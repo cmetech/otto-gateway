@@ -90,6 +90,10 @@ type TextBlock struct {
 type ResourceLinkBlock struct {
 	// URI is the resource URI.
 	URI string
+	// Name is the human-readable file/resource name (wire field `name`,
+	// required by ACP spec on resource_link). When empty, the wire encoder
+	// falls back to `path.Base(URI)` per Phase 1.1 D-04.
+	Name string
 	// Title is the human-readable title for the resource.
 	Title string
 }
