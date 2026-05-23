@@ -12,7 +12,7 @@ See: .planning/PROJECT.md (updated 2026-05-23)
 Phase: 1 of 9 (Foundations)
 Plan: 0 of TBD in current phase
 Status: Ready to plan
-Last activity: 2026-05-23 — ROADMAP.md created from `docs/briefs/go_port_brief.md` M0–M9 milestone plan, 53/53 v1 requirements mapped
+Last activity: 2026-05-23 — Completed quick task 260523-gna: DEVELOPERS.md + setup scripts (macOS bash + Windows PowerShell)
 
 Progress: [░░░░░░░░░░] 0%
 
@@ -56,6 +56,12 @@ None yet.
 ### Blockers/Concerns
 
 - Pi SDK env var / config key for setting OpenAI base URL needs verification before Phase 3 starts (per PROJECT.md "Context — Clients" — open verification item).
+
+### Quick Tasks Completed
+
+| # | Description | Date | Commit | Directory |
+|---|-------------|------|--------|-----------|
+| 260523-gna | DEVELOPERS.md + idempotent macOS/Windows setup scripts | 2026-05-23 | 84562ce | [260523-gna-create-developers-md-with-step-by-step-d](./quick/260523-gna-create-developers-md-with-step-by-step-d/) |
 
 ## Deferred Items
 
