@@ -160,7 +160,8 @@ Files confirmed to exist:
 - .planning/phases/01-foundations/01-03-SUMMARY.md: FOUND (this file)
 
 Commits confirmed to exist:
-- a352745: feat(01-03): activate trust gates
+- a352745: feat(01-03): activate trust gates — go-arch-lint scaffold, Makefile ci extended
+- b21e8f0: docs(01-03): complete trust gates plan execution summary
 
 ---
 *Phase: 01-foundations*
