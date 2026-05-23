@@ -4,8 +4,8 @@ milestone: v1.5
 milestone_name: milestone
 status: executing
 stopped_at: Phase 1 context gathered
-last_updated: "2026-05-23T18:02:38.654Z"
-last_activity: 2026-05-23 -- Phase 01 planning complete
+last_updated: "2026-05-23T18:05:25.332Z"
+last_activity: 2026-05-23 -- Phase 01 execution started
 progress:
   total_phases: 9
   completed_phases: 0
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-23)
 
 **Core value:** Both API surfaces (OpenAI for Pi SDK, Ollama for LangFlow) serve their respective clients without those clients knowing kiro-cli exists, with one place to enforce policy.
-**Current focus:** Phase 1 — Foundations (scaffold + trust gates + ACP JSON-RPC client)
+**Current focus:** Phase 01 — foundations
 
 ## Current Position
 
-Phase: 1 of 9 (Foundations)
-Plan: 0 of TBD in current phase
-Status: Ready to execute
-Last activity: 2026-05-23 -- Phase 01 planning complete
+Phase: 01 (foundations) — EXECUTING
+Plan: 1 of 4
+Status: Executing Phase 01
+Last activity: 2026-05-23 -- Phase 01 execution started
 
 Progress: [░░░░░░░░░░] 0%
 
