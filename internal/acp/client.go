@@ -81,14 +81,19 @@ type rpcNotification struct {
 // this echo, kiro-cli blocks forever waiting for the response to the id it
 // sent — Phase 2's first tool-using prompt would deadlock.
 //
+// Phase 1.1 CR-01: ID is json.RawMessage so it can echo whatever JSON id
+// shape arrived on the request (string, number, or null) byte-for-byte.
+// Typing this as uint64 silently corrupts string ids — a regression on the
+// same D-20 surface this struct is supposed to harden.
+//
 // Placed inline next to rpcRequest/rpcNotification per CONTEXT.md §Claude's
 // Discretion: with only three envelope shapes the splitting threshold from
 // PATTERNS.md ("split into rpc.go once there are 3+ envelope shapes") is at
 // the boundary — keep them grouped for now; split if a fourth envelope lands.
 type rpcResponse struct {
-	JSONRPC string `json:"jsonrpc"`
-	ID      uint64 `json:"id"`
-	Result  any    `json:"result"`
+	JSONRPC string          `json:"jsonrpc"`
+	ID      json.RawMessage `json:"id"`
+	Result  any             `json:"result"`
 }
 
 // initializeParams is the params payload for the initialize request.
@@ -794,7 +799,7 @@ func (c *Client) handleNotification(frame rpcFrame) {
 		// D-20: respond on the original frame id. Without this, kiro-cli
 		// blocks forever waiting for the response — the deadlock unblock for
 		// Phase 2's first tool-using prompt.
-		if frame.ID == nil {
+		if !frame.hasID() {
 			// A permission "request" with no id cannot be responded to —
 			// treat as a kiro-cli protocol break and log loudly.
 			c.cfg.Logger.Warn("acp: permission request without id — dropped")
@@ -803,14 +808,20 @@ func (c *Client) handleNotification(frame rpcFrame) {
 		// Best-effort Debug log of the inbound RequestID (useful when DEBUG=1).
 		// Parse failure does not block the response — the response only needs
 		// the original frame id, which is already in hand.
+		// CR-01: frame.ID is json.RawMessage; log its raw byte form so string
+		// AND numeric ids both render readably.
 		var params permissionParams
 		if err := json.Unmarshal(frame.Params, &params); err == nil && params.RequestID != "" {
 			c.cfg.Logger.Debug("acp: auto-granting permission",
-				"requestId", params.RequestID, "frameId", *frame.ID)
+				"requestId", params.RequestID, "frameId", string(frame.ID))
 		}
+		// CR-01: echo frame.ID verbatim so a string-id permission request
+		// gets a string-id response. The Phase 1.1-pre code dereffed a
+		// *uint64 here, which would silently drop string ids and reintroduce
+		// the D-20 deadlock.
 		data, err := json.Marshal(rpcResponse{
 			JSONRPC: "2.0",
-			ID:      *frame.ID,
+			ID:      frame.ID,
 			Result: map[string]any{
 				"optionId": "allow_always",
 				"granted":  true,

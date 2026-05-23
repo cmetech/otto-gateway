@@ -6,14 +6,32 @@ import (
 )
 
 // rpcFrame is the envelope for every incoming JSON-RPC 2.0 message from kiro-cli.
-// A nil ID field means the frame is a notification (session/update,
-// session/request_permission, etc.) — it never enters the pending map.
+// A frame with no ID (per hasID below) is a notification; the dispatcher routes
+// it to onNotif without consulting the pending map.
+//
+// Phase 1.1 CR-01: ID is json.RawMessage rather than *uint64 so the dispatcher
+// can survive any JSON-RPC 2.0 §4 id shape — string, number (negative or
+// positive), or null. The Phase 1 *uint64 form silently dropped string-id
+// frames, which would reintroduce the D-20 session/request_permission deadlock
+// the moment kiro-cli (or a future ACP agent) used string ids. The outbound
+// rpcResponse path now echoes ID verbatim, so the body of the JSON id is
+// preserved byte-for-byte from request to response. For our outbound requests
+// we still mint numeric ids via c.nextID.Add(1); the dispatcher parses those
+// back into uint64 for the pending-map lookup inside route().
 type rpcFrame struct {
-	ID     *uint64         `json:"id,omitempty"`
+	ID     json.RawMessage `json:"id,omitempty"`
 	Method string          `json:"method,omitempty"`
 	Result json.RawMessage `json:"result,omitempty"`
 	Error  *rpcError       `json:"error,omitempty"`
 	Params json.RawMessage `json:"params,omitempty"`
+}
+
+// hasID reports whether the frame carries a usable JSON-RPC id. JSON-RPC 2.0
+// allows id to be a string, number, or null; absence and explicit `null` are
+// treated the same way (the frame is a notification). Empty RawMessage covers
+// the "field absent" case; the explicit "null" check covers `"id": null`.
+func (f rpcFrame) hasID() bool {
+	return len(f.ID) > 0 && string(f.ID) != "null"
 }
 
 // rpcError is the JSON-RPC 2.0 error object.
@@ -77,16 +95,27 @@ func (d *dispatcher) route(frame rpcFrame) {
 		return
 	}
 	// Otherwise it's a response to one of our requests — must carry an id.
-	if frame.ID == nil {
+	if !frame.hasID() {
 		// Malformed frame (no method AND no id). Drop silently — surfaced via
 		// the read loop's malformed-frame Warn upstream.
 		return
 	}
+	// Phase 1.1 CR-01: pending-map keys are uint64 because we control the
+	// outbound id space (c.nextID.Add(1)). A response frame from kiro-cli
+	// MUST echo one of those ids verbatim, so a non-numeric id here means
+	// the response is unsolicited — drop it. parse here (where we control
+	// the type), NOT at the wire boundary; this preserves the ability of
+	// the dispatcher's notification path to forward string ids unchanged.
+	var num uint64
+	if err := json.Unmarshal(frame.ID, &num); err != nil {
+		// Response id is not a uint64 we ever issued — drop silently.
+		return
+	}
 	// Lookup and delete must be atomic under the same lock (Pitfall 3).
 	d.mu.Lock()
-	ch, ok := d.pending[*frame.ID]
+	ch, ok := d.pending[num]
 	if ok {
-		delete(d.pending, *frame.ID)
+		delete(d.pending, num)
 	}
 	d.mu.Unlock()
 	if ok {

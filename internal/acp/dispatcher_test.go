@@ -3,10 +3,18 @@
 package acp
 
 import (
+	"encoding/json"
 	"fmt"
 	"sync"
 	"testing"
 )
+
+// rawIDNum builds a JSON-RPC id as a json.RawMessage holding a JSON number.
+// Phase 1.1 CR-01: rpcFrame.ID is json.RawMessage so all tests construct ids
+// via this helper rather than via &uint64.
+func rawIDNum(n uint64) json.RawMessage {
+	return json.RawMessage(fmt.Sprintf("%d", n))
+}
 
 // TestDispatcherRoute verifies that a notification (no id, has method) routes
 // to onNotif.
@@ -36,6 +44,11 @@ func TestDispatcherRoute(t *testing.T) {
 // request like session/request_permission) routes to onNotif rather than the
 // pending map. Phase 1 incorrectly routed any frame-with-id to pending,
 // silently dropping permission requests and deadlocking kiro-cli.
+//
+// Phase 1.1 CR-01: ID is json.RawMessage so the dispatcher echoes whatever
+// shape arrived (number, string, or null). The numeric-id case lives here;
+// TestDispatcherRoutes_ServerRequest_StringID_PreservedForEcho covers the
+// string-id wire shape that the *uint64 form silently dropped.
 func TestDispatcherRoutes_ServerRequest_ToOnNotif(t *testing.T) {
 	t.Parallel()
 	notified := make(chan rpcFrame, 1)
@@ -43,19 +56,70 @@ func TestDispatcherRoutes_ServerRequest_ToOnNotif(t *testing.T) {
 		pending: make(map[uint64]chan<- rpcFrame),
 		onNotif: func(f rpcFrame) { notified <- f },
 	}
-	id42 := uint64(42)
-	d.route(rpcFrame{ID: &id42, Method: "session/request_permission"})
+	d.route(rpcFrame{ID: rawIDNum(42), Method: "session/request_permission"})
 
 	select {
 	case got := <-notified:
 		if got.Method != "session/request_permission" {
 			t.Errorf("method: got %q, want session/request_permission", got.Method)
 		}
-		if got.ID == nil || *got.ID != 42 {
-			t.Errorf("ID: got %v, want pointer-to-42 (must be preserved for response echo)", got.ID)
+		if !got.hasID() || string(got.ID) != "42" {
+			t.Errorf("ID: got %q, want raw bytes \"42\" (must be preserved for response echo)", string(got.ID))
 		}
 	default:
 		t.Error("onNotif was not called for server-initiated request (id + method)")
+	}
+}
+
+// TestDispatcherRoutes_ServerRequest_StringID_PreservedForEcho is the CR-01
+// regression test. JSON-RPC 2.0 §4 allows id to be a string OR number; the
+// pre-fix *uint64 field silently dropped string ids, which would make the
+// readLoop see "id: nil" on a session/request_permission frame and take the
+// "permission request without id — dropped" branch in handleNotification —
+// reintroducing the D-20 deadlock.
+//
+// Contract under test: the dispatcher forwards the inbound string-id frame
+// to onNotif with frame.ID preserved byte-for-byte ("req-1" stays the bytes
+// `"req-1"`, including quotes). handleNotification (in client.go) then
+// marshals an rpcResponse whose id field is the same json.RawMessage —
+// echoing the inbound string id verbatim per JSON-RPC 2.0 response rules.
+func TestDispatcherRoutes_ServerRequest_StringID_PreservedForEcho(t *testing.T) {
+	t.Parallel()
+	notified := make(chan rpcFrame, 1)
+	d := &dispatcher{
+		pending: make(map[uint64]chan<- rpcFrame),
+		onNotif: func(f rpcFrame) { notified <- f },
+	}
+	// Build the raw JSON id `"req-1"` (a JSON string).
+	stringID := json.RawMessage(`"req-1"`)
+	d.route(rpcFrame{ID: stringID, Method: "session/request_permission"})
+
+	select {
+	case got := <-notified:
+		if got.Method != "session/request_permission" {
+			t.Errorf("method: got %q, want session/request_permission", got.Method)
+		}
+		if !got.hasID() {
+			t.Fatal("hasID() returned false for a frame carrying a string id")
+		}
+		if string(got.ID) != `"req-1"` {
+			t.Errorf("ID raw bytes: got %q, want %q (must survive byte-for-byte for echo)",
+				string(got.ID), `"req-1"`)
+		}
+		// Confirm round-trip through json.Marshal preserves the string id.
+		// This is the load-bearing assertion: the outbound rpcResponse
+		// must include `"id":"req-1"` so kiro-cli's pending map matches.
+		marshalled, err := json.Marshal(struct {
+			ID json.RawMessage `json:"id"`
+		}{ID: got.ID})
+		if err != nil {
+			t.Fatalf("json.Marshal of preserved id: %v", err)
+		}
+		if string(marshalled) != `{"id":"req-1"}` {
+			t.Errorf("round-tripped frame: got %q, want %q", string(marshalled), `{"id":"req-1"}`)
+		}
+	default:
+		t.Error("onNotif was not called for server-initiated request with string id")
 	}
 }
 
@@ -71,14 +135,13 @@ func TestDispatcherPending(t *testing.T) {
 	id := uint64(42)
 	respCh := d.register(id)
 
-	id42 := id
 	// JSON-RPC 2.0 response: id set, NO method, result carries the body.
-	d.route(rpcFrame{ID: &id42, Result: []byte(`{}`)})
+	d.route(rpcFrame{ID: rawIDNum(id), Result: []byte(`{}`)})
 
 	select {
 	case got := <-respCh:
-		if got.ID == nil || *got.ID != 42 {
-			t.Errorf("got id %v, want pointer-to-42", got.ID)
+		if !got.hasID() || string(got.ID) != "42" {
+			t.Errorf("got id %q, want raw bytes \"42\"", string(got.ID))
 		}
 		if string(got.Result) != "{}" {
 			t.Errorf("got result %q, want {}", string(got.Result))
@@ -110,9 +173,8 @@ func TestDispatcherCancel(t *testing.T) {
 	d.cancel(id) // remove before response arrives
 
 	// Routing after cancel must be a no-op (no panic, no delivery).
-	id99 := id
 	// Response shape: id set, no method.
-	d.route(rpcFrame{ID: &id99, Result: []byte(`{}`)})
+	d.route(rpcFrame{ID: rawIDNum(id), Result: []byte(`{}`)})
 	// If we get here without panic, the test passes.
 
 	d.mu.Lock()
@@ -149,7 +211,7 @@ func TestDispatcherConcurrent(t *testing.T) {
 			defer wg.Done()
 			//nolint:gosec // G115: idx is bounded by n=10, never overflows uint64
 			id := uint64(idx + 1)
-			d.route(rpcFrame{ID: &id, Result: []byte(`{}`)})
+			d.route(rpcFrame{ID: rawIDNum(id), Result: []byte(`{}`)})
 		}(i)
 	}
 
@@ -167,8 +229,9 @@ func TestDispatcherConcurrent(t *testing.T) {
 	collectWg.Wait()
 
 	for i, r := range results {
-		if r.ID == nil || *r.ID != uint64(i+1) {
-			t.Errorf("goroutine %d: got id %v, want pointer-to-%d", i, r.ID, i+1)
+		want := fmt.Sprintf("%d", i+1)
+		if !r.hasID() || string(r.ID) != want {
+			t.Errorf("goroutine %d: got id %q, want %q", i, string(r.ID), want)
 		}
 	}
 }
