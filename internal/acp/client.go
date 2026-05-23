@@ -857,14 +857,21 @@ func (c *Client) handleNotification(frame rpcFrame) {
 			c.cfg.Logger.Warn("acp: marshal permission response failed", "err", err)
 			return
 		}
-		// WR-02: NO default arm. kiro-cli blocks forever if the response is
-		// missed, so backpressure on writeCh is correct — pausing the readLoop
-		// briefly is far better than silently dropping a frame the subprocess
-		// is waiting for.
-		select {
-		case c.writeCh <- data:
-		case <-c.clientCtx.Done():
-			// Client closing — drop response.
+		// WR-02 (Phase 1.1 review): the permission response writes directly
+		// via the framer rather than queueing on writeCh. The readLoop
+		// goroutine is BOTH the consumer of inbound frames AND the sole
+		// producer of this specific outbound frame. Queueing the response
+		// behind a full writeCh (capacity 16) means the readLoop blocks here
+		// while the writer goroutine drains — and while readLoop is blocked
+		// no new frames are read from the subprocess pipe, including the
+		// session/prompt response that would unblock callers and reduce
+		// writeCh backlog. The framer's internal mutex (framer.go:58-65)
+		// already serialises against the writer goroutine, so calling
+		// writeFrame directly is race-free; the only side-effect is that
+		// permission responses no longer share fifo ordering with normal
+		// RPC sends, which is fine — they're independent JSON-RPC frames.
+		if err := c.framer.writeFrame(json.RawMessage(data)); err != nil {
+			c.cfg.Logger.Warn("acp: permission response write failed", "err", err)
 		}
 
 	case "session/update", "session/notification", "_kiro.dev/session/update":
