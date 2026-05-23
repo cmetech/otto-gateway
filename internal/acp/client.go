@@ -77,9 +77,9 @@ type rpcNotification struct {
 // rpcResponse is the outbound JSON-RPC 2.0 response envelope (no method).
 //
 // Phase 1.1 D-20: session/request_permission is RESPONDED to on the original
-// frame id rather than triggering a new `session/grant_permission` request.
-// Without this echo, kiro-cli blocks forever waiting for the response to the
-// id it sent — Phase 2's first tool-using prompt would deadlock.
+// frame id rather than triggering a new permission-granting request. Without
+// this echo, kiro-cli blocks forever waiting for the response to the id it
+// sent — Phase 2's first tool-using prompt would deadlock.
 //
 // Placed inline next to rpcRequest/rpcNotification per CONTEXT.md §Claude's
 // Discretion: with only three envelope shapes the splitting threshold from
@@ -781,7 +781,7 @@ func (c *Client) Cancel(sessionID string) {
 // Handles:
 //   - session/request_permission → RESPOND on the original frame id with
 //     {optionId:"allow_always", granted:true} (Phase 1.1 D-20). The Phase 1
-//     path that sent a new `session/grant_permission` request is removed —
+//     path that sent a new grant-permission request is removed —
 //     kiro-cli waits for the response to its original id, so sending a new
 //     request id would deadlock the subprocess.
 //   - session/update / session/notification / _kiro.dev/session/update →
