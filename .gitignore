@@ -3,6 +3,8 @@
 /dist/
 loop24-gateway
 loop24-gateway.exe
+# Do not ignore the Go source directory that shares the binary name.
+!/cmd/loop24-gateway/
 
 # Build / test output
 *.test
