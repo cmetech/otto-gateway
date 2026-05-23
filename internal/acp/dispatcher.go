@@ -79,11 +79,22 @@ func (d *dispatcher) route(frame rpcFrame) {
 
 // drainAll sends a sentinel error frame to every pending caller and empties the map.
 // Called by failPending on Close() and on readLoop EOF so no caller hangs.
+//
+// CR-01 fix: the send uses a non-blocking select. A buffered-1 pending channel
+// can already be full if route() raced in a response just before drainAll took
+// the lock; a blocking send would then deadlock while still holding d.mu, which
+// would block every subsequent register/cancel/route call. The non-blocking
+// select drops the duplicate sentinel safely — the caller already has its frame
+// (or has walked away).
 func (d *dispatcher) drainAll(err error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	for id, ch := range d.pending {
-		ch <- rpcFrame{Error: &rpcError{Code: -32099, Message: err.Error()}}
+		select {
+		case ch <- rpcFrame{Error: &rpcError{Code: -32099, Message: err.Error()}}:
+		default:
+			// Channel already has a frame (route() beat us) or caller is gone — drop safely.
+		}
 		delete(d.pending, id)
 	}
 }

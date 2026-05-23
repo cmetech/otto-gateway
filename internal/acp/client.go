@@ -104,9 +104,14 @@ type setModelParams struct {
 }
 
 // promptParams is the params payload for session/prompt.
+//
+// CR-05 fix: Blocks is typed as []wireBlock (not []canonical.Block). The
+// canonical type encodes via Go's default reflect encoder, which produces a
+// shape kiro-cli cannot parse. translateBlocks (in translate.go) converts the
+// caller's canonical slice to the wire shape just before the send.
 type promptParams struct {
-	SessionID string           `json:"sessionId"`
-	Blocks    []canonical.Block `json:"blocks"`
+	SessionID string      `json:"sessionId"`
+	Blocks    []wireBlock `json:"blocks"`
 }
 
 // cancelParams is the params payload for session/cancel notification.
@@ -242,6 +247,17 @@ func NewWithConn(rwc io.ReadWriteCloser, cfg Config) *Client {
 // no in-flight caller hangs.
 func (c *Client) readLoop(ctx context.Context) {
 	defer c.wg.Done()
+	// CR-03 fix: propagate readLoop death to clientCtx. If the subprocess
+	// crashes before Close() is called, clientCtx must be cancelled so any
+	// subsequent caller of send() unblocks with ErrClientClosed instead of
+	// hanging on c.writeCh forever.
+	//
+	// Defer order (LIFO; last-registered runs first):
+	//   1. stream-cleanup defer (registered last → runs first)
+	//   2. c.cancel() (cancels clientCtx → unblocks Prompt/Initialize callers)
+	//   3. c.wg.Done() (signals Close()'s wg.Wait() to proceed → runs last)
+	// Do NOT reorder these defers.
+	defer c.cancel()
 	defer func() {
 		// On any readLoop exit, close the active stream if one exists so callers
 		// waiting on Result() don't hang.
@@ -517,7 +533,10 @@ func (c *Client) Prompt(ctx context.Context, sessionID string, blocks []canonica
 		JSONRPC: "2.0",
 		ID:      id,
 		Method:  "session/prompt",
-		Params:  promptParams{SessionID: sessionID, Blocks: blocks},
+		// CR-05 fix: convert canonical.Block slice to wire shape so kiro-cli
+		// receives {"type":"text","content":"..."} rather than the Go default
+		// discriminated-struct encoding.
+		Params: promptParams{SessionID: sessionID, Blocks: translateBlocks(blocks)},
 	}); err != nil {
 		c.streamMu.Lock()
 		c.activeStream = nil
@@ -548,7 +567,17 @@ func (c *Client) Prompt(ctx context.Context, sessionID string, blocks []canonica
 			}
 			return nil, fmt.Errorf("acp: prompt: rpc error %d: %s", frame.Error.Code, frame.Error.Message)
 		}
-		return stream, nil
+		// CR-02 fix: close the stream when the prompt response arrives (not only on
+		// readLoop EOF). This ensures stream.Result() returns without waiting for
+		// subprocess exit. Clear activeStream BEFORE closing so any late
+		// session/update notification falls through to the "unknown session" Warn
+		// log rather than racing with a closed channel.
+		s := stream
+		c.streamMu.Lock()
+		c.activeStream = nil
+		c.streamMu.Unlock()
+		s.close(nil, nil)
+		return s, nil
 	}
 }
 
@@ -592,12 +621,13 @@ func (c *Client) handleNotification(frame rpcFrame) {
 			c.cfg.Logger.Warn("acp: marshal grant failed", "err", err)
 			return
 		}
+		// WR-02 fix: NO default arm. kiro-cli blocks forever if a grant is missed,
+		// so backpressure on writeCh is correct — pausing readLoop briefly is far
+		// better than silently dropping a grant the subprocess is waiting for.
 		select {
 		case c.writeCh <- data:
 		case <-c.clientCtx.Done():
 			// Client closing — drop grant.
-		default:
-			c.cfg.Logger.Warn("acp: writeCh full, dropping grant_permission")
 		}
 
 	case "session/update", "_kiro.dev/session/update":

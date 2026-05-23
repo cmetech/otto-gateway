@@ -68,3 +68,71 @@ func translateUpdate(u sessionUpdateParams) canonical.Chunk {
 		}
 	}
 }
+
+// wireBlock is the ACP wire shape for a prompt input block.
+//
+// canonical.Block uses a Go discriminated-union (Kind + pointer variants),
+// which encodes via Go's default reflect encoder as
+// {"Kind":0,"Text":{"Content":"..."},"ResourceLink":null} — NOT the wire shape
+// kiro-cli expects. The wire format is a flat object with a "type" string
+// discriminator and per-variant fields.
+//
+// CR-05 fix: translateBlock converts canonical.Block → wireBlock so the
+// canonical package stays ACP-wire-format-agnostic (D-04 adapter
+// responsibility). If kiro-cli changes its wire format, only translate.go
+// changes.
+type wireBlock struct {
+	Type    string `json:"type"`
+	Content string `json:"content,omitempty"` // present for type=="text"
+	URI     string `json:"uri,omitempty"`     // present for type=="resource_link"
+	Title   string `json:"title,omitempty"`   // present for type=="resource_link"
+}
+
+// translateBlock converts a canonical.Block to the ACP wire shape.
+//
+// Mapping:
+//
+//	BlockKindText         → {"type":"text","content":"..."}
+//	BlockKindResourceLink → {"type":"resource_link","uri":"...","title":"..."}
+//	<unknown>             → {"type":"text"}   (empty text — avoids data loss)
+//
+// A nil variant pointer for a known Kind produces a wireBlock with only the
+// type discriminator set (Content/URI/Title omitted via omitempty).
+func translateBlock(b canonical.Block) wireBlock {
+	switch b.Kind {
+	case canonical.BlockKindText:
+		if b.Text == nil {
+			return wireBlock{Type: "text"}
+		}
+		return wireBlock{Type: "text", Content: b.Text.Content}
+	case canonical.BlockKindResourceLink:
+		if b.ResourceLink == nil {
+			return wireBlock{Type: "resource_link"}
+		}
+		return wireBlock{
+			Type:  "resource_link",
+			URI:   b.ResourceLink.URI,
+			Title: b.ResourceLink.Title,
+		}
+	default:
+		// Unknown kind — fall back to empty text block to avoid data loss.
+		return wireBlock{Type: "text"}
+	}
+}
+
+// translateBlocks converts a slice of canonical.Block values to wire-shape
+// structs. A nil or empty input returns a nil slice so the marshaled JSON
+// is an explicit empty array via promptParams.Blocks (json.Marshal renders
+// a nil []wireBlock as `null`; an empty []wireBlock{} as `[]`).
+//
+// Callers should pass at least one block — Phase 2 adapters always do.
+func translateBlocks(blocks []canonical.Block) []wireBlock {
+	if len(blocks) == 0 {
+		return nil
+	}
+	out := make([]wireBlock, len(blocks))
+	for i, b := range blocks {
+		out[i] = translateBlock(b)
+	}
+	return out
+}
