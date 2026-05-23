@@ -34,6 +34,11 @@ versions; CI uses the pinned set.
   it and falls back to `gofmt` if absent.
 - **gitleaks v8.18.4** — pre-commit secret scanning; pinned in
   `.pre-commit-config.yaml`.
+- **shellcheck** (latest) — lints `scripts/setup-dev.sh` via the
+  `jumanjihouse/pre-commit-hooks v3.0.0` wrapper pinned in
+  `.pre-commit-config.yaml`. The hook is a thin wrapper around
+  the system `shellcheck` binary, so it must be installed
+  separately.
 
 Two further pins live in `.pre-commit-config.yaml` that you do not
 install directly but should be aware of:
@@ -95,7 +100,7 @@ Requires Homebrew (https://brew.sh) and Xcode Command Line Tools.
 1. Install the toolchain.
 
    ```bash
-   brew install go golangci-lint pre-commit gosec gofumpt gitleaks
+   brew install go golangci-lint pre-commit gosec gofumpt gitleaks shellcheck
    ```
 
 2. Wire the git pre-commit hook.
@@ -163,13 +168,20 @@ here. Run from a non-admin PowerShell.
    # or: scoop install main/gitleaks
    ```
 
-7. Wire the git pre-commit hook.
+7. Install shellcheck.
+
+   ```powershell
+   winget install --id koalaman.shellcheck --silent --accept-package-agreements --accept-source-agreements
+   # or: scoop install main/shellcheck
+   ```
+
+8. Wire the git pre-commit hook.
 
    ```powershell
    pre-commit install
    ```
 
-8. Build, test, lint. `make` is not installed by default on
+9. Build, test, lint. `make` is not installed by default on
    Windows; get it via `winget install ezwinports.make` or
    `scoop install main/make`.
 
@@ -237,6 +249,7 @@ pre-commit --version
 gosec --version
 gofumpt --version
 gitleaks version
+shellcheck --version
 ```
 
 Then verify the project builds, tests, and lints cleanly:

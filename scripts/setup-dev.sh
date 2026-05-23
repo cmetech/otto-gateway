@@ -72,6 +72,13 @@ else
   brew install gitleaks
 fi
 
+if command -v shellcheck >/dev/null 2>&1; then
+  echo "[skip] shellcheck already installed: $(shellcheck --version | awk '/^version:/ {print $2}')"
+else
+  echo "[install] shellcheck"
+  brew install shellcheck
+fi
+
 # --- Versions summary ---------------------------------------------------------
 
 echo
@@ -82,6 +89,7 @@ pre-commit --version
 gosec --version 2>&1 | head -1
 gofumpt --version
 gitleaks version
+shellcheck --version | awk '/^version:/ {print "shellcheck", $2}'
 
 # --- Next steps ---------------------------------------------------------------
 

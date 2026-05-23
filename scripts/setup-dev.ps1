@@ -121,6 +121,11 @@ Install-Tool -ToolName 'gitleaks' `
     -ScoopName 'main/gitleaks' `
     -VersionProbe { gitleaks version }
 
+Install-Tool -ToolName 'shellcheck' `
+    -WingetId 'koalaman.shellcheck' `
+    -ScoopName 'main/shellcheck' `
+    -VersionProbe { shellcheck --version }
+
 # --- Versions summary ---------------------------------------------------------
 
 Write-Host ''
@@ -131,6 +136,7 @@ pre-commit --version
 gosec --version
 gofumpt --version
 gitleaks version
+shellcheck --version
 
 # --- Next steps ---------------------------------------------------------------
 
