@@ -83,10 +83,28 @@ Plans:
   5. `session/request_permission` is handled as a REQUEST (responds to the original frame `id` with `{result:{optionId:"allow_always", granted:true}}`); the separate `session/grant_permission` request path from Phase 1 is removed.
   6. New integration test in `internal/acp/integration_test.go`: gated on real `kiro-cli` (D-17 pattern); spawns the subprocess, completes `Initialize → NewSession → Prompt("hi")`, drains `stream.Chunks`, asserts at least one `ChunkKindText` chunk arrives with non-empty content, asserts `Stream.Result()` returns with a non-error `StopReason` (typically `StopEndTurn`). `goleak.VerifyNone(t)` passes. **This is the verification gate that unblocks Phase 2.**
 
-**Plans:** TBD
+**Plans:** 5 plans
 
 Plans:
-- [ ] TBD (run /gsd-plan-phase 1.1 to break down)
+**Wave 1**
+
+- [ ] 01.1-01-PLAN.md — Canonical types: add StopReason enum (D-02), ModelInfo struct (D-03), PromptCapabilities struct (D-03), Name field on ResourceLinkBlock (D-04). Leaf-package additions only; foundation for Plans 02-04.
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 01.1-02-PLAN.md — Initialize handshake + accessors: spec-compliant initializeParams (D-08), capture agentCapabilities.promptCapabilities (D-09), add stateMu + caps + models fields (D-06), PromptCapabilities() + AvailableModels() accessors (D-05). Paired with whitebox test that asserts the capture via the fake-conn pattern.
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [ ] 01.1-03-PLAN.md — Session/new + prompt wire shape + stop reason: mcpServers:[] (D-10), sessionId/id fallback (D-11), extract availableModels (D-12), promptParams Prompt+Content defensive duplicate (D-13), wireBlock new fields with resource_link Name path.Base fallback (D-14, D-04), parseStopReason helper + Stream.Result returns StopReason (D-02, D-07). Paired with whitebox tests for parseStopReason, translateBlock resource_link Name fallback, and Prompt round-trip surfacing StopReason via Stream.Result.
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
+- [ ] 01.1-04-PLAN.md — Notification parsing variance + permission RESPONSE + fake-server rewrite: three notification method names (D-16), tolerant sessionUpdateParams with json.RawMessage (D-17), content extraction fallback chain (D-18), normalizeUpdateType + new switch with spec-compliant discriminators (D-19), session/request_permission RESPONSE on original frame id + delete session/grant_permission send path (D-20). Paired with TestTranslateUpdate_VarianceMatrix (D-22), TestNormalizeUpdateType, rewritten fakeacp_test.go with spec-compliant shapes (D-23), consolidated TestIntegration_FakeACP_E2E_MixedVariants (D-23), updated TestAutoGrantPermission. Threat model included (defensive parsing of untrusted JSON from kiro-cli stdout + permission response correctness).
+
+**Wave 5** *(blocked on Wave 4 completion — Phase 2 unblock gate)*
+
+- [ ] 01.1-05-PLAN.md — Real-kiro round-trip integration test (D-24): TestIntegration_RealKiroCLI_PromptRoundTrip runs Initialize → NewSession → Prompt(hi) → drain chunks → Result against real kiro-cli 2.4.1; asserts PromptCapabilities non-zero, AvailableModels non-empty, ≥1 ChunkKindText with non-empty content, StopReason is non-error (typically StopEndTurn). Includes a blocking human-verify checkpoint that confirms the test passed against the local kiro-cli — **this is the Phase 2 unblock signal**.
 
 **Canonical ref:** `docs/reference/acp_wire_shapes.md` (created during Phase 2 discuss) is the authoritative spec for the 10 wire-shape defects and the target shapes.
 
@@ -195,7 +213,6 @@ Plans:
 **Goal:** Local embedding endpoints serve BGE-Small EN-V1.5 (default) and gated additional models on three endpoints — `/api/embed`, `/api/embeddings`, `/v1/embeddings` — without ever calling `kiro-cli`. Embedding backend follows brief §3.4 Option C (out-of-process sidecar, provisional) unless plan-phase flips the decision.
 **Mode:** mvp
 **Depends on:** Phase 6
-**Requirements:** EMBD-01, EMBD-02, EMBD-03, EMBD-04, EMBD-05, EMBD-06
 **Success Criteria** (what must be TRUE):
 
   1. `POST /api/embed` with `{"model":"bge-small-en-v1.5","input":"hello"}` (or `input: [...]`) returns one embedding per input; `POST /api/embeddings` with a single `prompt` returns a single flat vector (legacy shape).
@@ -246,7 +263,7 @@ Phases execute in numeric order: 1 → 1.1 → 2 → 3 → 3.1 → 4 → 5 → 6
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Foundations | 5/5 | Complete   | 2026-05-23 |
-| 1.1. ACP Wire Alignment (INSERTED) | 0/TBD | Not started | - |
+| 1.1. ACP Wire Alignment (INSERTED) | 0/5 | Not started | - |
 | 2. Ollama End-to-End | 0/TBD | Not started | - |
 | 3. OpenAI Surface | 0/TBD | Not started | - |
 | 4. Streaming | 0/TBD | Not started | - |
