@@ -142,17 +142,76 @@ Explicitly excluded. Documented to prevent scope creep.
 
 ## Traceability
 
-Empty initially. Populated by `/gsd:plan-phase` and updated as phases complete.
+Populated by the roadmapper from `.planning/ROADMAP.md`. Updated as phases complete.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| _(all v1 requirements above)_ | _(TBD by roadmapper)_ | Pending |
+| SURF-01 | Phase 2 | Pending |
+| SURF-02 | Phase 3 | Pending |
+| SURF-03 | Phase 2 | Pending |
+| SURF-04 | Phase 3 | Pending |
+| SURF-05 | Phase 2 | Pending |
+| SURF-06 | Phase 3 | Pending |
+| SURF-07 | Phase 2 | Pending |
+| STRM-01 | Phase 4 | Pending |
+| STRM-02 | Phase 4 | Pending |
+| STRM-03 | Phase 4 | Pending |
+| STRM-04 | Phase 4 | Pending |
+| STRM-05 | Phase 4 | Pending |
+| TOOL-01 | Phase 6 | Pending |
+| TOOL-02 | Phase 6 | Pending |
+| TOOL-03 | Phase 6 | Pending |
+| ACP-01 | Phase 1 | Pending |
+| ACP-02 | Phase 1 | Pending |
+| ACP-03 | Phase 1 | Pending |
+| ACP-04 | Phase 1 | Pending |
+| ACP-05 | Phase 1 | Pending |
+| ACP-06 | Phase 1 | Pending |
+| ACP-07 | Phase 2 | Pending |
+| POOL-01 | Phase 5 | Pending |
+| POOL-02 | Phase 5 | Pending |
+| POOL-03 | Phase 5 | Pending |
+| POOL-04 | Phase 5 | Pending |
+| SESS-01 | Phase 5 | Pending |
+| SESS-02 | Phase 5 | Pending |
+| SESS-03 | Phase 5 | Pending |
+| EMBD-01 | Phase 7 | Pending |
+| EMBD-02 | Phase 7 | Pending |
+| EMBD-03 | Phase 7 | Pending |
+| EMBD-04 | Phase 7 | Pending |
+| EMBD-05 | Phase 7 | Pending |
+| EMBD-06 | Phase 7 | Pending |
+| PLUG-01 | Phase 8 | Pending |
+| PLUG-02 | Phase 8 | Pending |
+| PLUG-03 | Phase 8 | Pending |
+| PLUG-04 | Phase 8 | Pending |
+| PLUG-05 | Phase 8 | Pending |
+| AUTH-01 | Phase 2 | Pending |
+| AUTH-02 | Phase 2 | Pending |
+| AUTH-03 | Phase 2 | Pending |
+| OBSV-01 | Phase 2 | Pending |
+| OBSV-02 | Phase 5 | Pending |
+| OBSV-03 | Phase 8 | Pending |
+| BLD-01 | Phase 1 | Pending |
+| BLD-02 | Phase 9 | Pending |
+| BLD-03 | Phase 9 | Pending |
+| BLD-04 | Phase 9 | Pending |
+| TRST-01 | Phase 1 | Pending |
+| TRST-02 | Phase 1 | Pending |
+| TRST-03 | Phase 1 | Pending |
+| TRST-04 | Phase 9 | Pending |
+| TRST-05 | Phase 9 | Pending |
+| TRST-06 | Phase 9 | Pending |
+| TRST-07 | Phase 9 | Pending |
+| TRST-08 | Phase 1 | Pending |
 
 **Coverage:**
-- v1 requirements: 53 total
-- Mapped to phases: 0 (roadmap pending)
-- Unmapped: 53 ⚠️ — resolved when ROADMAP.md is generated
+- v1 requirements: 58 total
+- Mapped to phases: 58 ✓
+- Unmapped: 0 ✓
+
+> Note: an earlier draft of this file listed "53 total" requirements; the actual count of REQ-IDs above is 58. Corrected here as part of the roadmap traceability pass.
 
 ---
 *Requirements defined: 2026-05-23*
-*Last updated: 2026-05-23 after initial definition*
+*Last updated: 2026-05-23 — Traceability populated by roadmapper; all 58 v1 REQ-IDs mapped to phases 1–9.*
