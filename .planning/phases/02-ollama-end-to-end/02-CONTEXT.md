@@ -153,6 +153,15 @@ Phase 1.1 (ACP Wire Alignment) closes the gap, adds a real-kiro
   the rest are zero-valued seams. Phase 3 / 3.1 / 4 / 6 activate dormant
   fields with zero canonical-type churn.
 
+  > **D-08 footnote (2026-05-23 — Codex review H-2, user-directed):** ChatRequest
+  > also gains `ResourceLinks []ResourceLinkBlock` as a Phase 2 forward-design
+  > seam (zero-valued in Ollama; populated by Phase 3.1 Anthropic resource_link
+  > blocks). This is necessary so `engine.pickCwd`'s longest-common-parent
+  > derivation (D-16 step 2) has a sourceable field — the Phase 2 cwd-from-
+  > resource_link unit test populates this field directly to satisfy SC #5.
+  > Without it, SC #5 is structurally unsatisfiable because no `ContentPart`
+  > kind carries resource_link URIs.
+
 - **D-09: `canonical.Message` uses `[]ContentPart` from day one.**
   ```go
   type Message struct {
@@ -174,6 +183,16 @@ Phase 1.1 (ACP Wire Alignment) closes the gap, adds a real-kiro
   (from Ollama `messages[].images: [b64]`). Other kinds wait for Phase
   3.1 / 6. Single-package — `internal/canonical` imports nothing under
   `internal/` (D-04 from Phase 1 still holds).
+
+  > **D-09 footnote (2026-05-23 — Codex review M-1, user-directed):** Phase 2
+  > also extends `canonical.Block` with `BlockKindImage` plus an
+  > `ImageBlock{ Source, MIMEType, Data }` variant, and the engine's
+  > `buildBlocks` emits a `BlockKindImage` block for every
+  > `ContentKindImage` part it encounters. Without this, Ollama
+  > `messages[].images: [b64]` would round-trip through canonical only to be
+  > silently dropped at the ACP block boundary. The Ollama adapter
+  > base64-decodes the wire image and populates `ContentPart{Kind:
+  > ContentKindImage, Image: &ImagePart{...}}`.
 
 - **D-10: `canonical.ChatResponse` is tri-surface forward-designed,
   symmetric to ChatRequest.** Fields: `ID string`, `Model string`,
