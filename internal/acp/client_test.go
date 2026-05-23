@@ -8,11 +8,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"testing"
 	"time"
 
 	"go.uber.org/goleak"
 
+	"loop24-gateway/internal/canonical"
 	"loop24-gateway/internal/testutil"
 )
 
@@ -403,6 +405,163 @@ func TestSetModelCancelledContext(t *testing.T) {
 	mock.serverClose()
 	_ = c.Close()
 	goleak.VerifyNone(t)
+}
+
+// TestInitialize_CapturesPromptCapabilities verifies the Plan 1.1-02 D-09
+// contract: after a successful Initialize, the client surfaces the agent's
+// promptCapabilities via the PromptCapabilities() accessor. Three sub-tests
+// cover the three relevant states.
+//
+// Layout note: each sub-test stands up its own mockRWC + responder goroutine
+// because newFakeACPServer (in fakeacp_test.go) lives in the blackbox
+// acp_test package and isn't reachable from this whitebox file.
+func TestInitialize_CapturesPromptCapabilities(t *testing.T) {
+	t.Run("before_initialize", func(t *testing.T) {
+		mock := newMockRWC()
+		cfg := newTestConfig(t)
+
+		c := NewWithConn(mock, cfg)
+		defer func() {
+			mock.serverClose()
+			_ = c.Close()
+			goleak.VerifyNone(t)
+		}()
+
+		// Without calling Initialize, the accessor must return the zero value
+		// (all false) per D-09 defensive-parse contract.
+		got := c.PromptCapabilities()
+		want := canonical.PromptCapabilities{}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("PromptCapabilities() before Initialize: got %+v, want zero %+v", got, want)
+		}
+		if models := c.AvailableModels(); models != nil {
+			t.Errorf("AvailableModels() before NewSession: got %+v, want nil", models)
+		}
+	})
+
+	t.Run("after_initialize_captures_caps", func(t *testing.T) {
+		mock := newMockRWC()
+		cfg := newTestConfig(t)
+
+		c := NewWithConn(mock, cfg)
+		defer func() {
+			mock.serverClose()
+			_ = c.Close()
+			goleak.VerifyNone(t)
+		}()
+
+		// Responder reads the initialize request line and writes back a result
+		// containing the full promptCapabilities object (D-09).
+		serveErr := make(chan error, 1)
+		go func() {
+			line, err := readLineFromPipe(mock.serverRead)
+			if err != nil {
+				serveErr <- fmt.Errorf("read initialize: %w", err)
+				return
+			}
+			var req map[string]any
+			if err := json.Unmarshal(line, &req); err != nil {
+				serveErr <- fmt.Errorf("unmarshal initialize: %w", err)
+				return
+			}
+			if err := mock.serverWriteJSON(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      req["id"],
+				"result": map[string]any{
+					"protocolVersion": 1,
+					"agentCapabilities": map[string]any{
+						"promptCapabilities": map[string]any{
+							"image":           true,
+							"audio":           false,
+							"embeddedContext": true,
+						},
+					},
+				},
+			}); err != nil {
+				serveErr <- fmt.Errorf("write initialize response: %w", err)
+				return
+			}
+			serveErr <- nil
+		}()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		if err := c.Initialize(ctx); err != nil {
+			t.Fatalf("Initialize: %v", err)
+		}
+		if err := <-serveErr; err != nil {
+			t.Fatalf("responder: %v", err)
+		}
+
+		got := c.PromptCapabilities()
+		want := canonical.PromptCapabilities{
+			Image:           true,
+			Audio:           false,
+			EmbeddedContext: true,
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("PromptCapabilities() after Initialize: got %+v, want %+v", got, want)
+		}
+
+		// AvailableModels stays nil until NewSession runs (Plan 03 wires it).
+		if models := c.AvailableModels(); models != nil {
+			t.Errorf("AvailableModels() before NewSession: got %+v, want nil", models)
+		}
+	})
+
+	t.Run("empty_caps_yields_zero_value", func(t *testing.T) {
+		mock := newMockRWC()
+		cfg := newTestConfig(t)
+
+		c := NewWithConn(mock, cfg)
+		defer func() {
+			mock.serverClose()
+			_ = c.Close()
+			goleak.VerifyNone(t)
+		}()
+
+		// Responder writes back an empty result — D-09 says this must NOT
+		// be an error; the caps stay at zero.
+		serveErr := make(chan error, 1)
+		go func() {
+			line, err := readLineFromPipe(mock.serverRead)
+			if err != nil {
+				serveErr <- fmt.Errorf("read initialize: %w", err)
+				return
+			}
+			var req map[string]any
+			if err := json.Unmarshal(line, &req); err != nil {
+				serveErr <- fmt.Errorf("unmarshal initialize: %w", err)
+				return
+			}
+			if err := mock.serverWriteJSON(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      req["id"],
+				"result":  map[string]any{},
+			}); err != nil {
+				serveErr <- fmt.Errorf("write initialize response: %w", err)
+				return
+			}
+			serveErr <- nil
+		}()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		if err := c.Initialize(ctx); err != nil {
+			t.Fatalf("Initialize (empty caps): %v", err)
+		}
+		if err := <-serveErr; err != nil {
+			t.Fatalf("responder: %v", err)
+		}
+
+		got := c.PromptCapabilities()
+		want := canonical.PromptCapabilities{}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("PromptCapabilities() with empty result: got %+v, want zero %+v", got, want)
+		}
+	})
 }
 
 // readLineFromPipe reads one newline-terminated line from r.

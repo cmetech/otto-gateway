@@ -75,9 +75,14 @@ type rpcNotification struct {
 }
 
 // initializeParams is the params payload for the initialize request.
+// Phase 1.1 D-08: spec-compliant shape — adds ProtocolVersion and renames
+// the Capabilities field to ClientCapabilities (with fs + terminal nested
+// flags). Phase 1's empty `capabilities: {}` shape was wrong; kiro-cli
+// tolerated it but the live ACP spec requires this shape.
 type initializeParams struct {
-	ClientInfo   clientInfo   `json:"clientInfo"`
-	Capabilities capabilities `json:"capabilities"`
+	ProtocolVersion    int                `json:"protocolVersion"`
+	ClientInfo         clientInfo         `json:"clientInfo"`
+	ClientCapabilities clientCapabilities `json:"clientCapabilities"`
 }
 
 type clientInfo struct {
@@ -85,7 +90,44 @@ type clientInfo struct {
 	Version string `json:"version"`
 }
 
-type capabilities struct{}
+// clientCapabilities declares what reverse RPCs the gateway can service.
+// Phase 1.1 D-08: the gateway does NOT implement fs/* or terminal/* reverse
+// handlers, so all flags are false. The Node implementation declares true
+// because it relays those calls; we don't (yet).
+type clientCapabilities struct {
+	Fs       fsCapabilities `json:"fs"`
+	Terminal bool           `json:"terminal"`
+}
+
+// fsCapabilities declares whether the client supports fs/read_text_file and
+// fs/write_text_file reverse requests from the agent. Phase 1.1: both false.
+type fsCapabilities struct {
+	ReadTextFile  bool `json:"readTextFile"`
+	WriteTextFile bool `json:"writeTextFile"`
+}
+
+// initializeResult is the result envelope returned by the initialize call.
+// Phase 1.1 D-09: capture agentCapabilities.promptCapabilities so callers can
+// inspect the agent's content-block support via PromptCapabilities(). Missing
+// or empty promptCapabilities → zero struct (all false); this is defensive
+// behaviour required by D-09.
+type initializeResult struct {
+	AgentCapabilities agentCapabilities `json:"agentCapabilities"`
+}
+
+// agentCapabilities is the wire shape of the initialize-response capabilities.
+type agentCapabilities struct {
+	PromptCapabilities promptCapabilitiesWire `json:"promptCapabilities"`
+}
+
+// promptCapabilitiesWire is the JSON-tagged twin of canonical.PromptCapabilities.
+// Wire shapes live inside internal/acp; canonical types stay JSON-tag-free per
+// Phase 1 D-11. Field-by-field translation happens in Initialize.
+type promptCapabilitiesWire struct {
+	Image           bool `json:"image"`
+	Audio           bool `json:"audio"`
+	EmbeddedContext bool `json:"embeddedContext"`
+}
 
 // sessionNewParams is the params payload for session/new.
 type sessionNewParams struct {
@@ -153,6 +195,14 @@ type Client struct {
 	// Guarded by streamMu.
 	activeStream *Stream
 	streamMu     sync.Mutex
+
+	// caps and models hold handshake state captured during Initialize/NewSession.
+	// Guarded by stateMu (D-06: separate from streamMu so the active-stream
+	// critical section stays narrow). models is populated by NewSession (Plan 03);
+	// declared here so the struct layout is final.
+	stateMu sync.RWMutex
+	caps    canonical.PromptCapabilities
+	models  []canonical.ModelInfo
 }
 
 // New spawns a kiro-cli subprocess and returns a connected Client.
@@ -387,6 +437,12 @@ func (c *Client) failPending(err error) {
 
 // Initialize sends the JSON-RPC initialize request and waits for a response.
 // ACP-03: required before any session/new or ping call.
+//
+// Phase 1.1 D-08/D-09: emits the spec-compliant params shape and captures
+// agentCapabilities.promptCapabilities from the response into c.caps under
+// c.stateMu. The signature is unchanged per D-05 so main.go and the future
+// pool do not need to rebuild. Defensive parse: a missing or empty
+// promptCapabilities object leaves c.caps at the zero value (all false).
 func (c *Client) Initialize(ctx context.Context) error {
 	id := c.nextID.Add(1)
 	respCh := c.disp.register(id)
@@ -397,8 +453,15 @@ func (c *Client) Initialize(ctx context.Context) error {
 		ID:      id,
 		Method:  "initialize",
 		Params: initializeParams{
-			ClientInfo:   clientInfo{Name: "loop24-gateway", Version: version.Version},
-			Capabilities: capabilities{},
+			ProtocolVersion: 1,
+			ClientInfo:      clientInfo{Name: "loop24-gateway", Version: version.Version},
+			ClientCapabilities: clientCapabilities{
+				Fs: fsCapabilities{
+					ReadTextFile:  false,
+					WriteTextFile: false,
+				},
+				Terminal: false,
+			},
 		},
 	}); err != nil {
 		return err
@@ -414,6 +477,23 @@ func (c *Client) Initialize(ctx context.Context) error {
 			}
 			return fmt.Errorf("acp: initialize: rpc error %d: %s", frame.Error.Code, frame.Error.Message)
 		}
+		// D-09: capture promptCapabilities. An empty/missing object naturally
+		// unmarshals into the zero struct (all false), which is the documented
+		// defensive-parse contract — callers should not see an error for that.
+		var r initializeResult
+		if len(frame.Result) > 0 {
+			if err := json.Unmarshal(frame.Result, &r); err != nil {
+				return fmt.Errorf("acp: initialize result: %w", err)
+			}
+		}
+		caps := canonical.PromptCapabilities{
+			Image:           r.AgentCapabilities.PromptCapabilities.Image,
+			Audio:           r.AgentCapabilities.PromptCapabilities.Audio,
+			EmbeddedContext: r.AgentCapabilities.PromptCapabilities.EmbeddedContext,
+		}
+		c.stateMu.Lock()
+		c.caps = caps
+		c.stateMu.Unlock()
 		return nil
 	}
 }
@@ -702,4 +782,33 @@ func (c *Client) Close() error {
 		}
 	})
 	return firstErr
+}
+
+// PromptCapabilities returns the agent's prompt capabilities captured during
+// the most recent successful Initialize. Before Initialize succeeds (or if
+// the agent omitted the field), this returns the zero canonical.PromptCapabilities
+// (all flags false). The returned value is a snapshot — callers may compare
+// it freely without locking.
+//
+// D-05: no context arg — this is a cached read, not an RPC.
+func (c *Client) PromptCapabilities() canonical.PromptCapabilities {
+	c.stateMu.RLock()
+	defer c.stateMu.RUnlock()
+	return c.caps
+}
+
+// AvailableModels returns a snapshot of the models exposed by the agent in
+// the most recent successful NewSession response. Before NewSession succeeds,
+// this returns nil. The returned slice is a defensive copy — callers may
+// mutate it without affecting the client's internal state.
+//
+// D-05: no context arg — this is a cached read, not an RPC.
+// Plan 03 populates c.models; this plan declares the field and the accessor.
+func (c *Client) AvailableModels() []canonical.ModelInfo {
+	c.stateMu.RLock()
+	defer c.stateMu.RUnlock()
+	if c.models == nil {
+		return nil
+	}
+	return append([]canonical.ModelInfo(nil), c.models...)
 }
