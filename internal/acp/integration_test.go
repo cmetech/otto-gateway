@@ -254,12 +254,166 @@ func TestIntegration_FakeACP_E2E_MixedVariants(t *testing.T) {
 	}
 }
 
+// TestIntegration_RealKiroCLI_PromptRoundTrip is the Phase 2 unblock gate
+// (Plan 01.1-05, CONTEXT.md D-24). It exercises the full Phase 1.1 wire-
+// alignment work — Initialize -> NewSession -> Prompt("hi") -> drain
+// session/update notifications -> stream.Result() — against the real
+// kiro-cli 2.4.1 binary that the Phase 1.1 fake server was built to mimic.
+//
+// Skips cleanly when kiro-cli is not on PATH and LOOP24_KIRO_BIN is unset
+// (D-17 pattern). When kiro-cli is present but exits before responding to
+// initialize (typically because auth has expired), the test soft-skips per
+// the SmokeTest convention.
+//
+// Assertions (per D-24 step list, see Plan 05 §<action>):
+//   - client.PromptCapabilities() is non-zero after Initialize (Plan 02 D-09
+//     accessor end-to-end against the real agentCapabilities shape).
+//   - client.AvailableModels() is non-empty after NewSession (Plan 03 D-12
+//     accessor end-to-end against the real models.availableModels shape).
+//   - At least one ChunkKindText chunk arrives on stream.Chunks with
+//     non-empty Text.Content (Plans 02/03/04 parsing path end-to-end).
+//   - stream.Result().StopReason is one of the non-error values —
+//     StopEndTurn, StopMaxTokens, or StopMaxTurnRequests (Plan 03 D-07
+//     parseStopReason end-to-end). StopUnknown is treated as a failure
+//     (the wire string from kiro-cli was unrecognised or missing).
+//
+// Timeout: 90 seconds — cold LLM responses can take that long even on a
+// trivial "hi" prompt; the SmokeTest's 30s is enough for non-prompt RPCs
+// but not for a full turn.
+func TestIntegration_RealKiroCLI_PromptRoundTrip(t *testing.T) {
+	bin := resolveKiroCLI(t) // t.Skip fires here if kiro-cli absent
+
+	cfg := acp.Config{
+		Logger:       testutil.Logger(t),
+		Command:      bin,
+		Args:         []string{"acp"},
+		PingInterval: 10 * time.Minute, // disable periodic ping during test
+	}
+
+	client, err := acp.New(cfg)
+	if err != nil {
+		t.Fatalf("acp.New: %v", err)
+	}
+	defer func() {
+		if err := client.Close(); err != nil {
+			// Non-zero exit from kiro-cli is expected when we close stdin.
+			t.Logf("client.Close (expected non-zero exit): %v", err)
+		}
+		goleak.VerifyNone(t)
+	}()
+
+	// D-24 step (5): 90s timeout — LLM responses can take that long on a
+	// cold call. SmokeTest uses 30s for non-prompt RPCs.
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	// D-24 step (6): Initialize with ErrClientClosed -> Skip guard (auth
+	// expiry presents as kiro-cli exiting before responding).
+	if err := client.Initialize(ctx); err != nil {
+		if errors.Is(err, acp.ErrClientClosed) {
+			t.Skipf("kiro-cli exited before responding to initialize (may require auth refresh — run kiro-cli interactively): %v", err)
+		}
+		t.Fatalf("Initialize: %v", err)
+	}
+	t.Log("Initialize: OK")
+
+	// D-24 step (7): PromptCapabilities() should be non-zero after Initialize.
+	// Errorf (not Fatalf) — the prompt round-trip itself is still worth
+	// running even if caps came through zero; the bug surface differs.
+	caps := client.PromptCapabilities()
+	if !caps.Image && !caps.Audio && !caps.EmbeddedContext {
+		t.Errorf("PromptCapabilities() returned all-false; expected at least one capability flag set by kiro-cli (got %+v)", caps)
+	} else {
+		t.Logf("PromptCapabilities(): %+v", caps)
+	}
+
+	// D-24 step (8): NewSession.
+	sessionID, err := client.NewSession(ctx, os.TempDir())
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	if sessionID == "" {
+		t.Fatal("NewSession returned empty sessionID")
+	}
+	t.Logf("NewSession: OK (sessionID=%s)", sessionID)
+
+	// D-24 step (9): AvailableModels() should be non-empty after NewSession.
+	models := client.AvailableModels()
+	if len(models) == 0 {
+		t.Errorf("AvailableModels() returned nil/empty; expected at least one model from kiro-cli")
+	} else {
+		t.Logf("AvailableModels(): %d models, first = %+v", len(models), models[0])
+	}
+
+	// D-24 step (10): Prompt with a single text block.
+	blocks := []canonical.Block{
+		{Kind: canonical.BlockKindText, Text: &canonical.TextBlock{Content: "hi"}},
+	}
+	stream, err := client.Prompt(ctx, sessionID, blocks)
+	if err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	t.Log("Prompt: returned without deadlock (D-20 fix exercised implicitly)")
+
+	// D-24 step (11): drain stream.Chunks. Count text chunks with non-empty
+	// content; capture the first for the t.Logf below.
+	var textChunks int
+	var firstText string
+	drained := false
+	for !drained {
+		select {
+		case chunk, ok := <-stream.Chunks:
+			if !ok {
+				drained = true
+				break
+			}
+			if chunk.Kind == canonical.ChunkKindText && chunk.Text != nil && chunk.Text.Content != "" {
+				textChunks++
+				if firstText == "" {
+					firstText = chunk.Text.Content
+				}
+			}
+		case <-ctx.Done():
+			t.Fatalf("timed out waiting for chunks (ctx: %v)", ctx.Err())
+		}
+	}
+	if textChunks == 0 {
+		t.Errorf("no ChunkKindText chunks with non-empty content arrived; the agent never responded with text")
+	} else {
+		t.Logf("received %d text chunks; first chunk content (truncated to 80 chars): %.80s", textChunks, firstText)
+	}
+
+	// D-24 step (12): final result.
+	result, err := stream.Result()
+	if err != nil {
+		t.Fatalf("stream.Result(): %v", err)
+	}
+	if result == nil {
+		t.Fatal("stream.Result() returned nil result")
+	}
+
+	// D-24 step (13): StopReason must be a non-error value. Acceptable per
+	// D-02: StopEndTurn (typical), StopMaxTokens (rare for "hi"),
+	// StopMaxTurnRequests. StopUnknown means parseStopReason did not
+	// recognise the wire value — that's a Plan 03 surface to investigate.
+	// StopRefusal / StopCancelled are legitimate kiro behaviour but
+	// indicate the round-trip did not complete normally.
+	switch result.StopReason {
+	case canonical.StopEndTurn, canonical.StopMaxTokens, canonical.StopMaxTurnRequests:
+		t.Logf("stream.Result().StopReason = %v (non-error stop)", result.StopReason)
+	case canonical.StopUnknown:
+		t.Errorf("stream.Result().StopReason = StopUnknown; expected a parsed canonical StopReason (the wire string from kiro-cli was unrecognised or missing)")
+	default:
+		t.Errorf("stream.Result().StopReason = %v; expected a non-error stop reason (StopEndTurn/StopMaxTokens/StopMaxTurnRequests)", result.StopReason)
+	}
+}
+
 // TestIntegration_RealKiroCLI_SmokeTest skips cleanly when kiro-cli is not found.
 // When present, it exercises Initialize → NewSession → Ping → Close without goroutine leaks.
 // D-17: LOOP24_KIRO_BIN env var override.
 //
 // Unchanged by Plan 04 — Plan 05 adds TestIntegration_RealKiroCLI_PromptRoundTrip
-// next to this.
+// above this.
 func TestIntegration_RealKiroCLI_SmokeTest(t *testing.T) {
 	bin := resolveKiroCLI(t) // t.Skip fires here if kiro-cli absent
 
