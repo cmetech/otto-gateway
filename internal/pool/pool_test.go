@@ -159,9 +159,9 @@ func (ff *fakeClientFactory) Spawn(_ context.Context, _ acp.Config) (pool.PoolCl
 // ---------------------------------------------------------------------------
 
 // hasKiroBinary reports whether real-kiro tests should run. Mirrors
-// the LOOP24_INTEGRATION=1 gate from Phase 1 (D-17).
+// the OTTO_INTEGRATION=1 gate from Phase 1 (D-17).
 func hasKiroBinary() bool {
-	if os.Getenv("LOOP24_INTEGRATION") != "1" {
+	if os.Getenv("OTTO_INTEGRATION") != "1" {
 		return false
 	}
 	_, err := exec.LookPath("kiro-cli")
@@ -207,7 +207,7 @@ func TestPool_Warmup_NoKiroCmd_FailsFast(t *testing.T) {
 	p := pool.New(pool.Config{
 		Logger:  testutil.Logger(t),
 		Size:    1,
-		KiroCmd: "/nonexistent/binary-xyz-loop24-test",
+		KiroCmd: "/nonexistent/binary-xyz-otto-test",
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -224,7 +224,7 @@ func TestPool_Warmup_NoKiroCmd_FailsFast(t *testing.T) {
 
 func TestPool_Warmup_SkipsWithoutKiroBinary(t *testing.T) {
 	if !hasKiroBinary() {
-		t.Skip("LOOP24_INTEGRATION=1 + kiro-cli on PATH required for real-kiro warmup")
+		t.Skip("OTTO_INTEGRATION=1 + kiro-cli on PATH required for real-kiro warmup")
 	}
 	p := pool.New(pool.Config{
 		Logger:   testutil.Logger(t),

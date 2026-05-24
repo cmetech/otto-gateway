@@ -520,7 +520,7 @@ func (c *Client) Initialize(ctx context.Context) error {
 		Method:  "initialize",
 		Params: initializeParams{
 			ProtocolVersion: 1,
-			ClientInfo:      clientInfo{Name: "loop24-gateway", Version: version.Version},
+			ClientInfo:      clientInfo{Name: "otto-gateway", Version: version.Version},
 			ClientCapabilities: clientCapabilities{
 				Fs: fsCapabilities{
 					ReadTextFile:  false,

@@ -1,4 +1,4 @@
-// Package main is the entry point for the Loop24 Gateway binary.
+// Package main is the entry point for the OTTO Gateway binary.
 //
 // Wiring order (Plan 06 POOL-02):
 //
@@ -20,7 +20,7 @@
 //     fires via the deferred cleanup closure returned by newApp.
 //
 // D-22: the binary stays foreground-only. start/stop/status are owned by
-// scripts/loop24 (POSIX) and scripts/loop24.ps1 (PowerShell). Never add
+// scripts/otto (POSIX) and scripts/otto.ps1 (PowerShell). Never add
 // lifecycle subcommands to the binary.
 package main
 

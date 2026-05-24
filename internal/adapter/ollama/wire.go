@@ -188,7 +188,7 @@ type ollamaPSResponse struct {
 	Models []ollamaPSEntry `json:"models"`
 }
 
-// ollamaVersionResponse is the GET /api/version body — Loop24 extension
+// ollamaVersionResponse is the GET /api/version body — OTTO extension
 // over the public Ollama spec (which returns only {version}). The
 // `commit` field is a non-breaking extension; LangFlow ignores it.
 type ollamaVersionResponse struct {

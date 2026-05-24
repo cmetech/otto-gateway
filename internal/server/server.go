@@ -1,4 +1,4 @@
-// Package server provides the HTTP server for the Loop24 gateway.
+// Package server provides the HTTP server for the OTTO Gateway.
 // It wires the chi router, middleware chain, and request handlers.
 package server
 
@@ -210,7 +210,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (s *Server) rootHandler(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(`{"name":"loop24-gateway"}` + "\n"))
+	_, _ = w.Write([]byte(`{"name":"otto-gateway"}` + "\n"))
 }
 
 // Run starts the HTTP server and blocks until ctx is cancelled.

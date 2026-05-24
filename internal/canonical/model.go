@@ -1,5 +1,5 @@
 // Package canonical defines the typed chunk and block types that flow through
-// the Loop24 gateway. This package imports nothing under internal/.
+// the OTTO Gateway. This package imports nothing under internal/.
 package canonical
 
 // ModelInfo identifies a model exposed by kiro-cli's session/new response.

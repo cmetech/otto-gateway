@@ -13,7 +13,7 @@ import (
 // ALLOWED_IPS is unset, per D-14).
 //
 // SECURITY NOTE (Codex H-7 / threat T-02-06): X-Forwarded-For is NOT trusted
-// unless cfg.TrustXForwardedFor is true. The Loop24 deployment model is
+// unless cfg.TrustXForwardedFor is true. The OTTO deployment model is
 // laptop-local (Assumption A3) — a process on localhost can set
 // `X-Forwarded-For: 127.0.0.1` and bypass an allowlist that honors XFF
 // blindly. Operators opt in to XFF trust ONLY when a known reverse proxy

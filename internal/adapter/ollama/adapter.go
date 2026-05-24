@@ -1,5 +1,5 @@
-// Package ollama implements the Ollama-shape HTTP surface for the Loop24
-// gateway. It exposes a chi sub-router that mounts under the configured
+// Package ollama implements the Ollama-shape HTTP surface for the OTTO
+// Gateway. It exposes a chi sub-router that mounts under the configured
 // OLLAMA_PATH_PREFIX (default "/api") and forwards canonical requests
 // through the engine.
 //

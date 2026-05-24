@@ -1,5 +1,5 @@
 // Package anthropic implements the Anthropic-shape HTTP surface for the
-// Loop24 gateway. It exposes a chi sub-router that mounts under the
+// OTTO Gateway. It exposes a chi sub-router that mounts under the
 // configured ANTHROPIC_PATH_PREFIX (default "/v1") and forwards
 // canonical requests through the engine to the warm kiro-cli pool.
 //
