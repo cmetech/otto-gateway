@@ -5,7 +5,7 @@ milestone_name: milestone
 status: ready_to_plan
 stopped_at: Phase 03.1 complete (6/6) — ready to discuss Phase 4
 last_updated: 2026-05-24T16:40:56.227Z
-last_activity: 2026-05-24 -- Completed quick task 260524-pee: E2E test suite (10 pass/0 fail/1 skip live)
+last_activity: 2026-05-24 -- Completed quick task 260524-pyd: Ollama E2E contract coverage (18 pass/0 fail/0 skip live)
 progress:
   total_phases: 11
   completed_phases: 3
@@ -92,6 +92,7 @@ None yet.
 | 260524-ldx | CLI flag support (flag-wins-over-env) for gateway binary | 2026-05-24 | f325d04 | [260524-ldx-cli-flags](./quick/260524-ldx-cli-flags/) |
 | 260524-md7 | Rebrand loop24-gateway → OTTO Gateway (Tier 2 full code rebrand; dir rename deferred to Tier 3) | 2026-05-24 | e89cbf3 | [260524-md7-otto-rebrand](./quick/260524-md7-otto-rebrand/) |
 | 260524-pee | E2E suite (real-binary boot + kiro, markdown report) automating HUMAN-UAT 1/2/3/6; opt-in Node SDK harness for 4/5 | 2026-05-24 | a57cbf5 | [260524-pee-e2e-suite](./quick/260524-pee-e2e-suite/) |
+| 260524-pyd | E2E Ollama contract coverage (LangFlow surface): version/auth/tags/chat/generate + stream-downgrade guard; live 18 pass/0 fail/0 skip | 2026-05-24 | 49fb09e | [260524-pyd-ollama-e2e](./quick/260524-pyd-ollama-e2e/) |
 
 ## Deferred Items
 
