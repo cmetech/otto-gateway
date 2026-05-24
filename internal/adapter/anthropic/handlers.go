@@ -1,10 +1,6 @@
 package anthropic
 
 import (
-	"context"
-	"encoding/json"
-	"fmt"
-	"log/slog"
 	"net/http"
 )
 
@@ -30,7 +26,8 @@ const messagesBodyCap int64 = 4 << 20
 //  6. wireToChatRequest builds canonical request.
 //  7. Branch on wire.Stream:
 //     - false (or absent): Engine.Collect → chatResponseToMessage → JSON.
-//     - true: Engine.Run → runSSEEmitterStub (Plan 03 replaces).
+//     - true: Engine.Run → runSSEEmitter (real Plan 03.1-03 emitter
+//       in sse.go — Plan 02 stub deleted).
 //  8. T-02-33: engine errors are LOGGED via slog.Error and rendered
 //     as 500 errAPI with the generic message "internal error" —
 //     never echo err.Error() which may contain request fragments.
@@ -85,11 +82,24 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 	if wire.Stream {
 		runHandle, err := a.cfg.Engine.Run(r.Context(), req)
 		if err != nil {
+			// Engine.Run failed BEFORE any SSE headers were written —
+			// respond with a normal JSON 500 envelope (T-02-33: never
+			// echo err.Error() which may contain request fragments).
 			a.cfg.Logger.Error("anthropic: engine.Run error", "err", err)
 			writeError(w, http.StatusInternalServerError, errAPI, "internal error")
 			return
 		}
-		runSSEEmitterStub(r.Context(), w, runHandle, wire.Model, a.cfg.Logger)
+		if err := runSSEEmitter(r.Context(), w, runHandle, wire.Model, a.cfg.Logger); err != nil {
+			// runSSEEmitter has already written SSE headers + frames
+			// (the error path inside the emitter handles its own
+			// `event: error` frame on mid-stream Result() errors —
+			// see sse.go finalizeStream). Log here for observability;
+			// the response body is whatever the emitter produced
+			// before the error (we cannot send a JSON 500 envelope
+			// after WriteHeader). ctx cancel is a normal disconnect,
+			// not an error — but still useful to log at debug.
+			a.cfg.Logger.Debug("anthropic: sse emitter terminated", "err", err)
+		}
 		return
 	}
 
@@ -103,82 +113,4 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, chatResponseToMessage(resp, wire.Model))
-}
-
-// runSSEEmitterStub is the forward-compatible Plan 03.1-02 placeholder
-// for the SSE streaming branch. Emits ONLY the message_start event so
-// the corresponding handler test (TestHandleMessages_StreamingBranchPlaceholder)
-// asserts on properties Plan 03 will preserve byte-for-byte:
-//
-//   - Content-Type: text/event-stream header set
-//   - First emitted SSE line: "event: message_start"
-//
-// Plan 03.1-03 deletes this entire function and replaces with the real
-// sse.go runSSEEmitter — the placeholder test name signals the swap
-// site, and Plan 03's emitter also emits message_start first so the
-// forward-compatible asserts continue to hold.
-//
-// runHandle is consumed only by calling Stream().Result() to drain it
-// — Plan 03 reads chunks here; Plan 02 ignores them. This drain is
-// load-bearing for goleak: an unconsumed Stream would leak the
-// engine's chunk-feeding goroutine.
-func runSSEEmitterStub(ctx context.Context, w http.ResponseWriter, runHandle RunHandle, model string, logger *slog.Logger) {
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		// Defensive — should not happen with httptest.NewRecorder
-		// (which does implement Flusher) or production net/http.
-		writeError(w, http.StatusInternalServerError, errAPI, "response writer does not support flushing")
-		return
-	}
-
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.WriteHeader(http.StatusOK)
-
-	// Build a minimal-viable message_start payload. Plan 03's real
-	// emitter produces a richer payload (real message ID + full
-	// metadata) but the event NAME and the framing pattern stay
-	// identical, so this placeholder is forward-compatible.
-	startPayload := map[string]any{
-		"type": "message_start",
-		"message": map[string]any{
-			"id":            "msg_stub",
-			"type":          "message",
-			"role":          "assistant",
-			"model":         model,
-			"content":       []any{},
-			"stop_reason":   nil,
-			"stop_sequence": nil,
-			"usage":         map[string]any{"input_tokens": 0, "output_tokens": 0},
-		},
-	}
-	body, err := json.Marshal(startPayload)
-	if err != nil {
-		// Cannot recover after WriteHeader; flush whatever we can and
-		// let the connection close.
-		body = []byte(`{"type":"message_start"}`)
-	}
-	_, _ = fmt.Fprintf(w, "event: message_start\ndata: %s\n\n", body)
-	flusher.Flush()
-
-	// Drain the stream so the underlying goroutine completes — this
-	// prevents goleak from flagging an unconsumed channel. Plan 03's
-	// real emitter does the same drain but as part of its
-	// content_block_* event loop.
-	stream := runHandle.Stream()
-	chunkCount := 0
-	for range stream.Chunks() {
-		chunkCount++ // discard chunk payload; count for debug log only
-	}
-	logger.Debug("anthropic: sse stub drained chunks (Plan 02 placeholder)", "count", chunkCount)
-	_, _ = stream.Result()
-
-	// Honor ctx cancellation by NOT emitting message_stop when the
-	// client has disconnected. (Plan 03 owns the full message_stop
-	// path — emitting it here as a "polite" stub frame is risky
-	// because the real emitter's payload may differ.)
-	if ctx.Err() != nil {
-		logger.Debug("anthropic: sse stub — client disconnect during drain", "err", ctx.Err())
-	}
 }

@@ -1,0 +1,2 @@
+event: message_start
+data: {"type":"message_start","message":{"id":"msg_01<id>","type":"message","role":"assistant","model":"auto","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}}

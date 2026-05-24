@@ -74,14 +74,6 @@ type fakeRunHandle struct {
 func (f *fakeRunHandle) Stream() Stream    { return f.stream }
 func (f *fakeRunHandle) SessionID() string { return f.sessionID }
 
-// makeClosedChunkChan returns an already-closed empty chunk channel
-// suitable for the streaming-stub test (no chunks to deliver).
-func makeClosedChunkChan() <-chan canonical.Chunk {
-	ch := make(chan canonical.Chunk)
-	close(ch)
-	return ch
-}
-
 // ----------------------------------------------------------------------------
 // HTTP helpers
 // ----------------------------------------------------------------------------
@@ -341,48 +333,57 @@ func TestHandleMessages_EngineError_500(t *testing.T) {
 }
 
 // ----------------------------------------------------------------------------
-// Streaming branch placeholder (B4 part 1 — forward-compatible asserts only)
+// Streaming end-to-end (B4 part 2 — Plan 02 placeholder REPLACED with real
+// SSE handler tests that exercise sse.go runSSEEmitter end-to-end).
+//
+// Plan 02's forward-compatible placeholder test (which asserted only
+// Content-Type: text/event-stream and the first event line) was DELETED
+// in Plan 03.1-03 along with the runSSEEmitterStub it covered. The
+// minimal handler-visible properties it asserted are now covered by the
+// three tests below:
+//
+//   - TestHandleMessages_StreamingEndToEnd — asserts status 200,
+//     Content-Type, and at least one data: frame. Full event-sequence
+//     verification is delegated to sse_golden_test.go.
+//   - TestHandleMessages_StreamingEngineRunError — engine.Run error BEFORE
+//     SSE headers → JSON 500 envelope.
+//   - TestHandleMessages_StreamingResultError — engine.Stream().Result()
+//     error mid-stream → final SSE frame is event: error.
 // ----------------------------------------------------------------------------
 
-// TestHandleMessages_StreamingBranchPlaceholder is the load-bearing
-// forward-compatibility test for the Plan 03.1-02 SSE stub. ASSERTS
-// ONLY:
-//
-//   - Content-Type: text/event-stream
-//   - First emitted SSE event line equals exactly "event: message_start"
-//
-// Plan 03.1-03 deletes runSSEEmitterStub and replaces with the real
-// emitter. Plan 03's real emitter ALSO emits message_start first, so
-// this test continues to pass byte-for-byte. The test name signals
-// the swap site — Plan 03 may delete this test if it asserts
-// additional Plan-03-specific behavior in its own test file.
-func TestHandleMessages_StreamingBranchPlaceholder(t *testing.T) {
+// TestHandleMessages_StreamingEndToEnd drives the real handler with a
+// fakeEngine whose Run returns a fakeRunHandle producing a single text
+// chunk. Asserts response status 200, Content-Type: text/event-stream,
+// and at least one `data:` line present in the body. The full event
+// sequence is covered by TestSSESequenceGolden_* in sse_golden_test.go;
+// this handler-level test stays thin to avoid duplication.
+func TestHandleMessages_StreamingEndToEnd(t *testing.T) {
+	chunks := make(chan canonical.Chunk, 1)
+	chunks <- canonical.Chunk{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "Hello!"}}
+	close(chunks)
 	eng := &fakeEngine{
 		runHandle: &fakeRunHandle{
 			stream: &fakeStream{
-				chunks: makeClosedChunkChan(),
+				chunks: chunks,
 				final:  &canonical.FinalResult{StopReason: canonical.StopEndTurn},
 			},
-			sessionID: "session_stub",
+			sessionID: "session_e2e",
 		},
 	}
 	a := newTestAdapter(eng)
 	body := `{"model":"auto","max_tokens":256,"messages":[{"role":"user","content":"hi"}],"stream":true}`
 	w := doPost(t, a, "/messages", body)
 
+	if w.Code != http.StatusOK {
+		t.Errorf("status: got %d, want 200; body=%s", w.Code, w.Body.String())
+	}
 	if ct := w.Header().Get("Content-Type"); ct != "text/event-stream" {
 		t.Errorf("Content-Type: got %q, want text/event-stream", ct)
 	}
-
-	scanner := bufio.NewScanner(w.Body)
-	if !scanner.Scan() {
-		t.Fatal("body: no lines emitted; want first line 'event: message_start'")
+	if !strings.Contains(w.Body.String(), "\ndata: ") && !strings.HasPrefix(w.Body.String(), "data: ") {
+		// Look for at least one data: line (either at start or after a newline).
+		t.Errorf("body: no data: frames found; body=%q", w.Body.String())
 	}
-	first := scanner.Text()
-	if first != "event: message_start" {
-		t.Errorf("first SSE line: got %q, want %q", first, "event: message_start")
-	}
-
 	// Engine.Run was called; engine.Collect was NOT.
 	if eng.runN != 1 {
 		t.Errorf("runN: got %d, want 1", eng.runN)
@@ -392,18 +393,85 @@ func TestHandleMessages_StreamingBranchPlaceholder(t *testing.T) {
 	}
 }
 
-// TestHandleMessages_StreamingEngineRunError_500 covers Engine.Run
+// TestHandleMessages_StreamingEngineRunError covers Engine.Run
 // returning an error BEFORE SSE headers were written — the response
 // is a normal JSON 500 envelope, NOT an SSE error frame.
-func TestHandleMessages_StreamingEngineRunError_500(t *testing.T) {
+func TestHandleMessages_StreamingEngineRunError(t *testing.T) {
 	eng := &fakeEngine{runErr: errors.New(`run failed for "hi"`)}
 	a := newTestAdapter(eng)
 	body := `{"model":"auto","max_tokens":256,"messages":[{"role":"user","content":"hi"}],"stream":true}`
 	w := doPost(t, a, "/messages", body)
 	assertErrorEnvelope(t, w, http.StatusInternalServerError, errAPI, "internal error")
+	// The response is JSON 500, NOT SSE.
+	if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Errorf("Content-Type: got %q, want application/json (no SSE headers on pre-stream error)", ct)
+	}
 	// T-02-33: no leak.
 	if strings.Contains(w.Body.String(), `"hi"`) {
 		t.Errorf("error body leaks request content: %q", w.Body.String())
+	}
+}
+
+// TestHandleMessages_StreamingResultError covers Engine.Run succeeding
+// but the fake stream's Result() returns an error — the emitter must
+// emit a final `event: error` frame mid-stream and return. Verified by
+// reading the response body and asserting the final non-empty SSE
+// event frame is `event: error`.
+func TestHandleMessages_StreamingResultError(t *testing.T) {
+	chunks := make(chan canonical.Chunk)
+	close(chunks)
+	eng := &fakeEngine{
+		runHandle: &fakeRunHandle{
+			stream: &fakeStream{
+				chunks: chunks,
+				final:  nil,
+				err:    errors.New(`mid-stream failure for "hi"`),
+			},
+			sessionID: "session_result_err",
+		},
+	}
+	a := newTestAdapter(eng)
+	body := `{"model":"auto","max_tokens":256,"messages":[{"role":"user","content":"hi"}],"stream":true}`
+	w := doPost(t, a, "/messages", body)
+
+	// The emitter wrote SSE headers BEFORE the error surfaced, so
+	// response is 200 + text/event-stream. The error appears
+	// mid-stream.
+	if w.Code != http.StatusOK {
+		t.Errorf("status: got %d, want 200 (SSE headers were written before Result error)", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "text/event-stream" {
+		t.Errorf("Content-Type: got %q, want text/event-stream", ct)
+	}
+
+	// Walk the event lines; the final SSE event MUST be `event: error`.
+	bodyStr := w.Body.String()
+	var events []string
+	scanner := bufio.NewScanner(strings.NewReader(bodyStr))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "event: ") {
+			events = append(events, strings.TrimPrefix(line, "event: "))
+		}
+	}
+	if len(events) == 0 {
+		t.Fatalf("body has no event: lines; body=%q", bodyStr)
+	}
+	if events[len(events)-1] != "error" {
+		t.Errorf("final event: got %q, want %q; events=%v", events[len(events)-1], "error", events)
+	}
+	for _, ev := range events {
+		if ev == "message_stop" || ev == "message_delta" {
+			t.Errorf("found %q event AFTER error frame — SDK treats error as terminal", ev)
+		}
+	}
+	// T-02-33: the SSE error frame must NOT echo request content or
+	// the underlying err string.
+	if strings.Contains(bodyStr, `"hi"`) {
+		t.Errorf("SSE body leaks request content: %q", bodyStr)
+	}
+	if strings.Contains(bodyStr, "mid-stream failure") {
+		t.Errorf("SSE body leaks raw err string: %q", bodyStr)
 	}
 }
 
