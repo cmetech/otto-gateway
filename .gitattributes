@@ -1,4 +1,4 @@
-# .gitattributes — line ending and binary file handling for loop24-gateway.
+# .gitattributes — line ending and binary file handling for otto-gateway.
 #
 # Why this exists: developers work on macOS + Windows laptops (see DEVELOPERS.md).
 # Without per-pattern normalization, Windows Git's core.autocrlf=true silently

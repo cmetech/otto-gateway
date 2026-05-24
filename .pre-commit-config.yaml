@@ -1,4 +1,4 @@
-# Pre-commit hooks for loop24-gateway.
+# Pre-commit hooks for otto-gateway.
 # Install once: `pre-commit install`. Runs on every `git commit`.
 # Aligns with the layered CI pipeline from docs/briefs/go_port_brief.md §3.12.
 

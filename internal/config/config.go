@@ -188,7 +188,7 @@ func LoadArgs(args []string) (Config, error) {
 		return cfg, err
 	}
 
-	fs := flag.NewFlagSet("loop24-gateway", flag.ContinueOnError)
+	fs := flag.NewFlagSet("otto-gateway", flag.ContinueOnError)
 	// Capture the FlagSet's output (usage text + parse-error messages) into a
 	// buffer instead of letting it hit stderr directly. On --help we hand the
 	// buffer back via HelpRequested so main prints usage to stdout; on a parse

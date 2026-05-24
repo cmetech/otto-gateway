@@ -1,11 +1,11 @@
-# Loop24 Gateway — Makefile
+# OTTO Gateway — Makefile
 # Targets are intentionally simple. Per docs/briefs/go_port_brief.md §3.9,
 # cross-compilation is a first-class concern; per §3.12, linting is gated.
 
-BINARY      := loop24-gateway
+BINARY      := otto-gateway
 PKG         := ./cmd/$(BINARY)
 VERSION     ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "0.0.0-dev")
-LDFLAGS     := -s -w -X loop24-gateway/internal/version.Version=$(VERSION)
+LDFLAGS     := -s -w -X otto-gateway/internal/version.Version=$(VERSION)
 BUILD_DIR   := bin
 
 .PHONY: all build run test test-race lint fmt tidy clean cross ci arch-lint start stop status help
@@ -59,13 +59,13 @@ ci: lint test-race arch-lint ## Full CI gate (lint + race-tests + govulncheck + 
 	$(shell go env GOPATH)/bin/govulncheck ./...
 
 start: ## Start gateway in background (wrapper script)
-	@./scripts/loop24 start
+	@./scripts/otto start
 
 stop: ## Stop background gateway (wrapper script)
-	@./scripts/loop24 stop
+	@./scripts/otto stop
 
 status: ## Show gateway status (wrapper script)
-	@./scripts/loop24 status
+	@./scripts/otto status
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  %-22s %s\n", $$1, $$2}' $(MAKEFILE_LIST)

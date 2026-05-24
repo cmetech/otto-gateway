@@ -1,4 +1,4 @@
-# Loop24 Gateway — golangci-lint config
+# OTTO Gateway — golangci-lint config
 # Matches the trust-gate set from docs/briefs/go_port_brief.md §3.12.
 # Strict by design; warnings are CI hard failures.
 
