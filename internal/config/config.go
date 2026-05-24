@@ -4,7 +4,9 @@ package config
 
 import (
 	"errors"
+	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/netip"
 	"os"
@@ -12,6 +14,11 @@ import (
 	"strings"
 	"time"
 )
+
+// ErrVersionRequested is returned by LoadArgs when --version was passed.
+// main() checks for it and prints version.Version then exits 0 — the config
+// package itself NEVER calls os.Exit (process exit is main's responsibility).
+var ErrVersionRequested = errors.New("version requested")
 
 // Config holds all gateway configuration loaded from environment variables.
 // Phase 1 reads a subset; later phases add fields without changing Load()'s signature.
@@ -143,6 +150,131 @@ func Load() (Config, error) {
 		EnabledSurfaces:     enabledSurfaces,
 		AnthropicPathPrefix: anthropicPath,
 	}, nil
+}
+
+// LoadArgs resolves configuration from env+defaults via Load(), then overlays
+// ONLY the CLI flags the operator explicitly passed (flag-wins-over-env). It
+// uses ONLY the Go stdlib `flag` package — no new dependencies (preserves the
+// no-cgo / minimal-deps constraint from CLAUDE.md).
+//
+// Design notes:
+//   - flag-wins via fs.Visit: Visit walks ONLY the flags actually passed on the
+//     command line, so any flag the operator omitted leaves the env-resolved
+//     value untouched (fall-through to env).
+//   - AUTH_TOKEN is deliberately NOT a flag. The bearer token is a secret and
+//     must not appear in argv / ps / /proc — it stays env-only (Node parity).
+//   - Load() is intentionally left env-only and UNCHANGED; LoadArgs wraps it.
+//   - A local flag.FlagSet (not flag.CommandLine) is used so there is no global
+//     state and the function is testable. Its output is discarded so --help /
+//     parse errors do not pollute stderr during tests.
+func LoadArgs(args []string) (Config, error) {
+	cfg, err := Load()
+	if err != nil {
+		return cfg, err
+	}
+
+	fs := flag.NewFlagSet("loop24-gateway", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+
+	// Defaults are seeded from the already-resolved cfg so that an unset flag's
+	// "default" mirrors the env-resolved value. We do NOT trust those defaults
+	// for the final overlay — only fs.Visit'd (explicitly-set) flags are applied
+	// below, which is what gives us true flag-wins/fall-through semantics.
+	var (
+		httpAddr        = fs.String("http-addr", cfg.HTTPAddr, "HTTP listen address")
+		kiroCmd         = fs.String("kiro-cmd", cfg.KiroCmd, "kiro-cli binary name or path")
+		kiroArgs        = fs.String("kiro-args", strings.Join(cfg.KiroArgs, " "), "kiro-cli arguments (whitespace-split)")
+		kiroCWD         = fs.String("kiro-cwd", cfg.KiroCWD, "working directory for kiro-cli subprocess")
+		debug           = fs.Bool("debug", cfg.Debug, "enable debug-level logging")
+		pingInterval    = fs.Duration("ping-interval", cfg.PingInterval, "kiro-cli heartbeat interval (Go duration)")
+		poolSize        = fs.Int("pool-size", cfg.PoolSize, "number of warm kiro-cli subprocesses")
+		enabledSurfaces = fs.String("enabled-surfaces", strings.Join(cfg.EnabledSurfaces, ","), "comma-split list of enabled HTTP surfaces")
+		ollamaPath      = fs.String("ollama-path-prefix", cfg.OllamaPathPrefix, "route prefix for the Ollama surface")
+		anthropicPath   = fs.String("anthropic-path-prefix", cfg.AnthropicPathPrefix, "route prefix for the Anthropic surface")
+		openaiPath      = fs.String("openai-path-prefix", cfg.OpenAIPathPrefix, "route prefix for the OpenAI surface")
+		allowedIPs      = fs.String("allowed-ips", "", "comma-split CIDR/IP allowlist")
+		authTrustXFF    = fs.Bool("auth-trust-xff", cfg.AuthTrustXFF, "trust X-Forwarded-For in the IP allowlist check")
+		version         = fs.Bool("version", false, "print version and exit")
+	)
+	// NOTE: the bearer token is intentionally NOT registered as a flag — it is
+	// a secret and stays env-only (AUTH_TOKEN). See the doc comment above. The
+	// acceptance grep gate asserts this token name never appears in this file.
+
+	if err := fs.Parse(args); err != nil {
+		// Wrap with %w so errors.Is(err, flag.ErrHelp) still matches in main
+		// (--help → exit 0) while satisfying wrapcheck. Unknown flags (e.g. an
+		// unregistered secret flag) and parse errors surface here as non-nil.
+		return cfg, fmt.Errorf("config: %w", err)
+	}
+
+	if *version {
+		return cfg, ErrVersionRequested
+	}
+
+	var errs []error
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "http-addr":
+			cfg.HTTPAddr = *httpAddr
+		case "kiro-cmd":
+			cfg.KiroCmd = *kiroCmd
+		case "kiro-cwd":
+			cfg.KiroCWD = *kiroCWD
+		case "ollama-path-prefix":
+			cfg.OllamaPathPrefix = *ollamaPath
+		case "anthropic-path-prefix":
+			cfg.AnthropicPathPrefix = *anthropicPath
+		case "openai-path-prefix":
+			cfg.OpenAIPathPrefix = *openaiPath
+		case "debug":
+			cfg.Debug = *debug
+		case "auth-trust-xff":
+			cfg.AuthTrustXFF = *authTrustXFF
+		case "pool-size":
+			cfg.PoolSize = *poolSize
+		case "ping-interval":
+			cfg.PingInterval = *pingInterval
+		case "kiro-args":
+			// Whitespace-split to match getEnvStrSlice (KIRO_ARGS) semantics.
+			cfg.KiroArgs = strings.Fields(*kiroArgs)
+		case "enabled-surfaces":
+			cfg.EnabledSurfaces = splitCommaTrim(*enabledSurfaces)
+			if verr := validateEnabledSurfaces(cfg.EnabledSurfaces); verr != nil {
+				errs = append(errs, fmt.Errorf("enabled-surfaces: %w", verr))
+			}
+		case "allowed-ips":
+			prefixes, perr := parseCIDRs(splitCommaTrim(*allowedIPs))
+			if perr != nil {
+				errs = append(errs, fmt.Errorf("allowed-ips: %w", perr))
+				return
+			}
+			cfg.AllowedIPs = prefixes
+		}
+	})
+
+	if len(errs) > 0 {
+		return Config{}, fmt.Errorf("config: invalid flags: %w", errors.Join(errs...))
+	}
+
+	return cfg, nil
+}
+
+// splitCommaTrim splits on "," , trims each entry, and drops empties — the same
+// shape getEnvStrSliceComma applies to comma-separated env vars. Used for the
+// --enabled-surfaces and --allowed-ips flags so CLI parsing matches env parsing.
+func splitCommaTrim(v string) []string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return nil
+	}
+	parts := strings.Split(v, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if t := strings.TrimSpace(p); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // validateEnabledSurfaces checks every entry in surfaces against the

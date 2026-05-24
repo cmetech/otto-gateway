@@ -27,6 +27,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -52,7 +53,17 @@ import (
 const warmupDeadline = 30 * time.Second
 
 func main() {
-	cfg, err := config.Load()
+	cfg, err := config.LoadArgs(os.Args[1:])
+	// Meta-flag exit-0 cases handled BEFORE the error→exit(1) path. main owns
+	// process exit; the config package NEVER calls os.Exit.
+	if errors.Is(err, config.ErrVersionRequested) {
+		fmt.Println(version.Version)
+		os.Exit(0)
+	}
+	if errors.Is(err, flag.ErrHelp) {
+		// Usage was already printed by the FlagSet; treat --help as success.
+		os.Exit(0)
+	}
 	if err != nil {
 		slog.New(slog.NewJSONHandler(os.Stderr, nil)).Error("config load failed", "err", err)
 		os.Exit(1)
@@ -335,7 +346,3 @@ func (h anthropicRunHandleAdapter) Stream() anthropic.Stream {
 func (h anthropicRunHandleAdapter) SessionID() string {
 	return h.run.SessionID()
 }
-
-// keep errors import live for callers that want to inspect typed errors
-// returned by newApp's pool.Warmup wrapping.
-var _ = errors.Is
