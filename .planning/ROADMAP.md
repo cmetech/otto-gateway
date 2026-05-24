@@ -1,8 +1,8 @@
-# Roadmap: Loop24 Gateway
+# Roadmap: OTTO Gateway
 
 ## Overview
 
-Loop24 Gateway is a from-scratch Go port of an existing Node.js Ollama
+OTTO Gateway is a from-scratch Go port of an existing Node.js Ollama
 proxy, expanding the surface to also expose an OpenAI-compatible API on
 the same port. The roadmap follows the M0–M9 milestone plan from
 `docs/briefs/go_port_brief.md` §5, with M0 and M1 collapsed into a
@@ -46,7 +46,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 **Requirements:** ACP-01, ACP-02, ACP-03, ACP-04, ACP-05, ACP-06, BLD-01, TRST-01, TRST-02, TRST-03, TRST-08
 **Success Criteria** (what must be TRUE):
 
-  1. `make build` produces a runnable host binary at `bin/loop24-gateway` that starts an HTTP server on `:11434` and serves `GET /health` returning empty pool/registry/embedding stats.
+  1. `make build` produces a runnable host binary at `bin/otto-gateway` that starts an HTTP server on `:11434` and serves `GET /health` returning empty pool/registry/embedding stats.
   2. `make lint` runs `golangci-lint` with the strict config (errcheck, errorlint, gosec, staticcheck, revive, wrapcheck, etc.) and passes with zero findings on the scaffold.
   3. `make test-race` runs `go test -race ./...` and passes; `govulncheck` runs clean in CI.
   4. A standalone integration test spawns `kiro-cli acp`, completes JSON-RPC `initialize` + `session/new`, sends a `ping`, auto-grants a `session/request_permission`, and translates a `session/update` into a typed chunk — all without leaking goroutines or hanging on subprocess exit.
@@ -280,7 +280,7 @@ Plans:
 **Requirements:** BLD-02, BLD-03, BLD-04, TRST-04, TRST-05, TRST-06, TRST-07
 **Success Criteria** (what must be TRUE):
 
-  1. `make cross` on a macOS dev box produces `bin/loop24-gateway-linux-amd64` and `bin/loop24-gateway-windows-amd64.exe` from vanilla `go build` + `GOOS`/`GOARCH`, with `CGO_ENABLED=0` and `-ldflags="-s -w"`; both binaries are statically linked and ≤25 MB.
+  1. `make cross` on a macOS dev box produces `bin/otto-gateway-linux-amd64` and `bin/otto-gateway-windows-amd64.exe` from vanilla `go build` + `GOOS`/`GOARCH`, with `CGO_ENABLED=0` and `-ldflags="-s -w"`; both binaries are statically linked and ≤25 MB.
   2. Each binary embeds its version via `-ldflags="-X main.version=$VERSION"`; `curl /api/version` against either binary returns the embedded value.
   3. The CI pipeline runs (and gates merges on) `gofumpt -d` → `go vet` → `go build` → `golangci-lint run` → `govulncheck` → `go test -race ./...` → `go test -run Example` → property tests → cross-compile smoke; all stages block the next on failure.
   4. `go-arch-lint` (or equivalent) enforces in CI that `internal/adapter/*` does not import `internal/engine` and `internal/canonical` imports nothing under `internal/`.

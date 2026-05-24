@@ -1,8 +1,8 @@
-# Loop24 Gateway
+# OTTO Gateway
 
 ## What This Is
 
-Loop24 Gateway is a Go-based LLM gateway that exposes OpenAI-,
+OTTO Gateway is a Go-based LLM gateway that exposes OpenAI-,
 Ollama-, and Anthropic-compatible HTTP APIs on a single port and
 routes every inbound request through a configurable guardrails
 chain to a pool of `kiro-cli` ACP worker subprocesses. It replaces
@@ -40,7 +40,7 @@ and the single governance surface are the load-bearing properties.
 
 - **REQ-CWD-01**: Per-request `cwd` from longest common parent of `resource_link` block URIs with `KIRO_CWD` fallback and `X-Working-Dir` override — `internal/engine/pickcwd.go` (Codex H-2 ResourceLinks source); 4-step priority chain covered by `pickcwd_test.go`.
 - **REQ-IMAGE-01**: Ollama `images: []` → `canonical.ContentKindImage` → ACP `image` block with sniffed MIME — `internal/adapter/ollama/wire.go` (`detectMIME`) + `internal/engine/build_acp.go` (Codex M-1); covered by `TestWireToChatRequest_Images` + `TestDetectMIME`.
-- **REQ-POOL-01** (baseline; Phase 5 raises `POOL_SIZE` default): Fixed-size warm pool ready before HTTP listener accepts — `internal/pool/pool.go` (Warmup) + `cmd/loop24-gateway/main.go` (POOL-02 ordering in `newApp`); `TestApp_WarmupBeforeListen` proves ordering.
+- **REQ-POOL-01** (baseline; Phase 5 raises `POOL_SIZE` default): Fixed-size warm pool ready before HTTP listener accepts — `internal/pool/pool.go` (Warmup) + `cmd/otto-gateway/main.go` (POOL-02 ordering in `newApp`); `TestApp_WarmupBeforeListen` proves ordering.
 - **REQ-PLUGIN-01**: `PreHook` / `PostHook` operate on canonical types with short-circuit return — `internal/engine/hooks.go` + `Engine.Run`; `TestEngine_PreHookShortCircuit_PreservesBody` (Codex H-4) + `TestEngine_PostHookExecutes` (Codex H-5).
 - **REQ-OBSERV-01** (Phase 2 slice): `/health` returns pool stats; auth-exempt paths include `/`, `/api/version`, `/health` — `internal/server/health.go` + `internal/server/server.go` (`NewFromConfig`); `TestNewFromConfig_HealthPoolWiring` + `TestExemptRoutes_BypassAuth/{version,health}`.
 
@@ -123,7 +123,7 @@ Trust gates (per `docs/briefs/go_port_brief.md` §3.12 — non-negotiable):
 
 **First Go project for the author.** Author is senior in JS / Python / shell with some Go familiarity but no greenfield Go experience. This shapes decisions toward stdlib + chi over fasthttp, `log/slog` over zerolog/zap, simple env-var config over viper. AI-assisted development is expected and the trust-gate suite is sized accordingly.
 
-**Local-only repo at boot.** `~/Projects/repos/local/loop24-gateway`. Module name `loop24-gateway` (bare) to defer the hosting decision. Bare module name will be revisited before the first remote push.
+**Local-only repo at boot.** `~/Projects/repos/local/loop24-gateway`. Module name `otto-gateway` (bare) to defer the hosting decision. Bare module name will be revisited before the first remote push. (Working-directory rename `loop24-gateway/` → `otto-gateway/` is a deferred Tier 3 step.)
 
 ## Constraints
 
@@ -150,7 +150,7 @@ Trust gates (per `docs/briefs/go_port_brief.md` §3.12 — non-negotiable):
 | stdlib `net/http` + `chi` (reject `fasthttp`) | Bifrost uses fasthttp for throughput; our bottleneck is `kiro-cli` subprocess latency, not HTTP parsing. fasthttp breaks `http.Handler` ecosystem (testing, middleware, `r.Context()`). Not worth it for our scale. | — Pending |
 | Trust-gate suite required from day one | AI-assisted development on a first-Go project. Strict `golangci-lint`, `gosec`, `govulncheck`, `-race`, `goleak`, property tests, architectural boundary linting. Derived from "Making AI-Generated Rust Code Trustworthy" (Garcia) adapted to Go tooling. | — Pending |
 | Out-of-process embeddings sidecar (provisional) | Preserves trivial cross-compile by avoiding cgo. Subject to revisit if `fastembed-rs`-equivalent pure-Go option matures or if cgo deployment friction proves acceptable. | — Pending |
-| Bare Go module name `loop24-gateway` | Local-only at boot; defer hosting decision until first remote push. | — Pending |
+| Bare Go module name `otto-gateway` | Local-only at boot; defer hosting decision until first remote push. | — Pending |
 
 ## Evolution
 
