@@ -1,6 +1,9 @@
 package config_test
 
 import (
+	"reflect"
+	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -160,5 +163,213 @@ func TestLogLevel(t *testing.T) {
 	cfg.Debug = true
 	if cfg.LogLevel().String() != "DEBUG" {
 		t.Errorf("LogLevel(): got %q, want DEBUG", cfg.LogLevel().String())
+	}
+}
+
+// --- AUTH_TOKEN coverage ------------------------------------------------
+
+func TestLoad_AuthToken_Empty(t *testing.T) {
+	// t.Setenv: cannot use t.Parallel().
+	// Unset env var → AuthToken should be nil/zero-length (auth disabled, Node parity).
+	t.Setenv("AUTH_TOKEN", "")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+	if len(cfg.AuthToken) != 0 {
+		t.Errorf("AuthToken: got %v, want empty", cfg.AuthToken)
+	}
+}
+
+func TestLoad_AuthToken_Multiple(t *testing.T) {
+	// t.Setenv: cannot use t.Parallel().
+	t.Setenv("AUTH_TOKEN", "a,b,c")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+	want := []string{"a", "b", "c"}
+	if !reflect.DeepEqual(cfg.AuthToken, want) {
+		t.Errorf("AuthToken: got %v, want %v", cfg.AuthToken, want)
+	}
+}
+
+func TestLoad_AuthToken_WithSpaces(t *testing.T) {
+	// t.Setenv: cannot use t.Parallel().
+	// Whitespace around comma-split entries must be trimmed; empties dropped.
+	t.Setenv("AUTH_TOKEN", " a , b ")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+	want := []string{"a", "b"}
+	if !reflect.DeepEqual(cfg.AuthToken, want) {
+		t.Errorf("AuthToken: got %v, want %v", cfg.AuthToken, want)
+	}
+}
+
+// --- ALLOWED_IPS coverage -----------------------------------------------
+
+func TestLoad_AllowedIPs_Empty(t *testing.T) {
+	// t.Setenv: cannot use t.Parallel().
+	t.Setenv("ALLOWED_IPS", "")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+	if len(cfg.AllowedIPs) != 0 {
+		t.Errorf("AllowedIPs: got %v, want empty", cfg.AllowedIPs)
+	}
+}
+
+func TestLoad_AllowedIPs_CIDRMix(t *testing.T) {
+	// t.Setenv: cannot use t.Parallel().
+	// Mix of v4 CIDR, bare v4 (→ /32), and v6 CIDR.
+	t.Setenv("ALLOWED_IPS", "10.0.0.0/8,192.168.1.1,::1/128")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+	got := make([]string, 0, len(cfg.AllowedIPs))
+	for _, p := range cfg.AllowedIPs {
+		got = append(got, p.String())
+	}
+	sort.Strings(got)
+	want := []string{"10.0.0.0/8", "192.168.1.1/32", "::1/128"}
+	sort.Strings(want)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("AllowedIPs: got %v, want %v", got, want)
+	}
+}
+
+func TestLoad_AllowedIPs_Malformed(t *testing.T) {
+	// t.Setenv: cannot use t.Parallel().
+	// Set-but-unparseable must surface as a Load() error (T-02-11 mitigation).
+	t.Setenv("ALLOWED_IPS", "not-an-ip")
+	_, err := config.Load()
+	if err == nil {
+		t.Fatal("Load() should return an error for ALLOWED_IPS=not-an-ip, got nil")
+	}
+	if !strings.Contains(err.Error(), "ALLOWED_IPS") {
+		t.Errorf("error should mention ALLOWED_IPS, got: %v", err)
+	}
+}
+
+// --- POOL_SIZE coverage -------------------------------------------------
+
+func TestLoad_PoolSize_Default(t *testing.T) {
+	// t.Setenv: cannot use t.Parallel().
+	t.Setenv("POOL_SIZE", "")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+	if cfg.PoolSize != 1 {
+		t.Errorf("PoolSize: got %d, want 1 (Phase 2 default)", cfg.PoolSize)
+	}
+}
+
+func TestLoad_PoolSize_Override(t *testing.T) {
+	// t.Setenv: cannot use t.Parallel().
+	t.Setenv("POOL_SIZE", "4")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+	if cfg.PoolSize != 4 {
+		t.Errorf("PoolSize: got %d, want 4", cfg.PoolSize)
+	}
+}
+
+func TestLoad_PoolSize_Malformed(t *testing.T) {
+	// t.Setenv: cannot use t.Parallel().
+	// T-02-12 mitigation: a non-integer must error at startup, not silently default.
+	t.Setenv("POOL_SIZE", "abc")
+	_, err := config.Load()
+	if err == nil {
+		t.Fatal("Load() should return an error for POOL_SIZE=abc, got nil")
+	}
+	if !strings.Contains(err.Error(), "POOL_SIZE") {
+		t.Errorf("error should mention POOL_SIZE, got: %v", err)
+	}
+}
+
+// --- OLLAMA_PATH_PREFIX / OPENAI_PATH_PREFIX coverage -------------------
+
+func TestLoad_OllamaPathPrefix_Default(t *testing.T) {
+	// t.Setenv: cannot use t.Parallel().
+	t.Setenv("OLLAMA_PATH_PREFIX", "")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+	if cfg.OllamaPathPrefix != "/api" {
+		t.Errorf("OllamaPathPrefix: got %q, want %q", cfg.OllamaPathPrefix, "/api")
+	}
+}
+
+func TestLoad_OllamaPathPrefix_Override(t *testing.T) {
+	// t.Setenv: cannot use t.Parallel().
+	t.Setenv("OLLAMA_PATH_PREFIX", "/ollama")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+	if cfg.OllamaPathPrefix != "/ollama" {
+		t.Errorf("OllamaPathPrefix: got %q, want %q", cfg.OllamaPathPrefix, "/ollama")
+	}
+}
+
+func TestLoad_OpenAIPathPrefix_Default(t *testing.T) {
+	// t.Setenv: cannot use t.Parallel().
+	t.Setenv("OPENAI_PATH_PREFIX", "")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+	if cfg.OpenAIPathPrefix != "/v1" {
+		t.Errorf("OpenAIPathPrefix: got %q, want %q", cfg.OpenAIPathPrefix, "/v1")
+	}
+}
+
+// --- AUTH_TRUST_XFF coverage (Codex H-7) --------------------------------
+
+func TestLoad_AuthTrustXFF_Default(t *testing.T) {
+	// t.Setenv: cannot use t.Parallel().
+	// Default false: laptop deployments are safe-by-default (T-02-39 mitigation).
+	t.Setenv("AUTH_TRUST_XFF", "")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+	if cfg.AuthTrustXFF {
+		t.Errorf("AuthTrustXFF: got true, want false (safe-by-default)")
+	}
+}
+
+func TestLoad_AuthTrustXFF_True(t *testing.T) {
+	// t.Setenv: cannot use t.Parallel().
+	// Opt-in path: only takes effect when operator deliberately sets the flag.
+	t.Setenv("AUTH_TRUST_XFF", "true")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+	if !cfg.AuthTrustXFF {
+		t.Errorf("AuthTrustXFF: got false, want true (AUTH_TRUST_XFF=true)")
+	}
+}
+
+func TestLoad_AuthTrustXFF_Malformed(t *testing.T) {
+	// t.Setenv: cannot use t.Parallel().
+	// T-02-39 mitigation: a non-boolean value must surface as startup error so
+	// operator typos don't silently fall back to "ambiguous default" state.
+	t.Setenv("AUTH_TRUST_XFF", "not-a-bool")
+	_, err := config.Load()
+	if err == nil {
+		t.Fatal("Load() should return an error for AUTH_TRUST_XFF=not-a-bool, got nil")
+	}
+	if !strings.Contains(err.Error(), "AUTH_TRUST_XFF") {
+		t.Errorf("error should mention AUTH_TRUST_XFF, got: %v", err)
 	}
 }
