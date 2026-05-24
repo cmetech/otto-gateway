@@ -27,7 +27,6 @@ package main
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -60,8 +59,10 @@ func main() {
 		fmt.Println(version.Version)
 		os.Exit(0)
 	}
-	if errors.Is(err, flag.ErrHelp) {
-		// Usage was already printed by the FlagSet; treat --help as success.
+	var helpErr *config.HelpRequested
+	if errors.As(err, &helpErr) {
+		// --help: print the captured usage to stdout (GNU convention) and exit 0.
+		fmt.Print(helpErr.Usage)
 		os.Exit(0)
 	}
 	if err != nil {

@@ -3,10 +3,10 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/netip"
 	"os"
@@ -19,6 +19,15 @@ import (
 // main() checks for it and prints version.Version then exits 0 — the config
 // package itself NEVER calls os.Exit (process exit is main's responsibility).
 var ErrVersionRequested = errors.New("version requested")
+
+// HelpRequested is returned by LoadArgs when -h/--help was passed. It carries
+// the rendered flag usage so main() can print it to stdout (GNU convention) and
+// exit 0. Unwrap returns flag.ErrHelp so errors.Is(err, flag.ErrHelp) still
+// matches; the config package itself NEVER calls os.Exit or writes to stdout.
+type HelpRequested struct{ Usage string }
+
+func (e *HelpRequested) Error() string { return "help requested" }
+func (e *HelpRequested) Unwrap() error { return flag.ErrHelp }
 
 // Config holds all gateway configuration loaded from environment variables.
 // Phase 1 reads a subset; later phases add fields without changing Load()'s signature.
@@ -174,7 +183,13 @@ func LoadArgs(args []string) (Config, error) {
 	}
 
 	fs := flag.NewFlagSet("loop24-gateway", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
+	// Capture the FlagSet's output (usage text + parse-error messages) into a
+	// buffer instead of letting it hit stderr directly. On --help we hand the
+	// buffer back via HelpRequested so main prints usage to stdout; on a parse
+	// error we discard the buffer and let main log the wrapped error once
+	// (avoids the double "error + usage to stderr, then slog" output).
+	var usage bytes.Buffer
+	fs.SetOutput(&usage)
 
 	// Defaults are seeded from the already-resolved cfg so that an unset flag's
 	// "default" mirrors the env-resolved value. We do NOT trust those defaults
@@ -201,9 +216,14 @@ func LoadArgs(args []string) (Config, error) {
 	// acceptance grep gate asserts this token name never appears in this file.
 
 	if err := fs.Parse(args); err != nil {
-		// Wrap with %w so errors.Is(err, flag.ErrHelp) still matches in main
-		// (--help → exit 0) while satisfying wrapcheck. Unknown flags (e.g. an
-		// unregistered secret flag) and parse errors surface here as non-nil.
+		// -h/--help is not a failure: hand the rendered usage back so main can
+		// print it to stdout and exit 0.
+		if errors.Is(err, flag.ErrHelp) {
+			return cfg, &HelpRequested{Usage: usage.String()}
+		}
+		// Wrap with %w so errors.Is still matches in main while satisfying
+		// wrapcheck. Unknown flags (e.g. an unregistered secret flag) and other
+		// parse errors surface here as non-nil; main logs them once.
 		return cfg, fmt.Errorf("config: %w", err)
 	}
 
