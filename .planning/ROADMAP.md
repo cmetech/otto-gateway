@@ -145,33 +145,33 @@ Plans:
 
 ### Phase 3: OpenAI Surface
 
-**Goal:** Bring the second adapter online on the same port, sharing the same canonical engine — Pi SDK with `base_url=http://localhost:11434/v1` completes an end-to-end chat against `kiro-cli` and gets back an OpenAI-compatible response. Validates that the adapter-over-canonical layout cleanly supports two surfaces.
+**Goal:** Bring a third adapter online on the same port, sharing the same canonical engine — Pi SDK with `base_url=http://localhost:11434/v1` completes an end-to-end chat against `kiro-cli` and gets back an OpenAI-compatible response. Validates that the adapter-over-canonical layout cleanly supports three surfaces (Ollama + Anthropic + OpenAI).
 **Mode:** mvp
-**Depends on:** Phase 2
+**Depends on:** Phase 3.1
 **Requirements:** SURF-02, SURF-04, SURF-06
 **Success Criteria** (what must be TRUE):
 
-  1. `curl -X POST http://localhost:11434/v1/chat/completions -H 'Authorization: Bearer …' -d '{"model":"auto","messages":[{"role":"user","content":"hi"}],"stream":false}'` returns an OpenAI-compatible JSON response sourced from the same canonical engine that serves `/api/chat`.
+  1. `curl -X POST http://localhost:11434/v1/chat/completions -H 'Authorization: Bearer …' -d '{"model":"auto","messages":[{"role":"user","content":"hi"}],"stream":false}'` returns an OpenAI-compatible JSON response sourced from the same canonical engine that serves `/api/chat` and `/v1/messages`.
   2. A Pi-SDK CLI configured with `base_url=http://localhost:11434/v1` and a bearer token completes a chat round-trip without modification to the SDK.
   3. `GET /v1/models` and `POST /v1/completions` return OpenAI-compatible shapes; the model list at `/v1/models` and `/api/tags` reflect the same underlying set.
-  4. Setting `ENABLED_SURFACES=ollama` (or `openai`) at deploy time disables the other surface without code changes; `OPENAI_PATH_PREFIX` and `OLLAMA_PATH_PREFIX` are overridable.
-  5. Architectural boundary check passes: `internal/adapter/openai` and `internal/adapter/ollama` import only `internal/canonical` + `internal/plugin`; neither imports `internal/engine`.
+  4. `ENABLED_SURFACES` (introduced in Phase 3.1) extends to accept `openai`; default becomes `ollama,anthropic,openai` enabling all three. Setting `ENABLED_SURFACES=ollama` (or any subset omitting `openai`) at deploy time disables the OpenAI surface without code changes; `OPENAI_PATH_PREFIX` and `OLLAMA_PATH_PREFIX` are overridable.
+  5. Architectural boundary check passes: `internal/adapter/openai`, `internal/adapter/ollama`, and `internal/adapter/anthropic` all import only `internal/canonical` + `internal/plugin`; none import `internal/engine`.
 
 **Plans:** TBD
 
 ### Phase 3.1: Anthropic Surface (INSERTED)
 
-**Goal:** Bring a third adapter online on the same port, sharing the same canonical engine — loop24-client (GSD Pi CLI) configured with `ANTHROPIC_BASE_URL=http://localhost:11434` completes an end-to-end Messages-API chat against `kiro-cli` and gets back an Anthropic-compatible response, **including SSE streaming day-one** because `@anthropic-ai/sdk`'s `messages.stream()` is the dominant call site in the client. This phase proves the adapter-over-canonical layout supports three surfaces, not just two, and validates that streaming is a first-class concern for the Anthropic shape (it can't be deferred to Phase 4 the way OpenAI/Ollama streaming can).
+**Goal:** Bring the second adapter online on the same port, sharing the same canonical engine — loop24-client (GSD Pi CLI) configured with `ANTHROPIC_BASE_URL=http://localhost:11434` completes an end-to-end Messages-API chat against `kiro-cli` and gets back an Anthropic-compatible response, **including SSE streaming day-one** because `@anthropic-ai/sdk`'s `messages.stream()` is the dominant call site in the client. This phase proves the adapter-over-canonical layout supports a second surface alongside Ollama and validates that streaming is a first-class concern for the Anthropic shape (it can't be deferred to Phase 4 the way Ollama streaming can). Phase 3 (OpenAI) will subsequently add the third surface.
 **Mode:** mvp
-**Depends on:** Phase 3 (canonical types + plugin chain seams locked by Ollama+OpenAI)
+**Depends on:** Phase 2 (canonical types locked + engine + auth middleware in place — sibling adapter to Phase 3, sequenced first because loop24-client is the dominant client and streaming is non-deferrable for the Anthropic shape)
 **Requirements:** ANTH-01, ANTH-02, ANTH-03, ANTH-04, ANTH-05, ANTH-06, ANTH-07, SURF-08
 **Success Criteria** (what must be TRUE):
 
-  1. `curl -X POST http://localhost:11434/v1/messages -H 'x-api-key: …' -H 'anthropic-version: 2023-06-01' -d '{"model":"auto","max_tokens":256,"messages":[{"role":"user","content":"hi"}]}'` returns an Anthropic-compatible JSON response (top-level `id`, `type:"message"`, `role:"assistant"`, `content:[{type:"text",text:"…"}]`, `stop_reason`, `usage`) sourced from the same canonical engine that serves `/api/chat` and `/v1/chat/completions`.
+  1. `curl -X POST http://localhost:11434/v1/messages -H 'x-api-key: …' -H 'anthropic-version: 2023-06-01' -d '{"model":"auto","max_tokens":256,"messages":[{"role":"user","content":"hi"}]}'` returns an Anthropic-compatible JSON response (top-level `id`, `type:"message"`, `role:"assistant"`, `content:[{type:"text",text:"…"}]`, `stop_reason`, `usage`) sourced from the same canonical engine that serves `/api/chat`.
   2. loop24-client (`../loop24-client`) configured with `ANTHROPIC_BASE_URL=http://localhost:11434` and a valid `ANTHROPIC_API_KEY` completes both a non-streaming `messages.create({stream:false})` AND a streaming `messages.stream({...})` round-trip end-to-end against the gateway, with zero changes to loop24-client code.
   3. Streaming emits the full Anthropic SSE event sequence: `message_start` → (`content_block_start` → `content_block_delta`+ → `content_block_stop`)+ → `message_delta` → `message_stop`, with `event:` and `data:` framing and `ping` keepalives every ~15s, all sourced from the same `<-chan canonical.Chunk` produced by `engine.Run(ctx, req)`.
-  4. Tool-call requests round-trip: `tool_use` content blocks emitted in canonical shape and rendered with `input` as an object (Anthropic-style, NOT JSON-string like OpenAI); `tool_result` blocks accepted on the inbound side.
-  5. `ENABLED_SURFACES=ollama,openai` (the previous Phase 3 default) disables the Anthropic adapter at boot; `ENABLED_SURFACES=ollama,openai,anthropic` (new default after this phase) enables all three. `internal/adapter/anthropic` imports only `internal/canonical` + `internal/plugin`; the `.go-arch-lint.yml` boundary check passes.
+  4. Tool-call requests round-trip: `tool_use` content blocks emitted in canonical shape and rendered with `input` as an object (Anthropic-style; OpenAI's JSON-string rendering lands in Phase 3); `tool_result` blocks accepted on the inbound side.
+  5. `ENABLED_SURFACES` env var is introduced in this phase with default `ollama,anthropic` enabling both surfaces. Setting `ENABLED_SURFACES=ollama` (the Phase 2 default) disables the Anthropic adapter at boot; Phase 3 will subsequently extend the default to `ollama,anthropic,openai`. `internal/adapter/anthropic` imports only `internal/canonical` + `internal/plugin`; the `.go-arch-lint.yml` boundary check passes.
   6. Header contract enforced: missing `anthropic-version` returns a canonical `invalid_request_error` rendered in Anthropic's `{"type":"error","error":{"type":"…","message":"…"}}` shape; the gateway accepts both `x-api-key` and `Authorization: Bearer …` auth modes (loop24-client uses both depending on provider).
 
 **Plans:** TBD
