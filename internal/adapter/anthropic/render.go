@@ -45,7 +45,16 @@ type contentBlock struct {
 	Thinking string         `json:"thinking,omitempty"`
 	ID       string         `json:"id,omitempty"`
 	Name     string         `json:"name,omitempty"`
-	Input    map[string]any `json:"input,omitempty"`
+	// Input is *map[string]any (not map[string]any) so the omitempty tag
+	// distinguishes "this is not a tool_use block, drop the field" (nil
+	// pointer) from "this is a tool_use block with no arguments, emit
+	// {}" (non-nil pointer to empty map). With a plain map type,
+	// encoding/json's omitempty drops both nil AND len==0 maps — so
+	// `Input: map[string]any{}` would still vanish from the wire.
+	// Indirection through a pointer lets chatResponseToMessage carry
+	// "field present, value empty" into the marshaller (CR-01 fix —
+	// VERIFICATION.md gap 1).
+	Input *map[string]any `json:"input,omitempty"`
 }
 
 // usage is the per-turn token-accounting envelope. Phase 3.1 emits
@@ -103,11 +112,21 @@ func chatResponseToMessage(resp *canonical.ChatResponse, requestedModel string) 
 				})
 			case canonical.ContentKindToolUse:
 				if part.ToolUse != nil {
+					// Anthropic spec requires tool_use.input as a JSON object even
+					// when empty. Coerce nil/empty to map[string]any{} so json.Marshal
+					// emits "input":{} rather than dropping the field via omitempty
+					// (CR-01 fix — VERIFICATION.md gap 1). The pointer indirection
+					// on contentBlock.Input is what makes omitempty preserve the
+					// field for an empty-but-present map.
+					input := part.ToolUse.Input
+					if len(input) == 0 {
+						input = map[string]any{}
+					}
 					out.Content = append(out.Content, contentBlock{
 						Type:  "tool_use",
 						ID:    part.ToolUse.ID,
 						Name:  part.ToolUse.Name,
-						Input: part.ToolUse.Input,
+						Input: &input,
 					})
 				}
 			}
