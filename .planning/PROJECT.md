@@ -36,8 +36,17 @@ and the single governance surface are the load-bearing properties.
 
 <!-- Shipped and confirmed valuable. -->
 
-(None yet — ship to validate. The existing Node implementation is
-referenced as the spec, not as validated state of this codebase.)
+**Validated in Phase 2** (LangFlow zero-reconfig pending operator smoke test — code path complete, awaiting human-UAT to promote REQ-OLLAMA-01 fully):
+
+- **REQ-CWD-01**: Per-request `cwd` from longest common parent of `resource_link` block URIs with `KIRO_CWD` fallback and `X-Working-Dir` override — `internal/engine/pickcwd.go` (Codex H-2 ResourceLinks source); 4-step priority chain covered by `pickcwd_test.go`.
+- **REQ-IMAGE-01**: Ollama `images: []` → `canonical.ContentKindImage` → ACP `image` block with sniffed MIME — `internal/adapter/ollama/wire.go` (`detectMIME`) + `internal/engine/build_acp.go` (Codex M-1); covered by `TestWireToChatRequest_Images` + `TestDetectMIME`.
+- **REQ-POOL-01** (baseline; Phase 5 raises `POOL_SIZE` default): Fixed-size warm pool ready before HTTP listener accepts — `internal/pool/pool.go` (Warmup) + `cmd/loop24-gateway/main.go` (POOL-02 ordering in `newApp`); `TestApp_WarmupBeforeListen` proves ordering.
+- **REQ-PLUGIN-01**: `PreHook` / `PostHook` operate on canonical types with short-circuit return — `internal/engine/hooks.go` + `Engine.Run`; `TestEngine_PreHookShortCircuit_PreservesBody` (Codex H-4) + `TestEngine_PostHookExecutes` (Codex H-5).
+- **REQ-OBSERV-01** (Phase 2 slice): `/health` returns pool stats; auth-exempt paths include `/`, `/api/version`, `/health` — `internal/server/health.go` + `internal/server/server.go` (`NewFromConfig`); `TestNewFromConfig_HealthPoolWiring` + `TestExemptRoutes_BypassAuth/{version,health}`.
+
+**Pending operator smoke test** (`02-HUMAN-UAT.md`):
+
+- **REQ-OLLAMA-01** *(load-bearing)*: LangFlow flow pointing at `/api/chat` works with zero reconfiguration — handler chain verified end-to-end with `fakeEngine`; LangFlow zero-reconfig smoke pending.
 
 ### Active
 
@@ -161,4 +170,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-05-23 — Phase 1.1 complete (ACP wire alignment + real-kiro round-trip gate)*
+*Last updated: 2026-05-24 — Phase 2 complete (Ollama end-to-end vertical slice: canonical → engine → pool → Ollama adapter; 6 plans across 4 waves; LangFlow smoke test pending in 02-HUMAN-UAT.md)*
