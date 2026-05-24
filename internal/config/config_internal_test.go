@@ -146,3 +146,68 @@ func TestParseCIDRs_ErrorMessageMentionsEntry(t *testing.T) {
 		t.Errorf("error message should mention offending entry, got: %v", err)
 	}
 }
+
+// --- validateEnabledSurfaces (Phase 3.1 D-16) ---------------------------
+
+func TestValidateEnabledSurfaces_OllamaOnly(t *testing.T) {
+	t.Parallel()
+	if err := validateEnabledSurfaces([]string{"ollama"}); err != nil {
+		t.Errorf("ollama is in the allow-list, want nil error, got %v", err)
+	}
+}
+
+func TestValidateEnabledSurfaces_AnthropicOnly(t *testing.T) {
+	t.Parallel()
+	if err := validateEnabledSurfaces([]string{"anthropic"}); err != nil {
+		t.Errorf("anthropic is in the allow-list, want nil error, got %v", err)
+	}
+}
+
+func TestValidateEnabledSurfaces_Both(t *testing.T) {
+	t.Parallel()
+	if err := validateEnabledSurfaces([]string{"ollama", "anthropic"}); err != nil {
+		t.Errorf("ollama+anthropic both valid, want nil error, got %v", err)
+	}
+}
+
+func TestValidateEnabledSurfaces_NilOrEmpty(t *testing.T) {
+	t.Parallel()
+	// Load() injects the default before calling validateEnabledSurfaces,
+	// so an empty list never reaches us in production. The helper still
+	// tolerates it (no-op) so tests that probe edge cases don't crash.
+	if err := validateEnabledSurfaces(nil); err != nil {
+		t.Errorf("nil list should be a no-op, got %v", err)
+	}
+	if err := validateEnabledSurfaces([]string{}); err != nil {
+		t.Errorf("empty list should be a no-op, got %v", err)
+	}
+}
+
+func TestValidateEnabledSurfaces_UnknownName_NamesTheOffender(t *testing.T) {
+	t.Parallel()
+	// D-16: error message must NAME the offending surface so the
+	// operator can diagnose the typo without re-reading the env (RESEARCH.md
+	// Pitfall 10).
+	err := validateEnabledSurfaces([]string{"ollama", "olama"})
+	if err == nil {
+		t.Fatal("want error for typo 'olama', got nil")
+	}
+	if !strings.Contains(err.Error(), "olama") {
+		t.Errorf("error must name the offending surface 'olama', got: %v", err)
+	}
+}
+
+func TestValidateEnabledSurfaces_OpenAIStillForbidden(t *testing.T) {
+	t.Parallel()
+	// Phase 3 will widen the allow-list to include "openai". Pin the
+	// Phase 3.1 contract: it must REJECT "openai" until then so a
+	// premature OpenAI deployment fails fast rather than silently
+	// disabling the surface.
+	err := validateEnabledSurfaces([]string{"openai"})
+	if err == nil {
+		t.Fatal("Phase 3.1 must NOT allow 'openai' (Phase 3 widens the list); got nil error")
+	}
+	if !strings.Contains(err.Error(), "openai") {
+		t.Errorf("error must name the offending surface 'openai', got: %v", err)
+	}
+}

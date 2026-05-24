@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -31,5 +32,70 @@ func TestWriteOllamaError_Shape(t *testing.T) {
 	want := map[string]string{"error": "Invalid or missing API key"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("body: want %v, got %v", want, got)
+	}
+}
+
+// --- D-15: extractToken whitebox tests (Phase 3.1) -----------------------
+//
+// extractToken implements the precedence rule introduced in D-15: try
+// Authorization: Bearer FIRST, fall back to x-api-key ONLY when the
+// Authorization header is absent or non-Bearer. The middleware-layer
+// TestBearer_DualHeader in auth_test.go validates the same contract end-
+// to-end; these whitebox cases pin the helper's behaviour directly.
+
+func TestExtractToken_AuthorizationBearer(t *testing.T) {
+	t.Parallel()
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+	r.Header.Set("Authorization", "Bearer my-token-1")
+	if got := extractToken(r); got != "my-token-1" {
+		t.Errorf("Authorization: Bearer extraction: got %q, want %q", got, "my-token-1")
+	}
+}
+
+func TestExtractToken_XAPIKeyFallback(t *testing.T) {
+	t.Parallel()
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+	// No Authorization header at all — fall back to x-api-key.
+	r.Header.Set("x-api-key", "anthropic-shape-key")
+	if got := extractToken(r); got != "anthropic-shape-key" {
+		t.Errorf("x-api-key fallback: got %q, want %q", got, "anthropic-shape-key")
+	}
+}
+
+func TestExtractToken_AuthorizationWinsOverXAPIKey(t *testing.T) {
+	t.Parallel()
+	// D-15 precedence: when BOTH headers are present, Authorization wins.
+	// The x-api-key fallback is consulted ONLY when Authorization is
+	// absent or non-Bearer. This guards against a downgrade attack where
+	// an attacker supplies a bad Bearer alongside a stolen x-api-key —
+	// Authorization MUST be evaluated first and its validity decides the
+	// request.
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+	r.Header.Set("Authorization", "Bearer auth-token")
+	r.Header.Set("x-api-key", "key-token")
+	if got := extractToken(r); got != "auth-token" {
+		t.Errorf("precedence: got %q, want %q (Authorization must win)", got, "auth-token")
+	}
+}
+
+func TestExtractToken_NonBearerAuthorizationFallsThrough(t *testing.T) {
+	t.Parallel()
+	// When Authorization is present but NOT "Bearer ...", the helper
+	// must fall through to x-api-key. This covers the Basic-auth case
+	// (Anthropic SDK doesn't send Basic but a misconfigured proxy
+	// could) and the "Bearer<no-space>token" malformation.
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+	r.Header.Set("Authorization", "Basic dXNlcjpwYXNz")
+	r.Header.Set("x-api-key", "fallback-key")
+	if got := extractToken(r); got != "fallback-key" {
+		t.Errorf("non-Bearer Authorization should fall through to x-api-key: got %q, want %q", got, "fallback-key")
+	}
+}
+
+func TestExtractToken_NeitherHeader_Empty(t *testing.T) {
+	t.Parallel()
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+	if got := extractToken(r); got != "" {
+		t.Errorf("no headers: got %q, want empty", got)
 	}
 }

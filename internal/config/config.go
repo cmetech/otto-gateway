@@ -53,6 +53,18 @@ type Config struct {
 	// safe-by-default; set true ONLY when a known reverse proxy is in front
 	// of the gateway. Loaded from AUTH_TRUST_XFF.
 	AuthTrustXFF bool
+	// EnabledSurfaces is the comma-split list of HTTP surfaces the gateway
+	// constructs at boot (Phase 3.1 D-16). Default is ["ollama","anthropic"];
+	// Phase 3 will widen the default to include "openai". Unknown surface
+	// names cause Load() to return an error (fail-fast — RESEARCH.md
+	// Pitfall 10 mitigation). Loaded from ENABLED_SURFACES.
+	EnabledSurfaces []string
+	// AnthropicPathPrefix is the route prefix under which the Anthropic
+	// adapter mounts (Phase 3.1 D-19; default "/v1"). Shares the prefix
+	// with the OpenAI surface per SURF-08 — endpoint-level disambiguation
+	// distinguishes /v1/messages (Anthropic) from /v1/chat/completions
+	// (OpenAI). Loaded from ANTHROPIC_PATH_PREFIX.
+	AnthropicPathPrefix string
 }
 
 // LogLevel returns the slog.Level implied by the Debug flag.
@@ -99,10 +111,16 @@ func Load() (Config, error) {
 
 	ollamaPath := getEnvStr("OLLAMA_PATH_PREFIX", "/api")
 	openaiPath := getEnvStr("OPENAI_PATH_PREFIX", "/v1")
+	anthropicPath := getEnvStr("ANTHROPIC_PATH_PREFIX", "/v1")
 
 	trustXFF, err := getEnvBool("AUTH_TRUST_XFF", false)
 	if err != nil {
 		errs = append(errs, err)
+	}
+
+	enabledSurfaces := getEnvStrSliceComma("ENABLED_SURFACES", []string{"ollama", "anthropic"})
+	if err := validateEnabledSurfaces(enabledSurfaces); err != nil {
+		errs = append(errs, fmt.Errorf("ENABLED_SURFACES: %w", err))
 	}
 
 	if len(errs) > 0 {
@@ -110,19 +128,52 @@ func Load() (Config, error) {
 	}
 
 	return Config{
-		HTTPAddr:         httpAddr,
-		KiroCmd:          kiroCmd,
-		KiroArgs:         kiroArgs,
-		KiroCWD:          kiroCWD,
-		Debug:            debug,
-		PingInterval:     pingInterval,
-		AuthToken:        authTokens,
-		AllowedIPs:       allowedIPs,
-		PoolSize:         poolSize,
-		OllamaPathPrefix: ollamaPath,
-		OpenAIPathPrefix: openaiPath,
-		AuthTrustXFF:     trustXFF,
+		HTTPAddr:            httpAddr,
+		KiroCmd:             kiroCmd,
+		KiroArgs:            kiroArgs,
+		KiroCWD:             kiroCWD,
+		Debug:               debug,
+		PingInterval:        pingInterval,
+		AuthToken:           authTokens,
+		AllowedIPs:          allowedIPs,
+		PoolSize:            poolSize,
+		OllamaPathPrefix:    ollamaPath,
+		OpenAIPathPrefix:    openaiPath,
+		AuthTrustXFF:        trustXFF,
+		EnabledSurfaces:     enabledSurfaces,
+		AnthropicPathPrefix: anthropicPath,
 	}, nil
+}
+
+// validateEnabledSurfaces checks every entry in surfaces against the
+// Phase 3.1 allow-list {"ollama","anthropic"} and returns a joined
+// error naming each offending value. Returns nil for an empty / nil
+// list (Load() injects the default before calling — empties never
+// reach us in production, but the helper tolerates them so direct
+// callers don't crash).
+//
+// D-16 fail-fast contract: the error message MUST name the offending
+// surface so an operator can diagnose `ENABLED_SURFACES=anthrpic`
+// (typo) without re-reading the env (RESEARCH.md Pitfall 10). Phase 3
+// will widen the allow-list to include "openai".
+func validateEnabledSurfaces(surfaces []string) error {
+	if len(surfaces) == 0 {
+		return nil
+	}
+	allowed := map[string]struct{}{
+		"ollama":    {},
+		"anthropic": {},
+	}
+	var errs []error
+	for _, s := range surfaces {
+		if _, ok := allowed[s]; !ok {
+			errs = append(errs, fmt.Errorf("unknown surface %q (allowed: ollama, anthropic)", s))
+		}
+	}
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	return nil
 }
 
 // getEnvStr reads an env var, trims whitespace, and returns the default if empty.

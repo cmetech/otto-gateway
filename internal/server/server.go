@@ -47,19 +47,30 @@ type PoolStatsSource interface {
 //     ProtectedRouter() output).
 //   - OllamaVersionHandler: /api/version handler mounted on the OUTER
 //     router (auth-exempt per AUTH-03; Codex M-4 fix).
+//   - AnthropicPath: "/v1" (from cfg.AnthropicPathPrefix). Phase 3.1
+//     D-17 parallel mount; the block is skipped when AnthropicPath is
+//     empty OR AnthropicProtectedRouter is nil.
+//   - AnthropicProtectedRouter: chi sub-router mounted under
+//     AnthropicPath INSIDE the auth-protected sub-tree. The SAME
+//     auth.Bearer + auth.IPAllowlist chain wraps it as the Ollama
+//     surface (D-15 "one middleware, one mental model" — D-15 dual-
+//     header reading applies to both surfaces). D-18: no Anthropic
+//     equivalent of /api/version is exposed on the outer router.
 //   - Pool: PoolStatsSource for /health (may be nil when KIRO_CMD unset).
 type Config struct {
-	Logger                *slog.Logger
-	Version               string
-	Commit                string
-	HTTPAddr              string
-	AuthTokens            []string
-	AllowedPrefixes       []netip.Prefix
-	AuthTrustXFF          bool
-	OllamaPath            string
-	OllamaProtectedRouter chi.Router
-	OllamaVersionHandler  http.HandlerFunc
-	Pool                  PoolStatsSource
+	Logger                   *slog.Logger
+	Version                  string
+	Commit                   string
+	HTTPAddr                 string
+	AuthTokens               []string
+	AllowedPrefixes          []netip.Prefix
+	AuthTrustXFF             bool
+	OllamaPath               string
+	OllamaProtectedRouter    chi.Router
+	OllamaVersionHandler     http.HandlerFunc
+	AnthropicPath            string
+	AnthropicProtectedRouter chi.Router
+	Pool                     PoolStatsSource
 }
 
 // Server wraps the chi router and HTTP server with structured logging.
@@ -159,6 +170,28 @@ func NewFromConfig(cfg Config) *Server {
 				TrustXForwardedFor: cfg.AuthTrustXFF, // Codex H-7
 			}))
 			r.Mount("/", cfg.OllamaProtectedRouter)
+		})
+	}
+
+	// Phase 3.1 D-17: parallel Anthropic mount block. Same auth chain
+	// as the Ollama branch — auth.Bearer reads BOTH Authorization:
+	// Bearer AND x-api-key via the D-15 extractToken helper, so
+	// loop24-client's preferred x-api-key path works without any
+	// adapter-specific middleware. D-18: no /v1/version equivalent
+	// is exposed on the outer router (Anthropic has no public
+	// /version surface).
+	if cfg.AnthropicPath != "" && cfg.AnthropicProtectedRouter != nil {
+		s.router.Route(cfg.AnthropicPath, func(r chi.Router) {
+			r.Use(auth.Bearer(auth.Config{
+				Logger: cfg.Logger,
+				Tokens: cfg.AuthTokens,
+			}))
+			r.Use(auth.IPAllowlist(auth.Config{
+				Logger:             cfg.Logger,
+				AllowedPrefixes:    cfg.AllowedPrefixes,
+				TrustXForwardedFor: cfg.AuthTrustXFF, // Codex H-7
+			}))
+			r.Mount("/", cfg.AnthropicProtectedRouter)
 		})
 	}
 
