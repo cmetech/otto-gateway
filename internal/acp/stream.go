@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sync"
 
-	"loop24-gateway/internal/canonical"
+	"otto-gateway/internal/canonical"
 )
 
 // FinalResult holds per-stream metadata available after Chunks closes.
@@ -68,10 +68,10 @@ type Stream struct {
 func newStream(_ context.Context, sessionID string) *Stream {
 	ch := make(chan canonical.Chunk, 64)
 	s := &Stream{
-		Chunks:    ch,
-		chunks:    ch,
-		done:      make(chan struct{}),
-		result:    &FinalResult{SessionID: sessionID},
+		Chunks: ch,
+		chunks: ch,
+		done:   make(chan struct{}),
+		result: &FinalResult{SessionID: sessionID},
 	}
 	return s
 }

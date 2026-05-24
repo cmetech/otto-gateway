@@ -9,7 +9,7 @@ import (
 	"reflect"
 	"testing"
 
-	"loop24-gateway/internal/auth"
+	"otto-gateway/internal/auth"
 )
 
 // okHandler is the "next" handler in the chain — returns 200 + a sentinel

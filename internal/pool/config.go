@@ -14,8 +14,8 @@ import (
 	"log/slog"
 	"time"
 
-	"loop24-gateway/internal/acp"
-	"loop24-gateway/internal/canonical"
+	"otto-gateway/internal/acp"
+	"otto-gateway/internal/canonical"
 )
 
 // PoolClient is the pool-internal interface that mirrors the subset of

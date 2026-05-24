@@ -22,7 +22,7 @@ import (
 	"strings"
 	"time"
 
-	"loop24-gateway/internal/canonical"
+	"otto-gateway/internal/canonical"
 )
 
 // Collect runs the request through the engine and aggregates the
@@ -64,8 +64,8 @@ func (e *Engine) Collect(ctx context.Context, req *canonical.ChatRequest) (*cano
 				if chunk.Thought != nil {
 					thoughtSB.WriteString(chunk.Thought.Content)
 				}
-			// ChunkKindToolCall / ChunkKindPlan still intentionally
-			// dropped in Phase 3.1; Phase 6 wires them.
+				// ChunkKindToolCall / ChunkKindPlan still intentionally
+				// dropped in Phase 3.1; Phase 6 wires them.
 			}
 		}
 		final, rerr := run.stream.Result()

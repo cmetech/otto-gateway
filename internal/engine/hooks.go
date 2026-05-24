@@ -10,7 +10,7 @@ package engine
 import (
 	"context"
 
-	"loop24-gateway/internal/canonical"
+	"otto-gateway/internal/canonical"
 )
 
 // PreHook is invoked by Engine.Run BEFORE any ACP traffic. Implementations

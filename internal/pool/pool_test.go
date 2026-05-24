@@ -15,11 +15,11 @@ import (
 	"testing"
 	"time"
 
-	"loop24-gateway/internal/acp"
-	"loop24-gateway/internal/canonical"
-	"loop24-gateway/internal/engine"
-	"loop24-gateway/internal/pool"
-	"loop24-gateway/internal/testutil"
+	"otto-gateway/internal/acp"
+	"otto-gateway/internal/canonical"
+	"otto-gateway/internal/engine"
+	"otto-gateway/internal/pool"
+	"otto-gateway/internal/testutil"
 )
 
 // Compile-time interface satisfaction assertion (defense-in-depth
@@ -54,11 +54,11 @@ type fakeClient struct {
 	// scripted model catalog returned by AvailableModels.
 	models []canonical.ModelInfo
 
-	mu               sync.Mutex
-	initializeCalls  int
-	newSessionCalls  int
-	cancelCalls      []string
-	closeCalls       int
+	mu              sync.Mutex
+	initializeCalls int
+	newSessionCalls int
+	cancelCalls     []string
+	closeCalls      int
 }
 
 func (f *fakeClient) Initialize(ctx context.Context) error {
@@ -116,9 +116,15 @@ func (f *fakeClient) AvailableModels() []canonical.ModelInfo {
 }
 
 // snapshot helpers — read counters/calls under mu.
-func (f *fakeClient) newSessionCount() int { f.mu.Lock(); defer f.mu.Unlock(); return f.newSessionCalls }
+func (f *fakeClient) newSessionCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.newSessionCalls
+}
+
 func (f *fakeClient) cancelCallList() []string {
-	f.mu.Lock(); defer f.mu.Unlock()
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	out := make([]string, len(f.cancelCalls))
 	copy(out, f.cancelCalls)
 	return out

@@ -13,8 +13,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"loop24-gateway/internal/canonical"
-	"loop24-gateway/internal/version"
+	"otto-gateway/internal/canonical"
+	"otto-gateway/internal/version"
 )
 
 // ErrClientClosed is returned to all in-flight callers when Close() is called or

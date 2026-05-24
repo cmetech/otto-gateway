@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"time"
 
-	"loop24-gateway/internal/canonical"
+	"otto-gateway/internal/canonical"
 )
 
 // PingInterval is the cadence at which the SSE emitter writes
@@ -391,7 +391,7 @@ func runSSEEmitterLoop(ctx context.Context, e *sseEmitter, run RunHandle, ticker
 //     writeSSEError + return the error. No message_delta/message_stop
 //     after the error frame (SDK treats error as terminal).
 //   - Result() success → emit message_delta (with mapped stop_reason)
-//     + message_stop + return nil.
+//   - message_stop + return nil.
 func finalizeStream(e *sseEmitter, run RunHandle) error {
 	if e.blockOpen {
 		// Best-effort close; the stream is ending either way.

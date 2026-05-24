@@ -1,7 +1,7 @@
 package acp
 
 import (
-	"loop24-gateway/internal/canonical"
+	"otto-gateway/internal/canonical"
 )
 
 // NewStreamForTest constructs a *Stream owned by the test code.

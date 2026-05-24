@@ -10,7 +10,7 @@ import (
 	"testing"
 	"testing/quick"
 
-	"loop24-gateway/internal/canonical"
+	"otto-gateway/internal/canonical"
 )
 
 // TestPickCwd_Priority walks the four-step priority chain. Each case

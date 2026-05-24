@@ -25,8 +25,8 @@ import (
 	"sync"
 	"testing"
 
-	"loop24-gateway/internal/canonical"
-	"loop24-gateway/internal/testutil"
+	"otto-gateway/internal/canonical"
+	"otto-gateway/internal/testutil"
 )
 
 // --- fakeACP harness ---
@@ -35,19 +35,19 @@ type fakeACP struct {
 	mu sync.Mutex
 
 	// programmable behavior
-	newSessionID    string
-	newSessionErr   error
-	setModelErr     error
-	promptErr       error
-	chunksToEmit    []canonical.Chunk
-	finalResult     *canonical.FinalResult
-	resultErr       error
+	newSessionID  string
+	newSessionErr error
+	setModelErr   error
+	promptErr     error
+	chunksToEmit  []canonical.Chunk
+	finalResult   *canonical.FinalResult
+	resultErr     error
 
 	// recorded calls
-	newSessionCalls []string  // cwds
-	setModelCalls   []string  // model ids
-	promptCalls     []string  // session ids
-	cancelCalls     []string  // session ids
+	newSessionCalls []string // cwds
+	setModelCalls   []string // model ids
+	promptCalls     []string // session ids
+	cancelCalls     []string // session ids
 }
 
 func (f *fakeACP) NewSession(_ context.Context, cwd string) (string, error) {

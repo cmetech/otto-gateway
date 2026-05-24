@@ -5,7 +5,7 @@ import "runtime/debug"
 
 // Version is set at build time via:
 //
-//	-ldflags="-X loop24-gateway/internal/version.Version=1.2.3"
+//	-ldflags="-X otto-gateway/internal/version.Version=1.2.3"
 //
 // Falls back to "0.0.0-dev" for local builds without -ldflags.
 var Version = "0.0.0-dev"

@@ -6,7 +6,7 @@ import (
 	"context"
 	"testing"
 
-	"loop24-gateway/internal/canonical"
+	"otto-gateway/internal/canonical"
 )
 
 // TestCollect_AggregatesText asserts that Collect concatenates multiple

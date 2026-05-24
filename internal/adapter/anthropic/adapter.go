@@ -7,8 +7,8 @@
 //   - this package declares CONSUMER-defined interfaces (Engine,
 //     RunHandle, Stream) locally. It MUST NOT import internal/engine —
 //     the concrete *engine.Engine structurally satisfies the local
-//     Engine interface and is wired in by cmd/loop24-gateway/main.go.
-//   - this package imports loop24-gateway/internal/canonical only
+//     Engine interface and is wired in by cmd/otto-gateway/main.go.
+//   - this package imports otto-gateway/internal/canonical only
 //     (plus stdlib + chi + log/slog).
 //
 // Phase 3.1 D-18 — the protected router registers EXACTLY ONE route:
@@ -21,7 +21,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"loop24-gateway/internal/canonical"
+	"otto-gateway/internal/canonical"
 )
 
 // Engine is the consumer-defined interface the adapter depends on for
@@ -49,7 +49,7 @@ type Engine interface {
 // satisfies this interface — but because *engine.Run.Stream returns the
 // concrete engine.Stream interface (which is also structurally
 // satisfied by our local Stream), Go's structural typing makes the
-// wiring transparent at cmd/loop24-gateway/main.go.
+// wiring transparent at cmd/otto-gateway/main.go.
 type RunHandle interface {
 	// Stream returns the chunk delivery interface for this run.
 	Stream() Stream

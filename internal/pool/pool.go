@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"sync"
 
-	"loop24-gateway/internal/acp"
-	"loop24-gateway/internal/canonical"
-	"loop24-gateway/internal/engine"
+	"otto-gateway/internal/acp"
+	"otto-gateway/internal/canonical"
+	"otto-gateway/internal/engine"
 )
 
 // Slot is one warm kiro-cli connection owned by the pool. Client is
@@ -466,5 +466,7 @@ func (w *poolStreamWrapper) releaseOnce() {
 // Production-path compile-time interface satisfaction check. Build
 // failure here means Pool no longer implements engine.ACPClient —
 // surface the missing method to the executor.
-var _ engine.ACPClient = (*Pool)(nil)
-var _ engine.Stream = (*poolStreamWrapper)(nil)
+var (
+	_ engine.ACPClient = (*Pool)(nil)
+	_ engine.Stream    = (*poolStreamWrapper)(nil)
+)

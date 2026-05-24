@@ -25,8 +25,8 @@ import (
 
 // errorEnvelope is the outer envelope. Type is always "error".
 type errorEnvelope struct {
-	Type  string      `json:"type"`
-	Error errorInner  `json:"error"`
+	Type  string     `json:"type"`
+	Error errorInner `json:"error"`
 }
 
 // errorInner is the inner error object. Type is one of the 8

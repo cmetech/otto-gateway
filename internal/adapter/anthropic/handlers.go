@@ -27,7 +27,7 @@ const messagesBodyCap int64 = 4 << 20
 //  7. Branch on wire.Stream:
 //     - false (or absent): Engine.Collect → chatResponseToMessage → JSON.
 //     - true: Engine.Run → runSSEEmitter (real Plan 03.1-03 emitter
-//       in sse.go — Plan 02 stub deleted).
+//     in sse.go — Plan 02 stub deleted).
 //  8. T-02-33: engine errors are LOGGED via slog.Error and rendered
 //     as 500 errAPI with the generic message "internal error" —
 //     never echo err.Error() which may contain request fragments.

@@ -34,7 +34,8 @@ func accessLog(logger *slog.Logger) func(http.Handler) http.Handler {
 
 			next.ServeHTTP(ww, r.WithContext(ctx))
 
-			reqLogger.Info("request",
+			reqLogger.Info(
+				"request",
 				"method", r.Method,
 				"path", r.URL.Path,
 				"status", ww.Status(),

@@ -1,4 +1,4 @@
-module loop24-gateway
+module otto-gateway
 
 go 1.23
 

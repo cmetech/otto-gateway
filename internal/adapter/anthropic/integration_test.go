@@ -15,10 +15,10 @@ import (
 	"testing"
 	"time"
 
-	"loop24-gateway/internal/canonical"
-	"loop24-gateway/internal/engine"
-	"loop24-gateway/internal/pool"
-	"loop24-gateway/internal/testutil"
+	"otto-gateway/internal/canonical"
+	"otto-gateway/internal/engine"
+	"otto-gateway/internal/pool"
+	"otto-gateway/internal/testutil"
 )
 
 // resolveKiroCLI gates integration tests on (1) LOOP24_INTEGRATION=1 in
@@ -83,7 +83,7 @@ func kiroSetup(t *testing.T) (*httptest.Server, func()) {
 	// concrete *engine.Run / *engine.Stream values are structurally
 	// compatible with anthropic.RunHandle / anthropic.Stream — but
 	// Go's interface-return-type rule means the wrapper has to convert
-	// at the call site. Mirrors cmd/loop24-gateway/main.go's
+	// at the call site. Mirrors cmd/otto-gateway/main.go's
 	// anthropicEngineAdapter (kept local to the test so the test file
 	// stays self-contained).
 	a := New(Config{
@@ -424,7 +424,8 @@ func TestIntegration_RealKiroCLI_RedactedThinkingFollowUp(t *testing.T) {
 			`{"type":"text","text":%s}`+
 			`]},`+
 			`{"role":"user","content":"say bye"}`+
-			`]}`, string(assistantTextJSON)))
+			`]}`, string(assistantTextJSON),
+	))
 
 	secondResp := postJSON(ctx, t, srv, secondBody)
 	defer func() { _ = secondResp.Body.Close() }()

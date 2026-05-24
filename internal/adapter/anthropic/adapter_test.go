@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"loop24-gateway/internal/canonical"
+	"otto-gateway/internal/canonical"
 )
 
 // notImplementedEngine is the smallest possible Engine satisfier — both

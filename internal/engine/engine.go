@@ -22,7 +22,7 @@ import (
 	"fmt"
 	"log/slog"
 
-	"loop24-gateway/internal/canonical"
+	"otto-gateway/internal/canonical"
 )
 
 // ACPClient is the consumer-defined interface the engine depends on for

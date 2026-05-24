@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"loop24-gateway/internal/engine"
-	"loop24-gateway/internal/pool"
-	"loop24-gateway/internal/testutil"
+	"otto-gateway/internal/engine"
+	"otto-gateway/internal/pool"
+	"otto-gateway/internal/testutil"
 )
 
 // resolveKiroCLI gates integration tests on (1) LOOP24_INTEGRATION=1 in

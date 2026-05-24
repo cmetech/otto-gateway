@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"loop24-gateway/internal/canonical"
+	"otto-gateway/internal/canonical"
 )
 
 // onePixelPNGBase64 is a 1×1 transparent PNG encoded as base64 (66 bytes
@@ -21,10 +21,10 @@ const onePixelPNGBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQ
 // and X-Working-Dir header passthrough.
 func TestWireToChatRequest(t *testing.T) {
 	tests := []struct {
-		name      string
-		body      ollamaChatRequest
-		wdHeader  string
-		assert    func(t *testing.T, got *canonical.ChatRequest)
+		name     string
+		body     ollamaChatRequest
+		wdHeader string
+		assert   func(t *testing.T, got *canonical.ChatRequest)
 	}{
 		{
 			name: "text only",

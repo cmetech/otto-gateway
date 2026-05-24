@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"loop24-gateway/internal/config"
-	"loop24-gateway/internal/testutil"
+	"otto-gateway/internal/config"
+	"otto-gateway/internal/testutil"
 )
 
 // TestApp_NoKiroCmd_StartsHealthOnly — when KIRO_CMD is empty, newApp

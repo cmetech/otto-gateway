@@ -20,9 +20,9 @@ import (
 
 	"go.uber.org/goleak"
 
-	"loop24-gateway/internal/acp"
-	"loop24-gateway/internal/canonical"
-	"loop24-gateway/internal/testutil"
+	"otto-gateway/internal/acp"
+	"otto-gateway/internal/canonical"
+	"otto-gateway/internal/testutil"
 )
 
 // resolveKiroCLI checks for a kiro-cli binary and skips the test if not found.

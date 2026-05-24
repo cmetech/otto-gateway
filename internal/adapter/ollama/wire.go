@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"loop24-gateway/internal/canonical"
+	"otto-gateway/internal/canonical"
 )
 
 // ----------------------------------------------------------------------------

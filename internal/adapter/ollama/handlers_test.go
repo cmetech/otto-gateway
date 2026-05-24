@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"loop24-gateway/internal/canonical"
+	"otto-gateway/internal/canonical"
 )
 
 // fakeEngine is the whitebox test double for the consumer-defined

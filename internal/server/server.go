@@ -17,8 +17,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
-	"loop24-gateway/internal/auth"
-	"loop24-gateway/internal/config"
+	"otto-gateway/internal/auth"
+	"otto-gateway/internal/config"
 )
 
 // PoolStatsSource is the consumer-defined interface healthHandler uses

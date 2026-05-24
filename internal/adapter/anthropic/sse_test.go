@@ -17,7 +17,7 @@ import (
 
 	"go.uber.org/goleak"
 
-	"loop24-gateway/internal/canonical"
+	"otto-gateway/internal/canonical"
 )
 
 // ----------------------------------------------------------------------------
@@ -91,8 +91,8 @@ type nonFlusherWriter struct {
 	body      []byte
 }
 
-func (n *nonFlusherWriter) Header() http.Header        { return n.headerMap }
-func (n *nonFlusherWriter) WriteHeader(s int)          { n.status = s }
+func (n *nonFlusherWriter) Header() http.Header { return n.headerMap }
+func (n *nonFlusherWriter) WriteHeader(s int)   { n.status = s }
 func (n *nonFlusherWriter) Write(p []byte) (int, error) {
 	n.body = append(n.body, p...)
 	return len(p), nil
@@ -245,14 +245,14 @@ func TestApplyChunk_TextThenThinkingThenText_IndexBumps(t *testing.T) {
 
 	events := sseEventLines(cf.Body())
 	want := []string{
-		"content_block_start",  // block 0 text
-		"content_block_delta",  // text_delta "hello"
-		"content_block_stop",   // close block 0
-		"content_block_start",  // block 1 thinking
-		"content_block_delta",  // thinking_delta "thinking"
-		"content_block_stop",   // close block 1
-		"content_block_start",  // block 2 text
-		"content_block_delta",  // text_delta "world"
+		"content_block_start", // block 0 text
+		"content_block_delta", // text_delta "hello"
+		"content_block_stop",  // close block 0
+		"content_block_start", // block 1 thinking
+		"content_block_delta", // thinking_delta "thinking"
+		"content_block_stop",  // close block 1
+		"content_block_start", // block 2 text
+		"content_block_delta", // text_delta "world"
 	}
 	if !equalSlice(events, want) {
 		t.Errorf("events: got %v, want %v", events, want)
@@ -764,7 +764,7 @@ func TestFinalize_NilFinalResult_FallsBackToStopUnknown(t *testing.T) {
 	}
 	// Find the message_delta data frame.
 	events := sseEventLines(cf.Body())
-	var deltaIdx = -1
+	deltaIdx := -1
 	for i, ev := range events {
 		if ev == "message_delta" {
 			deltaIdx = i

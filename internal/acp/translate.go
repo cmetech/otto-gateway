@@ -8,7 +8,7 @@ import (
 	"path"
 	"strings"
 
-	"loop24-gateway/internal/canonical"
+	"otto-gateway/internal/canonical"
 )
 
 // truncateForLog clips a string to maxLen bytes for safe inclusion in a log

@@ -36,14 +36,14 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"loop24-gateway/internal/adapter/anthropic"
-	"loop24-gateway/internal/adapter/ollama"
-	"loop24-gateway/internal/canonical"
-	"loop24-gateway/internal/config"
-	"loop24-gateway/internal/engine"
-	"loop24-gateway/internal/pool"
-	"loop24-gateway/internal/server"
-	"loop24-gateway/internal/version"
+	"otto-gateway/internal/adapter/anthropic"
+	"otto-gateway/internal/adapter/ollama"
+	"otto-gateway/internal/canonical"
+	"otto-gateway/internal/config"
+	"otto-gateway/internal/engine"
+	"otto-gateway/internal/pool"
+	"otto-gateway/internal/server"
+	"otto-gateway/internal/version"
 )
 
 // warmupDeadline bounds pool.Warmup so a hung kiro-cli Initialize cannot
@@ -74,7 +74,8 @@ func main() {
 
 	// Auth-mode startup log line (T-02-31 mitigation + Codex H-7
 	// surfaces XFF trust mode so operators see it).
-	logger.Info("auth mode",
+	logger.Info(
+		"auth mode",
 		"enabled", len(cfg.AuthToken) > 0,
 		"ip_allowlist", len(cfg.AllowedIPs) > 0,
 		"trust_xff", cfg.AuthTrustXFF,
@@ -99,7 +100,7 @@ func main() {
 type app struct {
 	cfg    config.Config
 	logger *slog.Logger
-	pool   *pool.Pool   // nil when KIRO_CMD unset
+	pool   *pool.Pool     // nil when KIRO_CMD unset
 	engine *engine.Engine // nil when pool is nil
 	srv    *server.Server
 }
@@ -239,7 +240,8 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 
 	// Boot log surfaces the resolved surface set so operators see
 	// what's actually mounted (closes a Phase 2 → Phase 3.1 ops gap).
-	logger.Info("server: enabled surfaces",
+	logger.Info(
+		"server: enabled surfaces",
 		"enabled_surfaces", cfg.EnabledSurfaces,
 		"ollama_mounted", ollamaAdapter != nil,
 		"anthropic_mounted", anthropicAdapter != nil,

@@ -13,10 +13,10 @@ import (
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/goleak"
 
-	"loop24-gateway/internal/config"
-	"loop24-gateway/internal/server"
-	"loop24-gateway/internal/testutil"
-	"loop24-gateway/internal/version"
+	"otto-gateway/internal/config"
+	"otto-gateway/internal/server"
+	"otto-gateway/internal/testutil"
+	"otto-gateway/internal/version"
 )
 
 func newTestServer(t *testing.T) *server.Server {

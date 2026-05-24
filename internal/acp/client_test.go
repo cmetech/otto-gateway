@@ -14,15 +14,15 @@ import (
 
 	"go.uber.org/goleak"
 
-	"loop24-gateway/internal/canonical"
-	"loop24-gateway/internal/testutil"
+	"otto-gateway/internal/canonical"
+	"otto-gateway/internal/testutil"
 )
 
 // mockRWC is a simple io.ReadWriteCloser backed by io.Pipe, used in unit tests.
 type mockRWC struct {
-	r          *io.PipeReader
-	w          *io.PipeWriter
-	serverRead *io.PipeReader
+	r           *io.PipeReader
+	w           *io.PipeWriter
+	serverRead  *io.PipeReader
 	serverWrite *io.PipeWriter
 }
 
@@ -41,7 +41,7 @@ func newMockRWC() *mockRWC {
 	}
 }
 
-func (m *mockRWC) Read(b []byte) (int, error)  { return m.r.Read(b) } //nolint:wrapcheck
+func (m *mockRWC) Read(b []byte) (int, error)  { return m.r.Read(b) }  //nolint:wrapcheck
 func (m *mockRWC) Write(b []byte) (int, error) { return m.w.Write(b) } //nolint:wrapcheck
 func (m *mockRWC) Close() error {
 	rerr := m.r.Close()

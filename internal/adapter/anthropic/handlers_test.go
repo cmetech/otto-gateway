@@ -12,8 +12,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"loop24-gateway/internal/auth"
-	"loop24-gateway/internal/canonical"
+	"otto-gateway/internal/auth"
+	"otto-gateway/internal/canonical"
 )
 
 // ----------------------------------------------------------------------------
@@ -31,9 +31,9 @@ type fakeEngine struct {
 	runErr      error
 	// lastReq captures the canonical request the handler synthesized
 	// so tests can assert wire→canonical translation passed through.
-	lastReq    *canonical.ChatRequest
-	collectN   int
-	runN       int
+	lastReq  *canonical.ChatRequest
+	collectN int
+	runN     int
 }
 
 func (f *fakeEngine) Collect(_ context.Context, req *canonical.ChatRequest) (*canonical.ChatResponse, error) {
@@ -62,7 +62,7 @@ type fakeStream struct {
 	err    error
 }
 
-func (f *fakeStream) Chunks() <-chan canonical.Chunk           { return f.chunks }
+func (f *fakeStream) Chunks() <-chan canonical.Chunk          { return f.chunks }
 func (f *fakeStream) Result() (*canonical.FinalResult, error) { return f.final, f.err }
 
 // fakeRunHandle wraps fakeStream.

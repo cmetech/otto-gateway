@@ -15,8 +15,8 @@ package engine
 import (
 	"context"
 
-	"loop24-gateway/internal/acp"
-	"loop24-gateway/internal/canonical"
+	"otto-gateway/internal/acp"
+	"otto-gateway/internal/canonical"
 )
 
 // NewACPClientAdapter returns an ACPClient that delegates to client.
@@ -92,5 +92,7 @@ func (a *acpStreamShim) Result() (*canonical.FinalResult, error) {
 // Production-path compile-time interface satisfaction check. Build
 // failure here means acpClientAdapter no longer implements ACPClient —
 // surface the missing method to the executor.
-var _ ACPClient = (*acpClientAdapter)(nil)
-var _ Stream = (*acpStreamShim)(nil)
+var (
+	_ ACPClient = (*acpClientAdapter)(nil)
+	_ Stream    = (*acpStreamShim)(nil)
+)

@@ -12,7 +12,7 @@ import (
 
 	"go.uber.org/goleak"
 
-	"loop24-gateway/internal/canonical"
+	"otto-gateway/internal/canonical"
 )
 
 // ----------------------------------------------------------------------------

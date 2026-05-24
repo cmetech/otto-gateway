@@ -7,8 +7,8 @@
 //   - this package declares CONSUMER-defined interfaces Engine and
 //     ModelCatalog. It MUST NOT import internal/engine — the concrete
 //     *engine.Engine structurally satisfies the local Engine interface
-//     and is wired in by cmd/loop24-gateway/main.go.
-//   - this package imports loop24-gateway/internal/canonical only.
+//     and is wired in by cmd/otto-gateway/main.go.
+//   - this package imports otto-gateway/internal/canonical only.
 //
 // Codex M-4 router split: the adapter exposes TWO accessors —
 // ProtectedRouter() returns the chi sub-router with the 10 protected
@@ -28,7 +28,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"loop24-gateway/internal/canonical"
+	"otto-gateway/internal/canonical"
 )
 
 // Engine is the consumer-defined interface the adapter depends on for

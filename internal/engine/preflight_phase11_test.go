@@ -14,8 +14,8 @@ package engine
 import (
 	"testing"
 
-	"loop24-gateway/internal/acp"
-	"loop24-gateway/internal/canonical"
+	"otto-gateway/internal/acp"
+	"otto-gateway/internal/canonical"
 )
 
 // TestPreflight_Phase11Surface compile-asserts the four Phase 1.1 surface

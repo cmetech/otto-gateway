@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"loop24-gateway/internal/config"
+	"otto-gateway/internal/config"
 )
 
 // These tests exercise config.LoadArgs — the CLI-flag overlay that wraps

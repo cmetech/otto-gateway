@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"loop24-gateway/internal/config"
+	"otto-gateway/internal/config"
 )
 
 func TestLoadDefaults(t *testing.T) {

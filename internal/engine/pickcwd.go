@@ -15,7 +15,7 @@ import (
 	"runtime"
 	"strings"
 
-	"loop24-gateway/internal/canonical"
+	"otto-gateway/internal/canonical"
 )
 
 // pickCwd derives the per-request working directory using D-16's priority:

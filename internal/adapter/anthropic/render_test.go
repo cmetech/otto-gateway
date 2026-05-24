@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"loop24-gateway/internal/canonical"
+	"otto-gateway/internal/canonical"
 )
 
 // ----------------------------------------------------------------------------

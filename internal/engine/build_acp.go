@@ -14,7 +14,7 @@ import (
 	"fmt"
 	"strings"
 
-	"loop24-gateway/internal/canonical"
+	"otto-gateway/internal/canonical"
 )
 
 // buildBlocks flattens a canonical.ChatRequest into the ACP block list

@@ -9,7 +9,7 @@ import (
 	"reflect"
 	"testing"
 
-	"loop24-gateway/internal/canonical"
+	"otto-gateway/internal/canonical"
 )
 
 // TestBuildBlocks_GoldenSystemUserAssistant verifies the bracketed-

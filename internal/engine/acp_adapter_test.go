@@ -27,9 +27,9 @@ import (
 	"testing"
 	"time"
 
-	"loop24-gateway/internal/acp"
-	"loop24-gateway/internal/canonical"
-	"loop24-gateway/internal/testutil"
+	"otto-gateway/internal/acp"
+	"otto-gateway/internal/canonical"
+	"otto-gateway/internal/testutil"
 )
 
 // TestACPClientAdapter_Compiles asserts at test-build time that
@@ -68,7 +68,7 @@ func newMockPipeRWC() *mockPipeRWC {
 	}
 }
 
-func (m *mockPipeRWC) Read(p []byte) (int, error)  { return m.clientRead.Read(p) }  //nolint:wrapcheck // test pipe delegation
+func (m *mockPipeRWC) Read(p []byte) (int, error)  { return m.clientRead.Read(p) }   //nolint:wrapcheck // test pipe delegation
 func (m *mockPipeRWC) Write(p []byte) (int, error) { return m.clientWrite.Write(p) } //nolint:wrapcheck // test pipe delegation
 func (m *mockPipeRWC) Close() error {
 	_ = m.clientRead.Close()

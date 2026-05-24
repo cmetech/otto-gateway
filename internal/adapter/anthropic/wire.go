@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	"loop24-gateway/internal/canonical"
+	"otto-gateway/internal/canonical"
 )
 
 // ----------------------------------------------------------------------------

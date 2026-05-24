@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"loop24-gateway/internal/canonical"
+	"otto-gateway/internal/canonical"
 )
 
 // captureLogger returns a logger whose output is captured in the
@@ -342,8 +342,8 @@ func TestWire_MapAnthropicRole(t *testing.T) {
 	}{
 		{"user", canonical.RoleUser},
 		{"assistant", canonical.RoleAssistant},
-		{"system", canonical.RoleUser},       // Anthropic has no system role at message level
-		{"tool", canonical.RoleUser},          // no tool role either — tool_result is a content block
+		{"system", canonical.RoleUser}, // Anthropic has no system role at message level
+		{"tool", canonical.RoleUser},   // no tool role either — tool_result is a content block
 		{"unknown", canonical.RoleUser},
 		{"", canonical.RoleUser},
 	}

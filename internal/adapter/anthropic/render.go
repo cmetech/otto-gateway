@@ -4,7 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 
-	"loop24-gateway/internal/canonical"
+	"otto-gateway/internal/canonical"
 )
 
 // ----------------------------------------------------------------------------
@@ -40,11 +40,11 @@ type anthropicMessage struct {
 // difference vs. OpenAI's `arguments` field (ANTH-03 / Pitfall 8 in
 // RESEARCH.md).
 type contentBlock struct {
-	Type     string         `json:"type"`
-	Text     string         `json:"text,omitempty"`
-	Thinking string         `json:"thinking,omitempty"`
-	ID       string         `json:"id,omitempty"`
-	Name     string         `json:"name,omitempty"`
+	Type     string `json:"type"`
+	Text     string `json:"text,omitempty"`
+	Thinking string `json:"thinking,omitempty"`
+	ID       string `json:"id,omitempty"`
+	Name     string `json:"name,omitempty"`
 	// Input is *map[string]any (not map[string]any) so the omitempty tag
 	// distinguishes "this is not a tool_use block, drop the field" (nil
 	// pointer) from "this is a tool_use block with no arguments, emit

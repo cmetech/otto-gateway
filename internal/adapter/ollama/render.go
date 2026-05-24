@@ -4,7 +4,7 @@ import (
 	"math"
 	"time"
 
-	"loop24-gateway/internal/canonical"
+	"otto-gateway/internal/canonical"
 )
 
 // chatResponseToWire converts a canonical.ChatResponse into the Ollama
