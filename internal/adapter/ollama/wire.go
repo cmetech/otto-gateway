@@ -1,0 +1,407 @@
+package ollama
+
+import (
+	"encoding/base64"
+	"encoding/json"
+	"net/http"
+
+	"loop24-gateway/internal/canonical"
+)
+
+// ----------------------------------------------------------------------------
+// Chat wire shape (POST /api/chat)
+// ----------------------------------------------------------------------------
+
+// ollamaChatRequest mirrors the public Ollama /api/chat request body
+// (RESEARCH.md §"Ollama Wire Shapes" — VERIFIED against the Node reference
+// acp-ollama-server.js and the public Ollama API spec). KeepAlive and
+// Options are accepted-and-ignored: LangFlow sends them and Phase 2 must
+// not 400 on their presence. Format and Options use json.RawMessage as
+// forward-design seams (Format also accepts a bare string like "json").
+type ollamaChatRequest struct {
+	Model     string           `json:"model"`
+	Messages  []ollamaMessage  `json:"messages"`
+	Tools     []ollamaToolSpec `json:"tools,omitempty"`
+	Format    json.RawMessage  `json:"format,omitempty"`
+	Stream    bool             `json:"stream"`
+	Think     bool             `json:"think,omitempty"`
+	KeepAlive json.RawMessage  `json:"keep_alive,omitempty"` // accepted-and-ignored
+	Options   json.RawMessage  `json:"options,omitempty"`    // accepted-and-ignored
+}
+
+// ollamaMessage mirrors one entry of /api/chat messages[]. Content is a
+// flat string per Ollama (NOT the OpenAI content-parts array). Images is
+// a slice of base64-encoded payloads (no MIME — wire.go's detectMIME
+// peeks the bytes after base64-decode).
+type ollamaMessage struct {
+	Role      string           `json:"role"`
+	Content   string           `json:"content"`
+	Images    []string         `json:"images,omitempty"`
+	ToolCalls []ollamaToolCall `json:"tool_calls,omitempty"`
+}
+
+// ollamaToolSpec is a forward-design seam — tools[] from /api/chat. Phase
+// 2 accepts but does not act on tools (mapped onto canonical.ToolSpec but
+// engine.buildBlocks emits only a placeholder bracketed-section header).
+type ollamaToolSpec struct {
+	Type     string                  `json:"type,omitempty"`
+	Function *ollamaToolSpecFunction `json:"function,omitempty"`
+}
+
+type ollamaToolSpecFunction struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	Parameters  map[string]any `json:"parameters,omitempty"`
+}
+
+// ollamaToolCall is the Ollama tool-call shape used in /api/chat responses
+// AND in assistant-turn echo back from the client. Phase 2 does not
+// populate this on the response side (tool dispatch deferred to Phase 6).
+type ollamaToolCall struct {
+	Function ollamaToolCallFunction `json:"function"`
+}
+
+type ollamaToolCallFunction struct {
+	Name      string         `json:"name"`
+	Arguments map[string]any `json:"arguments"`
+}
+
+// ollamaChatResponse is the Ollama /api/chat response shape (RESEARCH.md
+// "Response body" — every field is observed in the Node reference
+// chunksToOllamaMessage + makeStats output).
+type ollamaChatResponse struct {
+	Model              string                    `json:"model"`
+	CreatedAt          string                    `json:"created_at"`
+	Message            ollamaChatResponseMessage `json:"message"`
+	Done               bool                      `json:"done"`
+	DoneReason         string                    `json:"done_reason"`
+	TotalDuration      int64                     `json:"total_duration"`
+	LoadDuration       int64                     `json:"load_duration"`
+	PromptEvalCount    int                       `json:"prompt_eval_count"`
+	PromptEvalDuration int64                     `json:"prompt_eval_duration"`
+	EvalCount          int                       `json:"eval_count"`
+	EvalDuration       int64                     `json:"eval_duration"`
+}
+
+type ollamaChatResponseMessage struct {
+	Role     string `json:"role"`
+	Content  string `json:"content"`
+	Thinking string `json:"thinking,omitempty"`
+}
+
+// ----------------------------------------------------------------------------
+// Generate wire shape (POST /api/generate)
+// ----------------------------------------------------------------------------
+
+// ollamaGenerateRequest mirrors the Ollama /api/generate request body
+// (single-turn variant of /api/chat). Suffix/Raw/KeepAlive/Options are
+// accepted-and-ignored (LangFlow may set them).
+type ollamaGenerateRequest struct {
+	Model     string          `json:"model"`
+	Prompt    string          `json:"prompt"`
+	System    string          `json:"system,omitempty"`
+	Images    []string        `json:"images,omitempty"`
+	Format    json.RawMessage `json:"format,omitempty"`
+	Stream    bool            `json:"stream"`
+	Think     bool            `json:"think,omitempty"`
+	Suffix    string          `json:"suffix,omitempty"`     // accepted-and-ignored
+	Raw       bool            `json:"raw,omitempty"`        // accepted-and-ignored
+	KeepAlive json.RawMessage `json:"keep_alive,omitempty"` // accepted-and-ignored
+	Options   json.RawMessage `json:"options,omitempty"`    // accepted-and-ignored
+}
+
+// ollamaGenerateResponse mirrors /api/generate — same envelope as
+// /api/chat except the assistant text lives in `response` (a string),
+// not `message: {...}`.
+type ollamaGenerateResponse struct {
+	Model              string `json:"model"`
+	CreatedAt          string `json:"created_at"`
+	Response           string `json:"response"`
+	Done               bool   `json:"done"`
+	DoneReason         string `json:"done_reason"`
+	TotalDuration      int64  `json:"total_duration"`
+	LoadDuration       int64  `json:"load_duration"`
+	PromptEvalCount    int    `json:"prompt_eval_count"`
+	PromptEvalDuration int64  `json:"prompt_eval_duration"`
+	EvalCount          int    `json:"eval_count"`
+	EvalDuration       int64  `json:"eval_duration"`
+}
+
+// ----------------------------------------------------------------------------
+// Tags / Show / PS wire shapes
+// ----------------------------------------------------------------------------
+
+// ollamaModelTag is one entry of GET /api/tags response models[] —
+// mirrors the Node reference toOllamaModel (acp-ollama-server.js:735-749).
+type ollamaModelTag struct {
+	Name       string                `json:"name"`
+	Model      string                `json:"model"`
+	ModifiedAt string                `json:"modified_at"`
+	Size       int64                 `json:"size"`
+	Digest     string                `json:"digest"`
+	Details    ollamaModelTagDetails `json:"details"`
+}
+
+type ollamaModelTagDetails struct {
+	Format            string   `json:"format"`
+	Family            string   `json:"family"`
+	Families          []string `json:"families"`
+	ParameterSize     string   `json:"parameter_size"`
+	QuantizationLevel string   `json:"quantization_level"`
+}
+
+// ollamaTagsResponse wraps the models[] array (GET /api/tags).
+type ollamaTagsResponse struct {
+	Models []ollamaModelTag `json:"models"`
+}
+
+// ollamaShowRequest is the POST /api/show body (single field).
+type ollamaShowRequest struct {
+	Model string `json:"model"`
+}
+
+// ollamaShowResponse mirrors the Node reference /api/show envelope
+// (acp-ollama-server.js:761-776).
+type ollamaShowResponse struct {
+	Model        string                `json:"model"`
+	ModifiedAt   string                `json:"modified_at"`
+	Details      ollamaModelTagDetails `json:"details"`
+	Capabilities []string              `json:"capabilities"`
+	Modelinfo    map[string]any        `json:"modelinfo"`
+	Template     string                `json:"template"`
+	Parameters   string                `json:"parameters"`
+	License      string                `json:"license"`
+}
+
+// ollamaPSEntry is one entry of GET /api/ps response models[] — Node
+// reference synthetic shape (acp-ollama-server.js:778-789).
+type ollamaPSEntry struct {
+	Name      string                `json:"name"`
+	Model     string                `json:"model"`
+	Size      int64                 `json:"size"`
+	SizeVRAM  int64                 `json:"size_vram"`
+	Details   ollamaModelTagDetails `json:"details"`
+	ExpiresAt string                `json:"expires_at"`
+}
+
+type ollamaPSResponse struct {
+	Models []ollamaPSEntry `json:"models"`
+}
+
+// ollamaVersionResponse is the GET /api/version body — Loop24 extension
+// over the public Ollama spec (which returns only {version}). The
+// `commit` field is a non-breaking extension; LangFlow ignores it.
+type ollamaVersionResponse struct {
+	Version string `json:"version"`
+	Commit  string `json:"commit"`
+}
+
+// ----------------------------------------------------------------------------
+// Stub wire shapes
+// ----------------------------------------------------------------------------
+
+// ollamaStubStreamRequest is the common body shape for /api/pull /push
+// /create — only `stream` is read (default true). Modelname etc. are
+// accepted-and-ignored.
+type ollamaStubStreamRequest struct {
+	Stream *bool `json:"stream,omitempty"`
+}
+
+// ollamaStubStatusLine is one NDJSON line emitted by /api/pull (and the
+// shape returned by /api/pull?stream=false).
+type ollamaStubStatusLine struct {
+	Status string `json:"status"`
+}
+
+// ollamaCopyRequest is the POST /api/copy body — source / destination are
+// accepted-and-ignored; the handler returns `{}` regardless. Body shape is
+// decoded only to apply the size cap (Codex M-5).
+type ollamaCopyRequest struct {
+	Source      string `json:"source,omitempty"`
+	Destination string `json:"destination,omitempty"`
+}
+
+// ollamaDeleteRequest is the DELETE /api/delete body — `name` is
+// accepted-and-ignored. Same Codex M-5 size-cap rationale.
+type ollamaDeleteRequest struct {
+	Name string `json:"name,omitempty"`
+}
+
+// ----------------------------------------------------------------------------
+// wireToChatRequest — translate POST /api/chat body into canonical.ChatRequest
+// ----------------------------------------------------------------------------
+
+// wireToChatRequest extracts the canonical request from an Ollama chat
+// wire payload. Layout:
+//   - first messages[] entry with role=="system" → req.System (then
+//     ALSO appended as a RoleSystem message — buildBlocks skips it but
+//     the round-trip is preserved for callers inspecting Messages).
+//   - other messages map to canonical.Message{Role, Content:[{Kind:Text}]}.
+//   - per-message images[] (base64 strings) become additional
+//     ContentPart{Kind:Image, Image:&ImagePart{MIME, DataBase64}} entries
+//     APPENDED to the message's Content slice (text first, images after).
+//     Malformed base64 is skipped silently (Codex M-1 defensive — a single
+//     corrupt image must not abort wireToChatRequest).
+//   - WorkingDirOverride sourced from the X-Working-Dir header.
+//   - Stream / Think copied through.
+//
+// Returns only *canonical.ChatRequest; this function cannot fail at the
+// translation layer (validation lives in the caller — handleChat —
+// which checks len(Messages) == 0 before calling).
+func wireToChatRequest(w *ollamaChatRequest, r *http.Request) *canonical.ChatRequest {
+	req := &canonical.ChatRequest{
+		Model:              w.Model,
+		Stream:             w.Stream,
+		Think:              w.Think,
+		WorkingDirOverride: r.Header.Get("X-Working-Dir"),
+	}
+
+	// Extract the FIRST system message — the engine's buildBlocks
+	// reads req.System (not the Messages-with-RoleSystem path) for the
+	// [System] bracketed-section header.
+	for _, m := range w.Messages {
+		if m.Role == "system" && req.System == "" {
+			req.System = m.Content
+			break
+		}
+	}
+
+	for _, m := range w.Messages {
+		role := mapRole(m.Role)
+
+		var parts []canonical.ContentPart
+		if m.Content != "" {
+			parts = append(parts, canonical.ContentPart{
+				Kind: canonical.ContentKindText,
+				Text: m.Content,
+			})
+		}
+
+		// Codex M-1: every base64 image string becomes one
+		// ContentKindImage part appended after the text. detectMIME
+		// peeks the decoded bytes to assign image/png|jpeg|gif|
+		// application/octet-stream.
+		for _, b64 := range m.Images {
+			data, err := base64.StdEncoding.DecodeString(b64)
+			if err != nil {
+				// Defensive: malformed base64 is dropped, prompt continues.
+				continue
+			}
+			parts = append(parts, canonical.ContentPart{
+				Kind: canonical.ContentKindImage,
+				Image: &canonical.ImagePart{
+					MIME:       detectMIME(data),
+					DataBase64: b64,
+				},
+			})
+		}
+
+		// Skip messages that produced neither text nor image parts —
+		// happens for assistant tool-call-only messages on the input
+		// side (Phase 2 has no tool dispatch yet).
+		if len(parts) == 0 {
+			continue
+		}
+
+		req.Messages = append(req.Messages, canonical.Message{
+			Role:    role,
+			Content: parts,
+		})
+	}
+
+	// Tools (forward-design seam): copy onto canonical.ToolSpec so
+	// engine.buildBlocks emits the placeholder [Available tools]
+	// section. Phase 2 does not act on tools beyond bracketing them.
+	for _, t := range w.Tools {
+		if t.Function == nil {
+			continue
+		}
+		req.Tools = append(req.Tools, canonical.ToolSpec{
+			Name:        t.Function.Name,
+			Description: t.Function.Description,
+			Parameters:  t.Function.Parameters,
+		})
+	}
+
+	return req
+}
+
+// wireGenerateToChatRequest converts an Ollama /api/generate body into a
+// canonical.ChatRequest. /api/generate is the single-turn variant —
+// system field maps to req.System; prompt becomes a single RoleUser
+// message; images attach to that message.
+//
+// Returns only *canonical.ChatRequest (cannot fail at this layer;
+// caller validates prompt non-empty before invoking).
+func wireGenerateToChatRequest(w *ollamaGenerateRequest, r *http.Request) *canonical.ChatRequest {
+	req := &canonical.ChatRequest{
+		Model:              w.Model,
+		System:             w.System,
+		Stream:             w.Stream,
+		Think:              w.Think,
+		WorkingDirOverride: r.Header.Get("X-Working-Dir"),
+	}
+
+	var parts []canonical.ContentPart
+	if w.Prompt != "" {
+		parts = append(parts, canonical.ContentPart{
+			Kind: canonical.ContentKindText,
+			Text: w.Prompt,
+		})
+	}
+	for _, b64 := range w.Images {
+		data, err := base64.StdEncoding.DecodeString(b64)
+		if err != nil {
+			continue
+		}
+		parts = append(parts, canonical.ContentPart{
+			Kind: canonical.ContentKindImage,
+			Image: &canonical.ImagePart{
+				MIME:       detectMIME(data),
+				DataBase64: b64,
+			},
+		})
+	}
+	if len(parts) > 0 {
+		req.Messages = append(req.Messages, canonical.Message{
+			Role:    canonical.RoleUser,
+			Content: parts,
+		})
+	}
+
+	return req
+}
+
+// mapRole translates the Ollama wire role string into the canonical
+// MessageRole enum. Unknown roles default to RoleUser (canonical's zero
+// value) so a stray "function" or "developer" role does not crash the
+// adapter.
+func mapRole(s string) canonical.MessageRole {
+	switch s {
+	case "system":
+		return canonical.RoleSystem
+	case "assistant":
+		return canonical.RoleAssistant
+	case "tool":
+		return canonical.RoleTool
+	default:
+		return canonical.RoleUser
+	}
+}
+
+// detectMIME inspects the leading bytes of a decoded image payload and
+// returns the matching MIME type. Codex M-1: avoids requiring the wire
+// shape to carry MIME (Ollama messages[].images does not) and matches
+// the engine.buildBlocks ImageBlock.MIMEType contract.
+func detectMIME(data []byte) string {
+	switch {
+	case len(data) >= 4 && data[0] == 0x89 && data[1] == 0x50 && data[2] == 0x4e && data[3] == 0x47:
+		return "image/png"
+	case len(data) >= 3 && data[0] == 0xff && data[1] == 0xd8 && data[2] == 0xff:
+		return "image/jpeg"
+	case len(data) >= 4 && data[0] == 0x47 && data[1] == 0x49 && data[2] == 0x46 && data[3] == 0x38:
+		return "image/gif"
+	default:
+		return "application/octet-stream"
+	}
+}

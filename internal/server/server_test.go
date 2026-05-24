@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"go.uber.org/goleak"
 
 	"loop24-gateway/internal/config"
@@ -202,3 +204,204 @@ func TestRunContextCancel(t *testing.T) {
 		t.Fatal("Run did not return within 5s after context cancel — possible goroutine leak")
 	}
 }
+
+// ----------------------------------------------------------------------------
+// NewFromConfig — Phase 2 wiring (Plan 06)
+// ----------------------------------------------------------------------------
+
+// stubOllamaRouter returns a chi.Router with a single Post /chat that
+// writes 200 + a marker body. Used by NewFromConfig tests to assert
+// that protected requests reach the adapter when auth passes.
+func stubOllamaRouter() chi.Router {
+	r := chi.NewRouter()
+	r.Post("/chat", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+	return r
+}
+
+// stubVersionHandler returns the /api/version handler the outer router
+// mounts (Codex M-4). Always returns 200 with a fixed body so the test
+// can assert "version exempt from auth".
+func stubVersionHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"version":"test","commit":"deadbee"}`))
+	}
+}
+
+func newFromConfigForTest(t *testing.T, cfg server.Config) *server.Server {
+	t.Helper()
+	if cfg.Logger == nil {
+		cfg.Logger = testutil.Logger(t)
+	}
+	if cfg.Version == "" {
+		cfg.Version = "test"
+	}
+	if cfg.OllamaPath == "" {
+		cfg.OllamaPath = "/api"
+	}
+	if cfg.OllamaProtectedRouter == nil {
+		cfg.OllamaProtectedRouter = stubOllamaRouter()
+	}
+	if cfg.OllamaVersionHandler == nil {
+		cfg.OllamaVersionHandler = stubVersionHandler()
+	}
+	return server.NewFromConfig(cfg)
+}
+
+// TestExemptRoutes_BypassAuth — AUTH-03 / Codex M-4 acceptance: /, /health,
+// /api/version are reachable even when AUTH_TOKEN is set, with NO bearer
+// header supplied.
+func TestExemptRoutes_BypassAuth(t *testing.T) {
+	srv := newFromConfigForTest(t, server.Config{
+		AuthTokens: []string{"s3cret"},
+	})
+
+	cases := []struct{ name, path string }{
+		{"root", "/"},
+		{"health", "/health"},
+		{"version", "/api/version"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, c.path, nil)
+			w := httptest.NewRecorder()
+			srv.ServeHTTP(w, r)
+			if w.Code != http.StatusOK {
+				t.Errorf("%s: got %d, want 200 (must be auth-exempt)", c.path, w.Code)
+			}
+		})
+	}
+}
+
+// TestProtectedRoutes_RequireAuth — bearer must be present for the
+// /api sub-tree. Asserts both the 401 path and the 200 path with the
+// correct bearer.
+func TestProtectedRoutes_RequireAuth(t *testing.T) {
+	srv := newFromConfigForTest(t, server.Config{
+		AuthTokens: []string{"s3cret"},
+	})
+
+	// Without bearer.
+	r1 := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/chat", strings.NewReader(`{}`))
+	w1 := httptest.NewRecorder()
+	srv.ServeHTTP(w1, r1)
+	if w1.Code != http.StatusUnauthorized {
+		t.Errorf("POST /api/chat without bearer: got %d, want 401", w1.Code)
+	}
+
+	// With valid bearer.
+	r2 := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/chat", strings.NewReader(`{}`))
+	r2.Header.Set("Authorization", "Bearer s3cret")
+	w2 := httptest.NewRecorder()
+	srv.ServeHTTP(w2, r2)
+	if w2.Code != http.StatusOK {
+		t.Errorf("POST /api/chat with valid bearer: got %d, want 200; body=%s", w2.Code, w2.Body.String())
+	}
+}
+
+// TestIPAllowlist_DenyPath — RemoteAddr outside the allowlist must
+// receive 403 on a protected route.
+func TestIPAllowlist_DenyPath(t *testing.T) {
+	allow, _ := netip.ParsePrefix("10.0.0.0/8")
+	srv := newFromConfigForTest(t, server.Config{
+		AllowedPrefixes: []netip.Prefix{allow},
+	})
+
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/chat", strings.NewReader(`{}`))
+	r.RemoteAddr = "192.168.1.1:54321"
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, r)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("status: got %d, want 403 (RemoteAddr outside allowlist)", w.Code)
+	}
+}
+
+// TestIPAllowlist_AllowPath — RemoteAddr inside the allowlist reaches
+// the adapter (proves the allow path with the same Config wiring used
+// by the deny test).
+func TestIPAllowlist_AllowPath(t *testing.T) {
+	allow, _ := netip.ParsePrefix("10.0.0.0/8")
+	srv := newFromConfigForTest(t, server.Config{
+		AllowedPrefixes: []netip.Prefix{allow},
+	})
+
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/chat", strings.NewReader(`{}`))
+	r.RemoteAddr = "10.5.6.7:54321"
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Errorf("status: got %d, want 200 (RemoteAddr inside allowlist)", w.Code)
+	}
+}
+
+// TestIPAllowlist_XFFTrustGate — Codex H-7 end-to-end: when
+// AuthTrustXFF=false (default) a spoofed X-Forwarded-For header is
+// ignored (RemoteAddr decides); when AuthTrustXFF=true the header is
+// honored. Proves cfg.AuthTrustXFF threads through to auth.IPAllowlist's
+// auth.Config.TrustXForwardedFor.
+func TestIPAllowlist_XFFTrustGate(t *testing.T) {
+	allow, _ := netip.ParsePrefix("10.0.0.0/8")
+
+	t.Run("trust_xff_false_ignores_spoofed_header", func(t *testing.T) {
+		srv := newFromConfigForTest(t, server.Config{
+			AllowedPrefixes: []netip.Prefix{allow},
+			AuthTrustXFF:    false,
+		})
+		r := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/chat", strings.NewReader(`{}`))
+		r.RemoteAddr = "192.168.1.1:54321"
+		r.Header.Set("X-Forwarded-For", "10.5.6.7")
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, r)
+		if w.Code != http.StatusForbidden {
+			t.Errorf("AuthTrustXFF=false: got %d, want 403 (spoofed XFF must be ignored — Codex H-7)", w.Code)
+		}
+	})
+
+	t.Run("trust_xff_true_honors_header", func(t *testing.T) {
+		srv := newFromConfigForTest(t, server.Config{
+			AllowedPrefixes: []netip.Prefix{allow},
+			AuthTrustXFF:    true,
+		})
+		r := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/chat", strings.NewReader(`{}`))
+		r.RemoteAddr = "192.168.1.1:54321"
+		r.Header.Set("X-Forwarded-For", "10.5.6.7")
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, r)
+		if w.Code != http.StatusOK {
+			t.Errorf("AuthTrustXFF=true: got %d, want 200 (XFF must be honored)", w.Code)
+		}
+	})
+}
+
+// TestNewFromConfig_HealthPoolWiring — OBSV-01: /health renders pool
+// stats from the configured PoolStatsSource.
+func TestNewFromConfig_HealthPoolWiring(t *testing.T) {
+	srv := newFromConfigForTest(t, server.Config{
+		Pool: fakePoolSource{stats: server.PoolStats{Size: 4, Alive: 4, Busy: 1}},
+	})
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/health", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("/health status: got %d, want 200", w.Code)
+	}
+	var body server.HealthResponse
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Pool.Size != 4 || body.Pool.Alive != 4 || body.Pool.Busy != 1 {
+		t.Errorf("pool stats: got %+v, want {4,4,1}", body.Pool)
+	}
+}
+
+// fakePoolSource satisfies server.PoolStatsSource with a fixed Stats
+// value — lets the /health test exercise OBSV-01 without spinning up a
+// real pool.
+type fakePoolSource struct {
+	stats server.PoolStats
+}
+
+func (f fakePoolSource) Stats() server.PoolStats { return f.stats }
