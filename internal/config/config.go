@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -27,6 +28,31 @@ type Config struct {
 	Debug bool
 	// PingInterval is the heartbeat interval for kiro-cli (default 60s).
 	PingInterval time.Duration
+	// AuthToken is the list of accepted bearer tokens loaded from AUTH_TOKEN
+	// (comma-split). Empty (nil) means auth is disabled (Node parity).
+	AuthToken []string
+	// AllowedIPs is the list of CIDR prefixes accepted by the IP allowlist,
+	// loaded from ALLOWED_IPS (comma-split; each entry is a CIDR or bare IP
+	// which is promoted to a /32 or /128 prefix). Empty (nil) means allow-all
+	// (Node parity).
+	AllowedIPs []netip.Prefix
+	// PoolSize is the number of warm kiro-cli subprocesses (default 1 in
+	// Phase 2; Phase 5 raises the default to 4). Set-but-unparseable yields
+	// a Load() error.
+	PoolSize int
+	// OllamaPathPrefix is the route prefix under which the Ollama adapter is
+	// mounted (default "/api"). Loaded from OLLAMA_PATH_PREFIX.
+	OllamaPathPrefix string
+	// OpenAIPathPrefix is the route prefix under which the OpenAI adapter is
+	// mounted (default "/v1"). Loaded from OPENAI_PATH_PREFIX. Read-only
+	// forward-design in Phase 2 — Phase 3 begins consuming it.
+	OpenAIPathPrefix string
+	// AuthTrustXFF is the operator opt-in for trusting the X-Forwarded-For
+	// header in the IP allowlist check (default false; Codex H-7). When false
+	// the allowlist sees only r.RemoteAddr and laptop deployments are
+	// safe-by-default; set true ONLY when a known reverse proxy is in front
+	// of the gateway. Loaded from AUTH_TRUST_XFF.
+	AuthTrustXFF bool
 }
 
 // LogLevel returns the slog.Level implied by the Debug flag.
@@ -58,17 +84,44 @@ func Load() (Config, error) {
 		errs = append(errs, err)
 	}
 
+	authTokens := getEnvStrSliceComma("AUTH_TOKEN", nil)
+
+	allowedIPEntries := getEnvStrSliceComma("ALLOWED_IPS", nil)
+	allowedIPs, err := parseCIDRs(allowedIPEntries)
+	if err != nil {
+		errs = append(errs, fmt.Errorf("ALLOWED_IPS: %w", err))
+	}
+
+	poolSize, err := getEnvInt("POOL_SIZE", 1)
+	if err != nil {
+		errs = append(errs, err)
+	}
+
+	ollamaPath := getEnvStr("OLLAMA_PATH_PREFIX", "/api")
+	openaiPath := getEnvStr("OPENAI_PATH_PREFIX", "/v1")
+
+	trustXFF, err := getEnvBool("AUTH_TRUST_XFF", false)
+	if err != nil {
+		errs = append(errs, err)
+	}
+
 	if len(errs) > 0 {
 		return Config{}, fmt.Errorf("config: invalid env vars: %w", errors.Join(errs...))
 	}
 
 	return Config{
-		HTTPAddr:     httpAddr,
-		KiroCmd:      kiroCmd,
-		KiroArgs:     kiroArgs,
-		KiroCWD:      kiroCWD,
-		Debug:        debug,
-		PingInterval: pingInterval,
+		HTTPAddr:         httpAddr,
+		KiroCmd:          kiroCmd,
+		KiroArgs:         kiroArgs,
+		KiroCWD:          kiroCWD,
+		Debug:            debug,
+		PingInterval:     pingInterval,
+		AuthToken:        authTokens,
+		AllowedIPs:       allowedIPs,
+		PoolSize:         poolSize,
+		OllamaPathPrefix: ollamaPath,
+		OpenAIPathPrefix: openaiPath,
+		AuthTrustXFF:     trustXFF,
 	}, nil
 }
 
@@ -88,6 +141,73 @@ func getEnvStrSlice(key string, def []string) []string {
 		return def
 	}
 	return strings.Fields(v)
+}
+
+// getEnvStrSliceComma reads an env var, splits on "," (comma — distinct from
+// getEnvStrSlice's whitespace-split used for KIRO_ARGS), trims each entry, and
+// drops empty entries. Returns def if the env var is empty or contains only
+// whitespace/separators. Used for AUTH_TOKEN and ALLOWED_IPS per Node parity.
+func getEnvStrSliceComma(key string, def []string) []string {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	parts := strings.Split(v, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if t := strings.TrimSpace(p); t != "" {
+			out = append(out, t)
+		}
+	}
+	if len(out) == 0 {
+		return def
+	}
+	return out
+}
+
+// getEnvInt reads an integer env var. Returns an error if the var is set but
+// not parseable as an int. Returns def on empty. Matches getEnvBool's error
+// shape ("%s: cannot parse %q as int").
+func getEnvInt(key string, def int) (int, error) {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def, nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return 0, fmt.Errorf("%s: cannot parse %q as int", key, v)
+	}
+	return n, nil
+}
+
+// parseCIDRs converts a slice of CIDR / bare-IP strings into netip.Prefix
+// values. Each entry is first tried as a CIDR via netip.ParsePrefix; on
+// failure it falls back to netip.ParseAddr and is promoted to a host prefix
+// (/32 for IPv4, /128 for IPv6). All entry-level errors are accumulated via
+// errors.Join and returned together. Returns (nil, nil) when entries is nil;
+// returns an empty non-nil slice when entries is non-nil but zero-length.
+func parseCIDRs(entries []string) ([]netip.Prefix, error) {
+	if entries == nil {
+		return nil, nil
+	}
+	out := make([]netip.Prefix, 0, len(entries))
+	var errs []error
+	for _, e := range entries {
+		if p, err := netip.ParsePrefix(e); err == nil {
+			out = append(out, p)
+			continue
+		}
+		addr, err := netip.ParseAddr(e)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("invalid CIDR or IP %q", e))
+			continue
+		}
+		out = append(out, netip.PrefixFrom(addr, addr.BitLen()))
+	}
+	if len(errs) > 0 {
+		return nil, errors.Join(errs...)
+	}
+	return out, nil
 }
 
 // getEnvBool reads a boolean env var. Returns an error if the var is set but not parseable.
