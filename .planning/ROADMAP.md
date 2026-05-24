@@ -174,10 +174,24 @@ Plans:
   5. `ENABLED_SURFACES` env var is introduced in this phase with default `ollama,anthropic` enabling both surfaces. Setting `ENABLED_SURFACES=ollama` (the Phase 2 default) disables the Anthropic adapter at boot; Phase 3 will subsequently extend the default to `ollama,anthropic,openai`. `internal/adapter/anthropic` imports only `internal/canonical` + `internal/plugin`; the `.go-arch-lint.yml` boundary check passes.
   6. Header contract enforced: missing `anthropic-version` returns a canonical `invalid_request_error` rendered in Anthropic's `{"type":"error","error":{"type":"…","message":"…"}}` shape; the gateway accepts both `x-api-key` and `Authorization: Bearer …` auth modes (loop24-client uses both depending on provider).
 
-**Plans:** TBD
+**Plans:** 4 plans
 
 Plans:
-- [ ] TBD (run /gsd-plan-phase 3.1 to break down)
+**Wave 1**
+
+- [ ] 03.1-01-PLAN.md — Foundation: auth.Bearer dual-header (D-15), config ENABLED_SURFACES + ANTHROPIC_PATH_PREFIX (D-16/D-19), server.Config parallel Anthropic mount (D-17), engine.Collect thought aggregation (D-02), engine.buildBlocks [Reasoning] section (D-11), .go-arch-lint.yml adapter_anthropic + adapter_ollama + engine + pool boundaries
+
+**Wave 2** *(blocked on Wave 1)*
+
+- [ ] 03.1-02-PLAN.md — Anthropic adapter non-streaming vertical slice: adapter.go + decode.go + errors.go + wire.go + render.go + handlers.go (non-streaming branch) + full whitebox test suite. Closes ANTH-01, ANTH-05, ANTH-06; partial ANTH-03 (tool_use object render), ANTH-04 (version header + beta accept-and-ignore), ANTH-07 (inbound thinking)
+
+**Wave 3** *(blocked on Wave 2)*
+
+- [ ] 03.1-03-PLAN.md — SSE streaming vertical slice: sse.go state machine + select-loop + ping ticker + handler streaming branch + golden fixtures (sse_text_only, sse_text_then_thinking, sse_message_start). Closes ANTH-02; completes ANTH-07 outbound thinking via thinking_delta
+
+**Wave 4** *(blocked on Wave 3 — Phase 3.1 acceptance)*
+
+- [ ] 03.1-04-PLAN.md — Integration: cmd/main.go wire anthropic adapter with ENABLED_SURFACES gating, integration_test.go real-kiro round-trip (stream + non-stream), HUMAN-UAT checkpoint against loop24-client `messages.stream()` and `messages.create({stream:false})`. Closes ANTH-04 + SURF-08 acceptance bars
 
 ### Phase 4: Streaming
 
