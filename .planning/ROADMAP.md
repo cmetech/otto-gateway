@@ -26,7 +26,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Foundations** - Scaffold, trust-gate suite, ACP JSON-RPC client over `kiro-cli` stdio (completed 2026-05-23)
 - [x] **Phase 1.1: ACP Wire Alignment** *(INSERTED)* - Fix 10 Phase 1 wire-shape defects vs the working Node impl + live ACP spec; add real-kiro `session/prompt` round-trip integration test (completed 2026-05-23)
-- [ ] **Phase 2: Ollama End-to-End** - First runnable slice — LangFlow `POST /api/chat` reaches real `kiro-cli`
+- [x] **Phase 2: Ollama End-to-End** - First runnable slice — LangFlow `POST /api/chat` reaches real `kiro-cli` (completed 2026-05-24)
 - [ ] **Phase 3: OpenAI Surface** - Pi-SDK `POST /v1/chat/completions` shares the same canonical engine
 - [ ] **Phase 3.1: Anthropic Surface** *(INSERTED)* - loop24-client (GSD Pi) `POST /v1/messages` with Anthropic SSE shares the same canonical engine
 - [ ] **Phase 4: Streaming** - NDJSON (Ollama) and SSE (OpenAI + Anthropic) off one canonical chunk channel, with disconnect cancellation
@@ -122,7 +122,7 @@ Plans:
   4. Bearer-token auth and IP-allowlist middleware reject unauthorized requests while exempting `/`, `/api/version`, and `/health`.
   5. Per-request `cwd` is derived from longest common parent of `resource_link` block URIs, with `KIRO_CWD` fallback and `X-Working-Dir` header override, verified by handler-level tests.
 
-**Plans:** 5/6 plans executed
+**Plans:** 6/6 plans complete
 
 Plans:
 **Wave 1** *(no shared files — run in parallel)*
@@ -141,7 +141,7 @@ Plans:
 
 **Wave 4** *(depends on Wave 3 — Phase 2 acceptance)*
 
-- [ ] 02-06-PLAN.md — Ollama adapter (wire + render + handlers + stubs + 8 unit-test files) + server wiring (chi sub-router + exempt routes per D-14/AUTH-03) + main.go (pool→engine→ollama→server with Warmup-before-listen per POOL-02) + wrapper scripts + real-kiro integration test + LangFlow zero-reconfig human-verify checkpoint
+- [x] 02-06-PLAN.md — Ollama adapter (wire + render + handlers + stubs + 8 unit-test files) + server wiring (chi sub-router + exempt routes per D-14/AUTH-03) + main.go (pool→engine→ollama→server with Warmup-before-listen per POOL-02) + wrapper scripts + real-kiro integration test + LangFlow zero-reconfig human-verify checkpoint
 
 ### Phase 3: OpenAI Surface
 
@@ -283,7 +283,7 @@ Phases execute in numeric order: 1 → 1.1 → 2 → 3 → 3.1 → 4 → 5 → 6
 |-------|----------------|--------|-----------|
 | 1. Foundations | 5/5 | Complete   | 2026-05-23 |
 | 1.1. ACP Wire Alignment (INSERTED) | 5/5 | Complete   | 2026-05-23 |
-| 2. Ollama End-to-End | 5/6 | In Progress|  |
+| 2. Ollama End-to-End | 6/6 | Complete   | 2026-05-24 |
 | 3. OpenAI Surface | 0/TBD | Not started | - |
 | 4. Streaming | 0/TBD | Not started | - |
 | 5. Pool + Stateful Sessions | 0/TBD | Not started | - |
