@@ -82,7 +82,8 @@ e2e: build ## Run E2E suite (real binary + kiro) and write a markdown report
 		exit $$(cat tests/e2e/reports/rc)
 
 e2e-sdk-setup: ## Install the opt-in Node SDK harness (enables E2E steps 4-5)
-	cd tests/e2e/sdk && (pnpm install || npm install)
+	@command -v pnpm >/dev/null 2>&1 || { echo "ERROR: pnpm not found. We standardize on pnpm — install it (https://pnpm.io/installation), then re-run 'make e2e-sdk-setup'." >&2; exit 1; }
+	cd tests/e2e/sdk && pnpm install
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z0-9_-]+:.*?## / {printf "  %-22s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
