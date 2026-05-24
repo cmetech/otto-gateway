@@ -18,8 +18,8 @@ func TestLoadDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() returned unexpected error: %v", err)
 	}
-	if cfg.HTTPAddr != "127.0.0.1:11434" {
-		t.Errorf("HTTPAddr: got %q, want %q", cfg.HTTPAddr, "127.0.0.1:11434")
+	if cfg.HTTPAddr != "127.0.0.1:11435" {
+		t.Errorf("HTTPAddr: got %q, want %q", cfg.HTTPAddr, "127.0.0.1:11435")
 	}
 	if cfg.KiroCmd != "kiro-cli" {
 		t.Errorf("KiroCmd: got %q, want %q", cfg.KiroCmd, "kiro-cli")
