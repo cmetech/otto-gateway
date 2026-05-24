@@ -38,3 +38,7 @@ tmp/
 
 # Local Claude / Kiro state (skills + commands are versioned; runtime state is not)
 .claude/settings.local.json
+
+# E2E artifacts (generated; the SDK source files stay tracked)
+tests/e2e/reports/
+tests/e2e/sdk/node_modules/

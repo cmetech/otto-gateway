@@ -8,7 +8,7 @@ VERSION     ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo 
 LDFLAGS     := -s -w -X otto-gateway/internal/version.Version=$(VERSION)
 BUILD_DIR   := bin
 
-.PHONY: all build run test test-race lint fmt tidy clean cross ci arch-lint start stop status help
+.PHONY: all build run test test-race lint fmt tidy clean cross ci arch-lint start stop status e2e e2e-sdk-setup help
 
 all: lint test build ## Lint, test, and build for the host platform
 
@@ -67,5 +67,22 @@ stop: ## Stop background gateway (wrapper script)
 status: ## Show gateway status (wrapper script)
 	@./scripts/otto status
 
+# E2E suite: boots the real binary against real kiro-cli and ALWAYS renders a
+# markdown report regardless of pass/fail. Deliberately NOT wired into `all` or
+# `ci` (it needs a refreshed kiro-cli + network). The test exit code is captured
+# to a tmpfile and re-raised after the report renders — no bash PIPESTATUS, so
+# this stays POSIX-portable (the project Makefile sets no SHELL override).
+e2e: build ## Run E2E suite (real binary + kiro) and write a markdown report
+	@mkdir -p tests/e2e/reports
+	@TS=$$(date +%Y%m%d-%H%M%S); \
+		( OTTO_E2E=1 go test -tags e2e -json -v ./tests/e2e/ > tests/e2e/reports/raw.jsonl; echo $$? > tests/e2e/reports/rc ); \
+		go run ./tests/e2e/cmd/report < tests/e2e/reports/raw.jsonl > tests/e2e/reports/REPORT-$$TS.md; \
+		cp tests/e2e/reports/REPORT-$$TS.md tests/e2e/reports/LATEST.md; \
+		echo "E2E report: tests/e2e/reports/REPORT-$$TS.md"; \
+		exit $$(cat tests/e2e/reports/rc)
+
+e2e-sdk-setup: ## Install the opt-in Node SDK harness (enables E2E steps 4-5)
+	cd tests/e2e/sdk && (pnpm install || npm install)
+
 help: ## Show this help
-	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  %-22s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z0-9_-]+:.*?## / {printf "  %-22s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
