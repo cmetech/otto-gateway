@@ -223,6 +223,10 @@ make build && OTTO_E2E=1 make e2e
 # Add steps 4-5 (real @anthropic-ai/sdk parser):
 make e2e-sdk-setup      # one-time: installs the Node harness
 OTTO_E2E=1 make e2e
+
+# Run a subset (scopes the run + report); discover groups with e2e-list:
+make e2e-list
+make e2e RUN=TestE2E_Ollama        # e.g. just the Ollama/LangFlow contract
 ```
 
 Each run writes a markdown report to `tests/e2e/reports/LATEST.md`

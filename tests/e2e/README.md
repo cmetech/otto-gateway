@@ -19,9 +19,27 @@ make build && OTTO_E2E=1 make e2e
 To also run the SDK round-trip steps (the real `@anthropic-ai/sdk` parser):
 
 ```bash
-make e2e-sdk-setup     # one-time: installs the Node harness (pnpm/npm)
+make e2e-sdk-setup     # one-time: installs the Node harness (pnpm)
 OTTO_E2E=1 make e2e    # now runs all 6 UAT steps
 ```
+
+## Selecting which tests run
+
+`make e2e` runs every group by default. Scope a run (and its report) with
+`RUN=<regex>`, passed through to `go test -run`. Discover the group names with
+`make e2e-list`.
+
+```bash
+make e2e-list                                  # list TestE2E_* groups
+make e2e RUN=TestE2E_Ollama                    # one group (Ollama / LangFlow contract)
+make e2e RUN=TestE2E_Ollama/Tags               # a single subtest
+make e2e RUN='TestE2E_(Ollama|SharedGateway)'  # multiple groups (regex)
+make e2e                                       # all groups (RUN defaults to empty → matches everything)
+```
+
+Groups available today: `TestE2E_SharedGateway` (Anthropic core),
+`TestE2E_SurfaceGating_OllamaOnly`, `TestE2E_SurfaceGating_TypoFailFast`,
+`TestE2E_SDK_RoundTrip`, `TestE2E_Ollama`.
 
 ## Prerequisites
 
