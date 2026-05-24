@@ -50,6 +50,108 @@ func TestApp_NoKiroCmd_StartsHealthOnly(t *testing.T) {
 	}
 }
 
+// TestNewApp_SurfaceGating — Phase 3.1 Plan 04 Task 1 (B3 closure).
+//
+// Verifies that ENABLED_SURFACES controls which adapter routes the
+// gateway mounts. Three env permutations are exercised under the
+// degraded `KIRO_CMD=""` posture (pool + engine are nil, warmup is
+// skipped entirely — mirrors TestApp_NoKiroCmd_StartsHealthOnly):
+//
+//   - Default (ENABLED_SURFACES unset → ollama,anthropic): both
+//     /api/chat AND /v1/messages MUST be mounted (probe returns
+//     non-404 — in degraded mode, the nil-engine guard returns 503).
+//   - OllamaOnly (ENABLED_SURFACES=ollama): /api/chat mounted,
+//     /v1/messages route is absent and chi returns 404.
+//   - AnthropicOnly (ENABLED_SURFACES=anthropic): /v1/messages
+//     mounted, /api/chat absent (404).
+//
+// The test uses t.Setenv → config.Load → newApp → a.srv.ServeHTTP so
+// the env-resolved cfg drives the wiring. AUTH_TOKEN is cleared so
+// auth-protected routes return 503 (nil-engine) instead of 401
+// (auth-fail), which would also be non-404 but would obscure whether
+// the route was actually mounted.
+//
+// Threat mitigation: T-3.1-WIRE — closes the verification gap that
+// previously would only have surfaced in HUMAN-UAT.
+func TestNewApp_SurfaceGating(t *testing.T) {
+	subtests := []struct {
+		name                 string
+		enabledSurfaces      string // "" sentinel meaning "do not set ENABLED_SURFACES"
+		expectOllamaRoute    bool
+		expectAnthropicRoute bool
+	}{
+		{"Default", "", true, true},
+		{"OllamaOnly", "ollama", true, false},
+		{"AnthropicOnly", "anthropic", false, true},
+	}
+
+	for _, tc := range subtests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Degraded mode: pool + engine stay nil. Warmup is skipped.
+			t.Setenv("KIRO_CMD", "")
+			// Defensive — ephemeral port; the test never actually listens.
+			t.Setenv("HTTP_ADDR", ":0")
+			// No-auth so route probes are not blocked by 401 before
+			// reaching the chi router's 404 handler.
+			t.Setenv("AUTH_TOKEN", "")
+			if tc.enabledSurfaces != "" {
+				t.Setenv("ENABLED_SURFACES", tc.enabledSurfaces)
+			}
+
+			cfg, err := config.Load()
+			if err != nil {
+				t.Fatalf("config.Load: %v", err)
+			}
+			// Force degraded mode AFTER config.Load: getEnvStr("KIRO_CMD",
+			// "kiro-cli") falls back to the default when the env value
+			// is empty, so we cannot disable pool construction via env
+			// alone. Overriding the resolved Config field is the
+			// supported degraded-mode entrypoint (mirrors how
+			// TestApp_NoKiroCmd_StartsHealthOnly builds its cfg literal).
+			cfg.KiroCmd = ""
+			logger := testutil.Logger(t)
+
+			a, cleanup, err := newApp(context.Background(), cfg, logger)
+			if err != nil {
+				t.Fatalf("newApp: %v", err)
+			}
+			defer cleanup()
+			if a == nil || a.srv == nil {
+				t.Fatalf("newApp: nil app or srv")
+			}
+
+			probes := []struct {
+				path     string
+				expected bool // true = mounted (non-404), false = absent (404)
+			}{
+				{"/api/chat", tc.expectOllamaRoute},
+				{"/v1/messages", tc.expectAnthropicRoute},
+			}
+			for _, p := range probes {
+				req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, p.path, nil)
+				w := httptest.NewRecorder()
+				a.srv.ServeHTTP(w, req)
+
+				if p.expected {
+					// Route mounted — any non-404 proves the path
+					// is registered (503 nil-engine, 405 method-not-
+					// allowed on GET, etc. all qualify).
+					if w.Code == http.StatusNotFound {
+						t.Errorf("path %s: got 404, want non-404 (route should be mounted under %s)",
+							p.path, tc.name)
+					}
+				} else {
+					// Route absent — chi returns 404 for unmatched paths.
+					if w.Code != http.StatusNotFound {
+						t.Errorf("path %s: got %d, want 404 (route should NOT be mounted under %s)",
+							p.path, w.Code, tc.name)
+					}
+				}
+			}
+		})
+	}
+}
+
 // TestApp_WarmupBeforeListen — when KIRO_CMD is set to a binary that
 // CANNOT speak ACP (e.g., /bin/true exits 0 immediately), Warmup MUST
 // fail and newApp MUST return an error WITHOUT constructing the
