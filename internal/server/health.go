@@ -49,13 +49,22 @@ type EmbeddingStats struct {
 }
 
 // healthHandler handles GET /health.
-// Phase 1: always returns 200 with zero sub-stats.
+// Phase 2 (Plan 06 OBSV-01): renders Pool.Stats() into PoolStats when
+// the server was constructed with a non-nil PoolStatsSource. Nil-safe —
+// when KIRO_CMD is unset the pool is also unset and PoolStats stays at
+// the zero value (Size/Alive/Busy all 0), matching the Phase 1 review-
+// fix posture.
 func (s *Server) healthHandler(w http.ResponseWriter, r *http.Request) {
+	var ps PoolStats
+	if s.pool != nil {
+		ps = s.pool.Stats()
+	}
 	resp := HealthResponse{
 		Status:        "ok",
 		Version:       s.version,
 		UptimeSeconds: time.Since(s.start).Seconds(),
-		// Pool, Sessions, Embeddings are zero-value — correct for Phase 1.
+		Pool:          ps,
+		// Sessions, Embeddings are zero-value — Phase 5 / 7 surfaces.
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)

@@ -19,8 +19,16 @@ start() {
         fi
         rm -f "$LOOP24_PID"
     fi
-    # Gateway env vars (KIRO_CMD, KIRO_ARGS, KIRO_CWD, DEBUG, HTTP_ADDR, etc.)
-    # are inherited from the current environment automatically — no explicit forwarding needed.
+    # Gateway env vars are inherited from the current environment
+    # automatically — no explicit forwarding needed. Documented set
+    # (Plan 02-06 wrapper expansion):
+    #   KIRO_CMD, KIRO_ARGS, KIRO_CWD     — kiro-cli subprocess wiring
+    #   DEBUG, HTTP_ADDR, PING_INTERVAL  — runtime knobs
+    #   AUTH_TOKEN, ALLOWED_IPS           — auth + IP allowlist (Phase 2)
+    #   AUTH_TRUST_XFF                    — opt-in XFF trust (Codex H-7)
+    #   POOL_SIZE                         — warm-pool size (Phase 2)
+    #   OLLAMA_PATH_PREFIX                — Ollama route prefix (default /api)
+    #   OPENAI_PATH_PREFIX                — OpenAI route prefix (Phase 3 forward seam)
     nohup "$LOOP24_BIN" >> "$LOOP24_LOG" 2>&1 &
     echo $! > "$LOOP24_PID"
     echo "loop24-gateway started (PID $(cat "$LOOP24_PID"))"

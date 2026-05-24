@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"syscall"
@@ -16,22 +17,67 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
+	"loop24-gateway/internal/auth"
 	"loop24-gateway/internal/config"
 )
 
+// PoolStatsSource is the consumer-defined interface healthHandler uses
+// to render the {pool: {size, alive, busy}} sub-tree without importing
+// internal/pool's Stats type into the server's public surface. *pool.Pool
+// satisfies it structurally; a nil source is handled by healthHandler.
+type PoolStatsSource interface {
+	Stats() PoolStats
+}
+
+// Config bundles the dependencies and wiring the server needs when
+// constructed via NewFromConfig. It replaces the Phase 1 (Config, logger,
+// version) constructor signature without removing it — New is kept as a
+// thin wrapper so Phase 1 callers (and a degraded "/health only" mode
+// when KIRO_CMD is unset) continue to work.
+//
+// Fields:
+//   - Logger / Version / Commit / HTTPAddr — straight propagation.
+//   - AuthTokens: bearer-token set; empty disables auth (Node parity).
+//   - AllowedPrefixes: IP allowlist CIDRs; empty disables (Node parity).
+//   - AuthTrustXFF: Codex H-7 — propagated into auth.IPAllowlist's
+//     TrustXForwardedFor flag.
+//   - OllamaPath: "/api" (from cfg.OllamaPathPrefix).
+//   - OllamaProtectedRouter: chi sub-router mounted under OllamaPath
+//     INSIDE the auth-protected sub-tree (Codex M-4 — adapter's
+//     ProtectedRouter() output).
+//   - OllamaVersionHandler: /api/version handler mounted on the OUTER
+//     router (auth-exempt per AUTH-03; Codex M-4 fix).
+//   - Pool: PoolStatsSource for /health (may be nil when KIRO_CMD unset).
+type Config struct {
+	Logger                *slog.Logger
+	Version               string
+	Commit                string
+	HTTPAddr              string
+	AuthTokens            []string
+	AllowedPrefixes       []netip.Prefix
+	AuthTrustXFF          bool
+	OllamaPath            string
+	OllamaProtectedRouter chi.Router
+	OllamaVersionHandler  http.HandlerFunc
+	Pool                  PoolStatsSource
+}
+
 // Server wraps the chi router and HTTP server with structured logging.
 type Server struct {
-	cfg     config.Config
+	cfg     config.Config // legacy — kept for httpAddr fallback when only the Phase 1 path is used
 	logger  *slog.Logger
 	router  chi.Router
 	version string
 	commit  string
 	start   time.Time
+	pool    PoolStatsSource
+	addr    string
 }
 
-// New constructs a Server, registers middleware and routes, and returns it ready to serve.
-// Middleware is registered in order: RequestID → Recoverer → accessLog (D-13).
-// RequestID MUST be first — accessLog reads the request ID it sets (Pitfall 5).
+// New is the Phase 1 compatibility constructor — used when only the
+// /health surface is wired (KIRO_CMD unset, or tests that exercise the
+// pre-Phase-2 minimal server). For full Phase 2 wiring (auth, ollama
+// sub-router, exempt /api/version on the outer router) call NewFromConfig.
 func New(cfg config.Config, logger *slog.Logger, version string) *Server {
 	return NewWithCommit(cfg, logger, version, "unknown")
 }
@@ -44,6 +90,7 @@ func NewWithCommit(cfg config.Config, logger *slog.Logger, version, commit strin
 		version: version,
 		commit:  commit,
 		start:   time.Now(),
+		addr:    cfg.HTTPAddr,
 	}
 	s.router = chi.NewRouter()
 
@@ -58,10 +105,79 @@ func NewWithCommit(cfg config.Config, logger *slog.Logger, version, commit strin
 	return s
 }
 
+// NewFromConfig constructs a fully-wired Phase 2 server. The router is
+// built with:
+//   - outer middleware: RequestID → Recoverer → accessLog (D-13;
+//     Pitfall 2: accessLog runs BEFORE auth so denied requests appear
+//     in logs).
+//   - outer exempt routes: / (root) + /health + cfg.OllamaPath+"/version"
+//     via cfg.OllamaVersionHandler. Codex M-4: /api/version registered
+//     EXACTLY ONCE on the outer router (no inner /version registration);
+//     no precedence dance.
+//   - protected sub-tree: r.Route(cfg.OllamaPath, ...) applies
+//     auth.Bearer + auth.IPAllowlist (with Codex H-7 TrustXForwardedFor
+//     threaded from cfg.AuthTrustXFF), then mounts the adapter's
+//     protected router via r.Mount("/", cfg.OllamaProtectedRouter).
+//
+// cfg.Logger must be non-nil for production use; tests pass a t.Log-
+// backed logger via testutil.Logger.
+func NewFromConfig(cfg Config) *Server {
+	s := &Server{
+		logger:  cfg.Logger,
+		version: cfg.Version,
+		commit:  cfg.Commit,
+		start:   time.Now(),
+		pool:    cfg.Pool,
+		addr:    cfg.HTTPAddr,
+	}
+	s.router = chi.NewRouter()
+	s.router.Use(middleware.RequestID)
+	s.router.Use(middleware.Recoverer)
+	s.router.Use(accessLog(cfg.Logger))
+
+	// Exempt outer routes — auth + IP allowlist NOT applied here.
+	s.router.Get("/", s.rootHandler)
+	s.router.Get("/health", s.healthHandler)
+	if cfg.OllamaVersionHandler != nil && cfg.OllamaPath != "" {
+		// Codex M-4: register /api/version on the OUTER router so it
+		// stays exempt. The adapter does NOT register /version on its
+		// protected router; there is exactly one registration site.
+		s.router.Get(cfg.OllamaPath+"/version", cfg.OllamaVersionHandler)
+	}
+
+	// Protected sub-tree — auth.Bearer + auth.IPAllowlist scoped to
+	// cfg.OllamaPath only. /, /health, /api/version remain exempt.
+	if cfg.OllamaPath != "" && cfg.OllamaProtectedRouter != nil {
+		s.router.Route(cfg.OllamaPath, func(r chi.Router) {
+			r.Use(auth.Bearer(auth.Config{
+				Logger: cfg.Logger,
+				Tokens: cfg.AuthTokens,
+			}))
+			r.Use(auth.IPAllowlist(auth.Config{
+				Logger:             cfg.Logger,
+				AllowedPrefixes:    cfg.AllowedPrefixes,
+				TrustXForwardedFor: cfg.AuthTrustXFF, // Codex H-7
+			}))
+			r.Mount("/", cfg.OllamaProtectedRouter)
+		})
+	}
+
+	return s
+}
+
 // ServeHTTP implements http.Handler, delegating to the chi router.
 // This enables direct handler testing with httptest.NewRecorder without starting a listener.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.router.ServeHTTP(w, r)
+}
+
+// rootHandler serves GET / with a tiny JSON identity line. Phase 1's
+// "/" was unhandled (404); Phase 2 promotes it to an exempt liveness
+// surface (kept simple — operators run /health for the full envelope).
+func (s *Server) rootHandler(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"name":"loop24-gateway"}` + "\n"))
 }
 
 // Run starts the HTTP server and blocks until ctx is cancelled.
@@ -69,14 +185,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // This is the testable lifecycle method — tests cancel the context to verify shutdown.
 func (s *Server) Run(ctx context.Context) error {
 	srv := &http.Server{
-		Addr:              s.cfg.HTTPAddr,
+		Addr:              s.addr,
 		Handler:           s.router,
 		ReadHeaderTimeout: 10 * time.Second, // mitigates Slowloris (gosec G112)
 	}
 
 	errCh := make(chan error, 1)
 	go func() {
-		s.logger.Info("listening", "addr", s.cfg.HTTPAddr)
+		s.logger.Info("listening", "addr", s.addr)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- fmt.Errorf("server: listen: %w", err)
 		}

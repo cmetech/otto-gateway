@@ -24,8 +24,16 @@ function Start-Gateway {
         }
         Remove-Item $PidFile
     }
-    # Gateway env vars (KIRO_CMD, KIRO_ARGS, etc.) are inherited from the current
-    # environment automatically — Start-Process inherits parent env by default.
+    # Gateway env vars are inherited from the current environment
+    # automatically — Start-Process inherits parent env by default.
+    # Documented set (Plan 02-06 wrapper expansion):
+    #   KIRO_CMD, KIRO_ARGS, KIRO_CWD     — kiro-cli subprocess wiring
+    #   DEBUG, HTTP_ADDR, PING_INTERVAL  — runtime knobs
+    #   AUTH_TOKEN, ALLOWED_IPS           — auth + IP allowlist (Phase 2)
+    #   AUTH_TRUST_XFF                    — opt-in XFF trust (Codex H-7)
+    #   POOL_SIZE                         — warm-pool size (Phase 2)
+    #   OLLAMA_PATH_PREFIX                — Ollama route prefix (default /api)
+    #   OPENAI_PATH_PREFIX                — OpenAI route prefix (Phase 3 forward seam)
     # -NoNewWindow: prevents a console popup (Pitfall 8 in RESEARCH.md).
     # -PassThru: returns the Process object so we can capture its PID.
     $proc = Start-Process `
