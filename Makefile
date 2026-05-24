@@ -8,7 +8,7 @@ VERSION     ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo 
 LDFLAGS     := -s -w -X otto-gateway/internal/version.Version=$(VERSION)
 BUILD_DIR   := bin
 
-.PHONY: all build run test test-race lint fmt tidy clean cross ci arch-lint start stop status e2e e2e-sdk-setup help
+.PHONY: all build run test test-race lint fmt tidy clean cross ci arch-lint start stop status e2e e2e-list e2e-sdk-setup help
 
 all: lint test build ## Lint, test, and build for the host platform
 
@@ -72,14 +72,25 @@ status: ## Show gateway status (wrapper script)
 # `ci` (it needs a refreshed kiro-cli + network). The test exit code is captured
 # to a tmpfile and re-raised after the report renders — no bash PIPESTATUS, so
 # this stays POSIX-portable (the project Makefile sets no SHELL override).
-e2e: build ## Run E2E suite (real binary + kiro) and write a markdown report
+#
+# Select a subset with RUN=<regex> (passed to `go test -run`). Empty (default)
+# runs everything. Examples:
+#   make e2e RUN=TestE2E_Ollama            # only the Ollama group
+#   make e2e RUN=TestE2E_Ollama/Tags       # one subtest
+#   make e2e RUN='TestE2E_(Ollama|SharedGateway)'  # two groups
+# Discover group names with `make e2e-list`.
+RUN ?=
+e2e: build ## Run E2E suite (real binary + kiro); RUN=<regex> selects a subset
 	@mkdir -p tests/e2e/reports
 	@TS=$$(date +%Y%m%d-%H%M%S); \
-		( OTTO_E2E=1 go test -tags e2e -json -v ./tests/e2e/ > tests/e2e/reports/raw.jsonl; echo $$? > tests/e2e/reports/rc ); \
+		( OTTO_E2E=1 go test -tags e2e -json -v -run "$(RUN)" ./tests/e2e/ > tests/e2e/reports/raw.jsonl; echo $$? > tests/e2e/reports/rc ); \
 		go run ./tests/e2e/cmd/report < tests/e2e/reports/raw.jsonl > tests/e2e/reports/REPORT-$$TS.md; \
 		cp tests/e2e/reports/REPORT-$$TS.md tests/e2e/reports/LATEST.md; \
 		echo "E2E report: tests/e2e/reports/REPORT-$$TS.md"; \
 		exit $$(cat tests/e2e/reports/rc)
+
+e2e-list: ## List E2E test groups (names usable with RUN=)
+	@go test -tags e2e -list '.*' ./tests/e2e/ | grep -E '^TestE2E' | sort
 
 e2e-sdk-setup: ## Install the opt-in Node SDK harness (enables E2E steps 4-5)
 	@command -v pnpm >/dev/null 2>&1 || { echo "ERROR: pnpm not found. We standardize on pnpm — install it (https://pnpm.io/installation), then re-run 'make e2e-sdk-setup'." >&2; exit 1; }
