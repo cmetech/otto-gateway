@@ -11,6 +11,10 @@ loop24-gateway.exe
 *.out
 coverage.*
 
+# Golden-fixture mismatch artifacts (written by failing golden tests
+# under any testdata/ directory; the .golden source files ARE tracked).
+**/testdata/*.actual
+
 # Go workspace files (local only)
 go.work
 go.work.sum
