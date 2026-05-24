@@ -122,7 +122,7 @@ Plans:
   4. Bearer-token auth and IP-allowlist middleware reject unauthorized requests while exempting `/`, `/api/version`, and `/health`.
   5. Per-request `cwd` is derived from longest common parent of `resource_link` block URIs, with `KIRO_CWD` fallback and `X-Working-Dir` header override, verified by handler-level tests.
 
-**Plans:** 4/6 plans executed
+**Plans:** 5/6 plans executed
 
 Plans:
 **Wave 1** *(no shared files — run in parallel)*
@@ -137,7 +137,7 @@ Plans:
 
 **Wave 3** *(depends on Wave 2)*
 
-- [ ] 02-05-PLAN.md — internal/pool package: channel-of-slots Pool satisfying engine.ACPClient (D-06), Warmup (D-07a fail-fast sequential), Models capture from first slot (D-13), Stats for /health, session→slot map with sync.Once-guarded slot release on stream close
+- [x] 02-05-PLAN.md — internal/pool package: channel-of-slots Pool satisfying engine.ACPClient (D-06), Warmup (D-07a fail-fast sequential), Models capture from first slot (D-13), Stats for /health, session→slot map with sync.Once-guarded slot release on stream close
 
 **Wave 4** *(depends on Wave 3 — Phase 2 acceptance)*
 
@@ -283,7 +283,7 @@ Phases execute in numeric order: 1 → 1.1 → 2 → 3 → 3.1 → 4 → 5 → 6
 |-------|----------------|--------|-----------|
 | 1. Foundations | 5/5 | Complete   | 2026-05-23 |
 | 1.1. ACP Wire Alignment (INSERTED) | 5/5 | Complete   | 2026-05-23 |
-| 2. Ollama End-to-End | 4/6 | In Progress|  |
+| 2. Ollama End-to-End | 5/6 | In Progress|  |
 | 3. OpenAI Surface | 0/TBD | Not started | - |
 | 4. Streaming | 0/TBD | Not started | - |
 | 5. Pool + Stateful Sessions | 0/TBD | Not started | - |
