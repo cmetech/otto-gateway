@@ -1,9 +1,22 @@
-# go-arch-lint Phase 1 scaffold.
-# Components declared; deps reflect actual Phase 1 import graph (non-test files).
-# Test files excluded — they may import any package freely (blackbox _test packages, goleak, etc.).
-# Phase 2 activates tighter restriction rules: canonical imports nothing,
-# server only depends on canonical/config/version, etc.
-# See docs/briefs/go_port_brief.md §3.12 (TRST-04).
+# go-arch-lint Phase 3.1 baseline (extended in Plan 03.1-01 Task 3).
+#
+# Components reflect the actual non-test import graph through Phase 2 + the
+# Phase 3.1 adapter_anthropic seam. The TRST-04 boundary is enforced here:
+#
+#   * adapter_ollama  → canonical only (consumer-defined Engine interface
+#                       in the adapter package; *engine.Engine satisfies
+#                       it structurally via cmd/main.go wiring).
+#   * adapter_anthropic → canonical only (same TRST-04 contract; the
+#                         next plan (03.1-02) creates source files under
+#                         internal/adapter/anthropic/**).
+#   * engine          → canonical + acp (via acp_adapter.go boundary file).
+#   * pool            → canonical + acp + engine (satisfies engine.ACPClient).
+#   * auth            → no internal deps (standalone middleware).
+#   * server          → config + auth (mounts the auth middleware chain).
+#
+# Test files are excluded from the boundary check — they may import any
+# package freely (blackbox _test packages, integration tests with pool
+# wiring, goleak, etc.). See docs/briefs/go_port_brief.md §3.12 (TRST-04).
 version: 3
 workdir: internal
 
@@ -13,10 +26,20 @@ excludeFiles:
 components:
   acp:
     in: acp/**
+  adapter_ollama:
+    in: adapter/ollama/**
+  adapter_anthropic:
+    in: adapter/anthropic/**
+  auth:
+    in: auth/**
   canonical:
     in: canonical/**
   config:
     in: config/**
+  engine:
+    in: engine/**
+  pool:
+    in: pool/**
   server:
     in: server/**
   version:
@@ -24,23 +47,43 @@ components:
   testutil:
     in: testutil/**
 
-# Phase 1: dep rules permissive — reflect actual Phase 1 import graph so check exits 0.
-# Phase 2 will tighten these once adapter↔canonical↔engine boundaries are established.
 deps:
   acp:
     anyVendorDeps: true
     mayDependOn:
       - canonical
       - version
-  server:
+  adapter_ollama:
     anyVendorDeps: true
     mayDependOn:
-      - config
-      - version
+      - canonical
+  adapter_anthropic:
+    anyVendorDeps: true
+    mayDependOn:
+      - canonical
+  auth:
+    anyVendorDeps: true
   canonical:
     anyVendorDeps: true
   config:
     anyVendorDeps: true
+  engine:
+    anyVendorDeps: true
+    mayDependOn:
+      - canonical
+      - acp
+  pool:
+    anyVendorDeps: true
+    mayDependOn:
+      - canonical
+      - acp
+      - engine
+  server:
+    anyVendorDeps: true
+    mayDependOn:
+      - auth
+      - config
+      - version
   version:
     anyVendorDeps: true
   testutil:
