@@ -42,3 +42,6 @@ tmp/
 # E2E artifacts (generated; the SDK source files stay tracked)
 tests/e2e/reports/
 tests/e2e/sdk/node_modules/
+# Opt-in harness lockfiles — version pinned in package.json; setup accepts pnpm or npm.
+tests/e2e/sdk/pnpm-lock.yaml
+tests/e2e/sdk/package-lock.json
