@@ -206,6 +206,30 @@ most are:
 `make fmt`, `make tidy`, `make test-race`, `make build`, and
 `make clean` round out the set.
 
+## End-to-end (E2E) testing
+
+The `tests/e2e/` suite boots the **real `otto-gateway` binary** against
+**real `kiro-cli`** and drives it over HTTP — it automates the Phase 3.1
+acceptance checks (health, dual-auth, streaming SSE framing, surface
+gating, and the `@anthropic-ai/sdk` round-trip) so you do not have to
+`curl` by hand. It is **opt-in**: behind a `//go:build e2e` tag + an
+`OTTO_E2E=1` gate, so `make test` / `make ci` never run it and never need
+`kiro-cli` or Node.
+
+```bash
+# Steps 1-3 + 6 (real binary + kiro):
+make build && OTTO_E2E=1 make e2e
+
+# Add steps 4-5 (real @anthropic-ai/sdk parser):
+make e2e-sdk-setup      # one-time: installs the Node harness
+OTTO_E2E=1 make e2e
+```
+
+Each run writes a markdown report to `tests/e2e/reports/LATEST.md`
+(timestamp, version, pass/fail/skip table). Prerequisites: `kiro-cli`
+on `PATH` and authenticated (tests **skip** — not fail — if warmup
+fails); Node only for steps 4-5. Full reference: **`tests/e2e/README.md`**.
+
 ## Known issues / gotchas
 
 1. **`go mod tidy` pre-commit hook fails on a fresh clone.** The
