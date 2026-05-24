@@ -174,12 +174,12 @@ Plans:
   5. `ENABLED_SURFACES` env var is introduced in this phase with default `ollama,anthropic` enabling both surfaces. Setting `ENABLED_SURFACES=ollama` (the Phase 2 default) disables the Anthropic adapter at boot; Phase 3 will subsequently extend the default to `ollama,anthropic,openai`. `internal/adapter/anthropic` imports only `internal/canonical` + `internal/plugin`; the `.go-arch-lint.yml` boundary check passes.
   6. Header contract enforced: missing `anthropic-version` returns a canonical `invalid_request_error` rendered in Anthropic's `{"type":"error","error":{"type":"…","message":"…"}}` shape; the gateway accepts both `x-api-key` and `Authorization: Bearer …` auth modes (loop24-client uses both depending on provider).
 
-**Plans:** 4 plans
+**Plans:** 1/4 plans executed
 
 Plans:
 **Wave 1**
 
-- [ ] 03.1-01-PLAN.md — Foundation: auth.Bearer dual-header (D-15), config ENABLED_SURFACES + ANTHROPIC_PATH_PREFIX (D-16/D-19), server.Config parallel Anthropic mount (D-17), engine.Collect thought aggregation (D-02), engine.buildBlocks [Reasoning] section (D-11), .go-arch-lint.yml adapter_anthropic + adapter_ollama + engine + pool boundaries
+- [x] 03.1-01-PLAN.md — Foundation: auth.Bearer dual-header (D-15), config ENABLED_SURFACES + ANTHROPIC_PATH_PREFIX (D-16/D-19), server.Config parallel Anthropic mount (D-17), engine.Collect thought aggregation (D-02), engine.buildBlocks [Reasoning] section (D-11), .go-arch-lint.yml adapter_anthropic + adapter_ollama + engine + pool boundaries
 
 **Wave 2** *(blocked on Wave 1)*
 
