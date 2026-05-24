@@ -405,3 +405,87 @@ type fakePoolSource struct {
 }
 
 func (f fakePoolSource) Stats() server.PoolStats { return f.stats }
+
+// ---------------------------------------------------------------------------
+// NewFromConfig — Phase 3.1 anthropic mount (D-17)
+// ---------------------------------------------------------------------------
+
+// stubAnthropicRouter mirrors stubOllamaRouter — a chi.Router with a
+// single Post handler. Lets the anthropic mount tests assert that a
+// protected request reaches the adapter when auth passes.
+func stubAnthropicRouter() chi.Router {
+	r := chi.NewRouter()
+	r.Post("/messages", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":"anthropic"}`))
+	})
+	return r
+}
+
+// TestNewFromConfig_AnthropicMount asserts the D-17 parallel mount: a
+// non-nil AnthropicProtectedRouter at AnthropicPath="/v1" is served
+// behind the same auth.Bearer + auth.IPAllowlist chain as the Ollama
+// surface. Unauthenticated → 401; authenticated → 200.
+func TestNewFromConfig_AnthropicMount(t *testing.T) {
+	srv := newFromConfigForTest(t, server.Config{
+		AuthTokens:               []string{"s3cret"},
+		AnthropicPath:            "/v1",
+		AnthropicProtectedRouter: stubAnthropicRouter(),
+	})
+
+	// Without bearer.
+	r1 := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/messages", strings.NewReader(`{}`))
+	w1 := httptest.NewRecorder()
+	srv.ServeHTTP(w1, r1)
+	if w1.Code != http.StatusUnauthorized {
+		t.Errorf("POST /v1/messages without bearer: got %d, want 401 (body=%s)", w1.Code, w1.Body.String())
+	}
+
+	// With valid bearer.
+	r2 := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/messages", strings.NewReader(`{}`))
+	r2.Header.Set("Authorization", "Bearer s3cret")
+	w2 := httptest.NewRecorder()
+	srv.ServeHTTP(w2, r2)
+	if w2.Code != http.StatusOK {
+		t.Errorf("POST /v1/messages with valid bearer: got %d, want 200; body=%s", w2.Code, w2.Body.String())
+	}
+
+	// With valid x-api-key (D-15 dual-header path applied to the
+	// anthropic mount because the SAME auth.Bearer middleware is wired).
+	r3 := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/messages", strings.NewReader(`{}`))
+	r3.Header.Set("x-api-key", "s3cret")
+	w3 := httptest.NewRecorder()
+	srv.ServeHTTP(w3, r3)
+	if w3.Code != http.StatusOK {
+		t.Errorf("POST /v1/messages with valid x-api-key: got %d, want 200; body=%s", w3.Code, w3.Body.String())
+	}
+}
+
+// TestNewFromConfig_AnthropicMount_NilRouter — when
+// AnthropicProtectedRouter is nil the mount block is skipped (nil-safe
+// gate, mirrors the Ollama branch's defensive design). The server
+// still starts and serves the Ollama mount; /v1/messages → 404.
+func TestNewFromConfig_AnthropicMount_NilRouter(t *testing.T) {
+	srv := newFromConfigForTest(t, server.Config{
+		AuthTokens:               []string{"s3cret"},
+		AnthropicPath:            "/v1",
+		AnthropicProtectedRouter: nil, // explicitly nil — gate must skip
+	})
+
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/messages", strings.NewReader(`{}`))
+	r.Header.Set("Authorization", "Bearer s3cret")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, r)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("POST /v1/messages with nil AnthropicProtectedRouter: got %d, want 404 (mount block must be skipped)", w.Code)
+	}
+
+	// The Ollama mount must still respond on its own path.
+	r2 := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/chat", strings.NewReader(`{}`))
+	r2.Header.Set("Authorization", "Bearer s3cret")
+	w2 := httptest.NewRecorder()
+	srv.ServeHTTP(w2, r2)
+	if w2.Code != http.StatusOK {
+		t.Errorf("Ollama mount must still serve when Anthropic mount is absent: got %d, want 200", w2.Code)
+	}
+}

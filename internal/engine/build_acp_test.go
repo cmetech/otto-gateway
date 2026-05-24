@@ -221,6 +221,89 @@ func TestBuildBlocks_MultipleImages_PreservesOrder(t *testing.T) {
 	}
 }
 
+// TestBuildBlocks_AssistantWithThinking (Phase 3.1 D-11, option a):
+// when an assistant message carries BOTH a text part and a thinking
+// part, the transcript emits a [Reasoning] bracketed section AFTER
+// the [Assistant] section. Keeps [Assistant] semantically pure for
+// response text and gives kiro-cli the thinking content as a
+// distinct section in the prompt — matches the [System] / [User] /
+// [Assistant] convention from the Node reference.
+func TestBuildBlocks_AssistantWithThinking(t *testing.T) {
+	req := &canonical.ChatRequest{
+		Messages: []canonical.Message{
+			{Role: canonical.RoleUser, Content: []canonical.ContentPart{
+				{Kind: canonical.ContentKindText, Text: "Why?"},
+			}},
+			{Role: canonical.RoleAssistant, Content: []canonical.ContentPart{
+				{Kind: canonical.ContentKindText, Text: "Because reasons."},
+				{Kind: canonical.ContentKindThinking, Text: "Step 1: identify cause. Step 2: explain."},
+			}},
+		},
+	}
+	got := buildBlocks(req)
+	if got[0].Text == nil {
+		t.Fatal("expected text block")
+	}
+	content := got[0].Text.Content
+
+	// The [Reasoning] section is forward-design seam from Phase 2 and
+	// also appears via req.Think=true, so the assertion specifically
+	// checks for the THINKING content text after [Reasoning] (not just
+	// the header) and the ordering: Assistant text before Reasoning.
+	assistantIdx := indexOfSection(content, "[Assistant]\nBecause reasons.")
+	reasoningIdx := indexOfSection(content, "[Reasoning]\nStep 1: identify cause. Step 2: explain.")
+	if assistantIdx < 0 {
+		t.Errorf("expected [Assistant] section with text; got %q", content)
+	}
+	if reasoningIdx < 0 {
+		t.Errorf("expected [Reasoning] section with thinking text; got %q", content)
+	}
+	if assistantIdx > reasoningIdx {
+		t.Errorf("ordering: [Assistant] must appear BEFORE [Reasoning] in the transcript; got %q", content)
+	}
+}
+
+// TestBuildBlocks_AssistantTextOnly_NoReasoningSection (Phase 3.1 D-11
+// regression guard): an assistant message with only a text part MUST
+// NOT emit a [Reasoning] section. This guards against an accidental
+// double-section emit when the new joinThinkingParts helper is added
+// alongside the existing joinTextParts.
+func TestBuildBlocks_AssistantTextOnly_NoReasoningSection(t *testing.T) {
+	req := &canonical.ChatRequest{
+		Messages: []canonical.Message{
+			{Role: canonical.RoleAssistant, Content: []canonical.ContentPart{
+				{Kind: canonical.ContentKindText, Text: "Hi there."},
+			}},
+		},
+	}
+	got := buildBlocks(req)
+	if got[0].Text == nil {
+		t.Fatal("expected text block")
+	}
+	content := got[0].Text.Content
+	if contains(content, "[Reasoning]") {
+		t.Errorf("text-only assistant must NOT emit [Reasoning]; got %q", content)
+	}
+	if !contains(content, "[Assistant]\nHi there.") {
+		t.Errorf("expected [Assistant] section with text; got %q", content)
+	}
+}
+
+// indexOfSection returns the byte index of `needle` in `haystack` or
+// -1 when absent. Tiny helper so the ordering assertion above stays
+// readable.
+func indexOfSection(haystack, needle string) int {
+	if len(needle) > len(haystack) {
+		return -1
+	}
+	for i := 0; i+len(needle) <= len(haystack); i++ {
+		if haystack[i:i+len(needle)] == needle {
+			return i
+		}
+	}
+	return -1
+}
+
 // Example_buildBlocks is a runnable godoc example (TRST-07). The
 // Output: block is validated by `go test -run Example`. Lowercase
 // suffix style because buildBlocks is unexported.

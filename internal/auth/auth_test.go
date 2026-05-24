@@ -95,6 +95,108 @@ func TestBearer_MultiToken_ValidatesAny(t *testing.T) {
 	}
 }
 
+// TestBearer_DualHeader (Phase 3.1 D-15): the Bearer middleware accepts
+// BOTH "Authorization: Bearer <token>" AND "x-api-key: <token>" globally
+// against the same Config.Tokens set, using constant-time-compare on
+// every token-comparison branch. Authorization takes precedence when
+// both headers are present — even when the Authorization Bearer value
+// is INVALID, the request is rejected (a valid x-api-key MUST NOT
+// rescue a bad Bearer).
+func TestBearer_DualHeader(t *testing.T) {
+	cfg := auth.Config{Tokens: []string{"s3cret"}}
+
+	cases := []struct {
+		name             string
+		setAuthorization string // "" means do not set
+		setXAPIKey       string // "" means do not set
+		wantStatus       int
+	}{
+		{
+			name:             "bearer_only_valid",
+			setAuthorization: "Bearer s3cret",
+			wantStatus:       http.StatusOK,
+		},
+		{
+			name:       "x_api_key_only_valid",
+			setXAPIKey: "s3cret",
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:             "bearer_wrong_x_api_key_valid_rejects",
+			setAuthorization: "Bearer wrong",
+			setXAPIKey:       "s3cret",
+			wantStatus:       http.StatusUnauthorized,
+		},
+		{
+			name:             "bearer_valid_x_api_key_wrong_accepts",
+			setAuthorization: "Bearer s3cret",
+			setXAPIKey:       "wrong",
+			wantStatus:       http.StatusOK,
+		},
+		{
+			name:       "neither_header_rejects",
+			wantStatus: http.StatusUnauthorized,
+		},
+		{
+			name:             "non_bearer_authorization_falls_through_to_x_api_key",
+			setAuthorization: "Basic dXNlcjpwYXNz",
+			setXAPIKey:       "s3cret",
+			wantStatus:       http.StatusOK,
+		},
+		{
+			name:             "non_bearer_authorization_and_no_x_api_key_rejects",
+			setAuthorization: "Basic dXNlcjpwYXNz",
+			wantStatus:       http.StatusUnauthorized,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/messages", nil)
+			if tc.setAuthorization != "" {
+				req.Header.Set("Authorization", tc.setAuthorization)
+			}
+			if tc.setXAPIKey != "" {
+				req.Header.Set("x-api-key", tc.setXAPIKey)
+			}
+			auth.Bearer(cfg)(okHandler).ServeHTTP(rec, req)
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status: want %d, got %d (body=%s)", tc.wantStatus, rec.Code, rec.Body.String())
+			}
+			if tc.wantStatus == http.StatusUnauthorized {
+				// The Bearer middleware is surface-agnostic — it emits
+				// the Ollama-shape error envelope regardless of the
+				// requested path (D-15 + RESEARCH.md Pattern 3 option 2).
+				if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+					t.Errorf("Content-Type: want application/json, got %q", ct)
+				}
+				want := map[string]string{"error": "Invalid or missing API key"}
+				if got := decodeErrorBody(t, rec); !reflect.DeepEqual(got, want) {
+					t.Errorf("body: want %v, got %v", want, got)
+				}
+			}
+		})
+	}
+}
+
+// TestBearer_DualHeader_EmptyTokens_PassesThrough confirms that even
+// with both headers present, an empty Tokens slice still falls through
+// to the next handler — D-15 preserves the Phase 2 no-auth-mode
+// semantics (AUTH_TOKEN unset → no auth, matching Node parity).
+func TestBearer_DualHeader_EmptyTokens_PassesThrough(t *testing.T) {
+	cfg := auth.Config{} // no Tokens
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/messages", nil)
+	req.Header.Set("Authorization", "Bearer anything")
+	req.Header.Set("x-api-key", "anything-else")
+	auth.Bearer(cfg)(okHandler).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: want 200 (auth disabled — D-15 preserves no-auth mode), got %d", rec.Code)
+	}
+}
+
 // --- IPAllowlist ----------------------------------------------------------
 
 func cidr(t *testing.T, s string) netip.Prefix {

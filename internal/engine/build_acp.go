@@ -77,6 +77,18 @@ func buildBlocks(req *canonical.ChatRequest) []canonical.Block {
 			if text != "" {
 				fmt.Fprintf(&b, "[Assistant]\n%s\n\n", text)
 			}
+			// Phase 3.1 D-11 (option a): inbound thinking content blocks
+			// (from Anthropic conversation history) reach kiro-cli as a
+			// distinct [Reasoning] section AFTER the [Assistant] section.
+			// Keeps [Assistant] semantically pure for response text and
+			// mirrors the bracketed-section convention from the Node
+			// reference. The section is emitted ONLY when thinking
+			// content is non-empty so text-only assistant turns don't
+			// gain a phantom header.
+			thinking := joinThinkingParts(m.Content)
+			if thinking != "" {
+				fmt.Fprintf(&b, "[Reasoning]\n%s\n\n", thinking)
+			}
 		case canonical.RoleTool:
 			// Dormant in Phase 2 (Phase 6 fills the [Tool result] body).
 		default: // RoleUser
@@ -132,6 +144,25 @@ func joinTextParts(parts []canonical.ContentPart) string {
 	var b strings.Builder
 	for _, p := range parts {
 		if p.Kind == canonical.ContentKindText {
+			b.WriteString(p.Text)
+		}
+	}
+	return b.String()
+}
+
+// joinThinkingParts concatenates the Text fields of every ContentPart
+// whose Kind == ContentKindThinking. Mirrors joinTextParts exactly,
+// gated on a different Kind discriminator. Phase 3.1 D-11 activates
+// this helper to preserve inbound `thinking` content blocks from
+// Anthropic conversation history into the [Reasoning] bracketed
+// section emitted on the ACP wire.
+func joinThinkingParts(parts []canonical.ContentPart) string {
+	if len(parts) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for _, p := range parts {
+		if p.Kind == canonical.ContentKindThinking {
 			b.WriteString(p.Text)
 		}
 	}

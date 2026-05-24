@@ -147,9 +147,18 @@ func joinTextContent(parts []canonical.ContentPart) string {
 
 // joinThinkingContent concatenates the Text fields of any
 // ContentKindThinking parts so that /api/chat responses honor
-// think:true round-trip (Assumption A4 in RESEARCH.md). Phase 2 keeps
+// think:true round-trip (Assumption A4 in RESEARCH.md). Phase 2 kept
 // this empty for non-thinking requests; the field is omitempty so it
 // disappears entirely when there is no thinking content.
+//
+// Phase 3.1 D-02 follow-on (option a — KEEP populating): now that
+// engine.Collect aggregates ChunkKindThought into a
+// ContentPart{Kind: ContentKindThinking}, this helper will emit a
+// populated `thinking` field on /api/chat responses whenever
+// kiro-cli produces thoughts. LangFlow tolerates the field via the
+// existing `omitempty` JSON tag (no shape break) and Node parity is
+// preserved on the negative side (Node simply never emits the field;
+// we now do when there IS thinking content — strictly additive).
 func joinThinkingContent(parts []canonical.ContentPart) string {
 	if len(parts) == 0 {
 		return ""

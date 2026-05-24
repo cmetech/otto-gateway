@@ -4,8 +4,8 @@ milestone: v1.5
 milestone_name: milestone
 status: executing
 stopped_at: Phase 3.1 context gathered
-last_updated: "2026-05-24T04:28:24.971Z"
-last_activity: 2026-05-24 -- Phase 03.1 planning complete
+last_updated: "2026-05-24T12:25:36.116Z"
+last_activity: 2026-05-24 -- Phase 03.1 execution started
 progress:
   total_phases: 11
   completed_phases: 3
@@ -21,15 +21,15 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-23)
 
 **Core value:** All three API surfaces (OpenAI for Pi SDK, Ollama for LangFlow, Anthropic for loop24-client/GSD Pi) serve their respective clients without those clients knowing kiro-cli exists, with one place to enforce policy.
-**Current focus:** Phase 03.1 — anthropic surface
+**Current focus:** Phase 03.1 — anthropic-surface
 
 ## Current Position
 
-Phase: 03.1
-Plan: Not started
-Status: Ready to execute
+Phase: 03.1 (anthropic-surface) — EXECUTING
+Plan: 1 of 4
+Status: Executing Phase 03.1
 Next: /gsd-discuss-phase 1.1 → /gsd-plan-phase 1.1 → /gsd-execute-phase 1.1 → /gsd-plan-phase 2
-Last activity: 2026-05-24 -- Phase 03.1 planning complete
+Last activity: 2026-05-24 -- Phase 03.1 execution started
 
 Progress: [░░░░░░░░░░] 0%
 

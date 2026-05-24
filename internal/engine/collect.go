@@ -46,22 +46,33 @@ func (e *Engine) Collect(ctx context.Context, req *canonical.ChatRequest) (*cano
 		// Result (it would also work but is meaningless here).
 		resp = run.response
 	} else {
-		// Normal path: aggregate text from the stream.
-		var sb strings.Builder
+		// Normal path: aggregate text AND thoughts from the stream.
+		// Phase 3.1 D-02 activates the dormant ContentKindThinking
+		// seam — thoughts that Phase 2 dropped now flow into a
+		// second content part so the Anthropic adapter can render
+		// `{type:"thinking",thinking:"..."}` blocks (ANTH-07
+		// foundation). Two builders, one switch — text and thoughts
+		// stay independent so order-of-arrival doesn't matter.
+		var sb, thoughtSB strings.Builder
 		for chunk := range run.stream.Chunks() {
-			if chunk.Kind == canonical.ChunkKindText && chunk.Text != nil {
-				sb.WriteString(chunk.Text.Content)
+			switch chunk.Kind {
+			case canonical.ChunkKindText:
+				if chunk.Text != nil {
+					sb.WriteString(chunk.Text.Content)
+				}
+			case canonical.ChunkKindThought:
+				if chunk.Thought != nil {
+					thoughtSB.WriteString(chunk.Thought.Content)
+				}
+			// ChunkKindToolCall / ChunkKindPlan still intentionally
+			// dropped in Phase 3.1; Phase 6 wires them.
 			}
-			// ChunkKindThought / ChunkKindToolCall / ChunkKindPlan
-			// are intentionally dropped in Phase 2. Phase 3.1 wires
-			// Thought through Anthropic's "thinking" content block;
-			// Phase 6 wires ToolCall via tool-result content parts.
 		}
 		final, rerr := run.stream.Result()
 		if rerr != nil {
 			return nil, fmt.Errorf("engine: collect result: %w", rerr)
 		}
-		resp = assembleChatResponse(req, sb.String(), final)
+		resp = assembleChatResponse(req, sb.String(), thoughtSB.String(), final)
 	}
 
 	// Codex H-5: PostHook traversal happens HERE in Collect (not in
@@ -78,12 +89,26 @@ func (e *Engine) Collect(ctx context.Context, req *canonical.ChatRequest) (*cano
 }
 
 // assembleChatResponse builds a canonical.ChatResponse from the
-// per-stream text aggregation plus the FinalResult's StopReason. The
-// ID is time-based (matches the ID generator convention used by other
-// Go-LLM gateways); Model echoes back the request's Model field;
-// Usage is zero-valued in Phase 2 (kiro-cli does not yet report token
-// counts via session/prompt).
-func assembleChatResponse(req *canonical.ChatRequest, text string, final *canonical.FinalResult) *canonical.ChatResponse {
+// per-stream text + thinking aggregations plus the FinalResult's
+// StopReason. The ID is time-based (matches the ID generator
+// convention used by other Go-LLM gateways); Model echoes back the
+// request's Model field; Usage is zero-valued in Phase 2 (kiro-cli
+// does not yet report token counts via session/prompt).
+//
+// Phase 3.1 D-02 — content shape:
+//   - The text part is ALWAYS present at Content[0] (may be empty
+//     string when the stream produced only thoughts). This keeps the
+//     Phase 2 Ollama joinTextContent path stable.
+//   - The thinking part is appended at Content[1] ONLY when
+//     `thinking != ""`. Phase 2 Ollama tests that never see a
+//     ChunkKindThought continue to assert len(Content) == 1.
+//   - The thinking part renders into the Anthropic adapter's
+//     `{type:"thinking",thinking:"..."}` content block (ANTH-07
+//     non-streaming) and into the Ollama
+//     `ollamaChatResponseMessage.Thinking` field via the existing
+//     joinThinkingContent helper (the omitempty JSON tag drops the
+//     field for thought-free responses).
+func assembleChatResponse(req *canonical.ChatRequest, text, thinking string, final *canonical.FinalResult) *canonical.ChatResponse {
 	stop := canonical.StopUnknown
 	if final != nil {
 		stop = final.StopReason
@@ -92,14 +117,21 @@ func assembleChatResponse(req *canonical.ChatRequest, text string, final *canoni
 	if req != nil {
 		model = req.Model
 	}
+	content := []canonical.ContentPart{
+		{Kind: canonical.ContentKindText, Text: text},
+	}
+	if thinking != "" {
+		content = append(content, canonical.ContentPart{
+			Kind: canonical.ContentKindThinking,
+			Text: thinking,
+		})
+	}
 	return &canonical.ChatResponse{
 		ID:    fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano()),
 		Model: model,
 		Message: canonical.Message{
-			Role: canonical.RoleAssistant,
-			Content: []canonical.ContentPart{
-				{Kind: canonical.ContentKindText, Text: text},
-			},
+			Role:    canonical.RoleAssistant,
+			Content: content,
 		},
 		StopReason: stop,
 		Usage:      canonical.Usage{},

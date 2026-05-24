@@ -373,3 +373,92 @@ func TestLoad_AuthTrustXFF_Malformed(t *testing.T) {
 		t.Errorf("error should mention AUTH_TRUST_XFF, got: %v", err)
 	}
 }
+
+// --- ENABLED_SURFACES coverage (Phase 3.1 D-16) -------------------------
+
+func TestLoad_EnabledSurfaces_Default(t *testing.T) {
+	// t.Setenv: cannot use t.Parallel().
+	// D-16: default is ollama,anthropic (Phase 3 extends to add openai).
+	t.Setenv("ENABLED_SURFACES", "")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+	want := []string{"ollama", "anthropic"}
+	if !reflect.DeepEqual(cfg.EnabledSurfaces, want) {
+		t.Errorf("EnabledSurfaces: got %v, want %v", cfg.EnabledSurfaces, want)
+	}
+}
+
+func TestLoad_EnabledSurfaces_OllamaOnly(t *testing.T) {
+	// t.Setenv: cannot use t.Parallel().
+	t.Setenv("ENABLED_SURFACES", "ollama")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+	want := []string{"ollama"}
+	if !reflect.DeepEqual(cfg.EnabledSurfaces, want) {
+		t.Errorf("EnabledSurfaces: got %v, want %v (anthropic must be disabled)", cfg.EnabledSurfaces, want)
+	}
+}
+
+func TestLoad_EnabledSurfaces_AnthropicOnly(t *testing.T) {
+	// t.Setenv: cannot use t.Parallel().
+	t.Setenv("ENABLED_SURFACES", "anthropic")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+	want := []string{"anthropic"}
+	if !reflect.DeepEqual(cfg.EnabledSurfaces, want) {
+		t.Errorf("EnabledSurfaces: got %v, want %v (ollama must be disabled)", cfg.EnabledSurfaces, want)
+	}
+}
+
+func TestLoad_EnabledSurfaces_UnknownName_Errors(t *testing.T) {
+	// t.Setenv: cannot use t.Parallel().
+	// D-16 fail-fast: an unknown surface (typo) must cause Load() to
+	// error so the binary exits non-zero rather than silently disabling
+	// a surface (RESEARCH.md Pitfall 10). Allow-list is {"ollama",
+	// "anthropic"} in Phase 3.1; Phase 3 will widen.
+	t.Setenv("ENABLED_SURFACES", "ollama,olama")
+	_, err := config.Load()
+	if err == nil {
+		t.Fatal("Load() should return an error for ENABLED_SURFACES=ollama,olama (typo), got nil")
+	}
+	if !strings.Contains(err.Error(), "ENABLED_SURFACES") {
+		t.Errorf("error should mention ENABLED_SURFACES, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "olama") {
+		t.Errorf("error should name the offending surface 'olama', got: %v", err)
+	}
+}
+
+// --- ANTHROPIC_PATH_PREFIX coverage (Phase 3.1 D-19) --------------------
+
+func TestLoad_AnthropicPathPrefix_Default(t *testing.T) {
+	// t.Setenv: cannot use t.Parallel().
+	// D-19: default is /v1 (shares with OpenAI; SURF-08 endpoint-level
+	// disambiguation).
+	t.Setenv("ANTHROPIC_PATH_PREFIX", "")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+	if cfg.AnthropicPathPrefix != "/v1" {
+		t.Errorf("AnthropicPathPrefix: got %q, want %q", cfg.AnthropicPathPrefix, "/v1")
+	}
+}
+
+func TestLoad_AnthropicPathPrefix_Override(t *testing.T) {
+	// t.Setenv: cannot use t.Parallel().
+	t.Setenv("ANTHROPIC_PATH_PREFIX", "/anthropic/v1")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+	if cfg.AnthropicPathPrefix != "/anthropic/v1" {
+		t.Errorf("AnthropicPathPrefix: got %q, want %q", cfg.AnthropicPathPrefix, "/anthropic/v1")
+	}
+}
