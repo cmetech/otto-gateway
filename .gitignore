@@ -39,9 +39,9 @@ tmp/
 # Local Claude / Kiro state (skills + commands are versioned; runtime state is not)
 .claude/settings.local.json
 
-# E2E artifacts (generated; the SDK source files stay tracked)
+# E2E artifacts (generated; the SDK source files + pnpm-lock.yaml stay tracked)
 tests/e2e/reports/
 tests/e2e/sdk/node_modules/
-# Opt-in harness lockfiles — version pinned in package.json; setup accepts pnpm or npm.
-tests/e2e/sdk/pnpm-lock.yaml
+# We standardize on pnpm — pnpm-lock.yaml is committed for reproducible installs.
+# An npm-generated lockfile is not (use pnpm).
 tests/e2e/sdk/package-lock.json
