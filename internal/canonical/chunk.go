@@ -66,6 +66,11 @@ const (
 	BlockKindText BlockKind = iota
 	// BlockKindResourceLink is a resource link input block.
 	BlockKindResourceLink
+	// BlockKindImage is an inline image input block (D-09 footnote —
+	// Codex M-1). Appended at iota position 2; existing iota values
+	// for BlockKindText (0) and BlockKindResourceLink (1) are preserved
+	// so Phase 1.1 callers continue to read correctly.
+	BlockKindImage
 )
 
 // Block is a discriminated-union value representing prompt input.
@@ -78,6 +83,8 @@ type Block struct {
 	Text *TextBlock
 	// ResourceLink is set when Kind == BlockKindResourceLink.
 	ResourceLink *ResourceLinkBlock
+	// Image is set when Kind == BlockKindImage.
+	Image *ImageBlock
 }
 
 // TextBlock carries plain text prompt content.
@@ -96,4 +103,20 @@ type ResourceLinkBlock struct {
 	Name string
 	// Title is the human-readable title for the resource.
 	Title string
+}
+
+// ImageBlock carries an inline image block. Adapter base64-decodes wire
+// data into Data before constructing this block; downstream emit
+// translates back to the ACP spec image-block wire shape (source /
+// mimeType / data fields per agentclientprotocol.com/protocol/content.md).
+type ImageBlock struct {
+	// Source is the original wire reference (data URL or http URL).
+	// Informational only.
+	Source string
+	// MIMEType is the image MIME type (e.g., "image/png", "image/jpeg").
+	MIMEType string
+	// Data is the raw decoded image bytes. Adapter MUST base64-decode
+	// the wire form before populating; ACP wire-shape encoder
+	// re-base64-encodes for the agent.
+	Data []byte
 }
