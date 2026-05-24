@@ -29,10 +29,16 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
+	"slices"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+
+	"loop24-gateway/internal/adapter/anthropic"
 	"loop24-gateway/internal/adapter/ollama"
+	"loop24-gateway/internal/canonical"
 	"loop24-gateway/internal/config"
 	"loop24-gateway/internal/engine"
 	"loop24-gateway/internal/pool"
@@ -136,9 +142,15 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 		})
 	}
 
-	// adapter.New tolerates nil Engine / nil ModelCatalog — the
-	// degraded mode keeps /, /health, /api/version, and the stub
-	// endpoints serving while chat/generate return 503.
+	// Adapter construction is gated by cfg.EnabledSurfaces (D-16
+	// fail-fast in config.Load already rejects unknown names). Each
+	// adapter tolerates nil Engine / nil ModelCatalog — degraded
+	// "KIRO_CMD unset" mode returns 503 from the chat handlers while
+	// keeping /, /health, and /api/version (Ollama only) alive.
+	//
+	// engineForAdapter is computed once and reused so both surfaces
+	// share the same canonical engine handle (D-17 — one engine, many
+	// surfaces).
 	var engineForAdapter ollama.Engine
 	if a.engine != nil {
 		engineForAdapter = a.engine
@@ -147,31 +159,94 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 	if a.pool != nil {
 		catalogForAdapter = a.pool
 	}
-	adapter := ollama.New(ollama.Config{
-		Logger:       logger,
-		Engine:       engineForAdapter,
-		ModelCatalog: catalogForAdapter,
-		Version:      version.Version,
-		Commit:       version.Commit(),
-	})
+
+	var ollamaAdapter *ollama.Adapter
+	if slices.Contains(cfg.EnabledSurfaces, "ollama") {
+		ollamaAdapter = ollama.New(ollama.Config{
+			Logger:       logger,
+			Engine:       engineForAdapter,
+			ModelCatalog: catalogForAdapter,
+			Version:      version.Version,
+			Commit:       version.Commit(),
+		})
+	}
+
+	var anthropicAdapter *anthropic.Adapter
+	if slices.Contains(cfg.EnabledSurfaces, "anthropic") {
+		// anthropic.Engine is satisfied via anthropicEngineAdapter
+		// (below) — *engine.Engine.Run returns the concrete *engine.Run
+		// while anthropic.Engine.Run wants anthropic.RunHandle, so a
+		// thin wrapper is required (Go structural typing is strict
+		// about return types).
+		//
+		// When a.engine is nil (degraded mode) eng stays nil and the
+		// nil-engine guard in anthropic.handleMessages returns 503
+		// (Plan 02 Task 3 line 35).
+		var eng anthropic.Engine
+		if a.engine != nil {
+			eng = anthropicEngineAdapter{engine: a.engine}
+		}
+		anthropicAdapter = anthropic.New(anthropic.Config{
+			Logger: logger,
+			Engine: eng,
+		})
+	}
+
+	// Compose protected-router accessors with nil-safety. When a
+	// surface is disabled the corresponding field stays nil and the
+	// server.NewFromConfig mount block skips it.
+	var (
+		ollamaProtectedRouter    chi.Router
+		ollamaVersionHandler     http.HandlerFunc
+		anthropicProtectedRouter chi.Router
+	)
+	if ollamaAdapter != nil {
+		ollamaProtectedRouter = ollamaAdapter.ProtectedRouter()
+		ollamaVersionHandler = ollamaAdapter.HandleVersion()
+	}
+	if anthropicAdapter != nil {
+		anthropicProtectedRouter = anthropicAdapter.ProtectedRouter()
+	}
+
+	if ollamaAdapter == nil && anthropicAdapter == nil {
+		// Defensive: an operator-supplied empty list (e.g.,
+		// ENABLED_SURFACES=" ,") shouldn't reach this path because
+		// config.Load injects the default when the env value resolves
+		// to an empty slice. If it does (programmatic Config literals
+		// in tests, for example), keep serving the exempt routes
+		// (/, /health) and log a warning — do NOT exit non-zero.
+		// D-16 fail-fast is reserved for unknown surface names.
+		logger.Warn("no surfaces enabled; serving exempt routes only",
+			"enabled_surfaces", cfg.EnabledSurfaces)
+	}
 
 	var poolForServer server.PoolStatsSource
 	if a.pool != nil {
 		poolForServer = poolStatsAdapter{pool: a.pool}
 	}
 
+	// Boot log surfaces the resolved surface set so operators see
+	// what's actually mounted (closes a Phase 2 → Phase 3.1 ops gap).
+	logger.Info("server: enabled surfaces",
+		"enabled_surfaces", cfg.EnabledSurfaces,
+		"ollama_mounted", ollamaAdapter != nil,
+		"anthropic_mounted", anthropicAdapter != nil,
+	)
+
 	a.srv = server.NewFromConfig(server.Config{
-		Logger:                logger,
-		Version:               version.Version,
-		Commit:                version.Commit(),
-		HTTPAddr:              cfg.HTTPAddr,
-		AuthTokens:            cfg.AuthToken,
-		AllowedPrefixes:       cfg.AllowedIPs,
-		AuthTrustXFF:          cfg.AuthTrustXFF, // Codex H-7 wiring path complete
-		OllamaPath:            cfg.OllamaPathPrefix,
-		OllamaProtectedRouter: adapter.ProtectedRouter(),
-		OllamaVersionHandler:  adapter.HandleVersion(), // Codex M-4 split accessor
-		Pool:                  poolForServer,
+		Logger:                   logger,
+		Version:                  version.Version,
+		Commit:                   version.Commit(),
+		HTTPAddr:                 cfg.HTTPAddr,
+		AuthTokens:               cfg.AuthToken,
+		AllowedPrefixes:          cfg.AllowedIPs,
+		AuthTrustXFF:             cfg.AuthTrustXFF, // Codex H-7 wiring path complete
+		OllamaPath:               cfg.OllamaPathPrefix,
+		OllamaProtectedRouter:    ollamaProtectedRouter,
+		OllamaVersionHandler:     ollamaVersionHandler, // Codex M-4 split accessor
+		AnthropicPath:            cfg.AnthropicPathPrefix,
+		AnthropicProtectedRouter: anthropicProtectedRouter,
+		Pool:                     poolForServer,
 	})
 
 	return a, cleanup, nil
@@ -198,6 +273,67 @@ func buildLogger(cfg config.Config) *slog.Logger {
 	return slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: cfg.LogLevel(),
 	}))
+}
+
+// anthropicEngineAdapter wraps a concrete *engine.Engine and adapts
+// its Run signature to anthropic.Engine. The Collect method passes
+// through unchanged. This is the cmd-level seam that keeps the
+// internal/adapter/anthropic package free of any internal/engine
+// import (TRST-04 boundary — enforced by .go-arch-lint.yml).
+//
+// Why a wrapper instead of structural satisfaction:
+// *engine.Engine.Run returns (*engine.Run, error); anthropic.Engine.Run
+// wants (anthropic.RunHandle, error). Go interfaces require the
+// return type to match exactly, and Go does not auto-promote the
+// concrete *engine.Run to an interface even when the concrete type
+// satisfies the target interface — the conversion has to happen at
+// the call site. anthropicRunHandleAdapter is that conversion.
+type anthropicEngineAdapter struct {
+	engine *engine.Engine
+}
+
+// Collect satisfies anthropic.Engine.Collect by delegating verbatim.
+// Error wrapping uses fmt.Errorf("anthropic engine collect: %w", err)
+// so wrapcheck is satisfied while preserving errors.Is/As semantics.
+func (a anthropicEngineAdapter) Collect(ctx context.Context, req *canonical.ChatRequest) (*canonical.ChatResponse, error) {
+	resp, err := a.engine.Collect(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("anthropic engine collect: %w", err)
+	}
+	return resp, nil
+}
+
+// Run satisfies anthropic.Engine.Run by wrapping the concrete *engine.Run
+// in anthropicRunHandleAdapter.
+func (a anthropicEngineAdapter) Run(ctx context.Context, req *canonical.ChatRequest) (anthropic.RunHandle, error) {
+	run, err := a.engine.Run(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("anthropic engine run: %w", err)
+	}
+	return anthropicRunHandleAdapter{run: run}, nil
+}
+
+// anthropicRunHandleAdapter adapts *engine.Run to anthropic.RunHandle.
+// engine.Run.Stream() returns engine.Stream (interface); anthropic
+// declares its own Stream interface that is structurally compatible
+// — the concrete chunk channel + Result method match. The pass-through
+// works because Go IS willing to assign one interface value to another
+// when the source's method set is a superset of the destination's.
+type anthropicRunHandleAdapter struct {
+	run *engine.Run
+}
+
+func (h anthropicRunHandleAdapter) Stream() anthropic.Stream {
+	// *engine.Run.Stream() returns engine.Stream; anthropic.Stream's
+	// method set (Chunks() <-chan canonical.Chunk + Result()
+	// (*canonical.FinalResult, error)) is structurally identical, so
+	// assigning the concrete value to the anthropic.Stream interface
+	// variable works.
+	return h.run.Stream()
+}
+
+func (h anthropicRunHandleAdapter) SessionID() string {
+	return h.run.SessionID()
 }
 
 // keep errors import live for callers that want to inspect typed errors
