@@ -18,7 +18,6 @@ package anthropic
 import (
 	"context"
 	"log/slog"
-	"net/http"
 
 	"github.com/go-chi/chi/v5"
 
@@ -112,32 +111,6 @@ func New(cfg Config) *Adapter {
 // D-17 wiring lives in internal/server/server.go).
 func (a *Adapter) ProtectedRouter() chi.Router {
 	return a.protectedRouter
-}
-
-// handleMessages is the POST /messages handler. The implementation
-// lives in handlers.go (Task 3 of Plan 03.1-02). This declaration is
-// here only as a forward-reference for the chi router registration in
-// New — Go's method-set resolution finds the real method on *Adapter
-// regardless of which file it lives in. The stub below is REPLACED by
-// handlers.go in the same package; if handlers.go is absent (e.g.,
-// during Task 1 development), this stub returns a placeholder 501 so
-// the package still compiles.
-//
-// NOTE: this declaration is intentionally placed in adapter.go (not
-// handlers.go) so the Task 1 commit can stand alone — the package
-// compiles with just adapter.go + decode.go + errors.go +
-// testmain_test.go. handlers.go in Task 3 declares the real
-// handleMessages method with the full implementation; Go's
-// single-definition rule means BOTH cannot coexist, so the real
-// handlers.go will REMOVE this stub by replacing it.
-//
-// This is the only place in the package where a Task-1 stub exists.
-// All other Task-1 files are production-ready.
-func (a *Adapter) handleMessages(w http.ResponseWriter, _ *http.Request) {
-	// Placeholder — Task 3 (Plan 03.1-02) replaces this with the real
-	// handler. Task 1 tests assert only that the route is registered
-	// (not the response shape), so any non-404 status satisfies them.
-	writeError(w, http.StatusNotImplemented, errAPI, "handler not yet implemented (Plan 03.1-02 Task 3)")
 }
 
 // discardWriter implements io.Writer with a no-op Write so the
