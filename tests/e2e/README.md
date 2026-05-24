@@ -43,6 +43,17 @@ OTTO_E2E=1 make e2e    # now runs all 6 UAT steps
 | `TestE2E_SurfaceGating_OllamaOnly` | 6 | `ENABLED_SURFACES=ollama` → `/v1/messages` 404, `/api/chat` works |
 | `TestE2E_SurfaceGating_TypoFailFast` | 6 | `ENABLED_SURFACES=anthrpic` → process exits non-zero, stderr names `anthrpic` |
 | `TestE2E_SDK_RoundTrip` | 4 + 5 | real `@anthropic-ai/sdk` `messages.create()` + `messages.stream()`/`finalMessage()` parse our wire bytes with no Zod exception |
+| `TestE2E_Ollama/VersionAuthExempt` | Ollama contract | `GET /api/version` no auth → 200, has `version` + `commit` (AUTH-03 exemption; LangFlow version probe on the outer unauthenticated router) |
+| `TestE2E_Ollama/Unauthorized` | Ollama contract | `POST /api/chat` no auth → 401 (auth rejects before kiro) |
+| `TestE2E_Ollama/Tags` | Ollama contract | `GET /api/tags` (Bearer) → 200, non-empty `models[]` incl. `auto`; stable fields only (name, model, details.format/family) — LangFlow model list |
+| `TestE2E_Ollama/Chat_NonStreaming` | Ollama contract | `POST /api/chat` (Bearer, stream:false) → 200 `application/json`, single object: model=auto, message.role=assistant, content non-empty, done, done_reason∈{stop,length} (LangFlow chat path, real kiro) |
+| `TestE2E_Ollama/Chat_StreamDowngrade` | Ollama contract | `POST /api/chat` stream:true → 200 single JSON object (NOT NDJSON), done — guards the Phase-2 silent stream→non-stream downgrade |
+| `TestE2E_Ollama/Generate_NonStreaming` | Ollama contract | `POST /api/generate` (Bearer, stream:false) → 200 single object: `response` non-empty, done (LangFlow generate path, real kiro) |
+
+> **Phase 4 note:** Ollama NDJSON streaming is Phase 4. This suite currently
+> asserts the non-streaming contract plus the `stream:true` silent-downgrade
+> guard (`Chat_StreamDowngrade`), which must be updated to expect
+> `application/x-ndjson` multi-line frames when Phase 4 lands NDJSON streaming.
 
 Each gateway is booted on its own free loopback port; auth/streaming subtests
 share one boot for speed, surface-gating cases boot their own.
