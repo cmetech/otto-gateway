@@ -62,7 +62,9 @@ func Bearer(cfg Config) func(http.Handler) http.Handler {
 // extractToken implements the D-15 dual-header precedence contract:
 // try `Authorization: Bearer <token>` first, fall back to `x-api-key:
 // <token>` only when Authorization is absent or non-Bearer. Returns
-// the empty string when neither path yields a credential.
+// the empty string when neither path yields a credential. The scheme
+// token is matched case-insensitively per RFC 7235 §2.1 / RFC 6750
+// (so "Bearer", "bearer", "BEARER", "BeArEr" are all accepted).
 //
 // Precedence is deliberately Authorization-wins: when BOTH headers are
 // present the Bearer value is used unconditionally. This blocks a
@@ -70,13 +72,22 @@ func Bearer(cfg Config) func(http.Handler) http.Handler {
 // a stolen x-api-key — the bad Bearer is evaluated first and the
 // request is rejected. The fallback path is consulted ONLY when
 // Authorization adds no credential (absent or non-Bearer scheme).
+// Crucially, the case-insensitive scheme match ensures the precedence
+// holds for ALL RFC-valid spellings — a downgrade attacker cannot
+// bypass the guard by lowercasing the scheme.
 //
 // The package-private auth_internal_test.go pins this contract with
 // table-driven cases; TestBearer_DualHeader in auth_test.go validates
 // the same contract end-to-end through the middleware.
 func extractToken(r *http.Request) string {
 	const bearerPrefix = "Bearer "
-	if authHeader := r.Header.Get("Authorization"); strings.HasPrefix(authHeader, bearerPrefix) {
+	authHeader := r.Header.Get("Authorization")
+	// RFC 7235 §2.1 + RFC 6750: the auth-scheme token is case-insensitive.
+	// The len(authHeader) >= len(bearerPrefix) guard prevents an
+	// out-of-bounds slice when the header is shorter than the prefix
+	// (including the empty / absent case — r.Header.Get returns "").
+	if len(authHeader) >= len(bearerPrefix) &&
+		strings.EqualFold(authHeader[:len(bearerPrefix)], bearerPrefix) {
 		return authHeader[len(bearerPrefix):]
 	}
 	return r.Header.Get("x-api-key")

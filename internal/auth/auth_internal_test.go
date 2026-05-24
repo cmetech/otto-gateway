@@ -99,3 +99,35 @@ func TestExtractToken_NeitherHeader_Empty(t *testing.T) {
 		t.Errorf("no headers: got %q, want empty", got)
 	}
 }
+
+// --- CR-02 / Gap 2: lowercase Bearer scheme acceptance ------------------
+//
+// RFC 7235 §2.1 and RFC 6750 require the auth-scheme token to be matched
+// case-insensitively. The previous strings.HasPrefix exact-case match in
+// extractToken silently dropped `Authorization: bearer <token>` and fell
+// through to x-api-key — which (a) rejected valid lowercase-Bearer creds
+// when no x-api-key was supplied, and (b) BROKE the D-15 Authorization-
+// wins downgrade-attack guard for lowercase clients (bad lowercase Bearer
+// + stolen x-api-key would silently authenticate as the x-api-key value).
+//
+// These two tests pin the contract for the lowercase variant: the scheme
+// must be recognized AND the precedence semantics must hold.
+
+func TestExtractToken_LowercaseBearerSchemeAccepted(t *testing.T) {
+	t.Parallel()
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+	r.Header.Set("Authorization", "bearer my-token")
+	if got := extractToken(r); got != "my-token" {
+		t.Errorf("lowercase scheme: got %q, want %q (RFC 7235 §2.1 case-insensitive scheme match required)", got, "my-token")
+	}
+}
+
+func TestExtractToken_LowercaseBearer_DoesNotFallThroughToXAPIKey(t *testing.T) {
+	t.Parallel()
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+	r.Header.Set("Authorization", "bearer auth-token")
+	r.Header.Set("x-api-key", "key-token")
+	if got := extractToken(r); got != "auth-token" {
+		t.Errorf("D-15 precedence: lowercase Bearer must still win over x-api-key; got %q, want %q", got, "auth-token")
+	}
+}
