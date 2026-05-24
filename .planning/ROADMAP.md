@@ -28,7 +28,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 1.1: ACP Wire Alignment** *(INSERTED)* - Fix 10 Phase 1 wire-shape defects vs the working Node impl + live ACP spec; add real-kiro `session/prompt` round-trip integration test (completed 2026-05-23)
 - [x] **Phase 2: Ollama End-to-End** - First runnable slice — LangFlow `POST /api/chat` reaches real `kiro-cli` (completed 2026-05-24)
 - [ ] **Phase 3: OpenAI Surface** - Pi-SDK `POST /v1/chat/completions` shares the same canonical engine
-- [ ] **Phase 3.1: Anthropic Surface** *(INSERTED)* - loop24-client (GSD Pi) `POST /v1/messages` with Anthropic SSE shares the same canonical engine
+- [x] **Phase 3.1: Anthropic Surface** *(INSERTED)* - loop24-client (GSD Pi) `POST /v1/messages` with Anthropic SSE shares the same canonical engine (completed 2026-05-24)
 - [ ] **Phase 4: Streaming** - NDJSON (Ollama) and SSE (OpenAI + Anthropic) off one canonical chunk channel, with disconnect cancellation
 - [ ] **Phase 5: Pool + Stateful Sessions** - Warm `POOL_SIZE` pool plus `X-Session-Id` registry, both visible on `/health/agents`
 - [ ] **Phase 6: Tool-Call Path** - Canonical tool calls rendered per-surface, with `coerceToolCall` for plain-JSON-as-text
@@ -174,7 +174,7 @@ Plans:
   5. `ENABLED_SURFACES` env var is introduced in this phase with default `ollama,anthropic` enabling both surfaces. Setting `ENABLED_SURFACES=ollama` (the Phase 2 default) disables the Anthropic adapter at boot; Phase 3 will subsequently extend the default to `ollama,anthropic,openai`. `internal/adapter/anthropic` imports only `internal/canonical` + `internal/plugin`; the `.go-arch-lint.yml` boundary check passes.
   6. Header contract enforced: missing `anthropic-version` returns a canonical `invalid_request_error` rendered in Anthropic's `{"type":"error","error":{"type":"…","message":"…"}}` shape; the gateway accepts both `x-api-key` and `Authorization: Bearer …` auth modes (loop24-client uses both depending on provider).
 
-**Plans:** 3/4 plans executed
+**Plans:** 4/4 plans complete
 
 Plans:
 **Wave 1**
@@ -191,7 +191,7 @@ Plans:
 
 **Wave 4** *(blocked on Wave 3 — Phase 3.1 acceptance)*
 
-- [ ] 03.1-04-PLAN.md — Integration: cmd/main.go wire anthropic adapter with ENABLED_SURFACES gating, integration_test.go real-kiro round-trip (stream + non-stream), HUMAN-UAT checkpoint against loop24-client `messages.stream()` and `messages.create({stream:false})`. Closes ANTH-04 + SURF-08 acceptance bars
+- [x] 03.1-04-PLAN.md — Integration: cmd/main.go wire anthropic adapter with ENABLED_SURFACES gating, integration_test.go real-kiro round-trip (stream + non-stream), HUMAN-UAT checkpoint against loop24-client `messages.stream()` and `messages.create({stream:false})`. Closes ANTH-04 + SURF-08 acceptance bars
 
 ### Phase 4: Streaming
 
