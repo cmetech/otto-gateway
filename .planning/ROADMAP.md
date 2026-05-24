@@ -122,14 +122,14 @@ Plans:
   4. Bearer-token auth and IP-allowlist middleware reject unauthorized requests while exempting `/`, `/api/version`, and `/health`.
   5. Per-request `cwd` is derived from longest common parent of `resource_link` block URIs, with `KIRO_CWD` fallback and `X-Working-Dir` header override, verified by handler-level tests.
 
-**Plans:** 6 plans
+**Plans:** 3/6 plans executed
 
 Plans:
 **Wave 1** *(no shared files — run in parallel)*
 
-- [ ] 02-01-PLAN.md — Canonical chat types (D-08/D-09/D-10/D-11): ChatRequest, ChatResponse, Message, ContentPart, ToolCall, ToolSpec, Usage, MessageRole, ContentKind + Wave 0 test scaffold
-- [ ] 02-02-PLAN.md — internal/auth package: Bearer (constant-time compare) + IPAllowlist (netip + XFF + ::ffff: strip) middlewares + tests
-- [ ] 02-03-PLAN.md — config.go extensions: AuthToken, AllowedIPs, PoolSize, OllamaPathPrefix, OpenAIPathPrefix + getEnvStrSliceComma + getEnvInt + parseCIDRs
+- [x] 02-01-PLAN.md — Canonical chat types (D-08/D-09/D-10/D-11): ChatRequest, ChatResponse, Message, ContentPart, ToolCall, ToolSpec, Usage, MessageRole, ContentKind + Wave 0 test scaffold
+- [x] 02-02-PLAN.md — internal/auth package: Bearer (constant-time compare) + IPAllowlist (netip + XFF + ::ffff: strip) middlewares + tests
+- [x] 02-03-PLAN.md — config.go extensions: AuthToken, AllowedIPs, PoolSize, OllamaPathPrefix, OpenAIPathPrefix + getEnvStrSliceComma + getEnvInt + parseCIDRs
 
 **Wave 2** *(depends on Wave 1)*
 
@@ -283,7 +283,7 @@ Phases execute in numeric order: 1 → 1.1 → 2 → 3 → 3.1 → 4 → 5 → 6
 |-------|----------------|--------|-----------|
 | 1. Foundations | 5/5 | Complete   | 2026-05-23 |
 | 1.1. ACP Wire Alignment (INSERTED) | 5/5 | Complete   | 2026-05-23 |
-| 2. Ollama End-to-End | 0/TBD | Not started | - |
+| 2. Ollama End-to-End | 3/6 | In Progress|  |
 | 3. OpenAI Surface | 0/TBD | Not started | - |
 | 4. Streaming | 0/TBD | Not started | - |
 | 5. Pool + Stateful Sessions | 0/TBD | Not started | - |
