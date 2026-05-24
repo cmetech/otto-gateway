@@ -48,8 +48,6 @@ type Config struct {
 // the Node reference for both auth and IP-allowlist rejections. It sets the
 // Content-Type header BEFORE WriteHeader (the order matters — once the
 // status line is flushed, header mutations are silently dropped).
-//
-//nolint:unused // consumed by Bearer + IPAllowlist middlewares added in Task 2 of this plan.
 func writeOllamaError(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
