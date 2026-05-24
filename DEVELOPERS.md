@@ -1,7 +1,7 @@
 # Developer Setup
 
 This document is the single source of truth for getting a working
-`loop24-gateway` dev environment on macOS or Windows. It covers a
+`otto-gateway` dev environment on macOS or Windows. It covers a
 manual step-by-step path and an automated scripted path. Success
 looks like `make build && make test && make lint` all exiting 0 on a
 fresh clone.

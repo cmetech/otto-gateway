@@ -1,6 +1,6 @@
 # docs/
 
-Design, architecture, and reference material for Loop24 Gateway.
+Design, architecture, and reference material for OTTO Gateway.
 
 These documents are the input context for `/gsd:new-project` and the
 phase-planning work that follows. **Read `briefs/go_port_brief.md`
@@ -13,8 +13,8 @@ first** — it is the spec of record.
 - **`architecture-overview.png`** — polished infographic showing the
   request flow: clients → API surfaces → guardrails → engine →
   kiro-cli ACP workers. Generated from
-  `loop24_architecture_infographic_prompt.md`.
-- **`loop24_architecture_infographic_prompt.md`** — the text-to-image
+  `otto_architecture_infographic_prompt.md`.
+- **`otto_architecture_infographic_prompt.md`** — the text-to-image
   prompt used to generate the diagram above. Reproducible; tweak and
   regenerate when the architecture evolves.
 

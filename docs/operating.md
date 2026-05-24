@@ -1,6 +1,6 @@
-# Operating loop24-gateway
+# Operating otto-gateway
 
-This document covers the developer-laptop lifecycle for loop24-gateway:
+This document covers the developer-laptop lifecycle for otto-gateway:
 starting and stopping the gateway in the background, where PID and log
 files live, env-var overrides for the wrapper scripts, and how the
 `status` subcommand determines whether the gateway is healthy.
@@ -8,17 +8,17 @@ files live, env-var overrides for the wrapper scripts, and how the
 The Go binary is a single foreground process. Two wrapper scripts own
 process supervision on developer laptops — the binary itself has no
 `start`/`stop` subcommands. See
-[`scripts/loop24`](../scripts/loop24) (POSIX) and
-[`scripts/loop24.ps1`](../scripts/loop24.ps1) (PowerShell).
+[`scripts/otto`](../scripts/otto) (POSIX) and
+[`scripts/otto.ps1`](../scripts/otto.ps1) (PowerShell).
 
 ## Quick Start (macOS / Linux)
 
 ```bash
-make build               # compile bin/loop24-gateway
+make build               # compile bin/otto-gateway
 
-./scripts/loop24 start   # launch in background
-./scripts/loop24 status  # check PID + /health
-./scripts/loop24 stop    # send SIGTERM, wait for exit
+./scripts/otto start   # launch in background
+./scripts/otto status  # check PID + /health
+./scripts/otto stop    # send SIGTERM, wait for exit
 ```
 
 Makefile shortcuts delegate to the same script:
@@ -34,13 +34,13 @@ make stop
 ```powershell
 make build
 
-.\scripts\loop24.ps1 start
-.\scripts\loop24.ps1 status
-.\scripts\loop24.ps1 stop
+.\scripts\otto.ps1 start
+.\scripts\otto.ps1 status
+.\scripts\otto.ps1 stop
 ```
 
 If PowerShell blocks execution due to execution policy, run via:
-`powershell -ExecutionPolicy Bypass -File .\scripts\loop24.ps1 start`
+`powershell -ExecutionPolicy Bypass -File .\scripts\otto.ps1 start`
 
 ## Subcommands
 
@@ -57,13 +57,13 @@ If PowerShell blocks execution due to execution policy, run via:
 
 | File | macOS / Linux default | Windows default |
 |------|-----------------------|-----------------|
-| Binary | `./bin/loop24-gateway` | `.\bin\loop24-gateway.exe` |
-| PID file | `/tmp/loop24-gateway.pid` | `%TEMP%\loop24-gateway.pid` |
-| Log file (stdout) | `/tmp/loop24-gateway.log` | `%TEMP%\loop24-gateway.log` |
-| Log file (stderr) | merged into stdout | `%TEMP%\loop24-gateway-err.log` |
+| Binary | `./bin/otto-gateway` | `.\bin\otto-gateway.exe` |
+| PID file | `/tmp/otto-gateway.pid` | `%TEMP%\otto-gateway.pid` |
+| Log file (stdout) | `/tmp/otto-gateway.log` | `%TEMP%\otto-gateway.log` |
+| Log file (stderr) | merged into stdout | `%TEMP%\otto-gateway-err.log` |
 
 On macOS/Linux, stdout and stderr are both redirected to the single log
-file via `nohup ... >> $LOOP24_LOG 2>&1`. On Windows, `Start-Process`
+file via `nohup ... >> $OTTO_LOG 2>&1`. On Windows, `Start-Process`
 cannot redirect both streams to the same file, so stdout and stderr go
 to separate files. The `logs` subcommand tails both files simultaneously
 using background jobs.
@@ -75,18 +75,18 @@ before calling the script.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LOOP24_BIN` | `./bin/loop24-gateway` (macOS/Linux) / `.\bin\loop24-gateway.exe` (Windows) | Path to the gateway binary |
-| `LOOP24_PID` | `/tmp/loop24-gateway.pid` (macOS/Linux) / `%TEMP%\loop24-gateway.pid` (Windows) | PID file location |
-| `LOOP24_LOG` | `/tmp/loop24-gateway.log` (macOS/Linux) / `%TEMP%\loop24-gateway.log` (Windows) | Log file location (stdout) |
-| `LOOP24_LOGERR` | `%TEMP%\loop24-gateway-err.log` | Stderr log file location — Windows only; not applicable on macOS/Linux where stderr is merged into stdout |
-| `LOOP24_ADDR` | `http://localhost:11434` | Gateway address used by the `status` subcommand for the `/health` probe |
+| `OTTO_BIN` | `./bin/otto-gateway` (macOS/Linux) / `.\bin\otto-gateway.exe` (Windows) | Path to the gateway binary |
+| `OTTO_PID` | `/tmp/otto-gateway.pid` (macOS/Linux) / `%TEMP%\otto-gateway.pid` (Windows) | PID file location |
+| `OTTO_LOG` | `/tmp/otto-gateway.log` (macOS/Linux) / `%TEMP%\otto-gateway.log` (Windows) | Log file location (stdout) |
+| `OTTO_LOGERR` | `%TEMP%\otto-gateway-err.log` | Stderr log file location — Windows only; not applicable on macOS/Linux where stderr is merged into stdout |
+| `OTTO_ADDR` | `http://localhost:11434` | Gateway address used by the `status` subcommand for the `/health` probe |
 
 Example — redirect logs to a project-specific directory:
 
 ```bash
-export LOOP24_LOG=~/Projects/loop24/gateway.log
-export LOOP24_PID=~/Projects/loop24/gateway.pid
-./scripts/loop24 start
+export OTTO_LOG=~/Projects/otto/gateway.log
+export OTTO_PID=~/Projects/otto/gateway.pid
+./scripts/otto start
 ```
 
 ## Gateway Environment Variables
@@ -108,14 +108,14 @@ Example — run with a custom binary path and debug logging:
 ```bash
 export KIRO_CMD=~/.local/bin/kiro-cli
 export DEBUG=true
-./scripts/loop24 start
+./scripts/otto start
 ```
 
 ## How `status` Works
 
 The `status` subcommand combines two checks:
 
-1. **PID file check.** If no PID file exists at `$LOOP24_PID`, the
+1. **PID file check.** If no PID file exists at `$OTTO_PID`, the
    gateway is stopped. If the file exists but the process is gone
    (stale PID), `status` reports `stopped (stale PID)` and exits
    non-zero.
@@ -125,7 +125,7 @@ The `status` subcommand combines two checks:
    `Get-Process -Id $pid` is used.
 
 3. **Health probe.** If the process is alive, `status` sends
-   `GET $LOOP24_ADDR/health` and prints the JSON response. The
+   `GET $OTTO_ADDR/health` and prints the JSON response. The
    response includes gateway version, uptime seconds, and pool/session/
    embedding stats.
 
@@ -142,16 +142,16 @@ request-scoped keys (`request_id`, `method`, `path`, `status`,
 Viewing logs:
 
 ```bash
-./scripts/loop24 logs        # last 50 lines (macOS/Linux)
-./scripts/loop24 logs -f     # follow (macOS/Linux)
-.\scripts\loop24.ps1 logs    # tail both stdout + stderr (Windows)
+./scripts/otto logs        # last 50 lines (macOS/Linux)
+./scripts/otto logs -f     # follow (macOS/Linux)
+.\scripts\otto.ps1 logs    # tail both stdout + stderr (Windows)
 ```
 
 On macOS/Linux, stdout and stderr are merged into a single file, so
 `logs` shows all output. On Windows, `logs` tails both
-`%TEMP%\loop24-gateway.log` and `%TEMP%\loop24-gateway-err.log`
+`%TEMP%\otto-gateway.log` and `%TEMP%\otto-gateway-err.log`
 simultaneously.
 
 > **Note:** Log files are not rotated. For extended development
-> sessions, truncate manually: `> /tmp/loop24-gateway.log` (macOS/Linux)
-> or `Clear-Content $env:TEMP\loop24-gateway.log` (Windows).
+> sessions, truncate manually: `> /tmp/otto-gateway.log` (macOS/Linux)
+> or `Clear-Content $env:TEMP\otto-gateway.log` (Windows).

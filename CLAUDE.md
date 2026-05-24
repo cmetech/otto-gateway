@@ -1,9 +1,9 @@
 <!-- GSD:project-start source:PROJECT.md -->
 ## Project
 
-**Loop24 Gateway**
+**OTTO Gateway**
 
-Loop24 Gateway is a Go-based LLM gateway that exposes OpenAI-,
+OTTO Gateway is a Go-based LLM gateway that exposes OpenAI-,
 Ollama-, and Anthropic-compatible HTTP APIs on a single port and
 routes every inbound request through a configurable guardrails
 chain to a pool of `kiro-cli` ACP worker subprocesses. It replaces

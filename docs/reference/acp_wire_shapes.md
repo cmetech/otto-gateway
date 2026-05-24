@@ -1,7 +1,7 @@
 # ACP Wire Shapes — Ground Truth
 
 **Status:** Authoritative reference for ACP JSON-RPC wire shapes that
-loop24-gateway must produce/consume when talking to `kiro-cli acp`.
+otto-gateway must produce/consume when talking to `kiro-cli acp`.
 
 **Sources (in precedence order):**
 
@@ -36,7 +36,7 @@ follow for any ACP wire-shape work.
   "params": {
     "protocolVersion": 1,
     "clientInfo": {
-      "name": "loop24-gateway",
+      "name": "otto-gateway",
       "version": "<embedded -ldflags version>"
     },
     "clientCapabilities": {
