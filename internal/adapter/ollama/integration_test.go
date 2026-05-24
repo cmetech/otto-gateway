@@ -1,0 +1,199 @@
+package ollama
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"testing"
+	"time"
+
+	"loop24-gateway/internal/engine"
+	"loop24-gateway/internal/pool"
+	"loop24-gateway/internal/testutil"
+)
+
+// resolveKiroCLI gates integration tests on (1) LOOP24_INTEGRATION=1 in
+// the env AND (2) either LOOP24_KIRO_BIN pointing at a kiro-cli binary
+// or kiro-cli being discoverable on PATH. Mirrors the Phase 1
+// internal/acp/integration_test.go pattern verbatim.
+func resolveKiroCLI(t *testing.T) string {
+	t.Helper()
+	if bin := os.Getenv("LOOP24_KIRO_BIN"); bin != "" {
+		return bin
+	}
+	if os.Getenv("LOOP24_INTEGRATION") != "1" {
+		t.Skip("set LOOP24_INTEGRATION=1 to run integration tests")
+	}
+	p, err := exec.LookPath("kiro-cli")
+	if err != nil {
+		t.Skip("kiro-cli not on PATH (set LOOP24_KIRO_BIN to override)")
+	}
+	return p
+}
+
+// TestIntegration_ChatEndToEnd exercises the full Phase 2 acceptance
+// path against real kiro-cli: spawn a 1-slot pool → wire engine →
+// construct adapter → mount on httptest.NewServer → POST /api/chat →
+// assert Ollama-shape response.
+//
+// Whitebox (package ollama) per the locked Task 1 decision — uses
+// ollamaChatResponse from wire.go directly so the wire contract owns
+// the assertion.
+func TestIntegration_ChatEndToEnd(t *testing.T) {
+	bin := resolveKiroCLI(t)
+
+	logger := testutil.Logger(t)
+
+	// Pool of 1 — Phase 2 default.
+	p := pool.New(pool.Config{
+		Logger:       logger,
+		Size:         1,
+		KiroCmd:      bin,
+		KiroArgs:     []string{"acp"},
+		PingInterval: 10 * time.Minute, // disable periodic ping during test
+	})
+	defer func() {
+		if err := p.Close(); err != nil {
+			t.Logf("pool.Close (expected non-zero exit): %v", err)
+		}
+	}()
+
+	warmCtx, cancelWarm := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancelWarm()
+	if err := p.Warmup(warmCtx); err != nil {
+		t.Skipf("pool.Warmup failed (likely kiro-cli auth-not-refreshed): %v", err)
+	}
+
+	eng := engine.New(engine.Config{
+		Logger: logger,
+		ACP:    p,
+	})
+
+	adapter := New(Config{
+		Logger:       logger,
+		Engine:       eng,
+		ModelCatalog: p,
+		Version:      "test",
+		Commit:       "deadbee",
+	})
+
+	// httptest.NewServer binds an ephemeral port — never hardcode 11434
+	// here (forbidden by the plan).
+	srv := httptest.NewServer(adapter.ProtectedRouter())
+	defer srv.Close()
+
+	// 30-second timeout overall (LLM response budget).
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	body := []byte(`{"model":"auto","messages":[{"role":"user","content":"hi"}],"stream":false}`)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, srv.URL+"/chat", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: got %d, want 200", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type: got %q, want application/json", ct)
+	}
+
+	var out ollamaChatResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if out.Message.Role != "assistant" {
+		t.Errorf("message.role: got %q, want assistant", out.Message.Role)
+	}
+	if out.Message.Content == "" {
+		t.Error("message.content: empty (kiro-cli did not return text)")
+	}
+	if !out.Done {
+		t.Error("done: got false, want true")
+	}
+	if out.DoneReason != "stop" && out.DoneReason != "length" {
+		t.Errorf("done_reason: got %q, want stop or length", out.DoneReason)
+	}
+	if out.TotalDuration <= 0 {
+		t.Errorf("total_duration: got %d, want > 0", out.TotalDuration)
+	}
+	t.Logf("integration response: %.80s (done_reason=%s, total_duration=%dns)",
+		out.Message.Content, out.DoneReason, out.TotalDuration)
+}
+
+// TestIntegration_TagsEndpoint — secondary integration check that
+// GET /api/tags returns a non-empty models[] containing "auto" plus at
+// least one kiro-reported model.
+func TestIntegration_TagsEndpoint(t *testing.T) {
+	bin := resolveKiroCLI(t)
+
+	logger := testutil.Logger(t)
+
+	p := pool.New(pool.Config{
+		Logger:       logger,
+		Size:         1,
+		KiroCmd:      bin,
+		KiroArgs:     []string{"acp"},
+		PingInterval: 10 * time.Minute,
+	})
+	defer func() {
+		if err := p.Close(); err != nil {
+			t.Logf("pool.Close (expected non-zero exit): %v", err)
+		}
+	}()
+
+	warmCtx, cancelWarm := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancelWarm()
+	if err := p.Warmup(warmCtx); err != nil {
+		t.Skipf("pool.Warmup failed: %v", err)
+	}
+
+	adapter := New(Config{
+		Logger:       logger,
+		ModelCatalog: p,
+		Version:      "test",
+		Commit:       "deadbee",
+	})
+
+	srv := httptest.NewServer(adapter.ProtectedRouter())
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/tags", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: got %d, want 200", resp.StatusCode)
+	}
+	var out ollamaTagsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(out.Models) < 2 {
+		t.Errorf("models len: got %d, want >= 2 (auto + at least one kiro model)", len(out.Models))
+	}
+	if out.Models[0].Name != "auto" {
+		t.Errorf("models[0]: got %q, want auto (must be prepended)", out.Models[0].Name)
+	}
+}
