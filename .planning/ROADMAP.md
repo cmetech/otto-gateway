@@ -174,7 +174,7 @@ Plans:
   5. `ENABLED_SURFACES` env var is introduced in this phase with default `ollama,anthropic` enabling both surfaces. Setting `ENABLED_SURFACES=ollama` (the Phase 2 default) disables the Anthropic adapter at boot; Phase 3 will subsequently extend the default to `ollama,anthropic,openai`. `internal/adapter/anthropic` imports only `internal/canonical` + `internal/plugin`; the `.go-arch-lint.yml` boundary check passes.
   6. Header contract enforced: missing `anthropic-version` returns a canonical `invalid_request_error` rendered in Anthropic's `{"type":"error","error":{"type":"…","message":"…"}}` shape; the gateway accepts both `x-api-key` and `Authorization: Bearer …` auth modes (loop24-client uses both depending on provider).
 
-**Plans:** 2/4 plans executed
+**Plans:** 3/4 plans executed
 
 Plans:
 **Wave 1**
@@ -187,7 +187,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2)*
 
-- [ ] 03.1-03-PLAN.md — SSE streaming vertical slice: sse.go state machine + select-loop + ping ticker + handler streaming branch + golden fixtures (sse_text_only, sse_text_then_thinking, sse_message_start). Closes ANTH-02; completes ANTH-07 outbound thinking via thinking_delta
+- [x] 03.1-03-PLAN.md — SSE streaming vertical slice: sse.go state machine + select-loop + ping ticker + handler streaming branch + golden fixtures (sse_text_only, sse_text_then_thinking, sse_message_start). Closes ANTH-02; completes ANTH-07 outbound thinking via thinking_delta
 
 **Wave 4** *(blocked on Wave 3 — Phase 3.1 acceptance)*
 
