@@ -5,7 +5,7 @@ milestone_name: milestone
 status: ready_to_plan
 stopped_at: Phase 03.1 complete (6/6) — ready to discuss Phase 4
 last_updated: 2026-05-24T16:40:56.227Z
-last_activity: 2026-05-24 -- Phase 03.1 execution started
+last_activity: 2026-05-24 -- Completed quick task 260524-ldx: CLI flag support
 progress:
   total_phases: 11
   completed_phases: 3
@@ -89,6 +89,7 @@ None yet.
 | # | Description | Date | Commit | Directory |
 |---|-------------|------|--------|-----------|
 | 260523-gna | DEVELOPERS.md + idempotent macOS/Windows setup scripts | 2026-05-23 | 84562ce | [260523-gna-create-developers-md-with-step-by-step-d](./quick/260523-gna-create-developers-md-with-step-by-step-d/) |
+| 260524-ldx | CLI flag support (flag-wins-over-env) for gateway binary | 2026-05-24 | f325d04 | [260524-ldx-cli-flags](./quick/260524-ldx-cli-flags/) |
 
 ## Deferred Items
 
