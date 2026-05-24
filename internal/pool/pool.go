@@ -7,6 +7,7 @@ import (
 
 	"loop24-gateway/internal/acp"
 	"loop24-gateway/internal/canonical"
+	"loop24-gateway/internal/engine"
 )
 
 // Slot is one warm kiro-cli connection owned by the pool. Client is
@@ -236,4 +237,234 @@ func (p *Pool) closeAll() error {
 	return firstErr
 }
 
-// var _ engine.ACPClient = (*Pool)(nil)  // enabled after Task 2 implements the ACPClient surface
+// ----------------------------------------------------------------------------
+// engine.ACPClient surface (Task 2)
+// ----------------------------------------------------------------------------
+//
+// NewSession / SetModel / Prompt / Cancel route through an acquired slot
+// per D-06. The same slot is held for a full Run lifecycle via the
+// sessionSlots map; the slot is released back to p.slots on EVERY
+// terminal path (Codex M-3):
+//
+//  1. Result() drained (happy path) — releases via poolStreamWrapper
+//  2. ctx cancelled before Result drains — releases via the ctx-watcher
+//     goroutine spawned inside Prompt
+//  3. engine-initiated Cancel(sid) — releases via Pool.Cancel
+//
+// The wrapper's sync.Once-guarded releaseOnce plus the map-delete-first
+// pattern (lookup, delete, then send-to-channel-only-if-found) together
+// guarantee exactly-one-release across all three races.
+
+// NewSession acquires a slot and creates a kiro-cli session on it. The
+// caller's ctx is observed on the acquire path so an aborted request
+// does not park forever on a fully-busy pool. On NewSession error the
+// slot is returned to p.slots before the error is surfaced (Codex M-3
+// error-path leak prevention).
+func (p *Pool) NewSession(ctx context.Context, cwd string) (string, error) {
+	var slot *Slot
+	select {
+	case slot = <-p.slots:
+		// acquired
+	case <-ctx.Done():
+		return "", fmt.Errorf("pool: acquire cancelled: %w", ctx.Err())
+	}
+
+	sid, err := slot.Client.NewSession(ctx, cwd)
+	if err != nil {
+		// Release the slot synchronously — no sessionSlots entry was
+		// recorded yet so we can put it back directly.
+		p.slots <- slot
+		return "", fmt.Errorf("pool: new-session: %w", err)
+	}
+
+	p.mu.Lock()
+	p.sessionSlots[sid] = slot
+	p.mu.Unlock()
+	return sid, nil
+}
+
+// SetModel looks up the slot for sid and forwards to slot.Client.SetModel.
+// On unknown session it returns a typed error. p.mu is released BEFORE
+// the slot.Client call so a slow SetModel never blocks other pool ops.
+func (p *Pool) SetModel(ctx context.Context, sid, modelID string) error {
+	p.mu.Lock()
+	slot, ok := p.sessionSlots[sid]
+	p.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("pool: unknown session %q", sid)
+	}
+	if err := slot.Client.SetModel(ctx, sid, modelID); err != nil {
+		return fmt.Errorf("pool: set-model: %w", err)
+	}
+	return nil
+}
+
+// Prompt looks up the slot for sid, forwards to slot.Client.Prompt, and
+// wraps the returned *acp.Stream in a poolStreamWrapper that releases
+// the slot on ANY of three terminal paths (Codex M-3 — Result drained,
+// ctx cancelled via the spawned watch goroutine, or engine.Cancel
+// called explicitly).
+//
+// On slot.Client.Prompt error the slot is released synchronously
+// (Codex M-3 error-path leak prevention).
+func (p *Pool) Prompt(ctx context.Context, sid string, blocks []canonical.Block) (engine.Stream, error) {
+	p.mu.Lock()
+	slot, ok := p.sessionSlots[sid]
+	p.mu.Unlock()
+	if !ok {
+		return nil, fmt.Errorf("pool: unknown session %q", sid)
+	}
+
+	raw, err := slot.Client.Prompt(ctx, sid, blocks)
+	if err != nil {
+		// Codex M-3: release the slot on Prompt error so a size-1 pool
+		// is not leaked by a kiro-cli protocol failure.
+		p.releaseSlotForSession(sid)
+		return nil, fmt.Errorf("pool: prompt: %w", err)
+	}
+
+	// release closure — used by all three terminal paths. The
+	// map-delete-first pattern means whichever terminal path fires
+	// SECOND finds the sessionSlots entry already gone and skips the
+	// channel send, so the slot returns to p.slots exactly once.
+	release := func() {
+		p.mu.Lock()
+		s, stillOwned := p.sessionSlots[sid]
+		if stillOwned {
+			delete(p.sessionSlots, sid)
+		}
+		p.mu.Unlock()
+		if !stillOwned {
+			// Another terminal path (Cancel) won the race and already
+			// deleted the entry — that path will (or already did) send
+			// to p.slots. Skip the send to avoid double-release.
+			return
+		}
+		p.slots <- s
+	}
+
+	// ctx-watcher goroutine — Codex M-3. If ctx cancels BEFORE Result()
+	// is called, this goroutine releases the slot. If Result() runs
+	// first, releaseOnce closes doneCh which cleanly exits this
+	// goroutine. goleak (testmain) catches any leaked watchers.
+	watchCtx, cancelWatch := context.WithCancel(ctx)
+	w := &poolStreamWrapper{
+		underlying:  raw,
+		release:     release,
+		doneCh:      make(chan struct{}),
+		cancelWatch: cancelWatch,
+	}
+	go func() {
+		select {
+		case <-watchCtx.Done():
+			// ctx cancelled (or Result-driven releaseOnce called
+			// cancelWatch — that path's doneCh-close branch wins
+			// the race, but both branches are safe).
+			w.releaseOnce()
+		case <-w.doneCh:
+			// Result() / Release() already fired — exit cleanly.
+		}
+	}()
+	return w, nil
+}
+
+// Cancel forwards to slot.Client.Cancel AND releases the slot back to
+// the pool (Codex M-3 fix — the previous design only forwarded the
+// cancel, leaking the slot on a size-1 pool whenever an engine-initiated
+// cancel did NOT drain the stream).
+//
+// Missing session is a silent no-op — matches the "best-effort cancel"
+// semantics of acp.Client.Cancel (which sends a notification with no
+// response expected).
+func (p *Pool) Cancel(sid string) {
+	p.mu.Lock()
+	slot, ok := p.sessionSlots[sid]
+	p.mu.Unlock()
+	if !ok {
+		return
+	}
+	slot.Client.Cancel(sid)
+	// Codex M-3: also release the slot. The wrapper's sync.Once
+	// coordinates so a subsequent Result() / ctx-cancel does not
+	// double-release — see release closure in Prompt for the
+	// map-delete-first race resolution.
+	p.releaseSlotForSession(sid)
+}
+
+// releaseSlotForSession is the shared release helper used by the
+// Prompt-error path and by Cancel. It performs the lookup-delete-then-
+// send pattern under mu so it interleaves safely with the wrapper's
+// release closure.
+func (p *Pool) releaseSlotForSession(sid string) {
+	p.mu.Lock()
+	slot, ok := p.sessionSlots[sid]
+	if ok {
+		delete(p.sessionSlots, sid)
+	}
+	p.mu.Unlock()
+	if ok {
+		p.slots <- slot
+	}
+}
+
+// poolStreamWrapper adapts *acp.Stream (Chunks is a FIELD; Result
+// returns *acp.FinalResult) to engine.Stream (Chunks is a METHOD;
+// Result returns *canonical.FinalResult) AND owns the slot-release
+// lifecycle (Codex M-3 — release happens exactly once on Result drained,
+// ctx cancelled, or Release called from Pool.Cancel).
+type poolStreamWrapper struct {
+	underlying  *acp.Stream
+	release     func()        // closure: re-add slot + delete sessionSlots[sid]
+	released    sync.Once     // ensures release runs exactly once
+	doneCh      chan struct{} // closed by releaseOnce so ctx-watcher exits
+	cancelWatch context.CancelFunc
+}
+
+// Chunks returns the underlying *acp.Stream.Chunks field via a
+// method-call shim so engine.Stream is satisfied. Pointer-equality of
+// the channel is preserved (no copy / no buffering) so the readLoop's
+// pushes flow directly through.
+func (w *poolStreamWrapper) Chunks() <-chan canonical.Chunk { return w.underlying.Chunks }
+
+// Result delegates to *acp.Stream.Result and translates the returned
+// *acp.FinalResult into a *canonical.FinalResult. After Result returns
+// (success or error), releaseOnce fires so the slot returns to the
+// pool's free queue.
+func (w *poolStreamWrapper) Result() (*canonical.FinalResult, error) {
+	fr, err := w.underlying.Result()
+	w.releaseOnce()
+	if fr == nil {
+		return nil, err //nolint:wrapcheck // pure delegation
+	}
+	return &canonical.FinalResult{
+		SessionID:  fr.SessionID,
+		ChunkCount: fr.ChunkCount,
+		StopReason: fr.StopReason,
+	}, err //nolint:wrapcheck // pure delegation
+}
+
+// Release is the package-private (per-test, not part of engine.Stream)
+// hook that Pool.Cancel uses to force early release without waiting on
+// Result. Codex M-3.
+func (w *poolStreamWrapper) Release() { w.releaseOnce() }
+
+// releaseOnce coordinates the three terminal paths via sync.Once. It
+// cancels the ctx-watcher (so the watcher goroutine exits via its
+// ctx.Done() branch), closes doneCh (the watcher's alternate exit
+// branch — exactly one of the two branches will win), then invokes
+// the release closure exactly once.
+func (w *poolStreamWrapper) releaseOnce() {
+	w.released.Do(func() {
+		if w.cancelWatch != nil {
+			w.cancelWatch()
+		}
+		close(w.doneCh)
+		w.release()
+	})
+}
+
+// Production-path compile-time interface satisfaction check. Build
+// failure here means Pool no longer implements engine.ACPClient —
+// surface the missing method to the executor.
+var _ engine.ACPClient = (*Pool)(nil)
+var _ engine.Stream = (*poolStreamWrapper)(nil)
