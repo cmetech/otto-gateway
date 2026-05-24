@@ -32,7 +32,9 @@ func (e *HelpRequested) Unwrap() error { return flag.ErrHelp }
 // Config holds all gateway configuration loaded from environment variables.
 // Phase 1 reads a subset; later phases add fields without changing Load()'s signature.
 type Config struct {
-	// HTTPAddr is the address the HTTP server listens on (default ":11434").
+	// HTTPAddr is the address the HTTP server listens on (default
+	// "127.0.0.1:11434" — loopback-only, secure-by-default for laptop
+	// deployments; set HTTP_ADDR=:11434 to bind all interfaces).
 	HTTPAddr string
 	// KiroCmd is the kiro-cli binary name or path (default "kiro-cli").
 	KiroCmd string
@@ -97,7 +99,7 @@ func (c Config) LogLevel() slog.Level {
 func Load() (Config, error) {
 	var errs []error
 
-	httpAddr := getEnvStr("HTTP_ADDR", ":11434")
+	httpAddr := getEnvStr("HTTP_ADDR", "127.0.0.1:11434")
 	kiroCmd := getEnvStr("KIRO_CMD", "kiro-cli")
 	kiroArgs := getEnvStrSlice("KIRO_ARGS", []string{"acp"})
 	kiroCWD := getEnvStr("KIRO_CWD", "")
