@@ -1,25 +1,25 @@
 #Requires -Version 5.1
-# scripts/loop24.ps1 - PowerShell lifecycle manager for loop24-gateway on Windows.
+# scripts/otto.ps1 - PowerShell lifecycle manager for otto-gateway on Windows.
 # Subcommands: start | stop | status | restart | logs | run
-# Env overrides: $env:LOOP24_BIN, $env:LOOP24_PID, $env:LOOP24_LOG, $env:LOOP24_ADDR
+# Env overrides: $env:OTTO_BIN, $env:OTTO_PID, $env:OTTO_LOG, $env:OTTO_ADDR
 
 param([string]$Command = "help")
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$BinPath    = if ($env:LOOP24_BIN)  { $env:LOOP24_BIN }  else { ".\bin\loop24-gateway.exe" }
-$PidFile    = if ($env:LOOP24_PID)  { $env:LOOP24_PID }  else { "$env:TEMP\loop24-gateway.pid" }
-$LogFile    = if ($env:LOOP24_LOG)  { $env:LOOP24_LOG }  else { "$env:TEMP\loop24-gateway.log" }
+$BinPath    = if ($env:OTTO_BIN)  { $env:OTTO_BIN }  else { ".\bin\otto-gateway.exe" }
+$PidFile    = if ($env:OTTO_PID)  { $env:OTTO_PID }  else { "$env:TEMP\otto-gateway.pid" }
+$LogFile    = if ($env:OTTO_LOG)  { $env:OTTO_LOG }  else { "$env:TEMP\otto-gateway.log" }
 # stdout and stderr MUST be separate files: Start-Process cannot redirect both to the same file.
-$LogErrFile = if ($env:LOOP24_LOGERR) { $env:LOOP24_LOGERR } else { "$env:TEMP\loop24-gateway-err.log" }
-$Addr       = if ($env:LOOP24_ADDR) { $env:LOOP24_ADDR } else { "http://localhost:11435" }
+$LogErrFile = if ($env:OTTO_LOGERR) { $env:OTTO_LOGERR } else { "$env:TEMP\otto-gateway-err.log" }
+$Addr       = if ($env:OTTO_ADDR) { $env:OTTO_ADDR } else { "http://localhost:11435" }
 
 function Start-Gateway {
     if (Test-Path $PidFile) {
         $existingPid = [int](Get-Content $PidFile -Raw)
         if (Get-Process -Id $existingPid -ErrorAction SilentlyContinue) {
-            Write-Error "loop24-gateway is already running (PID $existingPid)"
+            Write-Error "otto-gateway is already running (PID $existingPid)"
             exit 1
         }
         Remove-Item $PidFile
@@ -43,39 +43,39 @@ function Start-Gateway {
         -NoNewWindow `
         -PassThru
     $proc.Id | Set-Content $PidFile
-    Write-Host "loop24-gateway started (PID $($proc.Id))"
+    Write-Host "otto-gateway started (PID $($proc.Id))"
 }
 
 function Stop-Gateway {
     if (-not (Test-Path $PidFile)) {
-        Write-Error "loop24-gateway is not running (no PID file)"
+        Write-Error "otto-gateway is not running (no PID file)"
         exit 1
     }
     $storedPid = [int](Get-Content $PidFile -Raw)
     $proc = Get-Process -Id $storedPid -ErrorAction SilentlyContinue
     if (-not $proc) {
-        Write-Host "loop24-gateway: stopped (stale PID)"
+        Write-Host "otto-gateway: stopped (stale PID)"
         Remove-Item $PidFile -ErrorAction SilentlyContinue
         exit 0
     }
     $proc.Kill()
     $proc.WaitForExit(10000) | Out-Null  # wait up to 10s for clean exit
     Remove-Item $PidFile -ErrorAction SilentlyContinue
-    Write-Host "loop24-gateway stopped"
+    Write-Host "otto-gateway stopped"
 }
 
 function Get-GatewayStatus {
     if (-not (Test-Path $PidFile)) {
-        Write-Host "loop24-gateway: stopped"
+        Write-Host "otto-gateway: stopped"
         exit 1
     }
     $storedPid = [int](Get-Content $PidFile -Raw)
     $proc = Get-Process -Id $storedPid -ErrorAction SilentlyContinue
     if (-not $proc) {
-        Write-Host "loop24-gateway: stopped (stale PID)"
+        Write-Host "otto-gateway: stopped (stale PID)"
         exit 1
     }
-    Write-Host "loop24-gateway: running (PID $storedPid)"
+    Write-Host "otto-gateway: running (PID $storedPid)"
     try {
         $health = Invoke-RestMethod -Uri "$Addr/health" -TimeoutSec 3
         $health | ConvertTo-Json -Depth 5
@@ -108,7 +108,7 @@ function Invoke-Run {
 }
 
 function Show-Usage {
-    Write-Host "Usage: .\scripts\loop24.ps1 <command>"
+    Write-Host "Usage: .\scripts\otto.ps1 <command>"
     Write-Host ""
     Write-Host "Commands:"
     Write-Host "  start     Start gateway in background"

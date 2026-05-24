@@ -1,23 +1,23 @@
 #!/usr/bin/env bash
-# scripts/loop24 — POSIX lifecycle manager for loop24-gateway on macOS/Linux.
+# scripts/otto — POSIX lifecycle manager for otto-gateway on macOS/Linux.
 # Subcommands: start | stop | status | restart | logs [-f] | run
-# Env overrides: LOOP24_BIN, LOOP24_PID, LOOP24_LOG, LOOP24_ADDR
+# Env overrides: OTTO_BIN, OTTO_PID, OTTO_LOG, OTTO_ADDR
 set -euo pipefail
 
-LOOP24_BIN="${LOOP24_BIN:-./bin/loop24-gateway}"
-LOOP24_PID="${LOOP24_PID:-/tmp/loop24-gateway.pid}"
-LOOP24_LOG="${LOOP24_LOG:-/tmp/loop24-gateway.log}"
-LOOP24_ADDR="${LOOP24_ADDR:-http://localhost:11435}"
+OTTO_BIN="${OTTO_BIN:-./bin/otto-gateway}"
+OTTO_PID="${OTTO_PID:-/tmp/otto-gateway.pid}"
+OTTO_LOG="${OTTO_LOG:-/tmp/otto-gateway.log}"
+OTTO_ADDR="${OTTO_ADDR:-http://localhost:11435}"
 
 start() {
-    if [[ -f "$LOOP24_PID" ]]; then
+    if [[ -f "$OTTO_PID" ]]; then
         local pid
-        pid=$(cat "$LOOP24_PID")
+        pid=$(cat "$OTTO_PID")
         if kill -0 "$pid" 2>/dev/null; then
-            echo "loop24-gateway is already running (PID $pid)" >&2
+            echo "otto-gateway is already running (PID $pid)" >&2
             exit 1
         fi
-        rm -f "$LOOP24_PID"
+        rm -f "$OTTO_PID"
     fi
     # Gateway env vars are inherited from the current environment
     # automatically — no explicit forwarding needed. Documented set
@@ -29,21 +29,21 @@ start() {
     #   POOL_SIZE                         — warm-pool size (Phase 2)
     #   OLLAMA_PATH_PREFIX                — Ollama route prefix (default /api)
     #   OPENAI_PATH_PREFIX                — OpenAI route prefix (Phase 3 forward seam)
-    nohup "$LOOP24_BIN" >> "$LOOP24_LOG" 2>&1 &
-    echo $! > "$LOOP24_PID"
-    echo "loop24-gateway started (PID $(cat "$LOOP24_PID"))"
+    nohup "$OTTO_BIN" >> "$OTTO_LOG" 2>&1 &
+    echo $! > "$OTTO_PID"
+    echo "otto-gateway started (PID $(cat "$OTTO_PID"))"
 }
 
 stop() {
-    if [[ ! -f "$LOOP24_PID" ]]; then
-        echo "loop24-gateway is not running (no PID file)" >&2
+    if [[ ! -f "$OTTO_PID" ]]; then
+        echo "otto-gateway is not running (no PID file)" >&2
         exit 1
     fi
     local pid
-    pid=$(cat "$LOOP24_PID")
+    pid=$(cat "$OTTO_PID")
     if ! kill -0 "$pid" 2>/dev/null; then
-        echo "loop24-gateway: stopped (stale PID)"
-        rm -f "$LOOP24_PID"
+        echo "otto-gateway: stopped (stale PID)"
+        rm -f "$OTTO_PID"
         exit 0
     fi
     kill "$pid"
@@ -54,24 +54,24 @@ stop() {
         sleep 0.1
         i=$((i + 1))
     done
-    rm -f "$LOOP24_PID"
-    echo "loop24-gateway stopped"
+    rm -f "$OTTO_PID"
+    echo "otto-gateway stopped"
 }
 
 status() {
-    if [[ ! -f "$LOOP24_PID" ]]; then
-        echo "loop24-gateway: stopped"
+    if [[ ! -f "$OTTO_PID" ]]; then
+        echo "otto-gateway: stopped"
         exit 1
     fi
     local pid
-    pid=$(cat "$LOOP24_PID")
+    pid=$(cat "$OTTO_PID")
     if ! kill -0 "$pid" 2>/dev/null; then
-        echo "loop24-gateway: stopped (stale PID)"
+        echo "otto-gateway: stopped (stale PID)"
         exit 1
     fi
-    echo "loop24-gateway: running (PID $pid)"
+    echo "otto-gateway: running (PID $pid)"
     if command -v curl >/dev/null 2>&1; then
-        curl -sf "${LOOP24_ADDR}/health" 2>/dev/null | python3 -m json.tool 2>/dev/null || true
+        curl -sf "${OTTO_ADDR}/health" 2>/dev/null | python3 -m json.tool 2>/dev/null || true
     fi
 }
 
@@ -83,15 +83,15 @@ restart() {
 logs() {
     local follow="${1:-}"
     if [[ "$follow" == "-f" ]]; then
-        tail -f "$LOOP24_LOG"
+        tail -f "$OTTO_LOG"
     else
-        tail -n 50 "$LOOP24_LOG"
+        tail -n 50 "$OTTO_LOG"
     fi
 }
 
 run() {
     # Foreground execution — inherits all env vars from the calling shell.
-    exec "$LOOP24_BIN"
+    exec "$OTTO_BIN"
 }
 
 usage() {

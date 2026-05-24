@@ -1,5 +1,5 @@
 #Requires -Version 5.1
-# Loop24 Gateway — Windows dev environment bootstrap.
+# OTTO Gateway — Windows dev environment bootstrap.
 # Idempotent: safe to re-run. Skips already-installed tools.
 # See DEVELOPERS.md for the manual equivalent and gotchas.
 #
@@ -10,7 +10,7 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-Write-Host 'Loop24 Gateway — Windows dev environment bootstrap'
+Write-Host 'OTTO Gateway — Windows dev environment bootstrap'
 Write-Host '(idempotent — safe to re-run)'
 Write-Host ''
 
