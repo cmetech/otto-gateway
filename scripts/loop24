@@ -7,7 +7,7 @@ set -euo pipefail
 LOOP24_BIN="${LOOP24_BIN:-./bin/loop24-gateway}"
 LOOP24_PID="${LOOP24_PID:-/tmp/loop24-gateway.pid}"
 LOOP24_LOG="${LOOP24_LOG:-/tmp/loop24-gateway.log}"
-LOOP24_ADDR="${LOOP24_ADDR:-http://localhost:11434}"
+LOOP24_ADDR="${LOOP24_ADDR:-http://localhost:11435}"
 
 start() {
     if [[ -f "$LOOP24_PID" ]]; then

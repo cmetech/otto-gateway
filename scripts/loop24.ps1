@@ -13,7 +13,7 @@ $PidFile    = if ($env:LOOP24_PID)  { $env:LOOP24_PID }  else { "$env:TEMP\loop2
 $LogFile    = if ($env:LOOP24_LOG)  { $env:LOOP24_LOG }  else { "$env:TEMP\loop24-gateway.log" }
 # stdout and stderr MUST be separate files: Start-Process cannot redirect both to the same file.
 $LogErrFile = if ($env:LOOP24_LOGERR) { $env:LOOP24_LOGERR } else { "$env:TEMP\loop24-gateway-err.log" }
-$Addr       = if ($env:LOOP24_ADDR) { $env:LOOP24_ADDR } else { "http://localhost:11434" }
+$Addr       = if ($env:LOOP24_ADDR) { $env:LOOP24_ADDR } else { "http://localhost:11435" }
 
 function Start-Gateway {
     if (Test-Path $PidFile) {
