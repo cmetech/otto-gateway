@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -125,6 +126,83 @@ func TestChatResponseToMessage_ToolUseInputIsObject(t *testing.T) {
 	// Also confirm fields round-trip.
 	if v, ok := input.(map[string]any)["q"].(string); !ok || v != "ducks" {
 		t.Errorf("input.q: got %v, want 'ducks'", input.(map[string]any)["q"])
+	}
+}
+
+// TestChatResponseToMessage_ToolUseEmptyInput_RendersEmptyObject is the
+// CR-01 regression test (VERIFICATION.md gap 1). The Anthropic Messages
+// spec requires tool_use.input to ALWAYS be present as a JSON object,
+// even when the tool was invoked with no arguments — the
+// @anthropic-ai/sdk Zod parser in loop24-client throws if the field is
+// missing. Both nil canonical.ToolUsePart.Input and an explicit empty
+// map MUST render as `"input":{}` on the wire (NOT `"input":null`, and
+// the field MUST NOT be dropped by omitempty).
+func TestChatResponseToMessage_ToolUseEmptyInput_RendersEmptyObject(t *testing.T) {
+	cases := []struct {
+		name  string
+		input map[string]any
+	}{
+		{name: "NilInput", input: nil},
+		{name: "EmptyMap", input: map[string]any{}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			resp := &canonical.ChatResponse{
+				Model: "auto",
+				Message: canonical.Message{
+					Role: canonical.RoleAssistant,
+					Content: []canonical.ContentPart{
+						{Kind: canonical.ContentKindToolUse, ToolUse: &canonical.ToolUsePart{
+							ID: "toolu_1", Name: "ping", Input: c.input,
+						}},
+					},
+				},
+				StopReason: canonical.StopEndTurn,
+			}
+			out := chatResponseToMessage(resp, "auto")
+			wire, err := json.Marshal(out)
+			if err != nil {
+				t.Fatalf("Marshal: %v", err)
+			}
+
+			// Positive: the wire MUST carry "input":{} for the tool_use block.
+			if !bytes.Contains(wire, []byte(`"input":{}`)) {
+				t.Errorf("wire missing required `\"input\":{}` for nil/empty tool_use input; got: %s", wire)
+			}
+			// Negative: the wire MUST NOT carry "input":null.
+			if bytes.Contains(wire, []byte(`"input":null`)) {
+				t.Errorf("wire carries forbidden `\"input\":null` (spec demands empty object, not null); got: %s", wire)
+			}
+
+			// Structural cross-check: round-trip through generic decode to
+			// confirm the input field is present and is a JSON object
+			// (defends against any future encoder change that might satisfy
+			// the byte-substring assertions accidentally via overlap with
+			// another field).
+			var generic map[string]any
+			if err := json.Unmarshal(wire, &generic); err != nil {
+				t.Fatalf("Unmarshal: %v", err)
+			}
+			content, ok := generic["content"].([]any)
+			if !ok || len(content) != 1 {
+				t.Fatalf("content: got %T %v, want []any with 1 entry", generic["content"], generic["content"])
+			}
+			block, ok := content[0].(map[string]any)
+			if !ok {
+				t.Fatalf("content[0]: got %T, want map", content[0])
+			}
+			inputField, present := block["input"]
+			if !present {
+				t.Fatalf("content[0].input: field absent (omitempty dropped it); wire=%s", wire)
+			}
+			obj, isObject := inputField.(map[string]any)
+			if !isObject {
+				t.Fatalf("content[0].input: got %T (%v), want map[string]any (JSON OBJECT, not null/string)", inputField, inputField)
+			}
+			if len(obj) != 0 {
+				t.Errorf("content[0].input: got %v, want empty object {} for no-arg tool call", obj)
+			}
+		})
 	}
 }
 
