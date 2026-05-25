@@ -72,6 +72,13 @@ func (e *Engine) Collect(ctx context.Context, req *canonical.ChatRequest) (*cano
 		if rerr != nil {
 			return nil, fmt.Errorf("engine: collect result: %w", rerr)
 		}
+		// D-06 teardown: stop() prevents the AfterFunc goroutine from firing
+		// session/cancel after the stream closed naturally. stop() returning false
+		// is expected if ctx was already canceled — Cancel is idempotent
+		// (RESEARCH.md Pitfall 4).
+		if stop := run.StopWatchdog(); stop != nil {
+			stop()
+		}
 		resp = assembleChatResponse(req, sb.String(), thoughtSB.String(), final)
 	}
 

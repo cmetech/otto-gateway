@@ -19,6 +19,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -114,6 +115,12 @@ type Run struct {
 	// (newCompletedRun + chunk assembly from empty text) silently
 	// dropped the hook's payload — Codex H-4 fix.
 	response *canonical.ChatResponse
+	// stopWatchdog is the context.AfterFunc stop function. Nil when a
+	// PreHook short-circuited Run (no ACP session was opened, no watchdog
+	// was registered). Adapters and Collect call StopWatchdog() to retrieve
+	// it and invoke it after natural stream completion (RESEARCH.md Pattern
+	// 2 Option A; CONTEXT.md D-06).
+	stopWatchdog func() bool
 }
 
 // Stream exposes the underlying chunk stream so adapters can range
@@ -123,6 +130,15 @@ func (r *Run) Stream() Stream { return r.stream }
 // SessionID returns the kiro-cli session id this Run is bound to.
 // Empty string when a PreHook short-circuited and ACP was never touched.
 func (r *Run) SessionID() string { return r.sessionID }
+
+// StopWatchdog returns the context.AfterFunc stop function registered in
+// Run(). Callers (Collect, NDJSON/SSE emitters) invoke the returned
+// function after natural stream completion to prevent the watchdog goroutine
+// from firing a spurious session/cancel. stop() returning false means the
+// context was already canceled — that is expected and safe because Cancel is
+// idempotent. Returns nil when a PreHook short-circuited Run (no ACP
+// session, no watchdog was registered).
+func (r *Run) StopWatchdog() func() bool { return r.stopWatchdog }
 
 // Run orchestrates a request from canonical → ACP. On any error AFTER
 // NewSession succeeds, ACPClient.Cancel(sid) is called best-effort
@@ -172,11 +188,29 @@ func (e *Engine) Run(ctx context.Context, req *canonical.ChatRequest) (*Run, err
 		return nil, fmt.Errorf("engine: prompt: %w", err)
 	}
 
+	// D-06 in CONTEXT.md: engine-owned watchdog fires session/cancel if the
+	// request ctx terminates before the stream closes naturally.
+	// context.AfterFunc is Go 1.21+ (project requires 1.23). stop() returned
+	// here is stored on Run so adapters/Collect can prevent the goroutine on
+	// normal completion.
+	stopWatchdog := context.AfterFunc(ctx, func() {
+		switch {
+		case errors.Is(ctx.Err(), context.Canceled):
+			e.cfg.Logger.Debug("engine: watchdog: client disconnect — canceling session", "session_id", sid)
+		case errors.Is(ctx.Err(), context.DeadlineExceeded):
+			e.cfg.Logger.Debug("engine: watchdog: request timeout — canceling session", "session_id", sid)
+		default:
+			e.cfg.Logger.Debug("engine: watchdog: context done — canceling session", "session_id", sid, "err", ctx.Err())
+		}
+		e.cfg.ACP.Cancel(sid)
+	})
+
 	return &Run{
-		engine:    e,
-		sessionID: sid,
-		stream:    stream,
-		req:       req,
+		engine:       e,
+		sessionID:    sid,
+		stream:       stream,
+		req:          req,
+		stopWatchdog: stopWatchdog,
 	}, nil
 }
 

@@ -23,7 +23,7 @@ type ollamaChatRequest struct {
 	Messages  []ollamaMessage  `json:"messages"`
 	Tools     []ollamaToolSpec `json:"tools,omitempty"`
 	Format    json.RawMessage  `json:"format,omitempty"`
-	Stream    bool             `json:"stream"`
+	Stream    *bool            `json:"stream,omitempty"`
 	Think     bool             `json:"think,omitempty"`
 	KeepAlive json.RawMessage  `json:"keep_alive,omitempty"` // accepted-and-ignored
 	Options   json.RawMessage  `json:"options,omitempty"`    // accepted-and-ignored
@@ -102,7 +102,7 @@ type ollamaGenerateRequest struct {
 	System    string          `json:"system,omitempty"`
 	Images    []string        `json:"images,omitempty"`
 	Format    json.RawMessage `json:"format,omitempty"`
-	Stream    bool            `json:"stream"`
+	Stream    *bool           `json:"stream,omitempty"`
 	Think     bool            `json:"think,omitempty"`
 	Suffix    string          `json:"suffix,omitempty"`     // accepted-and-ignored
 	Raw       bool            `json:"raw,omitempty"`        // accepted-and-ignored
@@ -231,6 +231,12 @@ type ollamaDeleteRequest struct {
 // wireToChatRequest — translate POST /api/chat body into canonical.ChatRequest
 // ----------------------------------------------------------------------------
 
+// streamEnabled returns true when the *bool stream field is absent (nil —
+// Ollama default is stream:true per Node reference) or explicitly true.
+// Returns false only for explicit stream:false. (CONTEXT.md D-03,
+// RESEARCH.md Pitfall 1)
+func streamEnabled(s *bool) bool { return s == nil || *s }
+
 // wireToChatRequest extracts the canonical request from an Ollama chat
 // wire payload. Layout:
 //   - first messages[] entry with role=="system" → req.System (then
@@ -251,7 +257,7 @@ type ollamaDeleteRequest struct {
 func wireToChatRequest(w *ollamaChatRequest, r *http.Request) *canonical.ChatRequest {
 	req := &canonical.ChatRequest{
 		Model:              w.Model,
-		Stream:             w.Stream,
+		Stream:             streamEnabled(w.Stream),
 		Think:              w.Think,
 		WorkingDirOverride: r.Header.Get("X-Working-Dir"),
 	}
@@ -337,7 +343,7 @@ func wireGenerateToChatRequest(w *ollamaGenerateRequest, r *http.Request) *canon
 	req := &canonical.ChatRequest{
 		Model:              w.Model,
 		System:             w.System,
-		Stream:             w.Stream,
+		Stream:             streamEnabled(w.Stream),
 		Think:              w.Think,
 		WorkingDirOverride: r.Header.Get("X-Working-Dir"),
 	}
