@@ -9,6 +9,57 @@ import (
 )
 
 // ----------------------------------------------------------------------------
+// GET /v1/models render shapes (RESEARCH.md §Pattern 5)
+//
+// Field names are validated against Bifrost core/providers/openai/types.go:857-860:
+// id, object, created (unix seconds), owned_by.
+// ----------------------------------------------------------------------------
+
+// modelList is the OpenAI models/list response object.
+// object is always "list"; data contains one entry per model.
+type modelList struct {
+	Object string      `json:"object"` // "list"
+	Data   []modelInfo `json:"data"`
+}
+
+// modelInfo is one entry in the models list.
+// object is always "model"; created is a fixed unix-seconds timestamp
+// (Pitfall 8 style — a stable per-boot value is acceptable);
+// owned_by identifies the serving backend.
+type modelInfo struct {
+	ID      string `json:"id"`
+	Object  string `json:"object"`   // "model"
+	Created int64  `json:"created"`  // unix seconds
+	OwnedBy string `json:"owned_by"` // "kiro" or "otto-gateway"
+}
+
+// catalogToModelList builds the OpenAI modelList from the pool catalog.
+// "auto" is always prepended (mirror ollama/handlers.go:108-109 Node parity).
+// Each entry gets object:"model", the provided ownedBy and created values.
+// A nil or empty models slice returns only the "auto" entry.
+//
+// SC3: the same pool catalog source as /api/tags → same model set by construction.
+func catalogToModelList(models []canonical.ModelInfo, ownedBy string, created int64) modelList {
+	data := make([]modelInfo, 0, 1+len(models))
+	// Prepend the synthetic "auto" entry (always present — Node parity).
+	data = append(data, modelInfo{
+		ID:      "auto",
+		Object:  "model",
+		Created: created,
+		OwnedBy: ownedBy,
+	})
+	for _, m := range models {
+		data = append(data, modelInfo{
+			ID:      m.ID,
+			Object:  "model",
+			Created: created,
+			OwnedBy: ownedBy,
+		})
+	}
+	return modelList{Object: "list", Data: data}
+}
+
+// ----------------------------------------------------------------------------
 // Non-streaming response wire shape (POST /v1/chat/completions, stream:false)
 //
 // Field order is LOAD-BEARING: encoding/json walks struct fields in

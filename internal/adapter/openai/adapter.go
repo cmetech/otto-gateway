@@ -149,12 +149,6 @@ func (a *Adapter) handleCompletions(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, "not implemented", http.StatusNotImplemented)
 }
 
-// handleModels handles GET /models.
-// TODO(03-03): implement /v1/models list from ModelCatalog.
-func (a *Adapter) handleModels(w http.ResponseWriter, _ *http.Request) {
-	http.Error(w, "not implemented", http.StatusNotImplemented)
-}
-
 // discardWriter implements io.Writer with a no-op Write so the
 // defensive default logger in New() does not allocate. Avoids
 // io.Discard import.

@@ -2,6 +2,9 @@ package openai
 
 import (
 	"net/http"
+	"time"
+
+	"otto-gateway/internal/canonical"
 )
 
 // handleChatCompletions handles POST /chat/completions.
@@ -74,4 +77,25 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 	}
 
 	writeJSON(w, chatResponseToCompletion(resp, wire.Model))
+}
+
+// handleModels handles GET /models (D-04, SC3).
+//
+// It renders the OpenAI model list from the injected ModelCatalog —
+// the same catalog /api/tags iterates — satisfying SC3 same-set by
+// construction. "auto" is always prepended (Node parity).
+//
+// When ModelCatalog is nil (KIRO_CMD unset), only the synthetic
+// "auto" entry is returned so clients still see a usable list.
+//
+// No body decode (GET). No auth check (prefix middleware owns it).
+// T-03-22: modelInfo exposes only id/object/created/owned_by — no
+// internal pool slot detail, no env vars, no file paths.
+func (a *Adapter) handleModels(w http.ResponseWriter, _ *http.Request) {
+	created := time.Now().Unix()
+	var catalogModels []canonical.ModelInfo
+	if a.cfg.ModelCatalog != nil {
+		catalogModels = a.cfg.ModelCatalog.Models()
+	}
+	writeJSON(w, catalogToModelList(catalogModels, "kiro", created))
 }
