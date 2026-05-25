@@ -209,16 +209,35 @@ func TestRunContextCancel(t *testing.T) {
 // NewFromConfig — Phase 2 wiring (Plan 06)
 // ----------------------------------------------------------------------------
 
-// stubOllamaRouter returns a chi.Router with a single Post /chat that
-// writes 200 + a marker body. Used by NewFromConfig tests to assert
-// that protected requests reach the adapter when auth passes.
-func stubOllamaRouter() chi.Router {
-	r := chi.NewRouter()
-	r.Post("/chat", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"ok":true}`))
-	})
-	return r
+// stubRouteRegistrar wraps a set of route-registration functions as a
+// server.RouteRegistrar so tests can construct a minimal SurfaceMount
+// without building a full adapter.
+type stubRouteRegistrar struct {
+	fn func(r chi.Router)
+}
+
+func (s stubRouteRegistrar) RegisterRoutes(r chi.Router) { s.fn(r) }
+
+// stubOllamaRegistrar returns a RouteRegistrar that registers POST /chat
+// with a 200 response. Used by NewFromConfig tests to assert that
+// protected requests reach the adapter when auth passes.
+func stubOllamaRegistrar() server.RouteRegistrar {
+	return stubRouteRegistrar{fn: func(r chi.Router) {
+		r.Post("/chat", func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		})
+	}}
+}
+
+// stubAnthropicRegistrar returns a RouteRegistrar that registers POST /messages.
+func stubAnthropicRegistrar() server.RouteRegistrar {
+	return stubRouteRegistrar{fn: func(r chi.Router) {
+		r.Post("/messages", func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"ok":"anthropic"}`))
+		})
+	}}
 }
 
 // stubVersionHandler returns the /api/version handler the outer router
@@ -239,14 +258,15 @@ func newFromConfigForTest(t *testing.T, cfg server.Config) *server.Server {
 	if cfg.Version == "" {
 		cfg.Version = "test"
 	}
-	if cfg.OllamaPath == "" {
-		cfg.OllamaPath = "/api"
-	}
-	if cfg.OllamaProtectedRouter == nil {
-		cfg.OllamaProtectedRouter = stubOllamaRouter()
+	// Default: add a stub Ollama surface on "/api" if no surfaces provided.
+	if len(cfg.Surfaces) == 0 {
+		cfg.Surfaces = []server.SurfaceMount{
+			{Prefix: "/api", Router: stubOllamaRegistrar()},
+		}
 	}
 	if cfg.OllamaVersionHandler == nil {
 		cfg.OllamaVersionHandler = stubVersionHandler()
+		cfg.OllamaVersionPath = "/api/version"
 	}
 	return server.NewFromConfig(cfg)
 }
@@ -407,30 +427,21 @@ type fakePoolSource struct {
 func (f fakePoolSource) Stats() server.PoolStats { return f.stats }
 
 // ---------------------------------------------------------------------------
-// NewFromConfig — Phase 3.1 anthropic mount (D-17)
+// NewFromConfig — Phase 3.1 anthropic mount (D-17) — updated for D-01
+// SurfaceMount mechanic.
 // ---------------------------------------------------------------------------
 
-// stubAnthropicRouter mirrors stubOllamaRouter — a chi.Router with a
-// single Post handler. Lets the anthropic mount tests assert that a
-// protected request reaches the adapter when auth passes.
-func stubAnthropicRouter() chi.Router {
-	r := chi.NewRouter()
-	r.Post("/messages", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"ok":"anthropic"}`))
-	})
-	return r
-}
-
-// TestNewFromConfig_AnthropicMount asserts the D-17 parallel mount: a
-// non-nil AnthropicProtectedRouter at AnthropicPath="/v1" is served
-// behind the same auth.Bearer + auth.IPAllowlist chain as the Ollama
-// surface. Unauthenticated → 401; authenticated → 200.
+// TestNewFromConfig_AnthropicMount asserts the D-17 parallel mount: an
+// Anthropic SurfaceMount at prefix "/v1" is served behind the same
+// auth.Bearer + auth.IPAllowlist chain as the Ollama surface.
+// Unauthenticated → 401; authenticated → 200.
 func TestNewFromConfig_AnthropicMount(t *testing.T) {
 	srv := newFromConfigForTest(t, server.Config{
-		AuthTokens:               []string{"s3cret"},
-		AnthropicPath:            "/v1",
-		AnthropicProtectedRouter: stubAnthropicRouter(),
+		AuthTokens: []string{"s3cret"},
+		Surfaces: []server.SurfaceMount{
+			{Prefix: "/api", Router: stubOllamaRegistrar()},
+			{Prefix: "/v1", Router: stubAnthropicRegistrar()},
+		},
 	})
 
 	// Without bearer.
@@ -461,15 +472,16 @@ func TestNewFromConfig_AnthropicMount(t *testing.T) {
 	}
 }
 
-// TestNewFromConfig_AnthropicMount_NilRouter — when
-// AnthropicProtectedRouter is nil the mount block is skipped (nil-safe
-// gate, mirrors the Ollama branch's defensive design). The server
-// still starts and serves the Ollama mount; /v1/messages → 404.
-func TestNewFromConfig_AnthropicMount_NilRouter(t *testing.T) {
+// TestNewFromConfig_AnthropicMount_NoSurface — when no Surfaces are
+// provided for /v1 the server starts with only the Ollama mount;
+// /v1/messages → 404.
+func TestNewFromConfig_AnthropicMount_NoSurface(t *testing.T) {
 	srv := newFromConfigForTest(t, server.Config{
-		AuthTokens:               []string{"s3cret"},
-		AnthropicPath:            "/v1",
-		AnthropicProtectedRouter: nil, // explicitly nil — gate must skip
+		AuthTokens: []string{"s3cret"},
+		// Only Ollama — no /v1 surface.
+		Surfaces: []server.SurfaceMount{
+			{Prefix: "/api", Router: stubOllamaRegistrar()},
+		},
 	})
 
 	r := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/messages", strings.NewReader(`{}`))
@@ -477,7 +489,7 @@ func TestNewFromConfig_AnthropicMount_NilRouter(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, r)
 	if w.Code != http.StatusNotFound {
-		t.Errorf("POST /v1/messages with nil AnthropicProtectedRouter: got %d, want 404 (mount block must be skipped)", w.Code)
+		t.Errorf("POST /v1/messages with no /v1 surface: got %d, want 404 (no mount — must 404)", w.Code)
 	}
 
 	// The Ollama mount must still respond on its own path.
@@ -487,5 +499,83 @@ func TestNewFromConfig_AnthropicMount_NilRouter(t *testing.T) {
 	srv.ServeHTTP(w2, r2)
 	if w2.Code != http.StatusOK {
 		t.Errorf("Ollama mount must still serve when Anthropic mount is absent: got %d, want 200", w2.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestSurfaceMount — D-01 co-mount regression test (NEW, no prior analog).
+// Proves that two SurfaceMounts on the same "/v1" prefix can co-mount
+// without triggering chi's double-Mount panic, and that each endpoint
+// resolves correctly. Also verifies that a third surface on a different
+// prefix ("/api") continues to route.
+// ---------------------------------------------------------------------------
+
+// stubOpenAIRegistrar returns a RouteRegistrar that registers the three
+// OpenAI endpoints: POST /chat/completions, POST /completions, GET /models.
+func stubOpenAIRegistrar() server.RouteRegistrar {
+	return stubRouteRegistrar{fn: func(r chi.Router) {
+		r.Post("/chat/completions", func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"object":"chat.completion"}`))
+		})
+		r.Post("/completions", func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"object":"text_completion"}`))
+		})
+		r.Get("/models", func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"object":"list","data":[]}`))
+		})
+	}}
+}
+
+// TestSurfaceMount proves the D-01 guarantee: two SurfaceMounts sharing
+// the "/v1" prefix co-mount under one auth-wrapped Route block without
+// a chi double-Mount panic. Requests to all three prefix+endpoint
+// combinations must resolve (not 404 behind auth, or 401 with no token
+// when auth is active — the important thing is not-404).
+func TestSurfaceMount(t *testing.T) {
+	// Defer-recover ensures a chi panic fails the test rather than crashing the process.
+	// In practice, if NewFromConfig panics, the defer fires and we get a meaningful failure.
+	var panicVal interface{}
+	func() {
+		defer func() { panicVal = recover() }()
+
+		srv := newFromConfigForTest(t, server.Config{
+			AuthTokens: []string{"s3cret"},
+			// Two surfaces on "/v1" — the D-01 co-mount scenario.
+			Surfaces: []server.SurfaceMount{
+				{Prefix: "/v1", Router: stubAnthropicRegistrar()},
+				{Prefix: "/v1", Router: stubOpenAIRegistrar()},
+				{Prefix: "/api", Router: stubOllamaRegistrar()},
+			},
+		})
+
+		// Drive requests through the built router — must not be 404.
+		// Auth is configured so unauthenticated requests get 401, not 404.
+		// 401 proves the route exists and auth is correctly applied.
+		cases := []struct {
+			method, path string
+		}{
+			{http.MethodPost, "/v1/messages"},             // Anthropic
+			{http.MethodPost, "/v1/chat/completions"},     // OpenAI
+			{http.MethodPost, "/v1/completions"},          // OpenAI legacy
+			{http.MethodGet, "/v1/models"},                // OpenAI models
+			{http.MethodPost, "/api/chat"},                // Ollama
+		}
+
+		for _, c := range cases {
+			req := httptest.NewRequestWithContext(context.Background(), c.method, c.path, strings.NewReader(`{}`))
+			rec := httptest.NewRecorder()
+			srv.ServeHTTP(rec, req)
+
+			if rec.Code == http.StatusNotFound {
+				t.Errorf("%s %s: got 404 (route not registered — D-01 co-mount may have panicked or failed)", c.method, c.path)
+			}
+		}
+	}()
+
+	if panicVal != nil {
+		t.Fatalf("NewFromConfig panicked (chi double-Mount trap): %v", panicVal)
 	}
 }
