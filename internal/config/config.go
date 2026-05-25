@@ -140,7 +140,7 @@ func Load() (Config, error) {
 		errs = append(errs, err)
 	}
 
-	enabledSurfaces := getEnvStrSliceComma("ENABLED_SURFACES", []string{"ollama", "anthropic"})
+	enabledSurfaces := getEnvStrSliceComma("ENABLED_SURFACES", []string{"ollama", "anthropic", "openai"})
 	if err := validateEnabledSurfaces(enabledSurfaces); err != nil {
 		errs = append(errs, fmt.Errorf("ENABLED_SURFACES: %w", err))
 	}
@@ -321,11 +321,12 @@ func validateEnabledSurfaces(surfaces []string) error {
 	allowed := map[string]struct{}{
 		"ollama":    {},
 		"anthropic": {},
+		"openai":    {},
 	}
 	var errs []error
 	for _, s := range surfaces {
 		if _, ok := allowed[s]; !ok {
-			errs = append(errs, fmt.Errorf("unknown surface %q (allowed: ollama, anthropic)", s))
+			errs = append(errs, fmt.Errorf("unknown surface %q (allowed: ollama, anthropic, openai)", s))
 		}
 	}
 	if len(errs) > 0 {

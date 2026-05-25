@@ -197,17 +197,14 @@ func TestValidateEnabledSurfaces_UnknownName_NamesTheOffender(t *testing.T) {
 	}
 }
 
-func TestValidateEnabledSurfaces_OpenAIStillForbidden(t *testing.T) {
+func TestValidateEnabledSurfaces_OpenAIAllowed(t *testing.T) {
 	t.Parallel()
-	// Phase 3 will widen the allow-list to include "openai". Pin the
-	// Phase 3.1 contract: it must REJECT "openai" until then so a
-	// premature OpenAI deployment fails fast rather than silently
-	// disabling the surface.
+	// Phase 3 (D-05): the allow-list now includes "openai". This was
+	// previously pinned as "OpenAIStillForbidden" for Phase 3.1 —
+	// that gate is now superseded. validateEnabledSurfaces must
+	// accept "openai" without error.
 	err := validateEnabledSurfaces([]string{"openai"})
-	if err == nil {
-		t.Fatal("Phase 3.1 must NOT allow 'openai' (Phase 3 widens the list); got nil error")
-	}
-	if !strings.Contains(err.Error(), "openai") {
-		t.Errorf("error must name the offending surface 'openai', got: %v", err)
+	if err != nil {
+		t.Fatalf("Phase 3 must allow 'openai'; got error: %v", err)
 	}
 }

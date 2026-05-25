@@ -378,13 +378,13 @@ func TestLoad_AuthTrustXFF_Malformed(t *testing.T) {
 
 func TestLoad_EnabledSurfaces_Default(t *testing.T) {
 	// t.Setenv: cannot use t.Parallel().
-	// D-16: default is ollama,anthropic (Phase 3 extends to add openai).
+	// D-16: default is ollama,anthropic,openai (Phase 3 widened from ollama,anthropic).
 	t.Setenv("ENABLED_SURFACES", "")
 	cfg, err := config.Load()
 	if err != nil {
 		t.Fatalf("Load() returned unexpected error: %v", err)
 	}
-	want := []string{"ollama", "anthropic"}
+	want := []string{"ollama", "anthropic", "openai"}
 	if !reflect.DeepEqual(cfg.EnabledSurfaces, want) {
 		t.Errorf("EnabledSurfaces: got %v, want %v", cfg.EnabledSurfaces, want)
 	}
@@ -421,7 +421,7 @@ func TestLoad_EnabledSurfaces_UnknownName_Errors(t *testing.T) {
 	// D-16 fail-fast: an unknown surface (typo) must cause Load() to
 	// error so the binary exits non-zero rather than silently disabling
 	// a surface (RESEARCH.md Pitfall 10). Allow-list is {"ollama",
-	// "anthropic"} in Phase 3.1; Phase 3 will widen.
+	// "anthropic", "openai"} after Phase 3 widening.
 	t.Setenv("ENABLED_SURFACES", "ollama,olama")
 	_, err := config.Load()
 	if err == nil {
@@ -432,6 +432,48 @@ func TestLoad_EnabledSurfaces_UnknownName_Errors(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "olama") {
 		t.Errorf("error should name the offending surface 'olama', got: %v", err)
+	}
+}
+
+func TestLoad_EnabledSurfaces_OpenAIOnly(t *testing.T) {
+	// t.Setenv: cannot use t.Parallel().
+	// D-05: "openai" is now in the allow-list; enabling only openai
+	// must succeed without error.
+	t.Setenv("ENABLED_SURFACES", "openai")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error for ENABLED_SURFACES=openai: %v", err)
+	}
+	want := []string{"openai"}
+	if !reflect.DeepEqual(cfg.EnabledSurfaces, want) {
+		t.Errorf("EnabledSurfaces: got %v, want %v", cfg.EnabledSurfaces, want)
+	}
+}
+
+func TestLoad_EnabledSurfaces_AllThree(t *testing.T) {
+	// t.Setenv: cannot use t.Parallel().
+	// D-05: all three surfaces together must be accepted.
+	t.Setenv("ENABLED_SURFACES", "openai,ollama,anthropic")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error for ENABLED_SURFACES=openai,ollama,anthropic: %v", err)
+	}
+	want := []string{"openai", "ollama", "anthropic"}
+	if !reflect.DeepEqual(cfg.EnabledSurfaces, want) {
+		t.Errorf("EnabledSurfaces: got %v, want %v", cfg.EnabledSurfaces, want)
+	}
+}
+
+func TestLoad_EnabledSurfaces_OpenAI_Typo_Errors(t *testing.T) {
+	// t.Setenv: cannot use t.Parallel().
+	// D-05 fail-fast: "openia" (typo for openai) must still fail.
+	t.Setenv("ENABLED_SURFACES", "openia")
+	_, err := config.Load()
+	if err == nil {
+		t.Fatal("Load() should return an error for ENABLED_SURFACES=openia (typo), got nil")
+	}
+	if !strings.Contains(err.Error(), "openia") {
+		t.Errorf("error should name the offending surface 'openia', got: %v", err)
 	}
 }
 
