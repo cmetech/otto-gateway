@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+
 	"otto-gateway/internal/canonical"
 	"otto-gateway/internal/engine"
 	"otto-gateway/internal/pool"
@@ -91,7 +93,13 @@ func kiroSetup(t *testing.T) (*httptest.Server, func()) {
 		Engine: realEngineAdapter{engine: eng},
 	})
 
-	srv := httptest.NewServer(a.ProtectedRouter())
+	// Mount via RegisterRoutes (the D-01 SurfaceMount path) to exercise
+	// the migrated route-registration code path rather than the legacy
+	// ProtectedRouter. This turns the no-regression assertion from a
+	// clean build into a positive routing check through the migrated path.
+	r := chi.NewRouter()
+	a.RegisterRoutes(r)
+	srv := httptest.NewServer(r)
 	return srv, func() {
 		srv.Close()
 		if err := p.Close(); err != nil {

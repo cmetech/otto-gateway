@@ -36,6 +36,7 @@ import (
 
 	"otto-gateway/internal/adapter/anthropic"
 	"otto-gateway/internal/adapter/ollama"
+	"otto-gateway/internal/adapter/openai"
 	"otto-gateway/internal/canonical"
 	"otto-gateway/internal/config"
 	"otto-gateway/internal/engine"
@@ -203,6 +204,31 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 		})
 	}
 
+	var openaiAdapter *openai.Adapter
+	if slices.Contains(cfg.EnabledSurfaces, "openai") {
+		// openai.Engine is satisfied via openaiEngineAdapter (below) —
+		// same Go return-type-invariance rationale as the anthropic bridge.
+		// When a.engine is nil (degraded mode) eng stays nil and the
+		// nil-engine guard in openai.handleChatCompletions returns 503.
+		var eng openai.Engine
+		if a.engine != nil {
+			eng = openaiEngineAdapter{engine: a.engine}
+		}
+		// Pass the same pool as ModelCatalog so /v1/models reflects live
+		// kiro-cli models (same pool used for ollama at catalogForAdapter).
+		// When pool is nil (KIRO_CMD unset), openai.handleModels returns
+		// only the synthetic "auto" entry.
+		var cat openai.ModelCatalog
+		if a.pool != nil {
+			cat = a.pool
+		}
+		openaiAdapter = openai.New(openai.Config{
+			Logger:       logger,
+			Engine:       eng,
+			ModelCatalog: cat,
+		})
+	}
+
 	// Build the SurfaceMount list (D-01). Each enabled adapter contributes
 	// a SurfaceMount entry; adapters that are nil (disabled or degraded)
 	// are skipped. The server groups entries by prefix so Anthropic and
@@ -220,6 +246,12 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 		surfaces = append(surfaces, server.SurfaceMount{
 			Prefix: cfg.AnthropicPathPrefix,
 			Router: anthropicAdapter,
+		})
+	}
+	if openaiAdapter != nil {
+		surfaces = append(surfaces, server.SurfaceMount{
+			Prefix: cfg.OpenAIPathPrefix,
+			Router: openaiAdapter,
 		})
 	}
 
@@ -242,11 +274,14 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 
 	// Boot log surfaces the resolved surface set so operators see
 	// what's actually mounted (closes a Phase 2 → Phase 3.1 ops gap).
+	// openai_mounted reflects whether the /v1 OpenAI surface is wired
+	// (T-03-30 observability — Runtime State Inventory).
 	logger.Info(
 		"server: enabled surfaces",
 		"enabled_surfaces", cfg.EnabledSurfaces,
 		"ollama_mounted", ollamaAdapter != nil,
 		"anthropic_mounted", anthropicAdapter != nil,
+		"openai_mounted", openaiAdapter != nil,
 	)
 
 	a.srv = server.NewFromConfig(server.Config{
@@ -347,5 +382,46 @@ func (h anthropicRunHandleAdapter) Stream() anthropic.Stream {
 }
 
 func (h anthropicRunHandleAdapter) SessionID() string {
+	return h.run.SessionID()
+}
+
+// openaiEngineAdapter wraps a concrete *engine.Engine and adapts its Run
+// signature to openai.Engine. Mirrors anthropicEngineAdapter exactly —
+// same Go return-type-invariance rationale (cmd-level seam, TRST-04).
+type openaiEngineAdapter struct {
+	engine *engine.Engine
+}
+
+// Collect satisfies openai.Engine.Collect by delegating verbatim.
+func (a openaiEngineAdapter) Collect(ctx context.Context, req *canonical.ChatRequest) (*canonical.ChatResponse, error) {
+	resp, err := a.engine.Collect(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("openai engine collect: %w", err)
+	}
+	return resp, nil
+}
+
+// Run satisfies openai.Engine.Run by wrapping the concrete *engine.Run
+// in openaiRunHandleAdapter.
+func (a openaiEngineAdapter) Run(ctx context.Context, req *canonical.ChatRequest) (openai.RunHandle, error) {
+	run, err := a.engine.Run(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("openai engine run: %w", err)
+	}
+	return openaiRunHandleAdapter{run: run}, nil
+}
+
+// openaiRunHandleAdapter adapts *engine.Run to openai.RunHandle.
+// Mirrors anthropicRunHandleAdapter — same structural-compatibility
+// reasoning for engine.Stream → openai.Stream assignment.
+type openaiRunHandleAdapter struct {
+	run *engine.Run
+}
+
+func (h openaiRunHandleAdapter) Stream() openai.Stream {
+	return h.run.Stream()
+}
+
+func (h openaiRunHandleAdapter) SessionID() string {
 	return h.run.SessionID()
 }
