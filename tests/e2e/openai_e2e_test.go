@@ -130,6 +130,11 @@ func TestE2E_OpenAI(t *testing.T) {
 	// object: object=="chat.completion", choices[0].index==0,
 	// choices[0].message.role=="assistant", message.content non-empty,
 	// finish_reason non-empty. Real kiro — inherits bootGateway warmup-skip.
+	//
+	// ChatCompletions_NonStreaming ratifies STRM-05 (stream:false regression for
+	// OpenAI surface). Note: OpenAI wire.Stream is bool (absent=false), so absent
+	// field also routes to non-streaming — this matches the OpenAI public spec and
+	// is correct behavior.
 	t.Run("ChatCompletions_NonStreaming", func(t *testing.T) {
 		body := []byte(`{"model":"auto","messages":[{"role":"user","content":"say hi"}],"stream":false}`)
 		resp := ollamaRequest(t, http.MethodPost, baseURL+"/v1/chat/completions", body, auth)
@@ -197,6 +202,10 @@ func TestE2E_OpenAI(t *testing.T) {
 	// data:-only framing, role-first delta, content deltas, a finish_reason
 	// frame, and a terminal `data: [DONE]`. Pi hard-codes stream:true so this
 	// is the load-bearing surface for SURF-06.
+	//
+	// ChatCompletions_Streaming ratifies STRM-02 (OpenAI SSE) and STRM-03 (same
+	// canonical channel as Ollama and Anthropic — all three surfaces call
+	// engine.Run().Stream().Chunks() via the engine adapter).
 	t.Run("ChatCompletions_Streaming", func(t *testing.T) {
 		body := []byte(`{"model":"auto","messages":[{"role":"user","content":"say hi"}],"stream":true}`)
 		resp := ollamaRequest(t, http.MethodPost, baseURL+"/v1/chat/completions", body, auth)
