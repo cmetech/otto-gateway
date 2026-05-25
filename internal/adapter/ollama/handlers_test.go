@@ -22,6 +22,12 @@ type fakeEngine struct {
 	// lastReq captures the canonical request the handler synthesized
 	// so tests can assert wire→canonical translation passed through.
 	lastReq *canonical.ChatRequest
+
+	// runChunks is the set of canonical.Chunk values Engine.Run sends during
+	// streaming tests. Nil means the stream closes immediately (done:true only).
+	runChunks []canonical.Chunk
+	// runErr, if non-nil, is returned directly by Engine.Run before any streaming.
+	runErr error
 }
 
 func (f *fakeEngine) Collect(_ context.Context, req *canonical.ChatRequest) (*canonical.ChatResponse, error) {
@@ -32,11 +38,20 @@ func (f *fakeEngine) Collect(_ context.Context, req *canonical.ChatRequest) (*ca
 	return f.resp, nil
 }
 
-// Run is a compile stub so adapter.go's Engine interface is satisfied after
-// Plan 01. Plan 03 Task 2 replaces this with a real fake RunHandle for
-// streaming tests.
+// runChunks is the set of canonical.Chunk values fakeEngine.Run sends for
+// streaming tests. If nil, an empty channel is used (stream closes immediately).
+// runErr is returned by Engine.Run itself (before any streaming begins).
+// streamErr is the error returned by fakeStream.Result() at stream end.
+
+// Run builds a fakeRunHandle populated with runChunks and closes the channel,
+// enabling streaming handler tests. runErr, if non-nil, causes Run to return
+// an error directly (before streaming begins).
 func (f *fakeEngine) Run(_ context.Context, _ *canonical.ChatRequest) (RunHandle, error) {
-	return nil, errors.New("fakeEngine.Run: not implemented until Plan 03 wires the real fake — streaming tests use Plan 03")
+	if f.runErr != nil {
+		return nil, f.runErr
+	}
+	final := &canonical.FinalResult{StopReason: canonical.StopEndTurn}
+	return newFakeRunHandle(f.runChunks, final, nil), nil
 }
 
 // fakeCatalog implements ModelCatalog with a fixed []canonical.ModelInfo.
@@ -126,7 +141,30 @@ func TestHandleChat_EmptyMessages_400(t *testing.T) {
 	}
 }
 
-func TestHandleChat_StreamTrue_SilentDowngrade(t *testing.T) {
+// TestHandleChat_Streaming: absent/true stream field routes to Engine.Run
+// and the response Content-Type is application/x-ndjson.
+func TestHandleChat_Streaming(t *testing.T) {
+	eng := &fakeEngine{
+		runChunks: []canonical.Chunk{
+			{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "hello"}},
+		},
+	}
+	a := newTestAdapter(eng, nil)
+	// Absent stream field (default = stream:true per streamEnabled).
+	body := `{"model":"auto","messages":[{"role":"user","content":"hi"}]}`
+	w := doPost(t, a, "/chat", body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	ct := w.Header().Get("Content-Type")
+	if !strings.HasPrefix(ct, "application/x-ndjson") {
+		t.Errorf("Content-Type: got %q, want application/x-ndjson prefix (streaming branch)", ct)
+	}
+}
+
+// TestHandleChat_StreamFalse_NonStreaming: explicit stream:false still routes
+// to Engine.Collect and returns a single application/json object.
+func TestHandleChat_StreamFalse_NonStreaming(t *testing.T) {
 	eng := &fakeEngine{
 		resp: &canonical.ChatResponse{
 			Message: canonical.Message{
@@ -137,25 +175,26 @@ func TestHandleChat_StreamTrue_SilentDowngrade(t *testing.T) {
 		},
 	}
 	a := newTestAdapter(eng, nil)
-	body := `{"model":"auto","messages":[{"role":"user","content":"hi"}],"stream":true}`
+	body := `{"model":"auto","messages":[{"role":"user","content":"hi"}],"stream":false}`
 	w := doPost(t, a, "/chat", body)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status: got %d, want 200; body=%s", w.Code, w.Body.String())
 	}
-	// Engine was called — proves we did NOT branch into streaming.
-	if eng.lastReq == nil {
-		t.Fatal("engine not called — silent downgrade broken")
+	ct := w.Header().Get("Content-Type")
+	if !strings.HasPrefix(ct, "application/json") {
+		t.Errorf("Content-Type: got %q, want application/json prefix (non-streaming)", ct)
 	}
-	// canonical.Stream should be false in the request (the adapter
-	// flipped wire.Stream to false before translating).
-	if eng.lastReq.Stream {
-		t.Error("canonical Stream: got true, want false (silent downgrade did not propagate)")
+	// Engine.Collect was called (not Run).
+	if eng.lastReq == nil {
+		t.Fatal("engine.Collect not called for stream:false")
 	}
 }
 
+// TestHandleChat_EngineError_500: stream:false + Collect error → 500.
 func TestHandleChat_EngineError_500(t *testing.T) {
 	a := newTestAdapter(&fakeEngine{err: errors.New("kiro exploded")}, nil)
-	body := `{"model":"auto","messages":[{"role":"user","content":"hi"}]}`
+	// Use stream:false so the test exercises Engine.Collect (not Engine.Run).
+	body := `{"model":"auto","messages":[{"role":"user","content":"hi"}],"stream":false}`
 	w := doPost(t, a, "/chat", body)
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status: got %d, want 500", w.Code)
@@ -163,6 +202,17 @@ func TestHandleChat_EngineError_500(t *testing.T) {
 	// T-02-33: error string must not echo the request body content.
 	if strings.Contains(w.Body.String(), "hi") {
 		t.Errorf("error body leaks request content: %q", w.Body.String())
+	}
+}
+
+// TestHandleChat_RunError_500: streaming path (default absent stream) +
+// Engine.Run error → 500 before any NDJSON is written.
+func TestHandleChat_RunError_500(t *testing.T) {
+	a := newTestAdapter(&fakeEngine{runErr: errors.New("kiro exploded on Run")}, nil)
+	body := `{"model":"auto","messages":[{"role":"user","content":"hi"}]}`
+	w := doPost(t, a, "/chat", body)
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status: got %d, want 500", w.Code)
 	}
 }
 
