@@ -128,26 +128,6 @@ func (a *Adapter) RegisterRoutes(r chi.Router) {
 // and POST /completions (4 MiB, mirrors the Anthropic adapter limit).
 const chatBodyCap int64 = 4 << 20 // 4 MiB
 
-// handleChatCompletions handles POST /chat/completions.
-// Real implementation lives in handlers.go (Plan 03-02 Task 3).
-// This stub decodes the body using the real wire struct and helper so
-// that decode.go and errors.go helpers are exercised during Plan 01 tests;
-// Task 3 replaces the body with the engine dispatch.
-func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
-	var wire chatCompletionRequest
-	if err := decodeJSONBody(w, r, chatBodyCap, &wire); err != nil {
-		if isMaxBytesError(err) {
-			writeError(w, http.StatusRequestEntityTooLarge, errRequestTooLarge, "request body exceeds maximum size")
-			return
-		}
-		writeError(w, http.StatusBadRequest, errInvalidRequest, "invalid JSON: "+err.Error())
-		return
-	}
-	// TODO(03-02): replace with real engine dispatch + streaming branch.
-	// writeJSON used here to satisfy errcheck on unused-func; real call site is handlers.go.
-	writeJSON(w, chatResponseToCompletion(nil, wire.Model))
-}
-
 // completionRequest is a placeholder request struct for decoding
 // POST /completions. TODO(03-03): replace with the full wire struct.
 type completionRequest struct {
