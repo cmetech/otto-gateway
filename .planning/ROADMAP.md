@@ -224,7 +224,21 @@ Plans:
   4. Killing the HTTP request mid-stream (canceling `r.Context()`) issues a `session/cancel` over JSON-RPC and the `kiro-cli` subprocess stops emitting chunks for that request without crashing the slot.
   5. Both adapters consume the same `chan canonical.ChatChunk` from `engine.Run(ctx, req)` — verified by reading the engine signature and adapter pump tests.
 
-**Plans:** TBD
+**Plans:** 4 plans
+
+Plans:
+**Wave 1**
+
+- [ ] 04-01-PLAN.md — Wire *bool fix (stream absent=true) + engine.Run AfterFunc watchdog + StopWatchdog accessor + ollama adapter Engine/RunHandle/Stream interfaces
+
+**Wave 2** *(blocked on Wave 1 completion — runs parallel)*
+
+- [ ] 04-02-PLAN.md — Ollama NDJSON emitter (ndjson.go) + handlers.go streaming branch + ollama adapter goleak gate + Chat_Streaming/Generate_Streaming/Chat_DisconnectSmoke E2E
+- [ ] 04-03-PLAN.md — Engine watchdog unit tests (watchdog_test.go) + ACP cancel frame wire integration test (cancel_test.go + fakeacp_test.go extension)
+
+**Wave 3** *(blocked on Waves 1-2 completion — Phase 4 acceptance)*
+
+- [ ] 04-04-PLAN.md — OpenAI SSE + Anthropic SSE regression E2E subtests (STRM-02/03/05 ratification)
 
 ### Phase 5: Pool + Stateful Sessions
 
