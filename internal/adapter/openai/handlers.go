@@ -79,6 +79,65 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, chatResponseToCompletion(resp, wire.Model))
 }
 
+// handleCompletions handles POST /completions (legacy text completion shim — D-03).
+//
+// Flow:
+//  1. Nil-engine guard → 503 errAPI ("kiro-cli not configured").
+//  2. decodeJSONBody with 4 MiB cap. 413 errRequestTooLarge on cap;
+//     400 errInvalidRequest on syntactic error.
+//  3. Silently downgrade stream:true to false (JSON-only shim; D-03 /
+//     Open Question 2 resolved — no Phase 3 client drives completions streaming).
+//     Mirror ollama/handlers.go:42-45.
+//  4. promptToMessages: decode Prompt (string or []string); empty → 400.
+//  5. engine.Collect → chatResponseToTextCompletion → writeJSON.
+//  6. T-02-33: engine errors logged raw via slog.Error, generic 500 — NEVER echo.
+//  7. Accept-and-ignore: logprobs/echo/suffix/best_of/n/max_tokens in wire struct.
+//
+// T-03-20: decodeJSONBody + MaxBytesReader(4 MiB) → 413.
+// T-03-21: engine.Collect errors slog'd raw + generic 500 message (T-02-33 carry-forward).
+func (a *Adapter) handleCompletions(w http.ResponseWriter, r *http.Request) {
+	if a.cfg.Engine == nil {
+		writeError(w, http.StatusServiceUnavailable, errAPI, "kiro-cli not configured (set KIRO_CMD)")
+		return
+	}
+
+	var wire completionWireRequest
+	if err := decodeJSONBody(w, r, chatBodyCap, &wire); err != nil {
+		if isMaxBytesError(err) {
+			writeError(w, http.StatusRequestEntityTooLarge, errRequestTooLarge, "request body exceeds maximum size")
+			return
+		}
+		writeError(w, http.StatusBadRequest, errInvalidRequest, "invalid JSON: "+err.Error())
+		return
+	}
+
+	// D-03: JSON-only shim; stream is silently downgraded.
+	// (Mirror ollama/handlers.go:42-45 pattern.)
+	wire.Stream = false
+
+	msgs, err := promptToMessages(wire.Prompt)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, errInvalidRequest, err.Error())
+		return
+	}
+
+	req := &canonical.ChatRequest{
+		Model:              wire.Model,
+		Messages:           msgs,
+		WorkingDirOverride: r.Header.Get("X-Working-Dir"),
+	}
+
+	resp, err := a.cfg.Engine.Collect(r.Context(), req)
+	if err != nil {
+		// T-02-33: log raw error, respond with generic message.
+		a.cfg.Logger.Error("openai: completions engine.Collect error", "err", err)
+		writeError(w, http.StatusInternalServerError, errAPI, "internal error")
+		return
+	}
+
+	writeJSON(w, chatResponseToTextCompletion(resp, wire.Model))
+}
+
 // handleModels handles GET /models (D-04, SC3).
 //
 // It renders the OpenAI model list from the injected ModelCatalog —

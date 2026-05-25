@@ -21,7 +21,6 @@ package openai
 import (
 	"context"
 	"log/slog"
-	"net/http"
 
 	"github.com/go-chi/chi/v5"
 
@@ -128,26 +127,7 @@ func (a *Adapter) RegisterRoutes(r chi.Router) {
 // and POST /completions (4 MiB, mirrors the Anthropic adapter limit).
 const chatBodyCap int64 = 4 << 20 // 4 MiB
 
-// completionRequest is a placeholder request struct for decoding
-// POST /completions. TODO(03-03): replace with the full wire struct.
-type completionRequest struct {
-	Model string `json:"model"`
-}
-
-// handleCompletions handles POST /completions (legacy text completion shim).
-// TODO(03-03): implement prompt→canonical→text_completion response.
-func (a *Adapter) handleCompletions(w http.ResponseWriter, r *http.Request) {
-	var req completionRequest
-	if err := decodeJSONBody(w, r, chatBodyCap, &req); err != nil {
-		if isMaxBytesError(err) {
-			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
-			return
-		}
-		http.Error(w, "invalid JSON", http.StatusBadRequest)
-		return
-	}
-	http.Error(w, "not implemented", http.StatusNotImplemented)
-}
+// handleCompletions is defined in handlers.go (Plan 03-03).
 
 // discardWriter implements io.Writer with a no-op Write so the
 // defensive default logger in New() does not allocate. Avoids

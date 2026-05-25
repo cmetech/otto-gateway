@@ -2,6 +2,7 @@ package openai
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -160,6 +161,83 @@ func decodeMessageContent(raw json.RawMessage) string {
 		// Non-text parts (image, etc.) are skipped — Phase 3 scope.
 	}
 	return sb.String()
+}
+
+// ----------------------------------------------------------------------------
+// Wire request shapes (POST /v1/completions legacy shim — D-03)
+// ----------------------------------------------------------------------------
+
+// completionWireRequest mirrors the legacy OpenAI text completions request.
+// Prompt is json.RawMessage because it accepts either a string or a []string.
+//
+// Accept-and-ignore extras (per D-03 / RESEARCH.md §Pattern 4): Logprobs,
+// Echo, Suffix, BestOf, N, MaxTokens decode without a 400. Stream bool
+// defaults false; handleCompletions silently sets it to false if true
+// (JSON-only shim; resolved Open Question 2 — no Phase 3 client drives
+// completions streaming). No DisallowUnknownFields per decode.go invariant.
+type completionWireRequest struct {
+	Model  string          `json:"model"`
+	Prompt json.RawMessage `json:"prompt"`           // string OR []string (polymorphic)
+	Stream bool            `json:"stream,omitempty"` // silently downgraded to false
+
+	// Accepted-and-ignored advanced params (D-03 — kiro-cli backend ignores them;
+	// T-03-23 accept disposition in threat register).
+	Logprobs json.RawMessage `json:"logprobs,omitempty"`
+	Echo     json.RawMessage `json:"echo,omitempty"`
+	Suffix   json.RawMessage `json:"suffix,omitempty"`
+	BestOf   json.RawMessage `json:"best_of,omitempty"`
+	N        json.RawMessage `json:"n,omitempty"`
+	MaxTokens json.RawMessage `json:"max_tokens,omitempty"`
+}
+
+// promptToMessages decodes the polymorphic Prompt field (string or []string)
+// into a single canonical.Message with role=RoleUser. Returns an error if
+// the prompt is empty or unparseable (→ 400 in handleCompletions).
+//
+// Array form: elements are joined with "\n" to preserve line boundaries.
+func promptToMessages(raw json.RawMessage) ([]canonical.Message, error) {
+	if len(raw) == 0 {
+		return nil, errors.New("prompt is required")
+	}
+
+	// Try string first (common path).
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		if s == "" {
+			return nil, errors.New("prompt must not be empty")
+		}
+		return []canonical.Message{
+			{
+				Role: canonical.RoleUser,
+				Content: []canonical.ContentPart{{
+					Kind: canonical.ContentKindText,
+					Text: s,
+				}},
+			},
+		}, nil
+	}
+
+	// Array-of-strings form.
+	var parts []string
+	if err := json.Unmarshal(raw, &parts); err != nil {
+		return nil, errors.New("prompt must be a string or array of strings")
+	}
+	if len(parts) == 0 {
+		return nil, errors.New("prompt array must not be empty")
+	}
+	joined := strings.Join(parts, "\n")
+	if joined == "" {
+		return nil, errors.New("prompt array produced empty content")
+	}
+	return []canonical.Message{
+		{
+			Role: canonical.RoleUser,
+			Content: []canonical.ContentPart{{
+				Kind: canonical.ContentKindText,
+				Text: joined,
+			}},
+		},
+	}, nil
 }
 
 // mapOpenAIRole translates the OpenAI wire role string into the canonical

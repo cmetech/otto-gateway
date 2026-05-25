@@ -195,6 +195,72 @@ func genMessageID(prefix string) string {
 	return prefix + hex.EncodeToString(b[:])
 }
 
+// ----------------------------------------------------------------------------
+// POST /v1/completions render shapes (RESEARCH.md §Pattern 4)
+// ----------------------------------------------------------------------------
+
+// textCompletion is the OpenAI text_completion response object.
+// object is always "text_completion"; logprobs in the choices is always null
+// (D-03 accept-and-ignore — kiro-cli backend cannot honor logprobs).
+type textCompletion struct {
+	ID      string       `json:"id"`      // "cmpl-…"
+	Object  string       `json:"object"`  // "text_completion"
+	Created int64        `json:"created"` // unix seconds
+	Model   string       `json:"model"`
+	Choices []textChoice `json:"choices"`
+	Usage   completionUsage `json:"usage"` // honest zeros (D-12)
+}
+
+// textChoice is one entry in the text_completion choices[].
+// Text carries the assistant's output directly (not a message object).
+// FinishReason is always a non-null mapped string.
+// Logprobs is always null (D-03 accept-and-ignore; RESEARCH.md §Pattern 4).
+type textChoice struct {
+	Index        int       `json:"index"`
+	Text         string    `json:"text"`
+	FinishReason string    `json:"finish_reason"` // non-null mapped string
+	Logprobs     *struct{} `json:"logprobs"`       // always null
+}
+
+// chatResponseToTextCompletion renders a canonical.ChatResponse into the
+// OpenAI text_completion wire shape. requestedModel is echoed back to the
+// client. Uses joinTextContent + mapFinishReason + genMessageID("cmpl-").
+// Nil resp is handled defensively (empty text, StopUnknown → "stop").
+func chatResponseToTextCompletion(resp *canonical.ChatResponse, requestedModel string) textCompletion {
+	out := textCompletion{
+		ID:      genMessageID("cmpl-"),
+		Object:  "text_completion",
+		Created: time.Now().Unix(),
+		Model:   requestedModel,
+		Usage: completionUsage{
+			PromptTokens:     0, // D-12 honest zeros
+			CompletionTokens: 0,
+			TotalTokens:      0,
+		},
+	}
+
+	text := ""
+	stopReason := canonical.StopUnknown
+	if resp != nil {
+		text = joinTextContent(resp.Message.Content)
+		stopReason = resp.StopReason
+		if out.Model == "" {
+			out.Model = resp.Model
+		}
+	}
+
+	out.Choices = []textChoice{
+		{
+			Index:        0,
+			Text:         text,
+			FinishReason: mapFinishReason(stopReason),
+			Logprobs:     nil, // always null per D-03
+		},
+	}
+
+	return out
+}
+
 // joinTextContent concatenates the Text fields of every ContentPart
 // whose Kind == ContentKindText. Non-text parts are skipped.
 // Copied verbatim from internal/adapter/ollama/render.go:135-146.
