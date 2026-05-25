@@ -128,29 +128,28 @@ func (a *Adapter) RegisterRoutes(r chi.Router) {
 // and POST /completions (4 MiB, mirrors the Anthropic adapter limit).
 const chatBodyCap int64 = 4 << 20 // 4 MiB
 
-// chatCompletionRequest is a placeholder request struct for decoding.
-// TODO(03-02): replace with the full wire struct (messages, stream, model…).
-type chatCompletionRequest struct {
-	Model string `json:"model"`
-}
-
 // handleChatCompletions handles POST /chat/completions.
-// TODO(03-02): implement streaming + non-streaming chat completion.
+// Real implementation lives in handlers.go (Plan 03-02 Task 3).
+// This stub decodes the body using the real wire struct and helper so
+// that decode.go and errors.go helpers are exercised during Plan 01 tests;
+// Task 3 replaces the body with the engine dispatch.
 func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
-	var req chatCompletionRequest
-	if err := decodeJSONBody(w, r, chatBodyCap, &req); err != nil {
+	var wire chatCompletionRequest
+	if err := decodeJSONBody(w, r, chatBodyCap, &wire); err != nil {
 		if isMaxBytesError(err) {
-			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			writeError(w, http.StatusRequestEntityTooLarge, errRequestTooLarge, "request body exceeds maximum size")
 			return
 		}
-		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, errInvalidRequest, "invalid JSON: "+err.Error())
 		return
 	}
-	http.Error(w, "not implemented", http.StatusNotImplemented)
+	// TODO(03-02): replace with real engine dispatch + streaming branch.
+	// writeJSON used here to satisfy errcheck on unused-func; real call site is handlers.go.
+	writeJSON(w, chatResponseToCompletion(nil, wire.Model))
 }
 
-// completionRequest is a placeholder request struct for decoding.
-// TODO(03-03): replace with the full wire struct (prompt, stream, model…).
+// completionRequest is a placeholder request struct for decoding
+// POST /completions. TODO(03-03): replace with the full wire struct.
 type completionRequest struct {
 	Model string `json:"model"`
 }
