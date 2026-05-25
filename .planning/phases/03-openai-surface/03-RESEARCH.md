@@ -561,7 +561,7 @@ for prefix, mounts := range byPrefix {
 
 **Confirmation note:** The Pi SDK base-URL key (`baseUrl`) and streaming default (`stream:true` hard-coded) are NOT assumptions — they are VERIFIED from local source (custom-models.md:24, openai-completions.ts:362). They were the STATE.md open item and are now closed.
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Does the official `openai` npm SDK (Pi's transport) require the final usage chunk when `stream_options.include_usage:true` is sent?**
    - What we know: Pi sends `stream_options.include_usage:true` (openai-completions.ts:365-367); the SDK exposes `chunk.usage` when present.
@@ -603,7 +603,7 @@ for prefix, mounts := range byPrefix {
 | SURF-04 | `POST /v1/completions` → `{object:"text_completion", choices[].text, usage zeros}`; advanced params ignored | unit | `go test ./internal/adapter/openai -run TestCompletions` | ❌ Wave 0 |
 | SURF-04 | Error envelope `{"error":{message,type,param,code}}` + status map (400/404/413/500) | unit | `go test ./internal/adapter/openai -run TestErrors` | ❌ Wave 0 |
 | SURF-04 | content string-or-array decode; system/developer role hoist; model:"auto" skips SetModel | unit / property | `go test ./internal/adapter/openai -run TestWire` | ❌ Wave 0 |
-| SURF-02 | `ENABLED_SURFACES` default includes openai; `validateEnabledSurfaces` accepts "openai"; unknown still fails | unit | `go test ./internal/config -run TestEnabledSurfaces` | ⚠️ extend existing config_test |
+| SURF-02 | `ENABLED_SURFACES` default includes openai; `validateEnabledSurfaces` accepts "openai"; unknown still fails | unit | `go test ./internal/config -run 'EnabledSurfaces'` | ⚠️ extend existing config_test |
 | SURF-02/D-01 | Both `/v1` surfaces mount without panic; `/v1/messages` AND `/v1/chat/completions` both routable | unit | `go test ./internal/server -run TestSurfaceMount` | ❌ Wave 0 |
 | SURF-06 | SSE handler leak-free; ctx-cancel returns cleanly | goleak | `go test ./internal/adapter/openai` (TestMain goleak gate) | ❌ Wave 0 (testmain_test.go) |
 | TRST-04 | `internal/adapter/openai` imports only canonical (+plugin) | arch | `make arch-lint` | ⚠️ add `adapter_openai` to .go-arch-lint.yml |

@@ -49,13 +49,17 @@ created: 2026-05-24
 | `POST /v1/completions` → `{object:"text_completion",choices[].text,usage zeros}`; advanced params ignored | SURF-04 | unit | `go test ./internal/adapter/openai -run TestCompletions` | ❌ W0 |
 | Error envelope `{"error":{message,type,param,code}}` + status map (400/401/404/413/500) | SURF-04 | unit | `go test ./internal/adapter/openai -run TestErrors` | ❌ W0 |
 | content string-or-array decode; system/developer role hoist; `model:"auto"` skips SetModel | SURF-04 | unit / property | `go test ./internal/adapter/openai -run TestWire` | ❌ W0 |
-| `ENABLED_SURFACES` default includes openai; `validateEnabledSurfaces` accepts "openai"; unknown still fails fast | SURF-02 | unit | `go test ./internal/config -run TestEnabledSurfaces` | ⚠️ extend existing |
+| `ENABLED_SURFACES` default includes openai; `validateEnabledSurfaces` accepts "openai"; unknown still fails fast | SURF-02 | unit | `go test ./internal/config -run 'EnabledSurfaces'` | ⚠️ extend existing |
 | Both `/v1` surfaces mount without panic; `/v1/messages` AND `/v1/chat/completions` both routable | SURF-02 / D-01 | unit | `go test ./internal/server -run TestSurfaceMount` | ❌ W0 |
 | SSE handler leak-free; ctx-cancel returns cleanly | SURF-06 | goleak | `go test ./internal/adapter/openai` (TestMain goleak gate) | ❌ W0 |
 | `internal/adapter/openai` imports only canonical (+plugin); none import engine | TRST-04 | arch | `make arch-lint` | ⚠️ add `adapter_openai` |
 | All concurrency race-clean | TRST-03 | race | `go test -race ./internal/adapter/openai/...` | ❌ W0 |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
+
+> Note: the `ENABLED_SURFACES` row uses `-run 'EnabledSurfaces'` (matches the real
+> `TestLoad_EnabledSurfaces_*` functions). `-run TestEnabledSurfaces` matches ZERO
+> tests and exits 0 vacuously — do not use it.
 
 ---
 
@@ -67,7 +71,7 @@ created: 2026-05-24
 - [ ] `internal/adapter/openai/integration_test.go` — full `r.Route`/httptest round-trip incl. `Content-Type: text/event-stream` assertion + `bufio.Scanner` over frames
 - [ ] `internal/server/server_test.go` — SurfaceMount-grouping test proving two `/v1` surfaces co-mount without panic (NEW — D-01 regression pin)
 - [ ] `.go-arch-lint.yml` — add `adapter_openai` component + `mayDependOn: [canonical]` (mirror `adapter_anthropic`)
-- [ ] Extend `internal/config/config_test.go` — assert default slice includes "openai" and allow-list accepts it (D-05)
+- [ ] Extend `internal/config/config_test.go` — assert default slice includes "openai" and allow-list accepts it (D-05); also update the existing `TestLoad_EnabledSurfaces_Default` expectation to `["ollama","anthropic","openai"]`
 - [ ] Framework install: none — all tooling present.
 
 ---
@@ -90,3 +94,4 @@ created: 2026-05-24
 - [ ] `nyquist_compliant: true` set in frontmatter
 
 **Approval:** pending
+</content>
