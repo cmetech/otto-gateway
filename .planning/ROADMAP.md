@@ -29,7 +29,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 2: Ollama End-to-End** - First runnable slice — LangFlow `POST /api/chat` reaches real `kiro-cli` (completed 2026-05-24)
 - [x] **Phase 3: OpenAI Surface** - Pi-SDK `POST /v1/chat/completions` shares the same canonical engine (completed 2026-05-25)
 - [x] **Phase 3.1: Anthropic Surface** *(INSERTED)* - loop24-client (GSD Pi) `POST /v1/messages` with Anthropic SSE shares the same canonical engine (completed 2026-05-24)
-- [ ] **Phase 4: Streaming** - NDJSON (Ollama) and SSE (OpenAI + Anthropic) off one canonical chunk channel, with disconnect cancellation
+- [x] **Phase 4: Streaming** - NDJSON (Ollama) and SSE (OpenAI + Anthropic) off one canonical chunk channel, with disconnect cancellation (completed 2026-05-25)
 - [ ] **Phase 5: Pool + Stateful Sessions** - Warm `POOL_SIZE` pool plus `X-Session-Id` registry, both visible on `/health/agents`
 - [ ] **Phase 6: Tool-Call Path** - Canonical tool calls rendered per-surface, with `coerceToolCall` for plain-JSON-as-text
 - [ ] **Phase 7: Embeddings** - Local BGE/E5 embeddings on three endpoints, independent of `kiro-cli`
@@ -224,7 +224,7 @@ Plans:
   4. Killing the HTTP request mid-stream (canceling `r.Context()`) issues a `session/cancel` over JSON-RPC and the `kiro-cli` subprocess stops emitting chunks for that request without crashing the slot.
   5. Both adapters consume the same `chan canonical.ChatChunk` from `engine.Run(ctx, req)` — verified by reading the engine signature and adapter pump tests.
 
-**Plans:** 3/4 plans executed
+**Plans:** 4/4 plans complete
 
 Plans:
 **Wave 1**
@@ -238,7 +238,7 @@ Plans:
 
 **Wave 3** *(blocked on Waves 1-2 completion — Phase 4 acceptance)*
 
-- [ ] 04-04-PLAN.md — Ratification E2E: OpenAI SSE streaming + non-streaming regression, Anthropic SSE streaming + non-streaming regression; documents bool-default-streaming semantics for both surfaces and Anthropic D-05 event:error exemption
+- [x] 04-04-PLAN.md — Ratification E2E: OpenAI SSE streaming + non-streaming regression, Anthropic SSE streaming + non-streaming regression; documents bool-default-streaming semantics for both surfaces and Anthropic D-05 event:error exemption
 
 ### Phase 5: Pool + Stateful Sessions
 
@@ -330,7 +330,7 @@ Phases execute in numeric order: 1 → 1.1 → 2 → 3 → 3.1 → 4 → 5 → 6
 | 1.1. ACP Wire Alignment (INSERTED) | 5/5 | Complete   | 2026-05-23 |
 | 2. Ollama End-to-End | 6/6 | Complete   | 2026-05-24 |
 | 3. OpenAI Surface | 4/4 | Complete   | 2026-05-25 |
-| 4. Streaming | 3/4 | In Progress|  |
+| 4. Streaming | 4/4 | Complete   | 2026-05-25 |
 | 5. Pool + Stateful Sessions | 0/TBD | Not started | - |
 | 6. Tool-Call Path | 0/TBD | Not started | - |
 | 7. Embeddings | 0/TBD | Not started | - |
