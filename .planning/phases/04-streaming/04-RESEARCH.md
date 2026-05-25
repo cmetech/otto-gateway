@@ -624,22 +624,25 @@ func TestMain(m *testing.M) {
 
 ---
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **`*bool` vs `bool` for `wire.Stream`**
    - What we know: `bool` defaults to `false` (absent = non-streaming); Node default is `stream:true` absent.
    - What's unclear: LangFlow always sends explicit `stream:true` or `stream:false`; other clients may omit it.
    - Recommendation: Change to `*bool` for correctness; the planner should make this a Wave 0 wire-type change in `wire.go`.
+   - **RESOLVED** — `wire.Stream` becomes `*bool` (Plan 01 Task 1). `streamEnabled(nil)` returns `true` (absent = streaming).
 
 2. **`Run.StopWatchdog()` accessor vs embedding the stop func in `finalizeNDJSON` closure**
    - What we know: Adapters cannot import `internal/engine`; `RunHandle` interface is declared locally in each adapter package.
    - What's unclear: The `stopWatchdog` field is on `*engine.Run`; adapters access it through their local `RunHandle` interface.
    - Recommendation: Add `StopWatchdog() func() bool` to the local `RunHandle` interfaces in `internal/adapter/ollama/adapter.go` AND `internal/adapter/openai/adapter.go` AND `internal/adapter/anthropic/adapter.go`. The concrete `*engine.Run` structurally satisfies it. This propagates cleanly without an import.
+   - **RESOLVED** — `StopWatchdog() func() bool` added to `ollama.RunHandle` (Plan 01 Task 3). Added to `openai.RunHandle` and `anthropic.RunHandle` as well, and each emitter's normal-completion path calls `stop()` — `openai/sse.go` `finalizeSSE` and the anthropic emitter's completion path (Plan 04 Task 0).
 
 3. **Where to put the watchdog unit test (D-10 fake-ACP assertion)**
    - What we know: `fakeacp_test.go` is in `package acp_test`; the engine's `fakeACP` is in `package engine` (whitebox). The watchdog is in the engine; the observable wire frame is on the ACP client.
    - What's unclear: Whether to test the watchdog via the engine fake-ACP pattern (extending `engine_test.go` with a `cancelSeenChan`) or via a new `acp/watchdog_integration_test.go` that goes engine → real `*acp.Client` → fake-ACP server.
    - Recommendation: Add a new `engine/watchdog_test.go` that uses a `fakeACP.cancelCalls` slice (already recorded by the existing `fakeACP` harness) to assert `Cancel` was called with the right session ID after ctx cancellation. The fake-ACP `session/cancel` JSON-RPC wire frame is separately validated in `acp/cancel_test.go` (new file) where the full ACP client + fake-ACP server pipeline is exercised.
+   - **RESOLVED** — `internal/engine/watchdog_test.go` (whitebox, `fakeACP.cancelCalls`) + `internal/acp/cancel_test.go` (ACP wire frame), per Plan 03.
 
 ---
 
