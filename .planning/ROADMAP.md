@@ -224,7 +224,7 @@ Plans:
   4. Killing the HTTP request mid-stream (canceling `r.Context()`) issues a `session/cancel` over JSON-RPC and the `kiro-cli` subprocess stops emitting chunks for that request without crashing the slot.
   5. Both adapters consume the same `chan canonical.ChatChunk` from `engine.Run(ctx, req)` — verified by reading the engine signature and adapter pump tests.
 
-**Plans:** 1/4 plans executed
+**Plans:** 3/4 plans executed
 
 Plans:
 **Wave 1**
@@ -233,8 +233,8 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion — plans run in parallel)*
 
-- [ ] 04-02-PLAN.md — Ollama NDJSON streaming: goleak gate (testmain_test.go), ndjson.go emitter (cancelFn + StopWatchdog teardown), handlers.go streaming branch, Chat_Streaming + Generate_Streaming + Chat_DisconnectSmoke E2E (pool-alive health-check assertion for slot-survival)
-- [ ] 04-03-PLAN.md — Watchdog correctness tests: engine watchdog unit tests (channel-based CancelOnCtxDone + stop-then-cancel StopPreventsCancel), ACP cancel frame integration test (cancelSeen channel in fakeACPServer)
+- [x] 04-02-PLAN.md — Ollama NDJSON streaming: goleak gate (testmain_test.go), ndjson.go emitter (cancelFn + StopWatchdog teardown), handlers.go streaming branch, Chat_Streaming + Generate_Streaming + Chat_DisconnectSmoke E2E (pool-alive health-check assertion for slot-survival)
+- [x] 04-03-PLAN.md — Watchdog correctness tests: engine watchdog unit tests (channel-based CancelOnCtxDone + stop-then-cancel StopPreventsCancel), ACP cancel frame integration test (cancelSeen channel in fakeACPServer)
 
 **Wave 3** *(blocked on Waves 1-2 completion — Phase 4 acceptance)*
 
@@ -330,7 +330,7 @@ Phases execute in numeric order: 1 → 1.1 → 2 → 3 → 3.1 → 4 → 5 → 6
 | 1.1. ACP Wire Alignment (INSERTED) | 5/5 | Complete   | 2026-05-23 |
 | 2. Ollama End-to-End | 6/6 | Complete   | 2026-05-24 |
 | 3. OpenAI Surface | 4/4 | Complete   | 2026-05-25 |
-| 4. Streaming | 1/4 | In Progress|  |
+| 4. Streaming | 3/4 | In Progress|  |
 | 5. Pool + Stateful Sessions | 0/TBD | Not started | - |
 | 6. Tool-Call Path | 0/TBD | Not started | - |
 | 7. Embeddings | 0/TBD | Not started | - |
