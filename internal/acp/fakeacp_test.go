@@ -92,6 +92,13 @@ type fakeACPServer struct {
 	// lastPromptID captures the id from the most recent session/prompt request.
 	// emitPromptResult uses it to echo the id back on the response frame.
 	lastPromptID float64
+	// cancelSeen is closed once the fake observes a session/cancel notification
+	// from the client. STRM-04 / Plan 04-03: D-10 contract.
+	cancelSeen chan struct{}
+	// lastCancelSID holds the sessionId from the most recent session/cancel
+	// notification observed by the fake. Protected by the serve() goroutine's
+	// sequential scan — read only after cancelSeen is closed.
+	lastCancelSID string
 }
 
 // newFakeACPServer creates a fake ACP server and starts its goroutine.
@@ -125,6 +132,7 @@ func newFakeACPServer(t *testing.T) *fakeACPServer {
 		done:                       make(chan struct{}),
 		permissionResponseReceived: make(chan struct{}),
 		promptSeen:                 make(chan struct{}),
+		cancelSeen:                 make(chan struct{}),
 	}
 
 	go f.serve(t)
@@ -261,6 +269,24 @@ func (f *fakeACPServer) serve(t *testing.T) {
 			if err := f.writeJSON(resp); err != nil {
 				t.Logf("fakeACP: write ping response: %v", err)
 				return
+			}
+
+		case "session/cancel":
+			// session/cancel is a notification (no id, no response expected).
+			// STRM-04 / Plan 04-03: capture the sessionId and signal cancelSeen.
+			var params struct {
+				SessionID string `json:"sessionId"`
+			}
+			if raw, ok := frame["params"]; ok {
+				_ = json.Unmarshal(raw, &params)
+			}
+			f.lastCancelSID = params.SessionID
+			// Close idempotently — same pattern as permissionResponseReceived.
+			select {
+			case <-f.cancelSeen:
+				// already closed
+			default:
+				close(f.cancelSeen)
 			}
 
 		default:
