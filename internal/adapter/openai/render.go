@@ -9,6 +9,57 @@ import (
 )
 
 // ----------------------------------------------------------------------------
+// GET /v1/models render shapes (RESEARCH.md §Pattern 5)
+//
+// Field names are validated against Bifrost core/providers/openai/types.go:857-860:
+// id, object, created (unix seconds), owned_by.
+// ----------------------------------------------------------------------------
+
+// modelList is the OpenAI models/list response object.
+// object is always "list"; data contains one entry per model.
+type modelList struct {
+	Object string      `json:"object"` // "list"
+	Data   []modelInfo `json:"data"`
+}
+
+// modelInfo is one entry in the models list.
+// object is always "model"; created is a fixed unix-seconds timestamp
+// (Pitfall 8 style — a stable per-boot value is acceptable);
+// owned_by identifies the serving backend.
+type modelInfo struct {
+	ID      string `json:"id"`
+	Object  string `json:"object"`   // "model"
+	Created int64  `json:"created"`  // unix seconds
+	OwnedBy string `json:"owned_by"` // "kiro" or "otto-gateway"
+}
+
+// catalogToModelList builds the OpenAI modelList from the pool catalog.
+// "auto" is always prepended (mirror ollama/handlers.go:108-109 Node parity).
+// Each entry gets object:"model", the provided ownedBy and created values.
+// A nil or empty models slice returns only the "auto" entry.
+//
+// SC3: the same pool catalog source as /api/tags → same model set by construction.
+func catalogToModelList(models []canonical.ModelInfo, ownedBy string, created int64) modelList {
+	data := make([]modelInfo, 0, 1+len(models))
+	// Prepend the synthetic "auto" entry (always present — Node parity).
+	data = append(data, modelInfo{
+		ID:      "auto",
+		Object:  "model",
+		Created: created,
+		OwnedBy: ownedBy,
+	})
+	for _, m := range models {
+		data = append(data, modelInfo{
+			ID:      m.ID,
+			Object:  "model",
+			Created: created,
+			OwnedBy: ownedBy,
+		})
+	}
+	return modelList{Object: "list", Data: data}
+}
+
+// ----------------------------------------------------------------------------
 // Non-streaming response wire shape (POST /v1/chat/completions, stream:false)
 //
 // Field order is LOAD-BEARING: encoding/json walks struct fields in
@@ -142,6 +193,72 @@ func genMessageID(prefix string) string {
 		return prefix + "rand_unavailable"
 	}
 	return prefix + hex.EncodeToString(b[:])
+}
+
+// ----------------------------------------------------------------------------
+// POST /v1/completions render shapes (RESEARCH.md §Pattern 4)
+// ----------------------------------------------------------------------------
+
+// textCompletion is the OpenAI text_completion response object.
+// object is always "text_completion"; logprobs in the choices is always null
+// (D-03 accept-and-ignore — kiro-cli backend cannot honor logprobs).
+type textCompletion struct {
+	ID      string       `json:"id"`      // "cmpl-…"
+	Object  string       `json:"object"`  // "text_completion"
+	Created int64        `json:"created"` // unix seconds
+	Model   string       `json:"model"`
+	Choices []textChoice `json:"choices"`
+	Usage   completionUsage `json:"usage"` // honest zeros (D-12)
+}
+
+// textChoice is one entry in the text_completion choices[].
+// Text carries the assistant's output directly (not a message object).
+// FinishReason is always a non-null mapped string.
+// Logprobs is always null (D-03 accept-and-ignore; RESEARCH.md §Pattern 4).
+type textChoice struct {
+	Index        int       `json:"index"`
+	Text         string    `json:"text"`
+	FinishReason string    `json:"finish_reason"` // non-null mapped string
+	Logprobs     *struct{} `json:"logprobs"`       // always null
+}
+
+// chatResponseToTextCompletion renders a canonical.ChatResponse into the
+// OpenAI text_completion wire shape. requestedModel is echoed back to the
+// client. Uses joinTextContent + mapFinishReason + genMessageID("cmpl-").
+// Nil resp is handled defensively (empty text, StopUnknown → "stop").
+func chatResponseToTextCompletion(resp *canonical.ChatResponse, requestedModel string) textCompletion {
+	out := textCompletion{
+		ID:      genMessageID("cmpl-"),
+		Object:  "text_completion",
+		Created: time.Now().Unix(),
+		Model:   requestedModel,
+		Usage: completionUsage{
+			PromptTokens:     0, // D-12 honest zeros
+			CompletionTokens: 0,
+			TotalTokens:      0,
+		},
+	}
+
+	text := ""
+	stopReason := canonical.StopUnknown
+	if resp != nil {
+		text = joinTextContent(resp.Message.Content)
+		stopReason = resp.StopReason
+		if out.Model == "" {
+			out.Model = resp.Model
+		}
+	}
+
+	out.Choices = []textChoice{
+		{
+			Index:        0,
+			Text:         text,
+			FinishReason: mapFinishReason(stopReason),
+			Logprobs:     nil, // always null per D-03
+		},
+	}
+
+	return out
 }
 
 // joinTextContent concatenates the Text fields of every ContentPart

@@ -21,7 +21,6 @@ package openai
 import (
 	"context"
 	"log/slog"
-	"net/http"
 
 	"github.com/go-chi/chi/v5"
 
@@ -114,10 +113,10 @@ func New(cfg Config) *Adapter {
 // directly onto the provided shared sub-router via r.Post/r.Get —
 // never r.Mount("/", …) which would panic when Anthropic shares "/v1".
 //
-// Handler bodies are stubs in Plan 01 (return 501); real logic lands in:
-//   - TODO(03-02): handleChatCompletions — streaming + non-streaming
-//   - TODO(03-03): handleCompletions — legacy text completion shim
-//   - TODO(03-03): handleModels — /v1/models from ModelCatalog
+// All handlers are fully implemented:
+//   - handleChatCompletions: stream:false (JSON) and stream:true (SSE) — Plan 02
+//   - handleCompletions: legacy text completion shim (JSON-only) — Plan 03
+//   - handleModels: /v1/models from ModelCatalog — Plan 03
 func (a *Adapter) RegisterRoutes(r chi.Router) {
 	r.Post("/chat/completions", a.handleChatCompletions)
 	r.Post("/completions", a.handleCompletions)
@@ -128,32 +127,7 @@ func (a *Adapter) RegisterRoutes(r chi.Router) {
 // and POST /completions (4 MiB, mirrors the Anthropic adapter limit).
 const chatBodyCap int64 = 4 << 20 // 4 MiB
 
-// completionRequest is a placeholder request struct for decoding
-// POST /completions. TODO(03-03): replace with the full wire struct.
-type completionRequest struct {
-	Model string `json:"model"`
-}
-
-// handleCompletions handles POST /completions (legacy text completion shim).
-// TODO(03-03): implement prompt→canonical→text_completion response.
-func (a *Adapter) handleCompletions(w http.ResponseWriter, r *http.Request) {
-	var req completionRequest
-	if err := decodeJSONBody(w, r, chatBodyCap, &req); err != nil {
-		if isMaxBytesError(err) {
-			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
-			return
-		}
-		http.Error(w, "invalid JSON", http.StatusBadRequest)
-		return
-	}
-	http.Error(w, "not implemented", http.StatusNotImplemented)
-}
-
-// handleModels handles GET /models.
-// TODO(03-03): implement /v1/models list from ModelCatalog.
-func (a *Adapter) handleModels(w http.ResponseWriter, _ *http.Request) {
-	http.Error(w, "not implemented", http.StatusNotImplemented)
-}
+// handleCompletions is defined in handlers.go (Plan 03-03).
 
 // discardWriter implements io.Writer with a no-op Write so the
 // defensive default logger in New() does not allocate. Avoids
