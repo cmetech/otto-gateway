@@ -224,12 +224,12 @@ Plans:
   4. Killing the HTTP request mid-stream (canceling `r.Context()`) issues a `session/cancel` over JSON-RPC and the `kiro-cli` subprocess stops emitting chunks for that request without crashing the slot.
   5. Both adapters consume the same `chan canonical.ChatChunk` from `engine.Run(ctx, req)` — verified by reading the engine signature and adapter pump tests.
 
-**Plans:** 4 plans
+**Plans:** 1/4 plans executed
 
 Plans:
 **Wave 1**
 
-- [ ] 04-01-PLAN.md — Atomic watchdog + all-surface teardown: engine.Run AfterFunc watchdog + StopWatchdog accessor, collect.go natural-completion stop(), ollama wire.go *bool + streamEnabled, ALL three RunHandle interface extensions + stop() call sites in finalizeSSE/finalizeStream, D-07 derived ctx in openai/anthropic handlers, ollamaEngineAdapter + ollamaRunHandleAdapter shims in main.go, openai/anthropic RunHandleAdapter StopWatchdog() — zero spurious-cancel window from first watchdog commit
+- [x] 04-01-PLAN.md — Atomic watchdog + all-surface teardown: engine.Run AfterFunc watchdog + StopWatchdog accessor, collect.go natural-completion stop(), ollama wire.go *bool + streamEnabled, ALL three RunHandle interface extensions + stop() call sites in finalizeSSE/finalizeStream, D-07 derived ctx in openai/anthropic handlers, ollamaEngineAdapter + ollamaRunHandleAdapter shims in main.go, openai/anthropic RunHandleAdapter StopWatchdog() — zero spurious-cancel window from first watchdog commit
 
 **Wave 2** *(blocked on Wave 1 completion — plans run in parallel)*
 
@@ -330,7 +330,7 @@ Phases execute in numeric order: 1 → 1.1 → 2 → 3 → 3.1 → 4 → 5 → 6
 | 1.1. ACP Wire Alignment (INSERTED) | 5/5 | Complete   | 2026-05-23 |
 | 2. Ollama End-to-End | 6/6 | Complete   | 2026-05-24 |
 | 3. OpenAI Surface | 4/4 | Complete   | 2026-05-25 |
-| 4. Streaming | 0/4 | Not started | - |
+| 4. Streaming | 1/4 | In Progress|  |
 | 5. Pool + Stateful Sessions | 0/TBD | Not started | - |
 | 6. Tool-Call Path | 0/TBD | Not started | - |
 | 7. Embeddings | 0/TBD | Not started | - |
