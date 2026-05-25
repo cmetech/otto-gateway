@@ -78,9 +78,25 @@ created: 2026-05-24
 
 ## Manual-Only Verifications
 
-| Behavior | Requirement | Why Manual | Test Instructions |
-|----------|-------------|------------|-------------------|
-| Pi-SDK real round-trip (streaming) | SURF-06 | Requires the real `@earendil-works/pi-ai` client + live `kiro-cli` backend; Pi hard-codes `stream:true` so this exercises the SSE path | Configure Pi `~/.gsd/agent/models.json` with `baseUrl=http://localhost:11434/v1`, `api:"openai-completions"`, `apiKey=<bearer>`; run a chat; confirm streamed assistant reply with zero SDK modification |
+None — the Pi-SDK round-trip (SURF-06 / SC2) is now covered by automated E2E
+tests (see below), so there are no manual-only verifications for this phase.
+
+### Automated coverage of the former HUMAN-UAT (SC2 / SURF-06)
+
+The Pi round-trip was originally scoped as a manual HUMAN-UAT. It is now proven
+by two automated layers in `tests/e2e/` (real binary + real `kiro-cli`, gated by
+`OTTO_E2E=1`, skips cleanly when `kiro-cli` is unavailable):
+
+| Behavior | Requirement | Test | Command |
+|----------|-------------|------|---------|
+| `/v1/chat/completions` non-stream → `chat.completion` (real kiro) | SURF-04 / SC1 | `TestE2E_OpenAI/ChatCompletions_NonStreaming` | `make e2e RUN=TestE2E_OpenAI` |
+| `/v1/chat/completions` **stream:true** → well-formed `chat.completion.chunk` frames + `[DONE]` (real kiro; the Pi path) | SURF-06 / SC2 | `TestE2E_OpenAI/ChatCompletions_Streaming` | `make e2e RUN=TestE2E_OpenAI` |
+| `/v1/models` set == `/api/tags` set | SURF-04 / SC3 | `TestE2E_OpenAI/ModelsMatchTags` | `make e2e RUN=TestE2E_OpenAI` |
+| `/v1/completions` → `text_completion`, advanced params ignored | SURF-04 | `TestE2E_OpenAI/Completions_NonStreaming` | `make e2e RUN=TestE2E_OpenAI` |
+| OpenAI routes 404 when `ENABLED_SURFACES` omits `openai` | SURF-02 / SC4 | `TestE2E_SurfaceGating_OpenAINotMounted` | `make e2e RUN=TestE2E_SurfaceGating_OpenAINotMounted` |
+| **Official `openai` SDK** non-stream + stream round-trip (the exact SDK Pi wraps) | SURF-06 / SC2 | `TestE2E_OpenAI_SDK_RoundTrip` (opt-in; `make e2e-sdk-setup` then `OTTO_E2E_SDK=1`) | `make e2e RUN=TestE2E_OpenAI_SDK_RoundTrip` |
+
+All passed against live `kiro-cli` on 2026-05-24 (streamed reply: "Hi! How can I help you?").
 
 ---
 

@@ -134,12 +134,22 @@ No new network endpoints, auth paths, or schema changes introduced beyond what t
 - `go test ./internal/server/... ./internal/adapter/...` — all OK
 - `make ci` (after cache clean) — lint 0, tests all pass, arch-lint OK, govulncheck no vulns
 
+## SC2 Resolution — automated instead of HUMAN-UAT
+
+The Task 3 Pi-SDK round-trip was originally returned as a HUMAN-UAT checkpoint.
+Per operator direction, it was instead automated to match the existing Ollama
+and Anthropic E2E coverage, removing the manual step. Added in `tests/e2e/`:
+
+- `openai_e2e_test.go` — `TestE2E_OpenAI` (Unauthorized, Models, ModelsMatchTags/SC3, ChatCompletions_NonStreaming/SC1, **ChatCompletions_Streaming/SC2**, Completions_NonStreaming) + `TestE2E_SurfaceGating_OpenAINotMounted` (SC4/SURF-02). Boots the real binary against real `kiro-cli`.
+- `sdk/openai_roundtrip.mjs` + `TestE2E_OpenAI_SDK_RoundTrip` — opt-in round-trip through the official `openai` npm SDK (the exact SDK Pi wraps), non-stream + stream.
+
+All passed against live `kiro-cli` on 2026-05-24 (streamed reply "Hi! How can I help you?", finish_reason=stop). **SC2 is now verified by automation — no operator sign-off required.**
+
 ## Next Phase Readiness
 
 - All three API surfaces (Ollama /api, Anthropic /v1, OpenAI /v1) are mounted and gateable via ENABLED_SURFACES
-- SC1, SC3, SC4, SC5 are verified by automated tests and make ci
-- SC2 (Pi-SDK HUMAN-UAT) awaits operator sign-off per the checkpoint below
-- Phase 4 can begin after the Pi-SDK round-trip is approved
+- SC1–SC5 all verified by automated tests + `make ci` + the new OpenAI E2E suite
+- Phase 4 can begin (Ollama NDJSON + disconnect cancellation + one-channel ratification)
 
 ---
 *Phase: 03-openai-surface*
