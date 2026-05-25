@@ -1,6 +1,7 @@
 package ollama
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"runtime/debug"
@@ -39,24 +40,36 @@ func (a *Adapter) handleChat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "`messages` is required and must be a non-empty array")
 		return
 	}
-	// Phase 2 only honors non-streaming; silent downgrade matches Node parity.
-	// streamEnabled treats nil as true (Ollama default); explicit stream:true
-	// is also downgraded. Phase 4 Plan 02 removes this block and adds NDJSON.
-	if streamEnabled(wire.Stream) {
-		f := false
-		wire.Stream = &f
-	}
 
 	req := wireToChatRequest(&wire, r)
 
-	start := time.Now()
-	resp, err := a.cfg.Engine.Collect(r.Context(), req)
+	if !streamEnabled(wire.Stream) {
+		// stream:false — non-streaming path: collect and return a single JSON object.
+		start := time.Now()
+		resp, err := a.cfg.Engine.Collect(r.Context(), req)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, chatResponseToWire(resp, start, wire.Model))
+		return
+	}
+
+	// stream:true (default when absent) — NDJSON streaming path (Phase 4).
+	// D-07: derive a cancelFn so emitNDJSONChunk can signal write failure back
+	// to the engine watchdog via context cancellation.
+	ctx, cancelFn := context.WithCancel(r.Context())
+	defer cancelFn()
+
+	run, err := a.cfg.Engine.Run(ctx, req)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-
-	writeJSON(w, chatResponseToWire(resp, start, wire.Model))
+	start := time.Now()
+	if emitErr := runNDJSONEmitter(ctx, cancelFn, w, run, wire.Model, true, start, a.cfg.Logger); emitErr != nil {
+		a.cfg.Logger.Debug("ollama: ndjson chat emitter error", "err", emitErr)
+	}
 }
 
 // ----------------------------------------------------------------------------
@@ -82,22 +95,36 @@ func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "`prompt` is required")
 		return
 	}
-	// Phase 2 silent downgrade — same rationale as handleChat above.
-	if streamEnabled(wire.Stream) {
-		f := false
-		wire.Stream = &f
-	}
 
 	req := wireGenerateToChatRequest(&wire, r)
 
-	start := time.Now()
-	resp, err := a.cfg.Engine.Collect(r.Context(), req)
+	if !streamEnabled(wire.Stream) {
+		// stream:false — non-streaming path: collect and return a single JSON object.
+		start := time.Now()
+		resp, err := a.cfg.Engine.Collect(r.Context(), req)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, generateResponseToWire(resp, start, wire.Model))
+		return
+	}
+
+	// stream:true (default when absent) — NDJSON streaming path (Phase 4).
+	// D-07: derive a cancelFn so emitNDJSONChunk can signal write failure back
+	// to the engine watchdog via context cancellation.
+	ctx, cancelFn := context.WithCancel(r.Context())
+	defer cancelFn()
+
+	run, err := a.cfg.Engine.Run(ctx, req)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-
-	writeJSON(w, generateResponseToWire(resp, start, wire.Model))
+	start := time.Now()
+	if emitErr := runNDJSONEmitter(ctx, cancelFn, w, run, wire.Model, false, start, a.cfg.Logger); emitErr != nil {
+		a.cfg.Logger.Debug("ollama: ndjson generate emitter error", "err", emitErr)
+	}
 }
 
 // ----------------------------------------------------------------------------
