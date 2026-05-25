@@ -157,7 +157,7 @@ Plans:
   4. `ENABLED_SURFACES` (introduced in Phase 3.1) extends to accept `openai`; default becomes `ollama,anthropic,openai` enabling all three. Setting `ENABLED_SURFACES=ollama` (or any subset omitting `openai`) at deploy time disables the OpenAI surface without code changes; `OPENAI_PATH_PREFIX` and `OLLAMA_PATH_PREFIX` are overridable.
   5. Architectural boundary check passes: `internal/adapter/openai`, `internal/adapter/ollama`, and `internal/adapter/anthropic` all import only `internal/canonical` + `internal/plugin`; none import `internal/engine`.
 
-**Plans:** 2/4 plans executed
+**Plans:** 3/4 plans executed
 
 Plans:
 **Wave 1**
@@ -170,7 +170,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 — shares handlers/render/wire)*
 
-- [ ] 03-03-PLAN.md — /v1/models (pool catalog, SC3) + /v1/completions legacy shim (D-03)
+- [x] 03-03-PLAN.md — /v1/models (pool catalog, SC3) + /v1/completions legacy shim (D-03)
 
 **Wave 4** *(blocked on Waves 1-3 — Phase 3 acceptance)*
 
@@ -315,7 +315,7 @@ Phases execute in numeric order: 1 → 1.1 → 2 → 3 → 3.1 → 4 → 5 → 6
 | 1. Foundations | 5/5 | Complete   | 2026-05-23 |
 | 1.1. ACP Wire Alignment (INSERTED) | 5/5 | Complete   | 2026-05-23 |
 | 2. Ollama End-to-End | 6/6 | Complete   | 2026-05-24 |
-| 3. OpenAI Surface | 2/4 | In Progress|  |
+| 3. OpenAI Surface | 3/4 | In Progress|  |
 | 4. Streaming | 0/TBD | Not started | - |
 | 5. Pool + Stateful Sessions | 0/TBD | Not started | - |
 | 6. Tool-Call Path | 0/TBD | Not started | - |
