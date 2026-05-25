@@ -55,6 +55,12 @@ type RunHandle interface {
 	// SessionID returns the kiro-cli session id this Run is bound to
 	// (empty when a PreHook short-circuited and ACP was never touched).
 	SessionID() string
+	// StopWatchdog returns the context.AfterFunc stop function for this
+	// run. Call it after normal stream completion to prevent the D-06
+	// watchdog goroutine from firing a spurious session/cancel. stop()
+	// returning false is expected on the disconnect path — Cancel is
+	// idempotent. (CONTEXT.md D-06, RESEARCH.md Pattern 2 Option A)
+	StopWatchdog() func() bool
 }
 
 // Stream is the consumer-defined chunk-delivery interface returned by

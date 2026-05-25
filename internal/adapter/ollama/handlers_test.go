@@ -32,6 +32,13 @@ func (f *fakeEngine) Collect(_ context.Context, req *canonical.ChatRequest) (*ca
 	return f.resp, nil
 }
 
+// Run is a compile stub so adapter.go's Engine interface is satisfied after
+// Plan 01. Plan 03 Task 2 replaces this with a real fake RunHandle for
+// streaming tests.
+func (f *fakeEngine) Run(_ context.Context, _ *canonical.ChatRequest) (RunHandle, error) {
+	return nil, errors.New("fakeEngine.Run: not implemented until Plan 03 wires the real fake — streaming tests use Plan 03")
+}
+
 // fakeCatalog implements ModelCatalog with a fixed []canonical.ModelInfo.
 type fakeCatalog struct {
 	models []canonical.ModelInfo

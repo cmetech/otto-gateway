@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,10 +12,39 @@ import (
 	"testing"
 	"time"
 
+	"otto-gateway/internal/canonical"
 	"otto-gateway/internal/engine"
 	"otto-gateway/internal/pool"
 	"otto-gateway/internal/testutil"
 )
+
+// testEngineAdapter adapts *engine.Engine to ollama.Engine for integration
+// tests. Mirrors cmd/otto-gateway/main.go's ollamaEngineAdapter — exists here
+// because integration_test.go is whitebox (package ollama) and cannot use the
+// cmd-level shim directly.
+type testEngineAdapter struct{ eng *engine.Engine }
+
+func (a testEngineAdapter) Collect(ctx context.Context, req *canonical.ChatRequest) (*canonical.ChatResponse, error) {
+	resp, err := a.eng.Collect(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("integration collect: %w", err)
+	}
+	return resp, nil
+}
+
+func (a testEngineAdapter) Run(ctx context.Context, req *canonical.ChatRequest) (RunHandle, error) {
+	run, err := a.eng.Run(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("integration run: %w", err)
+	}
+	return testRunHandleAdapter{run: run}, nil
+}
+
+type testRunHandleAdapter struct{ run *engine.Run }
+
+func (h testRunHandleAdapter) Stream() Stream         { return h.run.Stream() }
+func (h testRunHandleAdapter) SessionID() string      { return h.run.SessionID() }
+func (h testRunHandleAdapter) StopWatchdog() func() bool { return h.run.StopWatchdog() }
 
 // resolveKiroCLI gates integration tests on (1) OTTO_INTEGRATION=1 in
 // the env AND (2) either OTTO_KIRO_BIN pointing at a kiro-cli binary
@@ -75,7 +105,7 @@ func TestIntegration_ChatEndToEnd(t *testing.T) {
 
 	adapter := New(Config{
 		Logger:       logger,
-		Engine:       eng,
+		Engine:       testEngineAdapter{eng: eng},
 		ModelCatalog: p,
 		Version:      "test",
 		Commit:       "deadbee",

@@ -71,8 +71,9 @@ type fakeRunHandle struct {
 	sessionID string
 }
 
-func (f *fakeRunHandle) Stream() Stream    { return f.stream }
-func (f *fakeRunHandle) SessionID() string { return f.sessionID }
+func (f *fakeRunHandle) Stream() Stream         { return f.stream }
+func (f *fakeRunHandle) SessionID() string      { return f.sessionID }
+func (f *fakeRunHandle) StopWatchdog() func() bool { return nil }
 
 // ----------------------------------------------------------------------------
 // HTTP helpers

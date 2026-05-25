@@ -412,6 +412,16 @@ func finalizeStream(e *sseEmitter, run RunHandle) error {
 		return fmt.Errorf("anthropic: sse stream result: %w", rerr)
 	}
 
+	// D-06 teardown: prevent watchdog from firing spurious Cancel after natural
+	// stream completion. Note: Anthropic is explicitly EXEMPT from D-05
+	// (CONTEXT.md) — the Anthropic spec mandates `event: error` on terminal
+	// stream errors, so the error path (rerr != nil) above does NOT call
+	// stop(). Only the rerr == nil success path calls stop() so the watchdog
+	// still fires session/cancel on Anthropic stream errors/truncation.
+	if stop := run.StopWatchdog(); stop != nil {
+		stop()
+	}
+
 	stopReason := canonical.StopUnknown
 	if final != nil {
 		stopReason = final.StopReason
