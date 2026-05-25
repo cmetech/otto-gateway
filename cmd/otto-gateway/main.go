@@ -34,8 +34,6 @@ import (
 	"slices"
 	"time"
 
-	"github.com/go-chi/chi/v5"
-
 	"otto-gateway/internal/adapter/anthropic"
 	"otto-gateway/internal/adapter/ollama"
 	"otto-gateway/internal/canonical"
@@ -205,23 +203,27 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 		})
 	}
 
-	// Compose protected-router accessors with nil-safety. When a
-	// surface is disabled the corresponding field stays nil and the
-	// server.NewFromConfig mount block skips it.
-	var (
-		ollamaProtectedRouter    chi.Router
-		ollamaVersionHandler     http.HandlerFunc
-		anthropicProtectedRouter chi.Router
-	)
+	// Build the SurfaceMount list (D-01). Each enabled adapter contributes
+	// a SurfaceMount entry; adapters that are nil (disabled or degraded)
+	// are skipped. The server groups entries by prefix so Anthropic and
+	// OpenAI can share "/v1" without triggering chi's double-Mount panic.
+	var surfaces []server.SurfaceMount
+	var ollamaVersionHandler http.HandlerFunc
 	if ollamaAdapter != nil {
-		ollamaProtectedRouter = ollamaAdapter.ProtectedRouter()
+		surfaces = append(surfaces, server.SurfaceMount{
+			Prefix: cfg.OllamaPathPrefix,
+			Router: ollamaAdapter,
+		})
 		ollamaVersionHandler = ollamaAdapter.HandleVersion()
 	}
 	if anthropicAdapter != nil {
-		anthropicProtectedRouter = anthropicAdapter.ProtectedRouter()
+		surfaces = append(surfaces, server.SurfaceMount{
+			Prefix: cfg.AnthropicPathPrefix,
+			Router: anthropicAdapter,
+		})
 	}
 
-	if ollamaAdapter == nil && anthropicAdapter == nil {
+	if len(surfaces) == 0 {
 		// Defensive: an operator-supplied empty list (e.g.,
 		// ENABLED_SURFACES=" ,") shouldn't reach this path because
 		// config.Load injects the default when the env value resolves
@@ -248,19 +250,17 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 	)
 
 	a.srv = server.NewFromConfig(server.Config{
-		Logger:                   logger,
-		Version:                  version.Version,
-		Commit:                   version.Commit(),
-		HTTPAddr:                 cfg.HTTPAddr,
-		AuthTokens:               cfg.AuthToken,
-		AllowedPrefixes:          cfg.AllowedIPs,
-		AuthTrustXFF:             cfg.AuthTrustXFF, // Codex H-7 wiring path complete
-		OllamaPath:               cfg.OllamaPathPrefix,
-		OllamaProtectedRouter:    ollamaProtectedRouter,
-		OllamaVersionHandler:     ollamaVersionHandler, // Codex M-4 split accessor
-		AnthropicPath:            cfg.AnthropicPathPrefix,
-		AnthropicProtectedRouter: anthropicProtectedRouter,
-		Pool:                     poolForServer,
+		Logger:               logger,
+		Version:              version.Version,
+		Commit:               version.Commit(),
+		HTTPAddr:             cfg.HTTPAddr,
+		AuthTokens:           cfg.AuthToken,
+		AllowedPrefixes:      cfg.AllowedIPs,
+		AuthTrustXFF:         cfg.AuthTrustXFF, // Codex H-7 wiring path complete
+		OllamaVersionPath:    cfg.OllamaPathPrefix + "/version",
+		OllamaVersionHandler: ollamaVersionHandler,     // Codex M-4 split accessor
+		Surfaces:             surfaces,
+		Pool:                 poolForServer,
 	})
 
 	return a, cleanup, nil

@@ -112,10 +112,33 @@ func New(cfg Config) *Adapter {
 }
 
 // ProtectedRouter returns the chi sub-router carrying the 10 protected
-// Ollama routes. server.New mounts this under cfg.OllamaPath inside the
-// auth-protected sub-tree.
+// Ollama routes. Kept for any legacy callers; prefer RegisterRoutes for
+// the D-01 SurfaceMount mechanic.
 func (a *Adapter) ProtectedRouter() chi.Router {
 	return a.protectedRouter
+}
+
+// RegisterRoutes implements server.RouteRegistrar for the D-01
+// SurfaceMount mechanic. It registers all 10 protected Ollama routes
+// directly onto the provided shared sub-router via r.Post/r.Get/r.Delete,
+// avoiding the chi double-Mount panic that would occur from
+// r.Mount("/", a.protectedRouter) when another surface shares the prefix.
+func (a *Adapter) RegisterRoutes(r chi.Router) {
+	// Canonical chat / generate.
+	r.Post("/chat", a.handleChat)
+	r.Post("/generate", a.handleGenerate)
+
+	// Catalog endpoints.
+	r.Get("/tags", a.handleTags)
+	r.Post("/show", a.handleShow)
+	r.Get("/ps", a.handlePS)
+
+	// Stub endpoints (Node parity — LangFlow exercises these).
+	r.Post("/pull", a.handlePull)
+	r.Post("/push", a.handlePush)
+	r.Post("/create", a.handleCreate)
+	r.Post("/copy", a.handleCopy)
+	r.Delete("/delete", a.handleDelete)
 }
 
 // HandleVersion returns the /api/version handler as a standalone

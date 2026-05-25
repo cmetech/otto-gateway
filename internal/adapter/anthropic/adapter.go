@@ -106,11 +106,19 @@ func New(cfg Config) *Adapter {
 }
 
 // ProtectedRouter returns the chi sub-router carrying the single
-// protected /messages route. server.NewFromConfig mounts this under
-// cfg.AnthropicPath inside the auth-protected sub-tree (Phase 3.1
-// D-17 wiring lives in internal/server/server.go).
+// protected /messages route. Kept for any legacy callers; prefer
+// RegisterRoutes for the D-01 SurfaceMount mechanic.
 func (a *Adapter) ProtectedRouter() chi.Router {
 	return a.protectedRouter
+}
+
+// RegisterRoutes implements server.RouteRegistrar for the D-01
+// SurfaceMount mechanic. It registers POST /messages directly onto the
+// provided shared sub-router via r.Post, avoiding the chi double-Mount
+// panic that would occur from r.Mount("/", a.protectedRouter) when
+// OpenAI shares the same "/v1" prefix.
+func (a *Adapter) RegisterRoutes(r chi.Router) {
+	r.Post("/messages", a.handleMessages)
 }
 
 // discardWriter implements io.Writer with a no-op Write so the

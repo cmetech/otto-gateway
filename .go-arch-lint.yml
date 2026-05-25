@@ -30,6 +30,8 @@ components:
     in: adapter/ollama/**
   adapter_anthropic:
     in: adapter/anthropic/**
+  adapter_openai:
+    in: adapter/openai/**
   auth:
     in: auth/**
   canonical:
@@ -58,6 +60,10 @@ deps:
     mayDependOn:
       - canonical
   adapter_anthropic:
+    anyVendorDeps: true
+    mayDependOn:
+      - canonical
+  adapter_openai:
     anyVendorDeps: true
     mayDependOn:
       - canonical

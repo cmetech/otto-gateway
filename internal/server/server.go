@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
+	"sort"
 	"syscall"
 	"time"
 
@@ -29,6 +30,27 @@ type PoolStatsSource interface {
 	Stats() PoolStats
 }
 
+// RouteRegistrar is the interface each adapter implements to register
+// its routes onto a shared chi sub-router. Using direct r.Post/r.Get
+// calls (rather than r.Mount("/", subrouter)) avoids the chi double-Mount
+// panic that occurs when two adapters share the same prefix (e.g. both
+// Anthropic and OpenAI default to "/v1"). See D-01 in RESEARCH.md.
+type RouteRegistrar interface {
+	RegisterRoutes(r chi.Router)
+}
+
+// SurfaceMount pairs a URL prefix with a RouteRegistrar. Multiple
+// SurfaceMount entries may share the same Prefix; NewFromConfig groups
+// them and opens ONE auth-wrapped r.Route block per unique prefix so
+// that two surfaces on "/v1" (Anthropic + OpenAI) do not collide.
+type SurfaceMount struct {
+	// Prefix is the URL path prefix, e.g. "/api" or "/v1".
+	Prefix string
+	// Router registers the surface's routes onto the shared sub-router
+	// via r.Post / r.Get (never r.Mount("/", …)).
+	Router RouteRegistrar
+}
+
 // Config bundles the dependencies and wiring the server needs when
 // constructed via NewFromConfig. It replaces the Phase 1 (Config, logger,
 // version) constructor signature without removing it — New is kept as a
@@ -41,36 +63,27 @@ type PoolStatsSource interface {
 //   - AllowedPrefixes: IP allowlist CIDRs; empty disables (Node parity).
 //   - AuthTrustXFF: Codex H-7 — propagated into auth.IPAllowlist's
 //     TrustXForwardedFor flag.
-//   - OllamaPath: "/api" (from cfg.OllamaPathPrefix).
-//   - OllamaProtectedRouter: chi sub-router mounted under OllamaPath
-//     INSIDE the auth-protected sub-tree (Codex M-4 — adapter's
-//     ProtectedRouter() output).
 //   - OllamaVersionHandler: /api/version handler mounted on the OUTER
-//     router (auth-exempt per AUTH-03; Codex M-4 fix).
-//   - AnthropicPath: "/v1" (from cfg.AnthropicPathPrefix). Phase 3.1
-//     D-17 parallel mount; the block is skipped when AnthropicPath is
-//     empty OR AnthropicProtectedRouter is nil.
-//   - AnthropicProtectedRouter: chi sub-router mounted under
-//     AnthropicPath INSIDE the auth-protected sub-tree. The SAME
-//     auth.Bearer + auth.IPAllowlist chain wraps it as the Ollama
-//     surface (D-15 "one middleware, one mental model" — D-15 dual-
-//     header reading applies to both surfaces). D-18: no Anthropic
-//     equivalent of /api/version is exposed on the outer router.
+//     router (auth-exempt per AUTH-03; Codex M-4 fix). Only registered
+//     when OllamaVersionPath is non-empty.
+//   - OllamaVersionPath: the full outer path for the version handler,
+//     e.g. "/api/version". Typically cfg.OllamaPathPrefix+"/version".
+//   - Surfaces: the list of adapters to mount. Each entry contributes
+//     its routes to a shared auth-wrapped Route block for its Prefix.
+//     Entries with the same Prefix share one block (D-01 grouping).
 //   - Pool: PoolStatsSource for /health (may be nil when KIRO_CMD unset).
 type Config struct {
-	Logger                   *slog.Logger
-	Version                  string
-	Commit                   string
-	HTTPAddr                 string
-	AuthTokens               []string
-	AllowedPrefixes          []netip.Prefix
-	AuthTrustXFF             bool
-	OllamaPath               string
-	OllamaProtectedRouter    chi.Router
-	OllamaVersionHandler     http.HandlerFunc
-	AnthropicPath            string
-	AnthropicProtectedRouter chi.Router
-	Pool                     PoolStatsSource
+	Logger               *slog.Logger
+	Version              string
+	Commit               string
+	HTTPAddr             string
+	AuthTokens           []string
+	AllowedPrefixes      []netip.Prefix
+	AuthTrustXFF         bool
+	OllamaVersionPath    string       // outer exempt path, e.g. "/api/version"
+	OllamaVersionHandler http.HandlerFunc
+	Surfaces             []SurfaceMount
+	Pool                 PoolStatsSource
 }
 
 // Server wraps the chi router and HTTP server with structured logging.
@@ -116,19 +129,21 @@ func NewWithCommit(cfg config.Config, logger *slog.Logger, version, commit strin
 	return s
 }
 
-// NewFromConfig constructs a fully-wired Phase 2 server. The router is
-// built with:
+// NewFromConfig constructs a fully-wired server. The router is built with:
 //   - outer middleware: RequestID → Recoverer → accessLog (D-13;
 //     Pitfall 2: accessLog runs BEFORE auth so denied requests appear
 //     in logs).
-//   - outer exempt routes: / (root) + /health + cfg.OllamaPath+"/version"
+//   - outer exempt routes: / (root) + /health + cfg.OllamaVersionPath
 //     via cfg.OllamaVersionHandler. Codex M-4: /api/version registered
 //     EXACTLY ONCE on the outer router (no inner /version registration);
 //     no precedence dance.
-//   - protected sub-tree: r.Route(cfg.OllamaPath, ...) applies
-//     auth.Bearer + auth.IPAllowlist (with Codex H-7 TrustXForwardedFor
-//     threaded from cfg.AuthTrustXFF), then mounts the adapter's
-//     protected router via r.Mount("/", cfg.OllamaProtectedRouter).
+//   - protected sub-trees: cfg.Surfaces grouped by Prefix. For each
+//     unique Prefix, ONE auth-wrapped r.Route block is opened that
+//     applies auth.Bearer + auth.IPAllowlist (Codex H-7 TrustXForwardedFor
+//     threaded from cfg.AuthTrustXFF) ONCE. Each SurfaceMount within the
+//     group calls sm.Router.RegisterRoutes(r) — direct r.Post/r.Get calls
+//     onto the shared sub-router (D-01 mechanic: never r.Mount("/", …)
+//     which would panic when two surfaces share one prefix).
 //
 // cfg.Logger must be non-nil for production use; tests pass a t.Log-
 // backed logger via testutil.Logger.
@@ -149,17 +164,35 @@ func NewFromConfig(cfg Config) *Server {
 	// Exempt outer routes — auth + IP allowlist NOT applied here.
 	s.router.Get("/", s.rootHandler)
 	s.router.Get("/health", s.healthHandler)
-	if cfg.OllamaVersionHandler != nil && cfg.OllamaPath != "" {
+	if cfg.OllamaVersionHandler != nil && cfg.OllamaVersionPath != "" {
 		// Codex M-4: register /api/version on the OUTER router so it
 		// stays exempt. The adapter does NOT register /version on its
 		// protected router; there is exactly one registration site.
-		s.router.Get(cfg.OllamaPath+"/version", cfg.OllamaVersionHandler)
+		s.router.Get(cfg.OllamaVersionPath, cfg.OllamaVersionHandler)
 	}
 
-	// Protected sub-tree — auth.Bearer + auth.IPAllowlist scoped to
-	// cfg.OllamaPath only. /, /health, /api/version remain exempt.
-	if cfg.OllamaPath != "" && cfg.OllamaProtectedRouter != nil {
-		s.router.Route(cfg.OllamaPath, func(r chi.Router) {
+	// D-01: group Surfaces by prefix and open ONE auth-wrapped Route
+	// block per unique prefix. This avoids the chi double-Mount panic
+	// that occurs when two adapters share the same prefix (Anthropic +
+	// OpenAI both default to "/v1"). Within each prefix's block, each
+	// adapter registers its own routes via RegisterRoutes(r) which
+	// calls r.Post/r.Get directly — never r.Mount("/", …).
+	byPrefix := make(map[string][]SurfaceMount)
+	for _, sm := range cfg.Surfaces {
+		byPrefix[sm.Prefix] = append(byPrefix[sm.Prefix], sm)
+	}
+	// Sort prefixes for deterministic route registration order.
+	prefixes := make([]string, 0, len(byPrefix))
+	for p := range byPrefix {
+		prefixes = append(prefixes, p)
+	}
+	sort.Strings(prefixes)
+
+	for _, prefix := range prefixes {
+		mounts := byPrefix[prefix]
+		// Capture prefix for the closure.
+		p := prefix
+		s.router.Route(p, func(r chi.Router) {
 			r.Use(auth.Bearer(auth.Config{
 				Logger: cfg.Logger,
 				Tokens: cfg.AuthTokens,
@@ -169,29 +202,9 @@ func NewFromConfig(cfg Config) *Server {
 				AllowedPrefixes:    cfg.AllowedPrefixes,
 				TrustXForwardedFor: cfg.AuthTrustXFF, // Codex H-7
 			}))
-			r.Mount("/", cfg.OllamaProtectedRouter)
-		})
-	}
-
-	// Phase 3.1 D-17: parallel Anthropic mount block. Same auth chain
-	// as the Ollama branch — auth.Bearer reads BOTH Authorization:
-	// Bearer AND x-api-key via the D-15 extractToken helper, so
-	// loop24-client's preferred x-api-key path works without any
-	// adapter-specific middleware. D-18: no /v1/version equivalent
-	// is exposed on the outer router (Anthropic has no public
-	// /version surface).
-	if cfg.AnthropicPath != "" && cfg.AnthropicProtectedRouter != nil {
-		s.router.Route(cfg.AnthropicPath, func(r chi.Router) {
-			r.Use(auth.Bearer(auth.Config{
-				Logger: cfg.Logger,
-				Tokens: cfg.AuthTokens,
-			}))
-			r.Use(auth.IPAllowlist(auth.Config{
-				Logger:             cfg.Logger,
-				AllowedPrefixes:    cfg.AllowedPrefixes,
-				TrustXForwardedFor: cfg.AuthTrustXFF, // Codex H-7
-			}))
-			r.Mount("/", cfg.AnthropicProtectedRouter)
+			for _, sm := range mounts {
+				sm.Router.RegisterRoutes(r)
+			}
 		})
 	}
 
