@@ -109,8 +109,9 @@ type fakeRunHandle struct {
 	sessionID string
 }
 
-func (h *fakeRunHandle) Stream() Stream    { return h.stream }
-func (h *fakeRunHandle) SessionID() string { return h.sessionID }
+func (h *fakeRunHandle) Stream() Stream         { return h.stream }
+func (h *fakeRunHandle) SessionID() string      { return h.sessionID }
+func (h *fakeRunHandle) StopWatchdog() func() bool { return nil }
 
 // nullLogger returns a discard *slog.Logger for tests that don't need log output.
 func nullLogger() *slog.Logger {

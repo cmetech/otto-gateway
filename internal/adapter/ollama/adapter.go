@@ -39,6 +39,39 @@ import (
 // chat/generate handlers return 503 in that case.
 type Engine interface {
 	Collect(ctx context.Context, req *canonical.ChatRequest) (*canonical.ChatResponse, error)
+	Run(ctx context.Context, req *canonical.ChatRequest) (RunHandle, error)
+}
+
+// RunHandle is the consumer-defined handle the adapter receives from
+// Engine.Run. *engine.Run satisfies this structurally (via main.go
+// ollamaRunHandleAdapter). StopWatchdog() is called by ndjson.go
+// finalizeNDJSON on normal stream completion to prevent the D-06 watchdog
+// goroutine from firing a spurious session/cancel (RESEARCH.md Pattern 2
+// Option A).
+type RunHandle interface {
+	// Stream returns the chunk delivery interface for this run.
+	Stream() Stream
+	// SessionID returns the kiro-cli session id this Run is bound to
+	// (empty when a PreHook short-circuited and ACP was never touched).
+	SessionID() string
+	// StopWatchdog returns the context.AfterFunc stop function for this
+	// run. Call it after normal stream completion to prevent the D-06
+	// watchdog goroutine from firing a spurious session/cancel. stop()
+	// returning false is expected on the disconnect path — Cancel is
+	// idempotent. (CONTEXT.md D-06, RESEARCH.md Pattern 2 Option A)
+	StopWatchdog() func() bool
+}
+
+// Stream is the consumer-defined chunk-delivery interface returned by
+// RunHandle.Stream(). Mirrors engine.Stream so *engine.Run.Stream()'s
+// concrete return value satisfies it structurally.
+type Stream interface {
+	// Chunks returns the receive-only channel of canonical.Chunk values.
+	// The channel closes when the stream ends (success or error).
+	Chunks() <-chan canonical.Chunk
+	// Result blocks until the stream is closed and returns the
+	// canonical.FinalResult and any terminal error.
+	Result() (*canonical.FinalResult, error)
 }
 
 // ModelCatalog is the consumer-defined interface used by handleTags and

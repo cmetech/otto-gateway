@@ -165,7 +165,7 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 	// surfaces).
 	var engineForAdapter ollama.Engine
 	if a.engine != nil {
-		engineForAdapter = a.engine
+		engineForAdapter = ollamaEngineAdapter{engine: a.engine}
 	}
 	var catalogForAdapter ollama.ModelCatalog
 	if a.pool != nil {
@@ -385,6 +385,10 @@ func (h anthropicRunHandleAdapter) SessionID() string {
 	return h.run.SessionID()
 }
 
+func (h anthropicRunHandleAdapter) StopWatchdog() func() bool {
+	return h.run.StopWatchdog()
+}
+
 // openaiEngineAdapter wraps a concrete *engine.Engine and adapts its Run
 // signature to openai.Engine. Mirrors anthropicEngineAdapter exactly —
 // same Go return-type-invariance rationale (cmd-level seam, TRST-04).
@@ -411,6 +415,57 @@ func (a openaiEngineAdapter) Run(ctx context.Context, req *canonical.ChatRequest
 	return openaiRunHandleAdapter{run: run}, nil
 }
 
+// ollamaEngineAdapter wraps a concrete *engine.Engine and adapts its Run
+// signature to ollama.Engine. Mirrors anthropicEngineAdapter exactly —
+// same Go return-type-invariance rationale: *engine.Engine.Run returns
+// (*engine.Run, error) while ollama.Engine.Run wants (ollama.RunHandle, error).
+// This is the cmd-level seam that keeps internal/adapter/ollama free of any
+// internal/engine import (TRST-04 boundary — enforced by .go-arch-lint.yml).
+//
+// When a.engine is nil (degraded mode) engineForAdapter stays nil and the
+// nil-engine guard in ollama.handleChat/handleGenerate returns 503.
+type ollamaEngineAdapter struct {
+	engine *engine.Engine
+}
+
+// Collect satisfies ollama.Engine.Collect by delegating verbatim.
+func (a ollamaEngineAdapter) Collect(ctx context.Context, req *canonical.ChatRequest) (*canonical.ChatResponse, error) {
+	resp, err := a.engine.Collect(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("ollama engine collect: %w", err)
+	}
+	return resp, nil
+}
+
+// Run satisfies ollama.Engine.Run by wrapping the concrete *engine.Run
+// in ollamaRunHandleAdapter.
+func (a ollamaEngineAdapter) Run(ctx context.Context, req *canonical.ChatRequest) (ollama.RunHandle, error) {
+	run, err := a.engine.Run(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("ollama engine run: %w", err)
+	}
+	return ollamaRunHandleAdapter{run: run}, nil
+}
+
+// ollamaRunHandleAdapter adapts *engine.Run to ollama.RunHandle.
+// Mirrors anthropicRunHandleAdapter — same structural-compatibility
+// reasoning for engine.Stream → ollama.Stream assignment.
+type ollamaRunHandleAdapter struct {
+	run *engine.Run
+}
+
+func (h ollamaRunHandleAdapter) Stream() ollama.Stream {
+	return h.run.Stream()
+}
+
+func (h ollamaRunHandleAdapter) SessionID() string {
+	return h.run.SessionID()
+}
+
+func (h ollamaRunHandleAdapter) StopWatchdog() func() bool {
+	return h.run.StopWatchdog()
+}
+
 // openaiRunHandleAdapter adapts *engine.Run to openai.RunHandle.
 // Mirrors anthropicRunHandleAdapter — same structural-compatibility
 // reasoning for engine.Stream → openai.Stream assignment.
@@ -424,4 +479,8 @@ func (h openaiRunHandleAdapter) Stream() openai.Stream {
 
 func (h openaiRunHandleAdapter) SessionID() string {
 	return h.run.SessionID()
+}
+
+func (h openaiRunHandleAdapter) StopWatchdog() func() bool {
+	return h.run.StopWatchdog()
 }

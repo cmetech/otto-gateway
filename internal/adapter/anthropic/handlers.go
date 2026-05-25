@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"context"
 	"net/http"
 )
 
@@ -80,7 +81,12 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 	req := wireToChatRequest(&wire, r, a.cfg.Logger)
 
 	if wire.Stream {
-		runHandle, err := a.cfg.Engine.Run(r.Context(), req)
+		// D-07: create a derived context so that a write failure in
+		// runSSEEmitter cancels the derived ctx (via defer cancelFn), which
+		// the D-06 watchdog observes and translates into session/cancel.
+		ctx, cancelFn := context.WithCancel(r.Context())
+		defer cancelFn()
+		runHandle, err := a.cfg.Engine.Run(ctx, req)
 		if err != nil {
 			// Engine.Run failed BEFORE any SSE headers were written —
 			// respond with a normal JSON 500 envelope (T-02-33: never
@@ -89,7 +95,7 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, errAPI, "internal error")
 			return
 		}
-		if err := runSSEEmitter(r.Context(), w, runHandle, wire.Model, a.cfg.Logger); err != nil {
+		if err := runSSEEmitter(ctx, w, runHandle, wire.Model, a.cfg.Logger); err != nil {
 			// runSSEEmitter has already written SSE headers + frames
 			// (the error path inside the emitter handles its own
 			// `event: error` frame on mid-stream Result() errors —

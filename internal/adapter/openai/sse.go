@@ -220,6 +220,13 @@ func finalizeSSE(e *sseEmitter, run RunHandle) error {
 		return fmt.Errorf("openai: sse stream result: %w", rerr)
 	}
 
+	// D-06 teardown: stop() prevents the AfterFunc goroutine from emitting a
+	// spurious session/cancel after the stream closed naturally. D-08: this is
+	// NOT a shared stream driver — each emitter owns its own stop call.
+	if stop := run.StopWatchdog(); stop != nil {
+		stop()
+	}
+
 	// If no text chunks arrived at all, the role delta was never sent.
 	// Emit it now so the stream is always role-first (API contract).
 	if !e.roleSent {

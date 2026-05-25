@@ -40,8 +40,11 @@ func (a *Adapter) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Phase 2 only honors non-streaming; silent downgrade matches Node parity.
-	if wire.Stream {
-		wire.Stream = false
+	// streamEnabled treats nil as true (Ollama default); explicit stream:true
+	// is also downgraded. Phase 4 Plan 02 removes this block and adds NDJSON.
+	if streamEnabled(wire.Stream) {
+		f := false
+		wire.Stream = &f
 	}
 
 	req := wireToChatRequest(&wire, r)
@@ -79,8 +82,10 @@ func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "`prompt` is required")
 		return
 	}
-	if wire.Stream {
-		wire.Stream = false
+	// Phase 2 silent downgrade — same rationale as handleChat above.
+	if streamEnabled(wire.Stream) {
+		f := false
+		wire.Stream = &f
 	}
 
 	req := wireGenerateToChatRequest(&wire, r)

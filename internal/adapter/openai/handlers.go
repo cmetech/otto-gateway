@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"context"
 	"net/http"
 	"time"
 
@@ -50,7 +51,12 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 
 	if wire.Stream {
 		// Streaming path (Pi/SC2 use case — Pi hard-codes stream:true).
-		runHandle, err := a.cfg.Engine.Run(r.Context(), req)
+		// D-07: create a derived context so that a write failure in
+		// runSSEEmitter cancels the derived ctx (via defer cancelFn), which
+		// the D-06 watchdog observes and translates into session/cancel.
+		ctx, cancelFn := context.WithCancel(r.Context())
+		defer cancelFn()
+		runHandle, err := a.cfg.Engine.Run(ctx, req)
 		if err != nil {
 			// engine.Run failed BEFORE any SSE headers were written — safe to
 			// respond with a normal JSON 500 envelope (T-02-33: log raw, generic message).
@@ -58,7 +64,7 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 			writeError(w, http.StatusInternalServerError, errAPI, "internal error")
 			return
 		}
-		if err := runSSEEmitter(r.Context(), w, runHandle, wire.Model, a.cfg.Logger); err != nil {
+		if err := runSSEEmitter(ctx, w, runHandle, wire.Model, a.cfg.Logger); err != nil {
 			// runSSEEmitter has already written SSE headers + at least some frames.
 			// We cannot send a JSON 500 after WriteHeader; log at debug and let
 			// the truncated stream stand (Pitfall 3 / A5).
