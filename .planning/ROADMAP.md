@@ -229,16 +229,16 @@ Plans:
 Plans:
 **Wave 1**
 
-- [ ] 04-01-PLAN.md — Wire *bool fix (stream absent=true) + engine.Run AfterFunc watchdog + StopWatchdog accessor + ollama adapter Engine/RunHandle/Stream interfaces
+- [ ] 04-01-PLAN.md — Atomic watchdog + all-surface teardown: engine.Run AfterFunc watchdog + StopWatchdog accessor, collect.go natural-completion stop(), ollama wire.go *bool + streamEnabled, ALL three RunHandle interface extensions + stop() call sites in finalizeSSE/finalizeStream, D-07 derived ctx in openai/anthropic handlers, ollamaEngineAdapter + ollamaRunHandleAdapter shims in main.go, openai/anthropic RunHandleAdapter StopWatchdog() — zero spurious-cancel window from first watchdog commit
 
-**Wave 2** *(blocked on Wave 1 completion — runs parallel)*
+**Wave 2** *(blocked on Wave 1 completion — plans run in parallel)*
 
-- [ ] 04-02-PLAN.md — Ollama NDJSON emitter (ndjson.go) + handlers.go streaming branch + ollama adapter goleak gate + Chat_Streaming/Generate_Streaming/Chat_DisconnectSmoke E2E
-- [ ] 04-03-PLAN.md — Engine watchdog unit tests (watchdog_test.go) + ACP cancel frame wire integration test (cancel_test.go + fakeacp_test.go extension)
+- [ ] 04-02-PLAN.md — Ollama NDJSON streaming: goleak gate (testmain_test.go), ndjson.go emitter (cancelFn + StopWatchdog teardown), handlers.go streaming branch, Chat_Streaming + Generate_Streaming + Chat_DisconnectSmoke E2E (pool-alive health-check assertion for slot-survival)
+- [ ] 04-03-PLAN.md — Watchdog correctness tests: engine watchdog unit tests (channel-based CancelOnCtxDone + stop-then-cancel StopPreventsCancel), ACP cancel frame integration test (cancelSeen channel in fakeACPServer)
 
 **Wave 3** *(blocked on Waves 1-2 completion — Phase 4 acceptance)*
 
-- [ ] 04-04-PLAN.md — OpenAI SSE + Anthropic SSE regression E2E subtests (STRM-02/03/05 ratification)
+- [ ] 04-04-PLAN.md — Ratification E2E: OpenAI SSE streaming + non-streaming regression, Anthropic SSE streaming + non-streaming regression; documents bool-default-streaming semantics for both surfaces and Anthropic D-05 event:error exemption
 
 ### Phase 5: Pool + Stateful Sessions
 
@@ -330,7 +330,7 @@ Phases execute in numeric order: 1 → 1.1 → 2 → 3 → 3.1 → 4 → 5 → 6
 | 1.1. ACP Wire Alignment (INSERTED) | 5/5 | Complete   | 2026-05-23 |
 | 2. Ollama End-to-End | 6/6 | Complete   | 2026-05-24 |
 | 3. OpenAI Surface | 4/4 | Complete   | 2026-05-25 |
-| 4. Streaming | 0/TBD | Not started | - |
+| 4. Streaming | 0/4 | Not started | - |
 | 5. Pool + Stateful Sessions | 0/TBD | Not started | - |
 | 6. Tool-Call Path | 0/TBD | Not started | - |
 | 7. Embeddings | 0/TBD | Not started | - |
