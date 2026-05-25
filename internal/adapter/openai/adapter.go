@@ -113,10 +113,10 @@ func New(cfg Config) *Adapter {
 // directly onto the provided shared sub-router via r.Post/r.Get —
 // never r.Mount("/", …) which would panic when Anthropic shares "/v1".
 //
-// Handler bodies are stubs in Plan 01 (return 501); real logic lands in:
-//   - TODO(03-02): handleChatCompletions — streaming + non-streaming
-//   - TODO(03-03): handleCompletions — legacy text completion shim
-//   - TODO(03-03): handleModels — /v1/models from ModelCatalog
+// All handlers are fully implemented:
+//   - handleChatCompletions: stream:false (JSON) and stream:true (SSE) — Plan 02
+//   - handleCompletions: legacy text completion shim (JSON-only) — Plan 03
+//   - handleModels: /v1/models from ModelCatalog — Plan 03
 func (a *Adapter) RegisterRoutes(r chi.Router) {
 	r.Post("/chat/completions", a.handleChatCompletions)
 	r.Post("/completions", a.handleCompletions)
