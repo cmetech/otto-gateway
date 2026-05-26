@@ -30,7 +30,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 3: OpenAI Surface** - Pi-SDK `POST /v1/chat/completions` shares the same canonical engine (completed 2026-05-25)
 - [x] **Phase 3.1: Anthropic Surface** *(INSERTED)* - loop24-client (GSD Pi) `POST /v1/messages` with Anthropic SSE shares the same canonical engine (completed 2026-05-24)
 - [x] **Phase 4: Streaming** - NDJSON (Ollama) and SSE (OpenAI + Anthropic) off one canonical chunk channel, with disconnect cancellation (completed 2026-05-25)
-- [x] **Phase 5: Pool + Stateful Sessions** - Warm `POOL_SIZE` pool plus `X-Session-Id` registry, both visible on `/health/agents` (completed 2026-05-26)
+- [ ] **Phase 5: Pool + Stateful Sessions** - Warm `POOL_SIZE` pool plus `X-Session-Id` registry, both visible on `/health/agents` (plans 3/3 shipped 2026-05-26; verification gaps_found — SC3 X-Session-Id stateful path returns kiro-cli 500)
 - [ ] **Phase 6: Tool-Call Path** - Canonical tool calls rendered per-surface, with `coerceToolCall` for plain-JSON-as-text
 - [ ] **Phase 7: Embeddings** - Local BGE/E5 embeddings on three endpoints, independent of `kiro-cli`
 - [ ] **Phase 8: Plugin Hook Chain** - `PreHook`/`PostHook` over canonical types, with RequestID, Auth, Logging registered
