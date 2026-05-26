@@ -57,13 +57,17 @@ func (a *Adapter) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	if entry != nil {
 		entry.Mu.Lock()
-		// D-11: MarkUsed registers FIRST (runs LAST in defer LIFO) so it
-		// fires after the stream Result returns; Unlock registers SECOND
-		// (runs FIRST in defer LIFO) — semantically the orderings are
-		// equivalent because Mu is per-entry and never touched by
-		// Result/Stream, but this ordering documents D-11 intent.
-		defer entry.MarkUsed()
+		// D-11 (CR-01 fix): Unlock registers FIRST (runs LAST in defer
+		// LIFO), MarkUsed registers SECOND (runs FIRST in defer LIFO).
+		// This ordering ensures MarkUsed's write to Entry.LastUsed
+		// happens UNDER entry.Mu, which is the same mutex the reaper
+		// takes via TryLock when reading LastUsed (reaper.go). The
+		// previous ordering ran MarkUsed AFTER Unlock — a data race on
+		// LastUsed and a logic window where the reaper could kill a
+		// session whose stream had just completed but whose LastUsed
+		// was still stale.
 		defer entry.Mu.Unlock()
+		defer entry.MarkUsed()
 	}
 
 	if !streamEnabled(wire.Stream) {
@@ -162,8 +166,12 @@ func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 	}
 	if entry != nil {
 		entry.Mu.Lock()
-		defer entry.MarkUsed()
+		// CR-01 fix: Unlock registers FIRST (runs LAST), MarkUsed
+		// SECOND (runs FIRST). MarkUsed writes Entry.LastUsed and must
+		// run UNDER entry.Mu so the reaper's TryLock-guarded read sees
+		// the post-stream value.
 		defer entry.Mu.Unlock()
+		defer entry.MarkUsed()
 	}
 
 	if !streamEnabled(wire.Stream) {

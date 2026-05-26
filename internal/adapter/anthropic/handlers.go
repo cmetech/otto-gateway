@@ -91,8 +91,12 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	if entry != nil {
 		entry.Mu.Lock()
-		defer entry.MarkUsed()
+		// CR-01 fix: Unlock registers FIRST (runs LAST), MarkUsed
+		// SECOND (runs FIRST). MarkUsed writes Entry.LastUsed and must
+		// run UNDER entry.Mu so the reaper's TryLock-guarded read sees
+		// the post-stream value.
 		defer entry.Mu.Unlock()
+		defer entry.MarkUsed()
 	}
 
 	if wire.Stream {
