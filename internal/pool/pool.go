@@ -514,14 +514,26 @@ func (p *Pool) Prompt(ctx context.Context, sid string, blocks []canonical.Block)
 // Missing session is a silent no-op — matches the "best-effort cancel"
 // semantics of acp.Client.Cancel (which sends a notification with no
 // response expected).
+//
+// WR-04 fix: capture the Client pointer UNDER p.mu before releasing the
+// lock so a concurrent respawn (e.g., a future refactor that respawns
+// a session-bound slot) cannot swap slot.Client between our read and
+// the Cancel call. Today the "only NewSession respawns from the free
+// queue" invariant makes the unguarded read benign, but capturing
+// while we already hold the mutex is free insurance against the
+// invariant breaking.
 func (p *Pool) Cancel(sid string) {
 	p.mu.Lock()
 	slot, ok := p.sessionSlots[sid]
+	var client PoolClient
+	if ok {
+		client = slot.Client
+	}
 	p.mu.Unlock()
-	if !ok {
+	if !ok || client == nil {
 		return
 	}
-	slot.Client.Cancel(sid)
+	client.Cancel(sid)
 	// Codex M-3: also release the slot. The wrapper's sync.Once
 	// coordinates so a subsequent Result() / ctx-cancel does not
 	// double-release — see release closure in Prompt for the
