@@ -1,0 +1,7 @@
+# kiro-shim invocation: /Users/coreyellis/.local/bin/kiro-cli [acp]
+{"ts":"2026-05-26T15:47:34.327537Z","pid":75003,"child_pid":75004,"dir":"OUT","frame":{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientInfo":{"name":"otto-gateway","version":"0e8d8e9"},"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false}}}}
+{"ts":"2026-05-26T15:47:35.552114Z","pid":75003,"child_pid":75004,"dir":"OUT","frame":{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"","mcpServers":[]}}}
+{"ts":"2026-05-26T15:47:36.320494Z","pid":75003,"child_pid":75004,"dir":"OUT","frame":{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"9c23864a-3f9a-42d4-9ced-bf23f62e44f7"}}}
+{"ts":"2026-05-26T15:48:07.719169Z","pid":75003,"child_pid":75004,"dir":"OUT","frame":{"jsonrpc":"2.0","id":3,"method":"session/new","params":{"cwd":"/Users/coreyellis/code/github.com/cmetech/otto_app/otto-gateway/.claude/worktrees/agent-a36887bded4cd971a","mcpServers":[]}}}
+{"ts":"2026-05-26T15:48:07.720913Z","pid":75003,"child_pid":75004,"dir":"OUT","frame":{"jsonrpc":"2.0","id":4,"method":"session/prompt","params":{"sessionId":"78de878c-6ca6-4419-90c3-991705141e0c","prompt":[{"type":"text","text":"[User]\nhi"}],"content":[{"type":"text","text":"[User]\nhi"}]}}}
+{"ts":"2026-05-26T15:48:34.188177Z","pid":75003,"child_pid":75004,"dir":"OUT","frame":{"jsonrpc":"2.0","id":5,"method":"ping","params":{}}}

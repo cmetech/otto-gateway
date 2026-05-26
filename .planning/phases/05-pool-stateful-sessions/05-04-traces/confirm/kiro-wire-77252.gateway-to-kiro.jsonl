@@ -1,0 +1,5 @@
+# kiro-shim invocation: /Users/coreyellis/.local/bin/kiro-cli [acp]
+{"ts":"2026-05-26T15:49:32.905851Z","pid":77252,"child_pid":77253,"dir":"OUT","frame":{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientInfo":{"name":"otto-gateway","version":"0e8d8e9"},"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false}}}}
+{"ts":"2026-05-26T15:49:33.511272Z","pid":77252,"child_pid":77253,"dir":"OUT","frame":{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"/tmp","mcpServers":[]}}}
+{"ts":"2026-05-26T15:49:33.933715Z","pid":77252,"child_pid":77253,"dir":"OUT","frame":{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"d2607d94-2b83-4039-a8a7-4704004dc4de"}}}
+{"ts":"2026-05-26T15:50:32.90544Z","pid":77252,"child_pid":77253,"dir":"OUT","frame":{"jsonrpc":"2.0","id":3,"method":"ping","params":{}}}

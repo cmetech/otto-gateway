@@ -1,0 +1,5 @@
+# kiro-shim invocation: /Users/coreyellis/.local/bin/kiro-cli [acp]
+{"ts":"2026-05-26T15:48:18.596178Z","pid":75516,"child_pid":75517,"dir":"OUT","frame":{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientInfo":{"name":"otto-gateway","version":"0e8d8e9"},"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false}}}}
+{"ts":"2026-05-26T15:48:19.158439Z","pid":75516,"child_pid":75517,"dir":"OUT","frame":{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"","mcpServers":[]}}}
+{"ts":"2026-05-26T15:48:19.57588Z","pid":75516,"child_pid":75517,"dir":"OUT","frame":{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":"4163412f-74d4-4fa1-959b-b15756e9b002","prompt":[{"type":"text","text":"[User]\nhi"}],"content":[{"type":"text","text":"[User]\nhi"}]}}}
+{"ts":"2026-05-26T15:48:19.639391Z","pid":75516,"child_pid":75517,"dir":"OUT","frame":{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"4163412f-74d4-4fa1-959b-b15756e9b002"}}}

@@ -21,6 +21,17 @@ import (
 // per X-Session-Id). The ctx and cwd arguments are intentionally
 // ignored: the engine.ACPClient interface predates the per-entry
 // session model and the cwd handshake already happened in createEntry.
+//
+// Plan 05-04 H-A reverse-regression note (see
+// .planning/phases/05-pool-stateful-sessions/05-04-WIRE-DIFF.md
+// "Rejected Hypotheses" → H-A): do NOT "fix" this method to call
+// e.Client.NewSession per request. The wire-diff investigation
+// confirmed (via two-turn continuity Experiment 3) that the cached
+// SessionID supports multiple session/prompt calls without -32603. The
+// actual SC3 bug was H-B (empty cwd at createEntry's session/new) —
+// patched in registry.createEntry, not here. Recreating the session
+// per request would break conversation-level continuity (turn 2 would
+// not see turn 1's context because the model is bound per session id).
 func (e *Entry) NewSession(_ context.Context, _ string) (string, error) {
 	return e.SessionID, nil
 }
