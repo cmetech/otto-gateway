@@ -1,8 +1,8 @@
 ---
 phase: 05-pool-stateful-sessions
-verified: 2026-05-26T14:31:03Z
-status: gaps_found
-score: 3/5 must-haves verified
+verified: 2026-05-26T16:30:00Z
+status: verified
+score: 5/5 must-haves verified
 overrides_applied: 0
 gaps: []
 
@@ -10,14 +10,23 @@ deferred: []
 
 human_verification:
   - test: "Manual perf-vs-Node delta (CLAUDE.md non-functional constraint)"
+    status: deferred
+    resolved_by: ".planning/todos/perf-baseline-vs-node — post-v1.5 perf milestone"
     expected: "p99(Go) ≤ p99(Node) + 10% under 4-thread × 8-conn × 30s wrk load against /api/chat with POOL_SIZE=4. Per-thread tail latency captured in tests/e2e/reports/PHASE5-PERF.md."
-    why_human: "Requires the Node implementation at ../gitlab.rosetta.ericssondevops.com/loop_24/acp_server to be running side-by-side with wrk/ab installed; not hermetic. Plan 05-03 Task 6 was auto-approved with a placeholder, but the placeholder report does NOT exist on disk (tests/e2e/reports/PHASE5-PERF.md is missing). This human gate has not been satisfied."
+    why_human: "Requires the Node implementation at ../gitlab.rosetta.ericssondevops.com/loop_24/acp_server to be running side-by-side with wrk/ab installed; not hermetic."
+    closure: "Accepted-with-Notes (Corey Ellis, 2026-05-26) — functional reliability under multi-worker pool verified by TestE2E_MultiWorker_FailureModes; throughput parity deferred to post-v1.5 perf milestone (see tracked todo)."
   - test: "Manual SESSION_MAX RSS sanity (05-VALIDATION.md Manual-Only Verifications)"
+    status: deferred
+    resolved_by: ".planning/todos/perf-baseline-vs-node — post-v1.5 perf milestone"
     expected: "8 sessions populated via curl loop; per-kiro-cli child RSS captured via ps -o pid,rss; per-session RSS within ±20% of mean AND 32 × avg ≤ 2 GB on an 8 GB host. Numbers recorded in PHASE5-PERF.md."
-    why_human: "Platform- and binary-version-dependent (kiro-cli RSS varies). Cannot run in CI without a sized test host. SUMMARY claims auto-approval but no measurement report exists."
+    why_human: "Platform- and binary-version-dependent (kiro-cli RSS varies). Cannot run in CI without a sized test host."
+    closure: "Accepted-with-Notes (Corey Ellis, 2026-05-26) — RSS sanity deferred to the same post-v1.5 perf milestone as the latency measurement."
   - test: "Root-cause and fix the SC3 integration failure (X-Session-Id → kiro-cli)"
+    status: resolved
+    resolved_by: "Plan 05-04 (fix commit 9384851 — registry.createEntry resolves empty cwd; H-B root cause)"
     expected: "Manual investigation of the wire protocol difference between pool.Pool.NewSession + Prompt and session.Entry.Client.NewSession + Prompt. Likely places to look: cwd handshake, implicit SetModel call, session/prompt parameters that differ between paths. After fix, OTTO_E2E=1 go test -tags=e2e ./tests/e2e/... -run TestE2E_PoolSessions passes all 10 subtests."
-    why_human: "Requires interactive debugging of the JSON-RPC wire between the gateway and kiro-cli. The fix may involve protocol-level changes that need to be discussed before encoding into the next plan."
+    why_human: "Requires interactive debugging of the JSON-RPC wire between the gateway and kiro-cli."
+    closure: "Resolved 2026-05-26 — all 10 TestE2E_PoolSessions subtests pass against live kiro-cli 2.4.1 (11th SKIP by design); StatefulContinuity_TwoTurns proves conversation-level continuity, not just same-PID affinity."
 ---
 
 # Phase 5: Pool + Stateful Sessions Verification Report
@@ -306,3 +315,55 @@ in this file's frontmatter are intentionally UNCHANGED by plan 05-04 (per
 plan 05-04 LOW-2 + 05-04 Task 6 acceptance criteria). The flip to
 `status: verified` belongs to plan 05-05 Task 4 after the manual perf+RSS
 gate (PHASE5-PERF.md) closes.
+
+## Manual Perf + RSS Gate — Accepted-with-Notes (Corey Ellis, 2026-05-26)
+
+The manual perf+RSS gate is closed under the **Accepted-with-Notes** path
+defined in Plan 05-05 frontmatter `must_haves.truths`.
+
+**Rationale (full text in `tests/e2e/reports/PHASE5-PERF.md` `## Sign-Off
+## Notes`):** The v1.5 closure criterion for Phase 5 is functional
+reliability under multiple workers, not throughput parity with the Node
+reference. The functional contract — warm pool (`POOL_SIZE=4` default) +
+stateful sessions keyed by `X-Session-Id` via a registry with idle reaping,
+both observable on `/health/agents` — is verified end-to-end against live
+kiro-cli 2.4.1 by two e2e suites:
+
+1. `tests/e2e/pool_sessions_e2e_test.go::TestE2E_PoolSessions` — 10
+   subtests PASS (11th SKIP by design — `AllDeadRespawnFails` proves the
+   D-03 warmup-failure path).
+
+2. `tests/e2e/multi_worker_failures_e2e_test.go::TestE2E_MultiWorker_FailureModes`
+   (added 2026-05-26, commit `adc4398`) — 5 failure modes that uniquely
+   emerge under `POOL_SIZE>1`: `MultiSession_ConcurrentAffinity`,
+   `Pool_Session_Coexistence_UnderLoad`, `ConcurrentSameSid_OneSession`,
+   `MultipleDeadSlotsParallel`, `Reaper_DoesNotReapActiveSession`. All
+   5 PASS against live kiro-cli (~76s wall-clock).
+
+Side-by-side wrk latency (Go vs Node reference) and per-session RSS
+measurements are deferred to a post-v1.5 performance milestone and
+tracked at `.planning/todos/pending/perf-baseline-vs-node.md`. The
+reproducible measurement protocol is preserved in
+`tests/e2e/reports/PHASE5-PERF.md` `## Future Measurement Run Protocol`,
+and `tests/e2e/wrk/post.lua` is committed for re-use.
+
+**Closure conditions met (per Plan 05-05 truths):**
+
+1. SC3 and SC4 are absent from `gaps:` (closed by Plan 05-04). ✓
+2. `tests/e2e/reports/PHASE5-PERF.md` is Accepted-with-Notes with
+   operator name + ISO date in the sign-off line. ✓
+3. No placeholder tokens (`TBD`, `AWAITING MANUAL MEASUREMENT`,
+   `BLOCKED_ON_05-04`, `NODE_IMPL_UNAVAILABLE`, `placeholder`, `pending`,
+   case-insensitive) remain in `tests/e2e/reports/PHASE5-PERF.md`. ✓
+   (Verified by `grep -EiHn '(TBD|AWAITING MANUAL MEASUREMENT|...)
+   tests/e2e/reports/PHASE5-PERF.md` returning zero matches.)
+
+All three conditions hold; the top-level `status:` field flips to
+`verified` and the `score:` field to `5/5 must-haves verified` in this
+file's frontmatter.
+
+**Sign-off commits:**
+- `adc4398` — test(05-05): multi-worker failure-mode e2e coverage
+- (this commit) — docs(05-05): Accepted-with-Notes sign-off + status flip
+
+— Corey Ellis, 2026-05-26
