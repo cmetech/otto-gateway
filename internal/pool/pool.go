@@ -334,11 +334,18 @@ func (p *Pool) Close() error {
 	return firstErr
 }
 
-// closeAll closes every slot's Client and marks the pool closed. Safe
-// to call once (the public Close wraps it in sync.Once). On partial
-// failures during Warmup, Warmup invokes closeAll directly to tear
-// down whatever has been built so far — closeAll therefore tolerates
-// being called on a partially-populated p.all.
+// closeAll closes every slot's Client and marks the pool closed.
+//
+// Idempotency contract (WR-06): closeAll IS internally idempotent for
+// repeated calls because the first invocation nils p.all under p.mu,
+// so a second call's `slots := p.all` reads nil and the iteration
+// is a no-op. The public Close wraps closeAll in sync.Once so callers
+// see firstErr from the original invocation; Warmup's partial-failure
+// path calls closeAll directly without going through closeOnce, which
+// is why the closeAll body must tolerate being followed by Pool.Close
+// (cleanup runs after a Warmup-failure return — both paths fire).
+// Do NOT remove the `p.all = nil` line; the no-op-on-second-call
+// behaviour rests on it.
 func (p *Pool) closeAll() error {
 	p.mu.Lock()
 	slots := p.all

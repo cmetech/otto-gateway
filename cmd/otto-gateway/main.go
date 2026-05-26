@@ -126,6 +126,20 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 	// TickInterval + worst-case reapOnce iteration before wg.Wait
 	// returns. Pool.Close runs unconditionally even if registry.Close
 	// errored (resolved Open Question 3 from 05-CONTEXT.md).
+	//
+	// WR-06 ordering dependency: a.registry is constructed AFTER
+	// a.pool below. On a pool.Warmup failure the early-return path
+	// below calls this closure with a.registry == nil; that path is
+	// nil-safe via the registry != nil guard. On a successful Warmup
+	// followed by some later failure (e.g., server build), both
+	// a.pool and a.registry are non-nil and both Close calls run.
+	//
+	// pool.Close is internally idempotent (closeOnce + closeAll
+	// nils p.all so a second call iterates an empty slice). Warmup's
+	// own partial-failure path calls closeAll directly — this cleanup
+	// closure may therefore observe an already-drained pool. That is
+	// load-bearing benign; do not "optimise" by skipping the second
+	// Close.
 	cleanup := func() {
 		if a.registry != nil {
 			if err := a.registry.Close(); err != nil {
