@@ -59,13 +59,13 @@ ci: lint test-race arch-lint ## Full CI gate (lint + race-tests + govulncheck + 
 	$(shell go env GOPATH)/bin/govulncheck ./...
 
 start: ## Start gateway in background (wrapper script)
-	@./scripts/otto start
+	@./scripts/otto-gw start
 
 stop: ## Stop background gateway (wrapper script)
-	@./scripts/otto stop
+	@./scripts/otto-gw stop
 
 status: ## Show gateway status (wrapper script)
-	@./scripts/otto status
+	@./scripts/otto-gw status
 
 # E2E suite: boots the real binary against real kiro-cli and ALWAYS renders a
 # markdown report regardless of pass/fail. Deliberately NOT wired into `all` or

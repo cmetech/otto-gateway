@@ -1,5 +1,6 @@
 #Requires -Version 5.1
-# scripts/otto.ps1 - PowerShell lifecycle manager for otto-gateway on Windows.
+# scripts/otto-gw.ps1 - PowerShell lifecycle manager for otto-gateway on Windows.
+# Renamed from scripts/otto.ps1 to avoid collision with the otto CLI binary.
 # Subcommands: start | stop | status | restart | logs | run
 # Env overrides: $env:OTTO_BIN, $env:OTTO_PID, $env:OTTO_LOG, $env:OTTO_ADDR
 
@@ -13,7 +14,7 @@ $PidFile    = if ($env:OTTO_PID)  { $env:OTTO_PID }  else { "$env:TEMP\otto-gate
 $LogFile    = if ($env:OTTO_LOG)  { $env:OTTO_LOG }  else { "$env:TEMP\otto-gateway.log" }
 # stdout and stderr MUST be separate files: Start-Process cannot redirect both to the same file.
 $LogErrFile = if ($env:OTTO_LOGERR) { $env:OTTO_LOGERR } else { "$env:TEMP\otto-gateway-err.log" }
-$Addr       = if ($env:OTTO_ADDR) { $env:OTTO_ADDR } else { "http://localhost:11435" }
+$Addr       = if ($env:OTTO_ADDR) { $env:OTTO_ADDR } else { "http://localhost:18080" }
 
 function Start-Gateway {
     if (Test-Path $PidFile) {

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# scripts/otto — POSIX lifecycle manager for otto-gateway on macOS/Linux.
+# scripts/otto-gw — POSIX lifecycle manager for otto-gateway on macOS/Linux.
+# Renamed from scripts/otto to avoid collision with the otto CLI binary.
 # Subcommands: start | stop | status | restart | logs [-f] | run
 # Env overrides: OTTO_BIN, OTTO_PID, OTTO_LOG, OTTO_ADDR
 set -euo pipefail
@@ -7,7 +8,7 @@ set -euo pipefail
 OTTO_BIN="${OTTO_BIN:-./bin/otto-gateway}"
 OTTO_PID="${OTTO_PID:-/tmp/otto-gateway.pid}"
 OTTO_LOG="${OTTO_LOG:-/tmp/otto-gateway.log}"
-OTTO_ADDR="${OTTO_ADDR:-http://localhost:11435}"
+OTTO_ADDR="${OTTO_ADDR:-http://localhost:18080}"
 
 start() {
     if [[ -f "$OTTO_PID" ]]; then

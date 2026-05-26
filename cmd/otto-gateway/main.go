@@ -20,7 +20,7 @@
 //     fires via the deferred cleanup closure returned by newApp.
 //
 // D-22: the binary stays foreground-only. start/stop/status are owned by
-// scripts/otto (POSIX) and scripts/otto.ps1 (PowerShell). Never add
+// scripts/otto-gw (POSIX) and scripts/otto-gw.ps1 (PowerShell). Never add
 // lifecycle subcommands to the binary.
 package main
 

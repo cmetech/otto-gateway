@@ -33,12 +33,13 @@ func (e *HelpRequested) Unwrap() error { return flag.ErrHelp }
 // Phase 1 reads a subset; later phases add fields without changing Load()'s signature.
 type Config struct {
 	// HTTPAddr is the address the HTTP server listens on (default
-	// "127.0.0.1:11435" — loopback-only, secure-by-default for laptop
-	// deployments. Port 11435 (not the Ollama-standard 11434) avoids
-	// colliding with the legacy JS acp_server so both can run side-by-side
-	// during cutover; set HTTP_ADDR=:11435 to bind all interfaces, or
+	// "127.0.0.1:18080" — loopback-only, secure-by-default for laptop
+	// deployments. Port 18080 sits in the IANA unassigned 16000-19999
+	// range and avoids collisions with well-known dev ports (8080
+	// HTTP-alt, 11434 Ollama, 11435 legacy JS acp_server). Set
+	// HTTP_ADDR=:18080 to bind all interfaces, or
 	// HTTP_ADDR=127.0.0.1:11434 to take over the Ollama port once the JS
-	// proxy is retired).
+	// proxy is fully retired.
 	HTTPAddr string
 	// KiroCmd is the kiro-cli binary name or path (default "kiro-cli").
 	KiroCmd string
@@ -122,7 +123,7 @@ func (c Config) LogLevel() slog.Level {
 func Load() (Config, error) {
 	var errs []error
 
-	httpAddr := getEnvStr("HTTP_ADDR", "127.0.0.1:11435")
+	httpAddr := getEnvStr("HTTP_ADDR", "127.0.0.1:18080")
 	kiroCmd := getEnvStr("KIRO_CMD", "kiro-cli")
 	kiroArgs := getEnvStrSlice("KIRO_ARGS", []string{"acp"})
 	kiroCWD := getEnvStr("KIRO_CWD", "")

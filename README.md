@@ -104,18 +104,18 @@ Build the binary first, then use the platform wrapper script:
 
 ```bash
 make build
-./scripts/otto start    # launch in background
-./scripts/otto status   # check PID + /health
-./scripts/otto stop     # stop gracefully
+./scripts/otto-gw start    # launch in background
+./scripts/otto-gw status   # check PID + /health
+./scripts/otto-gw stop     # stop gracefully
 ```
 
 **Windows (PowerShell):**
 
 ```powershell
 make build
-.\scripts\otto.ps1 start
-.\scripts\otto.ps1 status
-.\scripts\otto.ps1 stop
+.\scripts\otto-gw.ps1 start
+.\scripts\otto-gw.ps1 status
+.\scripts\otto-gw.ps1 stop
 ```
 
 `make start`, `make status`, and `make stop` are Makefile shortcuts for the POSIX wrapper on macOS/Linux.

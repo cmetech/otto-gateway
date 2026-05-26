@@ -46,7 +46,7 @@ errors), which the Go test maps to pass/fail.
 With a gateway already running:
 
 ```
-ANTHROPIC_BASE_URL=http://127.0.0.1:11435 \
+ANTHROPIC_BASE_URL=http://127.0.0.1:18080 \
 ANTHROPIC_API_KEY=your-token \
 node sdk_roundtrip.mjs
 ```
