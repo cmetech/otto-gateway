@@ -84,14 +84,18 @@ func (r *Registry) reapOnce() {
 			es.entry.Client.Cancel(es.entry.SessionID)
 			closeErr := es.entry.Client.Close()
 			r.mu.Lock()
-			// Defensive: another path (Delete) may have already
-			// removed the entry. Only delete if the map still points
+			// CR-04 fix: write Entry.Dead UNDER r.mu (same mutex
+			// readers in Registry.Get and Detail use). Previously
+			// the Dead write happened after r.mu was released,
+			// racing readers under the race detector. Defensive:
+			// another path (Delete) may have already removed the
+			// entry. Only delete + flip Dead if the map still points
 			// to OUR entry.
 			if cur, ok := r.entries[es.sid]; ok && cur == es.entry {
 				delete(r.entries, es.sid)
+				es.entry.Dead = true
 			}
 			r.mu.Unlock()
-			es.entry.Dead = true
 			if r.cfg.Logger != nil {
 				if closeErr != nil {
 					r.cfg.Logger.Warn("session: reap close failed",

@@ -52,12 +52,23 @@ func (r *Registry) Stats() Stats {
 //
 // Implementation notes:
 //   - Snapshot taken under r.mu.RLock so concurrent Get/Delete are not
-//     blocked.
+//     blocked. Reading Entry.Dead under r.mu is safe (CR-04 fix: the
+//     reaper writes Dead UNDER r.mu now, so this reader and that writer
+//     share r.mu).
 //   - Busy is computed via e.Mu.TryLock() per entry: failure means a
 //     surface handler is mid-Prompt under e.Mu, set Busy=true. On
 //     success we immediately Unlock — the observation is point-in-time.
 //   - Model is *string: nil when LastModel=="", otherwise a pointer to
-//     a copy so JSON encodes null vs a quoted string per D-16.
+//     a copy so JSON encodes null vs a quoted string per D-16. CR-04
+//     fix: LastModel is read INSIDE the e.Mu.TryLock critical section
+//     so it shares the same mutex as Entry.SetModel's writer. On
+//     TryLock failure (stream in flight) we surface Model=nil — point-
+//     in-time observability is fine, and a busy stream's model is
+//     captured by the *previous* observation tick anyway.
+//   - LastUsed is read in the same way (it's also written by MarkUsed
+//     under e.Mu after CR-01); under TryLock failure LastUsed reads as
+//     the zero value so callers see an "in-flight, point-in-time
+//     unknown" row.
 //   - Entries still in-creation (e.creating==true) are included with
 //     Alive=!Dead, Busy=true (their Mu is effectively locked by
 //     createEntry's spawn path), LastUsed=zero, Model=nil. Operators
@@ -74,22 +85,27 @@ func (r *Registry) Detail() []SessionDetail {
 			continue
 		}
 		busy := true
+		var modelPtr *string
+		var lastUsed time.Time
 		if !e.creating {
 			if e.Mu.TryLock() {
 				busy = false
+				// CR-04 fix: read LastModel + LastUsed INSIDE the
+				// e.Mu critical section so we synchronise with the
+				// writers (SetModel, MarkUsed) on the same mutex.
+				if e.LastModel != "" {
+					m := e.LastModel
+					modelPtr = &m
+				}
+				lastUsed = e.LastUsed
 				e.Mu.Unlock()
 			}
-		}
-		var modelPtr *string
-		if e.LastModel != "" {
-			m := e.LastModel
-			modelPtr = &m
 		}
 		rows = append(rows, SessionDetail{
 			ID:       sid,
 			Alive:    !e.Dead,
 			Busy:     busy,
-			LastUsed: e.LastUsed,
+			LastUsed: lastUsed,
 			Model:    modelPtr,
 		})
 	}
