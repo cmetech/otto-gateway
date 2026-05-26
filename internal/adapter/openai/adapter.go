@@ -25,6 +25,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"otto-gateway/internal/canonical"
+	"otto-gateway/internal/session"
 )
 
 // Engine is the consumer-defined interface the adapter depends on for
@@ -84,6 +85,18 @@ type ModelCatalog interface {
 	Models() []canonical.ModelInfo
 }
 
+// EngineForSessionFunc is the per-request engine factory used by the
+// X-Session-Id branch (Plan 05-03 Task 3). See the ollama adapter for
+// the full TRST-04 rationale; the OpenAI wiring is identical.
+type EngineForSessionFunc func(entry *session.Entry) Engine
+
+// SessionRegistry is the consumer-defined interface the adapter calls
+// into for the X-Session-Id branch. *session.Registry satisfies it
+// structurally; tests inject fakes.
+type SessionRegistry interface {
+	Get(ctx context.Context, sid, cwd string) (*session.Entry, error)
+}
+
 // Config bundles the adapter's wiring dependencies. Engine and ModelCatalog
 // are nil-tolerant (the degraded-mode behavior covers KIRO_CMD-unset
 // deployments).
@@ -98,6 +111,17 @@ type Config struct {
 	// ModelCatalog enumerates known models for GET /models.
 	// May be nil; handleModels returns only the synthetic "auto" entry.
 	ModelCatalog ModelCatalog
+	// Registry is the dedicated-session registry; non-nil enables the
+	// X-Session-Id branch in handleChatCompletions / handleCompletions.
+	// (Plan 05-03 D-04..D-11)
+	Registry SessionRegistry
+	// EngineForSession is the per-request engine factory closure called
+	// when the X-Session-Id branch takes the registry path. May be nil;
+	// X-Session-Id requests fall through to the pool path when nil.
+	EngineForSession EngineForSessionFunc
+	// KiroCWD is the default working directory passed to Registry.Get
+	// when the X-Session-Id branch creates a new session.
+	KiroCWD string
 }
 
 // Adapter wires the OpenAI HTTP surface. Construct via New.

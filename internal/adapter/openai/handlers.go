@@ -2,10 +2,12 @@ package openai
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"time"
 
 	"otto-gateway/internal/canonical"
+	"otto-gateway/internal/session"
 )
 
 // handleChatCompletions handles POST /chat/completions.
@@ -49,6 +51,18 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 
 	req := wireToChatRequest(&wire, r)
 
+	// Plan 05-03 D-04..D-11: X-Session-Id branch.
+	eng, entry, sErr := a.resolveEngine(r)
+	if sErr != nil {
+		a.writeSessionError(w, sErr)
+		return
+	}
+	if entry != nil {
+		entry.Mu.Lock()
+		defer entry.MarkUsed()
+		defer entry.Mu.Unlock()
+	}
+
 	if wire.Stream {
 		// Streaming path (Pi/SC2 use case — Pi hard-codes stream:true).
 		// D-07: create a derived context so that a write failure in
@@ -56,7 +70,7 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 		// the D-06 watchdog observes and translates into session/cancel.
 		ctx, cancelFn := context.WithCancel(r.Context())
 		defer cancelFn()
-		runHandle, err := a.cfg.Engine.Run(ctx, req)
+		runHandle, err := eng.Run(ctx, req)
 		if err != nil {
 			// engine.Run failed BEFORE any SSE headers were written — safe to
 			// respond with a normal JSON 500 envelope (T-02-33: log raw, generic message).
@@ -74,7 +88,7 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Non-streaming path (SC1 curl use case).
-	resp, err := a.cfg.Engine.Collect(r.Context(), req)
+	resp, err := eng.Collect(r.Context(), req)
 	if err != nil {
 		// T-02-33: log raw error, respond with generic message.
 		a.cfg.Logger.Error("openai: engine.Collect error", "err", err)
@@ -133,7 +147,19 @@ func (a *Adapter) handleCompletions(w http.ResponseWriter, r *http.Request) {
 		WorkingDirOverride: r.Header.Get("X-Working-Dir"),
 	}
 
-	resp, err := a.cfg.Engine.Collect(r.Context(), req)
+	// Plan 05-03: X-Session-Id branch (same shape as handleChatCompletions).
+	eng, entry, sErr := a.resolveEngine(r)
+	if sErr != nil {
+		a.writeSessionError(w, sErr)
+		return
+	}
+	if entry != nil {
+		entry.Mu.Lock()
+		defer entry.MarkUsed()
+		defer entry.Mu.Unlock()
+	}
+
+	resp, err := eng.Collect(r.Context(), req)
 	if err != nil {
 		// T-02-33: log raw error, respond with generic message.
 		a.cfg.Logger.Error("openai: completions engine.Collect error", "err", err)
@@ -142,6 +168,31 @@ func (a *Adapter) handleCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, chatResponseToTextCompletion(resp, wire.Model))
+}
+
+// resolveEngine implements the Plan 05-03 X-Session-Id branch for the
+// OpenAI surface. See ollama's resolveEngine for the contract.
+func (a *Adapter) resolveEngine(r *http.Request) (Engine, *session.Entry, error) {
+	sid := r.Header.Get("X-Session-Id")
+	if sid == "" || a.cfg.Registry == nil || a.cfg.EngineForSession == nil {
+		return a.cfg.Engine, nil, nil
+	}
+	entry, err := a.cfg.Registry.Get(r.Context(), sid, a.cfg.KiroCWD)
+	if err != nil {
+		return nil, nil, err
+	}
+	return a.cfg.EngineForSession(entry), entry, nil
+}
+
+// writeSessionError renders a registry error in the OpenAI error
+// envelope. ErrSessionMaxExceeded → 503; other errors → 500.
+func (a *Adapter) writeSessionError(w http.ResponseWriter, err error) {
+	if errors.Is(err, session.ErrSessionMaxExceeded) {
+		writeError(w, http.StatusServiceUnavailable, errAPI, "session capacity exceeded")
+		return
+	}
+	a.cfg.Logger.Error("openai: session registry error", "err", err)
+	writeError(w, http.StatusInternalServerError, errAPI, "internal error")
 }
 
 // handleModels handles GET /models (D-04, SC3).

@@ -29,6 +29,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"otto-gateway/internal/canonical"
+	"otto-gateway/internal/session"
 )
 
 // Engine is the consumer-defined interface the adapter depends on for
@@ -83,6 +84,31 @@ type ModelCatalog interface {
 	Models() []canonical.ModelInfo
 }
 
+// EngineForSessionFunc is the per-request engine factory used by the
+// X-Session-Id branch (Plan 05-03 Task 3). cmd/otto-gateway/main.go
+// wires this to a closure that builds a fresh *engine.Engine bound to
+// the supplied *session.Entry (which satisfies engine.ACPClient via
+// internal/session/entry_acp.go's compile-time gate). The closure
+// returns the adapter's local Engine interface so the adapter never
+// imports internal/engine (TRST-04 boundary preserved).
+//
+// When nil (degraded mode or pre-Phase-5 wiring), the X-Session-Id
+// branch falls through to the pool path — the handler ignores any
+// X-Session-Id header.
+type EngineForSessionFunc func(entry *session.Entry) Engine
+
+// SessionRegistry is the consumer-defined interface the adapter calls
+// into for the X-Session-Id branch. The concrete *session.Registry
+// from internal/session structurally satisfies it (Get(ctx, sid, cwd)
+// (*session.Entry, error)). Declaring it HERE rather than depending
+// on *session.Registry directly lets unit tests inject a fake without
+// standing up the full Registry + ClientFactory stack — the locked
+// pattern from Plan 05-03 Task 3 (`fakeSessionRegistry` returning a
+// session.NewEntryForTest-constructed Entry).
+type SessionRegistry interface {
+	Get(ctx context.Context, sid, cwd string) (*session.Entry, error)
+}
+
 // Config bundles the adapter's wiring dependencies. Engine and ModelCatalog
 // are nil-tolerant (the degraded-mode behavior covers KIRO_CMD-unset
 // deployments). Version + Commit are captured at construction so the
@@ -104,6 +130,21 @@ type Config struct {
 	// Commit is the VCS commit hash reported by /api/version (typically
 	// version.Commit()).
 	Commit string
+	// Registry is the dedicated-session registry; non-nil enables the
+	// X-Session-Id branch in handleChat / handleGenerate. The handler
+	// reads X-Session-Id from the request and, when non-empty, calls
+	// Registry.Get to obtain a *session.Entry. (Plan 05-03 D-04..D-11)
+	// Typed as the narrow SessionRegistry interface so tests can inject
+	// a fake; the production *session.Registry satisfies it structurally.
+	Registry SessionRegistry
+	// EngineForSession is the per-request engine factory closure called
+	// when the X-Session-Id branch takes the registry path. See the
+	// type doc. May be nil; X-Session-Id requests fall through to the
+	// pool path when EngineForSession is nil OR Registry is nil.
+	EngineForSession EngineForSessionFunc
+	// KiroCWD is the default working directory passed to Registry.Get
+	// when the X-Session-Id branch creates a new session. May be empty.
+	KiroCWD string
 }
 
 // Adapter wires the Ollama HTTP surface. Construct via New.

@@ -22,6 +22,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"otto-gateway/internal/canonical"
+	"otto-gateway/internal/session"
 )
 
 // Engine is the consumer-defined interface the adapter depends on for
@@ -76,6 +77,18 @@ type Stream interface {
 	Result() (*canonical.FinalResult, error)
 }
 
+// EngineForSessionFunc is the per-request engine factory used by the
+// X-Session-Id branch (Plan 05-03 Task 3). See the ollama adapter for
+// the full TRST-04 rationale.
+type EngineForSessionFunc func(entry *session.Entry) Engine
+
+// SessionRegistry is the consumer-defined interface the adapter calls
+// into for the X-Session-Id branch. *session.Registry satisfies it
+// structurally; tests inject fakes.
+type SessionRegistry interface {
+	Get(ctx context.Context, sid, cwd string) (*session.Entry, error)
+}
+
 // Config bundles the adapter's wiring dependencies. Engine is
 // nil-tolerant (the 503 degraded-mode behavior covers KIRO_CMD-unset
 // deployments). D-18: no ModelCatalog, no Version/Commit — Anthropic
@@ -88,6 +101,15 @@ type Config struct {
 	// Engine collects / runs canonical chat requests. May be nil;
 	// handleMessages returns 503 when nil.
 	Engine Engine
+	// Registry is the dedicated-session registry; non-nil enables the
+	// X-Session-Id branch in handleMessages. (Plan 05-03 D-04..D-11)
+	Registry SessionRegistry
+	// EngineForSession is the per-request engine factory closure called
+	// when the X-Session-Id branch takes the registry path.
+	EngineForSession EngineForSessionFunc
+	// KiroCWD is the default working directory passed to Registry.Get
+	// when the X-Session-Id branch creates a new session.
+	KiroCWD string
 }
 
 // Adapter wires the Anthropic HTTP surface. Construct via New.
