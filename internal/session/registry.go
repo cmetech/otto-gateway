@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -218,6 +219,20 @@ func (r *Registry) Get(ctx context.Context, sid, cwd string) (*Entry, error) {
 // outside r.mu. On success it publishes the fully-populated entry; on
 // error it removes the placeholder so subsequent Get calls retry. In
 // both cases close(placeholder.ready) signals any same-sid waiters.
+//
+// Plan 05-04 SC3 fix (H-B root cause — see
+// .planning/phases/05-pool-stateful-sessions/05-04-WIRE-DIFF.md):
+// kiro-cli's session/prompt returns rpc error -32603 "Improperly formed
+// request" against every prompt issued on a session whose session/new
+// was called with an empty cwd. The pool path is unaffected because
+// engine.Run resolves cwd via engine.pickCwd which falls back to
+// os.Getwd(). The registry must do the same; the simplest cwd guarantee
+// is local — if the caller supplies "" (the default when KIRO_CWD env
+// var is unset), substitute os.Getwd() before calling client.NewSession.
+// Importing internal/engine to reuse pickCwd is forbidden by
+// .go-arch-lint.yml (the session→engine→session cycle would surface
+// once engine grows registry-aware helpers), so the fallback is inlined
+// here.
 func (r *Registry) createEntry(ctx context.Context, sid, cwd string, e *Entry) (*Entry, error) {
 	// Best-effort cleanup on error: remove placeholder + close ready +
 	// optionally close the freshly-spawned client.
@@ -234,6 +249,17 @@ func (r *Registry) createEntry(ctx context.Context, sid, cwd string, e *Entry) (
 			_ = client.Close()
 		}
 		return nil, err
+	}
+
+	// Plan 05-04 SC3 fix: ensure cwd is non-empty before calling
+	// client.NewSession. kiro-cli rejects subsequent session/prompt
+	// against an empty-cwd session with rpc error -32603 (see WIRE-DIFF).
+	if cwd == "" {
+		wd, wdErr := os.Getwd()
+		if wdErr != nil {
+			return publishError(nil, fmt.Errorf("session: resolve cwd %q: %w", sid, wdErr))
+		}
+		cwd = wd
 	}
 
 	client, err := r.cfg.Factory.Spawn(ctx, acp.Config{
