@@ -3,8 +3,11 @@ package session
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
+
+	"otto-gateway/internal/acp"
 )
 
 // ErrSessionNotFound is returned by Registry.Delete when the sid is not
@@ -117,38 +120,233 @@ func New(cfg Config) *Registry {
 // ctx parameter is kept in the signature for API stability so plan
 // 05-03 can pass the gateway's lifetime ctx if cross-cutting
 // cancellation becomes needed.
-//
-// Task 0 STUB: spawns the reaper but reaperLoop body is itself a stub.
-// Full implementation arrives in Task 2.
 func (r *Registry) Start(_ context.Context) {
 	r.wg.Add(1)
 	go r.reaperLoop()
 }
 
 // Get returns the existing entry for sid, or lazy-creates one and
-// caches it under r.entries[sid]. Task 0 STUB: full implementation
-// arrives in Task 1.
-func (r *Registry) Get(_ context.Context, _, _ string) (*Entry, error) {
-	panic("session.Registry.Get: not yet implemented (Task 1)")
+// caches it under r.entries[sid]. (D-05, D-06, Pitfall 4)
+//
+// Lazy-create race resolution (Pitfall 4) is via the creating sentinel
+// + ready chan:
+//
+//  1. First caller observing no entry installs a placeholder Entry with
+//     creating=true under r.mu, drops the lock, runs the slow
+//     Spawn+Initialize+NewSession sequence, then re-acquires the lock to
+//     publish the fully-populated entry (or removes it on error) and
+//     close(ready).
+//  2. Concurrent same-sid callers observe creating==true, release r.mu,
+//     wait on <-e.ready, then re-acquire r.mu and re-read entries[sid].
+//     This deterministically gives a single Spawn per sid.
+//
+// SESSION_MAX gate (D-06) is enforced at the placeholder-install step:
+// if len(entries) >= cfg.MaxSessions and sid is not already present,
+// return ErrSessionMaxExceeded without installing a placeholder.
+//
+// Dead entries are treated as not-present: deleted from the map and
+// the lazy-create path runs to produce a replacement entry. This
+// matches the "Get returns alive entry OR creates new one" contract.
+func (r *Registry) Get(ctx context.Context, sid, cwd string) (*Entry, error) {
+	for {
+		r.mu.Lock()
+		if r.closed {
+			r.mu.Unlock()
+			return nil, ErrRegistryClosed
+		}
+		if e, ok := r.entries[sid]; ok {
+			if e.Dead {
+				// Dead entry: delete and fall through to lazy-create.
+				delete(r.entries, sid)
+			} else if e.creating {
+				// Pitfall 4: another caller is mid-create for this
+				// sid. Drop r.mu, wait for completion, then retry the
+				// lookup.
+				ready := e.ready
+				r.mu.Unlock()
+				select {
+				case <-ready:
+					continue // re-loop to re-read entries[sid]
+				case <-ctx.Done():
+					return nil, fmt.Errorf("session: get cancelled while waiting for racing create: %w", ctx.Err())
+				case <-r.closing:
+					return nil, ErrRegistryClosed
+				}
+			} else {
+				// Alive + ready: return cached entry.
+				r.mu.Unlock()
+				return e, nil
+			}
+		}
+		// SESSION_MAX gate (D-06).
+		if len(r.entries) >= r.cfg.MaxSessions {
+			r.mu.Unlock()
+			return nil, ErrSessionMaxExceeded
+		}
+		// Install creation sentinel + drop the lock so Spawn does not
+		// block other registry ops.
+		placeholder := &Entry{
+			creating: true,
+			ready:    make(chan struct{}),
+		}
+		r.entries[sid] = placeholder
+		r.mu.Unlock()
+		return r.createEntry(ctx, sid, cwd, placeholder)
+	}
 }
 
-// Delete removes the entry for sid from the registry. Task 0 STUB:
-// full implementation arrives in Task 1.
-func (r *Registry) Delete(_ string) error {
-	panic("session.Registry.Delete: not yet implemented (Task 1)")
+// createEntry runs the slow Spawn + Initialize + NewSession sequence
+// outside r.mu. On success it publishes the fully-populated entry; on
+// error it removes the placeholder so subsequent Get calls retry. In
+// both cases close(placeholder.ready) signals any same-sid waiters.
+func (r *Registry) createEntry(ctx context.Context, sid, cwd string, e *Entry) (*Entry, error) {
+	// Best-effort cleanup on error: remove placeholder + close ready +
+	// optionally close the freshly-spawned client.
+	publishError := func(client PoolClient, err error) (*Entry, error) {
+		r.mu.Lock()
+		// Only delete if the placeholder is still ours — another
+		// concurrent path (e.g., Delete) may have removed it.
+		if cur, ok := r.entries[sid]; ok && cur == e {
+			delete(r.entries, sid)
+		}
+		r.mu.Unlock()
+		close(e.ready)
+		if client != nil {
+			_ = client.Close()
+		}
+		return nil, err
+	}
+
+	client, err := r.cfg.Factory.Spawn(ctx, acp.Config{
+		Logger:       r.cfg.Logger,
+		Command:      r.cfg.KiroCmd,
+		Args:         r.cfg.KiroArgs,
+		Cwd:          cwd,
+		PingInterval: r.cfg.PingInterval,
+	})
+	if err != nil {
+		return publishError(nil, fmt.Errorf("session: spawn %q: %w", sid, err))
+	}
+	if err := client.Initialize(ctx); err != nil {
+		return publishError(client, fmt.Errorf("session: initialize %q: %w", sid, err))
+	}
+	sessionID, err := client.NewSession(ctx, cwd)
+	if err != nil {
+		return publishError(client, fmt.Errorf("session: new-session %q: %w", sid, err))
+	}
+
+	// Publish: under r.mu fill the entry fields, clear creating, then
+	// close(ready) so waiters observe the populated entry on retry.
+	r.mu.Lock()
+	// Defensive: if the placeholder was removed (e.g., DELETE raced),
+	// abandon the work and best-effort close the spawned client.
+	cur, stillOurs := r.entries[sid]
+	if !stillOurs || cur != e {
+		r.mu.Unlock()
+		close(e.ready)
+		_ = client.Close()
+		return nil, fmt.Errorf("session: create %q: entry removed concurrently", sid)
+	}
+	e.Client = client
+	e.SessionID = sessionID
+	e.LastUsed = time.Now()
+	e.creating = false
+	r.mu.Unlock()
+	close(e.ready)
+	return e, nil
 }
 
-// Close drains the reaper and tears down all entries. Task 0 STUB:
-// the closeOnce + close(closing) + wg.Wait() shape is implemented so
-// tests that spawn Start can clean up cleanly; entry teardown lands
-// in Task 1.
+// Delete tears down a session synchronously. D-08 semantics:
+//
+//  1. Lock r.mu; look up entries[sid]. If absent, return
+//     ErrSessionNotFound (→ 404).
+//  2. delete(r.entries, sid) BEFORE dropping r.mu — Codex M-3
+//     map-delete-first ensures concurrent Get sees "not present" and a
+//     subsequent same-sid Get can lazy-create cleanly.
+//  3. Drop r.mu (critical: never hold across slow Close()).
+//  4. Best-effort Cancel(e.SessionID) — interrupts in-flight Prompt
+//     so any open stream's readLoop sees EOF promptly.
+//  5. e.Client.Close() — wraps the close error with sid context.
+//
+// Map-delete-first means Delete does NOT block on the entry's Mu.
+// An in-flight Prompt under Mu sees its readLoop crash via EOF (Pitfall 1)
+// — Phase 4's D-06 watchdog covers the response side; the surface
+// handler observes the truncated stream and renders an error.
+func (r *Registry) Delete(sid string) error {
+	r.mu.Lock()
+	e, ok := r.entries[sid]
+	if !ok {
+		r.mu.Unlock()
+		return ErrSessionNotFound
+	}
+	delete(r.entries, sid)
+	r.mu.Unlock()
+
+	// If the entry was still mid-creation, it has no Client yet — skip
+	// Cancel/Close, but still close the ready chan so waiters unblock
+	// and see "not present" on retry.
+	if e.Client != nil {
+		e.Client.Cancel(e.SessionID)
+		if err := e.Client.Close(); err != nil {
+			return fmt.Errorf("session: delete %q: close: %w", sid, err)
+		}
+	}
+	if e.creating && e.ready != nil {
+		select {
+		case <-e.ready:
+			// already closed (createEntry finished)
+		default:
+			close(e.ready)
+		}
+	}
+	return nil
+}
+
+// Close drains the reaper and tears down all entries. Pitfall 5:
+//
+//  1. closeOnce guards re-entry.
+//  2. Mark r.closed=true under r.mu so subsequent Get returns
+//     ErrRegistryClosed without racing the entry teardown.
+//  3. Snapshot + nil the entries map under r.mu, drop the lock —
+//     entries are closed WITHOUT holding r.mu (anti-pattern from
+//     pool.closeAll: never hold r.mu across slow Client.Close()).
+//  4. close(r.closing) signals reaper exit; r.wg.Wait() blocks
+//     bounded by TickInterval + worst-case reapOnce iteration.
+//  5. Iterate snapshot, calling Cancel + Close on each. First error
+//     wins the return.
 func (r *Registry) Close() error {
+	var firstErr error
 	r.closeOnce.Do(func() {
 		r.mu.Lock()
 		r.closed = true
+		entries := r.entries
+		r.entries = nil
 		r.mu.Unlock()
+
 		close(r.closing)
 		r.wg.Wait()
+
+		for sid, e := range entries {
+			if e == nil {
+				continue
+			}
+			if e.Client == nil {
+				// Mid-creation entry — best-effort close ready
+				// so any same-sid waiters unblock.
+				if e.ready != nil {
+					select {
+					case <-e.ready:
+					default:
+						close(e.ready)
+					}
+				}
+				continue
+			}
+			e.Client.Cancel(e.SessionID)
+			if err := e.Client.Close(); err != nil && firstErr == nil {
+				firstErr = fmt.Errorf("session: close %q: %w", sid, err)
+			}
+		}
 	})
-	return nil
+	return firstErr
 }

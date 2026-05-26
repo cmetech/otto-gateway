@@ -41,8 +41,7 @@ type SessionDetail struct {
 	Model *string `json:"model"`
 }
 
-// Stats returns a point-in-time snapshot of registry occupancy. Task 0
-// STUB: full implementation arrives in Task 1.
+// Stats returns a point-in-time snapshot of registry occupancy.
 func (r *Registry) Stats() Stats {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -50,10 +49,49 @@ func (r *Registry) Stats() Stats {
 }
 
 // Detail returns the per-session detail rows for /health/agents (D-16).
-// Task 0 STUB: returns an empty (but non-nil) slice; full implementation
-// arrives in Task 1.
+//
+// Implementation notes:
+//   - Snapshot taken under r.mu.RLock so concurrent Get/Delete are not
+//     blocked.
+//   - Busy is computed via e.Mu.TryLock() per entry: failure means a
+//     surface handler is mid-Prompt under e.Mu, set Busy=true. On
+//     success we immediately Unlock — the observation is point-in-time.
+//   - Model is *string: nil when LastModel=="", otherwise a pointer to
+//     a copy so JSON encodes null vs a quoted string per D-16.
+//   - Entries still in-creation (e.creating==true) are included with
+//     Alive=!Dead, Busy=true (their Mu is effectively locked by
+//     createEntry's spawn path), LastUsed=zero, Model=nil. Operators
+//     reading /health/agents see them as transient.
+//
+// Returns an empty (non-nil) slice when the registry is empty so the
+// handler encodes "sessions": [] rather than null.
 func (r *Registry) Detail() []SessionDetail {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return make([]SessionDetail, 0, len(r.entries))
+	rows := make([]SessionDetail, 0, len(r.entries))
+	for sid, e := range r.entries {
+		if e == nil {
+			continue
+		}
+		busy := true
+		if !e.creating {
+			if e.Mu.TryLock() {
+				busy = false
+				e.Mu.Unlock()
+			}
+		}
+		var modelPtr *string
+		if e.LastModel != "" {
+			m := e.LastModel
+			modelPtr = &m
+		}
+		rows = append(rows, SessionDetail{
+			ID:       sid,
+			Alive:    !e.Dead,
+			Busy:     busy,
+			LastUsed: e.LastUsed,
+			Model:    modelPtr,
+		})
+	}
+	return rows
 }

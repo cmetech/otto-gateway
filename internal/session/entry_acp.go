@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"otto-gateway/internal/acp"
@@ -12,47 +13,50 @@ import (
 // Entry method set implementing engine.ACPClient. Surface handlers in
 // plan 05-03 pass *Entry as the ACPClient to engine.Run, so the Phase 4
 // D-06 watchdog applies to stateful sessions identically to pool ones.
-//
-// Task 0 STUBS for NewSession/SetModel/Prompt/Cancel — full bodies in
-// Task 1. MarkUsed is implemented here in Task 0 because it is a
-// one-liner with no dependencies on the other methods, and the
-// reaper-test scaffolding may want to call it.
 
 // NewSession returns the cached ACP session id created during
 // Registry.createEntry. Unlike *acp.Client.NewSession, this is a pure
 // accessor — the registry pre-creates the session once and engine.Run
 // reuses it across requests for the same sid (D-04 dedicated session
-// per X-Session-Id).
-//
-// Task 0 STUB.
+// per X-Session-Id). The ctx and cwd arguments are intentionally
+// ignored: the engine.ACPClient interface predates the per-entry
+// session model and the cwd handshake already happened in createEntry.
 func (e *Entry) NewSession(_ context.Context, _ string) (string, error) {
-	panic("session.Entry.NewSession: not yet implemented (Task 1)")
+	return e.SessionID, nil
 }
 
 // SetModel implements the D-09 diff-skip: if modelID matches the cached
 // LastModel, return nil without an RPC. Otherwise forward to the
-// underlying Client and update the cache on success.
-//
-// Task 0 STUB.
-func (e *Entry) SetModel(_ context.Context, _, _ string) error {
-	panic("session.Entry.SetModel: not yet implemented (Task 1)")
+// underlying Client and update the cache on success. Cache is updated
+// AFTER the RPC succeeds so a failed SetModel does not poison the
+// cache (per resolved Open Question 1: SetModel failure surfaces 4xx,
+// entry stays alive).
+func (e *Entry) SetModel(ctx context.Context, sessionID, modelID string) error {
+	if modelID == e.LastModel {
+		return nil
+	}
+	if err := e.Client.SetModel(ctx, sessionID, modelID); err != nil {
+		return fmt.Errorf("session: set-model: %w", err)
+	}
+	e.LastModel = modelID
+	return nil
 }
 
 // Prompt wraps Client.Prompt's *acp.Stream return value in an
 // acpStreamShim so the engine.Stream interface is satisfied. Caller
 // holds e.Mu for the lifetime of the stream (D-07).
-//
-// Task 0 STUB.
-func (e *Entry) Prompt(_ context.Context, _ string, _ []canonical.Block) (engine.Stream, error) {
-	panic("session.Entry.Prompt: not yet implemented (Task 1)")
+func (e *Entry) Prompt(ctx context.Context, sessionID string, blocks []canonical.Block) (engine.Stream, error) {
+	raw, err := e.Client.Prompt(ctx, sessionID, blocks)
+	if err != nil {
+		return nil, fmt.Errorf("session: prompt: %w", err)
+	}
+	return &acpStreamShim{s: raw}, nil
 }
 
 // Cancel is best-effort and forwards to Client.Cancel. The caller (or
 // engine.Run's Phase 4 D-06 watchdog) owns the e.Mu lifecycle.
-//
-// Task 0 STUB.
-func (e *Entry) Cancel(_ string) {
-	panic("session.Entry.Cancel: not yet implemented (Task 1)")
+func (e *Entry) Cancel(sessionID string) {
+	e.Client.Cancel(sessionID)
 }
 
 // MarkUsed updates LastUsed to time.Now(). Per D-11, surface handlers
