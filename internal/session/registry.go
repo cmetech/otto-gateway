@@ -69,6 +69,25 @@ type Entry struct {
 	// Same-sid waiters select on this channel to learn when the
 	// creation attempt has resolved.
 	ready chan struct{}
+	// readyOnce guards close(ready) so concurrent paths
+	// (createEntry success, createEntry publishError, createEntry
+	// concurrent-removal, Delete mid-creation branch, Close
+	// mid-creation branch) can call closeReady idempotently without
+	// panicking on a double close (CR-02). The previous
+	// select-default idiom was racy: between case-evaluation and
+	// default-close, another goroutine could close the channel and
+	// the second close panicked the process.
+	readyOnce sync.Once
+}
+
+// closeReady idempotently closes e.ready. Safe to call from any
+// goroutine and any number of times (CR-02 fix).
+func (e *Entry) closeReady() {
+	e.readyOnce.Do(func() {
+		if e.ready != nil {
+			close(e.ready)
+		}
+	})
 }
 
 // Registry owns the map of dedicated kiro-cli sessions keyed by sid.
@@ -210,7 +229,7 @@ func (r *Registry) createEntry(ctx context.Context, sid, cwd string, e *Entry) (
 			delete(r.entries, sid)
 		}
 		r.mu.Unlock()
-		close(e.ready)
+		e.closeReady()
 		if client != nil {
 			_ = client.Close()
 		}
@@ -243,7 +262,7 @@ func (r *Registry) createEntry(ctx context.Context, sid, cwd string, e *Entry) (
 	cur, stillOurs := r.entries[sid]
 	if !stillOurs || cur != e {
 		r.mu.Unlock()
-		close(e.ready)
+		e.closeReady()
 		_ = client.Close()
 		return nil, fmt.Errorf("session: create %q: entry removed concurrently", sid)
 	}
@@ -252,7 +271,7 @@ func (r *Registry) createEntry(ctx context.Context, sid, cwd string, e *Entry) (
 	e.LastUsed = time.Now()
 	e.creating = false
 	r.mu.Unlock()
-	close(e.ready)
+	e.closeReady()
 	return e, nil
 }
 
@@ -291,13 +310,12 @@ func (r *Registry) Delete(sid string) error {
 			return fmt.Errorf("session: delete %q: close: %w", sid, err)
 		}
 	}
-	if e.creating && e.ready != nil {
-		select {
-		case <-e.ready:
-			// already closed (createEntry finished)
-		default:
-			close(e.ready)
-		}
+	if e.creating {
+		// CR-02 fix: use idempotent closeReady() instead of the racy
+		// select-default close idiom. A concurrent createEntry path
+		// could close the channel between the select case-evaluation
+		// and the default-close, panicking the process.
+		e.closeReady()
 	}
 	return nil
 }
@@ -332,14 +350,10 @@ func (r *Registry) Close() error {
 			}
 			if e.Client == nil {
 				// Mid-creation entry — best-effort close ready
-				// so any same-sid waiters unblock.
-				if e.ready != nil {
-					select {
-					case <-e.ready:
-					default:
-						close(e.ready)
-					}
-				}
+				// so any same-sid waiters unblock. CR-02 fix:
+				// use idempotent closeReady() (sync.Once) instead
+				// of the racy select-default close idiom.
+				e.closeReady()
 				continue
 			}
 			e.Client.Cancel(e.SessionID)
