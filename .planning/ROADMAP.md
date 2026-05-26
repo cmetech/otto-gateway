@@ -254,7 +254,7 @@ Plans:
   4. An idle session is reaped after `SESSION_TTL_MS` (default 30 min) — verified with a shortened TTL in a test — and `DELETE /v1/sessions/:id` immediately tears one down and returns `{deleted: "<id>"}`.
   5. `GET /health/agents` returns per-pool-slot detail (`alive`, `busy`, `label`) and per-session detail (`alive`, `last_used`); dead slots are detected and lazily re-spawned without blocking other acquires.
 
-**Plans:** 5 plans (3 complete + 2 gap-closure pending)
+**Plans:** 4/5 plans executed
 
 Plans:
 **Wave 1**
@@ -271,7 +271,7 @@ Plans:
 
 **Wave 4** *(GAP CLOSURE — blocked on Wave 3; addresses 05-VERIFICATION.md gaps 1+2)*
 
-- [ ] 05-04-PLAN.md — SC3 root-cause + fix: wire-trace both kiro-cli paths (working pool vs broken session), diff transcripts to identify protocol divergence, encode fix in `internal/session/entry_acp.go`, ACP-fake unit test, strengthen DeleteSession_CancelsInFlight (≥1 chunk before DELETE assertion), full e2e suite green. Closes SESS-01/SESS-02/SESS-03 PARTIAL → SATISFIED.
+- [x] 05-04-PLAN.md — SC3 root-cause + fix: wire-trace both kiro-cli paths (working pool vs broken session), diff transcripts to identify protocol divergence, encode fix in `internal/session/entry_acp.go`, ACP-fake unit test, strengthen DeleteSession_CancelsInFlight (≥1 chunk before DELETE assertion), full e2e suite green. Closes SESS-01/SESS-02/SESS-03 PARTIAL → SATISFIED.
 
 **Wave 5** *(GAP CLOSURE — blocked on Wave 4; addresses 05-VERIFICATION.md gap 3)*
 
@@ -352,7 +352,7 @@ Phases execute in numeric order: 1 → 1.1 → 2 → 3 → 3.1 → 4 → 5 → 6
 | 2. Ollama End-to-End | 6/6 | Complete   | 2026-05-24 |
 | 3. OpenAI Surface | 4/4 | Complete   | 2026-05-25 |
 | 4. Streaming | 4/4 | Complete   | 2026-05-25 |
-| 5. Pool + Stateful Sessions | 3/5 | In progress (gap closure) | 2026-05-26 |
+| 5. Pool + Stateful Sessions | 4/5 | In Progress|  |
 | 6. Tool-Call Path | 0/TBD | Not started | - |
 | 7. Embeddings | 0/TBD | Not started | - |
 | 8. Plugin Hook Chain | 0/TBD | Not started | - |
