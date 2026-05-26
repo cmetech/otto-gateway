@@ -54,16 +54,16 @@ Requirements for initial release. Each maps to roadmap phases (see Traceability)
 
 ### Pool — Warm subprocess pool
 
-- [ ] **POOL-01**: Fixed-size pool (default `POOL_SIZE=4`) of warm `kiro-cli` subprocesses.
-- [ ] **POOL-02**: Pool warmup completes before `http.Server.ListenAndServe()` accepts connections. Cold boot pays the warmup cost up front; first real request is fast.
-- [ ] **POOL-03**: `Acquire` returns the first free slot or blocks on a buffered channel of free slots. `Release` returns the slot to the channel.
-- [ ] **POOL-04**: Dead slots are detected and re-spawned lazily without blocking other acquires.
+- [x] **POOL-01**: Fixed-size pool (default `POOL_SIZE=4`) of warm `kiro-cli` subprocesses.
+- [x] **POOL-02**: Pool warmup completes before `http.Server.ListenAndServe()` accepts connections. Cold boot pays the warmup cost up front; first real request is fast.
+- [x] **POOL-03**: `Acquire` returns the first free slot or blocks on a buffered channel of free slots. `Release` returns the slot to the channel.
+- [x] **POOL-04**: Dead slots are detected and re-spawned lazily without blocking other acquires.
 
 ### Session — Stateful sessions
 
-- [ ] **SESS-01**: Requests with `X-Session-Id` header use a dedicated `kiro-cli` subprocess via `SessionRegistry`, not the warm pool.
-- [ ] **SESS-02**: Idle sessions reaped after `SESSION_TTL_MS` (default 1,800,000 = 30 min). Reaper runs every 60s.
-- [ ] **SESS-03**: `DELETE /v1/sessions/:id` tears down a stateful session immediately and returns `{deleted: "<id>"}`.
+- [x] **SESS-01**: Requests with `X-Session-Id` header use a dedicated `kiro-cli` subprocess via `SessionRegistry`, not the warm pool.
+- [x] **SESS-02**: Idle sessions reaped after `SESSION_TTL_MS` (default 1,800,000 = 30 min). Reaper runs every 60s.
+- [x] **SESS-03**: `DELETE /v1/sessions/:id` tears down a stateful session immediately and returns `{deleted: "<id>"}`.
 
 ### Embeddings — Local embedding endpoints
 
@@ -88,7 +88,7 @@ Requirements for initial release. Each maps to roadmap phases (see Traceability)
 - [ ] **AUTH-02**: IP allowlist via `ALLOWED_IPS` env var (comma-separated). Empty means allow-all.
 - [ ] **AUTH-03**: Auth and allowlist middleware exempt `/`, `/api/version`, and `/health` paths.
 - [ ] **OBSV-01**: `GET /health` returns pool stats, session registry stats, and embedding registry stats in a JSON object.
-- [ ] **OBSV-02**: `GET /health/agents` returns per-pool-slot detail (`alive`, `busy`, `label`) and per-session detail (`alive`, `last_used`).
+- [x] **OBSV-02**: `GET /health/agents` returns per-pool-slot detail (`alive`, `busy`, `label`) and per-session detail (`alive`, `last_used`).
 - [ ] **OBSV-03**: Structured logging via `log/slog` with `X-Request-Id` correlation across pre-hook, engine, ACP, and post-hook spans.
 
 ### Build — Distribution and cross-compile
@@ -188,13 +188,13 @@ Populated by the roadmapper from `.planning/ROADMAP.md`. Updated as phases compl
 | ACP-05 | Phase 1 | Pending |
 | ACP-06 | Phase 1 | Pending |
 | ACP-07 | Phase 2 | Pending |
-| POOL-01 | Phase 5 | Pending |
-| POOL-02 | Phase 5 | Pending |
-| POOL-03 | Phase 5 | Pending |
-| POOL-04 | Phase 5 | Pending |
-| SESS-01 | Phase 5 | Pending |
-| SESS-02 | Phase 5 | Pending |
-| SESS-03 | Phase 5 | Pending |
+| POOL-01 | Phase 5 | Complete |
+| POOL-02 | Phase 5 | Complete |
+| POOL-03 | Phase 5 | Complete |
+| POOL-04 | Phase 5 | Complete |
+| SESS-01 | Phase 5 | Complete |
+| SESS-02 | Phase 5 | Complete |
+| SESS-03 | Phase 5 | Complete |
 | EMBD-01 | Phase 7 | Pending |
 | EMBD-02 | Phase 7 | Pending |
 | EMBD-03 | Phase 7 | Pending |
@@ -210,7 +210,7 @@ Populated by the roadmapper from `.planning/ROADMAP.md`. Updated as phases compl
 | AUTH-02 | Phase 2 | Pending |
 | AUTH-03 | Phase 2 | Pending |
 | OBSV-01 | Phase 2 | Pending |
-| OBSV-02 | Phase 5 | Pending |
+| OBSV-02 | Phase 5 | Complete |
 | OBSV-03 | Phase 8 | Pending |
 | BLD-01 | Phase 1 | Pending |
 | BLD-02 | Phase 9 | Pending |

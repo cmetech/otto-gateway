@@ -30,7 +30,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 3: OpenAI Surface** - Pi-SDK `POST /v1/chat/completions` shares the same canonical engine (completed 2026-05-25)
 - [x] **Phase 3.1: Anthropic Surface** *(INSERTED)* - loop24-client (GSD Pi) `POST /v1/messages` with Anthropic SSE shares the same canonical engine (completed 2026-05-24)
 - [x] **Phase 4: Streaming** - NDJSON (Ollama) and SSE (OpenAI + Anthropic) off one canonical chunk channel, with disconnect cancellation (completed 2026-05-25)
-- [ ] **Phase 5: Pool + Stateful Sessions** - Warm `POOL_SIZE` pool plus `X-Session-Id` registry, both visible on `/health/agents` (plans 3/3 shipped 2026-05-26; verification gaps_found — gap-closure plans 05-04 (SC3 root-cause + fix) + 05-05 (PHASE5-PERF.md skeleton + manual gates) appended 2026-05-26)
+- [x] **Phase 5: Pool + Stateful Sessions** - Warm `POOL_SIZE` pool plus `X-Session-Id` registry, both visible on `/health/agents` (plans 3/3 shipped 2026-05-26; verification gaps_found — gap-closure plans 05-04 (SC3 root-cause + fix) + 05-05 (PHASE5-PERF.md skeleton + manual gates) appended 2026-05-26) (completed 2026-05-26)
 - [ ] **Phase 6: Tool-Call Path** - Canonical tool calls rendered per-surface, with `coerceToolCall` for plain-JSON-as-text
 - [ ] **Phase 7: Embeddings** - Local BGE/E5 embeddings on three endpoints, independent of `kiro-cli`
 - [ ] **Phase 8: Plugin Hook Chain** - `PreHook`/`PostHook` over canonical types, with RequestID, Auth, Logging registered
@@ -254,7 +254,7 @@ Plans:
   4. An idle session is reaped after `SESSION_TTL_MS` (default 30 min) — verified with a shortened TTL in a test — and `DELETE /v1/sessions/:id` immediately tears one down and returns `{deleted: "<id>"}`.
   5. `GET /health/agents` returns per-pool-slot detail (`alive`, `busy`, `label`) and per-session detail (`alive`, `last_used`); dead slots are detected and lazily re-spawned without blocking other acquires.
 
-**Plans:** 4/5 plans executed
+**Plans:** 5/5 plans complete
 
 Plans:
 **Wave 1**
@@ -275,7 +275,7 @@ Plans:
 
 **Wave 5** *(GAP CLOSURE — blocked on Wave 4; addresses 05-VERIFICATION.md gap 3)*
 
-- [ ] 05-05-PLAN.md — PHASE5-PERF.md skeleton + manual measurement gates: autonomous report skeleton, human-action latency (wrk 4×8×30s Node↔Go), human-action SESSION_MAX RSS sanity (8 sessions, per-child RSS), sign-off + VERIFICATION.md re-stamp. Closes CLAUDE.md non-functional perf constraint gate.
+- [x] 05-05-PLAN.md — PHASE5-PERF.md skeleton + manual measurement gates: autonomous report skeleton, human-action latency (wrk 4×8×30s Node↔Go), human-action SESSION_MAX RSS sanity (8 sessions, per-child RSS), sign-off + VERIFICATION.md re-stamp. Closes CLAUDE.md non-functional perf constraint gate.
 
 ### Phase 6: Tool-Call Path
 
@@ -352,7 +352,7 @@ Phases execute in numeric order: 1 → 1.1 → 2 → 3 → 3.1 → 4 → 5 → 6
 | 2. Ollama End-to-End | 6/6 | Complete   | 2026-05-24 |
 | 3. OpenAI Surface | 4/4 | Complete   | 2026-05-25 |
 | 4. Streaming | 4/4 | Complete   | 2026-05-25 |
-| 5. Pool + Stateful Sessions | 4/5 | In Progress|  |
+| 5. Pool + Stateful Sessions | 5/5 | Complete    | 2026-05-26 |
 | 6. Tool-Call Path | 0/TBD | Not started | - |
 | 7. Embeddings | 0/TBD | Not started | - |
 | 8. Plugin Hook Chain | 0/TBD | Not started | - |
