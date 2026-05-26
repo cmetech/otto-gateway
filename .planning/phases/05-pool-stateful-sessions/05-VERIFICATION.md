@@ -4,28 +4,7 @@ verified: 2026-05-26T14:31:03Z
 status: gaps_found
 score: 3/5 must-haves verified
 overrides_applied: 0
-gaps:
-  - truth: "Two requests with same X-Session-Id route to same dedicated kiro-cli subprocess (verifiable via per-slot label in /health/agents); requests without the header use the warm pool."
-    status: failed
-    reason: "X-Session-Id stateful path is reproducibly broken end-to-end against the real kiro-cli. The session entry IS created and visible in /health/agents (Registry.Get works), but every subsequent /api/chat with that header returns HTTP 500 with `engine: prompt: session: prompt: acp: prompt: rpc error -32603: Internal error`. The pool (stateless) path works correctly — the failure is specific to the registry path. SC3 is observably not met."
-    artifacts:
-      - path: "internal/session/entry_acp.go"
-        issue: "Entry.Prompt calls e.Client.Prompt(ctx, sessionID, blocks) with the SessionID cached in createEntry at session-creation time. Against the real kiro-cli (kiro-cli 2.x in PATH), this RPC always returns JSON-RPC code -32603 (Internal error). Root cause not isolated by the executor — could be a SetModel sequence requirement, a cwd handshake difference between pool path and session path, or a kiro-cli session lifecycle mismatch (the session is created during createEntry but used later by a different ctx chain)."
-      - path: "tests/e2e/pool_sessions_e2e_test.go"
-        issue: "Three subtests fail against the live kiro-cli: SessionIDAffinity (line 218: status 500 want 200), IdleReap_RealTime (line 265: create session status 500), DeleteSession_OK (line 302: create session status 500). The DeleteSession_CancelsInFlight subtest passes only because it does not require the stream to produce any tokens — it asserts only that the stream terminates within 5s, which it does because Prompt returns immediately with the 500."
-      - path: "internal/adapter/ollama/handlers_session_test.go"
-        issue: "Unit tests use session.NewEntryForTest(fakeACPClient{}, sid) which substitutes a fake ACP client whose Prompt method does not exercise kiro-cli's session/prompt JSON-RPC. The unit-test suite therefore cannot catch the live integration failure. The fake ACP client is internal to the test file."
-    missing:
-      - "An end-to-end working stateful prompt against real kiro-cli. Currently 100% of stateful /api/chat requests fail. Likely root cause is in Entry.Prompt's ACP call sequence — needs trace of the wire protocol between the gateway and kiro-cli to compare with the working pool path. May require additional handshake (e.g., setSessionMode, or implicit SetModel) that the pool path acquires via its NewSession call but the session path does not."
-      - "An e2e or integration smoke that pings the stateful path with real kiro-cli BEFORE phase closure — the existing e2e tests with the failing subtests need to be run against live kiro and pass."
-  - truth: "Idle session reaped after SESSION_TTL_MS (default 30 min) — testable with shortened TTL — and DELETE /v1/sessions/:id immediately tears down, returns {deleted: \"<id>\"}."
-    status: partial
-    reason: "Unit-level coverage is comprehensive and passes: TestReaper_ReapsIdleSessionInRealTime (D-13 real-time with TTL=200ms), TestSessionsRouter_Delete_KnownSid_Returns200WithDeleted (D-08 wire shape), TestRegistry_Delete_KnownSid (cancels + closes). However, the integration path (e2e) for both reaping AND DELETE happy-path REQUIRES a session to exist first via Registry.Get — and that requires a successful stateful prompt to populate the entry. Because the stateful prompt fails (see SC3 gap above), the e2e subtests IdleReap_RealTime and DeleteSession_OK cannot validate the reap/delete behavior end-to-end. The DELETE handler IS correctly wired (TestSessionsRouter_Delete_UnknownSid_Returns404 passes against the live gateway in e2e), but the happy-path 'create-then-delete' integration cannot be demonstrated until the SC3 root cause is fixed."
-    artifacts:
-      - path: "tests/e2e/pool_sessions_e2e_test.go"
-        issue: "IdleReap_RealTime subtest is unable to create the session it needs to reap (kiro-cli returns 500); DeleteSession_OK is similarly blocked."
-    missing:
-      - "End-to-end validation of session creation → reap and session creation → DELETE → 200 {deleted}. Blocked behind the SC3 fix."
+gaps: []
 
 deferred: []
 
@@ -235,3 +214,95 @@ The SC3 failure cannot be overridden — it is a binary integration failure obse
 
 _Verified: 2026-05-26T14:31:03Z_
 _Verifier: Claude (gsd-verifier)_
+
+## Gap Closure History
+
+### 2026-05-26 — SC3 + SC4 closed by Plan 05-04
+
+- **SC3 (stateful session integration broken):** closed. Root cause was H-B
+  (kiro-cli's `session/prompt` returns rpc error -32603 "Improperly formed
+  request" against every prompt issued on a session whose `session/new`
+  was called with an empty `cwd`). Fix applied in
+  `internal/session/registry.go::createEntry` — substitute `os.Getwd()`
+  when caller supplies cwd="". The pool path was unaffected because
+  `engine.Run` resolves cwd via `engine.pickCwd` with the same fallback.
+  Evidence:
+  - `TestE2E_PoolSessions/SessionIDAffinity` PASS (10.62s) against live
+    kiro-cli — previously failed at line 218 with status 500.
+  - `TestE2E_PoolSessions/StatefulContinuity_TwoTurns` PASS (7.78s) —
+    turn 1 = "Noted. The number is 7." → turn 2 = "7." (conversation-
+    level continuity on the same cached SessionID, ruling out H-A which
+    would have broken multi-turn state).
+  - Smoke curl: stateful `/api/chat -H 'X-Session-Id: smoke-1'` returns
+    HTTP 200 with assistant content; same sid on a second request also
+    returns HTTP 200 (continuity holds).
+
+- **SC4 (idle reap + DELETE + cancel-in-flight):** closed. Once SC3 was
+  fixed the dependent e2e subtests could create sessions and exercise
+  the reap/DELETE/cancel paths end-to-end. Evidence:
+  - `TestE2E_PoolSessions/IdleReap_RealTime` PASS (8.41s) — session
+    reaped after TTL=500ms + TickInterval=100ms; previously blocked
+    because session creation failed first.
+  - `TestE2E_PoolSessions/DeleteSession_OK` PASS (6.01s) — returns
+    `{"deleted":"<id>"}` with HTTP 200.
+  - `TestE2E_PoolSessions/DeleteSession_CancelsInFlight` PASS (6.04s)
+    with strengthened parse-and-validate assertion (plan 05-04 MEDIUM-4):
+    chunkCount=4, first chunk parses as valid Ollama assistant content
+    (`message.content="Hi"`), no top-level error key. The previous
+    assertion passed for the WRONG REASON (stream terminated immediately
+    because Entry.Prompt returned 500); the strengthened assertion is
+    the authority for SC4's cancel semantics.
+
+- **Root cause artifact:** `.planning/phases/05-pool-stateful-sessions/05-04-WIRE-DIFF.md`
+  with `## Working Pool Path`, `## Broken Session Path`,
+  `## Rejected Hypotheses` (H-A, H-C, H-D each cited with frame numbers),
+  `## Confirmatory Experiment` (single-variable change `KIRO_CWD=/tmp`
+  flipped 500 → 200), `## Root Cause`, `## Remediation Plan`.
+
+- **Diagnostic infrastructure:** `tools/kiro-shim/main.go` — stdio
+  JSON-RPC recorder. Reusable for future wire-protocol investigations.
+
+- **Fix commit:** `9384851` (fix(05-04): SC3 root cause — registry.createEntry resolves empty cwd)
+- **Diagnostic commit:** `36a7aac` (docs(05-04): SC3 root cause — kiro-cli rejects empty cwd on session/new)
+
+- **Test deltas in `tests/e2e/pool_sessions_e2e_test.go`:**
+  - NEW subtest `StatefulContinuity_TwoTurns` (HIGH-1) — the load-bearing
+    SC3 closure assertion. Same-PID affinity is NOT sufficient; the test
+    asserts conversation-level continuity (turn 2 references turn 1's
+    content).
+  - STRENGTHENED `DeleteSession_CancelsInFlight` (MEDIUM-4) — replaced
+    the silent `io.Copy(io.Discard, ...)` drain with a bounded
+    chunk-counting bufio.Scanner. Waits up to 3s for the first chunk
+    (no more fixed 250ms sleep) and validates the first chunk parses as
+    valid assistant content (not an error envelope, not metadata-only).
+
+- **Test deltas in `internal/session/entry_acp_test.go` (new file):**
+  - `TestRegistry_CreateEntry_ResolvesEmptyCwdToOSGetwd` — H-B regression
+    guard. FAILED against pre-fix code; PASSES against fix.
+  - `TestRegistry_CreateEntry_PassesNonEmptyCwdVerbatim` — symmetric guard.
+  - `TestEntry_NewSession_ReturnsCachedSessionID` — H-A REVERSE-regression
+    guard. The cached-sid accessor MUST stay; recreating the session per
+    prompt would break continuity.
+  - `TestEntry_Prompt_PassesCachedSessionID` — companion to the H-A guard.
+
+## Re-verification 2026-05-26
+
+After plan 05-04 fix landed:
+
+- `go test ./... -count=1 -race -timeout=180s`: all 12 packages green
+  (cmd, acp, adapter/{anthropic,ollama,openai}, auth, canonical, config,
+  engine, pool, server, session).
+- `OTTO_E2E=1 go test -tags=e2e -run 'TestE2E_PoolSessions' ./tests/e2e/... -count=1 -timeout=180s`:
+  10/10 subtests PASS, 1 SKIP by design (AllDeadRespawnFails — warmup
+  fails as expected with the failing-stub binary).
+- Smoke curl 3× (stateful turn1, stateful turn2 same sid, stateless) +
+  DELETE happy path: all HTTP 200; `{"deleted":"smoke-1"}`; no orphaned
+  kiro-cli children after shutdown.
+- `go vet ./internal/session/...`: clean. (`golangci-lint` not installed
+  on this host; per plan 05-04 LOW-1, go vet satisfies the lint gate.)
+
+**Note on phase status field:** the top-level `status:` and `score:` fields
+in this file's frontmatter are intentionally UNCHANGED by plan 05-04 (per
+plan 05-04 LOW-2 + 05-04 Task 6 acceptance criteria). The flip to
+`status: verified` belongs to plan 05-05 Task 4 after the manual perf+RSS
+gate (PHASE5-PERF.md) closes.

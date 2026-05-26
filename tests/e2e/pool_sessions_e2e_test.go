@@ -17,6 +17,7 @@
 package e2e_test
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -247,6 +248,82 @@ func TestE2E_PoolSessions(t *testing.T) {
 		}
 	})
 
+	t.Run("StatefulContinuity_TwoTurns", func(t *testing.T) {
+		// Same-PID affinity is NOT sufficient. This test is the authority
+		// for SC3 conversation-level closure (plan 05-04 HIGH-1). A fix
+		// that gives same-PID affinity but loses conversation state is
+		// not a fix for SC3 — the load-bearing property is "stateful
+		// sessions keyed by X-Session-Id", and stateful means
+		// conversation-level continuity.
+		//
+		// Test shape: turn 1 instructs the assistant to remember "7";
+		// turn 2 on the same sid asks what number to remember. The
+		// turn-2 body MUST contain the digit "7" (case-insensitive
+		// substring match — the digit is the same in either case, but
+		// the lowercase normalisation documents the test author's
+		// intent and stays symmetric if the prompt evolves).
+		baseURL, cleanup := bootGateway(t, map[string]string{"POOL_SIZE": "2"})
+		defer cleanup()
+
+		// Turn 1: instruct the assistant.
+		turn1Body := []byte(`{"model":"auto","messages":[{"role":"user","content":"Remember the number 7."}],"stream":false}`)
+		turn1Resp := doJSON(t, http.MethodPost, baseURL+"/api/chat",
+			map[string]string{"X-Session-Id": "continuity-1"}, turn1Body)
+		if turn1Resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(turn1Resp.Body)
+			_ = turn1Resp.Body.Close()
+			t.Fatalf("turn 1: status %d, want 200; body=%s", turn1Resp.StatusCode, string(body))
+		}
+		var turn1 struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		}
+		if err := json.NewDecoder(turn1Resp.Body).Decode(&turn1); err != nil {
+			_ = turn1Resp.Body.Close()
+			t.Fatalf("turn 1 decode: %v", err)
+		}
+		_ = turn1Resp.Body.Close()
+		t.Logf("turn 1 content: %q", turn1.Message.Content)
+
+		// Turn 2: probe recall — SAME sid so the registry routes to the
+		// SAME kiro-cli session.
+		turn2Body := []byte(`{"model":"auto","messages":[{"role":"user","content":"What number did I tell you to remember?"}],"stream":false}`)
+		turn2Resp := doJSON(t, http.MethodPost, baseURL+"/api/chat",
+			map[string]string{"X-Session-Id": "continuity-1"}, turn2Body)
+		if turn2Resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(turn2Resp.Body)
+			_ = turn2Resp.Body.Close()
+			t.Fatalf("turn 2: status %d, want 200; body=%s", turn2Resp.StatusCode, string(body))
+		}
+		var turn2 struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		}
+		if err := json.NewDecoder(turn2Resp.Body).Decode(&turn2); err != nil {
+			_ = turn2Resp.Body.Close()
+			t.Fatalf("turn 2 decode: %v", err)
+		}
+		_ = turn2Resp.Body.Close()
+		t.Logf("turn 2 content: %q", turn2.Message.Content)
+
+		// Load-bearing assertion: turn 2 must reference turn 1's content.
+		if !strings.Contains(strings.ToLower(turn2.Message.Content), "7") {
+			t.Fatalf("two-turn continuity broken: turn 2 did not reference turn 1's content. turn1=%q turn2=%q", turn1.Message.Content, turn2.Message.Content)
+		}
+
+		// Optional cleanup: not load-bearing. If kiro-cli's session
+		// lifecycle changes, this could fail benignly. Skip if the
+		// session is already gone (404).
+		delResp := doJSON(t, http.MethodDelete, baseURL+"/v1/sessions/continuity-1", nil, nil)
+		_, _ = io.Copy(io.Discard, delResp.Body)
+		_ = delResp.Body.Close()
+		if delResp.StatusCode != http.StatusOK && delResp.StatusCode != http.StatusNotFound {
+			t.Logf("DELETE continuity-1: status %d (200 or 404 expected)", delResp.StatusCode)
+		}
+	})
+
 	t.Run("IdleReap_RealTime", func(t *testing.T) {
 		// SC4 (reaper) — TTL=500ms, TickInterval=100ms.
 		baseURL, cleanup := bootGateway(t, map[string]string{
@@ -342,6 +419,15 @@ func TestE2E_PoolSessions(t *testing.T) {
 	t.Run("DeleteSession_CancelsInFlight", func(t *testing.T) {
 		// SC4 (cancel in-flight) — DELETE during a streaming request
 		// terminates the stream within bounded time.
+		//
+		// Plan 05-04 Task 5 strengthening (per 05-REVIEWS.md MEDIUM-4):
+		// the pre-strengthening assertion (just "stream terminates within
+		// 5s") passed against the pre-fix SC3 bug for the WRONG REASON —
+		// the stream terminated immediately because Entry.Prompt returned
+		// HTTP 500, not because DELETE cancelled an in-flight stream. The
+		// strengthened assertion parses the FIRST pre-DELETE NDJSON chunk
+		// and demands it be a valid Ollama assistant-content frame (not
+		// an error envelope, not a protocol-metadata-only frame).
 		baseURL, cleanup := bootGateway(t, map[string]string{"POOL_SIZE": "4"})
 		defer cleanup()
 
@@ -361,16 +447,59 @@ func TestE2E_PoolSessions(t *testing.T) {
 			t.Fatalf("stream request: %v", err)
 		}
 
-		// Drain the stream in a goroutine; record when it ends.
+		// Drain the stream in a goroutine. Record (a) the count of NDJSON
+		// lines received and (b) the FIRST complete line under a mutex
+		// so the assertion below can inspect it for content/error shape.
+		var (
+			drainMu    sync.Mutex
+			chunkCount int
+			firstLine  string
+		)
 		streamDone := make(chan struct{})
 		go func() {
 			defer close(streamDone)
 			defer func() { _ = streamResp.Body.Close() }()
-			_, _ = io.Copy(io.Discard, streamResp.Body)
+			scanner := bufio.NewScanner(streamResp.Body)
+			// Match internal/acp/framer.go scanner buffer size — NDJSON
+			// chunks can carry large assistant content.
+			scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+			for scanner.Scan() {
+				line := scanner.Text()
+				drainMu.Lock()
+				chunkCount++
+				if firstLine == "" {
+					firstLine = line
+				}
+				drainMu.Unlock()
+			}
 		}()
 
-		// Give the stream a moment to start.
-		time.Sleep(250 * time.Millisecond)
+		// Plan 05-04 Task 5: wait for the chunk counter to reach 1 (with
+		// a bounded poll, max ~3s) before issuing DELETE. The previous
+		// fixed 250ms sleep was a flake risk when the model's first
+		// token took longer to arrive. On timeout, fail loudly — no
+		// chunks = the fix did not land.
+		chunkDeadline := time.After(3 * time.Second)
+		chunkPoll := time.NewTicker(50 * time.Millisecond)
+		defer chunkPoll.Stop()
+		waitedForChunk := false
+	waitForFirstChunk:
+		for {
+			select {
+			case <-chunkDeadline:
+				streamCancel()
+				t.Fatalf("stream produced no chunks within 3s — fix did not land (no pre-DELETE chunk to validate)")
+			case <-chunkPoll.C:
+				drainMu.Lock()
+				count := chunkCount
+				drainMu.Unlock()
+				if count >= 1 {
+					waitedForChunk = true
+					break waitForFirstChunk
+				}
+			}
+		}
+		_ = waitedForChunk
 
 		// Issue DELETE.
 		delResp := doJSON(t, http.MethodDelete, baseURL+"/v1/sessions/e2e-del-cancel", nil, nil)
@@ -390,6 +519,49 @@ func TestE2E_PoolSessions(t *testing.T) {
 			streamCancel()
 			t.Errorf("streaming response did not terminate within 5s after DELETE")
 		}
+
+		// Plan 05-04 Task 5 (MEDIUM-4): parse the first pre-DELETE NDJSON
+		// chunk and validate it carries real assistant content — not an
+		// error envelope and not a protocol-metadata-only frame.
+		drainMu.Lock()
+		gotFirst := firstLine
+		drainMu.Unlock()
+		if gotFirst == "" {
+			t.Fatalf("no pre-DELETE chunk captured (chunkCount=%d) — assertion cannot run", chunkCount)
+		}
+		var firstChunk map[string]any
+		if err := json.Unmarshal([]byte(gotFirst), &firstChunk); err != nil {
+			t.Fatalf("first stream chunk not valid JSON: %v; line=%s", err, gotFirst)
+		}
+		if _, hasErr := firstChunk["error"]; hasErr {
+			t.Fatalf("first stream chunk contains error envelope, want assistant content: %s", gotFirst)
+		}
+		// At least one of (a) message.content is a non-empty string OR
+		// (b) top-level response is a non-empty string. /api/chat emits
+		// the message form; /api/generate emits response — handle both
+		// for robustness against future surface evolution.
+		var (
+			hasContent      bool
+			messageContent  string
+			responseContent string
+		)
+		if msg, ok := firstChunk["message"].(map[string]any); ok {
+			if c, ok := msg["content"].(string); ok && c != "" {
+				hasContent = true
+				messageContent = c
+			}
+		}
+		if r, ok := firstChunk["response"].(string); ok && r != "" {
+			hasContent = true
+			responseContent = r
+		}
+		if !hasContent {
+			t.Fatalf("first stream chunk is protocol metadata, want assistant content with non-empty message.content or response: %s", gotFirst)
+		}
+		// Log captured content for debugging on rare flakes (e.g., model
+		// output variance).
+		t.Logf("DeleteSession_CancelsInFlight: chunkCount=%d, message.content=%q, response=%q",
+			chunkCount, messageContent, responseContent)
 	})
 
 	t.Run("HealthAgentsShape", func(t *testing.T) {
