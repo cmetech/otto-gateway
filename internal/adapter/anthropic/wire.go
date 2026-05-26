@@ -5,10 +5,47 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"otto-gateway/internal/canonical"
 )
+
+// claudeModelHyphenVersionRe matches Anthropic-style Claude model IDs that use
+// hyphen-separated version numbers (e.g., claude-sonnet-4-6, claude-haiku-4-5,
+// claude-sonnet-4-5-20250514). Group 1 captures the family+major prefix,
+// group 2 captures the minor digit; an optional trailing -YYYYMMDD date tag
+// is matched and discarded.
+var claudeModelHyphenVersionRe = regexp.MustCompile(`^(claude-[a-z]+-\d+)-(\d+)(?:-\d{8})?$`)
+
+// normalizeClaudeModelID converts Anthropic-API-style Claude model IDs (which
+// use hyphen-separated version components, e.g. "claude-sonnet-4-6") to the
+// dot-separated form kiro-cli advertises and recognises on session/set_model
+// (e.g. "claude-sonnet-4.6"). Anthropic SDK clients (loop24-client, otto-cli,
+// @anthropic-ai/sdk) send the hyphenated form by convention; kiro-cli's
+// session/set_model silently accepts unknown IDs and then fails the subsequent
+// session/prompt with JSON-RPC -32603. Translating at the wire boundary keeps
+// canonical.ChatRequest.Model in the kiro-cli-recognisable form so the engine's
+// SetModel call succeeds end-to-end.
+//
+// Transformation rules:
+//
+//	claude-sonnet-4-6              → claude-sonnet-4.6
+//	claude-haiku-4-5               → claude-haiku-4.5
+//	claude-opus-4-7                → claude-opus-4.7
+//	claude-sonnet-4-5-20250514     → claude-sonnet-4.5  (date tag dropped)
+//	claude-sonnet-4                → claude-sonnet-4    (no minor; unchanged)
+//	auto / "" / non-claude IDs     → unchanged
+//
+// The response echo path uses the ORIGINAL wire.Model value (not the
+// translated canonical Model), so SDK clients see back the exact model
+// string they sent.
+func normalizeClaudeModelID(id string) string {
+	if m := claudeModelHyphenVersionRe.FindStringSubmatch(id); m != nil {
+		return m[1] + "." + m[2]
+	}
+	return id
+}
 
 // ----------------------------------------------------------------------------
 // Wire request shape (POST /v1/messages)
@@ -123,7 +160,7 @@ type anthropicToolSpec struct {
 // handleMessages.
 func wireToChatRequest(w *anthropicMessagesRequest, r *http.Request, logger *slog.Logger) *canonical.ChatRequest {
 	req := &canonical.ChatRequest{
-		Model:              w.Model,
+		Model:              normalizeClaudeModelID(w.Model),
 		Stream:             w.Stream,
 		MaxTokens:          w.MaxTokens,
 		Temperature:        w.Temperature,

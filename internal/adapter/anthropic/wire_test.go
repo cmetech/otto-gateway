@@ -373,3 +373,96 @@ func TestWire_StreamAndMaxTokensCopied(t *testing.T) {
 		t.Errorf("MaxTokens: got %d, want 512", req.MaxTokens)
 	}
 }
+
+// ----------------------------------------------------------------------------
+// Claude model-ID normalization
+// ----------------------------------------------------------------------------
+//
+// Anthropic API clients (loop24-client, otto-cli, @anthropic-ai/sdk) send
+// hyphen-separated version components (`claude-sonnet-4-6`). kiro-cli
+// advertises and accepts dot-separated versions (`claude-sonnet-4.6`).
+// kiro-cli's session/set_model silently accepts unknown IDs, and the
+// subsequent session/prompt then fails with JSON-RPC -32603 ("Internal
+// error"). Translating the model ID at the wire boundary fixes this
+// surface compatibility without leaking kiro-cli wire shape into the
+// canonical layer. The original wire.Model is still echoed back via the
+// response renderers — only the canonical ChatRequest.Model is normalised.
+
+func TestNormalizeClaudeModelID(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		// otto-cli / @anthropic-ai/sdk hyphen forms → kiro dot form.
+		{"claude-sonnet-4-6", "claude-sonnet-4.6"},
+		{"claude-sonnet-4-5", "claude-sonnet-4.5"},
+		{"claude-haiku-4-5", "claude-haiku-4.5"},
+		{"claude-opus-4-7", "claude-opus-4.7"},
+		{"claude-opus-4-6", "claude-opus-4.6"},
+
+		// Date-pinned form: drop the trailing -YYYYMMDD tag.
+		{"claude-sonnet-4-5-20250514", "claude-sonnet-4.5"},
+		{"claude-opus-4-7-20260101", "claude-opus-4.7"},
+
+		// Major-only IDs (kiro advertises "claude-sonnet-4"): unchanged.
+		{"claude-sonnet-4", "claude-sonnet-4"},
+
+		// "auto" + empty + non-claude IDs: pass through untouched.
+		{"auto", "auto"},
+		{"", ""},
+		{"deepseek-3.2", "deepseek-3.2"},
+		{"glm-5", "glm-5"},
+		{"qwen3-coder-next", "qwen3-coder-next"},
+
+		// Already-normalised dot form: idempotent.
+		{"claude-sonnet-4.6", "claude-sonnet-4.6"},
+		{"claude-haiku-4.5", "claude-haiku-4.5"},
+	}
+	for _, c := range cases {
+		t.Run(c.in, func(t *testing.T) {
+			got := normalizeClaudeModelID(c.in)
+			if got != c.want {
+				t.Errorf("normalizeClaudeModelID(%q) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+}
+
+// TestWire_ModelNormalizedToKiroForm verifies wireToChatRequest applies
+// the Anthropic-→kiro model-ID translation so engine.SetModel hands kiro-cli
+// an ID it recognises. End-to-end repro: claude-sonnet-4-6 produced a 500
+// against real kiro-cli before this fix (set_model accepted silently,
+// session/prompt then returned JSON-RPC -32603).
+func TestWire_ModelNormalizedToKiroForm(t *testing.T) {
+	logger, _ := captureLogger()
+	wire := &anthropicMessagesRequest{
+		Model:     "claude-sonnet-4-6",
+		MaxTokens: 256,
+		Messages: []anthropicWireMessage{
+			{Role: "user", Content: json.RawMessage(`"hi"`)},
+		},
+	}
+	req := wireToChatRequest(wire, newTestRequest(t, ""), logger)
+	if req.Model != "claude-sonnet-4.6" {
+		t.Errorf("req.Model: got %q, want %q (normalize hyphen→dot for kiro-cli set_model)",
+			req.Model, "claude-sonnet-4.6")
+	}
+}
+
+// TestWire_AutoModelPassesThrough guards against over-normalisation breaking
+// the "auto" / unset path. The engine special-cases Model=="auto" to skip
+// SetModel entirely (engine/engine.go), so the canonical value must be
+// preserved verbatim.
+func TestWire_AutoModelPassesThrough(t *testing.T) {
+	logger, _ := captureLogger()
+	wire := &anthropicMessagesRequest{
+		Model:     "auto",
+		MaxTokens: 256,
+		Messages: []anthropicWireMessage{
+			{Role: "user", Content: json.RawMessage(`"hi"`)},
+		},
+	}
+	req := wireToChatRequest(wire, newTestRequest(t, ""), logger)
+	if req.Model != "auto" {
+		t.Errorf("req.Model for auto: got %q, want %q", req.Model, "auto")
+	}
+}

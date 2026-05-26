@@ -125,4 +125,85 @@ func TestE2E_Anthropic(t *testing.T) {
 			t.Error("content[0].text: empty")
 		}
 	})
+
+	// Messages_ModelIDForms — kiro-cli advertises dot-separated Claude model
+	// IDs (`claude-sonnet-4.6`) but Anthropic-API-compatible clients
+	// (loop24-client, otto-cli, @anthropic-ai/sdk) send hyphen-separated IDs
+	// (`claude-sonnet-4-6`). kiro-cli's session/set_model silently accepts the
+	// unknown hyphen-form ID and the subsequent session/prompt then fails with
+	// JSON-RPC -32603 ("Internal error").
+	//
+	// Regression bug (2026-05-26, debug session anthropic-acp-internal-err):
+	// every /v1/messages call from a real otto client returned 500 because the
+	// Anthropic adapter forwarded the hyphen-form model ID verbatim. Fix:
+	// internal/adapter/anthropic/wire.go:normalizeClaudeModelID translates
+	// `claude-FAMILY-MAJOR-MINOR[-YYYYMMDD]` → `claude-FAMILY-MAJOR.MINOR`
+	// before storing into canonical.ChatRequest.Model. The response renderer
+	// continues to echo the ORIGINAL wire ID so SDK clients see back what
+	// they sent.
+	//
+	// Note: the prior Messages_Streaming / Messages_NonStreaming subtests
+	// both use `model:"auto"`, which the engine special-cases to SKIP
+	// SetModel entirely (engine/engine.go) — that is why this whole class
+	// of failure went undetected against real kiro until a real Anthropic
+	// SDK client was wired up.
+	t.Run("Messages_ModelIDForms", func(t *testing.T) {
+		cases := []struct {
+			name      string
+			modelWire string // what the client sends on the wire
+		}{
+			// Hyphen forms — the failure mode before the fix. All three were
+			// 500s; all three must now be 200s with the wire ID echoed back.
+			{"hyphen_sonnet_4_6", "claude-sonnet-4-6"},
+			{"hyphen_haiku_4_5", "claude-haiku-4-5"},
+			{"hyphen_dated_sonnet_4_5", "claude-sonnet-4-5-20250514"},
+			// Dot forms — kiro-cli's native wire shape; must continue to
+			// round-trip cleanly (no over-normalisation regression).
+			{"dot_sonnet_4_6", "claude-sonnet-4.6"},
+			{"dot_haiku_4_5", "claude-haiku-4.5"},
+		}
+		for _, c := range cases {
+			t.Run(c.name, func(t *testing.T) {
+				body := []byte(`{"model":"` + c.modelWire + `","max_tokens":256,"messages":[{"role":"user","content":"say hi"}]}`)
+				resp := postMessages(t, baseURL, body, map[string]string{"Authorization": "Bearer e2e-token"})
+				defer func() { _ = resp.Body.Close() }()
+				if resp.StatusCode != http.StatusOK {
+					t.Fatalf("status: got %d, want 200 for model=%q (kiro -32603 regression — see debug session anthropic-acp-internal-err); body=%s",
+						resp.StatusCode, c.modelWire, readAll(resp))
+				}
+				if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+					t.Errorf("Content-Type: got %q, want application/json prefix", ct)
+				}
+				var msg struct {
+					Type    string `json:"type"`
+					Role    string `json:"role"`
+					Model   string `json:"model"`
+					Content []struct {
+						Type string `json:"type"`
+						Text string `json:"text"`
+					} `json:"content"`
+				}
+				if err := json.NewDecoder(resp.Body).Decode(&msg); err != nil {
+					t.Fatalf("decode message: %v", err)
+				}
+				if msg.Type != "message" {
+					t.Errorf("type: got %q, want message", msg.Type)
+				}
+				if msg.Role != "assistant" {
+					t.Errorf("role: got %q, want assistant", msg.Role)
+				}
+				// A3 echo opaque (chatResponseToMessage): the response model
+				// field MUST echo the wire ID verbatim — NOT the translated
+				// kiro form. SDK clients pin model strings via equality
+				// checks against the value they originally sent.
+				if msg.Model != c.modelWire {
+					t.Errorf("model echo: got %q, want %q (wire ID must echo back unchanged; canonical translation is internal to the adapter)",
+						msg.Model, c.modelWire)
+				}
+				if len(msg.Content) == 0 || msg.Content[0].Text == "" {
+					t.Errorf("content: empty (kiro returned no text — model translation likely broke against real kiro)")
+				}
+			})
+		}
+	})
 }
