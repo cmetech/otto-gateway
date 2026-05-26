@@ -166,10 +166,18 @@ func NewWithCommit(cfg config.Config, logger *slog.Logger, version, commit strin
 //     which would panic when two surfaces share one prefix).
 //
 // cfg.Logger must be non-nil for production use; tests pass a t.Log-
-// backed logger via testutil.Logger.
+// backed logger via testutil.Logger. WR-03 fix: when cfg.Logger is
+// nil (a zero-value Config — used by some tests that construct the
+// server directly without the middleware chain) install a discard
+// logger so handler paths that fall back to s.logger never panic on
+// a nil deref.
 func NewFromConfig(cfg Config) *Server {
+	logger := cfg.Logger
+	if logger == nil {
+		logger = slog.New(slog.NewTextHandler(serverDiscardWriter{}, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	}
 	s := &Server{
-		logger:     cfg.Logger,
+		logger:     logger,
 		version:    cfg.Version,
 		commit:     cfg.Commit,
 		start:      time.Now(),
@@ -181,7 +189,7 @@ func NewFromConfig(cfg Config) *Server {
 	s.router = chi.NewRouter()
 	s.router.Use(middleware.RequestID)
 	s.router.Use(middleware.Recoverer)
-	s.router.Use(accessLog(cfg.Logger))
+	s.router.Use(accessLog(logger))
 
 	// Exempt outer routes — auth + IP allowlist NOT applied here.
 	s.router.Get("/", s.rootHandler)
@@ -220,11 +228,11 @@ func NewFromConfig(cfg Config) *Server {
 		p := prefix
 		s.router.Route(p, func(r chi.Router) {
 			r.Use(auth.Bearer(auth.Config{
-				Logger: cfg.Logger,
+				Logger: logger,
 				Tokens: cfg.AuthTokens,
 			}))
 			r.Use(auth.IPAllowlist(auth.Config{
-				Logger:             cfg.Logger,
+				Logger:             logger,
 				AllowedPrefixes:    cfg.AllowedPrefixes,
 				TrustXForwardedFor: cfg.AuthTrustXFF, // Codex H-7
 			}))
@@ -307,3 +315,11 @@ func (s *Server) RunUntilSignal(ctx context.Context) error {
 
 	return s.Run(derivedCtx)
 }
+
+// serverDiscardWriter is a no-op io.Writer used by NewFromConfig when
+// cfg.Logger is nil (WR-03 fallback). Mirrors the discardWriter
+// pattern in the adapter packages but kept package-local to avoid
+// adding an io import just for io.Discard.
+type serverDiscardWriter struct{}
+
+func (serverDiscardWriter) Write(p []byte) (int, error) { return len(p), nil }
