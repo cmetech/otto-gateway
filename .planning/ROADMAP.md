@@ -291,7 +291,22 @@ Plans:
   4. Tool definitions from both request shapes (OpenAI `tools[].function`, Ollama tool spec) are normalized into one canonical tool spec consumed by the engine.
   5. Property tests (`pgregory.net/rapid` or `testing/quick`) cover `coerceToolCall` round-trip + never-panic invariants and the canonical-tool-spec translator for both surfaces.
 
-**Plans:** TBD
+**Plans:** 5 plans
+
+Plans:
+**Wave 1** *(cross-cutting foundation; blocks Waves 2-3)*
+
+- [ ] 06-01-PLAN.md — Foundation: canonical.ToolCallChunk.ID (D-08), engine.coerce.go (D-01/D-09/D-10/D-11/D-12), engine.Collect third aggregator (CONTEXT line 31), engine.buildBlocks [Available tools] JSON catalog (D-16), acp/translate.go tool_call/tool_call_chunk → ChunkKindToolCall (D-03 canonical extraction)
+
+**Wave 2** *(per-surface vertical slices — run in parallel; blocked on Wave 1)*
+
+- [ ] 06-02-PLAN.md — Ollama vertical slice: wire.go ollamaChatResponseMessage.ToolCalls field, handlers.go CoerceToolCall hook-in (non-streaming, D-01), render.go plain-object args (D-04 / SC #2), ndjson.go per-chunk [tool: <name>] thought-text + done:true line tool_calls aggregator (D-07 Ollama)
+- [ ] 06-03-PLAN.md — OpenAI vertical slice: wire.go typed openAIToolSpec + ToolChoice decode (D-13), handlers.go CoerceToolCall hook-in (non-streaming), render.go JSON-string args + finish_reason:tool_calls post-fixup (SC #1), sse.go multi-frame tool_call SSE + golden fixture (D-07 OpenAI)
+- [ ] 06-04-PLAN.md — Anthropic vertical slice: wire.go anthropicToolSpec → canonical.ToolSpec + tool_choice decode (D-14 closes TODO Phase 6), sse.go applyChunk tool_use block sequence with CR-01 input:{} preservation + block-index discipline (D-07 Anthropic), handlers_test.go static-source assertion locking the NO-coerce asymmetry (D-01 verification)
+
+**Wave 3** *(cross-surface integration + checkpoints; blocked on Waves 1-2)*
+
+- [ ] 06-05-PLAN.md — Cross-surface E2E: tools_fixtures.go shared catalog + fake-kiro binary, tools_{ollama,openai,anthropic,cancel}_test.go full D-17 12-scenario matrix + cross-surface canonical equivalence + scenario 12 mid-stream cancel + goleak gate, blocking checkpoint for Node source byte-fidelity (RESEARCH Assumption A1), blocking HUMAN-UAT checkpoint for loop24-client messages.stream() conformance
 
 ### Phase 7: Embeddings
 
@@ -353,7 +368,7 @@ Phases execute in numeric order: 1 → 1.1 → 2 → 3 → 3.1 → 4 → 5 → 6
 | 3. OpenAI Surface | 4/4 | Complete   | 2026-05-25 |
 | 4. Streaming | 4/4 | Complete   | 2026-05-25 |
 | 5. Pool + Stateful Sessions | 5/5 | Complete    | 2026-05-26 |
-| 6. Tool-Call Path | 0/TBD | Not started | - |
+| 6. Tool-Call Path | 0/5 | Not started | - |
 | 7. Embeddings | 0/TBD | Not started | - |
 | 8. Plugin Hook Chain | 0/TBD | Not started | - |
 | 9. Distribution | 0/TBD | Not started | - |
