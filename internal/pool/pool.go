@@ -19,6 +19,13 @@ type Slot struct {
 	// Client is the PoolClient that this slot wraps. Interface-typed
 	// per Codex M-2 so fakeClient can be injected in tests.
 	Client PoolClient
+	// dead is set to true by the per-slot exit-watcher (exit_watcher.go,
+	// added in Phase 5 Task 2) when slot.Client.Done() fires. Read by
+	// Pool.NewSession's dead-slot branch (Task 2) which then synchronously
+	// re-spawns the slot before handing it to the caller. Guarded by p.mu —
+	// the watcher acquires p.mu only for the assignment, never holds it
+	// across slot.Client method calls.
+	dead bool
 }
 
 // Pool is a fixed-size warm pool of kiro-cli slots that satisfies
@@ -63,6 +70,15 @@ type Pool struct {
 	closed bool
 	// closeOnce ensures the shutdown sequence runs exactly once.
 	closeOnce sync.Once
+
+	// closing is closed by Pool.Close BEFORE closeAll so per-slot
+	// exit-watcher goroutines (exit_watcher.go, added in Phase 5 Task 2)
+	// select-exit deterministically via <-p.closing. Closing this channel
+	// BEFORE closeAll's slot.Client.Close calls means the watcher always
+	// observes the close-signal first and never flips slot.dead on
+	// shutdown teardown. goleak gate in testmain_test.go enforces clean
+	// watcher exit on Close.
+	closing chan struct{}
 }
 
 // New constructs a Pool with the given Config. The slots channel is
@@ -74,6 +90,7 @@ func New(cfg Config) *Pool {
 		cfg:          cfg,
 		slots:        make(chan *Slot, cfg.Size),
 		sessionSlots: make(map[string]*Slot),
+		closing:      make(chan struct{}),
 	}
 }
 
@@ -200,9 +217,17 @@ func (p *Pool) Stats() Stats {
 // Close shuts the pool down idempotently. Subsequent calls return nil
 // after the first invocation finishes. Slots are closed in reverse
 // allocation order; the first error encountered is returned.
+//
+// Phase 5 D-01: close(p.closing) is the FIRST line of the shutdown body,
+// BEFORE closeAll. Per-slot exit-watcher goroutines (exit_watcher.go,
+// added in Task 2) select on <-p.closing as their clean-exit branch;
+// closing first means the watcher always wins the select against
+// <-slot.Client.Done() that would otherwise fire from closeAll's
+// slot.Client.Close() calls. This is the goleak-clean ordering.
 func (p *Pool) Close() error {
 	var firstErr error
 	p.closeOnce.Do(func() {
+		close(p.closing)
 		firstErr = p.closeAll()
 	})
 	return firstErr

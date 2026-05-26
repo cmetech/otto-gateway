@@ -58,9 +58,9 @@ type Config struct {
 	// which is promoted to a /32 or /128 prefix). Empty (nil) means allow-all
 	// (Node parity).
 	AllowedIPs []netip.Prefix
-	// PoolSize is the number of warm kiro-cli subprocesses (default 1 in
-	// Phase 2; Phase 5 raises the default to 4). Set-but-unparseable yields
-	// a Load() error.
+	// PoolSize is the number of warm kiro-cli subprocesses (Phase 5
+	// POOL-01: default 4 for Node parity; Phase 2 shipped a default of 1).
+	// Set-but-unparseable yields a Load() error.
 	PoolSize int
 	// OllamaPathPrefix is the route prefix under which the Ollama adapter is
 	// mounted (default "/api"). Loaded from OLLAMA_PATH_PREFIX.
@@ -126,7 +126,12 @@ func Load() (Config, error) {
 		errs = append(errs, fmt.Errorf("ALLOWED_IPS: %w", err))
 	}
 
-	poolSize, err := getEnvInt("POOL_SIZE", 1)
+	// Phase 5 POOL-01: env default flips from 1 to 4 for Node parity (see
+	// 05-CONTEXT.md <domain> Phase Boundary). Note: the package-level
+	// default in internal/pool/config.go applyDefaults stays at 1 because
+	// the pool's tests construct pool.Config{} directly and expect Size=1
+	// when unset. Only this env-load layer flips.
+	poolSize, err := getEnvInt("POOL_SIZE", 4)
 	if err != nil {
 		errs = append(errs, err)
 	}

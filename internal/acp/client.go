@@ -913,6 +913,23 @@ func (c *Client) handleNotification(frame rpcFrame) {
 	}
 }
 
+// Done returns a channel that is closed when the client's subprocess has
+// exited (either via Close() or via the readLoop's defer c.cancel() that
+// fires on EOF / pipe close / ping-loop failure). The channel is closed
+// exactly once.
+//
+// Done is the push-based exit signal added in Phase 5 (D-01) for the
+// per-slot exit-watcher in internal/pool. It is intentionally a
+// receive-only chan struct{} (no error payload).
+//
+// The channel is derived from the existing private clientCtx — Close()
+// step 1 (cancel()) cancels clientCtx, so Done() fires for the same
+// teardown paths that already fire ErrClientClosed for in-flight callers.
+// No new fields, no new goroutines — pure accessor.
+func (c *Client) Done() <-chan struct{} {
+	return c.clientCtx.Done()
+}
+
 // Close shuts down the client cleanly.
 // D-07: idempotent via sync.Once. Shutdown order is documented below and is mandatory.
 // T-02-02: goroutine leak gate covered by goleak.VerifyTestMain.

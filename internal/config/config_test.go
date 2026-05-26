@@ -259,13 +259,14 @@ func TestLoad_AllowedIPs_Malformed(t *testing.T) {
 
 func TestLoad_PoolSize_Default(t *testing.T) {
 	// t.Setenv: cannot use t.Parallel().
+	// Phase 5 POOL-01: env default flipped from 1 to 4 for Node parity.
 	t.Setenv("POOL_SIZE", "")
 	cfg, err := config.Load()
 	if err != nil {
 		t.Fatalf("Load() returned unexpected error: %v", err)
 	}
-	if cfg.PoolSize != 1 {
-		t.Errorf("PoolSize: got %d, want 1 (Phase 2 default)", cfg.PoolSize)
+	if cfg.PoolSize != 4 {
+		t.Errorf("PoolSize: got %d, want 4 (Phase 5 POOL-01 Node-parity default)", cfg.PoolSize)
 	}
 }
 
