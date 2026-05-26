@@ -1174,24 +1174,31 @@ no env mutation, no `time.Now()` mocking.
 cited — no user confirmation needed. **(Not empty — A2/A7 should be
 surfaced during planning.)**
 
-## Open Questions
+## Open Questions (RESOLVED)
+
+> Resolved 2026-05-26 during /gsd-plan-phase verification iteration 1.
+> Recommendations accepted; planner must honor these in plans 05-02 + 05-03.
 
 1. **Should `SetModel` failures kill the session entry?**
    - What we know: `acp.Client.SetModel` can fail (e.g., invalid model
      name). D-09 says "call SetModel before Prompt if model differs."
    - What's unclear: If SetModel fails, do we tear down the entry
      (forcing a re-create) or surface a 4xx and leave the entry alive?
-   - Recommendation: Surface 4xx and leave the entry alive — the
+   - **RESOLVED:** Surface 4xx and leave the entry alive — the
      subsequent request with a valid model will succeed. Tear-down on
-     SetModel failure is a sledgehammer.
+     SetModel failure is a sledgehammer. (Affects 05-02 Task 1 / Task 2
+     SetModel diff-skip path AND 05-03 surface handlers — both must
+     translate SetModel errors to 4xx without registry mutation.)
 
 2. **Should DELETE return 200 or 204 on success?**
    - What we know: D-08 says "returns `{deleted: id}`" — implies 200
      with a body.
    - What's unclear: HTTP semantics suggest 204 (No Content) for
      DELETE, but Node parity is 200 with body.
-   - Recommendation: 200 with body per Node parity (D-08 wording). The
+   - **RESOLVED:** 200 with body per Node parity (D-08 wording). The
      body is useful for clients confirming which sid was deleted.
+     (Affects 05-03 Task 2 DELETE handler — must return
+     `200 {"deleted":"<id>"}`, never 204.)
 
 3. **Does the registry survive a `Pool.Close` failure?**
    - What we know: `cmd/otto-gateway/main.go`'s cleanup closure calls
@@ -1199,18 +1206,22 @@ surfaced during planning.)**
      cleanup.
    - What's unclear: If registry.Close fails (e.g., one entry's client
      panics on Close), should pool.Close still fire?
-   - Recommendation: Always run pool.Close (best-effort), log the
-     registry error. Matches `Pool.closeAll`'s "log first error,
-     continue on subsequent errors" discipline at
-     `internal/pool/pool.go:228-236`.
+   - **RESOLVED:** Always run pool.Close (best-effort), log the
+     registry error and continue. Matches `Pool.closeAll`'s "log first
+     error, continue on subsequent errors" discipline at
+     `internal/pool/pool.go:228-236`. (Affects 05-03 Task 4 main.go
+     shutdown ordering — registry.Close failure does NOT short-circuit
+     pool.Close; both run, errors are logged and aggregated.)
 
 4. **Does `/health/agents` need rate-limiting?**
    - What we know: D-18 says it's auth-exempt. The handler reads pool
      stats + registry stats, both O(slots + sessions).
    - What's unclear: Could an operator looping `curl /health/agents`
      starve the registry's reaper of the registry mutex?
-   - Recommendation: No — the handler takes the RLock briefly (snapshot
-     pattern, same as Pattern 4). Concurrent reads are fine.
+   - **RESOLVED:** No rate-limiting needed — the handler takes the
+     RLock briefly (snapshot pattern, same as Pattern 4). Concurrent
+     reads are fine. (Affects 05-03 Task 1 agentsHandler — RLock-then-
+     copy-then-unlock pattern, no Lock; no rate limiter dependency.)
 
 ## Environment Availability
 
