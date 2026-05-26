@@ -180,7 +180,11 @@ func (p *Pool) initSlot(ctx context.Context, label string) (*Slot, error) {
 		return nil, fmt.Errorf("pool: initialize %s: %w", label, err)
 	}
 	slot := &Slot{Label: label, Client: client}
-	p.startExitWatcher(slot)
+	// WR-01: capture Done() at the spawn site so the watcher
+	// goroutine cannot lazily re-evaluate slot.Client.Done() against a
+	// later-swapped client. Safe here without p.mu — the slot has
+	// just been allocated and no other goroutine holds a reference.
+	p.startExitWatcher(slot, client.Done())
 	return slot, nil
 }
 
@@ -236,13 +240,16 @@ func (p *Pool) respawnSlot(ctx context.Context, slot *Slot) error {
 		return fmt.Errorf("pool: respawn slot %s: initialize: %w", slot.Label, err)
 	}
 	// Step 4: replace under p.mu. Short critical section — no client
-	// method calls under the lock.
+	// method calls under the lock. WR-01: capture the NEW client's
+	// Done() channel under p.mu so the fresh watcher binds to the
+	// NEW client deterministically (no scheduler-timing dependency).
 	p.mu.Lock()
 	slot.Client = newClient
 	slot.dead = false
+	newDone := newClient.Done()
 	p.mu.Unlock()
 	// Step 5: spawn a fresh exit-watcher for the NEW client.
-	p.startExitWatcher(slot)
+	p.startExitWatcher(slot, newDone)
 	return nil
 }
 

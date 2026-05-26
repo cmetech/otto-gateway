@@ -51,7 +51,8 @@ func TestExitWatcher_FiresOnClientDone(t *testing.T) {
 	wc := newWatcherTestClient()
 	slot := &Slot{Label: "watcher-test-0", Client: wc}
 
-	p.startExitWatcher(slot)
+	// WR-01: callers now capture Done() at spawn time.
+	p.startExitWatcher(slot, wc.Done())
 
 	// Trigger client death.
 	close(wc.doneCh)
@@ -84,7 +85,8 @@ func TestExitWatcher_ExitsOnPoolClose(t *testing.T) {
 	wc := newWatcherTestClient()
 	slot := &Slot{Label: "watcher-close-0", Client: wc}
 
-	p.startExitWatcher(slot)
+	// WR-01: callers now capture Done() at spawn time.
+	p.startExitWatcher(slot, wc.Done())
 
 	// Trigger pool shutdown; watcher should pick <-p.closing branch.
 	if err := p.Close(); err != nil {
