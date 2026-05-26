@@ -1,0 +1,2 @@
+# kiro-shim invocation: /Users/coreyellis/.local/bin/kiro-cli [acp]
+{"ts":"2026-05-26T15:49:33.938436Z","pid":77433,"child_pid":77435,"dir":"OUT","frame":{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientInfo":{"name":"otto-gateway","version":"0e8d8e9"},"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false}}}}
