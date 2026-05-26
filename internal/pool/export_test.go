@@ -44,3 +44,34 @@ func (p *Pool) SessionSlotsLen() int {
 	defer p.mu.Unlock()
 	return len(p.sessionSlots)
 }
+
+// SlotAlive returns whether the slot with the given Label is alive
+// (slot.dead == false). Returns (false, false) when no slot matches.
+// Phase 5 D-01: test accessor for the dead-slot detection path; lets
+// tests assert state without grepping struct internals.
+func (p *Pool) SlotAlive(label string) (alive, found bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, s := range p.all {
+		if s != nil && s.Label == label {
+			return !s.dead, true
+		}
+	}
+	return false, false
+}
+
+// AllSlotsSnapshot returns a defensive copy of p.all for tests that need
+// to assert pool effective size after a respawn-failure shrink (D-03).
+func (p *Pool) AllSlotsSnapshot() []*Slot {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := make([]*Slot, len(p.all))
+	copy(out, p.all)
+	return out
+}
+
+// ClosingChan returns p.closing for tests that want to assert clean
+// watcher teardown via the Pool.Close path.
+func (p *Pool) ClosingChan() <-chan struct{} {
+	return p.closing
+}

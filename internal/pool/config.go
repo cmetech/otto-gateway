@@ -48,6 +48,10 @@ type PoolClient interface {
 	Cancel(sessionID string)
 	Close() error
 	AvailableModels() []canonical.ModelInfo
+	// Done is the Phase 5 D-01 push-exit signal: the channel closes when
+	// the client's subprocess has exited (Close() or readLoop EOF). The
+	// per-slot exit-watcher in exit_watcher.go selects on this channel.
+	Done() <-chan struct{}
 }
 
 // ClientFactory constructs a PoolClient per slot. The default

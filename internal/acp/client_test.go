@@ -821,6 +821,117 @@ func runPromptStopReasonScenario(t *testing.T, wireStop string, want canonical.S
 	}
 }
 
+// TestClient_Done_FiresOnClose verifies the Phase 5 D-01 push-exit signal:
+// after Close() returns, Done() must observe a closed channel within 1s.
+func TestClient_Done_FiresOnClose(t *testing.T) {
+	mock := newMockRWC()
+	cfg := newTestConfig(t)
+
+	c := NewWithConn(mock, cfg)
+	done := c.Done()
+
+	// Sanity: before Close, Done() is open.
+	select {
+	case <-done:
+		t.Fatal("Done() fired before Close()")
+	default:
+	}
+
+	mock.serverClose()
+	_ = c.Close()
+
+	select {
+	case <-done:
+		// expected
+	case <-time.After(1 * time.Second):
+		t.Fatal("Done() did not fire within 1s after Close()")
+	}
+	goleak.VerifyNone(t)
+}
+
+// TestClient_Done_FiresOnPingLoopKill verifies that Done() also fires when the
+// readLoop kills the clientCtx (e.g., subprocess exit / pipe EOF). The
+// mockRWC.serverClose() path simulates the same EOF path that triggers
+// readLoop's defer c.cancel().
+func TestClient_Done_FiresOnPingLoopKill(t *testing.T) {
+	mock := newMockRWC()
+	cfg := newTestConfig(t)
+
+	c := NewWithConn(mock, cfg)
+	done := c.Done()
+
+	// Close the server side — readLoop sees EOF and defers c.cancel(),
+	// which closes clientCtx and therefore Done().
+	mock.serverClose()
+
+	select {
+	case <-done:
+		// expected — readLoop's defer c.cancel() fired
+	case <-time.After(1 * time.Second):
+		t.Fatal("Done() did not fire within 1s after server-side EOF")
+	}
+
+	_ = c.Close()
+	goleak.VerifyNone(t)
+}
+
+// TestClient_Done_DoesNotFireBeforeClose verifies that select on Done() with
+// a default branch picks default while the client is healthy.
+func TestClient_Done_DoesNotFireBeforeClose(t *testing.T) {
+	mock := newMockRWC()
+	cfg := newTestConfig(t)
+
+	c := NewWithConn(mock, cfg)
+	defer func() {
+		mock.serverClose()
+		_ = c.Close()
+		goleak.VerifyNone(t)
+	}()
+
+	done := c.Done()
+
+	// Healthy client — Done() must not fire.
+	select {
+	case <-done:
+		t.Fatal("Done() fired on a healthy client")
+	default:
+		// expected
+	}
+}
+
+// TestClient_Done_IdempotentMultipleReaders verifies that three concurrent
+// readers all observe the close exactly once. context.Done() is a broadcast
+// channel: every receiver gets the close signal.
+func TestClient_Done_IdempotentMultipleReaders(t *testing.T) {
+	mock := newMockRWC()
+	cfg := newTestConfig(t)
+
+	c := NewWithConn(mock, cfg)
+
+	const readers = 3
+	observed := make(chan struct{}, readers)
+	for i := 0; i < readers; i++ {
+		go func() {
+			<-c.Done()
+			observed <- struct{}{}
+		}()
+	}
+
+	// Trigger close.
+	mock.serverClose()
+	_ = c.Close()
+
+	for i := 0; i < readers; i++ {
+		select {
+		case <-observed:
+			// expected
+		case <-time.After(2 * time.Second):
+			t.Fatalf("reader %d did not observe Done() close within 2s", i)
+		}
+	}
+	goleak.VerifyNone(t)
+}
+
 // readLineFromPipe reads one newline-terminated line from r.
 func readLineFromPipe(r io.Reader) ([]byte, error) {
 	return readLineFromPipeWithTimeout(r, 5*time.Second)
