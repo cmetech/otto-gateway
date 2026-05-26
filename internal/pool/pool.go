@@ -159,6 +159,11 @@ func (p *Pool) Warmup(ctx context.Context) error {
 // initSlot spawns + initialises a single slot via cfg.Factory. On
 // Initialize failure it closes the freshly-spawned client and returns
 // a wrapped error.
+//
+// Phase 5 D-01: spawns a per-slot exit-watcher goroutine (exit_watcher.go)
+// AFTER successful Initialize so the watcher observes the slot's Done()
+// channel for the rest of the slot's life (until the slot is respawned
+// or the pool closes).
 func (p *Pool) initSlot(ctx context.Context, label string) (*Slot, error) {
 	client, err := p.cfg.Factory.Spawn(ctx, acp.Config{
 		Logger:       p.cfg.Logger,
@@ -174,7 +179,86 @@ func (p *Pool) initSlot(ctx context.Context, label string) (*Slot, error) {
 		_ = client.Close()
 		return nil, fmt.Errorf("pool: initialize %s: %w", label, err)
 	}
-	return &Slot{Label: label, Client: client}, nil
+	slot := &Slot{Label: label, Client: client}
+	p.startExitWatcher(slot)
+	return slot, nil
+}
+
+// slotAlive reports whether the slot is alive (not dead). Held under p.mu
+// for a short critical section — no slot.Client calls under the lock.
+func (p *Pool) slotAlive(slot *Slot) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return !slot.dead
+}
+
+// respawnSlot synchronously re-spawns a dead slot in place (Phase 5
+// POOL-04 + D-02). The caller (Pool.NewSession's dead-slot branch) has
+// exclusive ownership of slot — it was just received from p.slots — so
+// in-place client replacement is race-free with concurrent acquires.
+//
+// Ordering is load-bearing (05-RESEARCH.md Pitfall 2 + 05-PATTERNS.md
+// §"Insertion 2"):
+//  1. Close the OLD client first. This fires the OLD client's Done(),
+//     so the OLD exit-watcher's <-slot.Client.Done() branch wins and
+//     the OLD watcher exits cleanly via slot.dead = true (which is
+//     about to be reset anyway).
+//  2. Spawn the NEW client (honors ctx — D-02: ctx-canceled caller
+//     does not block on a slow kiro-cli spawn).
+//  3. Initialize the NEW client (mirrors initSlot).
+//  4. Under p.mu: replace slot.Client and reset slot.dead = false.
+//  5. Spawn a fresh exit-watcher for the NEW client.
+//
+// On any failure the wrapped error is returned; the caller is expected
+// to call removeSlot to drop the dead slot from p.all (D-03).
+func (p *Pool) respawnSlot(ctx context.Context, slot *Slot) error {
+	// Step 1: close OLD client first so OLD exit-watcher exits cleanly
+	// via its <-slot.Client.Done() branch (Pitfall 2).
+	if slot.Client != nil {
+		_ = slot.Client.Close()
+	}
+	// Step 2: spawn NEW client. ctx is honored — caller cancellation
+	// during a slow kiro-cli spawn aborts the respawn promptly (D-02).
+	newClient, err := p.cfg.Factory.Spawn(ctx, acp.Config{
+		Logger:       p.cfg.Logger,
+		Command:      p.cfg.KiroCmd,
+		Args:         p.cfg.KiroArgs,
+		Cwd:          p.cfg.KiroCWD,
+		PingInterval: p.cfg.PingInterval,
+	})
+	if err != nil {
+		return fmt.Errorf("pool: respawn slot %s: spawn: %w", slot.Label, err)
+	}
+	// Step 3: initialise the NEW client. On failure close it to avoid
+	// orphaning a subprocess + writer/reader goroutine trio.
+	if err := newClient.Initialize(ctx); err != nil {
+		_ = newClient.Close()
+		return fmt.Errorf("pool: respawn slot %s: initialize: %w", slot.Label, err)
+	}
+	// Step 4: replace under p.mu. Short critical section — no client
+	// method calls under the lock.
+	p.mu.Lock()
+	slot.Client = newClient
+	slot.dead = false
+	p.mu.Unlock()
+	// Step 5: spawn a fresh exit-watcher for the NEW client.
+	p.startExitWatcher(slot)
+	return nil
+}
+
+// removeSlot drops slot from p.all so the pool effective size shrinks
+// (Phase 5 D-03 — respawn failure path). Held under p.mu briefly.
+// The slot is NOT returned to p.slots; subsequent NewSession callers
+// will compete for the remaining alive slots.
+func (p *Pool) removeSlot(slot *Slot) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for i, s := range p.all {
+		if s == slot {
+			p.all = append(p.all[:i], p.all[i+1:]...)
+			return
+		}
+	}
 }
 
 // Models returns a defensive copy of the captured model catalog.
@@ -292,6 +376,18 @@ func (p *Pool) NewSession(ctx context.Context, cwd string) (string, error) {
 		// acquired
 	case <-ctx.Done():
 		return "", fmt.Errorf("pool: acquire cancelled: %w", ctx.Err())
+	}
+
+	// Phase 5 D-01/D-02/D-03: dead-slot detection + lazy synchronous
+	// re-spawn. The per-slot exit-watcher (exit_watcher.go) flips
+	// slot.dead to true when slot.Client.Done() fires; this branch
+	// observes the flag, respawns synchronously, and on failure drops
+	// the slot from p.all so the pool effective size shrinks (D-03).
+	if !p.slotAlive(slot) {
+		if err := p.respawnSlot(ctx, slot); err != nil {
+			p.removeSlot(slot)
+			return "", fmt.Errorf("pool: respawn slot %s: %w", slot.Label, err)
+		}
 	}
 
 	sid, err := slot.Client.NewSession(ctx, cwd)
