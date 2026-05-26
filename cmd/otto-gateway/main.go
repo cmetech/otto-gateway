@@ -175,12 +175,12 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 		a.registry = session.New(session.Config{
 			Logger:       logger,
 			TTL:          cfg.SessionTTL,
+			TickInterval: cfg.SessionTickInterval,
 			MaxSessions:  cfg.SessionMax,
 			KiroCmd:      cfg.KiroCmd,
 			KiroArgs:     cfg.KiroArgs,
 			KiroCWD:      cfg.KiroCWD,
 			PingInterval: cfg.PingInterval,
-			// TickInterval left zero → applyDefaults uses 60s (Node parity).
 		})
 		a.registry.Start(context.Background())
 	}
