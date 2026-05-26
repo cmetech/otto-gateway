@@ -254,12 +254,12 @@ Plans:
   4. An idle session is reaped after `SESSION_TTL_MS` (default 30 min) — verified with a shortened TTL in a test — and `DELETE /v1/sessions/:id` immediately tears one down and returns `{deleted: "<id>"}`.
   5. `GET /health/agents` returns per-pool-slot detail (`alive`, `busy`, `label`) and per-session detail (`alive`, `last_used`); dead slots are detected and lazily re-spawned without blocking other acquires.
 
-**Plans:** 3 plans
+**Plans:** 1/3 plans executed
 
 Plans:
 **Wave 1**
 
-- [ ] 05-01-PLAN.md — Slice A: Pool dead-slot detection — acp.Client.Done() push-exit signal, per-slot exit-watcher goroutine, lazy synchronous re-spawn at Pool.NewSession (D-01/D-02), pool-shrink on respawn failure (D-03), Pool.Detail() per-slot rows for /health/agents (D-15), POOL_SIZE env default flip to 4 (POOL-01 Node parity). Closes POOL-01..04.
+- [x] 05-01-PLAN.md — Slice A: Pool dead-slot detection — acp.Client.Done() push-exit signal, per-slot exit-watcher goroutine, lazy synchronous re-spawn at Pool.NewSession (D-01/D-02), pool-shrink on respawn failure (D-03), Pool.Detail() per-slot rows for /health/agents (D-15), POOL_SIZE env default flip to 4 (POOL-01 Node parity). Closes POOL-01..04.
 
 **Wave 2** *(blocked on Wave 1 — config.go overlap)*
 
@@ -344,7 +344,7 @@ Phases execute in numeric order: 1 → 1.1 → 2 → 3 → 3.1 → 4 → 5 → 6
 | 2. Ollama End-to-End | 6/6 | Complete   | 2026-05-24 |
 | 3. OpenAI Surface | 4/4 | Complete   | 2026-05-25 |
 | 4. Streaming | 4/4 | Complete   | 2026-05-25 |
-| 5. Pool + Stateful Sessions | 0/3 | Not started | - |
+| 5. Pool + Stateful Sessions | 1/3 | In Progress|  |
 | 6. Tool-Call Path | 0/TBD | Not started | - |
 | 7. Embeddings | 0/TBD | Not started | - |
 | 8. Plugin Hook Chain | 0/TBD | Not started | - |
