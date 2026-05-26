@@ -276,14 +276,24 @@ func (p *Pool) Models() []canonical.ModelInfo {
 }
 
 // Stats returns a point-in-time snapshot of pool occupancy. Size is
-// the configured pool size; Alive counts non-nil clients; Busy is
-// len(all) - len(slots) — the count of checked-out slots.
+// the configured pool size; Alive counts slots with a live client
+// (non-nil Client AND !dead — matches Detail's per-slot view, see
+// CR-03); Busy is len(all) - len(slots) — the count of checked-out
+// slots.
+//
+// CR-03 fix: previously Alive counted any slot with `s.Client != nil`.
+// Phase 5's dead-slot detection (exit_watcher) sets `slot.dead = true`
+// WITHOUT clearing s.Client (the OLD client field stays populated
+// until respawnSlot swaps it). That meant /health reported all slots
+// alive even when N were dead awaiting lazy respawn — disagreeing
+// with /health/agents (which already uses !slot.dead). Use the same
+// !dead test here so the two endpoints stay consistent.
 func (p *Pool) Stats() Stats {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	alive := 0
 	for _, s := range p.all {
-		if s != nil && s.Client != nil {
+		if s != nil && s.Client != nil && !s.dead {
 			alive++
 		}
 	}
