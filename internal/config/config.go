@@ -87,6 +87,17 @@ type Config struct {
 	// distinguishes /v1/messages (Anthropic) from /v1/chat/completions
 	// (OpenAI). Loaded from ANTHROPIC_PATH_PREFIX.
 	AnthropicPathPrefix string
+	// SessionTTL is the idle-session reap threshold (Phase 5 SESS-02 /
+	// D-10). Default 30 minutes for Node parity (SESSION_TTL_MS=1_800_000).
+	// Loaded from SESSION_TTL_MS via getEnvDuration which accepts both
+	// ms-integers (Node parity) and Go duration strings.
+	SessionTTL time.Duration
+	// SessionMax is the SESSION_MAX cap on the number of concurrent
+	// dedicated sessions (Phase 5 D-06). Default 32. Lazy-create that
+	// would exceed the cap returns session.ErrSessionMaxExceeded for
+	// surface adapters to render as 503. NEW IN OTTO — no Node
+	// equivalent; document accordingly in docs/operating.md.
+	SessionMax int
 }
 
 // LogLevel returns the slog.Level implied by the Debug flag.
@@ -150,6 +161,22 @@ func Load() (Config, error) {
 		errs = append(errs, fmt.Errorf("ENABLED_SURFACES: %w", err))
 	}
 
+	// Phase 5 SESS-02 / D-10: SESSION_TTL_MS default 30 min (Node parity).
+	// getEnvDuration accepts both Go duration strings ("30m") and
+	// millisecond integers ("1800000") so the env name matches Node's
+	// SESSION_TTL_MS exactly.
+	sessionTTL, err := getEnvDuration("SESSION_TTL_MS", 30*time.Minute)
+	if err != nil {
+		errs = append(errs, err)
+	}
+
+	// Phase 5 D-06: SESSION_MAX cap (default 32). NEW env var — no Node
+	// equivalent; documented in docs/operating.md.
+	sessionMax, err := getEnvInt("SESSION_MAX", 32)
+	if err != nil {
+		errs = append(errs, err)
+	}
+
 	if len(errs) > 0 {
 		return Config{}, fmt.Errorf("config: invalid env vars: %w", errors.Join(errs...))
 	}
@@ -169,6 +196,8 @@ func Load() (Config, error) {
 		AuthTrustXFF:        trustXFF,
 		EnabledSurfaces:     enabledSurfaces,
 		AnthropicPathPrefix: anthropicPath,
+		SessionTTL:          sessionTTL,
+		SessionMax:          sessionMax,
 	}, nil
 }
 
@@ -214,6 +243,8 @@ func LoadArgs(args []string) (Config, error) {
 		debug           = fs.Bool("debug", cfg.Debug, "enable debug-level logging")
 		pingInterval    = fs.Duration("ping-interval", cfg.PingInterval, "kiro-cli heartbeat interval (Go duration)")
 		poolSize        = fs.Int("pool-size", cfg.PoolSize, "number of warm kiro-cli subprocesses")
+		sessionTTL      = fs.Duration("session-ttl", cfg.SessionTTL, "idle stateful-session reap threshold (Go duration; SESSION_TTL_MS also accepts ms-integer)")
+		sessionMax      = fs.Int("session-max", cfg.SessionMax, "maximum concurrent stateful sessions (SESSION_MAX)")
 		enabledSurfaces = fs.String("enabled-surfaces", strings.Join(cfg.EnabledSurfaces, ","), "comma-split list of enabled HTTP surfaces")
 		ollamaPath      = fs.String("ollama-path-prefix", cfg.OllamaPathPrefix, "route prefix for the Ollama surface")
 		anthropicPath   = fs.String("anthropic-path-prefix", cfg.AnthropicPathPrefix, "route prefix for the Anthropic surface")
@@ -263,6 +294,10 @@ func LoadArgs(args []string) (Config, error) {
 			cfg.AuthTrustXFF = *authTrustXFF
 		case "pool-size":
 			cfg.PoolSize = *poolSize
+		case "session-ttl":
+			cfg.SessionTTL = *sessionTTL
+		case "session-max":
+			cfg.SessionMax = *sessionMax
 		case "ping-interval":
 			cfg.PingInterval = *pingInterval
 		case "kiro-args":
