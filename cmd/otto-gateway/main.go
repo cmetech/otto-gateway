@@ -42,6 +42,7 @@ import (
 	"otto-gateway/internal/engine"
 	"otto-gateway/internal/pool"
 	"otto-gateway/internal/server"
+	"otto-gateway/internal/session"
 	"otto-gateway/internal/version"
 )
 
@@ -97,11 +98,12 @@ func main() {
 // one struct lets main_test.go assert on warmup-before-listen invariants
 // without copy-pasting the wiring graph.
 type app struct {
-	cfg    config.Config
-	logger *slog.Logger
-	pool   *pool.Pool     // nil when KIRO_CMD unset
-	engine *engine.Engine // nil when pool is nil
-	srv    *server.Server
+	cfg      config.Config
+	logger   *slog.Logger
+	pool     *pool.Pool     // nil when KIRO_CMD unset
+	engine   *engine.Engine // nil when pool is nil
+	registry *session.Registry // nil when KIRO_CMD unset; constructed alongside pool
+	srv      *server.Server
 }
 
 // newApp performs the Phase 2 wiring sequence and returns:
@@ -117,9 +119,19 @@ type app struct {
 func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, func(), error) {
 	a := &app{cfg: cfg, logger: logger}
 
-	// Cleanup closure — invoked once via the returned func. Closes the
-	// pool best-effort; safe to call when pool is nil.
+	// Cleanup closure — invoked once via the returned func. Plan 05-03
+	// shutdown ordering (Pitfall 5): registry.Close FIRST, pool.Close
+	// SECOND. Both are nil-safe. The reaper goroutine teardown completes
+	// in bounded time per plan 05-02 — Registry.Close blocks at most
+	// TickInterval + worst-case reapOnce iteration before wg.Wait
+	// returns. Pool.Close runs unconditionally even if registry.Close
+	// errored (resolved Open Question 3 from 05-CONTEXT.md).
 	cleanup := func() {
+		if a.registry != nil {
+			if err := a.registry.Close(); err != nil {
+				logger.Error("session: registry close", "err", err)
+			}
+		}
 		if a.pool != nil {
 			if err := a.pool.Close(); err != nil {
 				logger.Error("pool: close", "err", err)
@@ -152,6 +164,25 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 			ACP:        a.pool,
 			DefaultCWD: cfg.KiroCWD,
 		})
+
+		// Plan 05-03: construct the dedicated-session registry alongside
+		// the pool. The reaper is started here (rather than at Warmup)
+		// so the goroutine is spawned BEFORE any HTTP request can reach
+		// the X-Session-Id branch. Both lifecycles share KIRO_CMD /
+		// KIRO_ARGS / KIRO_CWD / PingInterval per the backward-compat
+		// env-var contract; SessionTTL + SessionMax are Phase 5 additions
+		// loaded by internal/config.
+		a.registry = session.New(session.Config{
+			Logger:       logger,
+			TTL:          cfg.SessionTTL,
+			MaxSessions:  cfg.SessionMax,
+			KiroCmd:      cfg.KiroCmd,
+			KiroArgs:     cfg.KiroArgs,
+			KiroCWD:      cfg.KiroCWD,
+			PingInterval: cfg.PingInterval,
+			// TickInterval left zero → applyDefaults uses 60s (Node parity).
+		})
+		a.registry.Start(context.Background())
 	}
 
 	// Adapter construction is gated by cfg.EnabledSurfaces (D-16
@@ -172,14 +203,53 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 		catalogForAdapter = a.pool
 	}
 
+	// Plan 05-03: build per-adapter EngineForSession factory closures.
+	// Each closure constructs a fresh *engine.Engine bound to the
+	// supplied *session.Entry (which satisfies engine.ACPClient via the
+	// compile-time gate in internal/session/entry_acp.go). The returned
+	// engine is wrapped in the adapter's surface-specific run-handle
+	// adapter so adapters never import internal/engine (TRST-04
+	// boundary preserved).
+	var ollamaEngineForSession ollama.EngineForSessionFunc
+	var openaiEngineForSession openai.EngineForSessionFunc
+	var anthropicEngineForSession anthropic.EngineForSessionFunc
+	var registryForAdapters *session.Registry
+	if a.registry != nil {
+		registryForAdapters = a.registry
+		ollamaEngineForSession = func(entry *session.Entry) ollama.Engine {
+			return ollamaEngineAdapter{engine: engine.New(engine.Config{
+				Logger:     logger,
+				ACP:        entry,
+				DefaultCWD: cfg.KiroCWD,
+			})}
+		}
+		openaiEngineForSession = func(entry *session.Entry) openai.Engine {
+			return openaiEngineAdapter{engine: engine.New(engine.Config{
+				Logger:     logger,
+				ACP:        entry,
+				DefaultCWD: cfg.KiroCWD,
+			})}
+		}
+		anthropicEngineForSession = func(entry *session.Entry) anthropic.Engine {
+			return anthropicEngineAdapter{engine: engine.New(engine.Config{
+				Logger:     logger,
+				ACP:        entry,
+				DefaultCWD: cfg.KiroCWD,
+			})}
+		}
+	}
+
 	var ollamaAdapter *ollama.Adapter
 	if slices.Contains(cfg.EnabledSurfaces, "ollama") {
 		ollamaAdapter = ollama.New(ollama.Config{
-			Logger:       logger,
-			Engine:       engineForAdapter,
-			ModelCatalog: catalogForAdapter,
-			Version:      version.Version,
-			Commit:       version.Commit(),
+			Logger:           logger,
+			Engine:           engineForAdapter,
+			ModelCatalog:     catalogForAdapter,
+			Version:          version.Version,
+			Commit:           version.Commit(),
+			Registry:         registryForAdapters,
+			EngineForSession: ollamaEngineForSession,
+			KiroCWD:          cfg.KiroCWD,
 		})
 	}
 
@@ -199,8 +269,11 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 			eng = anthropicEngineAdapter{engine: a.engine}
 		}
 		anthropicAdapter = anthropic.New(anthropic.Config{
-			Logger: logger,
-			Engine: eng,
+			Logger:           logger,
+			Engine:           eng,
+			Registry:         registryForAdapters,
+			EngineForSession: anthropicEngineForSession,
+			KiroCWD:          cfg.KiroCWD,
 		})
 	}
 
@@ -223,9 +296,12 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 			cat = a.pool
 		}
 		openaiAdapter = openai.New(openai.Config{
-			Logger:       logger,
-			Engine:       eng,
-			ModelCatalog: cat,
+			Logger:           logger,
+			Engine:           eng,
+			ModelCatalog:     cat,
+			Registry:         registryForAdapters,
+			EngineForSession: openaiEngineForSession,
+			KiroCWD:          cfg.KiroCWD,
 		})
 	}
 
@@ -255,6 +331,21 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 		})
 	}
 
+	// Plan 05-03: mount the SessionsRouter on the OpenAI path prefix
+	// (default /v1) so DELETE /v1/sessions/:id sits behind the same
+	// auth.Bearer + auth.IPAllowlist chain as the other /v1 surfaces.
+	// SessionsRouter satisfies server.RouteRegistrar; its SessionDeleter
+	// is satisfied by *session.Registry's Delete(sid) error method.
+	if a.registry != nil {
+		surfaces = append(surfaces, server.SurfaceMount{
+			Prefix: cfg.OpenAIPathPrefix,
+			Router: &server.SessionsRouter{
+				Registry: a.registry,
+				Logger:   logger,
+			},
+		})
+	}
+
 	if len(surfaces) == 0 {
 		// Defensive: an operator-supplied empty list (e.g.,
 		// ENABLED_SURFACES=" ,") shouldn't reach this path because
@@ -270,6 +361,18 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 	var poolForServer server.PoolStatsSource
 	if a.pool != nil {
 		poolForServer = poolStatsAdapter{pool: a.pool}
+	}
+	// Plan 05-03: build the PoolDetailSource + RegistryStatsSource
+	// bridges for /health/agents (D-14/D-15/D-16). Both are nil-safe —
+	// when KIRO_CMD is unset the pool / registry are also nil and the
+	// agentsHandler renders empty rows for the corresponding sub-tree.
+	var poolDetailForServer server.PoolDetailSource
+	if a.pool != nil {
+		poolDetailForServer = poolDetailAdapter{pool: a.pool}
+	}
+	var registryForServer server.RegistryStatsSource
+	if a.registry != nil {
+		registryForServer = registryStatsAdapter{reg: a.registry}
 	}
 
 	// Boot log surfaces the resolved surface set so operators see
@@ -293,9 +396,11 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 		AllowedPrefixes:      cfg.AllowedIPs,
 		AuthTrustXFF:         cfg.AuthTrustXFF, // Codex H-7 wiring path complete
 		OllamaVersionPath:    cfg.OllamaPathPrefix + "/version",
-		OllamaVersionHandler: ollamaVersionHandler,     // Codex M-4 split accessor
+		OllamaVersionHandler: ollamaVersionHandler, // Codex M-4 split accessor
 		Surfaces:             surfaces,
 		Pool:                 poolForServer,
+		PoolDetail:           poolDetailForServer, // Plan 05-03 D-15
+		Registry:             registryForServer,   // Plan 05-03 D-14/D-16
 	})
 
 	return a, cleanup, nil
@@ -313,6 +418,61 @@ type poolStatsAdapter struct {
 func (p poolStatsAdapter) Stats() server.PoolStats {
 	s := p.pool.Stats()
 	return server.PoolStats{Size: s.Size, Alive: s.Alive, Busy: s.Busy}
+}
+
+// poolDetailAdapter wraps *pool.Pool to satisfy server.PoolDetailSource.
+// pool.AgentSlot (plan 05-01) and server.AgentSlot (plan 05-03) are
+// structurally identical wire types declared in separate packages to
+// keep the engine boundary clean; this adapter does the per-row copy.
+// Stays here in main rather than in either package — same one-line
+// bridge pattern as poolStatsAdapter.
+type poolDetailAdapter struct {
+	pool *pool.Pool
+}
+
+func (p poolDetailAdapter) Detail() []server.AgentSlot {
+	slots := p.pool.Detail()
+	out := make([]server.AgentSlot, 0, len(slots))
+	for _, sl := range slots {
+		out = append(out, server.AgentSlot{
+			Label:            sl.Label,
+			Alive:            sl.Alive,
+			Busy:             sl.Busy,
+			CurrentSessionID: sl.CurrentSessionID,
+		})
+	}
+	return out
+}
+
+// registryStatsAdapter wraps *session.Registry to satisfy
+// server.RegistryStatsSource. session.Stats has one field (Active);
+// session.SessionDetail (D-16 wire shape) is structurally identical
+// to server.AgentSession — both share the JSON tag set
+// {id, alive, busy, last_used, model} — so the field copy is
+// straightforward. Like poolDetailAdapter, lives in main to keep
+// the boundary clean.
+type registryStatsAdapter struct {
+	reg *session.Registry
+}
+
+func (r registryStatsAdapter) Stats() server.SessionStats {
+	s := r.reg.Stats()
+	return server.SessionStats{Active: s.Active}
+}
+
+func (r registryStatsAdapter) Detail() []server.AgentSession {
+	details := r.reg.Detail()
+	out := make([]server.AgentSession, 0, len(details))
+	for _, d := range details {
+		out = append(out, server.AgentSession{
+			ID:       d.ID,
+			Alive:    d.Alive,
+			Busy:     d.Busy,
+			LastUsed: d.LastUsed,
+			Model:    d.Model,
+		})
+	}
+	return out
 }
 
 // buildLogger constructs the root *slog.Logger from the loaded config.
