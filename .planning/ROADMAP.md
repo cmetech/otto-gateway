@@ -254,7 +254,20 @@ Plans:
   4. An idle session is reaped after `SESSION_TTL_MS` (default 30 min) — verified with a shortened TTL in a test — and `DELETE /v1/sessions/:id` immediately tears one down and returns `{deleted: "<id>"}`.
   5. `GET /health/agents` returns per-pool-slot detail (`alive`, `busy`, `label`) and per-session detail (`alive`, `last_used`); dead slots are detected and lazily re-spawned without blocking other acquires.
 
-**Plans:** TBD
+**Plans:** 3 plans
+
+Plans:
+**Wave 1**
+
+- [ ] 05-01-PLAN.md — Slice A: Pool dead-slot detection — acp.Client.Done() push-exit signal, per-slot exit-watcher goroutine, lazy synchronous re-spawn at Pool.NewSession (D-01/D-02), pool-shrink on respawn failure (D-03), Pool.Detail() per-slot rows for /health/agents (D-15), POOL_SIZE env default flip to 4 (POOL-01 Node parity). Closes POOL-01..04.
+
+**Wave 2** *(blocked on Wave 1 — config.go overlap)*
+
+- [ ] 05-02-PLAN.md — Slice B: Session registry + reaper — new internal/session package (Registry + Entry + per-entry sync.Mutex), goleak gate from day one (Wave 0), Get with Pitfall-4 race resolution + SESSION_MAX=32 cap (D-04/D-05/D-06), Delete with Codex M-3 map-delete-first (D-08), SetModel diff-skip (D-09), reaper loop with TryLock skip-in-flight + snapshot-then-iterate (D-10/D-11/D-12/D-13), SESSION_TTL_MS + SESSION_MAX env-loading. Closes SESS-01, SESS-02, registry side of SESS-03.
+
+**Wave 3** *(blocked on Waves 1+2 — Phase 5 acceptance)*
+
+- [ ] 05-03-PLAN.md — Slice C: DELETE + /health/agents + main.go wiring — RegistryStatsSource interface + agentsHandler + /health/agents exempt route (D-14/D-15/D-16/D-17/D-18), DELETE /v1/sessions/:id via SessionsRouter (D-08 HTTP side), X-Session-Id branch in all three surface handlers (Ollama + OpenAI + Anthropic) with per-entry mutex + MarkUsed defer, cmd/otto-gateway/main.go wiring (registry construction + Registry.Start + ordered shutdown registry-before-pool), blocking human-verify SC1..SC5 against real kiro-cli. Closes OBSV-02 + HTTP side of SESS-03.
 
 ### Phase 6: Tool-Call Path
 
@@ -331,7 +344,7 @@ Phases execute in numeric order: 1 → 1.1 → 2 → 3 → 3.1 → 4 → 5 → 6
 | 2. Ollama End-to-End | 6/6 | Complete   | 2026-05-24 |
 | 3. OpenAI Surface | 4/4 | Complete   | 2026-05-25 |
 | 4. Streaming | 4/4 | Complete   | 2026-05-25 |
-| 5. Pool + Stateful Sessions | 0/TBD | Not started | - |
+| 5. Pool + Stateful Sessions | 0/3 | Not started | - |
 | 6. Tool-Call Path | 0/TBD | Not started | - |
 | 7. Embeddings | 0/TBD | Not started | - |
 | 8. Plugin Hook Chain | 0/TBD | Not started | - |
