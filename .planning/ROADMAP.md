@@ -254,7 +254,7 @@ Plans:
   4. An idle session is reaped after `SESSION_TTL_MS` (default 30 min) — verified with a shortened TTL in a test — and `DELETE /v1/sessions/:id` immediately tears one down and returns `{deleted: "<id>"}`.
   5. `GET /health/agents` returns per-pool-slot detail (`alive`, `busy`, `label`) and per-session detail (`alive`, `last_used`); dead slots are detected and lazily re-spawned without blocking other acquires.
 
-**Plans:** 1/3 plans executed
+**Plans:** 2/3 plans executed
 
 Plans:
 **Wave 1**
@@ -263,7 +263,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 — config.go overlap)*
 
-- [ ] 05-02-PLAN.md — Slice B: Session registry + reaper — new internal/session package (Registry + Entry + per-entry sync.Mutex), goleak gate from day one (Wave 0), Get with Pitfall-4 race resolution + SESSION_MAX=32 cap (D-04/D-05/D-06), Delete with Codex M-3 map-delete-first (D-08), SetModel diff-skip (D-09), reaper loop with TryLock skip-in-flight + snapshot-then-iterate (D-10/D-11/D-12/D-13), SESSION_TTL_MS + SESSION_MAX env-loading. Closes SESS-01, SESS-02, registry side of SESS-03.
+- [x] 05-02-PLAN.md — Slice B: Session registry + reaper — new internal/session package (Registry + Entry + per-entry sync.Mutex), goleak gate from day one (Wave 0), Get with Pitfall-4 race resolution + SESSION_MAX=32 cap (D-04/D-05/D-06), Delete with Codex M-3 map-delete-first (D-08), SetModel diff-skip (D-09), reaper loop with TryLock skip-in-flight + snapshot-then-iterate (D-10/D-11/D-12/D-13), SESSION_TTL_MS + SESSION_MAX env-loading. Closes SESS-01, SESS-02, registry side of SESS-03.
 
 **Wave 3** *(blocked on Waves 1+2 — Phase 5 acceptance)*
 
@@ -344,7 +344,7 @@ Phases execute in numeric order: 1 → 1.1 → 2 → 3 → 3.1 → 4 → 5 → 6
 | 2. Ollama End-to-End | 6/6 | Complete   | 2026-05-24 |
 | 3. OpenAI Surface | 4/4 | Complete   | 2026-05-25 |
 | 4. Streaming | 4/4 | Complete   | 2026-05-25 |
-| 5. Pool + Stateful Sessions | 1/3 | In Progress|  |
+| 5. Pool + Stateful Sessions | 2/3 | In Progress|  |
 | 6. Tool-Call Path | 0/TBD | Not started | - |
 | 7. Embeddings | 0/TBD | Not started | - |
 | 8. Plugin Hook Chain | 0/TBD | Not started | - |
