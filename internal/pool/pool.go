@@ -2,6 +2,7 @@ package pool
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
@@ -231,12 +232,23 @@ func (p *Pool) respawnSlot(ctx context.Context, slot *Slot) error {
 		PingInterval: p.cfg.PingInterval,
 	})
 	if err != nil {
+		// WR-07: distinguish ctx-cancellation (caller disconnect, the
+		// normal D-02 abort path) from genuine spawn failures so
+		// operator logs do not surface every cancelled request as a
+		// "respawn failed" incident.
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return fmt.Errorf("pool: respawn slot %s aborted: %w", slot.Label, err)
+		}
 		return fmt.Errorf("pool: respawn slot %s: spawn: %w", slot.Label, err)
 	}
 	// Step 3: initialise the NEW client. On failure close it to avoid
 	// orphaning a subprocess + writer/reader goroutine trio.
 	if err := newClient.Initialize(ctx); err != nil {
 		_ = newClient.Close()
+		// WR-07: same ctx-cancellation distinction as Spawn above.
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return fmt.Errorf("pool: respawn slot %s aborted: %w", slot.Label, err)
+		}
 		return fmt.Errorf("pool: respawn slot %s: initialize: %w", slot.Label, err)
 	}
 	// Step 4: replace under p.mu. Short critical section — no client
