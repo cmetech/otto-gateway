@@ -1249,3 +1249,220 @@ func (cg *ctxGatingFactory) Spawn(ctx context.Context, _ acp.Config) (pool.PoolC
 	}
 	return cg.clients[idx], nil
 }
+
+// ---------------------------------------------------------------------------
+// Phase 5 D-15 — Pool.Detail() rows for /health/agents consumer.
+// ---------------------------------------------------------------------------
+
+// makeWarmupOnly returns a stateful newSessionFn that returns the given
+// warmup sid on first call and runSid on subsequent calls. Helper for the
+// Detail tests so the Warmup path doesn't collide with test-time
+// NewSession routing.
+func makeWarmupOnly(warmupSid, runSid string) func(context.Context, string) (string, error) {
+	var n int32
+	return func(_ context.Context, _ string) (string, error) {
+		if atomic.AddInt32(&n, 1) == 1 {
+			return warmupSid, nil
+		}
+		return runSid, nil
+	}
+}
+
+// TestPool_Detail_HealthyPool — D-15: pool size 4, all alive, none busy.
+func TestPool_Detail_HealthyPool(t *testing.T) {
+	clients := []*fakeClient{
+		{newSessionFn: makeWarmupOnly("warm-0", "run-0")},
+		{newSessionFn: makeWarmupOnly("warm-1", "run-1")},
+		{newSessionFn: makeWarmupOnly("warm-2", "run-2")},
+		{newSessionFn: makeWarmupOnly("warm-3", "run-3")},
+	}
+	p := warmedPoolWithFakes(t, clients)
+	defer func() { _ = p.Close() }()
+
+	rows := p.Detail()
+	if len(rows) != 4 {
+		t.Fatalf("Detail() length = %d; want 4", len(rows))
+	}
+	for i, row := range rows {
+		wantLabel := "slot-" + string(rune('0'+i))
+		if row.Label != wantLabel {
+			t.Errorf("row[%d].Label = %q; want %q", i, row.Label, wantLabel)
+		}
+		if !row.Alive {
+			t.Errorf("row[%d].Alive = false; want true", i)
+		}
+		if row.Busy {
+			t.Errorf("row[%d].Busy = true; want false", i)
+		}
+		if row.CurrentSessionID != nil {
+			t.Errorf("row[%d].CurrentSessionID = %v; want nil", i, *row.CurrentSessionID)
+		}
+	}
+}
+
+// TestPool_Detail_OneBusyOneDead — D-15: slot-0 holds an active session,
+// slot-1 has dead=true (via fireDone). Detail returns rows reflecting both
+// states. Pool size 4 (others all idle+alive).
+func TestPool_Detail_OneBusyOneDead(t *testing.T) {
+	clients := []*fakeClient{
+		{newSessionFn: makeWarmupOnly("warm-0", "sess-X")},
+		{newSessionFn: makeWarmupOnly("warm-1", "run-1")},
+		{newSessionFn: makeWarmupOnly("warm-2", "run-2")},
+		{newSessionFn: makeWarmupOnly("warm-3", "run-3")},
+	}
+	p := warmedPoolWithFakes(t, clients)
+	defer func() { _ = p.Close() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+
+	// Open one session on slot-0 (the FIFO winner since Warmup pushed in
+	// order). Don't drain — the session stays active.
+	sid, err := p.NewSession(ctx, "")
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	if sid != "sess-X" {
+		t.Fatalf("first NewSession returned %q; want sess-X (slot-0)", sid)
+	}
+
+	// Kill slot-1 — it's still in p.slots since we only acquired slot-0.
+	clients[1].fireDone()
+	if !waitForSlotDead(p, "slot-1", 200*time.Millisecond) {
+		t.Fatal("slot-1 did not become dead within 200ms")
+	}
+
+	rows := p.Detail()
+	if len(rows) != 4 {
+		t.Fatalf("Detail() length = %d; want 4", len(rows))
+	}
+
+	// Find slot-0 + slot-1 by label.
+	rowByLabel := make(map[string]pool.AgentSlot, len(rows))
+	for _, r := range rows {
+		rowByLabel[r.Label] = r
+	}
+	row0, ok := rowByLabel["slot-0"]
+	if !ok {
+		t.Fatal("slot-0 row missing")
+	}
+	if !row0.Alive {
+		t.Error("slot-0 Alive = false; want true")
+	}
+	if !row0.Busy {
+		t.Error("slot-0 Busy = false; want true (session active)")
+	}
+	if row0.CurrentSessionID == nil || *row0.CurrentSessionID != "sess-X" {
+		t.Errorf("slot-0 CurrentSessionID = %v; want &\"sess-X\"", row0.CurrentSessionID)
+	}
+
+	row1, ok := rowByLabel["slot-1"]
+	if !ok {
+		t.Fatal("slot-1 row missing")
+	}
+	if row1.Alive {
+		t.Error("slot-1 Alive = true; want false (dead)")
+	}
+	if row1.Busy {
+		t.Error("slot-1 Busy = true; want false")
+	}
+	if row1.CurrentSessionID != nil {
+		t.Errorf("slot-1 CurrentSessionID = %v; want nil", *row1.CurrentSessionID)
+	}
+}
+
+// TestPool_Detail_AfterShrinkOnRespawnFailure — D-15 + D-03 interaction.
+// After a respawn failure removes a slot from p.all, Detail() returns
+// N-1 rows (the removed slot is gone, not just marked dead).
+func TestPool_Detail_AfterShrinkOnRespawnFailure(t *testing.T) {
+	var c0count int32
+	fc0 := &fakeClient{
+		newSessionFn: func(_ context.Context, _ string) (string, error) {
+			atomic.AddInt32(&c0count, 1)
+			return "warmup-0", nil
+		},
+	}
+	respawnErr := errors.New("spawn failed: shrink test")
+	ff := &scriptedFailingFactory{
+		clients:    []pool.PoolClient{fc0},
+		failAfter:  1,
+		failureErr: respawnErr,
+	}
+	p := pool.New(pool.Config{
+		Logger:  testutil.Logger(t),
+		Size:    1,
+		Factory: ff,
+	})
+	defer func() { _ = p.Close() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+	if err := p.Warmup(ctx); err != nil {
+		t.Fatalf("Warmup: %v", err)
+	}
+
+	// Pre-shrink: Detail returns one row.
+	if got := len(p.Detail()); got != 1 {
+		t.Fatalf("pre-shrink Detail len = %d; want 1", got)
+	}
+
+	fc0.fireDone()
+	if !waitForSlotDead(p, "slot-0", 200*time.Millisecond) {
+		t.Fatal("slot-0 did not become dead within 200ms")
+	}
+
+	// Trigger the respawn failure via NewSession.
+	if _, err := p.NewSession(ctx, ""); err == nil {
+		t.Fatal("NewSession: want respawn-fail error, got nil")
+	}
+
+	// Post-shrink: Detail returns zero rows.
+	rows := p.Detail()
+	if len(rows) != 0 {
+		t.Errorf("post-shrink Detail len = %d; want 0 (D-03 shrink)", len(rows))
+	}
+}
+
+// TestPool_Detail_NilSafeOnEmptyPool — calling Detail() before Warmup
+// returns an empty slice (not nil panic, not nil slice — empty slice so
+// the handler encodes "slots": []).
+func TestPool_Detail_NilSafeOnEmptyPool(t *testing.T) {
+	p := pool.New(pool.Config{Logger: testutil.Logger(t), Size: 4})
+	defer func() { _ = p.Close() }()
+
+	rows := p.Detail()
+	if rows == nil {
+		t.Fatal("Detail() returned nil; want empty slice for clean JSON encoding")
+	}
+	if len(rows) != 0 {
+		t.Errorf("Detail() pre-Warmup length = %d; want 0", len(rows))
+	}
+}
+
+// TestPool_Detail_FieldShape_MatchesD15 — JSON tags lock the D-15 wire
+// contract. Build failure if downstream consumers depend on the old shape.
+func TestPool_Detail_FieldShape_MatchesD15(t *testing.T) {
+	rt := reflect.TypeOf(pool.AgentSlot{})
+	wantTags := map[string]string{
+		"Label":            "label",
+		"Alive":            "alive",
+		"Busy":             "busy",
+		"CurrentSessionID": "current_session_id",
+	}
+	if rt.NumField() != len(wantTags) {
+		t.Fatalf("AgentSlot field count = %d; want %d (extra/missing fields break D-15 wire)",
+			rt.NumField(), len(wantTags))
+	}
+	for i := 0; i < rt.NumField(); i++ {
+		f := rt.Field(i)
+		want, ok := wantTags[f.Name]
+		if !ok {
+			t.Errorf("unexpected field %q", f.Name)
+			continue
+		}
+		got := f.Tag.Get("json")
+		if got != want {
+			t.Errorf("field %s json tag = %q; want %q", f.Name, got, want)
+		}
+	}
+}
