@@ -30,7 +30,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 3: OpenAI Surface** - Pi-SDK `POST /v1/chat/completions` shares the same canonical engine (completed 2026-05-25)
 - [x] **Phase 3.1: Anthropic Surface** *(INSERTED)* - loop24-client (GSD Pi) `POST /v1/messages` with Anthropic SSE shares the same canonical engine (completed 2026-05-24)
 - [x] **Phase 4: Streaming** - NDJSON (Ollama) and SSE (OpenAI + Anthropic) off one canonical chunk channel, with disconnect cancellation (completed 2026-05-25)
-- [ ] **Phase 5: Pool + Stateful Sessions** - Warm `POOL_SIZE` pool plus `X-Session-Id` registry, both visible on `/health/agents`
+- [x] **Phase 5: Pool + Stateful Sessions** - Warm `POOL_SIZE` pool plus `X-Session-Id` registry, both visible on `/health/agents` (completed 2026-05-26)
 - [ ] **Phase 6: Tool-Call Path** - Canonical tool calls rendered per-surface, with `coerceToolCall` for plain-JSON-as-text
 - [ ] **Phase 7: Embeddings** - Local BGE/E5 embeddings on three endpoints, independent of `kiro-cli`
 - [ ] **Phase 8: Plugin Hook Chain** - `PreHook`/`PostHook` over canonical types, with RequestID, Auth, Logging registered
@@ -254,7 +254,7 @@ Plans:
   4. An idle session is reaped after `SESSION_TTL_MS` (default 30 min) — verified with a shortened TTL in a test — and `DELETE /v1/sessions/:id` immediately tears one down and returns `{deleted: "<id>"}`.
   5. `GET /health/agents` returns per-pool-slot detail (`alive`, `busy`, `label`) and per-session detail (`alive`, `last_used`); dead slots are detected and lazily re-spawned without blocking other acquires.
 
-**Plans:** 2/3 plans executed
+**Plans:** 3/3 plans complete
 
 Plans:
 **Wave 1**
@@ -267,7 +267,7 @@ Plans:
 
 **Wave 3** *(blocked on Waves 1+2 — Phase 5 acceptance)*
 
-- [ ] 05-03-PLAN.md — Slice C: DELETE + /health/agents + main.go wiring — RegistryStatsSource interface + agentsHandler + /health/agents exempt route (D-14/D-15/D-16/D-17/D-18), DELETE /v1/sessions/:id via SessionsRouter (D-08 HTTP side), X-Session-Id branch in all three surface handlers (Ollama + OpenAI + Anthropic) with per-entry mutex + MarkUsed defer, cmd/otto-gateway/main.go wiring (registry construction + Registry.Start + ordered shutdown registry-before-pool), blocking human-verify SC1..SC5 against real kiro-cli. Closes OBSV-02 + HTTP side of SESS-03.
+- [x] 05-03-PLAN.md — Slice C: DELETE + /health/agents + main.go wiring — RegistryStatsSource interface + agentsHandler + /health/agents exempt route (D-14/D-15/D-16/D-17/D-18), DELETE /v1/sessions/:id via SessionsRouter (D-08 HTTP side), X-Session-Id branch in all three surface handlers (Ollama + OpenAI + Anthropic) with per-entry mutex + MarkUsed defer, cmd/otto-gateway/main.go wiring (registry construction + Registry.Start + ordered shutdown registry-before-pool), blocking human-verify SC1..SC5 against real kiro-cli. Closes OBSV-02 + HTTP side of SESS-03.
 
 ### Phase 6: Tool-Call Path
 
@@ -344,7 +344,7 @@ Phases execute in numeric order: 1 → 1.1 → 2 → 3 → 3.1 → 4 → 5 → 6
 | 2. Ollama End-to-End | 6/6 | Complete   | 2026-05-24 |
 | 3. OpenAI Surface | 4/4 | Complete   | 2026-05-25 |
 | 4. Streaming | 4/4 | Complete   | 2026-05-25 |
-| 5. Pool + Stateful Sessions | 2/3 | In Progress|  |
+| 5. Pool + Stateful Sessions | 3/3 | Complete   | 2026-05-26 |
 | 6. Tool-Call Path | 0/TBD | Not started | - |
 | 7. Embeddings | 0/TBD | Not started | - |
 | 8. Plugin Hook Chain | 0/TBD | Not started | - |
