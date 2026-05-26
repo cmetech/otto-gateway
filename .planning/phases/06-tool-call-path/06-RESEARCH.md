@@ -509,32 +509,37 @@ func TestE2E_Tools_Ollama(t *testing.T) {
 
 **If this table is empty:** N/A — 7 assumptions logged. **Plan-phase MUST address A1 with a checkpoint:human-verify task before code lands.** Other assumptions are validated by the D-17 E2E matrix.
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Does kiro-cli ever emit `tool_call_chunk` separately from `tool_call`?**
    - What we know: Phase 1.1 routes both to the same handler; Phase 6 promotes both to canonical ToolCallChunk. CONTEXT D-06 says "kiro emits complete args atomically."
    - What's unclear: Whether kiro 2.4.x ever splits args across notifications.
    - Recommendation: Plan adds an integration-test assertion that the per-tool-invocation count of (`tool_call` + `tool_call_chunk`) notifications equals 1. Fail loudly if not — that's the signal to add chunk-aggregation logic (deferred per CONTEXT).
+   - **RESOLVED:** Deferred. Phase 6 does NOT add a fail-loud assertion; if Node ever sends ≥2 chunks at a time we accept all (matches current Phase 1.1 behavior). If this becomes a real issue in production, file a follow-up. No plan task implements the assertion.
 
 2. **Should `StopReason` gain a `StopToolUse` value for Anthropic streaming's `stop_reason: "tool_use"` message_delta?**
    - What we know: Anthropic emits `stop_reason: "tool_use"` when turn ended with a tool call (verified — see Code Examples). Current canonical StopReason has end_turn / max_tokens / max_turn_requests / refusal / cancelled / unknown.
    - What's unclear: Whether plan should add StopToolUse to canonical (touches Phase 1.1 D-02 seam) OR map at the Anthropic adapter layer (when tool_calls is non-empty, override stop_reason to "tool_use" in render).
    - Recommendation: **Add `StopToolUse` to canonical** (additive, no churn). Map to OpenAI's `finish_reason: "tool_calls"` and Ollama's `done_reason: "stop"` (no Ollama equivalent). Anthropic renders `"tool_use"`. This is one canonical concept across all three surfaces.
+   - **RESOLVED:** NOT adopted. Plans use the **adapter-layer** `stop_reason` override path instead (06-04 Task 3, `internal/adapter/anthropic/render.go`, plus the streaming finalizer in 06-04 Task 2 `sse.go`) per REVIEW MEDIUM #4. Rationale: adapter-layer keeps the canonical type minimal and is the smaller diff against existing render code. The recommendation's reasoning still has merit; revisit in a future phase if more surfaces need it.
 
 3. **Does the Ollama NDJSON `done_reason` field need updating when tool_calls is populated?**
    - What we know: Phase 2 `chatResponseToWire` populates `DoneReason` from canonical StopReason. Node reference always emits `"stop"` for tool turns (Ollama spec has no specific tool stop reason).
    - What's unclear: Whether Ollama clients (LangFlow) key on done_reason value when tool_calls is present.
    - Recommendation: Match Node — always `"stop"` regardless of tool_calls. If LangFlow breaks, revisit.
+   - **RESOLVED:** Adopted. 06-02 Task 3 and 06-03 Task 3 both "always drop" the buffered text on coerce hit (matches Node behavior per Assumption A1). The Node byte-fidelity checkpoint in 06-01 will confirm. Ollama `done_reason` stays `"stop"` regardless of tool_calls per this resolution.
 
 4. **For Anthropic non-streaming, does the response need `stop_reason: "tool_use"` when Message.ToolCalls is populated?**
    - What we know: `mapStopReason` in `anthropic/render.go:166` maps the canonical StopReason; Phase 6 needs to ensure responses with tool_use blocks have correct stop_reason.
    - What's unclear: If kiro returns StopEndTurn but the response has tool_use blocks, do we override to "tool_use"?
    - Recommendation: If Q2 is resolved with `StopToolUse` added to canonical, the engine's Collect aggregator should set `resp.StopReason = StopToolUse` whenever `len(Message.ToolCalls) > 0` at the end of the stream. Single source of truth, no adapter-layer override.
+   - **RESOLVED:** NOT adopted (same as Q2). Adapter-layer override is the chosen path: 06-04 Task 3 (`render.go` non-streaming override) plus 06-04 Task 2 (`sse.go` streaming finalizer with `toolUseEmitted`).
 
 5. **Should `coerceToolCall` also handle JSON ARRAY at top level (e.g., parallel tool_calls JSON-as-text)?**
    - What we know: D-09 Step 6 requires `parsed.(map[string]any)`; arrays are rejected per D-10 "Parsed value is not an object: return false."
    - What's unclear: Whether real LangChain agents emit arrays.
    - Recommendation: D-10 locks the behavior — don't expand. If LangChain ever emits arrays, that's a Phase-6.1 or v2 concern. Property test covers the no-array-coerce invariant.
+   - **RESOLVED:** All listed edge cases are property-test inputs in 06-01 Task 3 (`testing/quick` Generator + named-case slice). Inline fenced JSON inside prose → no-coerce was added as an explicit case per LOW #6. Top-level JSON arrays remain rejected per D-10.
 
 ## Environment Availability
 

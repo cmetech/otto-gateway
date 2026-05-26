@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v1.5
 milestone_name: milestone
 status: executing
-last_updated: "2026-05-26T22:13:18.264Z"
-last_activity: 2026-05-26 -- Phase 6 planning complete
+last_updated: "2026-05-26T23:12:59.852Z"
+last_activity: 2026-05-26 -- Phase 06 planning complete
 progress:
   total_phases: 11
   completed_phases: 7
@@ -28,7 +28,7 @@ Phase: 6
 Plan: Not started
 Status: Ready to execute
 Next: /gsd-discuss-phase 1.1 → /gsd-plan-phase 1.1 → /gsd-execute-phase 1.1 → /gsd-plan-phase 2
-Last activity: 2026-05-26 -- Phase 6 planning complete
+Last activity: 2026-05-26 -- Phase 06 planning complete
 
 Progress: [░░░░░░░░░░] 0%
 
@@ -63,6 +63,8 @@ Progress: [░░░░░░░░░░] 0%
 
 - Phase 3.1 inserted after Phase 3: Anthropic Surface — adapter/anthropic for Messages API at /v1/messages with SSE streaming day-one (loop24-client / GSD Pi via ANTHROPIC_BASE_URL). Promotes SURF-V2-01 to v1; adds ANTH-01..07 + SURF-08. (URGENT)
 - Phase 1.1 inserted after Phase 1: ACP Wire Alignment — fix 10 wire-shape defects discovered during Phase 2 discuss; add real-kiro session/prompt round-trip integration test as Phase 2 unblock gate (URGENT)
+- Phase 8 edited: edited fields: goal, requirements (+PLUG-06), success_criteria (+SC6 PIIRedactionHook)
+- Phase 8 edited: edited fields: requirements (+OBSV-04), success_criteria (+SC7 GET /health/hooks view-only)
 
 ### Decisions
 

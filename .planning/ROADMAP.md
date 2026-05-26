@@ -291,22 +291,22 @@ Plans:
   4. Tool definitions from both request shapes (OpenAI `tools[].function`, Ollama tool spec) are normalized into one canonical tool spec consumed by the engine.
   5. Property tests (`pgregory.net/rapid` or `testing/quick`) cover `coerceToolCall` round-trip + never-panic invariants and the canonical-tool-spec translator for both surfaces.
 
-**Plans:** 5 plans
+**Plans:** 5 plans (revised 2026-05-26 per 06-REVIEWS.md)
 
 Plans:
 **Wave 1** *(cross-cutting foundation; blocks Waves 2-3)*
 
-- [ ] 06-01-PLAN.md — Foundation: canonical.ToolCallChunk.ID (D-08), engine.coerce.go (D-01/D-09/D-10/D-11/D-12), engine.Collect third aggregator (CONTEXT line 31), engine.buildBlocks [Available tools] JSON catalog (D-16), acp/translate.go tool_call/tool_call_chunk → ChunkKindToolCall (D-03 canonical extraction)
+- [ ] 06-01-PLAN.md — Foundation: canonical.ToolCallChunk.ID (D-08), engine.coerce.go SOLE producer of Message.ToolCalls (D-01/D-09/D-10/D-11/D-12), engine.Collect PASS-THROUGH (NO auto-aggregation per revised two-path rule), engine.buildBlocks [Available tools] JSON catalog with debug-log fallback (D-16), acp/translate.go tool_call/tool_call_chunk → ChunkKindToolCall (D-03 canonical extraction), BLOCKING Node byte-fidelity checkpoint at end of slice (moved from 06-05 per REVIEW HIGH #3)
 
-**Wave 2** *(per-surface vertical slices — run in parallel; blocked on Wave 1)*
+**Wave 2** *(per-surface vertical slices — run in parallel; blocked on Wave 1 including the Node fidelity checkpoint)*
 
-- [ ] 06-02-PLAN.md — Ollama vertical slice: wire.go ollamaChatResponseMessage.ToolCalls field, handlers.go CoerceToolCall hook-in (non-streaming, D-01), render.go plain-object args (D-04 / SC #2), ndjson.go per-chunk [tool: <name>] thought-text + done:true line tool_calls aggregator (D-07 Ollama)
-- [ ] 06-03-PLAN.md — OpenAI vertical slice: wire.go typed openAIToolSpec + ToolChoice decode (D-13), handlers.go CoerceToolCall hook-in (non-streaming), render.go JSON-string args + finish_reason:tool_calls post-fixup (SC #1), sse.go multi-frame tool_call SSE + golden fixture (D-07 OpenAI)
-- [ ] 06-04-PLAN.md — Anthropic vertical slice: wire.go anthropicToolSpec → canonical.ToolSpec + tool_choice decode (D-14 closes TODO Phase 6), sse.go applyChunk tool_use block sequence with CR-01 input:{} preservation + block-index discipline (D-07 Anthropic), handlers_test.go static-source assertion locking the NO-coerce asymmetry (D-01 verification)
+- [ ] 06-02-PLAN.md — Ollama vertical slice: wire.go ollamaChatResponseMessage.ToolCalls, handlers.go CoerceToolCall hook-in (non-streaming) + default-omitted stream-field test, render.go plain-object args (SC #2), ndjson.go kiro-native [tool: <name>]\n thought-text ONLY (two-path rule) + STREAMING COERCE on buffered text at stream end (REVIEW HIGH #1)
+- [ ] 06-03-PLAN.md — OpenAI vertical slice: wire.go typed openAIToolSpec + ToolChoice decode + mixed-valid-invalid tolerance (D-13), handlers.go CoerceToolCall hook-in (non-streaming), render.go JSON-string args + finish_reason post-fixup (SC #1), sse.go kiro-native ChunkKindToolCall as text-delta narration (two-path rule) + STREAMING COERCE multi-frame native tool_calls at stream end (REVIEW HIGH #1) + role-emit-once-with-tool-call-first golden fixture (REVIEW LOW #8)
+- [ ] 06-04-PLAN.md — Anthropic vertical slice (D-07 EXCEPTION to two-path rule — kiro-native renders as native tool_use blocks): wire.go anthropicToolSpec → canonical.ToolSpec + tool_choice decode (D-14 closes TODO), NEW anthropic/collect.go local aggregator (D-07 exception), sse.go applyChunk tool_use block sequence with CR-01 + block-index discipline + stop_reason finalize override, render.go non-streaming stop_reason override to "tool_use" (REVIEW MEDIUM #4 — render.go added to files_modified), handlers_test.go BOTH behavioral (REVIEW LOW #9 required) AND static-source NO-coerce assertions (D-01 belt-and-suspenders)
 
-**Wave 3** *(cross-surface integration + checkpoints; blocked on Waves 1-2)*
+**Wave 3** *(cross-surface integration + UAT checkpoint; blocked on Waves 1-2)*
 
-- [ ] 06-05-PLAN.md — Cross-surface E2E: tools_fixtures.go shared catalog + fake-kiro binary, tools_{ollama,openai,anthropic,cancel}_test.go full D-17 12-scenario matrix + cross-surface canonical equivalence + scenario 12 mid-stream cancel + goleak gate, blocking checkpoint for Node source byte-fidelity (RESEARCH Assumption A1), blocking HUMAN-UAT checkpoint for loop24-client messages.stream() conformance
+- [ ] 06-05-PLAN.md — Cross-surface E2E: NEW tests/e2e/cmd/fake-kiro-cli/main.go binary supporting full ACP method set (initialize/session/new/session/set_model/session/prompt/session/cancel/ping per REVIEW HIGH #5), tools_fixtures.go with new FakeKiro(t,script) (cmd, env) API (REVIEW HIGH #5), tools_{ollama,openai,anthropic,cancel}_test.go full D-17 12-scenario matrix including REVIEW HIGH #1/#2/MEDIUM #4 E2E verifications, scenario 12 mid-stream cancel with frame-log assertion, blocking HUMAN-UAT checkpoint for loop24-client messages.stream() conformance (Node byte-fidelity checkpoint MOVED to 06-01 per REVIEW HIGH #3)
 
 ### Phase 7: Embeddings
 
@@ -325,10 +325,10 @@ Plans:
 
 ### Phase 8: Plugin Hook Chain
 
-**Goal:** `PreHook` / `PostHook` interfaces operate on canonical request/response types, with day-one hooks registered: RequestID, Auth (refactored from middleware), and structured Logging. Short-circuit return from `PreHook` skips the engine. This establishes the seams for future guardrails (moderation, budget, schema, cache, audit) without rewriting handlers.
+**Goal:** `PreHook` / `PostHook` interfaces operate on canonical request/response types, with day-one hooks registered: RequestID, Auth (refactored from middleware), structured Logging, and PII Redaction. Short-circuit return from `PreHook` skips the engine. The PII hook ships with an extensible regex+validator recognizer registry — six built-in entities (Email, IPv4, IPv6, SSN, Credit Card with Luhn check, US Phone) and a one-struct addition path for new entities — so future guardrails (moderation, budget, schema, cache, audit) and new PII recognizers land without touching the hook engine.
 **Mode:** mvp
 **Depends on:** Phase 7
-**Requirements:** PLUG-01, PLUG-02, PLUG-03, PLUG-04, PLUG-05, OBSV-03
+**Requirements:** PLUG-01, PLUG-02, PLUG-03, PLUG-04, PLUG-05, PLUG-06, OBSV-03, OBSV-04
 **Success Criteria** (what must be TRUE):
 
   1. The engine calls `chain.Pre(ctx, canonicalReq)` before any ACP call and `chain.Post(ctx, canonicalReq, canonicalResp)` after; a `PreHook` returning a non-nil `*canonical.ChatResponse` short-circuits the engine and the adapter renders that response in its native shape.
@@ -336,6 +336,8 @@ Plans:
   3. `AuthHook` (Pre) validates bearer tokens from `AUTH_TOKEN` and short-circuits with a canonical auth-error response that the adapter renders correctly for both surfaces (OpenAI `{error:{...}}` vs Ollama `{error:"..."}`).
   4. `LoggingHook` emits a structured `Pre` log line on request entry and a `Post` log line on response with timing — both via `log/slog`.
   5. `ENABLED_HOOKS` env var enables/disables registered hooks at boot; hooks execute in registration order and the first non-nil short-circuit wins on the Pre chain.
+  6. `PIIRedactionHook` (Pre) walks every `canonical.ChatRequest.Messages[].ContentParts[].Text` and applies a registered set of `Recognizer{Name, Pattern *regexp.Regexp, Validate func(string) bool}` entries — six built-in recognizers (Email, IPv4, IPv6 via `net.ParseIP`, SSN with range filter, Credit Card with Luhn check, US Phone) — replacing matches with `<ENTITY>` tokens (or counter-suffixed `<EMAIL_1>` form to preserve referential identity within a prompt). All patterns are compiled at package init (no per-request compile). Env knobs: `PII_REDACTION_ENABLED` (bool, default off), `PII_ENABLED_ENTITIES` (comma list of entity names, default all six), `PII_REDACTION_MODE` (`replace|mask|hash|drop`, default `replace`). Adding a seventh recognizer requires only appending one `Recognizer{}` entry to the registry — no changes to the hook itself, the chain runner, or any caller. Pure-Go, no cgo, no external deps.
+  7. `GET /health/hooks` (read-only, exempt from auth like `/health` and `/health/agents`) returns the registered chain in registration order as JSON: each entry includes `name`, `kind` (`Pre`, `Post`, or `Pre,Post`), `enabled` (bool reflecting `ENABLED_HOOKS`), and an optional `config` object exposing safe-to-publish settings (e.g. `PIIRedactionHook` exposes `entities` and `mode`; `AuthHook` exposes no secrets). The endpoint is view-only — there is no runtime mutate path in v1; configuration changes require a restart.
 
 **Plans:** TBD
 
