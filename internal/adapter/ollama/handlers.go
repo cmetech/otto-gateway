@@ -3,9 +3,12 @@ package ollama
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"runtime/debug"
 	"time"
+
+	"otto-gateway/internal/session"
 )
 
 // Body-cap sizes per endpoint (Codex M-5 / threat T-02-29). Chat and
@@ -43,10 +46,30 @@ func (a *Adapter) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	req := wireToChatRequest(&wire, r)
 
+	// Plan 05-03 D-04..D-11: when X-Session-Id is present AND the registry
+	// + factory closure are wired, route through a per-request engine bound
+	// to the dedicated *session.Entry. Empty sid OR missing wiring falls
+	// through to the pool path (unchanged).
+	eng, entry, sErr := a.resolveEngine(r)
+	if sErr != nil {
+		a.writeSessionError(w, sErr)
+		return
+	}
+	if entry != nil {
+		entry.Mu.Lock()
+		// D-11: MarkUsed registers FIRST (runs LAST in defer LIFO) so it
+		// fires after the stream Result returns; Unlock registers SECOND
+		// (runs FIRST in defer LIFO) — semantically the orderings are
+		// equivalent because Mu is per-entry and never touched by
+		// Result/Stream, but this ordering documents D-11 intent.
+		defer entry.MarkUsed()
+		defer entry.Mu.Unlock()
+	}
+
 	if !streamEnabled(wire.Stream) {
 		// stream:false — non-streaming path: collect and return a single JSON object.
 		start := time.Now()
-		resp, err := a.cfg.Engine.Collect(r.Context(), req)
+		resp, err := eng.Collect(r.Context(), req)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -61,7 +84,7 @@ func (a *Adapter) handleChat(w http.ResponseWriter, r *http.Request) {
 	ctx, cancelFn := context.WithCancel(r.Context())
 	defer cancelFn()
 
-	run, err := a.cfg.Engine.Run(ctx, req)
+	run, err := eng.Run(ctx, req)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -70,6 +93,39 @@ func (a *Adapter) handleChat(w http.ResponseWriter, r *http.Request) {
 	if emitErr := runNDJSONEmitter(ctx, cancelFn, w, run, wire.Model, true, start, a.cfg.Logger); emitErr != nil {
 		a.cfg.Logger.Debug("ollama: ndjson chat emitter error", "err", emitErr)
 	}
+}
+
+// resolveEngine implements the X-Session-Id branch (Plan 05-03 Task 3).
+//
+// Returns (engine, entry, err) where:
+//   - engine is the Engine the handler should call (registry-bound when
+//     X-Session-Id is present and wired; pool-bound otherwise).
+//   - entry is the *session.Entry that was acquired (non-nil only when
+//     the registry path was taken); the caller MUST Lock/Unlock entry.Mu
+//     and defer entry.MarkUsed when entry != nil.
+//   - err is non-nil only when Registry.Get failed; the caller renders
+//     it via writeSessionError (translates ErrSessionMaxExceeded to 503).
+func (a *Adapter) resolveEngine(r *http.Request) (Engine, *session.Entry, error) {
+	sid := r.Header.Get("X-Session-Id")
+	if sid == "" || a.cfg.Registry == nil || a.cfg.EngineForSession == nil {
+		return a.cfg.Engine, nil, nil
+	}
+	entry, err := a.cfg.Registry.Get(r.Context(), sid, a.cfg.KiroCWD)
+	if err != nil {
+		return nil, nil, err
+	}
+	return a.cfg.EngineForSession(entry), entry, nil
+}
+
+// writeSessionError renders a registry error in the Ollama-shaped error
+// envelope. ErrSessionMaxExceeded → 503; other errors → 500.
+func (a *Adapter) writeSessionError(w http.ResponseWriter, err error) {
+	if errors.Is(err, session.ErrSessionMaxExceeded) {
+		writeError(w, http.StatusServiceUnavailable, "session capacity exceeded")
+		return
+	}
+	a.cfg.Logger.Error("ollama: session registry error", "err", err)
+	writeError(w, http.StatusInternalServerError, "session registry error")
 }
 
 // ----------------------------------------------------------------------------
@@ -98,10 +154,22 @@ func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 
 	req := wireGenerateToChatRequest(&wire, r)
 
+	// Plan 05-03: X-Session-Id branch (same shape as handleChat).
+	eng, entry, sErr := a.resolveEngine(r)
+	if sErr != nil {
+		a.writeSessionError(w, sErr)
+		return
+	}
+	if entry != nil {
+		entry.Mu.Lock()
+		defer entry.MarkUsed()
+		defer entry.Mu.Unlock()
+	}
+
 	if !streamEnabled(wire.Stream) {
 		// stream:false — non-streaming path: collect and return a single JSON object.
 		start := time.Now()
-		resp, err := a.cfg.Engine.Collect(r.Context(), req)
+		resp, err := eng.Collect(r.Context(), req)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -116,7 +184,7 @@ func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 	ctx, cancelFn := context.WithCancel(r.Context())
 	defer cancelFn()
 
-	run, err := a.cfg.Engine.Run(ctx, req)
+	run, err := eng.Run(ctx, req)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

@@ -12,7 +12,15 @@
 #   * engine          → canonical + acp (via acp_adapter.go boundary file).
 #   * pool            → canonical + acp + engine (satisfies engine.ACPClient).
 #   * auth            → no internal deps (standalone middleware).
-#   * server          → config + auth (mounts the auth middleware chain).
+#   * server          → config + auth + session (Phase 5 — needs
+#                       session.ErrSessionNotFound in the DELETE handler
+#                       sentinel-error branch).
+#   * session         → canonical + acp + engine (Entry satisfies
+#                       engine.ACPClient via the entry_acp.go boundary).
+#   * adapter_*       → canonical + session (Phase 5 — X-Session-Id
+#                       routing reads *session.Registry/*session.Entry
+#                       directly; internal/engine import remains
+#                       forbidden per the original TRST-04 rule).
 #
 # Test files are excluded from the boundary check — they may import any
 # package freely (blackbox _test packages, integration tests with pool
@@ -42,6 +50,8 @@ components:
     in: engine/**
   pool:
     in: pool/**
+  session:
+    in: session/**
   server:
     in: server/**
   version:
@@ -59,14 +69,17 @@ deps:
     anyVendorDeps: true
     mayDependOn:
       - canonical
+      - session
   adapter_anthropic:
     anyVendorDeps: true
     mayDependOn:
       - canonical
+      - session
   adapter_openai:
     anyVendorDeps: true
     mayDependOn:
       - canonical
+      - session
   auth:
     anyVendorDeps: true
   canonical:
@@ -84,11 +97,18 @@ deps:
       - canonical
       - acp
       - engine
+  session:
+    anyVendorDeps: true
+    mayDependOn:
+      - canonical
+      - acp
+      - engine
   server:
     anyVendorDeps: true
     mayDependOn:
       - auth
       - config
+      - session
       - version
   version:
     anyVendorDeps: true

@@ -54,17 +54,26 @@ type EmbeddingStats struct {
 // when KIRO_CMD is unset the pool is also unset and PoolStats stays at
 // the zero value (Size/Alive/Busy all 0), matching the Phase 1 review-
 // fix posture.
+//
+// Phase 5 (Plan 05-03): also populates Sessions.Active from the
+// configured RegistryStatsSource. Nil-safe — when KIRO_CMD is unset the
+// registry is also unset and SessionStats stays at the zero value.
 func (s *Server) healthHandler(w http.ResponseWriter, r *http.Request) {
 	var ps PoolStats
 	if s.pool != nil {
 		ps = s.pool.Stats()
+	}
+	var ss SessionStats
+	if s.registry != nil {
+		ss = s.registry.Stats()
 	}
 	resp := HealthResponse{
 		Status:        "ok",
 		Version:       s.version,
 		UptimeSeconds: time.Since(s.start).Seconds(),
 		Pool:          ps,
-		// Sessions, Embeddings are zero-value — Phase 5 / 7 surfaces.
+		Sessions:      ss,
+		// Embeddings is zero-value — Phase 7 surface.
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)

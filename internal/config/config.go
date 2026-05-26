@@ -98,6 +98,14 @@ type Config struct {
 	// surface adapters to render as 503. NEW IN OTTO — no Node
 	// equivalent; document accordingly in docs/operating.md.
 	SessionMax int
+	// SessionTickInterval is the cadence of the registry reaper goroutine
+	// (Phase 5 D-10). Default 60s. Exposed primarily as a test-injection
+	// seam — the e2e suite (tests/e2e/pool_sessions_e2e_test.go) sets
+	// SESSION_TICK_INTERVAL_MS=100 alongside SESSION_TTL_MS=500 to
+	// deterministically observe idle-session reaping in <2s. Loaded from
+	// SESSION_TICK_INTERVAL_MS via getEnvDuration (accepts ms-integer
+	// OR Go duration string).
+	SessionTickInterval time.Duration
 }
 
 // LogLevel returns the slog.Level implied by the Debug flag.
@@ -177,6 +185,16 @@ func Load() (Config, error) {
 		errs = append(errs, err)
 	}
 
+	// Phase 5 Plan 05-03 Task 5 (e2e injection seam): SESSION_TICK_INTERVAL_MS
+	// default 60s (matches session.applyDefaults). Accepts both ms-integer
+	// AND Go duration string via getEnvDuration. Production callers leave
+	// this at the default; the e2e suite sets it to 100ms for
+	// deterministic reap observation in IdleReap_RealTime.
+	sessionTickInterval, err := getEnvDuration("SESSION_TICK_INTERVAL_MS", 60*time.Second)
+	if err != nil {
+		errs = append(errs, err)
+	}
+
 	if len(errs) > 0 {
 		return Config{}, fmt.Errorf("config: invalid env vars: %w", errors.Join(errs...))
 	}
@@ -198,6 +216,7 @@ func Load() (Config, error) {
 		AnthropicPathPrefix: anthropicPath,
 		SessionTTL:          sessionTTL,
 		SessionMax:          sessionMax,
+		SessionTickInterval: sessionTickInterval,
 	}, nil
 }
 

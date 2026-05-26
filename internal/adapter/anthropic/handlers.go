@@ -2,7 +2,10 @@ package anthropic
 
 import (
 	"context"
+	"errors"
 	"net/http"
+
+	"otto-gateway/internal/session"
 )
 
 // messagesBodyCap is the maximum acceptable body size for POST
@@ -80,13 +83,25 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 
 	req := wireToChatRequest(&wire, r, a.cfg.Logger)
 
+	// Plan 05-03 D-04..D-11: X-Session-Id branch.
+	eng, entry, sErr := a.resolveEngine(r)
+	if sErr != nil {
+		a.writeSessionError(w, sErr)
+		return
+	}
+	if entry != nil {
+		entry.Mu.Lock()
+		defer entry.MarkUsed()
+		defer entry.Mu.Unlock()
+	}
+
 	if wire.Stream {
 		// D-07: create a derived context so that a write failure in
 		// runSSEEmitter cancels the derived ctx (via defer cancelFn), which
 		// the D-06 watchdog observes and translates into session/cancel.
 		ctx, cancelFn := context.WithCancel(r.Context())
 		defer cancelFn()
-		runHandle, err := a.cfg.Engine.Run(ctx, req)
+		runHandle, err := eng.Run(ctx, req)
 		if err != nil {
 			// Engine.Run failed BEFORE any SSE headers were written —
 			// respond with a normal JSON 500 envelope (T-02-33: never
@@ -109,7 +124,7 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := a.cfg.Engine.Collect(r.Context(), req)
+	resp, err := eng.Collect(r.Context(), req)
 	if err != nil {
 		// T-02-33: log the raw error structurally; respond with a
 		// neutral generic message that cannot echo request content.
@@ -119,4 +134,29 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, chatResponseToMessage(resp, wire.Model))
+}
+
+// resolveEngine implements the Plan 05-03 X-Session-Id branch for the
+// Anthropic surface. See ollama's resolveEngine for the contract.
+func (a *Adapter) resolveEngine(r *http.Request) (Engine, *session.Entry, error) {
+	sid := r.Header.Get("X-Session-Id")
+	if sid == "" || a.cfg.Registry == nil || a.cfg.EngineForSession == nil {
+		return a.cfg.Engine, nil, nil
+	}
+	entry, err := a.cfg.Registry.Get(r.Context(), sid, a.cfg.KiroCWD)
+	if err != nil {
+		return nil, nil, err
+	}
+	return a.cfg.EngineForSession(entry), entry, nil
+}
+
+// writeSessionError renders a registry error in the Anthropic error
+// envelope. ErrSessionMaxExceeded → 503; other errors → 500.
+func (a *Adapter) writeSessionError(w http.ResponseWriter, err error) {
+	if errors.Is(err, session.ErrSessionMaxExceeded) {
+		writeError(w, http.StatusServiceUnavailable, errOverloaded, "session capacity exceeded")
+		return
+	}
+	a.cfg.Logger.Error("anthropic: session registry error", "err", err)
+	writeError(w, http.StatusInternalServerError, errAPI, "internal error")
 }

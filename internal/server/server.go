@@ -30,6 +30,17 @@ type PoolStatsSource interface {
 	Stats() PoolStats
 }
 
+// RegistryStatsSource is the consumer-defined interface healthHandler +
+// agentsHandler use to render the sessions sub-tree without importing
+// internal/session into the server's public surface. The cmd/otto-gateway
+// registryStatsAdapter wraps *session.Registry to satisfy this interface;
+// a nil source is handled by both handlers (sessions render as zero / nil).
+// Defined here next to PoolStatsSource so the two stats sources mirror.
+type RegistryStatsSource interface {
+	Stats() SessionStats
+	Detail() []AgentSession
+}
+
 // RouteRegistrar is the interface each adapter implements to register
 // its routes onto a shared chi sub-router. Using direct r.Post/r.Get
 // calls (rather than r.Mount("/", subrouter)) avoids the chi double-Mount
@@ -72,6 +83,11 @@ type SurfaceMount struct {
 //     its routes to a shared auth-wrapped Route block for its Prefix.
 //     Entries with the same Prefix share one block (D-01 grouping).
 //   - Pool: PoolStatsSource for /health (may be nil when KIRO_CMD unset).
+//   - PoolDetail: PoolDetailSource for /health/agents per-slot rows
+//     (D-15). May be nil; agentsHandler renders empty pool detail.
+//   - Registry: RegistryStatsSource for /health sessions.active + the
+//     per-session detail rows in /health/agents (D-16). May be nil;
+//     both handlers render zero / nil sessions.
 type Config struct {
 	Logger               *slog.Logger
 	Version              string
@@ -84,18 +100,22 @@ type Config struct {
 	OllamaVersionHandler http.HandlerFunc
 	Surfaces             []SurfaceMount
 	Pool                 PoolStatsSource
+	PoolDetail           PoolDetailSource
+	Registry             RegistryStatsSource
 }
 
 // Server wraps the chi router and HTTP server with structured logging.
 type Server struct {
-	cfg     config.Config // legacy — kept for httpAddr fallback when only the Phase 1 path is used
-	logger  *slog.Logger
-	router  chi.Router
-	version string
-	commit  string
-	start   time.Time
-	pool    PoolStatsSource
-	addr    string
+	cfg        config.Config // legacy — kept for httpAddr fallback when only the Phase 1 path is used
+	logger     *slog.Logger
+	router     chi.Router
+	version    string
+	commit     string
+	start      time.Time
+	pool       PoolStatsSource
+	poolDetail PoolDetailSource
+	registry   RegistryStatsSource
+	addr       string
 }
 
 // New is the Phase 1 compatibility constructor — used when only the
@@ -149,12 +169,14 @@ func NewWithCommit(cfg config.Config, logger *slog.Logger, version, commit strin
 // backed logger via testutil.Logger.
 func NewFromConfig(cfg Config) *Server {
 	s := &Server{
-		logger:  cfg.Logger,
-		version: cfg.Version,
-		commit:  cfg.Commit,
-		start:   time.Now(),
-		pool:    cfg.Pool,
-		addr:    cfg.HTTPAddr,
+		logger:     cfg.Logger,
+		version:    cfg.Version,
+		commit:     cfg.Commit,
+		start:      time.Now(),
+		pool:       cfg.Pool,
+		poolDetail: cfg.PoolDetail,
+		registry:   cfg.Registry,
+		addr:       cfg.HTTPAddr,
 	}
 	s.router = chi.NewRouter()
 	s.router.Use(middleware.RequestID)
@@ -164,6 +186,10 @@ func NewFromConfig(cfg Config) *Server {
 	// Exempt outer routes — auth + IP allowlist NOT applied here.
 	s.router.Get("/", s.rootHandler)
 	s.router.Get("/health", s.healthHandler)
+	// D-18: /health/agents is auth-exempt, registered on the OUTER router
+	// alongside /health. The detail endpoint exposes full session ids
+	// verbatim (D-17) for operator dashboards.
+	s.router.Get("/health/agents", s.agentsHandler)
 	if cfg.OllamaVersionHandler != nil && cfg.OllamaVersionPath != "" {
 		// Codex M-4: register /api/version on the OUTER router so it
 		// stays exempt. The adapter does NOT register /version on its
