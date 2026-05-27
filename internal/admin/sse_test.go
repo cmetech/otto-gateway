@@ -100,10 +100,17 @@ func (f *flushRecorder) Flush() {
 	// No-op: data is already in the ResponseRecorder body buffer.
 }
 
-// noFlushRecorder wraps ResponseRecorder but does NOT implement http.Flusher.
-type noFlushRecorder struct {
-	*httptest.ResponseRecorder
+// noFlushResponseWriter wraps http.ResponseWriter but does NOT implement
+// http.Flusher. It uses delegation (not embedding) so no Flush method is
+// promoted from the underlying recorder — httptest.ResponseRecorder's Flush
+// method is hidden by the non-embedding wrapper.
+type noFlushResponseWriter struct {
+	rec *httptest.ResponseRecorder
 }
+
+func (n *noFlushResponseWriter) Header() http.Header         { return n.rec.Header() }
+func (n *noFlushResponseWriter) Write(b []byte) (int, error) { return n.rec.Write(b) }
+func (n *noFlushResponseWriter) WriteHeader(code int)        { n.rec.WriteHeader(code) }
 
 // ---------------------------------------------------------------------------
 // sseLoop via ticker injection
@@ -176,12 +183,12 @@ func TestAdmin_SSEHandler_FlusherCastFailure(t *testing.T) {
 	}
 	h.tailer = NewTailer(logPath, discardLogger())
 
-	// Wrap recorder in noFlushRecorder so http.Flusher cast fails.
+	// Wrap recorder in noFlushResponseWriter so http.Flusher cast fails.
 	inner := httptest.NewRecorder()
-	nfr := &noFlushRecorder{inner}
+	nfw := &noFlushResponseWriter{rec: inner}
 
 	req := httptest.NewRequest(http.MethodGet, "/logs/stream", nil)
-	h.sseHandler(nfr, req)
+	h.sseHandler(nfw, req)
 
 	if inner.Code != http.StatusInternalServerError {
 		t.Errorf("expected 500 for non-flusher writer, got %d", inner.Code)
@@ -222,24 +229,40 @@ func TestAdmin_SSEBackfillAndLive(t *testing.T) {
 	}
 	h.tailer = tailer
 
-	// Use a cancellable context to terminate the SSE handler.
-	ctx, cancel := context.WithCancel(context.Background())
+	// Use a real httptest.Server to avoid shared-recorder races between
+	// the handler goroutine writing headers and the test goroutine reading them.
+	// The handler is registered directly.
+	mux := http.NewServeMux()
+	mux.HandleFunc("/logs/stream", h.sseHandler)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
 
-	req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/logs/stream", nil)
-	rec := &flushRecorder{httptest.NewRecorder()}
+	// Open a real SSE connection; read lines via a buffered channel.
+	sseCtx, sseCancel := context.WithCancel(context.Background())
+	defer sseCancel()
+	httpReq, err := http.NewRequestWithContext(sseCtx, http.MethodGet, srv.URL+"/logs/stream", nil)
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
 
-	// Run handler in background — it blocks until ctx is cancelled.
-	handlerDone := make(chan struct{})
+	respCh := make(chan *http.Response, 1)
 	go func() {
-		defer close(handlerDone)
-		h.sseHandler(rec, req)
+		resp, err := http.DefaultClient.Do(httpReq)
+		if err == nil {
+			respCh <- resp
+		}
 	}()
 
-	// Give handler time to send backfill.
-	time.Sleep(200 * time.Millisecond)
+	// Wait for response.
+	var resp *http.Response
+	select {
+	case resp = <-respCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for SSE response")
+	}
+	defer resp.Body.Close()
 
 	// Check headers.
-	resp := rec.Result()
 	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
 		t.Errorf("Content-Type: got %q, want text/event-stream", ct)
 	}
@@ -253,12 +276,34 @@ func TestAdmin_SSEBackfillAndLive(t *testing.T) {
 		t.Errorf("X-Accel-Buffering: got %q, want no", xab)
 	}
 
-	// Check backfill lines appeared.
-	body := rec.Body.String()
-	if !strings.Contains(body, "event: log\ndata: pre-1\n") {
+	// Read SSE lines from the body in a goroutine.
+	linesCh := make(chan string, 100)
+	go func() {
+		scanner := bufio.NewScanner(resp.Body)
+		for scanner.Scan() {
+			line := scanner.Text()
+			linesCh <- line
+		}
+	}()
+
+	// Collect lines for 500ms to get backfill.
+	var bodyLines []string
+	deadline := time.After(500 * time.Millisecond)
+	collectLoop:
+	for {
+		select {
+		case line := <-linesCh:
+			bodyLines = append(bodyLines, line)
+		case <-deadline:
+			break collectLoop
+		}
+	}
+
+	body := strings.Join(bodyLines, "\n")
+	if !strings.Contains(body, "data: pre-1") {
 		t.Errorf("expected backfill 'pre-1' in body, got: %q", body)
 	}
-	if !strings.Contains(body, "event: log\ndata: pre-2\n") {
+	if !strings.Contains(body, "data: pre-2") {
 		t.Errorf("expected backfill 'pre-2' in body, got: %q", body)
 	}
 
@@ -268,22 +313,29 @@ func TestAdmin_SSEBackfillAndLive(t *testing.T) {
 	// Append a live line.
 	appendToFile(t, logPath, "live-1")
 
-	// Wait for it to arrive.
-	time.Sleep(1000 * time.Millisecond)
+	// Collect more lines to check live delivery.
+	var liveLines []string
+	liveDeadline := time.After(1500 * time.Millisecond)
+	liveLoop:
+	for {
+		select {
+		case line := <-linesCh:
+			liveLines = append(liveLines, line)
+		case <-liveDeadline:
+			break liveLoop
+		}
+	}
 
-	liveBody := rec.Body.String()
-	if !strings.Contains(liveBody, "event: log\ndata: live-1\n") {
+	liveBody := strings.Join(liveLines, "\n")
+	if !strings.Contains(liveBody, "data: live-1") {
 		t.Errorf("expected live line 'live-1' in body, got: %q", liveBody)
 	}
 
-	// Cancel context and wait for handler to exit.
-	cancel()
-	select {
-	case <-handlerDone:
-		// Good — handler exited cleanly.
-	case <-time.After(500 * time.Millisecond):
-		t.Error("handler did not exit within 500ms of ctx cancel")
-	}
+	// Cancel SSE connection and verify handler goroutine from TestAdmin_SSECtxCancelTeardown
+	// is what tests the clean teardown. Here we just cancel the connection.
+	sseCancel()
+	// Give handler goroutine time to exit after the connection closes.
+	time.Sleep(200 * time.Millisecond)
 }
 
 // ---------------------------------------------------------------------------
@@ -420,20 +472,22 @@ func TestAdmin_AdminGo_TailerWired(t *testing.T) {
 	})
 
 	// GET /logs/stream — should NOT return 404 (route is registered).
-	// It may return 500 if the response writer doesn't implement http.Flusher
-	// (httptest.ResponseRecorder does NOT implement Flusher by default).
-	// We use a non-Flusher recorder to get a deterministic non-404 response.
+	// Use noFlushResponseWriter to force the "streaming unsupported" 500 path
+	// so the handler returns synchronously (without blocking in sseLoop).
+	// httptest.ResponseRecorder embeds Flush() so we must use a non-embedding
+	// wrapper to defeat the http.Flusher cast.
+	inner := httptest.NewRecorder()
+	nfw := &noFlushResponseWriter{rec: inner}
 	req := httptest.NewRequest(http.MethodGet, "/logs/stream", nil)
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
+	handler.ServeHTTP(nfw, req)
 
-	if rec.Code == http.StatusNotFound {
+	if inner.Code == http.StatusNotFound {
 		t.Errorf("GET /logs/stream returned 404 — route not registered in Handler")
 	}
-	// Should be 500 "streaming unsupported" because httptest.ResponseRecorder
+	// Should be 500 "streaming unsupported" because noFlushResponseWriter
 	// doesn't implement http.Flusher.
-	if rec.Code != http.StatusInternalServerError {
-		t.Logf("GET /logs/stream returned %d (expected 500 for non-flusher recorder, or non-404)", rec.Code)
+	if inner.Code != http.StatusInternalServerError {
+		t.Errorf("GET /logs/stream returned %d (expected 500 from non-flusher writer)", inner.Code)
 	}
 }
 

@@ -81,13 +81,39 @@
     </div>
   </section>
 
-  <!-- Section 4: Log Tail panel (Plan 03 fills) -->
+  <!-- Section 4: Log Tail panel (Plan 03 — SSE live tail) -->
   <section aria-labelledby="log-tail-heading">
     <h2 id="log-tail-heading" class="otto-h2">Log Tail</h2>
     <div class="otto-log-panel">
-      <div class="otto-log-viewport otto-log-viewport-empty" data-log-viewport>
-        Waiting for log activity…
+
+      <!-- Activity header row: pulsing dot + connection status text -->
+      <div class="otto-log-header">
+        <span class="otto-live-dot otto-log-activity-dot" data-log-activity></span>
+        <span class="otto-log-status" data-log-status>Connecting…</span>
       </div>
+
+      <!-- Control row: level filter, regex grep, pause/resume, newest badge -->
+      <div class="otto-log-controls">
+        <select class="otto-select" data-log-level aria-label="Log level filter">
+          <option value="all">All levels</option>
+          <option value="debug">Debug</option>
+          <option value="info">Info</option>
+          <option value="warn">Warn</option>
+          <option value="error">Error</option>
+        </select>
+        <input class="otto-input" type="text" placeholder="Filter lines (regex)…"
+               data-log-grep aria-label="Filter lines">
+        <span class="otto-grep-hint" data-log-grep-hint hidden>Invalid regex — filter not applied</span>
+        <button class="otto-btn" type="button" data-log-pause>Pause</button>
+        <span class="otto-newest-badge" data-log-newest hidden></span>
+      </div>
+
+      <!-- Log viewport: monospace, fixed-height, scrollable, aria-live -->
+      <div class="otto-log-viewport" data-log-viewport
+           role="log" aria-live="polite" aria-relevant="additions">
+        <div class="otto-log-empty" data-log-empty>Waiting for log activity…</div>
+      </div>
+
     </div>
   </section>
 

@@ -344,6 +344,260 @@
   // Initialisation on DOMContentLoaded
   // ---------------------------------------------------------------------------
 
+  // ---------------------------------------------------------------------------
+  // Log Tail SSE — Phase 6.1 Plan 03
+  // EventSource consumer with level filter, regex grep (150ms debounce),
+  // pause/resume + "N new" badge, reconnect line deduplication.
+  // All DOM mutations use textContent (not innerHTML) — T-6.1-16 XSS.
+  // ---------------------------------------------------------------------------
+
+  var logPaused = false;           // true when operator clicks Pause
+  var logNewestBuffer = [];        // lines buffered while paused
+  var logGrepRe = null;            // current compiled RegExp or null (no filter)
+  var logLevelFilter = 'all';      // 'all' | 'debug' | 'info' | 'warn' | 'error'
+  var logConsecutiveReconnects = 0;
+  var logGrepDebounceTimer = null;
+
+  // Deduplication ring: last 20 lines received. Prevents duplicate backfill
+  // lines from appearing when EventSource reconnects (UI-SPEC §auto-reconnect).
+  var logRecentLines = [];
+  var LOG_DEDUP_MAX = 20;
+
+  function logIsDupe(line) {
+    return logRecentLines.indexOf(line) !== -1;
+  }
+
+  function logTrackLine(line) {
+    logRecentLines.push(line);
+    if (logRecentLines.length > LOG_DEDUP_MAX) {
+      logRecentLines.shift();
+    }
+  }
+
+  // Parse a slog log line to extract the level field.
+  // Supports both slog text format ("level=INFO ...") and JSON
+  // ({"level":"INFO",...}). Returns { level: 'info'|'debug'|'warn'|'error'|null }.
+  function parseLogLine(line) {
+    // Try JSON first (slog JSON handler output).
+    if (line.charAt(0) === '{') {
+      try {
+        var obj = JSON.parse(line);
+        var lv = obj.level;
+        if (typeof lv === 'string') {
+          return { level: lv.toLowerCase(), msg: line };
+        }
+      } catch (e) {
+        // fall through to text parsing
+      }
+    }
+    // slog text handler: "time=… level=INFO msg=…"
+    var match = /\blevel=([A-Za-z]+)/.exec(line);
+    if (match) {
+      return { level: match[1].toLowerCase(), msg: line };
+    }
+    return { level: null, msg: line };
+  }
+
+  // matchesFilters returns true if the line passes both level and grep filters.
+  function matchesFilters(parsed, line) {
+    if (logLevelFilter !== 'all' && parsed.level !== logLevelFilter) {
+      return false;
+    }
+    if (logGrepRe && !logGrepRe.test(line)) {
+      return false;
+    }
+    return true;
+  }
+
+  // appendLine adds a log line to the viewport (T-6.1-16: textContent only).
+  function appendLine(line, parsed) {
+    var vp = document.querySelector('[data-log-viewport]');
+    if (!vp) return;
+
+    // Remove "empty" placeholder on first line.
+    var empty = document.querySelector('[data-log-empty]');
+    if (empty) empty.hidden = true;
+
+    var div = document.createElement('div');
+    div.className = 'otto-log-line';
+    if (parsed.level && parsed.level !== 'info') {
+      div.classList.add('is-' + parsed.level);
+    }
+    div.textContent = line;  // textContent — never innerHTML (T-6.1-16)
+    if (!matchesFilters(parsed, line)) {
+      div.style.display = 'none';
+    }
+    vp.appendChild(div);
+
+    // Trim DOM to last 1000 nodes to prevent unbounded memory growth (T-6.1-17).
+    while (vp.children.length > 1000) {
+      vp.removeChild(vp.firstChild);
+    }
+  }
+
+  // autoScroll scrolls the viewport to the bottom.
+  function autoScroll() {
+    var vp = document.querySelector('[data-log-viewport]');
+    if (vp) vp.scrollTop = vp.scrollHeight;
+  }
+
+  // updateNewestBadge updates the "N new" badge visibility and count.
+  function updateNewestBadge() {
+    var badge = document.querySelector('[data-log-newest]');
+    if (!badge) return;
+    if (logNewestBuffer.length === 0) {
+      badge.hidden = true;
+      return;
+    }
+    badge.hidden = false;
+    badge.textContent = logNewestBuffer.length + ' new';
+  }
+
+  // onLogEvent handles an SSE "log" event.
+  function onLogEvent(ev) {
+    var line = ev.data;
+
+    // Deduplicate reconnect backfill.
+    if (logIsDupe(line)) return;
+    logTrackLine(line);
+
+    var parsed = parseLogLine(line);
+    if (logPaused) {
+      logNewestBuffer.push({ line: line, parsed: parsed });
+      updateNewestBadge();
+      return;
+    }
+    appendLine(line, parsed);
+    autoScroll();
+  }
+
+  // onSSEOpen handles EventSource open.
+  function onSSEOpen() {
+    var statusEl = document.querySelector('[data-log-status]');
+    if (statusEl) statusEl.textContent = 'Connected';
+    var dotEl = document.querySelector('[data-log-activity]');
+    if (dotEl) dotEl.classList.remove('is-disconnected');
+    logConsecutiveReconnects = 0;
+  }
+
+  // onSSEError handles EventSource error (browser auto-reconnects every ~3s).
+  function onSSEError() {
+    var statusEl = document.querySelector('[data-log-status]');
+    if (statusEl) statusEl.textContent = 'Log stream disconnected — reconnecting…';
+    var dotEl = document.querySelector('[data-log-activity]');
+    if (dotEl) dotEl.classList.add('is-disconnected');
+    logConsecutiveReconnects++;
+  }
+
+  // Pause button handler: toggles paused state.
+  function initPauseButton() {
+    var btn = document.querySelector('[data-log-pause]');
+    if (!btn) return;
+    btn.addEventListener('click', function () {
+      logPaused = !logPaused;
+      if (logPaused) {
+        btn.textContent = 'Resume';
+        btn.classList.add('is-paused');
+      } else {
+        btn.textContent = 'Pause';
+        btn.classList.remove('is-paused');
+        // Flush buffered lines.
+        for (var i = 0; i < logNewestBuffer.length; i++) {
+          var entry = logNewestBuffer[i];
+          appendLine(entry.line, entry.parsed);
+        }
+        logNewestBuffer = [];
+        updateNewestBadge();
+        autoScroll();
+      }
+    });
+  }
+
+  // Level dropdown: re-evaluate all existing log lines on change.
+  function initLevelFilter() {
+    var sel = document.querySelector('[data-log-level]');
+    if (!sel) return;
+    sel.addEventListener('change', function () {
+      logLevelFilter = sel.value;
+      // Walk existing DOM nodes and set display accordingly.
+      var vp = document.querySelector('[data-log-viewport]');
+      if (!vp) return;
+      var lines = vp.querySelectorAll('.otto-log-line');
+      for (var i = 0; i < lines.length; i++) {
+        var el = lines[i];
+        // Re-derive level from class list.
+        var level = null;
+        if (el.classList.contains('is-debug')) level = 'debug';
+        else if (el.classList.contains('is-warn')) level = 'warn';
+        else if (el.classList.contains('is-error')) level = 'error';
+        else level = 'info';
+        var parsed = { level: level };
+        var line = el.textContent;
+        el.style.display = matchesFilters(parsed, line) ? '' : 'none';
+      }
+    });
+  }
+
+  // Grep input: 150ms debounce + invalid-regex hint.
+  function initGrepFilter() {
+    var input = document.querySelector('[data-log-grep]');
+    var hint = document.querySelector('[data-log-grep-hint]');
+    if (!input) return;
+    input.addEventListener('input', function () {
+      clearTimeout(logGrepDebounceTimer);
+      logGrepDebounceTimer = setTimeout(function () {
+        var val = input.value;
+        if (val === '') {
+          logGrepRe = null;
+          if (hint) hint.hidden = true;
+        } else {
+          try {
+            logGrepRe = new RegExp(val, 'i');
+            if (hint) hint.hidden = true;
+          } catch (e) {
+            // Invalid regex: show hint, leave last valid filter active.
+            if (hint) hint.hidden = false;
+            return; // don't re-evaluate DOM
+          }
+        }
+        // Re-evaluate existing DOM lines with the new filter.
+        var vp = document.querySelector('[data-log-viewport]');
+        if (!vp) return;
+        var lines = vp.querySelectorAll('.otto-log-line');
+        for (var i = 0; i < lines.length; i++) {
+          var el = lines[i];
+          var level = null;
+          if (el.classList.contains('is-debug')) level = 'debug';
+          else if (el.classList.contains('is-warn')) level = 'warn';
+          else if (el.classList.contains('is-error')) level = 'error';
+          else level = 'info';
+          var parsed = { level: level };
+          var line = el.textContent;
+          el.style.display = matchesFilters(parsed, line) ? '' : 'none';
+        }
+      }, 150);
+    });
+  }
+
+  // Initialise EventSource and wire up controls on DOMContentLoaded.
+  // This block runs after the snapshot polling init so the setInterval
+  // registrations are not disturbed.
+  function initLogTail() {
+    initPauseButton();
+    initLevelFilter();
+    initGrepFilter();
+
+    var es = new EventSource('/admin/logs/stream');
+    es.addEventListener('log', onLogEvent);
+    es.addEventListener('ping', function () { /* keepalive — no-op */ });
+    es.onopen = onSSEOpen;
+    es.onerror = onSSEError;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Initialisation on DOMContentLoaded
+  // ---------------------------------------------------------------------------
+
   document.addEventListener('DOMContentLoaded', function () {
     // 1s ticker for "Xs ago" counter.
     setInterval(tick, 1000);
@@ -353,6 +607,9 @@
 
     // Repeating poll at the configured interval (30s default).
     setInterval(fetchSnapshot, pollMs);
+
+    // Initialise SSE log tail (Plan 03).
+    initLogTail();
   });
 
 })();

@@ -64,23 +64,21 @@ type Deps struct {
 }
 
 // handler holds the runtime state for the admin sub-router.
-// tailer is nil in Plan 01 — it is wired in Plan 03 when the SSE log-tail
-// route is added. The field is declared here so the struct shape is stable
-// across plans.
 type handler struct {
 	deps   Deps
-	tailer interface{} // *Tailer — nil until Plan 03; typed as interface{} to avoid a forward-ref import cycle
+	tailer *Tailer // wired in Plan 03 via NewTailer(deps.LogPath, deps.Logger)
 }
 
 // Handler returns a chi.Router mounting the admin sub-routes. The caller
 // (internal/server.NewFromConfig) mounts the returned handler at /admin
 // on the OUTER router, making all sub-routes auth-exempt per D-01/D-07.
 //
-// Routes (Plan 01 only — Plan 03 adds /logs/stream):
+// Routes:
 //
-//	GET /          → pageHandler  (renders HTML page from embed.FS template)
+//	GET /             → pageHandler  (renders HTML page from embed.FS template)
 //	GET /api/snapshot → snapshotHandler (aggregates pool+session data → JSON)
-//	GET /static/*  → http.FileServer over staticFS (embedded CSS/JS)
+//	GET /static/*     → http.FileServer over staticFS (embedded CSS/JS)
+//	GET /logs/stream  → sseHandler (SSE live log tail — D-08/D-09)
 func Handler(deps Deps) http.Handler {
 	// Nil-safe logger: if no logger is provided substitute a no-op so
 	// handler paths that call h.deps.Logger never panic on a nil deref.
@@ -89,6 +87,12 @@ func Handler(deps Deps) http.Handler {
 	}
 
 	h := &handler{deps: deps}
+
+	// Insertion point 1: construct the shared Tailer.
+	// NewTailer does NOT start a goroutine — the first SSE Subscribe does.
+	// This wiring does not affect the Plan 01 PageHandler/SnapshotHandler tests
+	// because goleak only fires when a goroutine is actually started.
+	h.tailer = NewTailer(deps.LogPath, deps.Logger)
 
 	r := chi.NewRouter()
 
@@ -104,6 +108,10 @@ func Handler(deps Deps) http.Handler {
 	// StripPrefix removes "/static/" so http.FileServer resolves paths
 	// within the staticFS sub-FS correctly (css/admin.css → staticFS root).
 	r.Handle("/static/*", http.StripPrefix("/static/", http.FileServer(http.FS(staticFS))))
+
+	// Insertion point 2: register the SSE log-tail route (D-08).
+	// Route ordering: page → snapshot → static → SSE.
+	r.Get("/logs/stream", h.sseHandler)
 
 	return r
 }

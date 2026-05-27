@@ -456,7 +456,7 @@ body {
 }
 
 /* -----------------------------------------------------------------------
- * Log tail panel (Plan 03 fills; Plan 01 ships empty stub)
+ * Log tail panel (Plan 03 — SSE live tail)
  * ----------------------------------------------------------------------- */
 
 .otto-log-panel {
@@ -464,6 +464,33 @@ body {
   border: 1px solid var(--otto-border);
   border-radius: var(--otto-radius-card);
   overflow: hidden;
+}
+
+/* Activity header row (Plan 03) */
+.otto-log-header {
+  display: flex;
+  align-items: center;
+  gap: var(--otto-space-sm);
+  padding: var(--otto-space-sm) var(--otto-space-base);
+  border-bottom: 1px solid var(--otto-border);
+}
+
+/* Log activity dot — uses otto-live-dot base + activity color override.
+ * When SSE is disconnected, add class is-disconnected for warning color. */
+.otto-log-activity-dot {
+  background: var(--otto-activity);
+  animation: otto-pulse 2s ease-in-out infinite;
+}
+
+.otto-log-activity-dot.is-disconnected {
+  background: var(--otto-warning);
+  animation: none;
+}
+
+/* Connection status text (Plan 03) */
+.otto-log-status {
+  color: var(--otto-muted);
+  font: 400 12px/1.4 var(--otto-font-ui);
 }
 
 .otto-log-controls {
@@ -475,24 +502,50 @@ body {
   flex-wrap: wrap;
 }
 
+/* Log viewport: monospace 12px, fixed height, overflow scroll (Plan 03) */
 .otto-log-viewport {
   height: 480px;
   overflow-y: auto;
-  font-family: var(--otto-font-mono);
-  font-size: 12px;
-  line-height: 1.5;
+  font: 400 12px/1.5 var(--otto-font-mono);
+  color: var(--otto-fg);
+  background: var(--otto-bg);
   padding: var(--otto-space-sm) var(--otto-space-base);
-  scroll-behavior: smooth;
 }
 
-.otto-log-viewport-empty {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
+/* Empty state shown before any lines arrive */
+.otto-log-empty {
   color: var(--otto-muted);
-  font-size: 14px;
-  font-family: var(--otto-font-ui);
+  text-align: center;
+  padding: var(--otto-space-lg);
+  font: 400 14px/1.5 var(--otto-font-ui);
+}
+
+/* Individual log line (Plan 03) */
+.otto-log-line {
+  white-space: pre-wrap;
+  word-break: break-all;
+  padding: 2px 0;
+}
+
+/* Log-line level color variants (D-12 / T-6.1-16) */
+.otto-log-line.is-debug { color: var(--otto-muted); }  /* DEBUG: #A0A0A0 */
+.otto-log-line.is-info  { color: var(--otto-fg); }     /* INFO:  #FAFAFA (default) */
+.otto-log-line.is-warn  { color: var(--otto-warning); } /* WARN:  #FF8C0A */
+.otto-log-line.is-error { color: var(--otto-failed); }  /* ERROR: #FF3232 */
+
+/* Regex invalid-pattern hint (Plan 03) */
+.otto-grep-hint {
+  color: var(--otto-warning);
+  font: 400 12px/1.4 var(--otto-font-ui);
+}
+
+/* "N new" badge shown while paused (Plan 03) */
+.otto-newest-badge {
+  background: var(--otto-warning);
+  color: var(--otto-bg);
+  padding: var(--otto-space-xs) var(--otto-space-sm);
+  border-radius: var(--otto-radius-input);
+  font: 600 12px/1.4 var(--otto-font-ui);
 }
 
 /* Input + Select shared styling */
@@ -534,6 +587,12 @@ body {
 
 .otto-btn:hover {
   opacity: 0.85;
+}
+
+/* Pause button variant — active (paused) state uses is-paused class */
+.otto-btn.is-paused {
+  background: var(--otto-link);
+  border-color: var(--otto-link);
 }
 
 /* -----------------------------------------------------------------------
