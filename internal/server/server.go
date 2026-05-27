@@ -102,6 +102,11 @@ type Config struct {
 	Pool                 PoolStatsSource
 	PoolDetail           PoolDetailSource
 	Registry             RegistryStatsSource
+	// AdminHandler is mounted at /admin on the OUTER router (auth-exempt
+	// per Phase 6.1 D-01). When nil, /admin is unrouted. Mounting does
+	// NOT affect existing exempt or SurfaceMount registrations per
+	// D-15/D-16; verified by server_admin_test.go.
+	AdminHandler http.Handler
 }
 
 // Server wraps the chi router and HTTP server with structured logging.
@@ -203,6 +208,15 @@ func NewFromConfig(cfg Config) *Server {
 		// stays exempt. The adapter does NOT register /version on its
 		// protected router; there is exactly one registration site.
 		s.router.Get(cfg.OllamaVersionPath, cfg.OllamaVersionHandler)
+	}
+
+	// Phase 6.1 D-07/D-15/D-16: admin handler mounts on the OUTER router,
+	// auth-exempt (D-01), and does NOT participate in ENABLED_SURFACES
+	// gating. Mount order: AFTER the existing exempt routes (/health etc.)
+	// so chi's route-registration order matches the auth-exempt posture
+	// documentation. When nil, /admin is unrouted (no-op).
+	if cfg.AdminHandler != nil {
+		s.router.Mount("/admin", cfg.AdminHandler)
 	}
 
 	// D-01: group Surfaces by prefix and open ONE auth-wrapped Route
