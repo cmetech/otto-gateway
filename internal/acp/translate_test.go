@@ -179,6 +179,84 @@ func TestTranslateUpdate_VarianceMatrix(t *testing.T) {
 			},
 		},
 		{
+			// Real kiro wire shape: emits args under `rawInput` (not the
+			// spec field `args`) and the canonical tool name under `kind`
+			// (the spec field `title` is repurposed as a user-facing
+			// status string that mutates per chunk — see the next case).
+			// The translator MUST prefer kind/rawInput when present so
+			// the canonical chunk carries the real args + stable name.
+			name:       "tool_call_kiro_wire_kind_and_rawInput",
+			paramsJSON: `{"sessionId":"s1","update":{"sessionUpdate":"tool_call","toolCallId":"tooluse_abc","title":"Reading CLAUDE.md:1","kind":"read","locations":[{"path":"/tmp/CLAUDE.md"}],"rawInput":{"operations":[{"mode":"Line","path":"/tmp/CLAUDE.md"}],"__tool_use_purpose":"Read CLAUDE.md to find # Project"}}}`,
+			want: canonical.Chunk{
+				Kind: canonical.ChunkKindToolCall,
+				ToolCall: &canonical.ToolCallChunk{
+					ID:   "tooluse_abc",
+					Name: "read", // kind wins over title
+					Args: map[string]any{
+						"operations": []any{
+							map[string]any{"mode": "Line", "path": "/tmp/CLAUDE.md"},
+						},
+						"__tool_use_purpose": "Read CLAUDE.md to find # Project",
+					},
+				},
+			},
+		},
+		{
+			// Spec compliance: when ONLY the spec field `args` is set
+			// (no kiro `rawInput`), the translator reads from `args`.
+			// Equivalent to the Node-reference fixture above; this case
+			// pins the fallback path explicitly so a future refactor
+			// can't silently invert the priority.
+			name:       "tool_call_spec_args_only_fallback",
+			paramsJSON: `{"sessionId":"s1","update":{"sessionUpdate":"tool_call","toolCallId":"tc_spec","title":"read_file","args":{"path":"/etc/hosts"}}}`,
+			want: canonical.Chunk{
+				Kind: canonical.ChunkKindToolCall,
+				ToolCall: &canonical.ToolCallChunk{
+					ID:   "tc_spec",
+					Name: "read_file", // title used since no kind
+					Args: map[string]any{"path": "/etc/hosts"},
+				},
+			},
+		},
+		{
+			// Precedence: when BOTH `args` and `rawInput` are present
+			// the spec field `args` wins (more explicit, documented).
+			// Defensive: if a future kiro version emits both,
+			// the translator stays deterministic on the spec field.
+			name:       "tool_call_args_wins_over_rawInput_when_both_set",
+			paramsJSON: `{"sessionId":"s1","update":{"sessionUpdate":"tool_call","toolCallId":"tc_both","kind":"read","title":"read","args":{"path":"/from-args"},"rawInput":{"path":"/from-rawInput"}}}`,
+			want: canonical.Chunk{
+				Kind: canonical.ChunkKindToolCall,
+				ToolCall: &canonical.ToolCallChunk{
+					ID:   "tc_both",
+					Name: "read",
+					Args: map[string]any{"path": "/from-args"},
+				},
+			},
+		},
+		{
+			// Placeholder-then-populated chunk pattern: kiro emits an
+			// announcement (tool_call_chunk, no rawInput) followed by
+			// the payload (tool_call, populated rawInput). The two
+			// translate calls produce two ChunkKindToolCall chunks with
+			// the same ID — the first with nil Args, the second with
+			// populated Args. The anthropic SSE adapter discriminates
+			// these via pendingToolUseFlush (sse.go) — translator's
+			// responsibility is to faithfully report what's on the wire.
+			// Verifies the announcement chunk does NOT synthesize fake
+			// args; it correctly leaves Args nil.
+			name:       "tool_call_chunk_kiro_announcement_no_args",
+			paramsJSON: `{"sessionId":"s1","update":{"sessionUpdate":"tool_call_chunk","toolCallId":"tooluse_xyz","title":"read","kind":"read"}}`,
+			want: canonical.Chunk{
+				Kind: canonical.ChunkKindToolCall,
+				ToolCall: &canonical.ToolCallChunk{
+					ID:   "tooluse_xyz",
+					Name: "read",
+					Args: nil,
+				},
+			},
+		},
+		{
 			name:       "tool_call_update_wrapped_snake_output_wins",
 			paramsJSON: `{"sessionId":"s1","update":{"sessionUpdate":"tool_call_update","output":"result data","content":{"type":"text","text":"alt result"}}}`,
 			want: canonical.Chunk{

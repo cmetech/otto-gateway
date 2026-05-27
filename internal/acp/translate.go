@@ -49,9 +49,24 @@ type sessionUpdateParams struct {
 	Text          string          `json:"text,omitempty"`
 	ToolCallID    string          `json:"toolCallId,omitempty"`
 	Title         string          `json:"title,omitempty"`
-	Args          map[string]any  `json:"args,omitempty"`
-	Output        string          `json:"output,omitempty"`
-	Entries       []planEntry     `json:"entries,omitempty"`
+	// Kind is kiro's canonical tool-name field on tool_call /
+	// tool_call_chunk notifications. The Node reference fixtures
+	// use Title for the tool name, but real kiro deployments use
+	// Title for a user-facing status string (e.g. "Reading X:1")
+	// that CHANGES between chunks of the same toolCallId. Kind is
+	// the stable tool name (e.g. "read"). Translation prefers Kind
+	// over Title for canonical.ToolCallChunk.Name.
+	Kind string `json:"kind,omitempty"`
+	// Args is the Node reference / test-fixture field name for tool
+	// call arguments. Real kiro deployments populate RawInput instead.
+	// Translation accepts either, preferring Args when both are set.
+	Args map[string]any `json:"args,omitempty"`
+	// RawInput is kiro's wire field for tool call arguments
+	// (kiro emits e.g. `"rawInput":{"operations":[...]}` on
+	// tool_call notifications). Falls back to Args for test fixtures.
+	RawInput map[string]any `json:"rawInput,omitempty"`
+	Output   string         `json:"output,omitempty"`
+	Entries  []planEntry    `json:"entries,omitempty"`
 }
 
 // sessionUpdateBody mirrors the inner body of a wrapped session/update
@@ -64,9 +79,13 @@ type sessionUpdateBody struct {
 	Text          string          `json:"text,omitempty"`
 	ToolCallID    string          `json:"toolCallId,omitempty"`
 	Title         string          `json:"title,omitempty"`
-	Args          map[string]any  `json:"args,omitempty"`
-	Output        string          `json:"output,omitempty"`
-	Entries       []planEntry     `json:"entries,omitempty"`
+	// Kind / RawInput mirror sessionUpdateParams — see field-level
+	// comments above for the kiro vs. test-fixture wire-shape split.
+	Kind     string         `json:"kind,omitempty"`
+	Args     map[string]any `json:"args,omitempty"`
+	RawInput map[string]any `json:"rawInput,omitempty"`
+	Output   string         `json:"output,omitempty"`
+	Entries  []planEntry    `json:"entries,omitempty"`
 }
 
 // planEntry is a single entry inside a `plan` session/update's entries[] array.
@@ -211,7 +230,9 @@ func translateUpdate(logger *slog.Logger, u sessionUpdateParams) (canonical.Chun
 			Text:          u.Text,
 			ToolCallID:    u.ToolCallID,
 			Title:         u.Title,
+			Kind:          u.Kind,
 			Args:          u.Args,
+			RawInput:      u.RawInput,
 			Output:        u.Output,
 			Entries:       u.Entries,
 		}
@@ -244,14 +265,34 @@ func translateUpdate(logger *slog.Logger, u sessionUpdateParams) (canonical.Chun
 		//     native shape (Anthropic content_block_*, OpenAI
 		//     delta.tool_calls, Ollama tool_calls on done — Phase 6
 		//     06-02/03/04).
+		//
+		// Wire-shape variance (Node ref fixtures vs. real kiro):
+		//
+		//   - Tool name: Node reference puts the tool name in `title`.
+		//     Real kiro uses `title` for a user-facing STATUS string
+		//     that changes per chunk (e.g. "Reading CLAUDE.md:1") and
+		//     emits the stable canonical tool name in `kind` (e.g.
+		//     "read"). Prefer `kind` so consumers see a consistent
+		//     name across the placeholder/populated chunk pair.
+		//
+		//   - Tool args: Node reference uses `args`. Real kiro uses
+		//     `rawInput` (e.g. `"rawInput":{"operations":[...]}`).
+		//     Accept either; prefer `args` when both are set (Node ref
+		//     wins for backward compat with existing tests).
+		//
 		// firstNonEmpty preserves the Phase 1.1 "unknown" fallback for
-		// title; ToolCallID and Args pass through verbatim (nil-safe).
+		// the name; ToolCallID passes through verbatim (nil-safe).
+		name := firstNonEmpty(body.Kind, body.Title, "unknown")
+		args := body.Args
+		if len(args) == 0 {
+			args = body.RawInput
+		}
 		return canonical.Chunk{
 			Kind: canonical.ChunkKindToolCall,
 			ToolCall: &canonical.ToolCallChunk{
 				ID:   body.ToolCallID,
-				Name: firstNonEmpty(body.Title, "unknown"),
-				Args: body.Args,
+				Name: name,
+				Args: args,
 			},
 		}, true
 	case "tool_call_update":
