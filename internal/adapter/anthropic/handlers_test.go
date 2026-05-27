@@ -108,17 +108,20 @@ func synthesizeRunHandleFromCollectResp(resp *canonical.ChatResponse, scriptedEr
 			}
 		}
 	}
-	// Also replay any preexisting ToolCalls (some tests construct
-	// these without a corresponding ContentKindToolUse part).
-	for _, tc := range resp.Message.ToolCalls {
-		chunks = append(chunks, canonical.Chunk{
-			Kind: canonical.ChunkKindToolCall,
-			ToolCall: &canonical.ToolCallChunk{
-				ID:   tc.ID,
-				Name: tc.Name,
-				Args: tc.Arguments,
-			},
-		})
+	// WR-04 (Phase 6 review): do NOT synthesize ChunkKindToolCall from
+	// resp.Message.ToolCalls. The Phase 6 contract is that ToolCalls
+	// gets populated by the CollectAnthropicChat aggregator (from
+	// kiro-native ChunkKindToolCall chunks), so synthesizing chunks
+	// from ToolCalls AND from ContentKindToolUse content parts would
+	// double-count any future fixture that sets both. Tests that need
+	// pre-populated ToolCalls must construct their own RunHandle
+	// directly (e.g., set runHandle on fakeEngine) rather than route
+	// through this synthesizer.
+	if len(resp.Message.ToolCalls) > 0 {
+		// Surface this as a test-author error eagerly. The synthesizer
+		// contract is one-way: Content -> chunks. Pre-populated
+		// ToolCalls on the synthesizer input is a fixture mistake.
+		panic("synthesizeRunHandleFromCollectResp: resp.Message.ToolCalls must be empty; populate via ContentKindToolUse parts and let CollectAnthropicChat re-derive ToolCalls (WR-04)")
 	}
 	ch := make(chan canonical.Chunk, len(chunks))
 	for _, c := range chunks {
