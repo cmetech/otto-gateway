@@ -2,7 +2,6 @@ package acp
 
 import (
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"net/url"
 	"path"
@@ -233,12 +232,27 @@ func translateUpdate(logger *slog.Logger, u sessionUpdateParams) (canonical.Chun
 			Thought: &canonical.ThoughtChunk{Content: content},
 		}, true
 	case "tool_call", "tool_call_chunk":
-		// CONTEXT.md <deferred>: render as thought with [tool: <title>]\n
-		// prefix; Phase 6 emits canonical.ToolCallChunk properly.
-		title := firstNonEmpty(body.Title, "unknown")
+		// Phase 6 D-03 (part 1 — canonical extraction): promote the
+		// kiro-emitted tool_call notification to a real
+		// canonical.ToolCallChunk with the wire fields preserved. The
+		// `[tool: <name>]\n` narration text that Phase 1.1 produced
+		// here has moved downstream:
+		//   - engine.Collect aggregates ChunkKindToolCall into the
+		//     assistant text for non-streaming Ollama/OpenAI (Phase 6
+		//     D-03 iteration-3 wording — see internal/engine/collect.go).
+		//   - Per-surface streaming emitters render the chunk in their
+		//     native shape (Anthropic content_block_*, OpenAI
+		//     delta.tool_calls, Ollama tool_calls on done — Phase 6
+		//     06-02/03/04).
+		// firstNonEmpty preserves the Phase 1.1 "unknown" fallback for
+		// title; ToolCallID and Args pass through verbatim (nil-safe).
 		return canonical.Chunk{
-			Kind:    canonical.ChunkKindThought,
-			Thought: &canonical.ThoughtChunk{Content: fmt.Sprintf("[tool: %s]\n", title)},
+			Kind: canonical.ChunkKindToolCall,
+			ToolCall: &canonical.ToolCallChunk{
+				ID:   body.ToolCallID,
+				Name: firstNonEmpty(body.Title, "unknown"),
+				Args: body.Args,
+			},
 		}, true
 	case "tool_call_update":
 		// Node behaviour: output ?? content.text — `content` already reflects

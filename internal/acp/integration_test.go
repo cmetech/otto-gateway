@@ -15,6 +15,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"reflect"
 	"testing"
 	"time"
 
@@ -52,7 +53,7 @@ func resolveKiroCLI(t *testing.T) string {
 //     - variantAgentMessageFlat            → ChunkKindText "hello"
 //     - variantAgentMessageWrappedCamel    → ChunkKindText "world"
 //     - variantAgentThoughtKiroDev          → ChunkKindThought "thinking"
-//     - variantToolCallWrapped              → ChunkKindThought "[tool: read_file]\n"
+//     - variantToolCallWrapped              → ChunkKindToolCall {Name: "read_file"} (Phase 6 D-03 — see Phase 6 06-01-PLAN.md Task 1)
 //     - variantPlanWrapped                  → ChunkKindPlan "Step 1\nStep 2"
 //     This exercises D-16 (three method names dispatched), D-17 (wrapped + flat
 //     body shapes), D-18 (content extraction chain across three shapes), and
@@ -199,7 +200,12 @@ func TestIntegration_FakeACP_E2E_MixedVariants(t *testing.T) {
 		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "hello"}},
 		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "world"}},
 		{Kind: canonical.ChunkKindThought, Thought: &canonical.ThoughtChunk{Content: "thinking"}},
-		{Kind: canonical.ChunkKindThought, Thought: &canonical.ThoughtChunk{Content: "[tool: read_file]\n"}},
+		// Phase 6 D-03 (part 1): tool_call notifications now promote to
+		// ChunkKindToolCall with populated ToolCall.{ID,Name,Args}. The
+		// `[tool: <name>]\n` narration text moved downstream (engine.Collect
+		// for non-streaming, per-surface emitters for streaming). The fake
+		// emits no toolCallId/args, so ID is empty and Args is nil.
+		{Kind: canonical.ChunkKindToolCall, ToolCall: &canonical.ToolCallChunk{ID: "", Name: "read_file", Args: nil}},
 		{Kind: canonical.ChunkKindPlan, Plan: &canonical.PlanChunk{Content: "Step 1\nStep 2"}},
 	}
 	var got []canonical.Chunk
@@ -228,10 +234,18 @@ func TestIntegration_FakeACP_E2E_MixedVariants(t *testing.T) {
 				t.Errorf("chunk[%d].Plan: got %+v, want %+v", i, got[i].Plan, w.Plan)
 			}
 		case canonical.ChunkKindToolCall:
-			// Phase 1.1 renders tool_* updates as thoughts (CONTEXT.md
-			// <deferred>); ChunkKindToolCall is not expected from translateUpdate
-			// in this phase. Fall through with a soft assertion.
-			t.Errorf("chunk[%d] unexpectedly typed as ChunkKindToolCall in Phase 1.1", i)
+			// Phase 6 D-03 (part 1): translateUpdate now promotes
+			// tool_call notifications to ChunkKindToolCall with populated
+			// ToolCall.{ID,Name,Args}. Assert the fields match.
+			if got[i].ToolCall == nil {
+				t.Errorf("chunk[%d].ToolCall: got nil, want non-nil with Name=%q", i, w.ToolCall.Name)
+				continue
+			}
+			if got[i].ToolCall.ID != w.ToolCall.ID ||
+				got[i].ToolCall.Name != w.ToolCall.Name ||
+				!reflect.DeepEqual(got[i].ToolCall.Args, w.ToolCall.Args) {
+				t.Errorf("chunk[%d].ToolCall: got %+v, want %+v", i, got[i].ToolCall, w.ToolCall)
+			}
 		}
 	}
 

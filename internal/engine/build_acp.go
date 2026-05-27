@@ -11,7 +11,9 @@ package engine
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"otto-gateway/internal/canonical"
@@ -62,10 +64,51 @@ func buildBlocks(req *canonical.ChatRequest) []canonical.Block {
 		fmt.Fprintf(&b, "[Output format] Respond ONLY in %s.\n\n", req.Format.Type)
 	}
 	if len(req.Tools) > 0 {
-		// Forward-design seam — Phase 6 will flesh out the tool-catalog
-		// emission. Phase 2 emits only a placeholder header so the
-		// section exists in the bracketed-section format.
-		b.WriteString("[Available tools]\nEmit a tool_call ACP notification to invoke any of the registered tools.\n\n")
+		// Phase 6 D-16: emit the full JSON tool catalog inside the
+		// bracketed section so kiro-cli has the contract it needs to
+		// invoke tools. Format mirrors the Node reference
+		// (`acp_server_node_reference.md` §"Bracketed sections" lines
+		// 155-159): header line + fenced ```json``` block with the
+		// catalog.
+		//
+		// We translate canonical.ToolSpec → a private wire struct with
+		// lowercase JSON tags before marshaling. Canonical types have
+		// no JSON tags (Phase 2 D-11 invariant — adapter-side
+		// translation only), so passing canonical through json.Marshal
+		// directly would emit capitalized `"Name"`/`"Description"`/
+		// `"Parameters"` keys which kiro-cli would not recognize.
+		//
+		// REVIEW LOW #6 defensive fallback: json.Marshal on the wire
+		// struct slice composed of well-formed map[string]any
+		// Parameters cannot fail in practice, but pathological inputs
+		// (e.g. a Parameters map containing a channel value) would
+		// trigger an UnsupportedTypeError. On marshal failure, log a
+		// debug line and emit the header-only placeholder so kiro at
+		// least sees the section. We use slog.Default() so callers
+		// can inject their own logger via the slog global without
+		// churning the buildBlocks signature for an edge case.
+		wireCatalog := make([]availableToolWire, 0, len(req.Tools))
+		for _, t := range req.Tools {
+			wireCatalog = append(wireCatalog, availableToolWire{
+				Name:        t.Name,
+				Description: t.Description,
+				Parameters:  t.Parameters,
+			})
+		}
+		toolsJSON, err := json.Marshal(wireCatalog)
+		if err != nil {
+			slog.Default().Debug(
+				"engine/build_acp: tools marshal failed; emitting header-only [Available tools]",
+				"err", err.Error(),
+				"tools_count", len(req.Tools),
+			)
+			b.WriteString("[Available tools]\nEmit a tool_call ACP notification to invoke any of the registered tools.\n\n")
+		} else {
+			fmt.Fprintf(&b,
+				"[Available tools]\nEmit a tool_call ACP notification to invoke any of the registered tools.\n\n```json\n%s\n```\n\n",
+				string(toolsJSON),
+			)
+		}
 	}
 
 	for _, m := range req.Messages {
@@ -167,4 +210,17 @@ func joinThinkingParts(parts []canonical.ContentPart) string {
 		}
 	}
 	return b.String()
+}
+
+// availableToolWire is the JSON-tagged wire shape used to serialize
+// canonical.ToolSpec values into the [Available tools] bracketed
+// section per Phase 6 D-16. Canonical tool types have no JSON tags
+// (Phase 2 D-11 invariant — adapter-side translation only); this
+// engine-internal wire struct supplies the lowercase
+// {"name","description","parameters"} keys that kiro-cli expects in
+// the JSON catalog, matching the Node reference shape.
+type availableToolWire struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	Parameters  map[string]any `json:"parameters,omitempty"`
 }

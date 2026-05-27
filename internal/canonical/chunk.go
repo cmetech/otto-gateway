@@ -46,6 +46,15 @@ type ThoughtChunk struct {
 
 // ToolCallChunk carries a tool invocation from kiro-cli.
 type ToolCallChunk struct {
+	// ID is the tool-call identifier. It is populated from `toolCallId`
+	// on the ACP wire when the source is kiro-native (the
+	// `internal/acp/translate.go` tool_call / tool_call_chunk branch
+	// per Phase 6 D-03), OR synthesized by `engine.CoerceToolCall` when
+	// the source is text-not-kiro (per Phase 6 D-08, the synthesized
+	// form is `call_<unix-nano>` matching the OpenAI convention).
+	// No JSON tag: the canonical package stays wire-format-agnostic
+	// per Phase 2 D-11.
+	ID string
 	// Name is the tool name.
 	Name string
 	// Args is the tool arguments as a map.
