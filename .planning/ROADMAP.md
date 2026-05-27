@@ -334,7 +334,24 @@ Plans:
   5. Templates + CSS + JS ship as compiled-in assets via `embed.FS` — `go build` from a fresh checkout produces one binary; no external file dependencies at runtime; cross-compile from macOS to `linux/amd64` and `windows/amd64` still succeeds with `CGO_ENABLED=0`.
   6. **Nice-to-have (deferrable):** live log tail at `/admin/logs` via SSE that streams new `/tmp/otto-gateway.log` lines as they appear. Must not hold an exclusive file handle, must tolerate log rotation (re-open on read error), and must be implementable without altering any existing log-writing path. If this can't be done cleanly inside the slice's budget, defer to a follow-up.
 
-**Plans:** TBD (run /gsd-plan-phase 6.1 to break down)
+**Plans:** 4 plans
+
+Plans:
+**Wave 1**
+
+- [ ] 06.1-01-PLAN.md — Slice A vertical: snapshot endpoint + minimal page shell — internal/admin package (admin.go, assets.go, snapshot.go), embed.FS templates/CSS/JS, summary-strip-only template + 30s polling JS, server.Config.AdminHandler mount, cmd/main.go wiring, .go-arch-lint.yml admin component, non-interference smoke (D-15/D-16)
+
+**Wave 2** *(blocked on Wave 1)*
+
+- [ ] 06.1-02-PLAN.md — Slice B additive UI: Pool Slots 3-col responsive grid + Active Sessions table (template + CSS + JS hydration; dead-slot 2px red border per CONTEXT specifics; relative-time formatter; empty-state swap)
+
+**Wave 3** *(blocked on Waves 1+2)*
+
+- [ ] 06.1-03-PLAN.md — Slice C vertical: log tail panel via SSE — tail.go (shared singleton Tailer + RingBuffer per D-09/D-10/D-11), sse.go (sseHandler mirroring anthropic SSE D-05 single-goroutine invariant), /admin/logs/stream wired, UI controls (level/grep/pause/resume/N-new badge) per UI-SPEC
+
+**Wave 4** *(blocked on Waves 1+2+3 — phase exit)*
+
+- [ ] 06.1-04-PLAN.md — Slice D verification: make cross green (CGO_ENABLED=0 linux/amd64 + windows/amd64.exe), binary-size delta ≤30KB, full manual UAT in browser (all 6 ROADMAP SC bars including dead-slot visual contract + log rotation), docs/operating.md Admin UI section
 
 ### Phase 8: Plugin Hook Chain
 
