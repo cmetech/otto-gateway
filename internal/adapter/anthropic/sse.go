@@ -333,7 +333,17 @@ func (e *sseEmitter) applyChunk(c canonical.Chunk) error {
 		if c.ToolCall == nil {
 			return nil
 		}
-		argsJSON, err := json.Marshal(c.ToolCall.Args)
+		// WR-02 (Phase 6 review): unify on the same nil-args discipline
+		// used by toolUseBlockHeader.Input (pointer-to-empty-map). Normalize
+		// a nil Args map to an empty map BEFORE Marshal so the wire never
+		// carries "null" inside partial_json — Anthropic's @anthropic-ai/sdk
+		// MessageStream parser rejects partial_json:"null". An empty
+		// non-nil map already marshals to "{}", so this is a no-op there.
+		args := c.ToolCall.Args
+		if args == nil {
+			args = map[string]any{}
+		}
+		argsJSON, err := json.Marshal(args)
 		if err != nil {
 			// Defensive: if Args contains a pathological value
 			// (chan, function), encoding/json will fail. Log + drop
@@ -341,14 +351,6 @@ func (e *sseEmitter) applyChunk(c canonical.Chunk) error {
 			e.logger.Debug("anthropic: sse tool_call args marshal failed; dropping delta",
 				"err", err, "name", c.ToolCall.Name)
 			return nil
-		}
-		// If Args was nil/empty, json.Marshal produces "null" — coerce
-		// to "{}" so the wire carries a valid empty object literal
-		// inside partial_json. (Defensive: kiro should not emit a
-		// nil Args alongside a tool_call, but the CR-01 contract
-		// downstream expects an object shape end-to-end.)
-		if string(argsJSON) == "null" {
-			argsJSON = []byte("{}")
 		}
 		if err := e.writeEvent("content_block_delta", contentBlockDelta{
 			Type:  "content_block_delta",
