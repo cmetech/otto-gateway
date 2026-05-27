@@ -3,6 +3,7 @@ package openai
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -35,9 +36,47 @@ type chatCompletionRequest struct {
 	Temperature          *float64        `json:"temperature,omitempty"`
 	TopP                 *float64        `json:"top_p,omitempty"`
 	Logprobs             json.RawMessage `json:"logprobs,omitempty"`
-	Tools                json.RawMessage `json:"tools,omitempty"`
+	// Tools is the OpenAI tool catalog (Phase 6 D-13 + iteration-3 MEDIUM #4).
+	// Decoded as []json.RawMessage so type-invalid sibling entries can be
+	// skipped per-entry without failing the whole request decode. Each entry
+	// is unmarshaled into openAIToolSpec independently in wireToChatRequest.
+	Tools                []json.RawMessage `json:"tools,omitempty"`
+	// ToolChoice is the polymorphic OpenAI tool_choice directive (Phase 6
+	// D-13). On the wire it can be a string ("auto" | "required" | "none")
+	// OR an object ({type:"function", function:{name:"..."}}). Decoded as
+	// json.RawMessage and split inside wireToChatRequest.
+	ToolChoice           json.RawMessage `json:"tool_choice,omitempty"`
 	FunctionCall         json.RawMessage `json:"function_call,omitempty"`
 	StopSequences        json.RawMessage `json:"stop,omitempty"`
+}
+
+// openAIToolSpec is one entry in the OpenAI tools[] field. Structurally
+// identical to internal/adapter/ollama/wire.go's ollamaToolSpec — OpenAI
+// and Ollama agreed on this wire shape years ago. The duplication is
+// intentional per Phase 4 D-08 (no-shared-driver between adapters); each
+// adapter owns its wire types.
+type openAIToolSpec struct {
+	Type     string                  `json:"type,omitempty"`
+	Function *openAIToolSpecFunction `json:"function,omitempty"`
+}
+
+// openAIToolSpecFunction holds the function declaration. Byte-identical
+// shape to ollamaToolSpecFunction (OpenAI/Ollama agreed years ago).
+type openAIToolSpecFunction struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	Parameters  map[string]any `json:"parameters,omitempty"`
+}
+
+// openAIToolChoiceObject is the object form of tool_choice. The string
+// forms ("auto" / "required" / "none") are decoded separately.
+type openAIToolChoiceObject struct {
+	Type     string                          `json:"type"`
+	Function *openAIToolChoiceObjectFunction `json:"function,omitempty"`
+}
+
+type openAIToolChoiceObjectFunction struct {
+	Name string `json:"name"`
 }
 
 // chatMessage is one entry of messages[]. Content is json.RawMessage
@@ -126,7 +165,81 @@ func wireToChatRequest(w *chatCompletionRequest, r *http.Request) *canonical.Cha
 		})
 	}
 
+	// Tools (Phase 6 D-13 + iteration-3 MEDIUM #4): unmarshal each
+	// entry independently. Type-invalid entries fail per-entry unmarshal
+	// and are skipped with a debug log; decoded-but-semantically-invalid
+	// entries (Function nil or Name empty) are skipped silently. Valid
+	// siblings are preserved in declaration order. This is the only way
+	// to tolerate type-invalid sibling entries without failing the whole
+	// request decode (iteration-2 regression).
+	for i, raw := range w.Tools {
+		var t openAIToolSpec
+		if err := json.Unmarshal(raw, &t); err != nil {
+			slog.Default().Debug("openai: tools entry decode failed; skipping",
+				"index", i,
+				"err", err.Error())
+			continue
+		}
+		if t.Function == nil || t.Function.Name == "" {
+			continue
+		}
+		req.Tools = append(req.Tools, canonical.ToolSpec{
+			Name:        t.Function.Name,
+			Description: t.Function.Description,
+			Parameters:  t.Function.Parameters,
+		})
+	}
+
+	// ToolChoice (Phase 6 D-13): polymorphic string-or-object decode.
+	// Attempt typed-object decode first (the richer shape); on failure
+	// attempt string decode. On second failure (e.g. numeric or unknown
+	// type), accept-and-ignore — leave ToolChoice nil. Mirrors the
+	// decodeMessageContent string-or-array discipline.
+	req.ToolChoice = decodeToolChoice(w.ToolChoice)
+
 	return req
+}
+
+// decodeToolChoice polymorphically decodes the OpenAI tool_choice wire
+// value (D-13). Returns nil for an absent or unknown-shape value
+// (accept-and-ignore per the Phase 3 decode.go:21-26 invariant).
+//
+// Recognized shapes:
+//   - JSON string "auto" → {Type:"auto"}
+//   - JSON string "required" → {Type:"required"} (OpenAI spec value;
+//     "any" is Anthropic-only and is NOT mapped here)
+//   - JSON string "none" → {Type:"none"}
+//   - JSON object {"type":"function","function":{"name":"..."}} →
+//     {Type:"function", Name:"..."}
+//   - Anything else → nil
+func decodeToolChoice(raw json.RawMessage) *canonical.ToolChoice {
+	if len(raw) == 0 {
+		return nil
+	}
+
+	// Try typed object first (the richer shape).
+	var obj openAIToolChoiceObject
+	if err := json.Unmarshal(raw, &obj); err == nil && obj.Type != "" {
+		choice := &canonical.ToolChoice{Type: obj.Type}
+		if obj.Function != nil {
+			choice.Name = obj.Function.Name
+		}
+		return choice
+	}
+
+	// Fall back to string form.
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		switch s {
+		case "auto", "required", "none":
+			return &canonical.ToolChoice{Type: s}
+		default:
+			return nil
+		}
+	}
+
+	// Unknown shape (numeric, array, etc.) — accept-and-ignore.
+	return nil
 }
 
 // decodeMessageContent decodes an OpenAI messages[].content field from its
