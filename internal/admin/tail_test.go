@@ -191,6 +191,10 @@ func TestAdmin_TailerLazyStartStop_MultipleSubscribers(t *testing.T) {
 	sub1 := tailer.Subscribe(t.Context())
 	sub2 := tailer.Subscribe(t.Context())
 
+	// Wait for the tailer goroutine to open the file and seek to EOF before
+	// appending, so the appended line is counted as new (not already scanned).
+	time.Sleep(400 * time.Millisecond)
+
 	// Append a line — both subscribers should receive it.
 	appendToFile(t, logPath, "hello")
 
@@ -388,16 +392,21 @@ func TestAdmin_TailerMissingFileGracefulRetry(t *testing.T) {
 		t.Errorf("expected empty snapshot for missing file, got %v", snap)
 	}
 
-	// Now create the file and append a line.
+	// Now create the file and wait for the tailer to open it at EOF.
 	f, err := os.Create(logPath)
 	if err != nil {
 		t.Fatalf("create log: %v", err)
 	}
 	f.Close()
+
+	// Allow at least 2 poll ticks for the tailer to detect the new file,
+	// open it, and position at EOF (lastSize=0).
+	time.Sleep(700 * time.Millisecond)
+
 	appendToFile(t, logPath, "late")
 
-	// Tailer should pick it up within 2s.
-	line := waitLine(sub.C, 2500*time.Millisecond)
+	// Tailer should pick it up within the next poll tick.
+	line := waitLine(sub.C, 2*time.Second)
 	if line != "late" {
 		t.Fatalf("expected 'late' after file creation, got %q", line)
 	}
