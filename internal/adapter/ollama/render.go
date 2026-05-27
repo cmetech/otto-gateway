@@ -160,17 +160,14 @@ func estimateTokens(text string) int {
 
 // joinTextContent concatenates the Text fields of every ContentPart
 // whose Kind == ContentKindText. Non-text parts are skipped.
+//
+// WR-05 (Phase 6 review): delegates to canonical.JoinTextParts to avoid
+// drift between the three identical implementations that previously
+// lived in adapter/{ollama,openai}/render.go and engine/build_acp.go.
+// The local function name is preserved for grep continuity with
+// existing call sites.
 func joinTextContent(parts []canonical.ContentPart) string {
-	if len(parts) == 0 {
-		return ""
-	}
-	out := ""
-	for _, p := range parts {
-		if p.Kind == canonical.ContentKindText {
-			out += p.Text
-		}
-	}
-	return out
+	return canonical.JoinTextParts(parts)
 }
 
 // joinThinkingContent concatenates the Text fields of any
@@ -187,15 +184,8 @@ func joinTextContent(parts []canonical.ContentPart) string {
 // existing `omitempty` JSON tag (no shape break) and Node parity is
 // preserved on the negative side (Node simply never emits the field;
 // we now do when there IS thinking content — strictly additive).
+//
+// WR-05: delegates to canonical.JoinThinkingParts.
 func joinThinkingContent(parts []canonical.ContentPart) string {
-	if len(parts) == 0 {
-		return ""
-	}
-	out := ""
-	for _, p := range parts {
-		if p.Kind == canonical.ContentKindThinking {
-			out += p.Text
-		}
-	}
-	return out
+	return canonical.JoinThinkingParts(parts)
 }

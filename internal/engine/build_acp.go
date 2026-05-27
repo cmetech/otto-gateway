@@ -180,17 +180,12 @@ func buildBlocks(req *canonical.ChatRequest) []canonical.Block {
 // joinTextParts concatenates the Text fields of every ContentPart whose
 // Kind == ContentKindText. Non-text parts (images, tool-use, etc.) are
 // skipped. Empty result when the message has no text parts.
+//
+// WR-05 (Phase 6 review): delegates to canonical.JoinTextParts to avoid
+// drift across the three previously-duplicate implementations
+// (engine + ollama + openai). Local name preserved for grep continuity.
 func joinTextParts(parts []canonical.ContentPart) string {
-	if len(parts) == 0 {
-		return ""
-	}
-	var b strings.Builder
-	for _, p := range parts {
-		if p.Kind == canonical.ContentKindText {
-			b.WriteString(p.Text)
-		}
-	}
-	return b.String()
+	return canonical.JoinTextParts(parts)
 }
 
 // joinThinkingParts concatenates the Text fields of every ContentPart
@@ -199,17 +194,10 @@ func joinTextParts(parts []canonical.ContentPart) string {
 // this helper to preserve inbound `thinking` content blocks from
 // Anthropic conversation history into the [Reasoning] bracketed
 // section emitted on the ACP wire.
+//
+// WR-05: delegates to canonical.JoinThinkingParts.
 func joinThinkingParts(parts []canonical.ContentPart) string {
-	if len(parts) == 0 {
-		return ""
-	}
-	var b strings.Builder
-	for _, p := range parts {
-		if p.Kind == canonical.ContentKindThinking {
-			b.WriteString(p.Text)
-		}
-	}
-	return b.String()
+	return canonical.JoinThinkingParts(parts)
 }
 
 // availableToolWire is the JSON-tagged wire shape used to serialize

@@ -333,16 +333,12 @@ func chatResponseToTextCompletion(resp *canonical.ChatResponse, requestedModel s
 
 // joinTextContent concatenates the Text fields of every ContentPart
 // whose Kind == ContentKindText. Non-text parts are skipped.
-// Copied verbatim from internal/adapter/ollama/render.go:135-146.
+//
+// WR-05 (Phase 6 review): delegates to canonical.JoinTextParts to avoid
+// drift between the three identical implementations that previously
+// lived in adapter/{ollama,openai}/render.go and engine/build_acp.go.
+// The local function name is preserved for grep continuity with
+// existing call sites.
 func joinTextContent(parts []canonical.ContentPart) string {
-	if len(parts) == 0 {
-		return ""
-	}
-	out := ""
-	for _, p := range parts {
-		if p.Kind == canonical.ContentKindText {
-			out += p.Text
-		}
-	}
-	return out
+	return canonical.JoinTextParts(parts)
 }
