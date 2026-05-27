@@ -203,6 +203,14 @@ func TestHandleChat_EngineError_500(t *testing.T) {
 	if strings.Contains(w.Body.String(), "hi") {
 		t.Errorf("error body leaks request content: %q", w.Body.String())
 	}
+	// CR-01 (Phase 6 review): the wire-visible body must be the
+	// neutral generic message — never echo the raw engine error.
+	if !strings.Contains(w.Body.String(), "internal error") {
+		t.Errorf("error body missing generic message: %q", w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "kiro exploded") {
+		t.Errorf("error body leaks raw engine error string: %q", w.Body.String())
+	}
 }
 
 // TestHandleChat_RunError_500: streaming path (default absent stream) +

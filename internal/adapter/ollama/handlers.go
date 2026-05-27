@@ -76,7 +76,12 @@ func (a *Adapter) handleChat(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		resp, err := eng.Collect(r.Context(), req)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			// T-02-33: log the raw error structurally; respond with a
+			// neutral generic message that cannot echo request content.
+			// Mirrors the discipline used by the Anthropic and OpenAI
+			// surfaces (handlers.go:165-167 / handlers.go:107-110).
+			a.cfg.Logger.Error("ollama: engine.Collect error", "err", err)
+			writeError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
 		// Phase 6 D-01: invoke CoerceToolCall on the non-streaming path
@@ -205,7 +210,12 @@ func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		resp, err := eng.Collect(r.Context(), req)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			// T-02-33: log the raw error structurally; respond with a
+			// neutral generic message that cannot echo request content.
+			// Mirrors the discipline used by the Anthropic and OpenAI
+			// surfaces (handlers.go:165-167 / handlers.go:107-110).
+			a.cfg.Logger.Error("ollama: engine.Collect error", "err", err)
+			writeError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
 		writeJSON(w, generateResponseToWire(resp, start, wire.Model))
