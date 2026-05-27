@@ -54,6 +54,14 @@ const moduleRoot = "../.."
 // but ONLY when OTTO_E2E=1. With the gate off it runs m.Run() immediately
 // (every test self-skips via gateOrSkip) so the gate-skip path is cheap and
 // never invokes the Go build toolchain.
+//
+// Phase 6 Plan 06-05 (iteration-3 fix to MEDIUM #6): TestMain ALSO compiles
+// the controllable fake-kiro-cli used by tests/e2e/tools_*_test.go into
+// os.TempDir()/fake-kiro-cli-<pid>. The package-level fakeKiroBinaryPath var
+// (declared in tools_fixtures.go) is set BEFORE m.Run so every subtest sees
+// a valid path. defer-delete on m.Run() exit. This avoids the iteration-2
+// bug where sync.Once + t.TempDir() left a cached path to a deleted binary
+// after the first subtest cleaned up its temp dir.
 func TestMain(m *testing.M) {
 	if os.Getenv("OTTO_E2E") != "1" {
 		os.Exit(m.Run())
@@ -89,7 +97,31 @@ func TestMain(m *testing.M) {
 	}
 	builtBinary = abs
 
-	os.Exit(m.Run())
+	// Compile fake-kiro-cli into os.TempDir() with a per-pid suffix so the
+	// path survives all subtests (iteration-3 fix to MEDIUM #6 — package-level
+	// lifetime, not per-test temp dir). See tools_testmain_test.go for the
+	// lifetime contract documentation.
+	fakeKiroOut := filepath.Join(os.TempDir(), fmt.Sprintf("fake-kiro-cli-%d", os.Getpid()))
+	fakeBuild := exec.CommandContext(ctx, "go", "build", "-o", fakeKiroOut, "./tests/e2e/cmd/fake-kiro-cli") //nolint:gosec // G204: fixed package literal
+	fakeBuild.Dir = moduleRoot
+	var fakeBuildErr bytes.Buffer
+	fakeBuild.Stderr = &fakeBuildErr
+	if err := fakeBuild.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "e2e: build fake-kiro-cli failed: %v\n%s\n", err, fakeBuildErr.String())
+		os.Exit(2)
+	}
+	fakeKiroAbs, err := filepath.Abs(fakeKiroOut)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "e2e: resolve fake-kiro-cli path: %v\n", err)
+		os.Exit(2)
+	}
+	fakeKiroBinaryPath = fakeKiroAbs
+
+	code := m.Run()
+	// Delete the fake-kiro binary BEFORE os.Exit so the cleanup actually runs
+	// (os.Exit bypasses deferred functions).
+	_ = os.Remove(fakeKiroAbs)
+	os.Exit(code)
 }
 
 // gateOrSkip is the top gate every test func calls first. With OTTO_E2E
