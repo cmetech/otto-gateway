@@ -129,15 +129,22 @@ type anthropicSystemBlock struct {
 	Text string `json:"text"`
 }
 
-// anthropicToolSpec is one entry of tools[]. Phase 3.1 decodes the
-// shape so the request decode does not 400 when tools are present, but
-// does NOT translate to canonical.ToolSpec — Phase 6 owns tool
-// dispatch (CONTEXT.md <deferred>). Loop24-client invocations Phase 3.1
-// lands rarely carry tools.
+// anthropicToolSpec is one entry of tools[]. Phase 3.1 declared the
+// shape; Phase 6 Plan 04 Task 1 closes the canonical translation in
+// wireToChatRequest. Anthropic's `input_schema` maps DIRECTLY to
+// canonical.ToolSpec.Parameters (both are JSON-schema-shaped object maps).
 type anthropicToolSpec struct {
 	Name        string         `json:"name"`
 	Description string         `json:"description,omitempty"`
 	InputSchema map[string]any `json:"input_schema"`
+}
+
+// anthropicToolChoiceObject is the object form of Anthropic's
+// tool_choice wire value. Anthropic's spec accepts {type:"auto"|"any"|"tool", name?}.
+// The Name field is only populated when Type == "tool".
+type anthropicToolChoiceObject struct {
+	Type string `json:"type"`
+	Name string `json:"name,omitempty"`
 }
 
 // ----------------------------------------------------------------------------
@@ -236,12 +243,60 @@ func wireToChatRequest(w *anthropicMessagesRequest, r *http.Request, logger *slo
 		})
 	}
 
-	// Phase 3.1 does NOT translate tools to canonical.ToolSpec — tool
-	// dispatch is Phase 6. Decoder accepts the shape so requests with
-	// tools[] do not 400.
-	// TODO(Phase 6): translate anthropicToolSpec → canonical.ToolSpec.
+	// Phase 6 Plan 04 Task 1 (D-14): translate anthropicToolSpec ->
+	// canonical.ToolSpec and tool_choice -> canonical.ToolChoice.
+	// Anthropic's `input_schema` maps DIRECTLY to canonical Parameters
+	// (both are JSON-schema-shaped object maps). Per-tool defensive
+	// skip on empty Name (Anthropic spec requires `name`).
+	for _, t := range w.Tools {
+		if t.Name == "" {
+			continue
+		}
+		req.Tools = append(req.Tools, canonical.ToolSpec{
+			Name:        t.Name,
+			Description: t.Description,
+			Parameters:  t.InputSchema,
+		})
+	}
+
+	// tool_choice polymorphic decode. Recognized shapes per Anthropic spec:
+	//   - {type:"auto"}            -> {Type:"auto"}
+	//   - {type:"any"}             -> {Type:"any"}   (REVIEW MEDIUM:
+	//     preserved verbatim; NOT normalized to "required". Anthropic uses
+	//     "any" where OpenAI uses "required"; this gateway preserves both
+	//     losslessly at the boundary. Cross-surface semantic mapping (any
+	//     vs required) is engine/hook concern, not adapter. See
+	//     TestWireToChatRequest_ToolChoice_Any_PreservedVerbatim.)
+	//   - {type:"tool",name:"X"}   -> {Type:"tool",Name:"X"}
+	//   - empty / absent / unknown shape (numeric, etc.) -> nil
+	//     (accept-and-ignore per D-10 permissive decode).
+	req.ToolChoice = decodeAnthropicToolChoice(w.ToolChoice)
 
 	return req
+}
+
+// decodeAnthropicToolChoice polymorphically decodes Anthropic's
+// tool_choice wire value (D-14). Returns nil for absent or unknown-shape
+// values (accept-and-ignore). Recognized object shapes:
+//   - {"type":"auto"}            -> &{Type:"auto"}
+//   - {"type":"any"}             -> &{Type:"any"}   (NOT mapped to "required")
+//   - {"type":"tool","name":"X"} -> &{Type:"tool", Name:"X"}
+func decodeAnthropicToolChoice(raw json.RawMessage) *canonical.ToolChoice {
+	if len(raw) == 0 {
+		return nil
+	}
+	var obj anthropicToolChoiceObject
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return nil
+	}
+	switch obj.Type {
+	case "auto", "any":
+		return &canonical.ToolChoice{Type: obj.Type}
+	case "tool":
+		return &canonical.ToolChoice{Type: "tool", Name: obj.Name}
+	default:
+		return nil
+	}
 }
 
 // decodeContentBlocks walks one message's content-block array and
