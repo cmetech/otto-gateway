@@ -64,8 +64,37 @@ func (e *Engine) Collect(ctx context.Context, req *canonical.ChatRequest) (*cano
 				if chunk.Thought != nil {
 					thoughtSB.WriteString(chunk.Thought.Content)
 				}
-				// ChunkKindToolCall / ChunkKindPlan still intentionally
-				// dropped in Phase 3.1; Phase 6 wires them.
+			case canonical.ChunkKindToolCall:
+				// ChunkKindToolCall is aggregated into Message.Content as
+				// `[tool: <name>]\n` narration text per Phase 6 D-03. This
+				// is what non-streaming Ollama/OpenAI render — they receive
+				// only *canonical.ChatResponse from this function and need
+				// the kiro-native tool-call information to survive into the
+				// final body.
+				//
+				// Message.ToolCalls population contract (per Phase 6 D-03/
+				// D-05/D-07):
+				//   - Generic engine.Collect (this function) does NOT
+				//     populate Message.ToolCalls from any chunk source.
+				//   - Ollama and OpenAI surfaces populate Message.ToolCalls
+				//     ONLY via engine.CoerceToolCall (the coerce-from-text
+				//     path — D-05), invoked by the adapter handlers AFTER
+				//     this function returns.
+				//   - Anthropic surface (D-07 exception) populates
+				//     Message.ToolCalls via its adapter-local Collect
+				//     (internal/adapter/anthropic/collect.go, 06-04 Option
+				//     A1) from kiro-native ChunkKindToolCall chunks. That
+				//     adapter uses engine.Run + its own aggregator and
+				//     bypasses this function.
+				//
+				// ChunkKindPlan still drops (no Phase 6 work).
+				name := "unknown"
+				if chunk.ToolCall != nil && chunk.ToolCall.Name != "" {
+					name = chunk.ToolCall.Name
+				}
+				sb.WriteString("[tool: ")
+				sb.WriteString(name)
+				sb.WriteString("]\n")
 			}
 		}
 		final, rerr := run.stream.Result()
