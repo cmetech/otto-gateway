@@ -178,6 +178,103 @@ func TestSSESequenceGolden_MessageStartFrame(t *testing.T) {
 	compareGolden(t, "sse_message_start.golden", firstFrame)
 }
 
+// TestSSE_Golden_ToolUse pins the byte-level Anthropic SSE sequence
+// for kiro-native tool_call chunks per Phase 6 Plan 04 D-07. Drives a
+// fake stream `[text-chunk("I'll check weather. "), tool_call-chunk(
+// id=toolu_01, name=get_weather, args={location:"NYC"})]` and asserts:
+//   - content_block_start for the tool_use block with `"input":{}`
+//     LITERAL on the wire (CR-01 pointer-to-empty-map; Pitfall 1
+//     guards against `"input":null`).
+//   - content_block_delta with input_json_delta carrying the full
+//     args JSON in partial_json.
+//   - content_block_stop, then message_delta with stop_reason set to
+//     `"tool_use"` (NOT `"end_turn"` — the toolUseEmitted finalizer
+//     override per Task 2 behavior).
+//   - Block-index sequence 0,0,0,0,1,1,1 (Pitfall 7 — exactly one
+//     bump on the text->tool_use kind transition).
+func TestSSE_Golden_ToolUse(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	chunks := []canonical.Chunk{
+		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "I'll check weather. "}},
+		{Kind: canonical.ChunkKindToolCall, ToolCall: &canonical.ToolCallChunk{
+			ID:   "toolu_01",
+			Name: "get_weather",
+			Args: map[string]any{"location": "NYC"},
+		}},
+	}
+	final := &canonical.FinalResult{StopReason: canonical.StopEndTurn}
+	body := driveGolden(t, chunks, final)
+
+	// Byte-level CR-01 assertions: must carry `"input":{}` literal AND
+	// must NOT carry `"input":null` anywhere.
+	if !bytes.Contains(body, []byte(`"input":{}`)) {
+		t.Errorf("wire missing required `\"input\":{}` literal for tool_use content_block_start (CR-01 pointer-to-empty-map); body:\n%s", body)
+	}
+	if bytes.Contains(body, []byte(`"input":null`)) {
+		t.Errorf("wire carries forbidden `\"input\":null` (Pitfall 1 — Anthropic SDK rejects null input); body:\n%s", body)
+	}
+
+	// stop_reason override (Task 2 toolUseEmitted finalizer): the
+	// streaming finalizer MUST emit `"stop_reason":"tool_use"` even
+	// when the engine's FinalResult.StopReason is StopEndTurn — the
+	// presence of a tool_use block overrides the mapping.
+	if !bytes.Contains(body, []byte(`"stop_reason":"tool_use"`)) {
+		t.Errorf("wire missing required `\"stop_reason\":\"tool_use\"` on message_delta (finalizer override); body:\n%s", body)
+	}
+	if bytes.Contains(body, []byte(`"stop_reason":"end_turn"`)) {
+		t.Errorf("wire carries forbidden `\"stop_reason\":\"end_turn\"` on message_delta — tool_use override missing; body:\n%s", body)
+	}
+
+	// Event sequence: message_start, content_block_start(text),
+	// content_block_delta(text), content_block_stop, content_block_start(tool_use),
+	// content_block_delta(input_json_delta), content_block_stop, message_delta, message_stop.
+	events := sseEventLines(string(body))
+	want := []string{
+		"message_start",
+		"content_block_start",
+		"content_block_delta",
+		"content_block_stop",
+		"content_block_start",
+		"content_block_delta",
+		"content_block_stop",
+		"message_delta",
+		"message_stop",
+	}
+	if !equalSlice(events, want) {
+		t.Errorf("event sequence: got %v, want %v", events, want)
+	}
+
+	// input_json_delta is the discriminator on the tool_use delta.
+	if !bytes.Contains(body, []byte(`"input_json_delta"`)) {
+		t.Errorf("wire missing input_json_delta discriminator on tool_use content_block_delta; body:\n%s", body)
+	}
+	// The args JSON should be present in partial_json. encoding/json
+	// produces deterministic key order for map[string]any (sorted), so
+	// {"location":"NYC"} renders as `{\"location\":\"NYC\"}` inside
+	// partial_json (which itself is a JSON string).
+	if !bytes.Contains(body, []byte(`"partial_json":"{\"location\":\"NYC\"}"`)) {
+		t.Errorf("wire missing expected partial_json carrying tool args; body:\n%s", body)
+	}
+
+	// Block-index discipline (Pitfall 7): exactly one bump on the
+	// text -> tool_use kind transition. Scan data lines for the
+	// `"index":N` field on each frame and assert the sequence is
+	// 0,0,0,0,1,1,1 (content_block_start, content_block_delta,
+	// content_block_stop for block 0; then content_block_start,
+	// content_block_delta, content_block_stop for block 1; the
+	// message_delta/message_stop frames have no index field).
+	idxRe := regexp.MustCompile(`"index":(\d+)`)
+	matches := idxRe.FindAllSubmatch(body, -1)
+	gotIdx := make([]string, 0, len(matches))
+	for _, m := range matches {
+		gotIdx = append(gotIdx, string(m[1]))
+	}
+	wantIdx := []string{"0", "0", "0", "0", "1", "1", "1"}
+	if !equalSlice(gotIdx, wantIdx) {
+		t.Errorf("block-index sequence: got %v, want %v (Pitfall 7: exactly one bump per kind transition)", gotIdx, wantIdx)
+	}
+}
+
 // TestNormalizeMessageID_RegressionPin verifies the regex+substitute
 // path actually rewrites a realistic genMessageID output. Defensive
 // pin so the goldens don't quietly regress if genMessageID changes
