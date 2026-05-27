@@ -39,20 +39,17 @@ func chatResponseToWire(resp *canonical.ChatResponse, start time.Time, requested
 		model = resp.Model
 	}
 
-	promptTokens := 0
-	if resp != nil {
-		// Best-effort prompt token estimate from the system + any user
-		// turns we can see. Phase 2 does not retain the prompt at
-		// render time, so this is approximate — Node uses the same
-		// estimator and accepts the approximation.
-		promptTokens = estimateTokens("")
-	}
-
 	stop := canonical.StopUnknown
 	if resp != nil {
 		stop = resp.StopReason
 	}
 
+	// WR-06 (Phase 6 review): PromptEvalCount is hardwired to 0 because
+	// Phase 2 does not retain the prompt at render time — estimateTokens("")
+	// always returned 0 and the conditional was dead code. A real
+	// prompt-token estimate needs the canonical.ChatRequest threaded
+	// through to the render layer; tracked as a Phase 8 task. Node parity
+	// is preserved because Node uses the same approximation.
 	out := &ollamaChatResponse{
 		Model:     model,
 		CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
@@ -65,7 +62,7 @@ func chatResponseToWire(resp *canonical.ChatResponse, start time.Time, requested
 		DoneReason:         mapStopReason(stop),
 		TotalDuration:      totalNs,
 		LoadDuration:       0,
-		PromptEvalCount:    promptTokens,
+		PromptEvalCount:    0,
 		PromptEvalDuration: int64(math.Floor(float64(totalNs) * 0.15)),
 		EvalCount:          estimateTokens(text),
 		EvalDuration:       int64(math.Floor(float64(totalNs) * 0.85)),
