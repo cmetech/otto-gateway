@@ -4,6 +4,13 @@ package ollama
 // runNDJSONEmitter. No mutex needed — single-goroutine invariant is enforced
 // by construction. The watchdog goroutine (context.AfterFunc) MUST NOT touch
 // w or flusher (Pitfall 8 in RESEARCH.md).
+//
+// Phase 6 (REVIEW HIGH #1 + iteration-3 sawKiroNativeToolCall): the
+// emitter state — `textBuffer`, `buffering`, `deferredTextLines`,
+// `sawKiroNativeToolCall` — is likewise touched ONLY inside the select-loop
+// goroutine in runNDJSONEmitter. Threading req through to the emitter
+// signature lets the end-of-stream coerce decision read req.Tools without
+// extra goroutines.
 
 import (
 	"context"
@@ -12,9 +19,11 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"otto-gateway/internal/canonical"
+	"otto-gateway/internal/engine"
 )
 
 // ----------------------------------------------------------------------------
@@ -45,6 +54,36 @@ type ndjsonGenerateLine struct {
 }
 
 // ----------------------------------------------------------------------------
+// emitterState — Phase 6 streaming coerce + kiro-native narration state
+// ----------------------------------------------------------------------------
+
+// emitterState carries the per-stream accumulators introduced in Phase 6
+// Slice 2. Lives on the select-loop goroutine stack — no mutex (D-05
+// single-goroutine invariant).
+type emitterState struct {
+	textBuffer            strings.Builder
+	buffering             bool
+	deferredTextLines     [][]byte
+	sawKiroNativeToolCall bool
+}
+
+// shouldBuffer decides whether to start buffering. Returns true when:
+//   - req.Tools is non-empty (no tools means no coerce target — never buffer)
+//   - the accumulated text (existing buffer plus the new chunk) begins with
+//     `{` or a triple-backtick fence (the heuristic CoerceToolCall's
+//     stripFences will recognize).
+func (s *emitterState) shouldBuffer(req *canonical.ChatRequest, newText string) bool {
+	if req == nil || len(req.Tools) == 0 {
+		return false
+	}
+	combined := strings.TrimSpace(s.textBuffer.String() + newText)
+	if combined == "" {
+		return false
+	}
+	return strings.HasPrefix(combined, "{") || strings.HasPrefix(combined, "```")
+}
+
+// ----------------------------------------------------------------------------
 // emitNDJSONChunk — write one done:false NDJSON line for a canonical.Chunk
 // ----------------------------------------------------------------------------
 
@@ -52,39 +91,32 @@ type ndjsonGenerateLine struct {
 //   - ChunkKindText → done:false line with content (chat) or response (generate)
 //   - ChunkKindThought + isChat=true → done:false line with thinking field (D-04)
 //   - ChunkKindThought + isChat=false → drop silently (/api/generate has no thinking — D-04)
+//   - ChunkKindToolCall + isChat=true → emit `[tool: <name>]\n` narration line
+//     per Phase 6 REVIEW HIGH #2 two-path rule. The done:true final line is the
+//     SOLE source of Message.ToolCalls (from coerce only) per D-03/D-05.
+//   - ChunkKindToolCall + isChat=false → drop silently (/api/generate has no
+//     content-block semantics — kiro-native tool_calls cannot meaningfully
+//     surface there).
 //   - Other chunk kinds → drop silently
 //
 // On json.Marshal error or write error: calls cancelFn() (D-07 — adapter
 // signals write failure to the engine watchdog via derived ctx cancel), then
 // returns a wrapped error.
-func emitNDJSONChunk(w http.ResponseWriter, flusher http.Flusher, c canonical.Chunk, model string, isChat bool, cancelFn context.CancelFunc) error {
+//
+// Phase 6 Slice 2 (REVIEW HIGH #1 + iteration-3): when state != nil, this
+// function does NOT write text chunks to the wire while state.buffering is
+// active or being entered. Instead it appends to state.textBuffer and to
+// state.deferredTextLines. The flush happens in finalizeStreamingCoerce.
+// state.sawKiroNativeToolCall flips to true on the first ChunkKindToolCall.
+func emitNDJSONChunk(w http.ResponseWriter, flusher http.Flusher, c canonical.Chunk, model string, isChat bool, cancelFn context.CancelFunc, state *emitterState, req *canonical.ChatRequest) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-
-	var payload any
 
 	switch c.Kind {
 	case canonical.ChunkKindText:
 		if c.Text == nil {
 			return nil // defensive nil-guard; skip silently
 		}
-		if isChat {
-			payload = ndjsonChatLine{
-				Model:     model,
-				CreatedAt: now,
-				Message: ollamaChatResponseMessage{
-					Role:    "assistant",
-					Content: c.Text.Content,
-				},
-				Done: false,
-			}
-		} else {
-			payload = ndjsonGenerateLine{
-				Model:     model,
-				CreatedAt: now,
-				Response:  c.Text.Content,
-				Done:      false,
-			}
-		}
+		return emitTextChunk(w, flusher, c.Text.Content, model, isChat, now, cancelFn, state, req)
 
 	case canonical.ChunkKindThought:
 		if !isChat {
@@ -94,7 +126,7 @@ func emitNDJSONChunk(w http.ResponseWriter, flusher http.Flusher, c canonical.Ch
 		if c.Thought == nil {
 			return nil // defensive nil-guard
 		}
-		payload = ndjsonChatLine{
+		payload := ndjsonChatLine{
 			Model:     model,
 			CreatedAt: now,
 			Message: ollamaChatResponseMessage{
@@ -103,12 +135,126 @@ func emitNDJSONChunk(w http.ResponseWriter, flusher http.Flusher, c canonical.Ch
 			},
 			Done: false,
 		}
+		return marshalAndWrite(w, flusher, payload, cancelFn)
+
+	case canonical.ChunkKindToolCall:
+		// REVIEW HIGH #2 + iteration-3 fix to HIGH #2: kiro-native tool_call
+		// emits a `[tool: <name>]\n` thought-text narration line and sets
+		// sawKiroNativeToolCall=true on the emitter state (suppresses the
+		// end-of-stream coerce). Does NOT accumulate into any tool_calls
+		// slice — the two-path rule isolates kiro-native (narration only)
+		// from coerce-synthesized (done line only).
+		if !isChat {
+			return nil // /api/generate has no content-block semantics.
+		}
+		name := "unknown"
+		if c.ToolCall != nil && c.ToolCall.Name != "" {
+			name = c.ToolCall.Name
+		}
+		if state != nil {
+			state.sawKiroNativeToolCall = true
+		}
+		narration := fmt.Sprintf("[tool: %s]\n", name)
+		payload := ndjsonChatLine{
+			Model:     model,
+			CreatedAt: now,
+			Message: ollamaChatResponseMessage{
+				Role:    "assistant",
+				Content: narration,
+			},
+			Done: false,
+		}
+		return marshalAndWrite(w, flusher, payload, cancelFn)
 
 	default:
 		// Unknown chunk kind — drop silently.
 		return nil
 	}
+}
 
+// emitTextChunk handles the text-chunk emission with the streaming-coerce
+// buffering branch (REVIEW HIGH #1). When buffering kicks in, the line is
+// built but stashed in state.deferredTextLines rather than flushed to the
+// wire. The buffer is released or discarded at stream close depending on
+// the sawKiroNativeToolCall / coerce-hit decision.
+func emitTextChunk(w http.ResponseWriter, flusher http.Flusher, text, model string, isChat bool, now string, cancelFn context.CancelFunc, state *emitterState, req *canonical.ChatRequest) error {
+	// /api/generate cannot meaningfully coerce — its response shape has no
+	// content-block / tool_calls envelope. Stream through unchanged.
+	if !isChat || state == nil {
+		var payload any
+		if isChat {
+			payload = ndjsonChatLine{
+				Model:     model,
+				CreatedAt: now,
+				Message: ollamaChatResponseMessage{
+					Role:    "assistant",
+					Content: text,
+				},
+				Done: false,
+			}
+		} else {
+			payload = ndjsonGenerateLine{
+				Model:     model,
+				CreatedAt: now,
+				Response:  text,
+				Done:      false,
+			}
+		}
+		return marshalAndWrite(w, flusher, payload, cancelFn)
+	}
+
+	// Streaming-coerce buffering decision (REVIEW HIGH #1):
+	//   - If we're already buffering, keep buffering (the entire run is
+	//     consistent: once we suspect JSON, never half-flush half-buffer).
+	//   - Otherwise, decide based on the accumulated trimmed text shape.
+	if !state.buffering {
+		if !state.shouldBuffer(req, text) {
+			// Non-JSON-shaped text — stream directly (Phase 4 behavior).
+			payload := ndjsonChatLine{
+				Model:     model,
+				CreatedAt: now,
+				Message: ollamaChatResponseMessage{
+					Role:    "assistant",
+					Content: text,
+				},
+				Done: false,
+			}
+			return marshalAndWrite(w, flusher, payload, cancelFn)
+		}
+		// First time we see JSON-shape — enter buffering.
+		state.buffering = true
+	}
+
+	// Buffering branch: accumulate into the text buffer AND build the
+	// would-be NDJSON line for later flush. Do NOT write or flush yet.
+	state.textBuffer.WriteString(text)
+	payload := ndjsonChatLine{
+		Model:     model,
+		CreatedAt: now,
+		Message: ollamaChatResponseMessage{
+			Role:    "assistant",
+			Content: text,
+		},
+		Done: false,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		cancelFn() // D-07: signal write failure via derived ctx
+		return fmt.Errorf("ollama: ndjson marshal buffered chunk: %w", err)
+	}
+	// Append newline to preserve the NDJSON line discipline when the buffer
+	// is released as-is later.
+	line := make([]byte, 0, len(body)+1)
+	line = append(line, body...)
+	line = append(line, '\n')
+	state.deferredTextLines = append(state.deferredTextLines, line)
+	return nil
+}
+
+// marshalAndWrite is the per-chunk wire-write helper. Centralizes the
+// json.Marshal + fmt.Fprintf + flusher.Flush sequence and the D-07
+// cancelFn signaling on error.
+func marshalAndWrite(w http.ResponseWriter, flusher http.Flusher, payload any, cancelFn context.CancelFunc) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		cancelFn() // D-07: signal write failure via derived ctx
@@ -133,24 +279,18 @@ func emitNDJSONChunk(w http.ResponseWriter, flusher http.Flusher, c canonical.Ch
 //  2. Sets Content-Type: application/x-ndjson and Cache-Control: no-cache
 //     BEFORE WriteHeader(200) (Pitfall 2 order).
 //  3. Runs the core select-loop: ctx.Done | chunk channel.
-//  4. On chunk channel close: delegates to finalizeNDJSON.
+//  4. On chunk channel close: delegates to finalizeNDJSON with the emitter
+//     state — which decides skip-or-coerce-or-flush per iteration-3 logic.
 //  5. On write error from emitNDJSONChunk: cancelFn is already called inside
 //     emitNDJSONChunk; returns the error to the caller for debug-logging.
 //
-// runNDJSONEmitter is the SOLE goroutine touching w and flusher (D-05
-// single-goroutine invariant). The watchdog goroutine (context.AfterFunc in
-// engine.go) MUST NOT touch these (Pitfall 8).
+// runNDJSONEmitter is the SOLE goroutine touching w and flusher AND the
+// emitter state (D-05 single-goroutine invariant). The watchdog goroutine
+// (context.AfterFunc in engine.go) MUST NOT touch these (Pitfall 8).
 //
 // Returns nil on clean stream completion (done:true emitted), ctx.Err() on
 // client disconnect, or a wrapped write/marshal error.
 func runNDJSONEmitter(ctx context.Context, cancelFn context.CancelFunc, w http.ResponseWriter, run RunHandle, model string, isChat bool, start time.Time, logger *slog.Logger, req *canonical.ChatRequest) error {
-	// req is threaded through so the streaming-coerce path (REVIEW HIGH #1 +
-	// iteration-3 sawKiroNativeToolCall) can read req.Tools for the
-	// end-of-stream CoerceToolCall invocation. Task 3 wires the buffering
-	// + skip-or-coerce-or-flush logic; for now req is plumbed but only used
-	// by the Task 3 changes.
-	_ = req
-
 	// Assert Flusher BEFORE any write so the caller can fall back to JSON 500
 	// when the ResponseWriter does not support streaming (Pitfall 2).
 	flusher, ok := w.(http.Flusher)
@@ -162,6 +302,10 @@ func runNDJSONEmitter(ctx context.Context, cancelFn context.CancelFunc, w http.R
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.WriteHeader(http.StatusOK)
+
+	// Phase 6 Slice 2 emitter state (REVIEW HIGH #1 + iteration-3 HIGH #2).
+	// Lives on the goroutine stack — no mutex needed (D-05).
+	state := &emitterState{}
 
 	chunks := run.Stream().Chunks()
 	for {
@@ -176,9 +320,9 @@ func runNDJSONEmitter(ctx context.Context, cancelFn context.CancelFunc, w http.R
 		case c, ok := <-chunks:
 			if !ok {
 				// Channel closed — stream ended naturally; emit final done:true line.
-				return finalizeNDJSON(w, flusher, run, model, isChat, start, logger)
+				return finalizeNDJSON(w, flusher, run, model, isChat, start, logger, state, req)
 			}
-			if err := emitNDJSONChunk(w, flusher, c, model, isChat, cancelFn); err != nil {
+			if err := emitNDJSONChunk(w, flusher, c, model, isChat, cancelFn, state, req); err != nil {
 				// cancelFn was already called inside emitNDJSONChunk on write error.
 				return err
 			}
@@ -197,11 +341,22 @@ func runNDJSONEmitter(ctx context.Context, cancelFn context.CancelFunc, w http.R
 //  2. Calls run.StopWatchdog() and invokes the stop func to prevent the D-06
 //     watchdog goroutine from firing a spurious ACP.Cancel after natural
 //     stream completion (Pitfall 3 / RESEARCH.md Pattern 2 Option A).
-//  3. Calls chatResponseToWire or generateResponseToWire with nil resp
-//     (nil-safe confirmed in render.go: both helpers guard `if resp != nil`),
-//     sets Done=true and DoneReason from final.StopReason, marshals and writes
-//     the final NDJSON line.
-func finalizeNDJSON(w http.ResponseWriter, flusher http.Flusher, run RunHandle, model string, isChat bool, start time.Time, logger *slog.Logger) error {
+//  3. Phase 6 Slice 2 iteration-3 skip-or-coerce-or-flush logic on the
+//     emitter state:
+//       a. If state.sawKiroNativeToolCall == true: SKIP coerce. Release any
+//          buffered text as plain NDJSON lines. Done:true line carries NO
+//          tool_calls.
+//       b. Else if !state.buffering: emit done:true normally (Phase 4
+//          behavior, unchanged).
+//       c. Else: build synthetic resp from textBuffer + call
+//          engine.CoerceToolCall(req, syntheticResp). On hit: DISCARD
+//          deferredTextLines, compose done:true via chatResponseToWire which
+//          renders Message.ToolCalls. On miss: RELEASE deferredTextLines in
+//          order, emit done:true normally.
+//  4. Calls chatResponseToWire or generateResponseToWire to build the final
+//     line, sets Done=true and DoneReason from final.StopReason, marshals
+//     and writes.
+func finalizeNDJSON(w http.ResponseWriter, flusher http.Flusher, run RunHandle, model string, isChat bool, start time.Time, logger *slog.Logger, state *emitterState, req *canonical.ChatRequest) error {
 	final, rerr := run.Stream().Result()
 	if rerr != nil {
 		// Mid-stream / terminal engine error after headers: cannot send JSON 500.
@@ -217,17 +372,70 @@ func finalizeNDJSON(w http.ResponseWriter, flusher http.Flusher, run RunHandle, 
 		stop()
 	}
 
-	// Build done:true final line. chatResponseToWire / generateResponseToWire
-	// both nil-guard their *canonical.ChatResponse parameter (render.go lines
-	// 32-35 and 82-84), so passing nil is safe.
 	stopReason := canonical.StopUnknown
 	if final != nil {
 		stopReason = final.StopReason
 	}
 
+	// Phase 6 Slice 2 streaming-coerce decision (REVIEW HIGH #1 + iteration-3 HIGH #2).
+	// Only runs on chat path (state is nil and unused for /api/generate paths
+	// that pass empty req.Tools; the buffering would never have engaged anyway).
+	var syntheticResp *canonical.ChatResponse
+	coerceFired := false
+	if isChat && state != nil {
+		if state.sawKiroNativeToolCall {
+			// Iteration-3 fix to HIGH #2: kiro-native fired during the
+			// stream, so we SKIP coerce entirely and FLUSH any buffered text
+			// as plain text lines. The user-visible behavior is "kiro-native
+			// ran (narration already emitted), plus any incidental
+			// JSON-shaped text that wasn't a coerce target".
+			if err := releaseBufferedLines(w, flusher, state.deferredTextLines); err != nil {
+				return err
+			}
+		} else if state.buffering {
+			// Coerce path: build a synthetic resp from the accumulated text
+			// and run engine.CoerceToolCall. Pointer-direct per Pitfall 6.
+			syntheticResp = &canonical.ChatResponse{
+				Message: canonical.Message{
+					Role: canonical.RoleAssistant,
+					Content: []canonical.ContentPart{
+						{Kind: canonical.ContentKindText, Text: state.textBuffer.String()},
+					},
+				},
+				StopReason: stopReason,
+			}
+			if engine.CoerceToolCall(req, syntheticResp) {
+				coerceFired = true
+				// Defensive length-guard per REVIEW LOW #7.
+				var firstName string
+				if len(syntheticResp.Message.ToolCalls) > 0 {
+					firstName = syntheticResp.Message.ToolCalls[0].Name
+				}
+				logger.Debug("ollama: streaming coerce fired", "tool", firstName)
+				// Discard the buffered text lines — they are superseded by
+				// the synthesized tool_calls on the done:true line.
+			} else {
+				// Coerce missed — release the buffered text lines and fall
+				// through to the standard done:true emission.
+				if err := releaseBufferedLines(w, flusher, state.deferredTextLines); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	// Build done:true final line. chatResponseToWire / generateResponseToWire
+	// both nil-guard their *canonical.ChatResponse parameter, so passing nil
+	// is safe in the no-coerce case.
 	var payload any
 	if isChat {
-		out := chatResponseToWire(nil, start, model)
+		var doneResp *canonical.ChatResponse
+		if coerceFired {
+			// The synthetic resp carries the populated ToolCalls slice —
+			// chatResponseToWire's tool_calls populate loop picks it up.
+			doneResp = syntheticResp
+		}
+		out := chatResponseToWire(doneResp, start, model)
 		out.Done = true
 		out.DoneReason = mapStopReason(stopReason)
 		payload = out
@@ -246,5 +454,21 @@ func finalizeNDJSON(w http.ResponseWriter, flusher http.Flusher, run RunHandle, 
 		return fmt.Errorf("ollama: ndjson write final: %w", err)
 	}
 	flusher.Flush()
+	return nil
+}
+
+// releaseBufferedLines flushes the deferred text lines to the wire in order.
+// Used by:
+//   - The iteration-3 sawKiroNativeToolCall branch (release without coerce).
+//   - The coerce-miss branch (release after coerce returned false).
+// Never called on the coerce-hit branch (those lines are discarded because
+// they are superseded by the synthesized tool_calls on the done line).
+func releaseBufferedLines(w http.ResponseWriter, flusher http.Flusher, lines [][]byte) error {
+	for _, line := range lines {
+		if _, err := w.Write(line); err != nil {
+			return fmt.Errorf("ollama: ndjson release buffered line: %w", err)
+		}
+		flusher.Flush()
+	}
 	return nil
 }
