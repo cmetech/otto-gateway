@@ -181,6 +181,91 @@
   }
 
   // ---------------------------------------------------------------------------
+  // relativeTime: format a last_used ISO timestamp as "Xs/Xm/Xh/Xd ago"
+  // ---------------------------------------------------------------------------
+
+  function relativeTime(iso) {
+    var t = new Date(iso);
+    var s = Math.max(0, Math.floor((Date.now() - t.getTime()) / 1000));
+    if (s < 60) return s + 's ago';
+    if (s < 3600) return Math.floor(s / 60) + 'm ago';
+    if (s < 86400) return Math.floor(s / 3600) + 'h ago';
+    return Math.floor(s / 86400) + 'd ago';
+  }
+
+  // ---------------------------------------------------------------------------
+  // renderSessions: DOM-patch the active-sessions table from snapshot sessions[]
+  // ---------------------------------------------------------------------------
+
+  function renderStatusBadge(sess) {
+    var span = document.createElement('span');
+    span.className = 'otto-badge';
+    if (!sess.alive) {
+      span.classList.add('is-dead');
+      span.textContent = 'Dead';
+    } else if (sess.busy) {
+      span.classList.add('is-busy');
+      span.textContent = 'Busy';
+    } else {
+      span.classList.add('is-alive');
+      span.textContent = 'Idle';
+    }
+    return span;
+  }
+
+  function td(cls, text, title) {
+    var cell = document.createElement('td');
+    if (cls) cell.className = cls;
+    if (typeof text === 'string' || typeof text === 'number') {
+      cell.textContent = text;
+    } else if (text && typeof text === 'object') {
+      // DOM node
+      cell.append(text);
+    }
+    if (title) cell.title = title;
+    return cell;
+  }
+
+  function buildSessionRow(sess) {
+    var tr = document.createElement('tr');
+    tr.append(
+      td('is-session-id', shortId(sess.id)),
+      td('', renderStatusBadge(sess)),
+      td('', relativeTime(sess.last_used), sess.last_used),
+      td(sess.model ? '' : 'is-model-null', sess.model || '—')
+    );
+    return tr;
+  }
+
+  function renderSessions(sessions) {
+    var tbody = document.querySelector('[data-sessions-tbody]');
+    var empty = document.querySelector('[data-sessions-empty]');
+    var table = document.querySelector('[data-sessions-table]');
+    if (!tbody) return;
+
+    if (!sessions || sessions.length === 0) {
+      if (empty) empty.hidden = false;
+      if (table) table.hidden = true;
+      tbody.replaceChildren();
+      return;
+    }
+
+    if (empty) empty.hidden = true;
+    if (table) table.hidden = false;
+
+    if (tbody.children.length !== sessions.length) {
+      // Array length changed — full rebuild.
+      tbody.replaceChildren.apply(tbody, sessions.map(buildSessionRow));
+    } else {
+      // Same count — update in place.
+      for (var i = 0; i < sessions.length; i++) {
+        var newRow = buildSessionRow(sessions[i]);
+        tbody.replaceChild(newRow, tbody.children[i]);
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // renderSummary: update DOM from snapshot data
   // ---------------------------------------------------------------------------
 
@@ -229,6 +314,7 @@
       .then(function (snap) {
         renderSummary(snap);
         renderSlots(snap.pool ? snap.pool.slots : []);
+        renderSessions(snap.sessions || []);
       })
       .catch(function () {
         consecutiveFailures++;

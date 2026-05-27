@@ -182,6 +182,67 @@ func TestAdmin_PageHandler_PoolGridScaffold(t *testing.T) {
 	}
 }
 
+// TestAdmin_PageHandler_SessionsTableScaffold verifies GET /admin returns HTML that
+// contains the sessions table markup required by Plan 02:
+// - data-sessions-card attribute (container)
+// - data-sessions-empty attribute (empty-state placeholder)
+// - data-sessions-tbody attribute (tbody JS hydration target)
+// - four column headers per UI-SPEC Copywriting Contract
+// - empty-state copy strings per UI-SPEC Copywriting Contract
+func TestAdmin_PageHandler_SessionsTableScaffold(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	deps := Deps{
+		Logger:  testutil.Logger(t),
+		Version: "1.2.3",
+		Commit:  "abc1234",
+	}
+	h := Handler(deps)
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /: want 200, got %d", rec.Code)
+	}
+
+	body := rec.Body.String()
+
+	// Structural markup checks.
+	for _, want := range []string{
+		"data-sessions-card",
+		"data-sessions-empty",
+		"data-sessions-tbody",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("page HTML missing required sessions markup %q", want)
+		}
+	}
+
+	// Column header checks per UI-SPEC Copywriting Contract.
+	for _, want := range []string{
+		"<th>Session</th>",
+		"<th>Status</th>",
+		"<th>Last used</th>",
+		"<th>Model</th>",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("page HTML missing required sessions column header %q", want)
+		}
+	}
+
+	// Empty-state copy checks per UI-SPEC Copywriting Contract.
+	for _, want := range []string{
+		"No active sessions",
+		"Stateful sessions created via the X-Session-Id header will appear here.",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("page HTML missing required empty-state copy %q", want)
+		}
+	}
+}
+
 // TestAdmin_AssetsFSContains verifies the embed.FS captured all required
 // asset files (regression for Pitfall 1 — embed glob semantics).
 func TestAdmin_AssetsFSContains(t *testing.T) {
