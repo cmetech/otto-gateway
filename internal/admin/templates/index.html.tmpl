@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OTTO Gateway — Admin</title>
+  <link rel="stylesheet" href="/admin/static/css/admin.css">
+</head>
+<body class="otto-admin">
+<main class="otto-page">
+
+  <!-- Section 1: Summary header strip (Plan 01 — fully populated) -->
+  <section class="otto-summary-strip" aria-labelledby="summary-heading">
+    <h1 id="summary-heading" class="sr-only">Gateway status overview</h1>
+
+    <!-- Status pill -->
+    <div class="otto-summary-item">
+      <span class="otto-summary-label">Status</span>
+      <span class="otto-status-pill" data-pill>—</span>
+    </div>
+
+    <!-- Uptime -->
+    <div class="otto-summary-item">
+      <span class="otto-summary-label">Uptime</span>
+      <span class="otto-summary-value" data-uptime>—</span>
+    </div>
+
+    <!-- Version (baked in at render time — does not poll) -->
+    <div class="otto-summary-item">
+      <span class="otto-summary-label">Version</span>
+      <span class="otto-summary-value text-mono">{{.Version}}</span>
+    </div>
+
+    <!-- Pool counts (hydrated by JS on first poll) -->
+    <div class="otto-summary-item">
+      <span class="otto-summary-label">Pool</span>
+      <span class="otto-summary-value" data-pool-summary>—</span>
+    </div>
+
+    <!-- Sessions active (hydrated by JS on first poll) -->
+    <div class="otto-summary-item">
+      <span class="otto-summary-label">Sessions active</span>
+      <span class="otto-summary-value" data-sessions-count>—</span>
+    </div>
+
+    <!-- Live indicator zone (right-aligned) -->
+    <div class="otto-live-zone">
+      <div class="otto-live-row">
+        <span class="otto-live-dot" data-live-dot></span>
+        <span class="otto-last-updated" data-last-updated>Loading…</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- Section 2: Pool Slots grid (Plan 02 fills the cards) -->
+  <section aria-labelledby="pool-slots-heading">
+    <h2 id="pool-slots-heading" class="otto-h2">Pool Slots</h2>
+    <div class="otto-slot-grid" data-slot-grid>
+      <!-- Plan 02 injects pool slot cards here -->
+    </div>
+  </section>
+
+  <!-- Section 3: Active Sessions table (Plan 02 fills) -->
+  <section aria-labelledby="active-sessions-heading">
+    <h2 id="active-sessions-heading" class="otto-h2">Active Sessions</h2>
+    <div class="otto-table-card" data-sessions-card>
+      <!-- Plan 02 injects the sessions table here -->
+    </div>
+  </section>
+
+  <!-- Section 4: Log Tail panel (Plan 03 fills) -->
+  <section aria-labelledby="log-tail-heading">
+    <h2 id="log-tail-heading" class="otto-h2">Log Tail</h2>
+    <div class="otto-log-panel">
+      <div class="otto-log-viewport otto-log-viewport-empty" data-log-viewport>
+        Waiting for log activity…
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<!-- Config island: bakes in version/commit at render time; pollMs is the
+     JS polling cadence (30s fixed per D-06). The `js` filter escapes both
+     fields for safe <script> context (html/template T-6.1-01 mitigation). -->
+<script>window.OTTO_ADMIN_CONFIG = { version: {{.Version | js}}, commit: {{.Commit | js}}, pollMs: 30000 };</script>
+<script src="/admin/static/js/admin.js"></script>
+</body>
+</html>

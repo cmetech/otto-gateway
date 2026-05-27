@@ -1,0 +1,199 @@
+package admin
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"go.uber.org/goleak"
+
+	"otto-gateway/internal/testutil"
+)
+
+// TestAdmin_SnapshotHandler verifies GET /api/snapshot returns 200 with
+// application/json and a valid AdminSnapshot body.
+func TestAdmin_SnapshotHandler(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	sid := "sess-abc"
+	model := "model-xyz"
+	deps := Deps{
+		Logger:  testutil.Logger(t),
+		Version: "1.2.3",
+		Commit:  "abc1234",
+		PoolDetail: &stubPool{
+			slots: []SnapshotSlot{
+				{Label: "slot-0", Alive: true, Busy: false, CurrentSessionID: nil},
+				{Label: "slot-1", Alive: true, Busy: true, CurrentSessionID: &sid},
+			},
+		},
+		Registry: &stubRegistry{
+			sessions: []SnapshotSess{
+				{ID: "sess-abc", Alive: true, Busy: true, LastUsed: time.Now(), Model: &model},
+			},
+		},
+	}
+	h := Handler(deps)
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/snapshot", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/snapshot: want 200, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	contentType := rec.Header().Get("Content-Type")
+	if !strings.HasPrefix(contentType, "application/json") {
+		t.Errorf("Content-Type: want application/json, got %q", contentType)
+	}
+
+	cacheControl := rec.Header().Get("Cache-Control")
+	if cacheControl != "no-store" {
+		t.Errorf("Cache-Control: want no-store, got %q", cacheControl)
+	}
+
+	var snap AdminSnapshot
+	if err := json.NewDecoder(rec.Body).Decode(&snap); err != nil {
+		t.Fatalf("decode AdminSnapshot: %v", err)
+	}
+
+	// Status must be one of the valid values.
+	validStatuses := map[string]bool{"ok": true, "degraded": true, "down": true}
+	if !validStatuses[snap.Status] {
+		t.Errorf("status: got %q, want one of ok/degraded/down", snap.Status)
+	}
+
+	if snap.Version == "" {
+		t.Error("version: want non-empty")
+	}
+	if snap.Commit == "" {
+		t.Error("commit: want non-empty")
+	}
+	if snap.UptimeSeconds < 0 {
+		t.Errorf("uptime_seconds: got %f, want >= 0", snap.UptimeSeconds)
+	}
+	if snap.GeneratedAt.IsZero() {
+		t.Error("generated_at: want non-zero")
+	}
+
+	// pool assertions
+	if snap.Pool.Size != 2 {
+		t.Errorf("pool.size: want 2, got %d", snap.Pool.Size)
+	}
+	if snap.Pool.Alive != 2 {
+		t.Errorf("pool.alive: want 2, got %d", snap.Pool.Alive)
+	}
+	if snap.Pool.Busy != 1 {
+		t.Errorf("pool.busy: want 1, got %d", snap.Pool.Busy)
+	}
+	if snap.Pool.Slots == nil {
+		t.Error("pool.slots: want non-nil JSON array")
+	}
+
+	// sessions assertions
+	if snap.Sessions == nil {
+		t.Error("sessions: want non-nil JSON array")
+	}
+	if len(snap.Sessions) != 1 {
+		t.Errorf("sessions: want 1 session, got %d", len(snap.Sessions))
+	}
+}
+
+// TestAdmin_SnapshotNilSafe verifies that the handler constructed with nil
+// PoolDetail and nil Registry does not panic and returns sensible zero values.
+func TestAdmin_SnapshotNilSafe(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	deps := Deps{
+		Logger:     testutil.Logger(t),
+		Version:    "1.0.0",
+		Commit:     "unknown",
+		PoolDetail: nil,
+		Registry:   nil,
+	}
+	h := Handler(deps)
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/snapshot", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/snapshot with nil deps: want 200, got %d", rec.Code)
+	}
+
+	var snap AdminSnapshot
+	if err := json.NewDecoder(rec.Body).Decode(&snap); err != nil {
+		t.Fatalf("decode AdminSnapshot: %v", err)
+	}
+
+	if snap.Pool.Size != 0 {
+		t.Errorf("pool.size: want 0, got %d", snap.Pool.Size)
+	}
+	if snap.Pool.Alive != 0 {
+		t.Errorf("pool.alive: want 0, got %d", snap.Pool.Alive)
+	}
+	if snap.Pool.Busy != 0 {
+		t.Errorf("pool.busy: want 0, got %d", snap.Pool.Busy)
+	}
+	if snap.Pool.Slots == nil {
+		t.Error("pool.slots: want non-nil (empty slice), got nil")
+	}
+	if snap.Sessions == nil {
+		t.Error("sessions: want non-nil (empty slice), got nil")
+	}
+	if snap.Status != "down" {
+		t.Errorf("status with nil pool: want 'down', got %q", snap.Status)
+	}
+}
+
+// TestAdmin_ComputeStatus verifies the pure computeStatus function covers
+// all three outcome paths.
+func TestAdmin_ComputeStatus(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	cases := []struct {
+		name   string
+		snap   AdminSnapshot
+		expect string
+	}{
+		{
+			name: "all_alive_is_ok",
+			snap: AdminSnapshot{Pool: SnapshotPool{Size: 4, Alive: 4, Busy: 0}},
+			expect: "ok",
+		},
+		{
+			name: "some_alive_is_degraded",
+			snap: AdminSnapshot{Pool: SnapshotPool{Size: 4, Alive: 2, Busy: 0}},
+			expect: "degraded",
+		},
+		{
+			name: "zero_alive_is_down",
+			snap: AdminSnapshot{Pool: SnapshotPool{Size: 4, Alive: 0, Busy: 0}},
+			expect: "down",
+		},
+		{
+			name: "zero_size_is_down",
+			snap: AdminSnapshot{Pool: SnapshotPool{Size: 0, Alive: 0, Busy: 0}},
+			expect: "down",
+		},
+		{
+			name: "size_zero_even_if_alive_nonzero",
+			snap: AdminSnapshot{Pool: SnapshotPool{Size: 0, Alive: 1, Busy: 0}},
+			expect: "down",
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := computeStatus(c.snap)
+			if got != c.expect {
+				t.Errorf("computeStatus: want %q, got %q (snap=%+v)", c.expect, got, c.snap)
+			}
+		})
+	}
+}
