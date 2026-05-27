@@ -156,6 +156,11 @@ func FakeKiro(t *testing.T, script Script) (cmd string, env map[string]string) {
 		t.Fatal("fakeKiroBinaryPath not initialized — TestMain (e2e_test.go) must run first; check OTTO_E2E=1 gate")
 	}
 
+	// Set OTTO_KIRO_BIN so bootGateway's resolveKiro picks up the fake-kiro
+	// path even when the real kiro-cli is not on PATH (CI / dev box without
+	// kiro installed). t.Setenv restores the original value on test cleanup.
+	t.Setenv("OTTO_KIRO_BIN", fakeKiroBinaryPath)
+
 	dir := t.TempDir()
 	env = map[string]string{}
 
