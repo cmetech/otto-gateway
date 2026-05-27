@@ -1167,32 +1167,32 @@ func newRequestIDFromReader(r io.Reader) string {
 planner check-in. A3 is worth checking if the project has unstated compliance posture.
 Everything else is mechanical project-convention alignment.
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Does `internal/plugin` import `internal/engine` for the PreHook/PostHook interface types, or does it duplicate those interfaces in plugin's own type space?**
    - What we know: `.go-arch-lint.yml` currently does NOT list a `plugin` component. We must add one and decide its allowed imports.
    - What's unclear: CONTEXT.md says "**Hooks MUST NOT import `internal/engine`** — they implement interfaces defined there but don't depend on the package." This conflicts with Go's interface model: to implement `engine.PreHook`, the plugin package must reference `engine.PreHook`. **Either (a) duplicate the interface in `plugin` and rely on structural satisfaction (cleaner boundary, more code), or (b) accept the engine import in `plugin` (one-direction reference; engine still doesn't import plugin).**
-   - Recommendation: **Option (b)** — `plugin` imports `engine` for the interface types. Engine remains pristine (no plugin import); the directional rule is preserved. `.go-arch-lint.yml` `plugin` component lists `mayDependOn: [canonical, engine]`. This matches the existing `pool` and `session` patterns which import `engine` for `engine.ACPClient` etc.
+   - RESOLVED: **Option (b)** — `plugin` imports `engine` for the interface types. Engine remains pristine (no plugin import); the directional rule is preserved. `.go-arch-lint.yml` `plugin` component lists `mayDependOn: [canonical, engine]`. This matches the existing `pool` and `session` patterns which import `engine` for `engine.ACPClient` etc. Ratified by 08-01 Task 5 (`.go-arch-lint.yml` mayDependOn:[canonical, engine]).
 
 2. **Where does the AuthHook get the bearer credential from?**
    - What we know: The HTTP-layer middleware reads `r.Header.Get("Authorization")` / `r.Header.Get("x-api-key")`. The hook sees only `canonical.ChatRequest` which has no headers.
    - What's unclear: Either (a) each adapter's handler extracts the credential from headers and attaches it to ctx via a typed key before calling `engine.Run`, OR (b) the credential lives on `canonical.ChatRequest` (new dormant field), OR (c) AuthHook stays at HTTP-middleware boundary AND a thin canonical AuthHook just verifies a "credential-already-checked" sentinel on ctx.
-   - Recommendation: **Option (a)** — adapter handler extracts the header, stamps onto ctx via a typed key (mirror of Pattern 3 RequestIDHook). The AuthHook reads ctx, validates, short-circuits with canonical-shaped error response. **This needs a brief planner question to confirm.**
+   - RESOLVED: **Option (a)** — adapter handler extracts the header, stamps onto ctx via a typed key. The AuthHook reads ctx, validates, short-circuits with canonical-shaped error response. Ratified by 08-02 (AuthHook + adapter `WithBearerToken` ctx-stamp tasks).
 
 3. **Does `RequestIDHook` need a Post step at all?**
    - What we know: D-04 lists `RequestID → Auth → PIIRedaction → Logging` for Pre; Post is `Logging only (the others have no Post behavior)`. CONTEXT.md mentions RequestIDHook's Post is "optional (could no-op or emit a final correlation log line)".
    - What's unclear: If RequestIDHook has no Post behavior, why is Pattern 4's kind field "Pre,Post"? Possible Post behavior: stamp `X-Request-Id` onto the response headers when the adapter renders. That's an adapter concern, though.
-   - Recommendation: **RequestIDHook is Pre only** in v1. The adapter copies `X-Request-Id` onto the response by reading ctx via `RequestIDFromContext` at render time. The `/health/hooks` `kind` field should be `Pre` for RequestIDHook. Update Pattern 4's example accordingly in PLAN.
+   - RESOLVED: **RequestIDHook is Pre only** in v1. The adapter copies `X-Request-Id` onto the response by reading ctx via `RequestIDFromContext` at render time. The `/health/hooks` `kind` field is `Pre` for RequestIDHook. Ratified by 08-01 (RequestIDHook implements only `engine.PreHook`).
 
 4. **What does AuthHook return as the canonical "auth failed" response?**
    - What we know: CONTEXT.md D-04 says "AuthHook returns a canonical error response; the adapter renders it." Existing adapter error-rendering precedent: `internal/adapter/anthropic/errors.go` (Phase 3.1).
    - What's unclear: `canonical.ChatResponse` currently has no error field. The Anthropic adapter's `errors.go` may render from a `StopReason == StopError` + `Message.Content[0].Text` shape, or via a separate `RenderError(canonicalError)` path.
-   - Recommendation: **Inspect adapter `errors.go` files in the PLAN phase** and either (a) add a `canonical.ChatError` envelope OR (b) overload `ChatResponse.StopReason == StopError` + `Message.Content[0].Text == error_message` (simpler, no canonical-type churn).
+   - RESOLVED: **Option (b)** — overload `ChatResponse.StopReason == StopError` + `Message.Content[0].Text == error_message` (simpler, no canonical-type churn). Adapter `errors.go` paths render the canonical short-circuit response in native shape (OpenAI `{error:{...}}` / Ollama `{error:"..."}` / Anthropic `{type:"error", error:{...}}`). Ratified by 08-02 (AuthHook short-circuit envelope) and 08-05 e2e three-surface coverage.
 
 5. **Does PIIRedactionHook also walk `canonical.ChatRequest.System` and `canonical.ChatRequest.StopSequences`?**
    - What we know: D-03 lists `Message.ContentParts[].Text`, `tool_use.Input`, `tool_result.Content`, and `Message.Content` (top-level legacy field). It does NOT mention `ChatRequest.System` or `StopSequences`.
    - What's unclear: System prompts can legitimately contain operator-side PII references; whether they should be redacted is a policy question.
-   - Recommendation: **Walk `ChatRequest.System` too** (it's user-controllable via Ollama/Anthropic system blocks). Skip `StopSequences` (operator-defined boundary strings; redacting them breaks the stop-condition). Confirm in PLAN.
+   - RESOLVED: **Walk `ChatRequest.System` too** (operator-controllable via Ollama/Anthropic system blocks; can contain PII). Skip `StopSequences` (operator-defined boundary strings; redacting them breaks stop-condition semantics). Ratified by 08-04 PIIRedactionHook scope.
 
 ## Environment Availability
 
