@@ -37,6 +37,7 @@ import (
 	"otto-gateway/internal/adapter/anthropic"
 	"otto-gateway/internal/adapter/ollama"
 	"otto-gateway/internal/adapter/openai"
+	"otto-gateway/internal/admin"
 	"otto-gateway/internal/canonical"
 	"otto-gateway/internal/config"
 	"otto-gateway/internal/engine"
@@ -389,6 +390,41 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 		registryForServer = registryStatsAdapter{reg: a.registry}
 	}
 
+	// Phase 6.1: build the admin observability handler.
+	//
+	// admin owns its own SnapshotSlot/SnapshotSess wire types (Plan 01 Task 1,
+	// option (b) — TRST-04 strict: admin must not import internal/server).
+	// adminPoolDetailAdapter and adminRegistryAdapter (declared at file scope
+	// below) bridge from the server-typed adapter values to admin's types via
+	// field-by-field copy. Cost: O(POOL_SIZE + SESSION_MAX) per snapshot poll,
+	// dwarfed by JSON marshalling cost.
+	//
+	// Per RESEARCH Open Question 3 (RESOLVED): pass time.Now() at wire-up
+	// rather than exporting server.Server.start; uptime drifts by a few ms,
+	// acceptable per CONTEXT.md.
+	//
+	// Per Pitfall 7: OTTO_LOG defaults to /tmp/otto-gateway.log when unset;
+	// the tailer (wired in Plan 03) handles missing-file gracefully via a
+	// degraded "Waiting for log activity…" UX. Plan 01 does NOT yet start
+	// the tailer — LogPath is populated for forward-compatibility.
+	var adminPoolDetail admin.PoolDetailSource
+	if poolDetailForServer != nil {
+		adminPoolDetail = adminPoolDetailAdapter{src: poolDetailForServer}
+	}
+	var adminRegistry admin.RegistryStatsSource
+	if registryForServer != nil {
+		adminRegistry = adminRegistryAdapter{src: registryForServer}
+	}
+	adminHandler := admin.Handler(admin.Deps{
+		Logger:     logger,
+		Version:    version.Version,
+		Commit:     version.Commit(),
+		Start:      time.Now(),
+		PoolDetail: adminPoolDetail,
+		Registry:   adminRegistry,
+		LogPath:    envOrDefault("OTTO_LOG", "/tmp/otto-gateway.log"),
+	})
+
 	// Boot log surfaces the resolved surface set so operators see
 	// what's actually mounted (closes a Phase 2 → Phase 3.1 ops gap).
 	// openai_mounted reflects whether the /v1 OpenAI surface is wired
@@ -415,6 +451,7 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 		Pool:                 poolForServer,
 		PoolDetail:           poolDetailForServer, // Plan 05-03 D-15
 		Registry:             registryForServer,   // Plan 05-03 D-14/D-16
+		AdminHandler:         adminHandler,        // Phase 6.1 admin observability UI
 	})
 
 	return a, cleanup, nil
@@ -487,6 +524,61 @@ func (r registryStatsAdapter) Detail() []server.AgentSession {
 		})
 	}
 	return out
+}
+
+// adminPoolDetailAdapter bridges from server.PoolDetailSource (returning
+// []server.AgentSlot) to admin.PoolDetailSource (returning []admin.SnapshotSlot).
+// admin owns its own wire types (TRST-04: admin must not import internal/server),
+// so this adapter does the per-row field copy at the cmd boundary. Cost is
+// O(POOL_SIZE) per snapshot poll — negligible vs JSON marshalling overhead.
+type adminPoolDetailAdapter struct {
+	src server.PoolDetailSource
+}
+
+func (a adminPoolDetailAdapter) Detail() []admin.SnapshotSlot {
+	rows := a.src.Detail()
+	out := make([]admin.SnapshotSlot, len(rows))
+	for i, r := range rows {
+		out[i] = admin.SnapshotSlot{
+			Label:            r.Label,
+			Alive:            r.Alive,
+			Busy:             r.Busy,
+			CurrentSessionID: r.CurrentSessionID,
+		}
+	}
+	return out
+}
+
+// adminRegistryAdapter bridges from server.RegistryStatsSource (returning
+// []server.AgentSession) to admin.RegistryStatsSource (returning []admin.SnapshotSess).
+// Same TRST-04 rationale and O(SESSION_MAX) cost as adminPoolDetailAdapter.
+type adminRegistryAdapter struct {
+	src server.RegistryStatsSource
+}
+
+func (a adminRegistryAdapter) Detail() []admin.SnapshotSess {
+	rows := a.src.Detail()
+	out := make([]admin.SnapshotSess, len(rows))
+	for i, r := range rows {
+		out[i] = admin.SnapshotSess{
+			ID:       r.ID,
+			Alive:    r.Alive,
+			Busy:     r.Busy,
+			LastUsed: r.LastUsed,
+			Model:    r.Model,
+		}
+	}
+	return out
+}
+
+// envOrDefault returns os.Getenv(key) if non-empty, else def.
+// Local helper — keeps internal/config minimal; Phase 6.1's LogPath
+// is the only consumer for now.
+func envOrDefault(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
 }
 
 // buildLogger constructs the root *slog.Logger from the loaded config.
