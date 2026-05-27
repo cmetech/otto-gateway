@@ -13,7 +13,7 @@ Requirements for initial release. Each maps to roadmap phases (see Traceability)
 - [ ] **SURF-02**: `ENABLED_SURFACES` env var (default `openai,ollama,anthropic`) enables or disables any surface at deploy time. `OPENAI_PATH_PREFIX` (default `/v1`), `OLLAMA_PATH_PREFIX` (default `/api`), and `ANTHROPIC_PATH_PREFIX` (default `/v1`) are overridable. OpenAI and Anthropic intentionally share the `/v1` prefix and disambiguate at the endpoint level (`POST /v1/chat/completions` vs `POST /v1/messages`); if a deployment needs them on separate prefixes set `ANTHROPIC_PATH_PREFIX=/anthropic/v1`.
 - [ ] **SURF-03**: `POST /api/chat`, `POST /api/generate`, `GET /api/tags`, `POST /api/show`, `GET /api/ps`, `GET /api/version` are served with Ollama-compatible request/response shapes.
 - [ ] **SURF-04**: `POST /v1/chat/completions`, `POST /v1/completions`, `GET /v1/models` are served with OpenAI-compatible shapes.
-- [ ] **SURF-05**: Existing LangFlow flows pointing at `/api/chat` and `/api/embed` work with zero reconfiguration against this gateway.
+- [ ] **SURF-05**: Existing LangFlow flows pointing at `/api/chat` work with zero reconfiguration against this gateway. (Embeddings endpoints `/api/embed`, `/api/embeddings` cut from v1 — see PROJECT.md Decisions.)
 - [ ] **SURF-06**: A Pi-SDK chat CLI configured with an OpenAI provider and `base_url=http://localhost:11434/v1` works end-to-end.
 - [ ] **SURF-07**: Stubs returning success for `POST /api/pull`, `POST /api/push`, `POST /api/create`, `POST /api/copy`, `DELETE /api/delete` (preserves Ollama-client compatibility).
 - [ ] **SURF-08**: `ANTHROPIC_PATH_PREFIX` (default `/v1`) — shares the `/v1` prefix with OpenAI but disambiguates by endpoint (`POST /v1/messages` vs `POST /v1/chat/completions`). When both surfaces are enabled, chi router mounts them under the same prefix without conflict; setting `ANTHROPIC_PATH_PREFIX=/anthropic/v1` moves Anthropic to a separate prefix.
@@ -65,15 +65,6 @@ Requirements for initial release. Each maps to roadmap phases (see Traceability)
 - [x] **SESS-02**: Idle sessions reaped after `SESSION_TTL_MS` (default 1,800,000 = 30 min). Reaper runs every 60s.
 - [x] **SESS-03**: `DELETE /v1/sessions/:id` tears down a stateful session immediately and returns `{deleted: "<id>"}`.
 
-### Embeddings — Local embedding endpoints
-
-- [ ] **EMBD-01**: `POST /api/embed` (new Ollama API, string or array input) returns one embedding per input.
-- [ ] **EMBD-02**: `POST /api/embeddings` (legacy Ollama API, single string) returns a single flat vector.
-- [ ] **EMBD-03**: `POST /v1/embeddings` (OpenAI API) returns embeddings in OpenAI shape (`{object:"list", data:[{object:"embedding", embedding:[...], index:N}]}`).
-- [ ] **EMBD-04**: BGE-Small EN-V1.5 default model. Additional models gated by `EMBEDDING_MODELS_ENABLED` env var. Default model warmed at startup.
-- [ ] **EMBD-05**: Embedding inputs are bounded by `EMBEDDING_MAX_INPUTS` (default 2048) per request; over-limit returns 400.
-- [ ] **EMBD-06**: Embeddings never invoke `kiro-cli`; they are served by a local backend (TBD per brief §3.4 — provisional out-of-process sidecar; revisit during phase planning).
-
 ### Plugins — Guardrails / hook chain
 
 - [ ] **PLUG-01**: `PreHook` / `PostHook` interfaces in `internal/plugin` operate on canonical request/response types. Hooks see surface-agnostic data.
@@ -88,7 +79,7 @@ Requirements for initial release. Each maps to roadmap phases (see Traceability)
 - [ ] **AUTH-01**: Bearer-token auth via `AUTH_TOKEN` env var (comma-separated list). Empty means no auth (matches Node default).
 - [ ] **AUTH-02**: IP allowlist via `ALLOWED_IPS` env var (comma-separated). Empty means allow-all.
 - [ ] **AUTH-03**: Auth and allowlist middleware exempt `/`, `/api/version`, and `/health` paths.
-- [ ] **OBSV-01**: `GET /health` returns pool stats, session registry stats, and embedding registry stats in a JSON object.
+- [ ] **OBSV-01**: `GET /health` returns pool stats and session registry stats in a JSON object.
 - [x] **OBSV-02**: `GET /health/agents` returns per-pool-slot detail (`alive`, `busy`, `label`) and per-session detail (`alive`, `last_used`).
 - [ ] **OBSV-03**: Structured logging via `log/slog` with `X-Request-Id` correlation across pre-hook, engine, ACP, and post-hook spans.
 - [ ] **OBSV-04**: `GET /health/hooks` returns the registered Pre/Post chain as JSON — each entry includes `name`, `kind` (`Pre`, `Post`, `Pre,Post`), `enabled`, and an optional `config` object exposing safe-to-publish settings only. Read-only; exempt from auth like `/health` and `/health/agents`. No runtime mutate path in v1.
@@ -197,12 +188,6 @@ Populated by the roadmapper from `.planning/ROADMAP.md`. Updated as phases compl
 | SESS-01 | Phase 5 | Complete |
 | SESS-02 | Phase 5 | Complete |
 | SESS-03 | Phase 5 | Complete |
-| EMBD-01 | Phase 7 | Pending |
-| EMBD-02 | Phase 7 | Pending |
-| EMBD-03 | Phase 7 | Pending |
-| EMBD-04 | Phase 7 | Pending |
-| EMBD-05 | Phase 7 | Pending |
-| EMBD-06 | Phase 7 | Pending |
 | PLUG-01 | Phase 8 | Pending |
 | PLUG-02 | Phase 8 | Pending |
 | PLUG-03 | Phase 8 | Pending |

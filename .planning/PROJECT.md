@@ -53,9 +53,9 @@ and the single governance surface are the load-bearing properties.
 <!-- Current scope. Building toward these. -->
 
 Surface compatibility:
-- [ ] **REQ-OLLAMA-01**: Existing LangFlow flows pointing at `/api/chat`, `/api/generate`, `/api/embed`, `/api/embeddings`, `/api/tags`, `/api/show`, `/api/ps`, `/api/version` keep working with zero reconfiguration.
+- [ ] **REQ-OLLAMA-01**: Existing LangFlow flows pointing at `/api/chat`, `/api/generate`, `/api/tags`, `/api/show`, `/api/ps`, `/api/version` keep working with zero reconfiguration. (Embeddings endpoints `/api/embed`, `/api/embeddings` cut from v1 — see Decisions.)
 - [ ] **REQ-OPENAI-01**: Pi SDK chat CLI (and any OpenAI-shaped client) can POST `/v1/chat/completions` with `Authorization: Bearer …` and receive an OpenAI-compatible response.
-- [ ] **REQ-OPENAI-02**: `/v1/completions`, `/v1/embeddings`, `/v1/models` are served with OpenAI-compatible shapes.
+- [ ] **REQ-OPENAI-02**: `/v1/completions`, `/v1/models` are served with OpenAI-compatible shapes. (`/v1/embeddings` cut from v1 — see Decisions.)
 - [ ] **REQ-ANTHROPIC-01**: loop24-client (`@anthropic-ai/sdk`) configured with `ANTHROPIC_BASE_URL=http://localhost:11434` can POST `/v1/messages` (with `x-api-key` or `Authorization: Bearer`, plus required `anthropic-version`) and receive an Anthropic-compatible response, both non-streaming and via `messages.stream()` SSE.
 - [ ] **REQ-ANTHROPIC-02**: Anthropic tool-use (`tool_use` blocks with object `input`) and `thinking` content blocks round-trip through the canonical engine.
 - [ ] **REQ-SURFACE-01**: All three surfaces share one process, one port, one pool, one canonical request/response type. `ENABLED_SURFACES` env var disables any at deploy time. OpenAI and Anthropic share `/v1` and disambiguate at the endpoint level (`/v1/chat/completions` vs `/v1/messages`).
@@ -81,12 +81,9 @@ Guardrails (the plugin chain):
 - [ ] **REQ-PLUGIN-02**: Day-one hooks: RequestID (Pre), Auth bearer-token (Pre), structured logging (Pre+Post).
 - [ ] **REQ-PLUGIN-03**: `ENABLED_HOOKS` env var (or equivalent config) enables/disables hooks per deployment.
 
-Embeddings:
-- [ ] **REQ-EMBED-01**: `/api/embed`, `/api/embeddings`, `/v1/embeddings` serve BGE/E5 model embeddings locally, independent of `kiro-cli`.
-
 Distribution + operations:
 - [ ] **REQ-BUILD-01**: Single statically-linked binary for `linux/amd64` and `windows/amd64`, cross-compiled from macOS dev box with `CGO_ENABLED=0`.
-- [ ] **REQ-OBSERV-01**: `/health` returns pool + registry + embedding stats; `/health/agents` returns per-slot detail. Bearer-auth and IP allowlist exempt these paths and `/api/version`.
+- [ ] **REQ-OBSERV-01**: `/health` returns pool + registry stats; `/health/agents` returns per-slot detail. Bearer-auth and IP allowlist exempt these paths and `/api/version`.
 
 Trust gates (per `docs/briefs/go_port_brief.md` §3.12 — non-negotiable):
 - [ ] **REQ-CI-01**: `golangci-lint` strict config with `errcheck`, `errorlint`, `gosec`, `staticcheck`, `revive`, `wrapcheck` and others; warnings are CI hard failures.
@@ -104,7 +101,7 @@ Trust gates (per `docs/briefs/go_port_brief.md` §3.12 — non-negotiable):
 - **macOS or ARM deployment targets.** Dev runs on macOS but deployments are x86_64 Linux + Windows. ARM/macOS-as-deploy is a nice-to-have, not blocking.
 - **Replacing `kiro-cli`.** The whole point is to proxy it faithfully.
 - **Backward compat with the Node `.env` file format** beyond reusing env-var names.
-- **In-process ONNX embeddings via cgo** — sacrificing the trivial cross-compile story is too expensive. Default to an out-of-process sidecar (per brief §3.4 Option C); brainstorm may reconsider.
+- **Embeddings of any kind in v1** — `/api/embed`, `/api/embeddings`, `/v1/embeddings` will not be served. Decided 2026-05-27 to drop Phase 7 from the milestone. The downstream "in-process ONNX via cgo" and "out-of-process sidecar" trade-offs are now moot since neither is being built.
 - **Hot config reload / dynamic plugin registration.** Plugins are Go types registered at boot. Restart to change config.
 - **Rust port.** Considered (`docs/briefs/rust_port_brief.md`) and rejected on cross-compile friction + first-Go-project pragmatism.
 
@@ -149,7 +146,7 @@ Trust gates (per `docs/briefs/go_port_brief.md` §3.12 — non-negotiable):
 | `PreHook`/`PostHook` plugin chain for guardrails | Hooks on canonical types means one moderation/auth/budget rule covers both surfaces. Bifrost-inspired. Day-one footprint is small (RequestID, Auth, Logging); the seams allow content moderation, schema validation, budget, semantic cache as later additions without rewriting handlers. | — Pending |
 | stdlib `net/http` + `chi` (reject `fasthttp`) | Bifrost uses fasthttp for throughput; our bottleneck is `kiro-cli` subprocess latency, not HTTP parsing. fasthttp breaks `http.Handler` ecosystem (testing, middleware, `r.Context()`). Not worth it for our scale. | — Pending |
 | Trust-gate suite required from day one | AI-assisted development on a first-Go project. Strict `golangci-lint`, `gosec`, `govulncheck`, `-race`, `goleak`, property tests, architectural boundary linting. Derived from "Making AI-Generated Rust Code Trustworthy" (Garcia) adapted to Go tooling. | — Pending |
-| Out-of-process embeddings sidecar (provisional) | Preserves trivial cross-compile by avoiding cgo. Subject to revisit if `fastembed-rs`-equivalent pure-Go option matures or if cgo deployment friction proves acceptable. | — Pending |
+| Embeddings cut from v1 (2026-05-27) | Phase 7 removed from the milestone; `/api/embed`, `/api/embeddings`, `/v1/embeddings` are out of scope. Prior provisional "out-of-process sidecar" decision is now moot. Original LangFlow flows that use Ollama embeddings will need to retain access to a separate embeddings server. | — Final |
 | Bare Go module name `otto-gateway` | Local-only at boot; defer hosting decision until first remote push. | — Pending |
 
 ## Evolution

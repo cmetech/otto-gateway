@@ -10,7 +10,7 @@ single foundations phase. Each phase from Phase 2 onward delivers a
 runnable, end-to-end vertical slice: Phase 2 is the first time a real
 client gets a real response from `kiro-cli` through the gateway
 (Ollama), Phase 3 brings the OpenAI surface online, and subsequent
-phases layer streaming, the warm pool, tool calls, embeddings,
+phases layer streaming, the warm pool, tool calls,
 guardrails, and finally the cross-compile / CI distribution story. The
 adapter-over-canonical layout (brief §3.13) and trust-gate suite (brief
 §3.12) are established in Phase 1 and enforced from then on.
@@ -32,7 +32,6 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 4: Streaming** - NDJSON (Ollama) and SSE (OpenAI + Anthropic) off one canonical chunk channel, with disconnect cancellation (completed 2026-05-25)
 - [x] **Phase 5: Pool + Stateful Sessions** - Warm `POOL_SIZE` pool plus `X-Session-Id` registry, both visible on `/health/agents` (plans 3/3 shipped 2026-05-26; verification gaps_found — gap-closure plans 05-04 (SC3 root-cause + fix) + 05-05 (PHASE5-PERF.md skeleton + manual gates) appended 2026-05-26) (completed 2026-05-26)
 - [x] **Phase 6: Tool-Call Path** - Canonical tool calls rendered per-surface, with `coerceToolCall` for plain-JSON-as-text (completed 2026-05-27)
-- [ ] **Phase 7: Embeddings** - Local BGE/E5 embeddings on three endpoints, independent of `kiro-cli`
 - [ ] **Phase 8: Plugin Hook Chain** - `PreHook`/`PostHook` over canonical types, with RequestID, Auth, Logging registered
 - [ ] **Phase 9: Distribution** - Cross-compile Linux+Windows from macOS, full trust-gate CI matrix gating merges
 
@@ -308,26 +307,11 @@ Plans:
 
 - [x] 06-05-PLAN.md — Cross-surface E2E: NEW tests/e2e/cmd/fake-kiro-cli/main.go binary supporting full ACP method set (initialize/session/new/session/set_model/session/prompt/session/cancel/ping per REVIEW HIGH #5), NEW tests/e2e/tools_testmain_test.go TestMain compiles binary at package init with per-pid os.TempDir() path (iteration-3 fix to MEDIUM #6 — binary lifetime is package-scoped, not per-test t.TempDir), tools_fixtures.go with new FakeKiro(t,script) (cmd, env) API reading package-level fakeKiroBinaryPath var (REVIEW HIGH #5), `go vet -tags e2e ./tests/e2e/...` (iteration-3 fix to MEDIUM #7), tools_{ollama,openai,anthropic,cancel}_test.go full D-17 12-scenario matrix including REVIEW HIGH #1/#2/MEDIUM #4 + iteration-3 HIGH #1/#2 E2E verifications, scenario 12 mid-stream cancel with frame-log assertion, blocking HUMAN-UAT checkpoint for loop24-client messages.stream() conformance (Node byte-fidelity checkpoint MOVED to 06-01 per REVIEW HIGH #3)
 
-### Phase 7: Embeddings
-
-**Goal:** Local embedding endpoints serve BGE-Small EN-V1.5 (default) and gated additional models on three endpoints — `/api/embed`, `/api/embeddings`, `/v1/embeddings` — without ever calling `kiro-cli`. Embedding backend follows brief §3.4 Option C (out-of-process sidecar, provisional) unless plan-phase flips the decision.
-**Mode:** mvp
-**Depends on:** Phase 6
-**Success Criteria** (what must be TRUE):
-
-  1. `POST /api/embed` with `{"model":"bge-small-en-v1.5","input":"hello"}` (or `input: [...]`) returns one embedding per input; `POST /api/embeddings` with a single `prompt` returns a single flat vector (legacy shape).
-  2. `POST /v1/embeddings` returns `{object:"list", data:[{object:"embedding", embedding:[…], index:N}]}` matching the OpenAI shape.
-  3. BGE-Small EN-V1.5 is warmed at startup (visible in `/health` embedding stats); additional models gated by `EMBEDDING_MODELS_ENABLED` env var.
-  4. Submitting more than `EMBEDDING_MAX_INPUTS` (default 2048) inputs in a single request returns HTTP 400.
-  5. Tracing/log inspection confirms embedding requests never invoke `kiro-cli` — they are served by the local backend (sidecar process or in-process backend, per the §3.4 decision logged in PROJECT.md during plan-phase).
-
-**Plans:** TBD
-
 ### Phase 8: Plugin Hook Chain
 
 **Goal:** `PreHook` / `PostHook` interfaces operate on canonical request/response types, with day-one hooks registered: RequestID, Auth (refactored from middleware), structured Logging, and PII Redaction. Short-circuit return from `PreHook` skips the engine. The PII hook ships with an extensible regex+validator recognizer registry — six built-in entities (Email, IPv4, IPv6, SSN, Credit Card with Luhn check, US Phone) and a one-struct addition path for new entities — so future guardrails (moderation, budget, schema, cache, audit) and new PII recognizers land without touching the hook engine.
 **Mode:** mvp
-**Depends on:** Phase 7
+**Depends on:** Phase 6
 **Requirements:** PLUG-01, PLUG-02, PLUG-03, PLUG-04, PLUG-05, PLUG-06, OBSV-03, OBSV-04
 **Success Criteria** (what must be TRUE):
 
@@ -371,6 +355,5 @@ Phases execute in numeric order: 1 → 1.1 → 2 → 3 → 3.1 → 4 → 5 → 6
 | 4. Streaming | 4/4 | Complete   | 2026-05-25 |
 | 5. Pool + Stateful Sessions | 5/5 | Complete    | 2026-05-26 |
 | 6. Tool-Call Path | 5/5 | Complete    | 2026-05-27 |
-| 7. Embeddings | 0/TBD | Not started | - |
 | 8. Plugin Hook Chain | 0/TBD | Not started | - |
 | 9. Distribution | 0/TBD | Not started | - |

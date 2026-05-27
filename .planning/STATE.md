@@ -78,7 +78,7 @@ Recent decisions affecting current work:
 - Pre-Phase 1: Adapter-over-canonical layout — `internal/adapter/{ollama,openai}` ↔ `internal/canonical` ↔ `internal/engine`
 - Pre-Phase 1: stdlib `net/http` + `chi` (reject `fasthttp`)
 - Pre-Phase 1: Trust-gate suite required from day one (Phase 1 establishes lint/test/security baseline)
-- Pre-Phase 7: Out-of-process embeddings sidecar provisional (avoids cgo; revisit in plan-phase 7)
+- 2026-05-27: Embeddings (Phase 7) cut from milestone — `/api/embed`, `/api/embeddings`, `/v1/embeddings` will not be implemented in v1. Provisional sidecar decision now moot.
 
 ### Pending Todos
 
