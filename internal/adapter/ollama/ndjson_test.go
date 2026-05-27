@@ -630,6 +630,48 @@ func TestNDJSON_KiroNative_DefensiveNilName(t *testing.T) {
 	}
 }
 
+// TestStream_ProseThenJSON_NoCoerce_NoLeak (WR-01 regression): when a
+// non-JSON-shaped text chunk has already flushed to the wire, a
+// subsequent JSON-shaped chunk MUST NOT retroactively engage the
+// streaming-coerce buffer. The done line must NOT carry tool_calls
+// (coerce did not fire), and the prose preamble must NOT precede a
+// tool_call envelope on the wire.
+//
+// This locks the Pitfall 3 "entire text" invariant in the streaming
+// path: once prose has leaked, coerce cannot safely fire (it would
+// produce a split-shape response: prose + synthesized tool_calls).
+func TestStream_ProseThenJSON_NoCoerce_NoLeak(t *testing.T) {
+	chunks := []canonical.Chunk{
+		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "Here's the answer: "}},
+		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: `{"location":"NYC"}`}},
+	}
+	final := &canonical.FinalResult{StopReason: canonical.StopEndTurn}
+	run := newFakeRunHandle(chunks, final, nil)
+
+	w := httptest.NewRecorder()
+	ctx := context.Background()
+	req := makeToolsCatalog()
+
+	if err := runNDJSONEmitter(ctx, noopCancelFn, w, run, "auto", true, time.Now(), nilLogger(), req); err != nil {
+		t.Fatalf("runNDJSONEmitter: %v", err)
+	}
+
+	body := w.Body.String()
+	// Coerce must NOT fire — done line cannot carry tool_calls when prose
+	// has already leaked to the wire.
+	if strings.Contains(body, `"tool_calls"`) {
+		t.Errorf("WR-01: prose-then-JSON must not fire streaming coerce; body=%s", body)
+	}
+	// Both text fragments must reach the wire (preserve all observable
+	// content; do not discard the JSON fragment as if it had been coerced).
+	if !strings.Contains(body, "Here's the answer:") {
+		t.Errorf("WR-01: prose preamble missing from wire; body=%s", body)
+	}
+	if !strings.Contains(body, `{\"location\":\"NYC\"}`) && !strings.Contains(body, `{"location":"NYC"}`) {
+		t.Errorf("WR-01: JSON fragment missing from wire; body=%s", body)
+	}
+}
+
 // ----------------------------------------------------------------------------
 // Helpers
 // ----------------------------------------------------------------------------

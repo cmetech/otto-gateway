@@ -480,6 +480,48 @@ func TestStream_NativeToolCall_Only_NoCoerce(t *testing.T) {
 	}
 }
 
+// TestStream_ProseThenJSON_NoCoerce_NoLeak (WR-01 regression): when a
+// non-JSON-shaped text chunk has already flushed as a plain text-delta
+// frame, a subsequent JSON-shaped chunk MUST NOT retroactively engage
+// the streaming-coerce buffer. The output must NOT carry delta.tool_calls
+// or finish_reason:"tool_calls" — coerce did not (and cannot safely)
+// fire once prose has reached the wire.
+//
+// This locks the Pitfall 3 "entire text" invariant in the SSE streaming
+// path: a split stream (prose first, JSON second) is not a valid coerce
+// candidate.
+func TestStream_ProseThenJSON_NoCoerce_NoLeak(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	chunks := []canonical.Chunk{
+		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "Here's the answer: "}},
+		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: `{"location":"NYC"}`}},
+	}
+	final := &canonical.FinalResult{StopReason: canonical.StopEndTurn}
+	body := driveGoldenWithReq(t, chunks, final, makeReqWithTools())
+	out := string(body)
+
+	// Prose preamble must reach the wire as a plain text-delta frame.
+	if !strings.Contains(out, `"delta":{"content":"Here's the answer: "}`) {
+		t.Errorf("WR-01: prose preamble must flush as text-delta; body=%q", out)
+	}
+	// The JSON fragment must ALSO reach the wire as a plain text-delta
+	// (released, NOT silently swallowed by the buffer).
+	if !strings.Contains(out, `"delta":{"content":"{\"location\":\"NYC\"}"}`) {
+		t.Errorf("WR-01: JSON fragment must flush as text-delta; body=%q", out)
+	}
+	// Coerce MUST NOT fire — no delta.tool_calls anywhere.
+	if strings.Contains(out, `"tool_calls"`) {
+		t.Errorf("WR-01: prose-then-JSON must not fire streaming coerce; body=%q", out)
+	}
+	// finish_reason is "stop", NOT "tool_calls".
+	if strings.Contains(out, `"finish_reason":"tool_calls"`) {
+		t.Errorf("WR-01: must NOT emit finish_reason:tool_calls on prose-then-JSON; body=%q", out)
+	}
+	if !strings.Contains(out, `"finish_reason":"stop"`) {
+		t.Errorf("WR-01: expected terminal finish_reason:stop; body=%q", out)
+	}
+}
+
 // TestNormalizeChatID verifies the regex+substitute path rewrites a
 // realistic genMessageID output correctly.
 func TestNormalizeChatID(t *testing.T) {

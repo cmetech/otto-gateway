@@ -131,6 +131,12 @@ type sseEmitter struct {
 	buffering             bool
 	deferredTextFrames    [][]byte
 	sawKiroNativeToolCall bool
+	// WR-01 (Phase 6 review): textFlushed locks the Pitfall 3 "entire
+	// text" invariant in the streaming path. Once any non-buffered text
+	// has been written to the wire, we MUST NOT start buffering for
+	// coerce — coerce requires the JSON to be the entire response, and
+	// a split stream (prose first, JSON second) violates that.
+	textFlushed bool
 }
 
 // writeData marshals payload to JSON and writes it as "data: <json>\n\n" +
@@ -258,8 +264,10 @@ func (e *sseEmitter) applyTextChunk(c canonical.Chunk) error {
 
 	// Decide whether to buffer. Once buffering has started, keep buffering.
 	// Otherwise, start buffering when req.Tools is non-empty AND the
-	// accumulated text starts JSON-shaped.
-	if !e.buffering && e.req != nil && len(e.req.Tools) > 0 {
+	// accumulated text starts JSON-shaped — BUT only if no non-buffered
+	// text has already been flushed (WR-01: split-stream coerce is unsafe
+	// per Pitfall 3 "entire text").
+	if !e.buffering && e.req != nil && len(e.req.Tools) > 0 && !e.textFlushed {
 		probe := e.textBuffer.String() + frag
 		if looksLikeJSONStart(probe) {
 			e.buffering = true
@@ -280,6 +288,10 @@ func (e *sseEmitter) applyTextChunk(c canonical.Chunk) error {
 		return nil
 	}
 
+	// WR-01: record that non-buffered text reached the wire so any
+	// future JSON-shaped chunk in this stream cannot retroactively
+	// start buffering.
+	e.textFlushed = true
 	return e.writeData(e.buildChunk(chunkChoice{
 		Index:        0,
 		Delta:        chunkDelta{Content: frag},

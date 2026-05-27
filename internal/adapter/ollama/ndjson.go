@@ -60,20 +60,34 @@ type ndjsonGenerateLine struct {
 // emitterState carries the per-stream accumulators introduced in Phase 6
 // Slice 2. Lives on the select-loop goroutine stack — no mutex (D-05
 // single-goroutine invariant).
+//
+// WR-01 (Phase 6 review): textFlushed locks the Pitfall 3 "entire text"
+// invariant in the streaming path. Once any non-buffered text has been
+// written to the wire, we MUST NOT start buffering for coerce — coerce
+// requires the JSON to be the entire response, and a split stream
+// (prose first, JSON second) violates that.
 type emitterState struct {
 	textBuffer            strings.Builder
 	buffering             bool
 	deferredTextLines     [][]byte
 	sawKiroNativeToolCall bool
+	textFlushed           bool
 }
 
 // shouldBuffer decides whether to start buffering. Returns true when:
 //   - req.Tools is non-empty (no tools means no coerce target — never buffer)
+//   - no non-buffered text has been flushed yet (Pitfall 3 "entire text"
+//     invariant — WR-01 fix)
 //   - the accumulated text (existing buffer plus the new chunk) begins with
 //     `{` or a triple-backtick fence (the heuristic CoerceToolCall's
 //     stripFences will recognize).
 func (s *emitterState) shouldBuffer(req *canonical.ChatRequest, newText string) bool {
 	if req == nil || len(req.Tools) == 0 {
+		return false
+	}
+	if s.textFlushed {
+		// WR-01: refuse to buffer once prose has already been flushed.
+		// A split stream (prose then JSON) cannot satisfy Pitfall 3.
 		return false
 	}
 	combined := strings.TrimSpace(s.textBuffer.String() + newText)
@@ -210,6 +224,10 @@ func emitTextChunk(w http.ResponseWriter, flusher http.Flusher, text, model stri
 	if !state.buffering {
 		if !state.shouldBuffer(req, text) {
 			// Non-JSON-shaped text — stream directly (Phase 4 behavior).
+			// WR-01: record that non-buffered text reached the wire so any
+			// future JSON-shaped chunk in this stream cannot retroactively
+			// start buffering (split-stream coerce is unsafe per Pitfall 3).
+			state.textFlushed = true
 			payload := ndjsonChatLine{
 				Model:     model,
 				CreatedAt: now,
