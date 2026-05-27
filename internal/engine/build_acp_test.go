@@ -304,6 +304,137 @@ func indexOfSection(haystack, needle string) int {
 	return -1
 }
 
+// TestBuildBlocks_AvailableTools_JSONCatalog (Phase 6 D-16 + REVIEW LOW #6):
+// when req.Tools is non-empty, buildBlocks emits the full JSON tool catalog
+// inside the [Available tools] bracketed section. When req.Tools is nil, no
+// [Available tools] section appears. When json.Marshal fails on a pathological
+// tool spec, the section header is still present (defensive degrade — no panic,
+// no error propagated) and a debug log is emitted via slog.Default().
+func TestBuildBlocks_AvailableTools_JSONCatalog(t *testing.T) {
+	t.Run("nil_tools_no_section", func(t *testing.T) {
+		req := &canonical.ChatRequest{
+			Messages: []canonical.Message{
+				{Role: canonical.RoleUser, Content: []canonical.ContentPart{
+					{Kind: canonical.ContentKindText, Text: "hi"},
+				}},
+			},
+		}
+		got := buildBlocks(req)
+		if got[0].Text == nil {
+			t.Fatal("expected text block")
+		}
+		if contains(got[0].Text.Content, "[Available tools]") {
+			t.Errorf("nil Tools must NOT emit [Available tools] section; got %q", got[0].Text.Content)
+		}
+	})
+
+	t.Run("single_tool_emits_json_catalog", func(t *testing.T) {
+		req := &canonical.ChatRequest{
+			Tools: []canonical.ToolSpec{
+				{
+					Name:        "get_weather",
+					Description: "Get current weather",
+					Parameters: map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"location": map[string]any{"type": "string"},
+						},
+						"required": []any{"location"},
+					},
+				},
+			},
+			Messages: []canonical.Message{
+				{Role: canonical.RoleUser, Content: []canonical.ContentPart{
+					{Kind: canonical.ContentKindText, Text: "weather?"},
+				}},
+			},
+		}
+		got := buildBlocks(req)
+		if got[0].Text == nil {
+			t.Fatal("expected text block")
+		}
+		content := got[0].Text.Content
+		assertions := []string{
+			"[Available tools]",
+			"```json",
+			`"name":"get_weather"`,
+			`"description":"Get current weather"`,
+			`"properties"`,
+			`"location"`,
+		}
+		for _, sub := range assertions {
+			if !contains(content, sub) {
+				t.Errorf("[Available tools] catalog missing %q in:\n%s", sub, content)
+			}
+		}
+	})
+
+	t.Run("multi_tool_preserves_declaration_order", func(t *testing.T) {
+		req := &canonical.ChatRequest{
+			Tools: []canonical.ToolSpec{
+				{Name: "alpha_tool", Description: "first", Parameters: map[string]any{"type": "object"}},
+				{Name: "beta_tool", Description: "second", Parameters: map[string]any{"type": "object"}},
+			},
+			Messages: []canonical.Message{
+				{Role: canonical.RoleUser, Content: []canonical.ContentPart{
+					{Kind: canonical.ContentKindText, Text: "x"},
+				}},
+			},
+		}
+		got := buildBlocks(req)
+		if got[0].Text == nil {
+			t.Fatal("expected text block")
+		}
+		content := got[0].Text.Content
+		alphaIdx := indexOfSection(content, `"name":"alpha_tool"`)
+		betaIdx := indexOfSection(content, `"name":"beta_tool"`)
+		if alphaIdx < 0 || betaIdx < 0 {
+			t.Fatalf("expected both tool names in catalog; got %q", content)
+		}
+		if alphaIdx > betaIdx {
+			t.Errorf("tool declaration order not preserved: alpha (idx %d) appears after beta (idx %d) in:\n%s", alphaIdx, betaIdx, content)
+		}
+	})
+
+	t.Run("marshal_failure_falls_back_to_header_only", func(t *testing.T) {
+		// REVIEW LOW #6: json.Marshal cannot serialize channels — inject
+		// one into Parameters as the marshal-error trigger. Expectation:
+		// (a) no panic, (b) section header still present, (c) buildBlocks
+		// returns successfully (does not propagate the marshal error).
+		req := &canonical.ChatRequest{
+			Tools: []canonical.ToolSpec{
+				{
+					Name:        "bad_tool",
+					Description: "has unmarshal-hostile params",
+					Parameters: map[string]any{
+						"bad": make(chan int),
+					},
+				},
+			},
+			Messages: []canonical.Message{
+				{Role: canonical.RoleUser, Content: []canonical.ContentPart{
+					{Kind: canonical.ContentKindText, Text: "x"},
+				}},
+			},
+		}
+		// Defer-recover so an accidental panic surfaces as a test failure
+		// rather than a process crash.
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("buildBlocks panicked on marshal-failure path: %v", r)
+			}
+		}()
+		got := buildBlocks(req)
+		if len(got) == 0 || got[0].Text == nil {
+			t.Fatal("expected at least the text block on marshal-failure path")
+		}
+		content := got[0].Text.Content
+		if !contains(content, "[Available tools]") {
+			t.Errorf("marshal-failure fallback must still emit [Available tools] header; got %q", content)
+		}
+	})
+}
+
 // Example_buildBlocks is a runnable godoc example (TRST-07). The
 // Output: block is validated by `go test -run Example`. Lowercase
 // suffix style because buildBlocks is unexported.

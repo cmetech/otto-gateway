@@ -117,19 +117,65 @@ func TestTranslateUpdate_VarianceMatrix(t *testing.T) {
 			},
 		},
 		{
-			name:       "tool_call_wrapped_snake_with_title",
-			paramsJSON: `{"sessionId":"s1","update":{"sessionUpdate":"tool_call","title":"read_file"}}`,
+			// Phase 6 D-03 part 1: tool_call notifications now promote to
+			// real ChunkKindToolCall with populated ToolCall.ID/Name/Args
+			// (was ChunkKindThought + [tool: <title>]\n text in Phase 1.1).
+			// The [tool: <name>]\n narration is now produced by
+			// engine.Collect (non-streaming) and per-surface emitters
+			// (streaming) — not by the translator.
+			name:       "tool_call_wrapped_snake_with_title_and_args",
+			paramsJSON: `{"sessionId":"s1","update":{"sessionUpdate":"tool_call","toolCallId":"tc_1","title":"read_file","args":{"path":"/etc/hosts"}}}`,
 			want: canonical.Chunk{
-				Kind:    canonical.ChunkKindThought,
-				Thought: &canonical.ThoughtChunk{Content: "[tool: read_file]\n"},
+				Kind: canonical.ChunkKindToolCall,
+				ToolCall: &canonical.ToolCallChunk{
+					ID:   "tc_1",
+					Name: "read_file",
+					Args: map[string]any{"path": "/etc/hosts"},
+				},
 			},
 		},
 		{
-			name:       "tool_call_chunk_wrapped_snake_with_title",
-			paramsJSON: `{"sessionId":"s1","update":{"sessionUpdate":"tool_call_chunk","title":"write"}}`,
+			// Phase 6 D-03 part 1: tool_call_chunk discriminator routes
+			// identically to tool_call (Pitfall 8 — kiro emits atomically,
+			// no aggregation needed).
+			name:       "tool_call_chunk_wrapped_snake_with_title_and_args",
+			paramsJSON: `{"sessionId":"s1","update":{"sessionUpdate":"tool_call_chunk","toolCallId":"tc_2","title":"write","args":{"file":"out.txt","data":"hi"}}}`,
 			want: canonical.Chunk{
-				Kind:    canonical.ChunkKindThought,
-				Thought: &canonical.ThoughtChunk{Content: "[tool: write]\n"},
+				Kind: canonical.ChunkKindToolCall,
+				ToolCall: &canonical.ToolCallChunk{
+					ID:   "tc_2",
+					Name: "write",
+					Args: map[string]any{"file": "out.txt", "data": "hi"},
+				},
+			},
+		},
+		{
+			// Phase 6 D-03 part 1: empty title still falls back to "unknown"
+			// per the firstNonEmpty discipline preserved from Phase 1.1.
+			// Args may be nil — passes through as nil map.
+			name:       "tool_call_without_title_falls_back_to_unknown_with_nil_args",
+			paramsJSON: `{"sessionId":"s1","update":{"sessionUpdate":"tool_call","toolCallId":"tc_empty"}}`,
+			want: canonical.Chunk{
+				Kind: canonical.ChunkKindToolCall,
+				ToolCall: &canonical.ToolCallChunk{
+					ID:   "tc_empty",
+					Name: "unknown",
+					Args: nil,
+				},
+			},
+		},
+		{
+			// Phase 6 D-03 part 1: tool_call_chunk with empty title and nil
+			// args also routes through the firstNonEmpty fallback.
+			name:       "tool_call_chunk_empty_title_nil_args",
+			paramsJSON: `{"sessionId":"s1","update":{"sessionUpdate":"tool_call_chunk"}}`,
+			want: canonical.Chunk{
+				Kind: canonical.ChunkKindToolCall,
+				ToolCall: &canonical.ToolCallChunk{
+					ID:   "",
+					Name: "unknown",
+					Args: nil,
+				},
 			},
 		},
 		{
@@ -173,11 +219,18 @@ func TestTranslateUpdate_VarianceMatrix(t *testing.T) {
 			},
 		},
 		{
-			name:       "tool_call_without_title_renders_unknown",
+			// Phase 6 D-03 part 1 (replaces Phase 1.1 thought-text): tool_call
+			// with no title/id/args still produces a real ChunkKindToolCall
+			// with Name == "unknown" (firstNonEmpty fallback preserved).
+			name:       "tool_call_without_title_renders_unknown_name_on_real_toolcall_chunk",
 			paramsJSON: `{"sessionId":"s1","update":{"sessionUpdate":"tool_call"}}`,
 			want: canonical.Chunk{
-				Kind:    canonical.ChunkKindThought,
-				Thought: &canonical.ThoughtChunk{Content: "[tool: unknown]\n"},
+				Kind: canonical.ChunkKindToolCall,
+				ToolCall: &canonical.ToolCallChunk{
+					ID:   "",
+					Name: "unknown",
+					Args: nil,
+				},
 			},
 		},
 		{
