@@ -330,3 +330,88 @@ func TestChatResponseToMessage_GoldenWireShape(t *testing.T) {
 		t.Errorf("wire mismatch:\n got:  %s\n want: %s", wire, want)
 	}
 }
+
+// TestRender_ToolUse_StopReasonOverride locks the Phase 6 Plan 04
+// Task 3 (REVIEW MEDIUM #4) non-streaming render contract: when the
+// canonical Message.Content contains a ContentKindToolUse part, the
+// wire stop_reason MUST be "tool_use" regardless of the canonical
+// StopReason value mapped by mapStopReason. Anthropic spec requires
+// this — the SDK treats `stop_reason:"end_turn"` + a populated
+// tool_use content block as a contradictory pair (undefined
+// behavior). This mirrors the streaming finalizer override in
+// sse.go (Task 2 toolUseEmitted).
+func TestRender_ToolUse_StopReasonOverride(t *testing.T) {
+	t.Run("TextAndToolUse_OverrideFires", func(t *testing.T) {
+		resp := &canonical.ChatResponse{
+			Model: "auto",
+			Message: canonical.Message{
+				Role: canonical.RoleAssistant,
+				Content: []canonical.ContentPart{
+					{Kind: canonical.ContentKindText, Text: "I'll check weather."},
+					{Kind: canonical.ContentKindToolUse, ToolUse: &canonical.ToolUsePart{
+						ID: "toolu_01", Name: "get_weather", Input: map[string]any{"location": "NYC"},
+					}},
+				},
+			},
+			StopReason: canonical.StopEndTurn,
+		}
+		out := chatResponseToMessage(resp, "auto")
+		if out.StopReason == nil {
+			t.Fatal("stop_reason: nil; want pointer to \"tool_use\" (override on tool_use part)")
+		}
+		if *out.StopReason != "tool_use" {
+			t.Errorf("stop_reason: got %q, want \"tool_use\" (override on tool_use content block)", *out.StopReason)
+		}
+	})
+	t.Run("TextOnly_NoOverride_EndTurn", func(t *testing.T) {
+		resp := &canonical.ChatResponse{
+			Model: "auto",
+			Message: canonical.Message{
+				Role: canonical.RoleAssistant,
+				Content: []canonical.ContentPart{
+					{Kind: canonical.ContentKindText, Text: "Hello!"},
+				},
+			},
+			StopReason: canonical.StopEndTurn,
+		}
+		out := chatResponseToMessage(resp, "auto")
+		if out.StopReason == nil || *out.StopReason != "end_turn" {
+			t.Errorf("stop_reason: got %v, want pointer to \"end_turn\" (no tool_use part -> no override)", out.StopReason)
+		}
+	})
+	t.Run("ToolUseOnly_OverrideFires", func(t *testing.T) {
+		resp := &canonical.ChatResponse{
+			Model: "auto",
+			Message: canonical.Message{
+				Role: canonical.RoleAssistant,
+				Content: []canonical.ContentPart{
+					{Kind: canonical.ContentKindToolUse, ToolUse: &canonical.ToolUsePart{
+						ID: "toolu_02", Name: "search", Input: map[string]any{"q": "ducks"},
+					}},
+				},
+			},
+			StopReason: canonical.StopEndTurn,
+		}
+		out := chatResponseToMessage(resp, "auto")
+		if out.StopReason == nil || *out.StopReason != "tool_use" {
+			t.Errorf("stop_reason: got %v, want pointer to \"tool_use\" (tool_use-only content)", out.StopReason)
+		}
+	})
+	t.Run("EmptyContent_NoOverride_CanonicalMappingRespected", func(t *testing.T) {
+		resp := &canonical.ChatResponse{
+			Model: "auto",
+			Message: canonical.Message{
+				Role:    canonical.RoleAssistant,
+				Content: nil,
+			},
+			StopReason: canonical.StopMaxTokens,
+		}
+		out := chatResponseToMessage(resp, "auto")
+		// Defensive "[{Type:text,Text:\"\"}]" content. NO ContentKindToolUse
+		// part exists in canonical -> no override -> canonical mapping
+		// respected -> "max_tokens".
+		if out.StopReason == nil || *out.StopReason != "max_tokens" {
+			t.Errorf("stop_reason: got %v, want pointer to \"max_tokens\" (empty Content; canonical mapping respected)", out.StopReason)
+		}
+	})
+}
