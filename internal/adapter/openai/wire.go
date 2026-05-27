@@ -300,6 +300,20 @@ type completionWireRequest struct {
 	Suffix   json.RawMessage `json:"suffix,omitempty"`
 	BestOf   json.RawMessage `json:"best_of,omitempty"`
 	N        json.RawMessage `json:"n,omitempty"`
+	// MaxTokens is json.RawMessage (NOT int) on the legacy /v1/completions
+	// path because it is accept-and-ignore (D-03) — kiro-cli does not expose
+	// a max_tokens lever on the backend. Using RawMessage lets us decode any
+	// shape (int, null, string-int variants) without 400'ing on type drift.
+	//
+	// WR-08 (Phase 6 review): this is INTENTIONALLY asymmetric with
+	// chatCompletionRequest.MaxTokens (which is `int` at line 34) — the
+	// chat-completion path propagates max_tokens into the canonical request
+	// while the legacy completion path silently drops it. A client that
+	// sends {"max_tokens": 100} to /v1/completions sees no enforcement; the
+	// same payload to /v1/chat/completions sets req.MaxTokens. This
+	// asymmetry is documented (not a bug) — if kiro-cli ever grows a
+	// max-tokens lever, hoist completionWireRequest.MaxTokens to `int` and
+	// wire it through promptToMessages.
 	MaxTokens json.RawMessage `json:"max_tokens,omitempty"`
 }
 
