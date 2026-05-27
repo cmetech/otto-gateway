@@ -155,3 +155,72 @@ simultaneously.
 > **Note:** Log files are not rotated. For extended development
 > sessions, truncate manually: `> /tmp/otto-gateway.log` (macOS/Linux)
 > or `Clear-Content $env:TEMP\otto-gateway.log` (Windows).
+
+## Admin Observability UI
+
+OTTO Gateway ships a dark-mode admin page at `GET /admin` that surfaces
+`/health` + `/health/agents` data through a styled HTML/CSS/JS bundle
+served from `embed.FS` (single static binary; no external runtime deps).
+
+### Endpoints
+
+| Path | Purpose |
+|------|---------|
+| `GET /admin` | The HTML page (renders summary strip, pool slots grid, active sessions table, log tail panel) |
+| `GET /admin/api/snapshot` | Unified JSON snapshot composing pool + registry detail (polled client-side every 30s) |
+| `GET /admin/logs/stream` | SSE stream of new log lines from `OTTO_LOG` (backfill of last ≤500 lines on connect, then live forward) |
+| `GET /admin/static/*` | Embedded CSS + JS assets |
+
+### OTTO_LOG dependency
+
+The log tail panel reads from the file pointed at by `OTTO_LOG`
+(defaults to `/tmp/otto-gateway.log`). When the gateway is launched
+via `scripts/otto-gw start`, the wrapper redirects stdout/stderr via
+shell `>>` to this file, and the admin page's tail panel renders
+incoming lines within ~1s.
+
+When the gateway is launched directly via `go run ./cmd/otto-gateway`
+or `./bin/otto-gateway` without `OTTO_LOG` or without shell
+redirection, the log file is empty/absent and the tail panel shows
+"Waiting for log activity…" indefinitely — this is a graceful
+degraded mode, not a failure.
+
+Log rotation: the tailer opens the file read-only with no exclusive
+lock and re-opens at EOF when it detects rotation (size shrink OR
+inode change via `os.SameFile`). `logrotate` create-and-rename
+strategies work; truncation (`> file`) also works. Historical
+content is NEVER backfilled on rotation.
+
+### v1 no-auth posture
+
+`/admin` and its sub-routes (`/admin/api/snapshot`, `/admin/logs/stream`)
+are auth-exempt in v1, regardless of whether `AUTH_TOKEN` is set.
+This is intentional (CONTEXT decision D-01): the operator network
+is assumed trusted (localhost / private VPC). Anyone with HTTP
+access to the gateway can see pool slot labels, session IDs,
+last-used timestamps, and live log lines (which may include
+DEBUG-level request paths and headers).
+
+**Deployments outside a trusted network MUST either:**
+- Wait for Phase 8 (plugin hook chain), which will gate `/admin/*`
+  behind the same `AuthHook` that protects `/v1/*` and `/api/*`.
+- Add a reverse-proxy-layer auth shim (nginx `auth_basic`, oauth2-proxy,
+  Cloudflare Access, etc.) in front of the gateway.
+
+### Supported browsers
+
+Any modern evergreen browser with `EventSource`, `fetch`, and ES2018+
+support: Chrome, Firefox, Safari, Edge (releases from 2019 onwards).
+Internet Explorer is NOT supported. No transpilation; no polyfills.
+
+### Remote access
+
+`/admin` listens on the same port as the rest of the gateway
+(`:11434` by default). To access from a remote machine without
+exposing the port:
+
+```
+ssh -L 11434:localhost:11434 user@gateway-host
+```
+
+Then visit `http://localhost:11434/admin` in your local browser.
