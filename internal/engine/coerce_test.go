@@ -391,10 +391,12 @@ func toolNames(tools []canonical.ToolSpec) []string {
 	return out
 }
 
-// Example_CoerceToolCall is a runnable godoc example (TRST-07). The
-// Output block is validated by `go test -run Example`. Lowercase suffix
-// not needed because CoerceToolCall is exported.
-func Example_CoerceToolCall() {
+// ExampleCoerceToolCall is a runnable godoc example (TRST-07). The
+// Output block is validated by `go test -run Example`. No suffix
+// (CoerceToolCall is exported, so the Go test framework expects the
+// function name to be ExampleCoerceToolCall — underscore suffix is
+// reserved for examples on unexported names).
+func ExampleCoerceToolCall() {
 	req := &canonical.ChatRequest{
 		Tools: []canonical.ToolSpec{
 			{

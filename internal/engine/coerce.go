@@ -1,0 +1,264 @@
+// Package engine — CoerceToolCall (D-01) + pickBestTool (D-10) +
+// stripFences (D-10) — the load-bearing LangChain-compat behavior
+// preserved from the Node reference (`docs/reference/acp_server_node_reference.md`
+// §"Load-bearing weirdness: `coerceToolCall`" lines 166-195).
+//
+// Why this exists: LangChain agents emit tool invocations as plain JSON
+// in the assistant's text content (e.g. `{"location":"Boston"}`) rather
+// than as a native tool_calls payload, because not every backend
+// surfaces a structured tool-call channel. `coerceToolCall` rescues
+// those LangChain agents by parsing the assistant text, scoring each
+// declared tool against the parsed JSON's keys, and synthesizing a
+// real tool_call entry that the client SDK will surface as a tool
+// invocation. Without this, LangFlow chains that emit `{"city":"London"}`
+// as plain text silently lose their tool calls.
+//
+// Per-surface contract (Phase 6 D-03/D-05/D-07 — see also collect.go's
+// commentary on Message.ToolCalls population):
+//   - Ollama and OpenAI surfaces invoke CoerceToolCall immediately
+//     after engine.Collect, between the canonical aggregation and the
+//     per-surface render. Returns bool so adapters can debug-log a
+//     `coerce=true` tag (Node's access log does this).
+//   - Anthropic surface does NOT invoke CoerceToolCall. Its native
+//     `tool_use` block path is wire-fluent and Anthropic-native clients
+//     (`@anthropic-ai/sdk` / loop24-client) do not emit JSON-as-text
+//     the way LangChain does on the Ollama path. Running coerce on
+//     Anthropic would silently rewrite assistant text into `tool_use`
+//     blocks, surprising the client. Anthropic populates
+//     Message.ToolCalls via its adapter-local Collect (06-04 Option A1)
+//     from kiro-native ChunkKindToolCall chunks.
+//
+// Interaction with engine.Collect (Phase 6 iteration-3 narration): because
+// engine.Collect now aggregates kiro-native ChunkKindToolCall chunks
+// into the assistant text as `[tool: <name>]\n` narration, the
+// assistant text seen by CoerceToolCall in a kiro-native scenario
+// STARTS with that narration text — which does NOT begin with `{` or
+// ` ``` `. Therefore Step 3 (raw JSON parse) and Step 4 (fence-strip
+// retry) both fail, Step 5 returns false, and the response is preserved
+// verbatim. The kiro-native + Ollama/OpenAI non-streaming path lands
+// the narration on the wire and coerce does not fire. No special-case
+// logic in CoerceToolCall is needed — the algorithm naturally handles
+// it. The kiro-native narration no-coerce assertion is locked by
+// `TestCoerceToolCall_AlgorithmCases/kiro_native_narration_text_no_coerce`
+// in coerce_test.go.
+package engine
+
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
+
+	"otto-gateway/internal/canonical"
+)
+
+// CoerceToolCall (D-01 + D-09 — the locked 9-step algorithm):
+//
+//  1. Defensive nil guards + skip:
+//     - req == nil OR resp == nil → return false.
+//     - len(req.Tools) == 0 → return false.
+//     - len(resp.Message.ToolCalls) > 0 → return false (D-02 idempotency:
+//     a non-empty ToolCalls short-circuits a re-invocation no-op).
+//  2. Extract assistant text: locate the single ContentKindText part in
+//     resp.Message.Content. If absent or empty (after TrimSpace), return
+//     false. The text-part index is remembered so Step 8 can clear it.
+//  3. Try json.Unmarshal on the raw text.
+//  4. If fail, run stripFences to strip ```json or bare ``` fences (the
+//     fence MUST wrap the ENTIRE text — Pitfall 3 "entire text"
+//     requirement). If stripFences returns (text, false) (no fence),
+//     return false. If stripFences succeeds, retry json.Unmarshal on
+//     the stripped text.
+//  5. If still fail after fence-strip → return false. Text preserved
+//     verbatim — never mutate response on parse failure.
+//  6. pickBestTool: for each ToolSpec in req.Tools, count how many keys
+//     in parsed (when parsed is map[string]any) appear as top-level keys
+//     of spec.Parameters["properties"]. Pick the highest scorer; ties
+//     broken by first-declared (D-10 — deterministic; first slice
+//     index wins).
+//  7. If the top score is zero → return false. Text preserved. (Node
+//     behavior — better than firing the wrong tool.)
+//  8. Replace Content[textIdx].Text with "" and append a synthetic
+//     ToolCall{ID: "call_<unix-nano>", Name: bestSpec.Name,
+//     Arguments: parsed-as-map} to resp.Message.ToolCalls.
+//  9. Return true.
+//
+// Returns true iff resp was rewritten (Step 9 reached); false otherwise.
+// No error return — parse failures are non-fatal per Step 5.
+//
+// CRITICAL — pointer semantics: this function mutates resp in place.
+// Callers MUST use the same pointer after the call. Pre-copying
+// (`respCopy := *resp`) before invocation would discard the mutation
+// (Pitfall 6).
+func CoerceToolCall(req *canonical.ChatRequest, resp *canonical.ChatResponse) bool {
+	// Step 1: defensive guards + idempotency short-circuit.
+	if req == nil || resp == nil {
+		return false
+	}
+	if len(req.Tools) == 0 {
+		return false
+	}
+	if len(resp.Message.ToolCalls) > 0 {
+		return false
+	}
+
+	// Step 2: locate the single assistant-text content part. Phase 6's
+	// engine.Collect always produces at most one ContentKindText part at
+	// index 0, but defensively walk the slice to find the FIRST text
+	// part regardless of position.
+	textIdx := -1
+	for i, part := range resp.Message.Content {
+		if part.Kind == canonical.ContentKindText {
+			textIdx = i
+			break
+		}
+	}
+	if textIdx < 0 {
+		return false
+	}
+	rawText := resp.Message.Content[textIdx].Text
+	if strings.TrimSpace(rawText) == "" {
+		return false
+	}
+
+	// Step 3: try raw json.Unmarshal.
+	var parsed any
+	if err := json.Unmarshal([]byte(rawText), &parsed); err != nil {
+		// Step 4: retry after fence-strip. If no fence is present
+		// (HasPrefix/HasSuffix chains both fail), bail per Step 5.
+		stripped, ok := stripFences(rawText)
+		if !ok {
+			return false
+		}
+		if err := json.Unmarshal([]byte(stripped), &parsed); err != nil {
+			// Step 5: still fail → text preserved verbatim.
+			return false
+		}
+	}
+
+	// D-10: only object parses are candidates. Arrays, scalars, nulls
+	// have no overlap with a tool's properties (which is a top-level
+	// keys map).
+	parsedMap, isMap := parsed.(map[string]any)
+	if !isMap {
+		return false
+	}
+
+	// Step 6: pick the best-scoring tool. Tie-break is first-declared
+	// (D-10) — pickBestTool iterates req.Tools by slice index, NOT map
+	// iteration, so ordering is deterministic.
+	bestSpec, bestScore := pickBestTool(parsedMap, req.Tools)
+
+	// Step 7: zero score → no-coerce (Node parity — better than firing
+	// the wrong tool).
+	if bestScore == 0 || bestSpec == nil {
+		return false
+	}
+
+	// Step 8: rewrite response. The synthesized ID uses `call_<unix-nano>`
+	// per D-11 (mirrors OpenAI's `call_` convention and the Phase 2
+	// `chatcmpl-<unix-nano>` pattern). Opaque to clients; no cryptographic
+	// claim — see T-06-03 in 06-01-PLAN.md threat register.
+	resp.Message.Content[textIdx].Text = ""
+	resp.Message.ToolCalls = append(resp.Message.ToolCalls, canonical.ToolCall{
+		ID:        fmt.Sprintf("call_%d", time.Now().UnixNano()),
+		Name:      bestSpec.Name,
+		Arguments: parsedMap,
+	})
+
+	// Step 9: rewritten.
+	return true
+}
+
+// pickBestTool scores each spec by the count of keys in parsed that
+// appear as top-level keys of spec.Parameters["properties"]. Returns
+// (best, score). On all-zero scores returns (nil, 0). Tie-break is
+// first-declared (D-10) — iteration is by slice index, so the first
+// spec with the highest score wins.
+//
+// Locked rules (D-10):
+//   - Iterate tools in declaration order (slice index, not map iteration).
+//   - For each spec: extract spec.Parameters["properties"] as
+//     map[string]any. If absent / not a map / empty, skip this spec
+//     (zero score; can't compare against an unknown shape).
+//   - Score = count of keys in parsed that appear as top-level keys of
+//     properties. TOP-LEVEL ONLY — no recursion (D-10).
+//   - On strict `>` update bestIdx/bestScore. On equality (`==`), DO
+//     NOT update — first-declared wins.
+func pickBestTool(parsed map[string]any, tools []canonical.ToolSpec) (*canonical.ToolSpec, int) {
+	bestIdx := -1
+	bestScore := 0
+	for i := range tools {
+		spec := &tools[i]
+		props := extractProperties(spec)
+		if len(props) == 0 {
+			continue
+		}
+		score := 0
+		for key := range parsed {
+			if _, ok := props[key]; ok {
+				score++
+			}
+		}
+		if score > bestScore {
+			bestScore = score
+			bestIdx = i
+		}
+	}
+	if bestIdx < 0 {
+		return nil, 0
+	}
+	return &tools[bestIdx], bestScore
+}
+
+// extractProperties pulls spec.Parameters["properties"] as map[string]any,
+// or returns nil if absent / wrong shape. Defensive against arbitrary
+// caller-supplied Parameters maps.
+func extractProperties(spec *canonical.ToolSpec) map[string]any {
+	if spec == nil || spec.Parameters == nil {
+		return nil
+	}
+	raw, ok := spec.Parameters["properties"]
+	if !ok {
+		return nil
+	}
+	props, ok := raw.(map[string]any)
+	if !ok {
+		return nil
+	}
+	return props
+}
+
+// stripFences detects and strips an outer ```json … ``` OR bare
+// ``` … ``` fence wrapping the ENTIRE trimmed text. Returns
+// (inner-content, true) if a fence wraps the whole text; (text-trim, false)
+// otherwise.
+//
+// Locked rules (D-10):
+//   - After strings.TrimSpace, check HasPrefix("```json\n") + HasSuffix("\n```")
+//     first; then HasPrefix("```\n") + HasSuffix("\n```").
+//   - Both prefix AND suffix must match — the fence MUST wrap the
+//     ENTIRE text (Pitfall 3 "entire text" requirement — no inline
+//     fenced JSON inside prose).
+//   - Tolerate CRLF by normalizing "\r\n" → "\n" BEFORE the
+//     prefix/suffix check.
+//   - NO regex (Pitfall 3 catastrophic-backtracking safety + Don't-
+//     Hand-Roll guidance). Two HasPrefix/HasSuffix chains with no
+//     nested quantifiers — linear time guaranteed.
+//
+// Returns (text-trimmed, false) when no fence is detected so the
+// caller can short-circuit; the trimmed text is informational only on
+// a `false` return (caller should NOT retry parse with it).
+func stripFences(text string) (string, bool) {
+	t := strings.ReplaceAll(text, "\r\n", "\n")
+	t = strings.TrimSpace(t)
+	const suffix = "\n```"
+	if strings.HasPrefix(t, "```json\n") && strings.HasSuffix(t, suffix) {
+		inner := t[len("```json\n") : len(t)-len(suffix)]
+		return inner, true
+	}
+	if strings.HasPrefix(t, "```\n") && strings.HasSuffix(t, suffix) {
+		inner := t[len("```\n") : len(t)-len(suffix)]
+		return inner, true
+	}
+	return t, false
+}
