@@ -40,7 +40,7 @@ func TestSSE_CtxCancel(t *testing.T) {
 	cancel() // cancel immediately — before the emitter even starts the select-loop
 
 	rec := httptest.NewRecorder()
-	err := runSSEEmitter(ctx, rec, runHandle, "auto", nullLogger())
+	err := runSSEEmitter(ctx, rec, runHandle, &canonical.ChatRequest{}, "auto", nullLogger())
 	if err == nil {
 		t.Error("expected non-nil error on ctx cancel, got nil")
 	}
@@ -75,7 +75,7 @@ func TestSSE_HeadersSetBeforeBody(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	if err := runSSEEmitter(context.Background(), rec, runHandle, "auto", nullLogger()); err != nil {
+	if err := runSSEEmitter(context.Background(), rec, runHandle, &canonical.ChatRequest{}, "auto", nullLogger()); err != nil {
 		t.Fatalf("runSSEEmitter: %v", err)
 	}
 

@@ -122,7 +122,19 @@ func nullLogger() *slog.Logger {
 // and returns the response body bytes. Uses model "auto" to match goldens.
 // Fixed-size chunks channel + close-after-fill so the emitter sees a clean
 // end-of-stream (mirror anthropic/sse_golden_test.go:105-124).
+//
+// Phase 6: passes an empty canonical.ChatRequest (no tools) so streaming
+// coerce is a no-op. Tests that exercise streaming coerce use the
+// driveGoldenWithReq variant below to attach tools.
 func driveGolden(t *testing.T, chunks []canonical.Chunk, final *canonical.FinalResult) []byte {
+	t.Helper()
+	return driveGoldenWithReq(t, chunks, final, &canonical.ChatRequest{})
+}
+
+// driveGoldenWithReq is the Phase 6 variant of driveGolden that allows
+// callers to attach a canonical.ChatRequest with req.Tools populated for
+// streaming-coerce tests.
+func driveGoldenWithReq(t *testing.T, chunks []canonical.Chunk, final *canonical.FinalResult, req *canonical.ChatRequest) []byte {
 	t.Helper()
 	ch := make(chan canonical.Chunk, len(chunks)+1) // +1 so close with 0 chunks works
 	for _, c := range chunks {
@@ -137,7 +149,7 @@ func driveGolden(t *testing.T, chunks []canonical.Chunk, final *canonical.FinalR
 		sessionID: "session_golden",
 	}
 	rec := httptest.NewRecorder()
-	if err := runSSEEmitter(context.Background(), rec, runHandle, "auto", nullLogger()); err != nil {
+	if err := runSSEEmitter(context.Background(), rec, runHandle, req, "auto", nullLogger()); err != nil {
 		t.Fatalf("runSSEEmitter: %v", err)
 	}
 	return rec.Body.Bytes()

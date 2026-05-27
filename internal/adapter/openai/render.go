@@ -3,6 +3,7 @@ package openai
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"time"
 
 	"otto-gateway/internal/canonical"
@@ -91,9 +92,32 @@ type completionChoice struct {
 
 // responseMessage is the message object inside a non-streaming choice.
 // Role is always "assistant"; Content is the joined text output.
+// ToolCalls carries the assistant's outbound tool invocations for the
+// OpenAI surface (Phase 6 D-07). Populated ONLY by engine.CoerceToolCall
+// (the coerce-from-text path) per the per-surface contract documented
+// below — kiro-native ChunkKindToolCall renders as `[tool: <name>]\n`
+// narration text in Content, NOT here.
 type responseMessage struct {
-	Role    string `json:"role"`    // "assistant"
-	Content string `json:"content"` // joined text parts
+	Role      string           `json:"role"`              // "assistant"
+	Content   string           `json:"content"`           // joined text parts
+	ToolCalls []openAIToolCall `json:"tool_calls,omitempty"`
+}
+
+// openAIToolCall is one entry of choices[].message.tool_calls (Phase 6 D-07).
+// Type is always "function" per the OpenAI spec.
+type openAIToolCall struct {
+	ID       string                 `json:"id"`
+	Type     string                 `json:"type"`
+	Function openAIToolCallFunction `json:"function"`
+}
+
+// openAIToolCallFunction is the function-call envelope. Arguments is a
+// JSON-encoded STRING (NOT map[string]any) — this is the OpenAI wire
+// convention and the wire-shape divergence canary opposite of Ollama's
+// Arguments object literal (Phase 6 D-07).
+type openAIToolCallFunction struct {
+	Name      string `json:"name,omitempty"`
+	Arguments string `json:"arguments"`
 }
 
 // completionUsage is the token-accounting envelope. Phase 3 emits honest
@@ -138,14 +162,60 @@ func chatResponseToCompletion(resp *canonical.ChatResponse, requestedModel strin
 		stopReason = resp.StopReason
 	}
 
+	// resp.Message.ToolCalls is populated for the OpenAI surface ONLY by
+	// engine.CoerceToolCall (the coerce-from-text path). Per the Phase 6
+	// per-surface population contract (D-03/D-05/D-07 — Anthropic is the
+	// D-07 exception; Ollama and OpenAI share this code-path discipline):
+	//   - kiro-native ChunkKindToolCall renders as `[tool: <name>]\n`
+	//     narration text in Content (non-streaming path inherits this
+	//     from engine.Collect's 06-01 Task 2 narration aggregator;
+	//     streaming path emits via sse.go's per-chunk ChunkKindToolCall
+	//     handler — also text-delta narration, NOT delta.tool_calls).
+	//   - engine.CoerceToolCall rescues LangChain-style JSON-as-text
+	//     emissions and populates Message.ToolCalls with synthetic
+	//     entries. The render path below converts those into the OpenAI
+	//     wire shape (Arguments as JSON-STRING, not object).
+	var toolCalls []openAIToolCall
+	if resp != nil {
+		for _, tc := range resp.Message.ToolCalls {
+			argsJSON, err := json.Marshal(tc.Arguments)
+			if err != nil {
+				// Defensive — should never trip on a map[string]any
+				// produced by CoerceToolCall (json.Unmarshal already
+				// validated the source). Fall back to an empty object
+				// literal so the wire shape stays well-formed.
+				argsJSON = []byte("{}")
+			}
+			toolCalls = append(toolCalls, openAIToolCall{
+				ID:   tc.ID,
+				Type: "function",
+				Function: openAIToolCallFunction{
+					Name:      tc.Name,
+					Arguments: string(argsJSON),
+				},
+			})
+		}
+	}
+
+	finishReason := mapFinishReason(stopReason)
+	// Post-fixup: when Message.ToolCalls is non-empty (only the coerce
+	// path populates it on the OpenAI surface), override finish_reason
+	// to "tool_calls" per the OpenAI spec. The canonical StopReason
+	// enum does not carry a tool-calls value — this is the OpenAI-
+	// specific resolution of RESEARCH Open Question 2.
+	if len(toolCalls) > 0 {
+		finishReason = "tool_calls"
+	}
+
 	out.Choices = []completionChoice{
 		{
 			Index: 0,
 			Message: responseMessage{
-				Role:    "assistant",
-				Content: text,
+				Role:      "assistant",
+				Content:   text,
+				ToolCalls: toolCalls,
 			},
-			FinishReason: mapFinishReason(stopReason),
+			FinishReason: finishReason,
 		},
 	}
 

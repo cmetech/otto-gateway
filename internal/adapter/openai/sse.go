@@ -155,7 +155,15 @@ func (e *sseEmitter) applyChunk(c canonical.Chunk) error {
 //
 // Returns nil on clean stream completion ([DONE] emitted), ctx.Err() on
 // client disconnect, or a wrapped write/marshal error.
-func runSSEEmitter(ctx context.Context, w http.ResponseWriter, run RunHandle, model string, logger *slog.Logger) error {
+//
+// Phase 6 (REVIEW HIGH #1 + iteration-3 sawKiroNativeToolCall): the
+// emitter accepts `req *canonical.ChatRequest` so end-of-stream coerce
+// can read req.Tools and call engine.CoerceToolCall on the buffered
+// assistant text. Streaming coerce fires ONLY when sawKiroNativeToolCall
+// is false at stream close — kiro-native ChunkKindToolCall renders as
+// text-delta narration (per HIGH #2 two-path rule) and trips the
+// sawKiroNativeToolCall flag so end-of-stream coerce is skipped.
+func runSSEEmitter(ctx context.Context, w http.ResponseWriter, run RunHandle, req *canonical.ChatRequest, model string, logger *slog.Logger) error {
 	// Assert Flusher BEFORE any write so the caller can fall back to JSON 500
 	// if the ResponseWriter does not support streaming (Pitfall 2 + anthropic analog).
 	flusher, ok := w.(http.Flusher)

@@ -70,6 +70,13 @@ deps:
     mayDependOn:
       - canonical
       - session
+      - engine  # Phase 6 D-05: adapters invoke engine.CoerceToolCall
+                # directly on the coerce-from-text path. The Engine
+                # interface in adapter.go remains the structural seam for
+                # Engine.Collect / Engine.Run (TRST-04 still upheld for
+                # those code paths); CoerceToolCall is a package-level
+                # function with no engine state, so the direct import is
+                # acceptable per the Phase 6 per-surface contract.
   adapter_anthropic:
     anyVendorDeps: true
     mayDependOn:
@@ -80,6 +87,10 @@ deps:
     mayDependOn:
       - canonical
       - session
+      - engine  # Phase 6 D-05: same rationale as adapter_ollama —
+                # engine.CoerceToolCall is a stateless package-level
+                # function invoked from both the non-streaming handler
+                # path and the streaming end-of-stream coerce path.
   auth:
     anyVendorDeps: true
   canonical:

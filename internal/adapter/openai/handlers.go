@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"otto-gateway/internal/canonical"
+	"otto-gateway/internal/engine"
 	"otto-gateway/internal/session"
 )
 
@@ -72,6 +73,15 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 		// D-07: create a derived context so that a write failure in
 		// runSSEEmitter cancels the derived ctx (via defer cancelFn), which
 		// the D-06 watchdog observes and translates into session/cancel.
+		//
+		// Phase 6 (REVIEW HIGH #1 + iteration-3 sawKiroNativeToolCall):
+		// the streaming branch threads the canonical `req` pointer down
+		// to runSSEEmitter. Streaming coerce lives in sse.go — see
+		// REVIEW HIGH #1. engine.CoerceToolCall must run AFTER all text
+		// deltas accumulate, before the terminal finish_reason frame
+		// composes. Iteration 3: sse.go also tracks sawKiroNativeToolCall
+		// and skips coerce when true (prevents the iteration-2 double-fire
+		// regression).
 		ctx, cancelFn := context.WithCancel(r.Context())
 		defer cancelFn()
 		runHandle, err := eng.Run(ctx, req)
@@ -82,7 +92,7 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 			writeError(w, http.StatusInternalServerError, errAPI, "internal error")
 			return
 		}
-		if err := runSSEEmitter(ctx, w, runHandle, wire.Model, a.cfg.Logger); err != nil {
+		if err := runSSEEmitter(ctx, w, runHandle, req, wire.Model, a.cfg.Logger); err != nil {
 			// runSSEEmitter has already written SSE headers + at least some frames.
 			// We cannot send a JSON 500 after WriteHeader; log at debug and let
 			// the truncated stream stand (Pitfall 3 / A5).
@@ -98,6 +108,26 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 		a.cfg.Logger.Error("openai: engine.Collect error", "err", err)
 		writeError(w, http.StatusInternalServerError, errAPI, "internal error")
 		return
+	}
+
+	// Phase 6 D-01: invoke CoerceToolCall on the non-streaming path
+	// between aggregation and per-surface render. The function mutates
+	// resp in place (Pitfall 6 — pass the pointer directly, no
+	// pre-copy). Coerce-from-text returns true iff Message.ToolCalls
+	// was rewritten; the kiro-native narration path (06-01 Task 2
+	// narration aggregator → text like "[tool: <name>]\n") naturally
+	// fails the JSON-parse step and is a coerce miss, so the narration
+	// text flows through resp.Message.Content into choices[0].message.
+	// content as expected.
+	if engine.CoerceToolCall(req, resp) {
+		// REVIEW LOW #7 defensive length-guard: even though CoerceToolCall
+		// only returns true after appending a ToolCall entry, guard the
+		// read in case the contract drifts.
+		var firstName string
+		if len(resp.Message.ToolCalls) > 0 {
+			firstName = resp.Message.ToolCalls[0].Name
+		}
+		a.cfg.Logger.Debug("openai: coerce fired", "tool", firstName)
 	}
 
 	writeJSON(w, chatResponseToCompletion(resp, wire.Model))
