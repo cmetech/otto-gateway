@@ -432,3 +432,157 @@ func TestHandleChat_RequestBodyTooLarge(t *testing.T) {
 		t.Errorf("status: got %d, want 413 (Codex M-5 cap)", w.Code)
 	}
 }
+
+// TestHandlers_DefaultStreamOmitted_GoesToStreaming locks the Ollama default:
+// when the `stream` field is OMITTED from the request body, the streaming
+// branch must take over (Content-Type: application/x-ndjson). Per Phase 4
+// D-05 + streamEnabled(s *bool): nil stream → true.
+//
+// Three subtests cover all three forms: omitted, explicit true, explicit false.
+// (REVIEW HIGH #1 — default-omitted test addition.)
+func TestHandlers_DefaultStreamOmitted_GoesToStreaming(t *testing.T) {
+	cases := []struct {
+		name        string
+		body        string
+		wantStream  bool
+		wantContent string
+	}{
+		{
+			name:        "omitted_defaults_to_streaming",
+			body:        `{"model":"auto","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object","properties":{"location":{"type":"string"}}}}}]}`,
+			wantStream:  true,
+			wantContent: "application/x-ndjson",
+		},
+		{
+			name:        "explicit_true_streams",
+			body:        `{"model":"auto","messages":[{"role":"user","content":"hi"}],"stream":true}`,
+			wantStream:  true,
+			wantContent: "application/x-ndjson",
+		},
+		{
+			name:        "explicit_false_non_streaming",
+			body:        `{"model":"auto","messages":[{"role":"user","content":"hi"}],"stream":false}`,
+			wantStream:  false,
+			wantContent: "application/json",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			eng := &fakeEngine{
+				resp: &canonical.ChatResponse{
+					Message: canonical.Message{
+						Role:    canonical.RoleAssistant,
+						Content: []canonical.ContentPart{{Kind: canonical.ContentKindText, Text: "ok"}},
+					},
+					StopReason: canonical.StopEndTurn,
+				},
+				runChunks: []canonical.Chunk{
+					{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "ok"}},
+				},
+			}
+			a := newTestAdapter(eng, nil)
+			w := doPost(t, a, "/chat", tc.body)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status: got %d, want 200; body=%s", w.Code, w.Body.String())
+			}
+			ct := w.Header().Get("Content-Type")
+			if !strings.HasPrefix(ct, tc.wantContent) {
+				t.Errorf("Content-Type: got %q, want prefix %q", ct, tc.wantContent)
+			}
+		})
+	}
+}
+
+// TestHandleChat_NonStreaming_CoerceFires proves the Phase 6 D-01 hook-in:
+// when /api/chat is invoked with tools[] and the engine returns a
+// JSON-shaped text body, the non-streaming branch invokes
+// engine.CoerceToolCall after engine.Collect and the response carries
+// message.tool_calls[] with plain-object arguments — NOT a JSON-string.
+//
+// The fakeEngine.Collect returns text `{"location":"NYC"}` which matches
+// the get_weather tool's properties. CoerceToolCall must rewrite the
+// response in place (Pitfall 6 — pointer-direct, no pre-copy).
+func TestHandleChat_NonStreaming_CoerceFires(t *testing.T) {
+	eng := &fakeEngine{
+		resp: &canonical.ChatResponse{
+			Model: "auto",
+			Message: canonical.Message{
+				Role: canonical.RoleAssistant,
+				Content: []canonical.ContentPart{
+					{Kind: canonical.ContentKindText, Text: `{"location":"NYC"}`},
+				},
+			},
+			StopReason: canonical.StopEndTurn,
+		},
+	}
+	a := newTestAdapter(eng, nil)
+	body := `{"model":"auto","messages":[{"role":"user","content":"weather?"}],"stream":false,"tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object","properties":{"location":{"type":"string"}}}}}]}`
+	w := doPost(t, a, "/chat", body)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+
+	// Byte-level wire-shape canary: arguments serialize as a plain JSON
+	// object (Ollama D-04), NOT an OpenAI-style JSON-encoded string.
+	bodyStr := w.Body.String()
+	if !strings.Contains(bodyStr, `"arguments":{"location":"NYC"}`) {
+		t.Errorf("wire-shape canary FAILED — expected plain-object arguments in response; got: %s", bodyStr)
+	}
+	if strings.Contains(bodyStr, `"arguments":"`) {
+		t.Errorf("wire-shape canary FAILED — found JSON-string arguments form (OpenAI shape); got: %s", bodyStr)
+	}
+
+	var resp ollamaChatResponse
+	if err := json.NewDecoder(strings.NewReader(bodyStr)).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Message.ToolCalls) != 1 {
+		t.Fatalf("Message.ToolCalls len: got %d, want 1 (coerce must have fired); body=%s", len(resp.Message.ToolCalls), bodyStr)
+	}
+	if resp.Message.ToolCalls[0].Function.Name != "get_weather" {
+		t.Errorf("ToolCalls[0].Function.Name: got %q, want get_weather", resp.Message.ToolCalls[0].Function.Name)
+	}
+	if resp.Message.ToolCalls[0].Function.Arguments["location"] != "NYC" {
+		t.Errorf("ToolCalls[0].Function.Arguments[location]: got %v, want NYC", resp.Message.ToolCalls[0].Function.Arguments["location"])
+	}
+	// Step 8: text content is cleared after coerce.
+	if resp.Message.Content != "" {
+		t.Errorf("Message.Content: got %q, want empty (coerce clears the matched text)", resp.Message.Content)
+	}
+}
+
+// TestHandleChat_NonStreaming_KiroNativeNarration_NoCoerce locks the
+// iteration-3 interaction: when engine.Collect produces `[tool: <name>]\n`
+// narration text (from the 06-01 aggregator), CoerceToolCall sees the
+// narration as non-JSON text, Step 3 + Step 4 both fail, Step 5 returns
+// false, and the narration text passes through to message.content
+// unchanged. No tool_calls field is populated.
+func TestHandleChat_NonStreaming_KiroNativeNarration_NoCoerce(t *testing.T) {
+	eng := &fakeEngine{
+		resp: &canonical.ChatResponse{
+			Model: "auto",
+			Message: canonical.Message{
+				Role: canonical.RoleAssistant,
+				Content: []canonical.ContentPart{
+					{Kind: canonical.ContentKindText, Text: "[tool: get_weather]\n"},
+				},
+			},
+			StopReason: canonical.StopEndTurn,
+		},
+	}
+	a := newTestAdapter(eng, nil)
+	body := `{"model":"auto","messages":[{"role":"user","content":"weather?"}],"stream":false,"tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object","properties":{"location":{"type":"string"}}}}}]}`
+	w := doPost(t, a, "/chat", body)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	bodyStr := w.Body.String()
+	if strings.Contains(bodyStr, `"tool_calls"`) {
+		t.Errorf("non-streaming kiro-native narration must NOT produce tool_calls; body=%s", bodyStr)
+	}
+	if !strings.Contains(bodyStr, `[tool: get_weather]`) {
+		t.Errorf("narration text missing from response; body=%s", bodyStr)
+	}
+}
