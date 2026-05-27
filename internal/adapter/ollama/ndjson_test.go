@@ -324,6 +324,313 @@ func TestNDJSON_StreamResultError(t *testing.T) {
 }
 
 // ----------------------------------------------------------------------------
+// Phase 6 Slice 2 — streaming coerce + kiro-native [tool:] narration + iteration-3
+// sawKiroNativeToolCall skip-or-coerce-or-flush logic
+// ----------------------------------------------------------------------------
+
+// makeToolsCatalog builds a *canonical.ChatRequest with a single get_weather
+// tool spec — used by the streaming-coerce tests to populate req.Tools so
+// the buffering heuristic engages.
+func makeToolsCatalog() *canonical.ChatRequest {
+	return &canonical.ChatRequest{
+		Tools: []canonical.ToolSpec{
+			{
+				Name: "get_weather",
+				Parameters: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"location": map[string]any{"type": "string"},
+					},
+				},
+			},
+		},
+	}
+}
+
+// TestNDJSON_StreamingCoerce_BareJSON: REVIEW HIGH #1 verification. A
+// streamed sequence of text chunks that together form a JSON object
+// matching a tool spec must NOT be emitted as per-delta NDJSON lines
+// (they get BUFFERED). At stream close, engine.CoerceToolCall fires on
+// the buffered text, the synthesized tool_calls[] is attached, the done:true
+// final line carries it, and the buffered deltas are DISCARDED.
+//
+// Wire-shape canary on the done line: arguments are a plain JSON object
+// (Ollama D-04), NOT a JSON-encoded string.
+func TestNDJSON_StreamingCoerce_BareJSON(t *testing.T) {
+	chunks := []canonical.Chunk{
+		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "{"}},
+		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: `"location":`}},
+		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: `"NYC"`}},
+		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "}"}},
+	}
+	final := &canonical.FinalResult{StopReason: canonical.StopEndTurn}
+	run := newFakeRunHandle(chunks, final, nil)
+
+	w := httptest.NewRecorder()
+	ctx := context.Background()
+	req := makeToolsCatalog()
+
+	if err := runNDJSONEmitter(ctx, noopCancelFn, w, run, "auto", true, time.Now(), nilLogger(), req); err != nil {
+		t.Fatalf("runNDJSONEmitter: %v", err)
+	}
+
+	body := w.Body.String()
+	lines := scanNDJSON(t, w.Body.Bytes())
+	if len(lines) != 1 {
+		t.Fatalf("NDJSON lines: got %d, want exactly 1 (only the done:true line; buffered text discarded on coerce hit); body=%s", len(lines), body)
+	}
+
+	// Wire-shape canary on the done line — plain-object arguments.
+	if !strings.Contains(body, `"arguments":{"location":"NYC"}`) {
+		t.Errorf("done line missing plain-object arguments; body=%s", body)
+	}
+	if strings.Contains(body, `"arguments":"`) {
+		t.Errorf("done line carries OpenAI-style JSON-string arguments; body=%s", body)
+	}
+
+	// Decode the done line and confirm tool_calls[] populated.
+	var done struct {
+		Done    bool `json:"done"`
+		Message struct {
+			Content   string `json:"content"`
+			ToolCalls []struct {
+				Function struct {
+					Name      string         `json:"name"`
+					Arguments map[string]any `json:"arguments"`
+				} `json:"function"`
+			} `json:"tool_calls"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal(lines[0], &done); err != nil {
+		t.Fatalf("decode done line: %v", err)
+	}
+	if !done.Done {
+		t.Error("done flag: got false, want true")
+	}
+	if len(done.Message.ToolCalls) != 1 {
+		t.Fatalf("tool_calls len: got %d, want 1", len(done.Message.ToolCalls))
+	}
+	if done.Message.ToolCalls[0].Function.Name != "get_weather" {
+		t.Errorf("tool_calls[0].function.name: got %q, want get_weather", done.Message.ToolCalls[0].Function.Name)
+	}
+	if done.Message.ToolCalls[0].Function.Arguments["location"] != "NYC" {
+		t.Errorf("tool_calls[0].function.arguments[location]: got %v, want NYC", done.Message.ToolCalls[0].Function.Arguments["location"])
+	}
+}
+
+// TestNDJSON_StreamingCoerce_NotJSON_PassThrough: when the text deltas
+// do NOT look like JSON (no `{` or fence prefix), the buffering heuristic
+// must NOT engage. Each text chunk streams as a normal NDJSON line and
+// the done:true line carries NO tool_calls. Behavior is identical to
+// Phase 4 pre-Phase-6.
+func TestNDJSON_StreamingCoerce_NotJSON_PassThrough(t *testing.T) {
+	chunks := []canonical.Chunk{
+		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "Hello "}},
+		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "world!"}},
+	}
+	final := &canonical.FinalResult{StopReason: canonical.StopEndTurn}
+	run := newFakeRunHandle(chunks, final, nil)
+
+	w := httptest.NewRecorder()
+	ctx := context.Background()
+	req := makeToolsCatalog()
+
+	if err := runNDJSONEmitter(ctx, noopCancelFn, w, run, "auto", true, time.Now(), nilLogger(), req); err != nil {
+		t.Fatalf("runNDJSONEmitter: %v", err)
+	}
+
+	body := w.Body.String()
+	lines := scanNDJSON(t, w.Body.Bytes())
+	// 2 text deltas + 1 done line = 3 lines.
+	if len(lines) != 3 {
+		t.Fatalf("NDJSON lines: got %d, want 3 (2 text deltas + done line, no buffering); body=%s", len(lines), body)
+	}
+	// No tool_calls on any line.
+	if strings.Contains(body, `"tool_calls"`) {
+		t.Errorf("non-JSON text path must NOT produce tool_calls; body=%s", body)
+	}
+	// Both text fragments appear.
+	if !strings.Contains(body, "Hello ") {
+		t.Errorf("missing first text fragment; body=%s", body)
+	}
+	if !strings.Contains(body, "world!") {
+		t.Errorf("missing second text fragment; body=%s", body)
+	}
+}
+
+// TestNDJSON_KiroNative_ThoughtTextOnly: REVIEW HIGH #2 verification.
+// A kiro-native ChunkKindToolCall must render as a `[tool: <name>]\n`
+// thought-text NDJSON line. The done:true final line must NOT carry
+// tool_calls[] (the two-path rule — only coerce-synthesized populates
+// tool_calls on the wire).
+func TestNDJSON_KiroNative_ThoughtTextOnly(t *testing.T) {
+	chunks := []canonical.Chunk{
+		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "starting "}},
+		{Kind: canonical.ChunkKindToolCall, ToolCall: &canonical.ToolCallChunk{
+			ID:   "tc_1",
+			Name: "get_weather",
+			Args: map[string]any{"location": "NYC"},
+		}},
+		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: " done"}},
+	}
+	final := &canonical.FinalResult{StopReason: canonical.StopEndTurn}
+	run := newFakeRunHandle(chunks, final, nil)
+
+	w := httptest.NewRecorder()
+	ctx := context.Background()
+	req := makeToolsCatalog()
+
+	if err := runNDJSONEmitter(ctx, noopCancelFn, w, run, "auto", true, time.Now(), nilLogger(), req); err != nil {
+		t.Fatalf("runNDJSONEmitter: %v", err)
+	}
+
+	body := w.Body.String()
+	lines := scanNDJSON(t, w.Body.Bytes())
+
+	// Expect 4 lines: "starting ", "[tool: get_weather]\n", " done", done:true.
+	if len(lines) != 4 {
+		t.Fatalf("NDJSON lines: got %d, want 4 (2 text + 1 tool-narration + 1 done); body=%s", len(lines), body)
+	}
+
+	// No line carries tool_calls (two-path rule: kiro-native renders as
+	// narration only, done line has no tool_calls because no coerce fired).
+	if strings.Contains(body, `"tool_calls"`) {
+		t.Errorf("kiro-native two-path rule violated — body contains tool_calls; body=%s", body)
+	}
+
+	// Narration line shape.
+	if !strings.Contains(body, `[tool: get_weather]`) {
+		t.Errorf("missing [tool: get_weather] narration; body=%s", body)
+	}
+
+	// The narration line must NOT set done:true.
+	var second struct {
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+		Done bool `json:"done"`
+	}
+	if err := json.Unmarshal(lines[1], &second); err != nil {
+		t.Fatalf("decode narration line: %v", err)
+	}
+	if second.Done {
+		t.Error("narration line: done==true, want false (intermediate line)")
+	}
+	if second.Message.Content != "[tool: get_weather]\n" {
+		t.Errorf("narration line content: got %q, want %q", second.Message.Content, "[tool: get_weather]\n")
+	}
+}
+
+// TestStream_NativeToolCall_ThenJSONText_NoCoerce: iteration-3 fix to
+// HIGH #2. After a kiro-native tool_call passes through during the stream,
+// sawKiroNativeToolCall is set to true. At stream end, even if subsequent
+// JSON-shaped text was buffered, coerce is SKIPPED entirely. The buffered
+// text is FLUSHED as plain text lines and the done:true line carries NO
+// tool_calls.
+func TestStream_NativeToolCall_ThenJSONText_NoCoerce(t *testing.T) {
+	chunks := []canonical.Chunk{
+		{Kind: canonical.ChunkKindToolCall, ToolCall: &canonical.ToolCallChunk{
+			ID:   "tc_1",
+			Name: "get_weather",
+			Args: map[string]any{"location": "NYC"},
+		}},
+		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "{"}},
+		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: `"location":`}},
+		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: `"Tokyo"`}},
+		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "}"}},
+	}
+	final := &canonical.FinalResult{StopReason: canonical.StopEndTurn}
+	run := newFakeRunHandle(chunks, final, nil)
+
+	w := httptest.NewRecorder()
+	ctx := context.Background()
+	req := makeToolsCatalog()
+
+	if err := runNDJSONEmitter(ctx, noopCancelFn, w, run, "auto", true, time.Now(), nilLogger(), req); err != nil {
+		t.Fatalf("runNDJSONEmitter: %v", err)
+	}
+
+	body := w.Body.String()
+
+	// No tool_calls anywhere (kiro-native render via narration; coerce skipped).
+	if strings.Contains(body, `"tool_calls"`) {
+		t.Errorf("iteration-3 fix violated — body contains tool_calls after kiro-native chunk; body=%s", body)
+	}
+
+	// The narration must appear.
+	if !strings.Contains(body, `[tool: get_weather]`) {
+		t.Errorf("missing [tool: get_weather] narration; body=%s", body)
+	}
+
+	// The buffered JSON-shaped text MUST be flushed (not discarded) because
+	// coerce was skipped — the text "Tokyo" should appear verbatim.
+	if !strings.Contains(body, "Tokyo") {
+		t.Errorf("buffered text was dropped instead of flushed (iteration-3 contract); body=%s", body)
+	}
+}
+
+// TestStream_NativeToolCall_Only_NoCoerce: iteration-3 fix to HIGH #2,
+// minimal case. Only a kiro-native tool_call chunk passes through (no
+// text). sawKiroNativeToolCall = true, no buffering, no text to flush.
+// Final output: exactly the `[tool: <name>]\n` narration line plus the
+// done:true line. No tool_calls anywhere.
+func TestStream_NativeToolCall_Only_NoCoerce(t *testing.T) {
+	chunks := []canonical.Chunk{
+		{Kind: canonical.ChunkKindToolCall, ToolCall: &canonical.ToolCallChunk{
+			ID:   "tc_1",
+			Name: "get_weather",
+			Args: map[string]any{"location": "NYC"},
+		}},
+	}
+	final := &canonical.FinalResult{StopReason: canonical.StopEndTurn}
+	run := newFakeRunHandle(chunks, final, nil)
+
+	w := httptest.NewRecorder()
+	ctx := context.Background()
+	req := makeToolsCatalog()
+
+	if err := runNDJSONEmitter(ctx, noopCancelFn, w, run, "auto", true, time.Now(), nilLogger(), req); err != nil {
+		t.Fatalf("runNDJSONEmitter: %v", err)
+	}
+
+	body := w.Body.String()
+	lines := scanNDJSON(t, w.Body.Bytes())
+	if len(lines) != 2 {
+		t.Fatalf("NDJSON lines: got %d, want 2 (narration + done); body=%s", len(lines), body)
+	}
+	if strings.Contains(body, `"tool_calls"`) {
+		t.Errorf("native-only path must NOT produce tool_calls; body=%s", body)
+	}
+	if !strings.Contains(body, `[tool: get_weather]`) {
+		t.Errorf("missing narration; body=%s", body)
+	}
+}
+
+// TestNDJSON_KiroNative_DefensiveNilName: defensive nil-name fallback —
+// when ToolCall.Name is empty/missing, the narration emits "[tool: unknown]\n".
+// This mirrors the discipline established in translate.go's
+// firstNonEmpty(body.Title, "unknown") fallback (06-01 Task 1).
+func TestNDJSON_KiroNative_DefensiveNilName(t *testing.T) {
+	chunks := []canonical.Chunk{
+		{Kind: canonical.ChunkKindToolCall, ToolCall: nil},
+	}
+	final := &canonical.FinalResult{StopReason: canonical.StopEndTurn}
+	run := newFakeRunHandle(chunks, final, nil)
+
+	w := httptest.NewRecorder()
+	ctx := context.Background()
+
+	if err := runNDJSONEmitter(ctx, noopCancelFn, w, run, "auto", true, time.Now(), nilLogger(), nil); err != nil {
+		t.Fatalf("runNDJSONEmitter: %v", err)
+	}
+
+	body := w.Body.String()
+	if !strings.Contains(body, `[tool: unknown]`) {
+		t.Errorf("nil ToolCall must emit [tool: unknown] fallback; body=%s", body)
+	}
+}
+
+// ----------------------------------------------------------------------------
 // Helpers
 // ----------------------------------------------------------------------------
 
