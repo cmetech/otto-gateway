@@ -291,7 +291,7 @@ Plans:
   4. Tool definitions from both request shapes (OpenAI `tools[].function`, Ollama tool spec) are normalized into one canonical tool spec consumed by the engine.
   5. Property tests (`pgregory.net/rapid` or `testing/quick`) cover `coerceToolCall` round-trip + never-panic invariants and the canonical-tool-spec translator for both surfaces.
 
-**Plans:** 1/5 plans executed
+**Plans:** 4/5 plans executed
 
 Plans:
 **Wave 1** *(cross-cutting foundation; blocks Waves 2-3)*
@@ -300,9 +300,9 @@ Plans:
 
 **Wave 2** *(per-surface vertical slices — run in parallel; blocked on Wave 1 including the Node fidelity checkpoint)*
 
-- [ ] 06-02-PLAN.md — Ollama vertical slice: wire.go ollamaChatResponseMessage.ToolCalls, handlers.go CoerceToolCall hook-in (non-streaming) + default-omitted stream-field test, render.go plain-object args (SC #2), ndjson.go kiro-native [tool: <name>]\n thought-text ONLY (two-path rule) + STREAMING COERCE on buffered text at stream end (REVIEW HIGH #1) + sawKiroNativeToolCall skip-or-coerce-or-flush logic (iteration-3 fix to HIGH #2 — no double-fire after kiro-native)
-- [ ] 06-03-PLAN.md — OpenAI vertical slice: wire.go []json.RawMessage per-entry decode for mixed-validity tools tolerance (iteration-3 fix to MEDIUM #4) + openAIToolSpec + ToolChoice decode (D-13), handlers.go CoerceToolCall hook-in (non-streaming), render.go JSON-string args + finish_reason post-fixup (SC #1), sse.go kiro-native ChunkKindToolCall as text-delta narration (two-path rule) + STREAMING COERCE multi-frame native tool_calls at stream end (REVIEW HIGH #1) + sawKiroNativeToolCall skip-or-coerce-or-flush logic (iteration-3 fix to HIGH #2) + role-emit-once-with-tool-call-first golden fixture (REVIEW LOW #8)
-- [ ] 06-04-PLAN.md — Anthropic vertical slice (D-07 EXCEPTION to per-surface Message.ToolCalls contract — kiro-native renders as native tool_use blocks): wire.go anthropicToolSpec → canonical.ToolSpec + tool_choice decode (D-14 closes TODO), NEW anthropic/collect.go local aggregator (D-07 exception) WITH parity test suite vs engine.Collect (iteration-3 fix to MEDIUM #5), sse.go applyChunk tool_use block sequence with CR-01 + block-index discipline + stop_reason finalize override, render.go non-streaming stop_reason override to "tool_use" (REVIEW MEDIUM #4), handlers_test.go BOTH behavioral (REVIEW LOW #9 required) AND static-source NO-coerce assertions (D-01 belt-and-suspenders)
+- [x] 06-02-PLAN.md — Ollama vertical slice: wire.go ollamaChatResponseMessage.ToolCalls, handlers.go CoerceToolCall hook-in (non-streaming) + default-omitted stream-field test, render.go plain-object args (SC #2), ndjson.go kiro-native [tool: <name>]\n thought-text ONLY (two-path rule) + STREAMING COERCE on buffered text at stream end (REVIEW HIGH #1) + sawKiroNativeToolCall skip-or-coerce-or-flush logic (iteration-3 fix to HIGH #2 — no double-fire after kiro-native)
+- [x] 06-03-PLAN.md — OpenAI vertical slice: wire.go []json.RawMessage per-entry decode for mixed-validity tools tolerance (iteration-3 fix to MEDIUM #4) + openAIToolSpec + ToolChoice decode (D-13), handlers.go CoerceToolCall hook-in (non-streaming), render.go JSON-string args + finish_reason post-fixup (SC #1), sse.go kiro-native ChunkKindToolCall as text-delta narration (two-path rule) + STREAMING COERCE multi-frame native tool_calls at stream end (REVIEW HIGH #1) + sawKiroNativeToolCall skip-or-coerce-or-flush logic (iteration-3 fix to HIGH #2) + role-emit-once-with-tool-call-first golden fixture (REVIEW LOW #8)
+- [x] 06-04-PLAN.md — Anthropic vertical slice (D-07 EXCEPTION to per-surface Message.ToolCalls contract — kiro-native renders as native tool_use blocks): wire.go anthropicToolSpec → canonical.ToolSpec + tool_choice decode (D-14 closes TODO), NEW anthropic/collect.go local aggregator (D-07 exception) WITH parity test suite vs engine.Collect (iteration-3 fix to MEDIUM #5), sse.go applyChunk tool_use block sequence with CR-01 + block-index discipline + stop_reason finalize override, render.go non-streaming stop_reason override to "tool_use" (REVIEW MEDIUM #4), handlers_test.go BOTH behavioral (REVIEW LOW #9 required) AND static-source NO-coerce assertions (D-01 belt-and-suspenders)
 
 **Wave 3** *(cross-surface integration + UAT checkpoint; blocked on Waves 1-2)*
 
@@ -370,7 +370,7 @@ Phases execute in numeric order: 1 → 1.1 → 2 → 3 → 3.1 → 4 → 5 → 6
 | 3. OpenAI Surface | 4/4 | Complete   | 2026-05-25 |
 | 4. Streaming | 4/4 | Complete   | 2026-05-25 |
 | 5. Pool + Stateful Sessions | 5/5 | Complete    | 2026-05-26 |
-| 6. Tool-Call Path | 1/5 | In Progress|  |
+| 6. Tool-Call Path | 4/5 | In Progress|  |
 | 7. Embeddings | 0/TBD | Not started | - |
 | 8. Plugin Hook Chain | 0/TBD | Not started | - |
 | 9. Distribution | 0/TBD | Not started | - |
