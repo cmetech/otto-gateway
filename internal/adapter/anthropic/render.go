@@ -98,6 +98,7 @@ func chatResponseToMessage(resp *canonical.ChatResponse, requestedModel string) 
 	}
 
 	if resp != nil {
+		hasToolUse := false
 		for _, part := range resp.Message.Content {
 			switch part.Kind {
 			case canonical.ContentKindText:
@@ -128,6 +129,7 @@ func chatResponseToMessage(resp *canonical.ChatResponse, requestedModel string) 
 						Name:  part.ToolUse.Name,
 						Input: &input,
 					})
+					hasToolUse = true
 				}
 			}
 			// Other kinds (Image, ToolResult) are inbound-only in
@@ -135,6 +137,19 @@ func chatResponseToMessage(resp *canonical.ChatResponse, requestedModel string) 
 			// side. Defensive silent skip.
 		}
 		out.StopReason = mapStopReason(resp.StopReason)
+
+		// Phase 6 Plan 04 Task 3 (REVIEW MEDIUM #4) — non-streaming
+		// stop_reason override: when the wire content contains a
+		// tool_use block, Anthropic spec requires stop_reason:
+		// "tool_use" regardless of the engine's mapped StopReason.
+		// The Anthropic SDK treats stop_reason:"end_turn" + a
+		// populated tool_use content block as a contradictory pair
+		// (undefined behavior). This mirrors the streaming
+		// finalizer override in sse.go (toolUseEmitted).
+		if hasToolUse {
+			s := "tool_use"
+			out.StopReason = &s
+		}
 	}
 
 	if len(out.Content) == 0 {
