@@ -147,6 +147,41 @@ func TestAdmin_StaticServes_JS(t *testing.T) {
 	}
 }
 
+// TestAdmin_PageHandler_PoolGridScaffold verifies GET /admin returns HTML that
+// contains the pool-slot grid markup required by Plan 02:
+// - data-slot-grid attribute (JS hydration target)
+// - data-slot-grid-empty attribute (empty-state placeholder)
+// - otto-slot-grid class (CSS target rendered before JS runs)
+func TestAdmin_PageHandler_PoolGridScaffold(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	deps := Deps{
+		Logger:  testutil.Logger(t),
+		Version: "1.2.3",
+		Commit:  "abc1234",
+	}
+	h := Handler(deps)
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /: want 200, got %d", rec.Code)
+	}
+
+	body := rec.Body.String()
+	for _, want := range []string{
+		"data-slot-grid",
+		"data-slot-grid-empty",
+		`class="otto-slot-grid"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("page HTML missing required pool-grid markup %q", want)
+		}
+	}
+}
+
 // TestAdmin_AssetsFSContains verifies the embed.FS captured all required
 // asset files (regression for Pitfall 1 — embed glob semantics).
 func TestAdmin_AssetsFSContains(t *testing.T) {

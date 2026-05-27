@@ -55,16 +55,29 @@
   <!-- Section 2: Pool Slots grid (Plan 02 fills the cards) -->
   <section aria-labelledby="pool-slots-heading">
     <h2 id="pool-slots-heading" class="otto-h2">Pool Slots</h2>
-    <div class="otto-slot-grid" data-slot-grid>
-      <!-- Plan 02 injects pool slot cards here -->
-    </div>
+    <div class="otto-slot-grid" data-slot-grid></div>
+    <div class="otto-slot-grid-empty" data-slot-grid-empty hidden>No pool slots configured (set POOL_SIZE)</div>
   </section>
 
   <!-- Section 3: Active Sessions table (Plan 02 fills) -->
   <section aria-labelledby="active-sessions-heading">
     <h2 id="active-sessions-heading" class="otto-h2">Active Sessions</h2>
-    <div class="otto-table-card" data-sessions-card>
-      <!-- Plan 02 injects the sessions table here -->
+    <div class="otto-sessions-card" data-sessions-card>
+      <table class="otto-sessions-table" data-sessions-table>
+        <thead>
+          <tr>
+            <th>Session</th>
+            <th>Status</th>
+            <th>Last used</th>
+            <th>Model</th>
+          </tr>
+        </thead>
+        <tbody data-sessions-tbody></tbody>
+      </table>
+      <div class="otto-empty-state" data-sessions-empty hidden>
+        <strong>No active sessions</strong>
+        <p>Stateful sessions created via the X-Session-Id header will appear here.</p>
+      </div>
     </div>
   </section>
 

@@ -80,6 +80,107 @@
   }
 
   // ---------------------------------------------------------------------------
+  // shortId: truncate a long id to "XXXX…XXXX" for display density
+  // ---------------------------------------------------------------------------
+
+  function shortId(id) {
+    return id && id.length > 10 ? id.slice(0, 4) + '…' + id.slice(-4) : (id || '—');
+  }
+
+  // ---------------------------------------------------------------------------
+  // renderSlots: DOM-patch the pool-slot grid from snapshot pool.slots[]
+  // ---------------------------------------------------------------------------
+
+  function buildSlotLabel(slot) {
+    var el = document.createElement('div');
+    el.className = 'otto-slot-label';
+    el.textContent = slot.label || ('Slot ' + slot.id);
+    return el;
+  }
+
+  function buildSlotBadges(slot) {
+    var el = document.createElement('div');
+    el.className = 'otto-slot-badges';
+    if (!slot.alive) {
+      var dead = document.createElement('span');
+      dead.className = 'otto-badge is-dead';
+      dead.textContent = 'DEAD';
+      el.append(dead);
+    } else {
+      var alive = document.createElement('span');
+      alive.className = 'otto-badge is-alive';
+      alive.textContent = 'ALIVE';
+      el.append(alive);
+      if (slot.current_session_id) {
+        var busy = document.createElement('span');
+        busy.className = 'otto-badge is-busy';
+        busy.textContent = 'BUSY';
+        el.append(busy);
+      }
+    }
+    return el;
+  }
+
+  function buildSlotMeta(slot) {
+    var el = document.createElement('div');
+    el.className = 'otto-slot-meta';
+    if (!slot.alive) {
+      el.classList.add('is-dead');
+      el.textContent = 'Dead — respawning…';
+    } else if (slot.current_session_id) {
+      el.classList.add('is-busy');
+      el.textContent = 'Busy — session ' + shortId(slot.current_session_id);
+    } else {
+      el.textContent = 'Idle';
+    }
+    return el;
+  }
+
+  function buildSlotCard(slot) {
+    var article = document.createElement('article');
+    article.className = 'otto-slot-card';
+    if (!slot.alive) {
+      article.classList.add('is-dead');
+    }
+    article.append(buildSlotLabel(slot), buildSlotBadges(slot), buildSlotMeta(slot));
+    return article;
+  }
+
+  function updateSlotCard(article, slot) {
+    if (!slot.alive) {
+      article.classList.add('is-dead');
+    } else {
+      article.classList.remove('is-dead');
+    }
+    // Replace children in place.
+    article.replaceChildren(buildSlotLabel(slot), buildSlotBadges(slot), buildSlotMeta(slot));
+  }
+
+  function renderSlots(slots) {
+    var grid = document.querySelector('[data-slot-grid]');
+    var empty = document.querySelector('[data-slot-grid-empty]');
+    if (!grid) return;
+
+    if (!slots || slots.length === 0) {
+      if (empty) empty.hidden = false;
+      grid.replaceChildren();
+      return;
+    }
+
+    if (empty) empty.hidden = true;
+
+    if (grid.children.length !== slots.length) {
+      // Array length changed — full rebuild.
+      grid.replaceChildren.apply(grid, slots.map(buildSlotCard));
+    } else {
+      // Same count — update in place.
+      for (var i = 0; i < slots.length; i++) {
+        updateSlotCard(grid.children[i], slots[i]);
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // renderSummary: update DOM from snapshot data
   // ---------------------------------------------------------------------------
 
@@ -127,6 +228,7 @@
       })
       .then(function (snap) {
         renderSummary(snap);
+        renderSlots(snap.pool ? snap.pool.slots : []);
       })
       .catch(function () {
         consecutiveFailures++;

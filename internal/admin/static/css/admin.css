@@ -292,11 +292,11 @@ body {
 
 .otto-slot-card.is-dead {
   border: 2px solid var(--otto-failed);
+  padding: calc(var(--otto-space-base) - 1px);
 }
 
 .otto-slot-label {
-  font-size: 16px;
-  font-weight: 600;
+  font: 600 16px/1.4 var(--otto-font-ui);
   color: var(--otto-fg);
 }
 
@@ -309,10 +309,42 @@ body {
   color: var(--otto-failed);
 }
 
+/* Slot meta text (Plan 02) */
+.otto-slot-meta {
+  font: 400 14px/1.5 var(--otto-font-ui);
+  color: var(--otto-muted);
+}
+
+.otto-slot-meta.is-busy {
+  color: var(--otto-fg);
+}
+
+.otto-slot-meta.is-dead {
+  color: var(--otto-failed);
+}
+
+/* Badge variants for alive/dead (Plan 02 — aliases to semantic colors) */
+.otto-badge.is-alive {
+  background: #1B3B2E;
+  color: var(--otto-healthy);
+}
+
+.otto-badge.is-dead {
+  background: #3D1E1E;
+  color: var(--otto-failed);
+}
+
+/* Session ID short display */
+.otto-session-id-short {
+  font: 400 12px/1.4 var(--otto-font-mono);
+  color: var(--otto-muted);
+}
+
 /* -----------------------------------------------------------------------
  * Active sessions table (Plan 02 fills; Plan 01 ships empty stub)
  * ----------------------------------------------------------------------- */
 
+/* Legacy table-card kept for backward compat with Plan 01 CSS */
 .otto-table-card {
   background: var(--otto-card);
   border: 1px solid var(--otto-border);
@@ -363,6 +395,64 @@ body {
   font-size: 14px;
   color: var(--otto-muted);
   margin: 0;
+}
+
+/* Sessions card (Plan 02) */
+.otto-sessions-card {
+  background: var(--otto-card);
+  border: 1px solid var(--otto-border);
+  border-radius: var(--otto-radius-card);
+  padding: var(--otto-space-base);
+  overflow-x: auto;
+}
+
+/* Sessions table (Plan 02) */
+.otto-sessions-table {
+  width: 100%;
+  border-collapse: collapse;
+  font: 400 14px/1.5 var(--otto-font-ui);
+  color: var(--otto-fg);
+}
+
+.otto-sessions-table thead th {
+  text-align: left;
+  padding: var(--otto-space-md);
+  border-bottom: 1px solid var(--otto-border);
+  font: 400 12px/1.4 var(--otto-font-ui);
+  color: var(--otto-muted);
+  text-transform: uppercase;
+}
+
+.otto-sessions-table tbody td {
+  padding: var(--otto-space-md);
+  border-bottom: 1px solid var(--otto-border);
+}
+
+.otto-sessions-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.otto-sessions-table td.is-session-id {
+  font: 400 14px/1.5 var(--otto-font-mono);
+  color: var(--otto-fg);
+}
+
+.otto-sessions-table td.is-model-null {
+  color: var(--otto-muted);
+}
+
+/* Empty state (Plan 02) */
+.otto-empty-state {
+  text-align: center;
+  padding: var(--otto-space-xl);
+  color: var(--otto-muted);
+}
+
+.otto-empty-state strong {
+  color: var(--otto-fg);
+  display: block;
+  margin-bottom: var(--otto-space-sm);
+  font: 600 16px/1.4 var(--otto-font-ui);
 }
 
 /* -----------------------------------------------------------------------
