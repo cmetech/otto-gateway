@@ -66,11 +66,25 @@ func TestMain(m *testing.M) {
 	if os.Getenv("OTTO_E2E") != "1" {
 		os.Exit(m.Run())
 	}
+	// CR-02 (Phase 6 review): delegate to runE2E so every cleanup path
+	// (temp dirs, fake-kiro binary) runs via defer, even when a build
+	// step fails. The previous shape called os.Exit(2) on fake-kiro
+	// build failure, which bypassed the defer that removed the temp
+	// dir — leaking otto-e2e-* dirs on every failed suite invocation.
+	os.Exit(runE2E(m))
+}
 
+// runE2E builds the otto-gateway and fake-kiro-cli binaries, wires the
+// shared package-level paths (builtBinary, fakeKiroBinaryPath), runs the
+// suite, and returns the exit code. Cleanup of the temp build dir and
+// the fake-kiro binary is registered via defer so partial-failure paths
+// (e.g., fake-kiro build fails AFTER the otto-gateway build succeeded)
+// still leave a clean filesystem behind.
+func runE2E(m *testing.M) int {
 	tmp, err := os.MkdirTemp("", "otto-e2e-")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "e2e: MkdirTemp: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	defer func() { _ = os.RemoveAll(tmp) }()
 
@@ -87,13 +101,13 @@ func TestMain(m *testing.M) {
 	build.Stderr = &buildErr
 	if err := build.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "e2e: build otto-gateway failed: %v\n%s\n", err, buildErr.String())
-		os.Exit(1)
+		return 1
 	}
 
 	abs, err := filepath.Abs(out)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "e2e: resolve binary path: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	builtBinary = abs
 
@@ -102,26 +116,26 @@ func TestMain(m *testing.M) {
 	// lifetime, not per-test temp dir). See tools_testmain_test.go for the
 	// lifetime contract documentation.
 	fakeKiroOut := filepath.Join(os.TempDir(), fmt.Sprintf("fake-kiro-cli-%d", os.Getpid()))
+	// CR-02: register the defer BEFORE attempting the build. If the build
+	// itself fails (or filepath.Abs below fails), the defer still removes
+	// any partial output. Removing a non-existent file is a no-op.
+	defer func() { _ = os.Remove(fakeKiroOut) }()
 	fakeBuild := exec.CommandContext(ctx, "go", "build", "-o", fakeKiroOut, "./tests/e2e/cmd/fake-kiro-cli") //nolint:gosec // G204: fixed package literal
 	fakeBuild.Dir = moduleRoot
 	var fakeBuildErr bytes.Buffer
 	fakeBuild.Stderr = &fakeBuildErr
 	if err := fakeBuild.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "e2e: build fake-kiro-cli failed: %v\n%s\n", err, fakeBuildErr.String())
-		os.Exit(2)
+		return 1
 	}
 	fakeKiroAbs, err := filepath.Abs(fakeKiroOut)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "e2e: resolve fake-kiro-cli path: %v\n", err)
-		os.Exit(2)
+		return 1
 	}
 	fakeKiroBinaryPath = fakeKiroAbs
 
-	code := m.Run()
-	// Delete the fake-kiro binary BEFORE os.Exit so the cleanup actually runs
-	// (os.Exit bypasses deferred functions).
-	_ = os.Remove(fakeKiroAbs)
-	os.Exit(code)
+	return m.Run()
 }
 
 // gateOrSkip is the top gate every test func calls first. With OTTO_E2E
