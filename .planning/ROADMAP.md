@@ -32,6 +32,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 4: Streaming** - NDJSON (Ollama) and SSE (OpenAI + Anthropic) off one canonical chunk channel, with disconnect cancellation (completed 2026-05-25)
 - [x] **Phase 5: Pool + Stateful Sessions** - Warm `POOL_SIZE` pool plus `X-Session-Id` registry, both visible on `/health/agents` (plans 3/3 shipped 2026-05-26; verification gaps_found — gap-closure plans 05-04 (SC3 root-cause + fix) + 05-05 (PHASE5-PERF.md skeleton + manual gates) appended 2026-05-26) (completed 2026-05-26)
 - [x] **Phase 6: Tool-Call Path** - Canonical tool calls rendered per-surface, with `coerceToolCall` for plain-JSON-as-text (completed 2026-05-27)
+- [ ] **Phase 6.1: Admin Observability UI** *(INSERTED)* - Dark-mode `/admin` page rendering `/health` + `/health/agents` with the OTTO brand palette; auto-refresh polling; nice-to-have live log tail
 - [ ] **Phase 8: Plugin Hook Chain** - `PreHook`/`PostHook` over canonical types, with RequestID, Auth, Logging registered
 - [ ] **Phase 9: Distribution** - Cross-compile Linux+Windows from macOS, full trust-gate CI matrix gating merges
 
@@ -307,6 +308,34 @@ Plans:
 
 - [x] 06-05-PLAN.md — Cross-surface E2E: NEW tests/e2e/cmd/fake-kiro-cli/main.go binary supporting full ACP method set (initialize/session/new/session/set_model/session/prompt/session/cancel/ping per REVIEW HIGH #5), NEW tests/e2e/tools_testmain_test.go TestMain compiles binary at package init with per-pid os.TempDir() path (iteration-3 fix to MEDIUM #6 — binary lifetime is package-scoped, not per-test t.TempDir), tools_fixtures.go with new FakeKiro(t,script) (cmd, env) API reading package-level fakeKiroBinaryPath var (REVIEW HIGH #5), `go vet -tags e2e ./tests/e2e/...` (iteration-3 fix to MEDIUM #7), tools_{ollama,openai,anthropic,cancel}_test.go full D-17 12-scenario matrix including REVIEW HIGH #1/#2/MEDIUM #4 + iteration-3 HIGH #1/#2 E2E verifications, scenario 12 mid-stream cancel with frame-log assertion, blocking HUMAN-UAT checkpoint for loop24-client messages.stream() conformance (Node byte-fidelity checkpoint MOVED to 06-01 per REVIEW HIGH #3)
 
+### Phase 6.1: Admin Observability UI (INSERTED)
+
+**Goal:** Lean, dark-mode admin page served at `GET /admin` that renders `/health` + `/health/agents` JSON in a styled UI using the OTTO brand palette. Self-refreshes via lightweight client-side polling (5s default) so operators see live pool/session/process state without manual refresh. Pure consumer of existing observability endpoints — no new gateway request-path logic, no new ACP plumbing. Single static binary preserved via `embed.FS` for HTML template + CSS + minimal JS (no node toolchain, no cgo).
+
+**Mode:** mvp
+**Depends on:** Phase 6
+**Requirements:** OBSV-* (no new IDs — surfaces existing `/health`, `/health/agents` data through HTML/CSS)
+
+**Brand palette** (from `oscar-adminui/src/layouts/UserThemeOptions.js` `customColors`):
+- Primary accent: `#FAD22D` (brand yellow/gold)
+- Body background: `#28243D` (dark purple-navy)
+- Card/paper surface: `#3A3A3A`
+- Foreground text: `#FAFAFA` (brandWhite) / muted `#A0A0A0` (brandGray3)
+- Borders: `#4A4A4A` (brandGray1c)
+- Status — healthy: `#0FC373` (brandGreen) / warning: `#FF8C0A` (brandOrange) / failed: `#FF3232` (brandRed)
+- Activity / live indicator: `#AF78D2` (brandPurple)
+
+**Success Criteria** (what must be TRUE):
+
+  1. `GET /admin` returns a styled HTML page rendering the JSON contents of `/health` (overall status, pool size, alive, busy, sessions active) and `/health/agents` (per-slot detail: alive, busy, label; per-session detail: alive, last_used) using the brand palette above. Page is responsive at 1024px+.
+  2. The page auto-refreshes the displayed metrics every 5s by polling `/health` + `/health/agents` from client-side JS, with a visible "last updated" timestamp and a paused-state badge (`#FF8C0A`) when a poll fails. Does NOT add a new gateway-side polling loop or background goroutine.
+  3. The route registration is additive: `/admin` is wired alongside existing surfaces; surface-gating (`ENABLED_SURFACES`) does not affect it; mounting `/admin` does not alter any existing `/api/*`, `/v1/*`, or `/health*` behavior. Verified via existing route tests + a new admin-route smoke.
+  4. Auth + IP-allowlist behavior matches the auth middleware contract — `/admin` is auth-protected when `AUTH_TOKEN` is set; allowed (parallels `/health`) when `AUTH_TOKEN` is unset (dev mode).
+  5. Templates + CSS + JS ship as compiled-in assets via `embed.FS` — `go build` from a fresh checkout produces one binary; no external file dependencies at runtime; cross-compile from macOS to `linux/amd64` and `windows/amd64` still succeeds with `CGO_ENABLED=0`.
+  6. **Nice-to-have (deferrable):** live log tail at `/admin/logs` via SSE that streams new `/tmp/otto-gateway.log` lines as they appear. Must not hold an exclusive file handle, must tolerate log rotation (re-open on read error), and must be implementable without altering any existing log-writing path. If this can't be done cleanly inside the slice's budget, defer to a follow-up.
+
+**Plans:** TBD (run /gsd-plan-phase 6.1 to break down)
+
 ### Phase 8: Plugin Hook Chain
 
 **Goal:** `PreHook` / `PostHook` interfaces operate on canonical request/response types, with day-one hooks registered: RequestID, Auth (refactored from middleware), structured Logging, and PII Redaction. Short-circuit return from `PreHook` skips the engine. The PII hook ships with an extensible regex+validator recognizer registry — six built-in entities (Email, IPv4, IPv6, SSN, Credit Card with Luhn check, US Phone) and a one-struct addition path for new entities — so future guardrails (moderation, budget, schema, cache, audit) and new PII recognizers land without touching the hook engine.
@@ -355,5 +384,6 @@ Phases execute in numeric order: 1 → 1.1 → 2 → 3 → 3.1 → 4 → 5 → 6
 | 4. Streaming | 4/4 | Complete   | 2026-05-25 |
 | 5. Pool + Stateful Sessions | 5/5 | Complete    | 2026-05-26 |
 | 6. Tool-Call Path | 5/5 | Complete    | 2026-05-27 |
+| 6.1. Admin Observability UI (INSERTED) | 0/TBD | Not started | - |
 | 8. Plugin Hook Chain | 0/TBD | Not started | - |
 | 9. Distribution | 0/TBD | Not started | - |

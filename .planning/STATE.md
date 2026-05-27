@@ -2,16 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.5
 milestone_name: milestone
-status: ready_to_plan
-last_updated: 2026-05-27T19:45:31.557Z
-last_activity: 2026-05-27 -- Phase 08 planning complete
+status: planning
+last_updated: "2026-05-27T19:58:52.253Z"
+last_activity: 2026-05-27
 progress:
   total_phases: 11
   completed_phases: 8
   total_plans: 45
   completed_plans: 40
   percent: 73
-stopped_at: Phase 6 complete (5/5) — ready to discuss Phase 08
 ---
 
 # Project State
@@ -21,14 +20,14 @@ stopped_at: Phase 6 complete (5/5) — ready to discuss Phase 08
 See: .planning/PROJECT.md (updated 2026-05-23)
 
 **Core value:** All three API surfaces (OpenAI for Pi SDK, Ollama for LangFlow, Anthropic for loop24-client/GSD Pi) serve their respective clients without those clients knowing kiro-cli exists, with one place to enforce policy.
-**Current focus:** Phase 08 — plugin hook chain
+**Current focus:** Phase 6.1 — admin observability UI
 
 ## Current Position
 
-Phase: 08
+Phase: 06.1
 Plan: Not started
 Status: Ready to plan
-Next: /gsd-discuss-phase 1.1 → /gsd-plan-phase 1.1 → /gsd-execute-phase 1.1 → /gsd-plan-phase 2
+Next: /gsd-discuss-phase 6.1 → /gsd-plan-phase 6.1 → /gsd-execute-phase 6.1
 Last activity: 2026-05-27
 
 Progress: [░░░░░░░░░░] 0%
@@ -67,6 +66,7 @@ Progress: [░░░░░░░░░░] 0%
 - Phase 1.1 inserted after Phase 1: ACP Wire Alignment — fix 10 wire-shape defects discovered during Phase 2 discuss; add real-kiro session/prompt round-trip integration test as Phase 2 unblock gate (URGENT)
 - Phase 8 edited: edited fields: goal, requirements (+PLUG-06), success_criteria (+SC6 PIIRedactionHook)
 - Phase 8 edited: edited fields: requirements (+OBSV-04), success_criteria (+SC7 GET /health/hooks view-only)
+- Phase 6.1 inserted after Phase 6: Admin Observability UI — dark-mode /admin page rendering /health + /health/agents with brand palette; auto-refresh polling; live log tail nice-to-have (URGENT)
 
 ### Decisions
 
