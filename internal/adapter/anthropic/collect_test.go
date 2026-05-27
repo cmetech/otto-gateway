@@ -52,6 +52,14 @@ type parityFakeEngine struct {
 	chunks []canonical.Chunk
 	final  *canonical.FinalResult
 	err    error
+	// WR-03 (Phase 6 review): when errOnRun is true and err is non-nil,
+	// Run returns (nil, err) — exercising the "engine: collect: <err>"
+	// wrap path inside CollectAnthropicChat that handles a Run error
+	// BEFORE the stream is consumed. When false (default), err surfaces
+	// via Stream.Result(), exercising the "engine: collect result:
+	// <err>" wrap path. The two are different code paths and must both
+	// be parity-tested.
+	errOnRun bool
 }
 
 // Collect mirrors the engine.Collect aggregation contract for the
@@ -103,8 +111,13 @@ func (f *parityFakeEngine) Collect(_ context.Context, req *canonical.ChatRequest
 }
 
 // Run yields a single-shot scripted stream from the same chunk list.
-// CollectAnthropicChat consumes this path.
+// CollectAnthropicChat consumes this path. WR-03: when errOnRun=true
+// and err is set, Run surfaces err directly so the Run-error wrap
+// path is exercised (NOT the Stream.Result() wrap path).
 func (f *parityFakeEngine) Run(_ context.Context, _ *canonical.ChatRequest) (RunHandle, error) {
+	if f.errOnRun && f.err != nil {
+		return nil, f.err
+	}
 	ch := make(chan canonical.Chunk, len(f.chunks))
 	for _, c := range f.chunks {
 		ch <- c
@@ -298,6 +311,42 @@ func TestCollectAnthropicChat_ParityWithEngine_ErrorPropagation(t *testing.T) {
 	// CollectAnthropicChat must surface the same underlying error via
 	// errors.Is. The wrap layer may differ; what matters is that
 	// callers can distinguish via the sentinel.
+	_, gotErr := CollectAnthropicChat(context.Background(), eng, req)
+	if gotErr == nil {
+		t.Fatal("CollectAnthropicChat: nil error; want non-nil")
+	}
+	if !errors.Is(gotErr, sentinel) {
+		t.Errorf("CollectAnthropicChat err: got %v, want errors.Is(err, sentinel)", gotErr)
+	}
+}
+
+// TestCollectAnthropicChat_ParityWithEngine_ErrorPropagation_RunPath
+// (WR-03 follow-up): the original ErrorPropagation test wires the
+// scripted error through Stream.Result() (exercising the "engine:
+// collect result: <err>" wrap path). This sibling test wires the same
+// sentinel through Run() (exercising the "engine: collect: <err>" wrap
+// path that handles a Run error BEFORE the stream is consumed). Both
+// paths must surface the same underlying error via errors.Is so a
+// future refactor that breaks the wrap shape on ONE path but not the
+// other is caught.
+func TestCollectAnthropicChat_ParityWithEngine_ErrorPropagation_RunPath(t *testing.T) {
+	sentinel := errors.New("scripted Run failure")
+	chunks := []canonical.Chunk{
+		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "x"}},
+	}
+	eng := &parityFakeEngine{chunks: chunks, err: sentinel, errOnRun: true}
+	req := &canonical.ChatRequest{Model: "auto"}
+
+	// Reference: parity Collect returns the sentinel directly (errOnRun
+	// only affects Run; Collect still returns err for parity with the
+	// original ErrorPropagation test).
+	_, refErr := eng.Collect(context.Background(), req)
+	if !errors.Is(refErr, sentinel) {
+		t.Fatalf("reference Collect err: got %v, want errors.Is(err, sentinel)", refErr)
+	}
+
+	// CollectAnthropicChat: exercises the Run-error wrap path. errors.Is
+	// must still reach the sentinel.
 	_, gotErr := CollectAnthropicChat(context.Background(), eng, req)
 	if gotErr == nil {
 		t.Fatal("CollectAnthropicChat: nil error; want non-nil")
