@@ -443,6 +443,22 @@ func normalizeToolResultContent(raw json.RawMessage, logger *slog.Logger) string
 // `system` field, and tool_result lives as a content block inside a
 // "user" message. Unknown roles default to RoleUser (canonical's zero
 // value).
+//
+// WR-10 (Phase 6 review): the default-to-RoleUser branch is DELIBERATE
+// and follows D-10 permissive decode — unknown roles (including "system"
+// and "tool", both of which are client mistakes on the Anthropic Messages
+// API at the message-level role field) are treated as user content
+// rather than rejected with a 400. This is INTENTIONALLY ASYMMETRIC with
+// the OpenAI surface: openai/wire.go hoists role:"system" into the
+// top-level System field of the canonical request because the OpenAI
+// chat-completion spec ALLOWS role:"system" at the message level.
+// Anthropic's spec does not — so a client putting a system message inside
+// the messages array is making a request-shape mistake, and the
+// permissive-decode policy folds that content into the conversation as
+// a user turn rather than rejecting. The behavior is locked by
+// TestWire_MapAnthropicRole (wire_test.go) so any future tightening
+// (e.g., returning a 400 on unknown roles) must explicitly opt out of
+// the lock.
 func mapAnthropicRole(s string) canonical.MessageRole {
 	switch s {
 	case "assistant":
