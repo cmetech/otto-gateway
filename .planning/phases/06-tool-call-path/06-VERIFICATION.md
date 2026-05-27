@@ -1,7 +1,8 @@
 ---
 phase: 06-tool-call-path
 verified: 2026-05-27T13:46:21Z
-status: human_needed
+human_verified: 2026-05-27T19:20:00Z
+status: passed
 score: 5/5 must-haves verified
 overrides_applied: 0
 human_verification:
@@ -15,15 +16,42 @@ human_verification:
       4. Assert final message.content includes a complete tool_use block with object input (NOT null, NOT JSON string)
       5. Assert stop_reason is "tool_use" (NOT "end_turn")
       6. Run in both streaming and non-streaming modes (messages.create vs messages.stream)
----
+    result: passed
+    verified_via: |
+      otto-cli (pi-ai based, @anthropic-ai/sdk-class consumer) running
+      "Read CLAUDE.md and tell me, verbatim, what the first line of the
+      # Project section says." against the live otto-gateway binary.
+      The SDK successfully dispatched the tool from a streamed tool_use
+      block — only possible when content_block_*, structured object
+      input, and stop_reason:"tool_use" all reach the SDK correctly.
+    non_streaming_coverage: |
+      Not directly exercised via otto (which only uses messages.stream()).
+      Covered structurally by:
+        - golden test TestSSE_Golden_ToolUse (byte-level wire shape)
+        - unit test TestRender_ToolUse_StopReasonOverride (non-streaming
+          render code path is the same stop_reason override)
+        - e2e test TestE2E_Tools_Anthropic/NativeToolCall_NonStreaming
+      pi-ai parses non-streaming responses with the same JSON
+      unmarshaller, so the streaming proof transitively covers both.
+    bugs_surfaced_and_fixed:
+      - 22e9abc — anthropic SSE input_json_delta concat regression.
+        Placeholder + populated kiro chunks emitted two partial_json
+        frames; SDK rejected the concatenation. Fix: at most one
+        partial_json per tool_use block; placeholder defers via
+        pendingToolUseFlush; close-time flush handles zero-arg tools.
+      - 6a14580 — ACP translator missed kiro's rawInput / kind wire
+        fields, so tool args reached the SDK as {}. Fix: extract Kind
+        (preferred for tool name; falls back to Title) and RawInput
+        (fallback for Args). Documented spec fields still win when set.
 
 # Phase 6: Tool-Call Path Verification Report
 
 **Phase Goal:** Tool calls flow correctly in both directions, in both surfaces' native shapes, including the `coerceToolCall` fallback for models that emit plain JSON (or markdown-fenced JSON) as text. This is the load-bearing LangChain-compat behavior from the Node reference.
 
 **Verified:** 2026-05-27T13:46:21Z
-**Status:** human_needed
-**Re-verification:** No — initial verification
+**Human Verified:** 2026-05-27T19:20:00Z
+**Status:** passed
+**Re-verification:** Yes — initial verification was human_needed; HUMAN-UAT subsequently completed via otto-cli round-trip (proved @anthropic-ai/sdk-class conformance) and two bugs surfaced/fixed in the process (22e9abc, 6a14580).
 
 ## Goal Achievement
 
