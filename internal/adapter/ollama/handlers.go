@@ -8,6 +8,7 @@ import (
 	"runtime/debug"
 	"time"
 
+	"otto-gateway/internal/engine"
 	"otto-gateway/internal/session"
 )
 
@@ -78,13 +79,38 @@ func (a *Adapter) handleChat(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		// Phase 6 D-01: invoke CoerceToolCall on the non-streaming path
+		// AFTER Collect, BEFORE render. The function mutates resp in place
+		// (Pitfall 6: pass the pointer directly — pre-copying would
+		// discard the ToolCalls slice append). REVIEW LOW #7: the
+		// `len(resp.Message.ToolCalls) > 0` guard is defensive — coerce
+		// returning true implies the slice is non-empty, but the explicit
+		// length check makes the debug-log site robust to future algorithm
+		// changes (and prevents a nil-deref on `resp.Message.ToolCalls[0]`).
+		if engine.CoerceToolCall(req, resp) {
+			var firstName string
+			if len(resp.Message.ToolCalls) > 0 {
+				firstName = resp.Message.ToolCalls[0].Name
+			}
+			a.cfg.Logger.Debug("ollama: coerce fired", "tool", firstName)
+		}
 		writeJSON(w, chatResponseToWire(resp, start, wire.Model))
 		return
 	}
 
 	// stream:true (default when absent) — NDJSON streaming path (Phase 4).
-	// D-07: derive a cancelFn so emitNDJSONChunk can signal write failure back
-	// to the engine watchdog via context cancellation.
+	//
+	// Phase 6 (REVIEW HIGH #1 + iteration-3 sawKiroNativeToolCall): coerce
+	// for the streaming path lives in ndjson.go, NOT here. The streaming
+	// emitter buffers JSON-shaped assistant text, tracks whether any
+	// kiro-native ChunkKindToolCall fired during the stream, and at
+	// stream end either skips coerce (sawKiroNativeToolCall == true) or
+	// runs coerce on the buffered text. The canonical req is threaded
+	// through to the emitter so it can call engine.CoerceToolCall with
+	// req.Tools available.
+	//
+	// D-07: derive a cancelFn so emitNDJSONChunk can signal write failure
+	// back to the engine watchdog via context cancellation.
 	ctx, cancelFn := context.WithCancel(r.Context())
 	defer cancelFn()
 
@@ -94,7 +120,7 @@ func (a *Adapter) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	start := time.Now()
-	if emitErr := runNDJSONEmitter(ctx, cancelFn, w, run, wire.Model, true, start, a.cfg.Logger); emitErr != nil {
+	if emitErr := runNDJSONEmitter(ctx, cancelFn, w, run, wire.Model, true, start, a.cfg.Logger, req); emitErr != nil {
 		a.cfg.Logger.Debug("ollama: ndjson chat emitter error", "err", emitErr)
 	}
 }
@@ -198,7 +224,10 @@ func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	start := time.Now()
-	if emitErr := runNDJSONEmitter(ctx, cancelFn, w, run, wire.Model, false, start, a.cfg.Logger); emitErr != nil {
+	// Generate has no tools[] — pass req so the emitter signature stays
+	// uniform; the streaming-coerce buffering logic only activates when
+	// len(req.Tools) > 0 so this is a no-op for /api/generate in practice.
+	if emitErr := runNDJSONEmitter(ctx, cancelFn, w, run, wire.Model, false, start, a.cfg.Logger, req); emitErr != nil {
 		a.cfg.Logger.Debug("ollama: ndjson generate emitter error", "err", emitErr)
 	}
 }

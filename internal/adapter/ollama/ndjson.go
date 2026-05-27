@@ -143,7 +143,14 @@ func emitNDJSONChunk(w http.ResponseWriter, flusher http.Flusher, c canonical.Ch
 //
 // Returns nil on clean stream completion (done:true emitted), ctx.Err() on
 // client disconnect, or a wrapped write/marshal error.
-func runNDJSONEmitter(ctx context.Context, cancelFn context.CancelFunc, w http.ResponseWriter, run RunHandle, model string, isChat bool, start time.Time, logger *slog.Logger) error {
+func runNDJSONEmitter(ctx context.Context, cancelFn context.CancelFunc, w http.ResponseWriter, run RunHandle, model string, isChat bool, start time.Time, logger *slog.Logger, req *canonical.ChatRequest) error {
+	// req is threaded through so the streaming-coerce path (REVIEW HIGH #1 +
+	// iteration-3 sawKiroNativeToolCall) can read req.Tools for the
+	// end-of-stream CoerceToolCall invocation. Task 3 wires the buffering
+	// + skip-or-coerce-or-flush logic; for now req is plumbed but only used
+	// by the Task 3 changes.
+	_ = req
+
 	// Assert Flusher BEFORE any write so the caller can fall back to JSON 500
 	// when the ResponseWriter does not support streaming (Pitfall 2).
 	flusher, ok := w.(http.Flusher)
