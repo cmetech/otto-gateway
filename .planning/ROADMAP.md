@@ -370,7 +370,7 @@ Phases execute in numeric order: 1 → 1.1 → 2 → 3 → 3.1 → 4 → 5 → 6
 | 3. OpenAI Surface | 4/4 | Complete   | 2026-05-25 |
 | 4. Streaming | 4/4 | Complete   | 2026-05-25 |
 | 5. Pool + Stateful Sessions | 5/5 | Complete    | 2026-05-26 |
-| 6. Tool-Call Path | 5/5 | Complete   | 2026-05-27 |
+| 6. Tool-Call Path | 5/5 | Complete    | 2026-05-27 |
 | 7. Embeddings | 0/TBD | Not started | - |
 | 8. Plugin Hook Chain | 0/TBD | Not started | - |
 | 9. Distribution | 0/TBD | Not started | - |

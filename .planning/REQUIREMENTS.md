@@ -38,9 +38,9 @@ Requirements for initial release. Each maps to roadmap phases (see Traceability)
 
 ### Tools — Tool-call handling and coercion
 
-- [ ] **TOOL-01**: Tool-call output is rendered in the surface's native shape — OpenAI uses JSON-string `arguments`, Ollama uses plain-object `arguments`.
-- [ ] **TOOL-02**: `coerceToolCall` behavior preserved: when `tools` is provided and the model returns bare JSON (or markdown-fenced JSON) as text, convert to a synthetic `tool_calls` entry. Best-tool selection via property-overlap scoring.
-- [ ] **TOOL-03**: Tool definitions in OpenAI request shape (`tools[].function`) and Ollama request shape are normalized to a canonical tool spec consumed by the engine.
+- [x] **TOOL-01**: Tool-call output is rendered in the surface's native shape — OpenAI uses JSON-string `arguments`, Ollama uses plain-object `arguments`.
+- [x] **TOOL-02**: `coerceToolCall` behavior preserved: when `tools` is provided and the model returns bare JSON (or markdown-fenced JSON) as text, convert to a synthetic `tool_calls` entry. Best-tool selection via property-overlap scoring.
+- [x] **TOOL-03**: Tool definitions in OpenAI request shape (`tools[].function`) and Ollama request shape are normalized to a canonical tool spec consumed by the engine.
 
 ### ACP — kiro-cli JSON-RPC behaviors
 
@@ -81,6 +81,7 @@ Requirements for initial release. Each maps to roadmap phases (see Traceability)
 - [ ] **PLUG-03**: Hooks are chained in registration order; first non-nil short-circuit wins for `PreHook`; all `PostHook`s run.
 - [ ] **PLUG-04**: Day-one hooks registered: `RequestIDHook` (generate/propagate `X-Request-Id`), `AuthHook` (bearer-token validation), `LoggingHook` (structured request/response logging via `log/slog`).
 - [ ] **PLUG-05**: `ENABLED_HOOKS` env var (or equivalent config key) enables/disables hooks per deployment.
+- [ ] **PLUG-06**: `PIIRedactionHook` (Pre) scrubs PII from `canonical.ChatRequest.Messages[].ContentParts[].Text` using an extensible `Recognizer{Name, Pattern *regexp.Regexp, Validate func(string) bool}` registry. v1 ships six built-in recognizers: Email, IPv4 (octet-range validated), IPv6 (`net.ParseIP` validated), SSN (range-rule filtered), Credit Card (Luhn-validated), US Phone. Patterns compiled at package init. Env knobs: `PII_REDACTION_ENABLED` (bool, default off), `PII_ENABLED_ENTITIES` (comma list, default all six), `PII_REDACTION_MODE` (`replace|mask|hash|drop`, default `replace`). Replacement tokens use `<ENTITY>` form, optionally counter-suffixed (`<EMAIL_1>`, `<EMAIL_2>`) to preserve referential identity within a prompt. Extension path: appending one `Recognizer{}` entry adds a new entity type — no changes to the hook, chain runner, or callers. Pure-Go, no cgo, no external deps.
 
 ### Auth + observability
 
@@ -90,6 +91,7 @@ Requirements for initial release. Each maps to roadmap phases (see Traceability)
 - [ ] **OBSV-01**: `GET /health` returns pool stats, session registry stats, and embedding registry stats in a JSON object.
 - [x] **OBSV-02**: `GET /health/agents` returns per-pool-slot detail (`alive`, `busy`, `label`) and per-session detail (`alive`, `last_used`).
 - [ ] **OBSV-03**: Structured logging via `log/slog` with `X-Request-Id` correlation across pre-hook, engine, ACP, and post-hook spans.
+- [ ] **OBSV-04**: `GET /health/hooks` returns the registered Pre/Post chain as JSON — each entry includes `name`, `kind` (`Pre`, `Post`, `Pre,Post`), `enabled`, and an optional `config` object exposing safe-to-publish settings only. Read-only; exempt from auth like `/health` and `/health/agents`. No runtime mutate path in v1.
 
 ### Build — Distribution and cross-compile
 
@@ -178,9 +180,9 @@ Populated by the roadmapper from `.planning/ROADMAP.md`. Updated as phases compl
 | STRM-03 | Phase 4 | Pending |
 | STRM-04 | Phase 4 | Pending |
 | STRM-05 | Phase 4 | Pending |
-| TOOL-01 | Phase 6 | Pending |
-| TOOL-02 | Phase 6 | Pending |
-| TOOL-03 | Phase 6 | Pending |
+| TOOL-01 | Phase 6 | Complete |
+| TOOL-02 | Phase 6 | Complete |
+| TOOL-03 | Phase 6 | Complete |
 | ACP-01 | Phase 1 | Pending |
 | ACP-02 | Phase 1 | Pending |
 | ACP-03 | Phase 1 | Pending |
