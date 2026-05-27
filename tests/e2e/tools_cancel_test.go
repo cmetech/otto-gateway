@@ -80,11 +80,12 @@ func TestE2E_Tools_Cancel(t *testing.T) {
 		cancel()
 		_ = resp.Body.Close()
 
-		// Wait for cancel propagation.
-		time.Sleep(300 * time.Millisecond)
-
-		// Assert session/cancel emission via frame-log read.
-		frames := ReadFakeKiroFrames(t, framesPath)
+		// WR-09 (Phase 6 review): wait for session/cancel propagation by
+		// polling the frame log instead of a fixed 300ms sleep. The poll
+		// loop returns as soon as the cancel frame appears (fast on a
+		// quiet dev box) and tolerates a slower loaded CI runner via the
+		// longer deadline.
+		frames := waitForSessionCancel(t, framesPath, 5*time.Second)
 		assertSessionCancelEmitted(t, frames)
 
 		// Slot survival: fresh non-streaming request.
@@ -125,9 +126,8 @@ func TestE2E_Tools_Cancel(t *testing.T) {
 		}
 		cancel()
 		_ = resp.Body.Close()
-		time.Sleep(300 * time.Millisecond)
-
-		frames := ReadFakeKiroFrames(t, framesPath)
+		// WR-09: poll for the cancel frame; see waitForSessionCancel comment.
+		frames := waitForSessionCancel(t, framesPath, 5*time.Second)
 		assertSessionCancelEmitted(t, frames)
 		assertSlotSurvives(t, baseURL, "/v1/chat/completions", OpenAIToolsRequest("hi", nil, false), auth)
 	})
@@ -167,12 +167,36 @@ func TestE2E_Tools_Cancel(t *testing.T) {
 		}
 		cancel()
 		_ = resp.Body.Close()
-		time.Sleep(300 * time.Millisecond)
-
-		frames := ReadFakeKiroFrames(t, framesPath)
+		// WR-09: poll for the cancel frame; see waitForSessionCancel comment.
+		frames := waitForSessionCancel(t, framesPath, 5*time.Second)
 		assertSessionCancelEmitted(t, frames)
 		assertSlotSurvives(t, baseURL, "/v1/messages", AnthropicToolsRequest("hi", nil, false), auth)
 	})
+}
+
+// waitForSessionCancel polls the frame-log file with a tight loop until a
+// `session/cancel` frame appears or the deadline elapses. Replaces the
+// fixed 300ms sleep with a fast best-case (returns as soon as the frame
+// is observed) and a tolerant worst-case (5s deadline by default). This
+// avoids both the flake mode (slow CI runner: 300ms is not enough) and
+// the waste mode (fast dev box: 300ms is unnecessary). Returns the final
+// frame snapshot regardless of whether the cancel was observed — the
+// caller's assertSessionCancelEmitted will fail with a useful frame dump
+// if it wasn't.
+func waitForSessionCancel(t *testing.T, framesPath string, timeout time.Duration) []map[string]any {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var frames []map[string]any
+	for time.Now().Before(deadline) {
+		frames = ReadFakeKiroFrames(t, framesPath)
+		for _, frame := range frames {
+			if m, _ := frame["method"].(string); m == "session/cancel" {
+				return frames
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return frames
 }
 
 // assertSessionCancelEmitted scans the frame-log for a frame whose method
