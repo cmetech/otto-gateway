@@ -165,3 +165,81 @@ func TestChatResponseToCompletion_ToolCalls(t *testing.T) {
 		}
 	})
 }
+
+// TestChatResponseToTextCompletion locks the /v1/completions (text_completion)
+// wire shape (WR-07 Phase 6 review). The function exists and is wired into
+// handleCompletions but had no direct test coverage before this lock. The
+// shape must match the legacy OpenAI text_completion endpoint contract that
+// the D-03 forward-compat shim accepts and ignores.
+func TestChatResponseToTextCompletion(t *testing.T) {
+	t.Run("ShapeAndFields", func(t *testing.T) {
+		resp := &canonical.ChatResponse{
+			StopReason: canonical.StopEndTurn,
+			Model:      "auto",
+			Message: canonical.Message{
+				Role: canonical.RoleAssistant,
+				Content: []canonical.ContentPart{
+					{Kind: canonical.ContentKindText, Text: "Hello, "},
+					{Kind: canonical.ContentKindText, Text: "world!"},
+				},
+			},
+		}
+		out := chatResponseToTextCompletion(resp, "auto")
+
+		// object literal canary
+		if out.Object != "text_completion" {
+			t.Errorf("object: got %q, want %q", out.Object, "text_completion")
+		}
+		// ID must use the "cmpl-" prefix (NOT the chat-completion "chatcmpl-" prefix).
+		if !strings.HasPrefix(out.ID, "cmpl-") {
+			t.Errorf("id: got %q, want cmpl- prefix", out.ID)
+		}
+		if strings.HasPrefix(out.ID, "chatcmpl-") {
+			t.Errorf("id: must NOT use chatcmpl- prefix on text_completion path; got %q", out.ID)
+		}
+		// Exactly one choice
+		if len(out.Choices) != 1 {
+			t.Fatalf("choices len: got %d, want 1", len(out.Choices))
+		}
+		// Joined text appears in the text field (concatenation of all
+		// ContentKindText parts).
+		if out.Choices[0].Text != "Hello, world!" {
+			t.Errorf("choices[0].text: got %q, want %q", out.Choices[0].Text, "Hello, world!")
+		}
+		// FinishReason is the mapped stop string ("stop" for StopEndTurn).
+		if out.Choices[0].FinishReason != "stop" {
+			t.Errorf("choices[0].finish_reason: got %q, want %q", out.Choices[0].FinishReason, "stop")
+		}
+		// Logprobs must render as JSON null. Logprobs field is *struct{};
+		// nil pointer marshals to null with no `omitempty` tag.
+		raw, err := json.Marshal(out)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if !strings.Contains(string(raw), `"logprobs":null`) {
+			t.Errorf("logprobs must render as JSON null; got: %s", raw)
+		}
+		// Usage envelope present with honest zeros (D-12).
+		if !strings.Contains(string(raw), `"usage"`) {
+			t.Errorf("usage field missing from text_completion shape; got: %s", raw)
+		}
+	})
+
+	t.Run("NilResp_DefensiveDefaults", func(t *testing.T) {
+		// Nil resp path: empty text, finish_reason defaults via mapFinishReason
+		// on StopUnknown, model echoes the requested value.
+		out := chatResponseToTextCompletion(nil, "auto")
+		if out.Object != "text_completion" {
+			t.Errorf("object: got %q, want %q", out.Object, "text_completion")
+		}
+		if len(out.Choices) != 1 {
+			t.Fatalf("choices len: got %d, want 1", len(out.Choices))
+		}
+		if out.Choices[0].Text != "" {
+			t.Errorf("choices[0].text: got %q, want empty", out.Choices[0].Text)
+		}
+		if out.Model != "auto" {
+			t.Errorf("model: got %q, want %q (echoed from requestedModel)", out.Model, "auto")
+		}
+	})
+}
