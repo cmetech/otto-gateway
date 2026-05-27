@@ -334,12 +334,12 @@ Plans:
   5. Templates + CSS + JS ship as compiled-in assets via `embed.FS` — `go build` from a fresh checkout produces one binary; no external file dependencies at runtime; cross-compile from macOS to `linux/amd64` and `windows/amd64` still succeeds with `CGO_ENABLED=0`.
   6. **Nice-to-have (deferrable):** live log tail at `/admin/logs` via SSE that streams new `/tmp/otto-gateway.log` lines as they appear. Must not hold an exclusive file handle, must tolerate log rotation (re-open on read error), and must be implementable without altering any existing log-writing path. If this can't be done cleanly inside the slice's budget, defer to a follow-up.
 
-**Plans:** 4 plans
+**Plans:** 1/4 plans executed
 
 Plans:
 **Wave 1**
 
-- [ ] 06.1-01-PLAN.md — Slice A vertical: snapshot endpoint + minimal page shell — internal/admin package (admin.go, assets.go, snapshot.go), embed.FS templates/CSS/JS, summary-strip-only template + 30s polling JS, server.Config.AdminHandler mount, cmd/main.go wiring, .go-arch-lint.yml admin component, non-interference smoke (D-15/D-16)
+- [x] 06.1-01-PLAN.md — Slice A vertical: snapshot endpoint + minimal page shell — internal/admin package (admin.go, assets.go, snapshot.go), embed.FS templates/CSS/JS, summary-strip-only template + 30s polling JS, server.Config.AdminHandler mount, cmd/main.go wiring, .go-arch-lint.yml admin component, non-interference smoke (D-15/D-16)
 
 **Wave 2** *(blocked on Wave 1)*
 
@@ -401,6 +401,6 @@ Phases execute in numeric order: 1 → 1.1 → 2 → 3 → 3.1 → 4 → 5 → 6
 | 4. Streaming | 4/4 | Complete   | 2026-05-25 |
 | 5. Pool + Stateful Sessions | 5/5 | Complete    | 2026-05-26 |
 | 6. Tool-Call Path | 5/5 | Complete    | 2026-05-27 |
-| 6.1. Admin Observability UI (INSERTED) | 0/TBD | Not started | - |
+| 6.1. Admin Observability UI (INSERTED) | 1/4 | In Progress|  |
 | 8. Plugin Hook Chain | 0/TBD | Not started | - |
 | 9. Distribution | 0/TBD | Not started | - |
