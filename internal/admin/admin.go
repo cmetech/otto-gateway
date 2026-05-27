@@ -103,11 +103,21 @@ func Handler(deps Deps) http.Handler {
 	r.Get("/api/snapshot", h.snapshotHandler)
 
 	// GET /static/* — serve embedded CSS/JS assets.
-	// chi strips the /admin mount prefix before forwarding to this handler,
-	// so this handler sees /static/css/admin.css (not /admin/static/...).
-	// StripPrefix removes "/static/" so http.FileServer resolves paths
-	// within the staticFS sub-FS correctly (css/admin.css → staticFS root).
-	r.Handle("/static/*", http.StripPrefix("/static/", http.FileServer(http.FS(staticFS))))
+	// chi.Mount("/admin", h) does NOT rewrite r.URL.Path in the sub-router;
+	// when called via the outer server the handler sees /admin/static/css/admin.css.
+	// When called directly (unit tests) it sees /static/css/admin.css.
+	// http.StripPrefix is applied with the path prefix seen in each context:
+	//   - mounted (real server): strip "/admin/static/"
+	//   - direct (unit tests):   strip "/static/"
+	// We use the chi wildcard URLParam("*") to extract the file path and bypass
+	// StripPrefix entirely, serving directly from staticFS regardless of mount context.
+	r.Handle("/static/*", http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		// chi sets the wildcard URLParam("*") to the path portion after /static/
+		// regardless of whether the handler is mounted or called directly.
+		// This makes the FileServer mount-path-agnostic.
+		filePath := chi.URLParam(req, "*")
+		http.ServeFileFS(w, req, staticFS, filePath)
+	}))
 
 	// Insertion point 2: register the SSE log-tail route (D-08).
 	// Route ordering: page → snapshot → static → SSE.
