@@ -1,7 +1,8 @@
 ---
 phase: 6
+iteration: 2
 reviewers: [codex]
-reviewed_at: 2026-05-26T18:30:00-04:00
+reviewed_at: 2026-05-27T02:07:03Z
 plans_reviewed:
   - 06-01-PLAN.md
   - 06-02-PLAN.md
@@ -14,230 +15,280 @@ unavailable_reviewers:
   - gemini, coderabbit, opencode, qwen, cursor, ollama, lm_studio, llama_cpp (not installed / not running locally)
 ---
 
-# Cross-AI Plan Review — Phase 6
+# Cross-AI Plan Review — Phase 6 (Iteration 2)
+
+> This is the SECOND review iteration. The first review (preserved in git history at commit 540c1d4's parent) drove the iteration-1 replan via `/gsd-plan-phase 6 --reviews`. This iteration-2 review evaluates whether the revisions resolved the prior concerns and surfaces any NEW concerns introduced.
 
 ## Codex Review
 
-## Overall Summary
+## Overall Assessment
 
-The plan set is unusually thorough and mostly well-structured: Wave 1 establishes the canonical pivot, Wave 2 fans out by adapter, and Wave 3 validates cross-surface behavior. The biggest risk is not lack of coverage, but internal semantic drift: several plans mix two incompatible interpretations of the tool-call path, especially whether kiro-native `ChunkKindToolCall` should become native `tool_calls`/`tool_use` wire output during streaming or only `[tool: <name>]` narration. Resolve that before implementation, or the agents will build contradictory slices.
+The revisions resolve several prior review concerns on paper: Node byte-fidelity moved to Wave 1, Anthropic non-streaming `stop_reason:"tool_use"` is now explicitly planned, fake-kiro scope is much better, and streaming coerce is no longer ignored. However, the new plans introduce a more serious consistency problem: the revised “two-path rule” is now over-corrected in 06-01/02/03 and leaves non-streaming kiro-native tool calls for Ollama/OpenAI with no viable rendering path. There is also a streaming edge case where kiro-native tool calls no longer populate `Message.ToolCalls`, so streaming coerce cannot know to skip when a native tool call already happened.
+
+Overall risk is still **MEDIUM-HIGH**, mostly because the semantic model is clearer but not yet fully implementable across streaming and non-streaming modes.
 
 ---
 
-## plan-00 — Wave 1 Foundation (06-01-PLAN.md)
+## 06-01 — Foundation
 
 ### Summary
 
-Strong foundation plan. It identifies the right canonical seams and tests the core algorithm heavily. The main risk is that it bakes in behavior that later plans interpret differently, especially `engine.Collect` populating `Message.ToolCalls` from kiro-native chunks.
+The plan is much improved around the prior concerns: it moves Node byte-fidelity before Wave 2, documents the two-path rule, adds `ToolCallChunk.ID`, and narrows `engine.CoerceToolCall` as the canonical coerce implementation. The main issue is that it now states `CoerceToolCall` is the “SOLE producer of `Message.ToolCalls`,” but later 06-04 intentionally violates that for Anthropic. More importantly, by making `engine.Collect` drop `ChunkKindToolCall`, the plan removes any path for non-streaming Ollama/OpenAI kiro-native tool-call narration unless the adapters add local aggregation.
 
 ### Strengths
 
-- Correctly centralizes `CoerceToolCall` in `internal/engine`.
-- Good property-test coverage for panic safety, idempotency, tie-breaking, and no-match behavior.
-- Adds `ToolCallChunk.ID`, which is necessary for all three wire surfaces.
-- Good attention to JSON fence handling and deterministic scoring.
-- Keeps new dependencies at zero.
+- Moves the Node fidelity checkpoint to the correct dependency point before Wave 2.
+- Strong property-test plan for `CoerceToolCall`, including inline fenced JSON in prose.
+- Good decision to use simple string fence checks rather than regex.
+- Clearer separation between ACP translation and adapter rendering.
+- Adds marshal-error logging for `[Available tools]`, addressing the prior silent fallback concern.
 
 ### Concerns
 
-- **HIGH:** The plan says kiro-native `ChunkKindToolCall` is aggregated into `Message.ToolCalls` and `ContentKindToolUse`. That may conflict with the highlighted two-path invariant: kiro-native tool calls are narration, coerce-synthesized calls are native tool calls. If non-streaming kiro-native output is supposed to return native `tool_calls`, document that as an explicit exception.
-- **MEDIUM:** Deferring Node byte-fidelity to Wave 3 is late. If the Node `coerceToolCall` behavior differs, Wave 2 tests and adapters may be built around the wrong algorithm.
-- **LOW:** `json.Marshal(req.Tools)` fallback to header-only on marshal error is safe, but silent fallback could make tools mysteriously disappear in tests using non-JSON-ish maps.
+- **HIGH:** `engine.Collect` dropping `ChunkKindToolCall` means non-streaming Ollama/OpenAI kiro-native tool calls disappear entirely. Wave 2 emitters only see live chunks on streaming paths; non-streaming adapters receive only `ChatResponse`.
+- **HIGH:** “`CoerceToolCall` is the SOLE producer of `Message.ToolCalls`” conflicts with 06-04, where Anthropic-local aggregation populates `Message.ToolCalls` from kiro-native chunks.
+- **MEDIUM:** The phrase “ChunkKindToolCall chunks pass through `engine.Collect` unchanged” is misleading. `Collect` consumes the chunk stream; if it does not aggregate them, they do not pass through to non-streaming renderers.
+- **LOW:** The Node byte-fidelity checkpoint is human-only and can approve Path C with risk accepted. That is acceptable, but Wave 2 should record the chosen path in summaries so later implementers know whether Node parity was truly verified.
 
 ### Suggestions
 
-- Add a short "kiro-native aggregation contract" note to plan-00: whether `Message.ToolCalls` from ACP is for non-streaming native output, hooks only, or both.
-- Move the Node byte-fidelity checkpoint to immediately after plan-00, before Wave 2 starts.
-- Add a focused unit test proving inline fenced JSON inside prose is not coerced.
+- Replace “SOLE producer of `Message.ToolCalls`” with “sole generic engine producer; Anthropic has an adapter-local exception.”
+- Add an explicit non-streaming decision matrix:
+  - Ollama/OpenAI kiro-native non-streaming: render `[tool: name]\n` as text, or drop intentionally?
+  - Anthropic kiro-native non-streaming: native `tool_use`.
+- If Ollama/OpenAI non-streaming should preserve narration, `engine.Collect` needs to append `[tool: name]\n` to text/thought content or the adapters need local collectors like Anthropic.
 
 ### Risk Assessment
 
-**MEDIUM.** The implementation scope is reasonable, but the semantic ambiguity around native ACP tool calls could propagate into every adapter.
+**HIGH.** The foundation resolves prior timing concerns, but its revised collect contract breaks or underspecifies non-streaming kiro-native behavior for two surfaces.
 
 ---
 
-## plan-01 — Ollama Slice (06-02-PLAN.md)
+## 06-02 — Ollama Slice
 
 ### Summary
 
-Good Ollama-specific coverage for object-shaped arguments and NDJSON final-line aggregation. The main issue is that coerce is only hooked into non-streaming despite Ollama defaulting to streaming.
+The revised Ollama plan directly addresses the streaming-coerce gap and clarifies that kiro-native streaming tool calls render as `[tool: name]\n` narration only. The buffering strategy is workable for JSON-shaped output, but the plan still has a major hole for non-streaming kiro-native tool calls because `engine.Collect` drops them. It also risks incorrectly coercing JSON text after a kiro-native tool call in streaming scenario 9, since the streaming synthetic response does not know a native tool call already occurred.
 
 ### Strengths
 
-- Correctly locks Ollama `arguments` as a plain object.
-- Preserves `[tool: <name>]\n` narration for streaming chunks.
-- Tests that `tool_calls` appear only on the final `done:true` line.
-- Regressions for existing Ollama tool spec decoding are valuable.
+- Correctly locks Ollama `arguments` as a plain JSON object.
+- Adds default-omitted `stream` coverage, which is important for Ollama compatibility.
+- Streaming coerce plan avoids emitting partial JSON text before knowing whether coerce fires.
+- Kiro-native streaming behavior is now aligned with the revised two-path rule.
+- Defensive log guard addresses prior low-severity concern.
 
 ### Concerns
 
-- **HIGH:** `engine.CoerceToolCall` is non-streaming only. Ollama defaults to `stream:true`, and LangFlow/LangChain compatibility is the load-bearing reason for coerce. If a streaming model emits bare JSON, this plan will not synthesize a tool call.
-- **MEDIUM:** The plan emits `[tool: <name>]` on intermediate stream lines and also adds `tool_calls` on the final line for kiro-native tool calls. That may violate the stated two-path rule unless explicitly intended for Ollama.
-- **LOW:** The debug log uses `resp.Message.ToolCalls[0]` after coerce; safe if coerce is correct, but still brittle. Prefer capture from return path or guard length defensively.
+- **HIGH:** Non-streaming kiro-native tool calls are lost. The plan says non-streaming kiro-native renders inline as `[tool: name]\n`, but only streaming `ndjson.go` handles `ChunkKindToolCall`; `engine.Collect` drops it.
+- **HIGH:** Streaming scenario 9 is likely wrong. If a kiro-native `ChunkKindToolCall` occurs and later JSON-shaped text is buffered, the synthetic response passed to `CoerceToolCall` has no existing `Message.ToolCalls`, so coerce may synthesize a second client tool call. This violates “existing tool_calls — coerce skipped.”
+- **MEDIUM:** The JSON-shape buffering heuristic can delay arbitrary JSON-looking but non-tool responses until stream end. That is probably acceptable, but it should be acknowledged as a compatibility tradeoff.
+- **LOW:** Buffering based on `strings.TrimSpace(accumulated)` should handle whitespace, but tests should include whitespace before `{` and fenced JSON split across chunks.
 
 ### Suggestions
 
-- Decide whether streaming coerce is required for Ollama. If yes, add final-buffer coerce before the done line.
-- Add a test for default omitted `stream` behavior, not just explicit `stream:false` / `true`.
-- Make the final-line kiro-native `tool_calls` behavior an explicit contract if keeping it.
+- Add `sawKiroNativeToolCall bool` in the streaming emitter. If true, disable end-of-stream coerce or seed the synthetic response with a dummy existing tool call so `CoerceToolCall` no-ops.
+- Define and implement non-streaming kiro-native behavior explicitly. If desired behavior is narration, aggregate `[tool: name]\n` into the non-streaming response text.
+- Add streaming tests for whitespace-prefixed JSON and fenced JSON split across chunks.
 
 ### Risk Assessment
 
-**HIGH** until streaming coerce is resolved. Without it, the most important LangChain/LangFlow path may remain broken.
+**HIGH.** Streaming coerce is addressed, but the revised implementation still fails important native-tool-call cases.
 
 ---
 
-## plan-02 — OpenAI Slice (06-03-PLAN.md)
+## 06-03 — OpenAI Slice
 
 ### Summary
 
-The OpenAI plan is detailed and mostly accurate on JSON-string arguments and typed `tools` decode. Its largest issue is the same streaming-coerce gap, plus a direct conflict with the two-path rule if kiro-native streaming chunks emit OpenAI `delta.tool_calls`.
+The OpenAI plan mirrors the Ollama corrections well: JSON-string arguments are explicit, streaming coerce is added, and kiro-native streaming no longer emits native `delta.tool_calls`. The same two core risks remain: non-streaming kiro-native tool calls are dropped, and streaming coerce can fire after a kiro-native tool call because the emitter does not preserve “existing tool call” state for the coerce check. The typed tools decoder also may not actually tolerate malformed mixed tool arrays if malformed entries fail request-level JSON unmarshal.
 
 ### Strengths
 
-- Correctly replaces `Tools json.RawMessage` with typed tool specs.
-- Correctly locks OpenAI `function.arguments` as a JSON string.
-- Handles `finish_reason:"tool_calls"` for non-streaming and streaming.
-- Multi-frame SSE shape is SDK-friendly.
-- Tool choice coverage is practical.
+- Correctly renders OpenAI `function.arguments` as a JSON string.
+- Good `finish_reason:"tool_calls"` post-fixup for coerce-synthesized calls.
+- Adds role-emitted-once coverage for tool-call-first streaming.
+- Tool choice decoding coverage is practical.
+- Removes the previous incorrect kiro-native `delta.tool_calls` streaming path.
 
 ### Concerns
 
-- **HIGH:** Streaming `ChunkKindToolCall` emits real OpenAI `delta.tool_calls`. The review prompt explicitly calls out the invariant "kiro-native tool_call → `[tool: <name>]` thought-text narration; coerce-synthesized → real tool_calls." This plan appears to violate that.
-- **HIGH:** Coerce is non-streaming only, but OpenAI paths default to streaming per requirements.
-- **MEDIUM:** Tool choice mapping accepts unknown shapes as nil, which is fine, but tests should verify malformed `tools` entries are ignored without dropping valid siblings.
-- **LOW:** The multi-frame SSE plan is good, but it should include a test that role emission still happens exactly once when tool call is the first chunk.
+- **HIGH:** Non-streaming kiro-native tool calls disappear for the same reason as Ollama: `engine.Collect` drops `ChunkKindToolCall`, and OpenAI non-streaming only renders `resp.Message.ToolCalls`.
+- **HIGH:** Streaming coerce may incorrectly synthesize a tool call after a kiro-native tool call because no `sawKiroNativeToolCall` state blocks coerce.
+- **MEDIUM:** Mixed valid/invalid tools tolerance is underspecified. If `Tools []openAIToolSpec` is decoded directly, an entry like `"function": "bad"` can fail unmarshalling the whole request before the per-tool skip loop runs. To truly preserve valid siblings, decode as `[]json.RawMessage` and unmarshal per entry.
+- **LOW:** The plan says `delta.tool_calls` frames are used only by coerce, but the wire types live in `chunkDelta`; tests should assert no accidental native use in the `ChunkKindToolCall` branch.
 
 ### Suggestions
 
-- Resolve the streaming native tool-call rule before coding `sse.go`: either emit `[tool: ...]` text, or update the phase decision docs to say OpenAI streaming is intentionally native `tool_calls`.
-- Add streaming coerce if OpenAI default-stream clients need LangChain JSON-as-text compatibility.
-- Add tests for mixed valid/invalid tools and tool-call-first streams.
+- Add `sawKiroNativeToolCall` and skip streaming coerce after native tool chunks.
+- Add a non-streaming kiro-native render path or explicitly remove native non-streaming scenarios from 06-05 for Ollama/OpenAI.
+- Change OpenAI tools decode to per-entry `json.RawMessage` if mixed malformed entries are a real requirement.
+- Add malformed-type tools test, not just missing/empty-name entries.
 
 ### Risk Assessment
 
-**HIGH.** The wire shape details are good, but the plan may implement the wrong semantic path for kiro-native streaming.
+**HIGH.** The wire-shape plan is strong, but native tool-call handling is still inconsistent across streaming and non-streaming paths.
 
 ---
 
-## plan-03 — Anthropic Slice (06-04-PLAN.md)
+## 06-04 — Anthropic Slice
 
 ### Summary
 
-Strong focus on Anthropic-specific hazards: `input:{}` preservation, block indexes, and no-coerce. The biggest gap is non-streaming `stop_reason:"tool_use"`: the plan asserts it in E2E, but does not clearly modify the non-streaming render path to produce it.
+The Anthropic plan is much more explicit than before. It correctly adds `render.go` for non-streaming `stop_reason:"tool_use"` and promotes behavioral no-coerce testing. The Option A1 local aggregator is a reasonable way to isolate the Anthropic exception, but it creates duplication risk and directly contradicts 06-01’s “sole producer” wording. The plan also needs to be careful not to bypass engine behavior, hooks, cancellation semantics, or response assembly details when duplicating `engine.Collect`.
 
 ### Strengths
 
-- Correctly protects the CR-01 pointer-to-empty-map behavior.
-- Good block-index golden test requirements.
-- Explicitly locks "no coerce on Anthropic," which is important.
-- Correctly decodes `tools[].input_schema` into canonical parameters.
-- Preserving `tool_choice:"any"` losslessly is defensible.
+- Explicitly resolves prior `stop_reason:"tool_use"` gap in non-streaming render.
+- Behavioral no-coerce test is correctly made primary.
+- Preserves Anthropic `tool_choice:"any"` losslessly with a test.
+- CR-01 `input:{}` preservation is well covered.
+- Block-index discipline is explicitly tested with golden output.
+- Option A1 is now locked rather than left for execution-time decision.
 
 ### Concerns
 
-- **HIGH:** Non-streaming Anthropic responses with tool use need `stop_reason:"tool_use"`, but the plan only updates SSE finalization. `render.go` is not modified, so E2E scenario 1 may still emit `end_turn`.
-- **MEDIUM:** Static source test for absence of `engine.CoerceToolCall` is unusual but acceptable. It can be brittle if imports or wrappers change. Behavioral no-coerce tests are more valuable.
-- **MEDIUM:** Tool choice `"any"` is preserved verbatim, while OpenAI `"required"` is used elsewhere. That may be fine, but engine semantics should explicitly accept both.
-- **LOW:** The plan says `handlers.go` is modified for a comment, but the source-file context section under "Source files this plan modifies" omits it.
+- **HIGH:** Option A1 duplicates `engine.Collect` behavior in an adapter. If `engine.Collect` handles errors, stop reasons, thoughts, stats, cancellation, post-hooks, or response assembly subtleties, the Anthropic local collector can drift.
+- **HIGH:** 06-04 populates `Message.ToolCalls` from kiro-native chunks, contradicting 06-01’s global “CoerceToolCall is the SOLE producer of `Message.ToolCalls`” rule.
+- **MEDIUM:** The plan says `CollectAnthropicChat` wraps `engine.Run`, but handler flow must be verified carefully. If handlers already call `Run` before `Collect`, this can accidentally double-run or bypass existing handler responsibilities.
+- **MEDIUM:** Static-source no-coerce test is still brittle. Keeping it as belt-and-suspenders is fine, but it should not block harmless refactors like aliasing imports or moving code.
+- **LOW:** If Anthropic non-streaming includes both text and tool_use content, tests should verify ordering is preserved exactly as chunks arrived.
 
 ### Suggestions
 
-- Add `internal/adapter/anthropic/render.go` to the modified files and explicitly override non-streaming stop reason to `"tool_use"` when content includes a tool_use block.
-- Prefer the behavioral no-coerce test as required, not optional.
-- Add one unit test for `tool_choice:any` proving downstream canonical consumers do not misinterpret it.
+- Rename the 06-01 invariant to allow “surface-local exceptions” and cite Anthropic explicitly.
+- In 06-04, require tests proving `CollectAnthropicChat` matches `engine.Collect` for text-only, thinking-only, mixed text/thinking, stop reason, and error propagation.
+- Confirm handler call structure before implementing Option A1; the plan should say whether it replaces a `Run+Collect` pair or a single `Collect` call.
+- Make static no-coerce test less brittle if possible, or mark it as allowed to be updated during refactors as long as behavioral test remains.
 
 ### Risk Assessment
 
-**MEDIUM-HIGH.** The streaming plan is solid, but non-streaming Anthropic stop reason is under-specified and likely to fail later E2E.
+**MEDIUM-HIGH.** The Anthropic behavior is now specified well, but adapter-local collection is a meaningful maintenance and correctness risk.
 
 ---
 
-## plan-04 — Cross-Surface E2E (06-05-PLAN.md)
+## 06-05 — Cross-Surface E2E
 
 ### Summary
 
-The validation ambition is excellent, but this plan is oversized and has harness-design risks. The fake-kiro infrastructure is doing a lot, and the Node fidelity checkpoint is too late.
+The E2E plan is substantially better: fake-kiro has a stable `(cmd, env)` contract, method coverage is complete, and Node byte-fidelity is no longer delayed. Per-subtest goleak is also an improvement. The remaining risks are harness complexity, a likely `sync.Once`/`t.TempDir` lifetime bug for the compiled fake binary, and E2E scenarios that may encode currently contradictory expectations from earlier plans.
 
 ### Strengths
 
-- Covers the right scenario matrix, including no-coerce Anthropic and mid-stream cancel.
-- Cross-surface equivalence helper is exactly the right validation layer.
-- Good attention to wire-shape divergence across surfaces.
-- Scenario 12 usefully ties Phase 4 cancellation to Phase 5 pool survival.
-- Human UAT for `@anthropic-ai/sdk` is justified.
+- Fake-kiro now covers `session/set_model` and `ping`, addressing the prior harness gap.
+- `(cmd, env)` fixture API is the right shape.
+- Frame logging for `session/cancel` is a good concrete assertion.
+- Per-subtest goleak attribution is better than parent-level cleanup.
+- E2E coverage maps well to the D-17 matrix.
+- loop24-client UAT remains as the correct Anthropic SDK conformance gate.
 
 ### Concerns
 
-- **HIGH:** `FakeKiroScript(t, notifications) string` returns only `KIRO_CMD`, but the proposed compiled fake binary needs a notifications file env var. The API and implementation do not line up unless the returned command is a wrapper that embeds the file path.
-- **HIGH:** The fake kiro only lists `initialize`, `session/new`, `session/prompt`, and `session/cancel`. The gateway may also call `session/set_model`, `ping`, and possibly other ACP methods. Missing these will cause E2E flakes or deadlocks.
-- **HIGH:** Node byte-fidelity checkpoint should not wait until after all E2E work. If drift is found, much of the matrix may need to be rewritten.
-- **MEDIUM:** Creating and compiling a fake CLI inside E2E is heavy. It is still reasonable, but it should be a small, explicit test utility with stable env contracts.
-- **MEDIUM:** `goleak.VerifyNone` in process-level E2E can be noisy because the gateway is a child process plus HTTP clients. Make sure ignores and cleanup are proven before making it a hard gate everywhere.
-- **LOW:** `tests/e2e/cmd/fake-kiro-cli/main.go` is required but not included in `files_modified`.
+- **HIGH:** `FakeKiro` compiling once into a `t.TempDir()` path is unsafe. The first test’s temp dir is cleaned up after that test, leaving later tests with a cached path to a deleted binary.
+- **HIGH:** E2E scenario expectations conflict with 06-01/02/03. Native non-streaming Ollama/OpenAI scenarios are listed, but the plans do not produce native tool_calls or narration for non-streaming kiro-native chunks.
+- **MEDIUM:** `go vet ./tests/e2e/...` without `-tags e2e` will not fully vet e2e-only files. The verification should include `go vet -tags e2e ./tests/e2e/...`.
+- **MEDIUM:** `goleak.VerifyNone` in process-level E2E can be noisy with HTTP transports and command wait goroutines. The ignore list needs to be empirically validated before becoming a hard gate across 25+ subtests.
+- **MEDIUM:** Fake-kiro emits notifications “verbatim” during `session/prompt`, then sends the response. Tests must ensure notifications include the exact session id the gateway expects or translation/stateful paths may behave unrealistically.
+- **LOW:** The cross-surface “same canonical tool call” helper is useful, but because Ollama/OpenAI native kiro calls are now text narration while Anthropic is native tool_use, equivalence must be scoped to coerce-synthesized paths or carefully normalized.
 
 ### Suggestions
 
-- Change the fixture API to return both command path and env overlay, e.g. `FakeKiro(t, script) (cmd string, env map[string]string)`.
-- Add fake support for every ACP method the gateway can issue during a normal request: `initialize`, `session/new`, `session/set_model`, `session/prompt`, `session/cancel`, `ping`, and EOF cleanup.
-- Move Node byte-fidelity checkpoint to between plan-00 and Wave 2.
-- Split plan-04 into two plans if possible: fake harness + matrix first, cancel/UAT/checkpoints second.
-- Include `tests/e2e/cmd/fake-kiro-cli/main.go` in `files_modified`.
+- Build fake-kiro into a package-level temp dir not tied to an individual test, or compile per test without `sync.Once`.
+- Change verification to `go vet -tags e2e ./tests/e2e/...`.
+- Add a small harness self-test that starts fake-kiro directly and exercises all six ACP methods before using it in gateway E2E.
+- Align D-17 scenario 1 expectations with the final two-path matrix before implementing tests.
+- Validate `GoleakVerifyAtEnd` on a single smoke E2E before applying it to the full matrix.
 
 ### Risk Assessment
 
-**HIGH.** The validation target is right, but the harness is complex enough to become its own project, and one checkpoint arrives too late.
+**MEDIUM-HIGH.** The harness design is much improved, but it is still complex and currently depends on unresolved semantic expectations from Waves 1-2.
 
 ---
 
-## Cross-Plan Issues To Resolve First
+## Cross-Plan Findings
 
-- **HIGH:** The two-path tool-call rule is inconsistent across plans. Some slices emit native `tool_calls` for kiro-native streaming; others emit `[tool: ...]` narration. Pick one rule per surface and per streaming/non-streaming mode before implementation.
-- **HIGH:** Streaming coerce is not implemented for Ollama/OpenAI despite both defaulting to streaming and coerce being the LangChain compatibility feature.
-- **HIGH:** Move Assumption A1 Node fidelity check earlier. It is not safe as a Wave 3 checkpoint if Wave 2 depends on exact behavior.
-- **MEDIUM:** Anthropic non-streaming `stop_reason:"tool_use"` needs an explicit implementation plan.
-- **MEDIUM:** Fake-kiro E2E needs a stable contract and complete ACP method support.
+### HIGH: Non-Streaming Kiro-Native Tool Calls Are Lost for Ollama/OpenAI
+
+06-01 says `engine.Collect` drops `ChunkKindToolCall`; 06-02/03 only render kiro-native tool calls in streaming emitters. Non-streaming Ollama/OpenAI handlers only receive `ChatResponse`, so there is no source left for `[tool: name]\n` narration or native `tool_calls`.
+
+**Fix:** Add an explicit non-streaming path. Either aggregate kiro-native tool chunks into text narration in `engine.Collect`, or add Ollama/OpenAI local collectors. Then update 06-05 scenario expectations accordingly.
+
+### HIGH: Streaming Coerce Does Not Respect “Existing Tool Calls” After Kiro-Native Chunks
+
+The original coerce invariant skips when `resp.Message.ToolCalls` is non-empty. In streaming Ollama/OpenAI, kiro-native tool calls no longer populate `Message.ToolCalls`, so buffered JSON after a native tool call can be coerced incorrectly.
+
+**Fix:** Track `sawKiroNativeToolCall` in SSE/NDJSON emitters. If true, skip streaming coerce or seed the synthetic response with an existing tool call before calling `CoerceToolCall`.
+
+### HIGH: “Sole Producer of Message.ToolCalls” Needs Scoped Wording
+
+06-01 says only `CoerceToolCall` produces `Message.ToolCalls`; 06-04 intentionally produces `Message.ToolCalls` from kiro-native chunks for Anthropic.
+
+**Fix:** Reword the invariant: “Generic engine collection does not produce `Message.ToolCalls`; OpenAI/Ollama populate them only via coerce; Anthropic has an adapter-local D-07 exception.”
+
+### MEDIUM: OpenAI Mixed Invalid Tool Tolerance Is Not Fully Achieved
+
+Directly decoding `Tools []openAIToolSpec` only tolerates structurally valid but semantically invalid entries. Type-invalid entries can fail the whole request decode.
+
+**Fix:** Decode `tools` as `[]json.RawMessage` and unmarshal each entry independently if sibling preservation is required.
+
+### MEDIUM: Anthropic Option A1 Needs Parity Tests Against Engine Collect
+
+Adapter-local collection is acceptable, but it must be proven equivalent to `engine.Collect` for all non-tool behavior.
+
+**Fix:** Add text/thinking/mixed/error/stop-reason parity tests for `CollectAnthropicChat`.
+
+---
+
+## Prior Concern Resolution Check
+
+- **Streaming coerce gap:** Partially resolved. Plans add streaming coerce, but miss the native-tool-call skip edge case.
+- **Two-path rule consistency:** Improved but overcorrected. Streaming semantics are clearer; non-streaming Ollama/OpenAI is now broken/undefined; Anthropic exception conflicts with 06-01 wording.
+- **Node byte-fidelity timing:** Resolved. Moving it to 06-01 is sound.
+- **Anthropic non-streaming stop_reason:** Resolved in plan. `render.go` modification and tests are appropriate.
+- **Fake-kiro harness scope:** Mostly resolved. Method coverage and `(cmd, env)` API are good; fake binary lifetime and `go vet -tags e2e` need correction.
+
+---
 
 ## Final Risk Assessment
 
-**Overall risk: MEDIUM-HIGH.** The plans are comprehensive and mostly aligned with the phase goals, but the unresolved semantic conflict around native tool-call rendering and the missing streaming-coerce path are load-bearing. Fix those before execution; otherwise the implementation may be well-tested against the wrong contract.
+**Overall: MEDIUM-HIGH.**
 
-*Tokens used: 95,087*
+The revised plans are much closer to executable, but two load-bearing semantic problems remain: non-streaming kiro-native tool calls for Ollama/OpenAI have no rendering path, and streaming coerce can incorrectly fire after kiro-native tool calls. Fixing those requires plan edits before implementation, not just tests. Once those are corrected, the phase risk drops to **MEDIUM**, mainly from Anthropic local aggregation and E2E harness complexity.
 
 ---
 
 ## Consensus Summary
 
-> Only one external reviewer was available (codex). No cross-reviewer consensus could be computed — every concern below comes from codex alone and should be weighed accordingly. Claude was skipped because the orchestrator is running inside Claude Code (SELF_CLI=claude); gemini/coderabbit/opencode/qwen/cursor and the three local-server reviewers (ollama/lm_studio/llama_cpp) are not installed/running on this machine.
+> Only one external reviewer was available (codex). No cross-reviewer consensus could be computed. Claude was skipped because the orchestrator runs inside Claude Code (SELF_CLI=claude). All other reviewers (gemini/coderabbit/opencode/qwen/cursor + local servers ollama/lm_studio/llama_cpp) are not installed/running on this machine.
 
-### Strengths (from codex)
-- Wave structure is sound: foundation → parallel adapters → cross-surface validation.
-- Property-test coverage of `CoerceToolCall` is thorough (panic safety, idempotency, tie-breaking, no-match).
-- CR-01 pointer-to-empty-map preservation on Anthropic is correctly protected.
-- Wire-shape divergence is captured in the right places (OpenAI JSON-string args, Ollama object args, Anthropic tool_use input object).
-- Zero new dependencies — uses stdlib `testing/quick` + already-imported `goleak`.
+### Prior Concern Resolution (iteration 1)
 
-### High-Priority Concerns (load-bearing)
+| Prior Concern | Codex Verdict |
+|---|---|
+| Streaming coerce gap | **Partially resolved** — streaming coerce added but native-tool-call skip edge case missed |
+| Two-path rule consistency | **Improved but overcorrected** — non-streaming Ollama/OpenAI is now broken/undefined; Anthropic exception conflicts with 06-01 wording |
+| Node byte-fidelity timing | **Resolved** — move to 06-01 is sound |
+| Anthropic non-streaming stop_reason | **Resolved** — render.go modification appropriate |
+| Fake-kiro harness scope | **Mostly resolved** — method coverage + (cmd, env) API good; fake binary lifetime + `go vet -tags e2e` need correction |
 
-1. **Streaming coerce gap** — `engine.CoerceToolCall` runs post-`engine.Collect` in handlers, which only fires on non-streaming requests. Ollama defaults to `stream:true` and OpenAI clients commonly stream. LangChain JSON-as-text compatibility — the load-bearing reason `coerceToolCall` exists at all — is therefore broken on the most common request shape. Need a streaming-side aggregator that buffers assistant text until end-of-stream (or first non-text chunk), runs coerce, then emits the final native tool_calls frame instead of the buffered text deltas. Touches Ollama NDJSON and OpenAI SSE emitters.
+### New HIGH-Priority Concerns (introduced by iteration-1 replan)
 
-2. **Two-path tool-call rule ambiguity** — CONTEXT.md D-03/D-05 says kiro-native tool_call renders as `[tool: <name>]` thought-text narration, but the plans also wire kiro-native `ChunkKindToolCall` into `Message.ToolCalls` and emit them as native wire `tool_calls[]` on the final frame (Ollama done line, OpenAI delta+finish_reason=tool_calls, Anthropic content_block). For non-streaming this might be intentional; for streaming it appears to violate the narration rule. Need an explicit per-surface × streaming/non-streaming decision matrix in CONTEXT before adapter code lands.
+1. **Non-streaming kiro-native tool calls are LOST for Ollama/OpenAI.** 06-01 says `engine.Collect` drops `ChunkKindToolCall`; 06-02/03 only render kiro-native in streaming emitters. Non-streaming handlers only receive `ChatResponse` — there is no source left for `[tool: name]
+` narration. **Fix:** either aggregate kiro-native chunks into text narration in `engine.Collect`, or add Ollama/OpenAI local collectors (mirror the Anthropic D-07 exception).
 
-3. **Assumption A1 timing** — Node byte-fidelity checkpoint is in Wave 3 (plan 06-05 task 4), but Wave 2 builds adapters around the coerce algorithm. If Node behavior diverges from the narrative reference, Wave 2 work is wrong. Move the checkpoint to between Wave 1 and Wave 2.
+2. **Streaming coerce does not respect "existing tool calls" after kiro-native chunks.** Coerce invariant skips when `Message.ToolCalls` is non-empty. Now that kiro-native chunks don't populate it, buffered JSON after a native tool call can be coerced incorrectly (double-fire). **Fix:** track `sawKiroNativeToolCall` in SSE/NDJSON emitters; skip streaming coerce or seed synthetic response with existing tool call when true.
 
-### Medium-Priority Concerns
+3. **"Sole producer of Message.ToolCalls" wording is too absolute.** 06-01 invariant conflicts with 06-04 Anthropic adapter-local aggregation. **Fix:** reword to "generic engine collection does not produce Message.ToolCalls; OpenAI/Ollama populate via coerce; Anthropic has an adapter-local D-07 exception."
 
-4. **Anthropic non-streaming `stop_reason:"tool_use"`** — plan 06-04 updates SSE finalization but not `render.go`. E2E scenario 1 (non-streaming native tool_call) will likely emit `stop_reason:"end_turn"` instead. Add render.go to plan 06-04's `files_modified` and override stop reason when content includes a tool_use block.
+### New MEDIUM Concerns
 
-5. **Fake-kiro harness scope** — plan 06-05's `FakeKiroScript(t, notifications) string` returns only `KIRO_CMD` but the implementation needs an env-overlay or wrapper to point the binary at the notifications file. Fake also only lists `initialize`, `session/new`, `session/prompt`, `session/cancel` — gateway also calls `session/set_model` and `ping`. Missing methods will cause flakes/deadlocks.
+4. **OpenAI mixed-valid/invalid tools tolerance is partial.** `[]openAIToolSpec` decode fails the whole request on type-invalid sibling entries. **Fix:** decode as `[]json.RawMessage` and unmarshal each entry independently.
 
-### Low-Priority Concerns
+5. **Anthropic Option A1 needs parity tests vs engine.Collect.** Adapter-local collection must be proven equivalent for text/thinking/mixed/stop-reason/error propagation.
 
-6. Silent header-only fallback in `[Available tools]` JSON catalog if `json.Marshal(req.Tools)` fails.
-7. Debug log `resp.Message.ToolCalls[0]` post-coerce is brittle (guard length defensively).
-8. OpenAI multi-frame SSE missing a test that role emission happens exactly once when tool_call is the first chunk.
-9. Static-source absence-of-call test in 06-04 is brittle (prefer behavioral test).
-10. `tests/e2e/cmd/fake-kiro-cli/main.go` missing from 06-05's `files_modified`.
+6. **Fake-kiro `sync.Once` + `t.TempDir()` lifetime bug.** First test's temp dir is cleaned up after that test, leaving later tests with a cached path to a deleted binary. **Fix:** compile into a package-level temp dir, or compile per test without `sync.Once`.
+
+7. **`go vet ./tests/e2e/...` without `-tags e2e` won't vet e2e-only files.** **Fix:** `go vet -tags e2e ./tests/e2e/...` in 06-05 Task 1 verify.
 
 ### Divergent Views
 
@@ -247,10 +298,11 @@ N/A — only one reviewer.
 
 ## To Incorporate Feedback
 
-Re-plan with review feedback:
+Re-plan with iteration-2 review feedback:
 
 ```
 /gsd-plan-phase 6 --reviews
 ```
 
-This will load `06-REVIEWS.md` and replan the affected slices. Expect plan 06-01 (kiro-native aggregation contract clarification + Node-checkpoint move), 06-02 + 06-03 (streaming coerce + two-path decision), and 06-04 (render.go non-streaming stop_reason) to materially change. Plan 06-05 likely splits into two plans (fake-harness + matrix; cancel + UAT + checkpoints) per the codex recommendation.
+Iteration-3 replan will need to touch 06-01 (Collect contract: don't drop ChunkKindToolCall — aggregate into text narration for non-streaming; reword "sole producer" with Anthropic exception), 06-02 + 06-03 (add `sawKiroNativeToolCall` flag to streaming emitters; consider non-streaming `[tool: name]
+` narration), 06-03 (OpenAI `tools` as `[]json.RawMessage` for per-entry tolerance), 06-04 (parity tests for adapter-local Collect vs engine.Collect), and 06-05 (fake-kiro binary lifetime fix; `-tags e2e` on vet).
