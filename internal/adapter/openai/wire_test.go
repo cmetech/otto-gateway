@@ -180,6 +180,182 @@ func TestWire(t *testing.T) {
 	})
 }
 
+// TestWireToChatRequest_Tools verifies the per-entry-tolerant decoder for
+// the OpenAI `tools[]` field per D-13 + iteration-3 MEDIUM #4. Tools is
+// decoded as []json.RawMessage on the wire so type-invalid sibling entries
+// can be skipped per-entry without failing the whole request decode.
+func TestWireToChatRequest_Tools(t *testing.T) {
+	t.Run("single_tool", func(t *testing.T) {
+		body := `{
+			"model":"auto",
+			"messages":[{"role":"user","content":"hi"}],
+			"tools":[{"type":"function","function":{"name":"get_weather","description":"Get current weather","parameters":{"type":"object","properties":{"location":{"type":"string"}},"required":["location"]}}}]
+		}`
+		var wire chatCompletionRequest
+		if err := json.Unmarshal([]byte(body), &wire); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		req := wireToChatRequest(&wire, fakeHTTPRequest(t))
+		if len(req.Tools) != 1 {
+			t.Fatalf("tools: got %d, want 1", len(req.Tools))
+		}
+		if req.Tools[0].Name != "get_weather" {
+			t.Errorf("name: got %q, want get_weather", req.Tools[0].Name)
+		}
+		if req.Tools[0].Description != "Get current weather" {
+			t.Errorf("description: got %q, want Get current weather", req.Tools[0].Description)
+		}
+		if req.Tools[0].Parameters == nil {
+			t.Fatal("parameters: nil; want populated map")
+		}
+		if got := req.Tools[0].Parameters["type"]; got != "object" {
+			t.Errorf("parameters.type: got %v, want object", got)
+		}
+	})
+
+	t.Run("multi_tool_order_preserved", func(t *testing.T) {
+		body := `{
+			"model":"auto",
+			"messages":[{"role":"user","content":"hi"}],
+			"tools":[
+				{"type":"function","function":{"name":"alpha","parameters":{}}},
+				{"type":"function","function":{"name":"beta","parameters":{}}},
+				{"type":"function","function":{"name":"gamma","parameters":{}}}
+			]
+		}`
+		var wire chatCompletionRequest
+		if err := json.Unmarshal([]byte(body), &wire); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		req := wireToChatRequest(&wire, fakeHTTPRequest(t))
+		if len(req.Tools) != 3 {
+			t.Fatalf("tools: got %d, want 3", len(req.Tools))
+		}
+		names := []string{req.Tools[0].Name, req.Tools[1].Name, req.Tools[2].Name}
+		want := []string{"alpha", "beta", "gamma"}
+		for i := range want {
+			if names[i] != want[i] {
+				t.Errorf("tools[%d].Name: got %q, want %q", i, names[i], want[i])
+			}
+		}
+	})
+
+	t.Run("no_tools_field", func(t *testing.T) {
+		body := `{"model":"auto","messages":[{"role":"user","content":"hi"}]}`
+		var wire chatCompletionRequest
+		if err := json.Unmarshal([]byte(body), &wire); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		req := wireToChatRequest(&wire, fakeHTTPRequest(t))
+		if req.Tools != nil {
+			t.Errorf("tools: got %v, want nil", req.Tools)
+		}
+	})
+}
+
+// TestWireToChatRequest_Tools_MixedValidInvalid locks the iteration-3
+// MEDIUM #4 fix: type-invalid sibling entries (function:42) are skipped
+// via per-entry unmarshal failure; decoded-but-semantically-invalid
+// entries (empty name) are skipped via post-unmarshal validation; valid
+// siblings are preserved in declaration order. The outer request decode
+// MUST NOT fail on the type-invalid sibling.
+func TestWireToChatRequest_Tools_MixedValidInvalid(t *testing.T) {
+	body := `{
+		"model":"auto",
+		"messages":[{"role":"user","content":"hi"}],
+		"tools":[
+			{"type":"function","function":{"name":"valid_a","parameters":{}}},
+			{"type":"function","function":42},
+			{"type":"function","function":{"name":""}},
+			{"type":"function","function":{"name":"valid_b","parameters":{}}}
+		]
+	}`
+	var wire chatCompletionRequest
+	if err := json.Unmarshal([]byte(body), &wire); err != nil {
+		t.Fatalf("outer request decode must NOT fail on type-invalid sibling; got: %v", err)
+	}
+	req := wireToChatRequest(&wire, fakeHTTPRequest(t))
+	if len(req.Tools) != 2 {
+		t.Fatalf("tools: got %d, want 2 (valid_a + valid_b)", len(req.Tools))
+	}
+	if req.Tools[0].Name != "valid_a" {
+		t.Errorf("tools[0].Name: got %q, want valid_a", req.Tools[0].Name)
+	}
+	if req.Tools[1].Name != "valid_b" {
+		t.Errorf("tools[1].Name: got %q, want valid_b", req.Tools[1].Name)
+	}
+}
+
+// TestWireToChatRequest_ToolChoice verifies polymorphic tool_choice decode
+// per D-13: "auto" / "required" / "none" string forms + {type:"function",
+// function:{name:...}} object form + unknown-shape accept-and-ignore.
+func TestWireToChatRequest_ToolChoice(t *testing.T) {
+	cases := []struct {
+		name     string
+		body     string
+		wantType string
+		wantName string
+		wantNil  bool
+	}{
+		{
+			name:     "auto",
+			body:     `{"model":"auto","messages":[{"role":"user","content":"hi"}],"tool_choice":"auto"}`,
+			wantType: "auto",
+		},
+		{
+			name:     "required",
+			body:     `{"model":"auto","messages":[{"role":"user","content":"hi"}],"tool_choice":"required"}`,
+			wantType: "required",
+		},
+		{
+			name:     "none",
+			body:     `{"model":"auto","messages":[{"role":"user","content":"hi"}],"tool_choice":"none"}`,
+			wantType: "none",
+		},
+		{
+			name:     "function",
+			body:     `{"model":"auto","messages":[{"role":"user","content":"hi"}],"tool_choice":{"type":"function","function":{"name":"get_weather"}}}`,
+			wantType: "function",
+			wantName: "get_weather",
+		},
+		{
+			name:    "unknown_numeric_accepts_and_ignores",
+			body:    `{"model":"auto","messages":[{"role":"user","content":"hi"}],"tool_choice":42}`,
+			wantNil: true,
+		},
+		{
+			name:    "absent",
+			body:    `{"model":"auto","messages":[{"role":"user","content":"hi"}]}`,
+			wantNil: true,
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			var wire chatCompletionRequest
+			if err := json.Unmarshal([]byte(tc.body), &wire); err != nil {
+				t.Fatalf("outer decode: %v", err)
+			}
+			req := wireToChatRequest(&wire, fakeHTTPRequest(t))
+			if tc.wantNil {
+				if req.ToolChoice != nil {
+					t.Errorf("tool_choice: got %+v, want nil", req.ToolChoice)
+				}
+				return
+			}
+			if req.ToolChoice == nil {
+				t.Fatalf("tool_choice: nil; want type=%q name=%q", tc.wantType, tc.wantName)
+			}
+			if req.ToolChoice.Type != tc.wantType {
+				t.Errorf("tool_choice.Type: got %q, want %q", req.ToolChoice.Type, tc.wantType)
+			}
+			if req.ToolChoice.Name != tc.wantName {
+				t.Errorf("tool_choice.Name: got %q, want %q", req.ToolChoice.Name, tc.wantName)
+			}
+		})
+	}
+}
+
 // TestErrors covers writeError: envelope shape + status codes + content-type ordering.
 func TestErrors(t *testing.T) {
 	cases := []struct {
