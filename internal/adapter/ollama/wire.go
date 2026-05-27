@@ -84,9 +84,24 @@ type ollamaChatResponse struct {
 }
 
 type ollamaChatResponseMessage struct {
-	Role     string `json:"role"`
-	Content  string `json:"content"`
-	Thinking string `json:"thinking,omitempty"`
+	Role    string `json:"role"`
+	Content string `json:"content"`
+	// ToolCalls is the assistant's outbound tool invocations on the
+	// response side. Phase 6 D-04/D-15: this field carries the Ollama
+	// wire shape for tool calls — Arguments is a plain JSON OBJECT
+	// (map[string]any), NOT a JSON-encoded string (that is the OpenAI
+	// surface's convention). The field is symmetric with the request-side
+	// ollamaMessage.ToolCalls.
+	//
+	// Per the Phase 6 per-surface contract (D-03/D-05/D-07), this field
+	// is populated ONLY by engine.CoerceToolCall (the coerce-from-text
+	// path) for the Ollama surface. Kiro-native tool_call chunks render
+	// as `[tool: <name>]\n` narration text in Content — for non-streaming
+	// they come from engine.Collect's iteration-3 narration aggregator
+	// (06-01), for streaming they come from ndjson.go's per-chunk
+	// ChunkKindToolCall handler.
+	ToolCalls []ollamaToolCall `json:"tool_calls,omitempty"`
+	Thinking  string           `json:"thinking,omitempty"`
 }
 
 // ----------------------------------------------------------------------------
