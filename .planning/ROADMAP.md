@@ -291,12 +291,12 @@ Plans:
   4. Tool definitions from both request shapes (OpenAI `tools[].function`, Ollama tool spec) are normalized into one canonical tool spec consumed by the engine.
   5. Property tests (`pgregory.net/rapid` or `testing/quick`) cover `coerceToolCall` round-trip + never-panic invariants and the canonical-tool-spec translator for both surfaces.
 
-**Plans:** 5 plans (revised 2026-05-26 per 06-REVIEWS.md iteration 3 — fixes iteration-2 regressions)
+**Plans:** 1/5 plans executed
 
 Plans:
 **Wave 1** *(cross-cutting foundation; blocks Waves 2-3)*
 
-- [ ] 06-01-PLAN.md — Foundation: canonical.ToolCallChunk.ID (D-08), engine.coerce.go (D-01/D-09/D-10/D-11/D-12), engine.Collect aggregates kiro-native ChunkKindToolCall into `[tool: <name>]\n` narration text (iteration-3 fix to HIGH #1 — restores non-streaming Ollama/OpenAI rendering), per-surface Message.ToolCalls population contract (iteration-3 HIGH #3 reworded — Ollama/OpenAI via CoerceToolCall, Anthropic via 06-04 D-07 exception, generic engine.Collect populates none), engine.buildBlocks [Available tools] JSON catalog with debug-log fallback (D-16), acp/translate.go tool_call/tool_call_chunk → ChunkKindToolCall (D-03 canonical extraction), BLOCKING Node byte-fidelity checkpoint at end of slice (moved from 06-05 per REVIEW HIGH #3)
+- [x] 06-01-PLAN.md — Foundation: canonical.ToolCallChunk.ID (D-08), engine.coerce.go (D-01/D-09/D-10/D-11/D-12), engine.Collect aggregates kiro-native ChunkKindToolCall into `[tool: <name>]\n` narration text (iteration-3 fix to HIGH #1 — restores non-streaming Ollama/OpenAI rendering), per-surface Message.ToolCalls population contract (iteration-3 HIGH #3 reworded — Ollama/OpenAI via CoerceToolCall, Anthropic via 06-04 D-07 exception, generic engine.Collect populates none), engine.buildBlocks [Available tools] JSON catalog with debug-log fallback (D-16), acp/translate.go tool_call/tool_call_chunk → ChunkKindToolCall (D-03 canonical extraction), BLOCKING Node byte-fidelity checkpoint at end of slice (moved from 06-05 per REVIEW HIGH #3)
 
 **Wave 2** *(per-surface vertical slices — run in parallel; blocked on Wave 1 including the Node fidelity checkpoint)*
 
@@ -370,7 +370,7 @@ Phases execute in numeric order: 1 → 1.1 → 2 → 3 → 3.1 → 4 → 5 → 6
 | 3. OpenAI Surface | 4/4 | Complete   | 2026-05-25 |
 | 4. Streaming | 4/4 | Complete   | 2026-05-25 |
 | 5. Pool + Stateful Sessions | 5/5 | Complete    | 2026-05-26 |
-| 6. Tool-Call Path | 0/5 | Not started | - |
+| 6. Tool-Call Path | 1/5 | In Progress|  |
 | 7. Embeddings | 0/TBD | Not started | - |
 | 8. Plugin Hook Chain | 0/TBD | Not started | - |
 | 9. Distribution | 0/TBD | Not started | - |
