@@ -8,6 +8,29 @@ import (
 	"otto-gateway/internal/session"
 )
 
+// PHASE 6 INVARIANT: Anthropic does NOT call engine.CoerceToolCall.
+//
+// Per CONTEXT D-01 + D-17 scenario 5, running coerce on the Anthropic
+// surface would silently rewrite messages.stream() consumers'
+// assistant text into synthesized tool_use blocks — a wire-shape
+// forgery that surprises loop24-client and any other Anthropic-native
+// client that emits JSON-shaped assistant text legitimately. The
+// per-surface Message.ToolCalls population contract (defined in
+// 06-01 and implemented for Anthropic in collect.go's
+// CollectAnthropicChat per the D-07 exception) is the correct
+// mechanism — kiro-native ChunkKindToolCall produces native tool_use
+// blocks via the adapter-local aggregator; bare-JSON assistant text
+// is preserved verbatim with no synthesis.
+//
+// Regression guards:
+//   - TestAnthropic_NoCoerce_Behavioral (REVIEW LOW #9 — primary):
+//     drives a fake engine emitting bare JSON text + tools[] catalog,
+//     asserts no tool_use is synthesized and stop_reason stays
+//     end_turn.
+//   - TestAnthropic_DoesNotCallCoerceToolCall (belt-and-suspenders):
+//     static-source assertion that handlers.go contains no
+//     `engine.CoerceToolCall` symbol.
+
 // messagesBodyCap is the maximum acceptable body size for POST
 // /v1/messages — 4 MiB. Matches Phase 2 Ollama chat body cap. Exceed
 // → 413 request_too_large per D-20.

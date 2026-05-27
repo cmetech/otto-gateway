@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -645,4 +646,216 @@ func TestHandleMessages_SystemAndThinking_ReachCanonical(t *testing.T) {
 	if len(eng.lastReq.Messages) != 2 {
 		t.Fatalf("canonical.Messages: got %d, want 2; %+v", len(eng.lastReq.Messages), eng.lastReq.Messages)
 	}
+}
+
+// ----------------------------------------------------------------------------
+// Phase 6 Plan 04 Task 4 — NO-coerce asymmetry locked (D-01 / D-17 scenario 5)
+//
+// Anthropic does NOT call engine.CoerceToolCall. Running coerce here
+// would silently rewrite messages.stream() consumers' assistant text
+// into synthesized tool_use blocks — a wire-shape forgery that
+// surprises loop24-client and any other Anthropic-native client that
+// emits JSON-shaped assistant text legitimately.
+//
+// Two regression guards:
+//   - TestAnthropic_NoCoerce_Behavioral (REVIEW LOW #9 promoted to
+//     required, the primary guard) — drives a fake engine that
+//     produces bare JSON text + the request carries a tools[] catalog
+//     with a matching tool. A future bug that adds CoerceToolCall to
+//     handlers.go would coerce the text into a tool_use block; this
+//     test asserts that does NOT happen — text preserved verbatim, no
+//     tool_use synthesized, stop_reason stays end_turn.
+//   - TestAnthropic_DoesNotCallCoerceToolCall (belt-and-suspenders,
+//     static-source assertion) — reads handlers.go and asserts the
+//     `engine.CoerceToolCall` symbol does NOT appear. Catches a refactor
+//     at compile-time before the behavioral test even runs.
+// ----------------------------------------------------------------------------
+
+// TestAnthropic_NoCoerce_Behavioral is the primary REVIEW LOW #9
+// regression guard. It drives a fake engine that emits a single text
+// chunk whose payload is bare JSON (the LangChain-style "JSON-as-text"
+// shape that engine.CoerceToolCall is built to handle on
+// Ollama/OpenAI). With a matching tools[] catalog, an Ollama or
+// OpenAI handler would coerce the text into a synthetic tool_use
+// block and set stop_reason:"tool_use". The Anthropic handler MUST
+// NOT — it preserves the text verbatim, emits no tool_use, and the
+// stop_reason stays end_turn. This is locked by D-01 + D-17
+// scenario 5.
+func TestAnthropic_NoCoerce_Behavioral(t *testing.T) {
+	bareJSONText := `{"location":"NYC"}`
+	eng := &fakeEngine{
+		collectResp: &canonical.ChatResponse{
+			Model: "auto",
+			Message: canonical.Message{
+				Role: canonical.RoleAssistant,
+				Content: []canonical.ContentPart{
+					{Kind: canonical.ContentKindText, Text: bareJSONText},
+				},
+			},
+			StopReason: canonical.StopEndTurn,
+		},
+	}
+	a := newTestAdapter(eng)
+	body := `{
+		"model": "auto",
+		"max_tokens": 256,
+		"messages": [{"role":"user","content":"what's the weather in NYC?"}],
+		"tools": [{
+			"name": "get_weather",
+			"description": "look up weather",
+			"input_schema": {
+				"type": "object",
+				"properties": {
+					"location": {"type": "string"}
+				},
+				"required": ["location"]
+			}
+		}]
+	}`
+	w := doPost(t, a, "/messages", body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	var resp anthropicMessage
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v; body=%s", err, w.Body.String())
+	}
+
+	// (a) The assistant text MUST be preserved verbatim. Coerce would
+	// have cleared the text and emitted a synthetic tool_use block;
+	// the Anthropic surface MUST NOT do that.
+	if len(resp.Content) == 0 {
+		t.Fatal("D-01 violation: response has no content blocks; expected preserved bare-JSON text")
+	}
+	sawText := false
+	for _, b := range resp.Content {
+		if b.Type == "text" && b.Text == bareJSONText {
+			sawText = true
+		}
+	}
+	if !sawText {
+		t.Errorf("D-01 violation: bare-JSON assistant text not preserved verbatim; content=%+v", resp.Content)
+	}
+
+	// (b) NO tool_use content block synthesized. This is what would
+	// happen if engine.CoerceToolCall ran here.
+	for _, b := range resp.Content {
+		if b.Type == "tool_use" {
+			t.Errorf("D-01 violation: synthesized tool_use block on Anthropic surface; content=%+v (engine.CoerceToolCall was called?)", resp.Content)
+		}
+	}
+
+	// (c) stop_reason stays end_turn (NOT "tool_use"). The Task 3
+	// render override fires only when a ContentKindToolUse part
+	// exists — which it MUST NOT here.
+	if resp.StopReason == nil {
+		t.Fatal("stop_reason: nil; want pointer to \"end_turn\"")
+	}
+	if *resp.StopReason != "end_turn" {
+		t.Errorf("D-01 violation: stop_reason got %q, want \"end_turn\" (no tool_use synthesized -> no override)", *resp.StopReason)
+	}
+}
+
+// TestAnthropic_DoesNotCallCoerceToolCall is the belt-and-suspenders
+// static-source guard. Cheap to run, fail-fast on the symbol —
+// catches refactors that add CoerceToolCall to handlers.go before the
+// behavioral test even runs. Primary regression guard is
+// TestAnthropic_NoCoerce_Behavioral above. Per CONTEXT D-01 / D-17
+// scenario 5, the Anthropic surface intentionally does NOT call
+// engine.CoerceToolCall.
+func TestAnthropic_DoesNotCallCoerceToolCall(t *testing.T) {
+	// G304 silenced: handlers.go is a known sibling source file,
+	// never user input.
+	src, err := os.ReadFile("handlers.go") //nolint:gosec // sibling source file; constant path
+	if err != nil {
+		t.Fatalf("ReadFile handlers.go: %v", err)
+	}
+	// Strip Go line + block comments so the PHASE 6 INVARIANT
+	// documentation block (which mentions engine.CoerceToolCall to
+	// EXPLAIN the absence) does not trip a false positive. We want
+	// to assert that the SYMBOL is not referenced in actual code.
+	stripped := stripGoComments(string(src))
+	if strings.Contains(stripped, "engine.CoerceToolCall") {
+		t.Errorf("D-01 violation: handlers.go references engine.CoerceToolCall in non-comment code. "+
+			"Per CONTEXT D-01 + D-17 scenario 5, the Anthropic surface intentionally "+
+			"does NOT call CoerceToolCall — running coerce would silently rewrite "+
+			"messages.stream() consumers' assistant text into synthesized tool_use "+
+			"blocks (wire-shape forgery). Remove the reference and rely on the "+
+			"per-surface contract: kiro-native ChunkKindToolCall is aggregated by "+
+			"CollectAnthropicChat (the D-07 exception); bare-JSON assistant text is "+
+			"preserved verbatim. See TestAnthropic_NoCoerce_Behavioral for the "+
+			"primary behavioral regression guard. stripped source:\n%s", stripped)
+	}
+}
+
+// stripGoComments removes Go `//` line comments and `/* ... */` block
+// comments from src so static-source assertions can distinguish
+// documentation mentions of a symbol from real code references.
+// Naive byte-walk implementation — does NOT attempt to handle
+// `//`-in-string-literals as a comment (that would be a defect-in-
+// the-source-anyway scenario). Sufficient for the tightly-scoped
+// PHASE 6 INVARIANT check.
+func stripGoComments(src string) string {
+	var sb strings.Builder
+	sb.Grow(len(src))
+	i := 0
+	n := len(src)
+	for i < n {
+		// Line comment.
+		if i+1 < n && src[i] == '/' && src[i+1] == '/' {
+			for i < n && src[i] != '\n' {
+				i++
+			}
+			continue
+		}
+		// Block comment.
+		if i+1 < n && src[i] == '/' && src[i+1] == '*' {
+			i += 2
+			for i+1 < n && !(src[i] == '*' && src[i+1] == '/') {
+				i++
+			}
+			if i+1 < n {
+				i += 2 // skip closing */
+			}
+			continue
+		}
+		// String literal — skip past so a "//" or "/*" inside a
+		// string does not get treated as a comment opening.
+		if src[i] == '"' {
+			sb.WriteByte(src[i])
+			i++
+			for i < n && src[i] != '"' {
+				if src[i] == '\\' && i+1 < n {
+					sb.WriteByte(src[i])
+					sb.WriteByte(src[i+1])
+					i += 2
+					continue
+				}
+				sb.WriteByte(src[i])
+				i++
+			}
+			if i < n {
+				sb.WriteByte(src[i])
+				i++
+			}
+			continue
+		}
+		// Raw string literal (backticks).
+		if src[i] == '`' {
+			sb.WriteByte(src[i])
+			i++
+			for i < n && src[i] != '`' {
+				sb.WriteByte(src[i])
+				i++
+			}
+			if i < n {
+				sb.WriteByte(src[i])
+				i++
+			}
+			continue
+		}
+		sb.WriteByte(src[i])
+		i++
+	}
+	return sb.String()
 }
