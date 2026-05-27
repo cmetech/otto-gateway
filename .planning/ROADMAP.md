@@ -31,7 +31,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 3.1: Anthropic Surface** *(INSERTED)* - loop24-client (GSD Pi) `POST /v1/messages` with Anthropic SSE shares the same canonical engine (completed 2026-05-24)
 - [x] **Phase 4: Streaming** - NDJSON (Ollama) and SSE (OpenAI + Anthropic) off one canonical chunk channel, with disconnect cancellation (completed 2026-05-25)
 - [x] **Phase 5: Pool + Stateful Sessions** - Warm `POOL_SIZE` pool plus `X-Session-Id` registry, both visible on `/health/agents` (plans 3/3 shipped 2026-05-26; verification gaps_found — gap-closure plans 05-04 (SC3 root-cause + fix) + 05-05 (PHASE5-PERF.md skeleton + manual gates) appended 2026-05-26) (completed 2026-05-26)
-- [ ] **Phase 6: Tool-Call Path** - Canonical tool calls rendered per-surface, with `coerceToolCall` for plain-JSON-as-text
+- [x] **Phase 6: Tool-Call Path** - Canonical tool calls rendered per-surface, with `coerceToolCall` for plain-JSON-as-text (completed 2026-05-27)
 - [ ] **Phase 7: Embeddings** - Local BGE/E5 embeddings on three endpoints, independent of `kiro-cli`
 - [ ] **Phase 8: Plugin Hook Chain** - `PreHook`/`PostHook` over canonical types, with RequestID, Auth, Logging registered
 - [ ] **Phase 9: Distribution** - Cross-compile Linux+Windows from macOS, full trust-gate CI matrix gating merges
@@ -291,7 +291,7 @@ Plans:
   4. Tool definitions from both request shapes (OpenAI `tools[].function`, Ollama tool spec) are normalized into one canonical tool spec consumed by the engine.
   5. Property tests (`pgregory.net/rapid` or `testing/quick`) cover `coerceToolCall` round-trip + never-panic invariants and the canonical-tool-spec translator for both surfaces.
 
-**Plans:** 4/5 plans executed
+**Plans:** 5/5 plans complete
 
 Plans:
 **Wave 1** *(cross-cutting foundation; blocks Waves 2-3)*
@@ -306,7 +306,7 @@ Plans:
 
 **Wave 3** *(cross-surface integration + UAT checkpoint; blocked on Waves 1-2)*
 
-- [ ] 06-05-PLAN.md — Cross-surface E2E: NEW tests/e2e/cmd/fake-kiro-cli/main.go binary supporting full ACP method set (initialize/session/new/session/set_model/session/prompt/session/cancel/ping per REVIEW HIGH #5), NEW tests/e2e/tools_testmain_test.go TestMain compiles binary at package init with per-pid os.TempDir() path (iteration-3 fix to MEDIUM #6 — binary lifetime is package-scoped, not per-test t.TempDir), tools_fixtures.go with new FakeKiro(t,script) (cmd, env) API reading package-level fakeKiroBinaryPath var (REVIEW HIGH #5), `go vet -tags e2e ./tests/e2e/...` (iteration-3 fix to MEDIUM #7), tools_{ollama,openai,anthropic,cancel}_test.go full D-17 12-scenario matrix including REVIEW HIGH #1/#2/MEDIUM #4 + iteration-3 HIGH #1/#2 E2E verifications, scenario 12 mid-stream cancel with frame-log assertion, blocking HUMAN-UAT checkpoint for loop24-client messages.stream() conformance (Node byte-fidelity checkpoint MOVED to 06-01 per REVIEW HIGH #3)
+- [x] 06-05-PLAN.md — Cross-surface E2E: NEW tests/e2e/cmd/fake-kiro-cli/main.go binary supporting full ACP method set (initialize/session/new/session/set_model/session/prompt/session/cancel/ping per REVIEW HIGH #5), NEW tests/e2e/tools_testmain_test.go TestMain compiles binary at package init with per-pid os.TempDir() path (iteration-3 fix to MEDIUM #6 — binary lifetime is package-scoped, not per-test t.TempDir), tools_fixtures.go with new FakeKiro(t,script) (cmd, env) API reading package-level fakeKiroBinaryPath var (REVIEW HIGH #5), `go vet -tags e2e ./tests/e2e/...` (iteration-3 fix to MEDIUM #7), tools_{ollama,openai,anthropic,cancel}_test.go full D-17 12-scenario matrix including REVIEW HIGH #1/#2/MEDIUM #4 + iteration-3 HIGH #1/#2 E2E verifications, scenario 12 mid-stream cancel with frame-log assertion, blocking HUMAN-UAT checkpoint for loop24-client messages.stream() conformance (Node byte-fidelity checkpoint MOVED to 06-01 per REVIEW HIGH #3)
 
 ### Phase 7: Embeddings
 
@@ -370,7 +370,7 @@ Phases execute in numeric order: 1 → 1.1 → 2 → 3 → 3.1 → 4 → 5 → 6
 | 3. OpenAI Surface | 4/4 | Complete   | 2026-05-25 |
 | 4. Streaming | 4/4 | Complete   | 2026-05-25 |
 | 5. Pool + Stateful Sessions | 5/5 | Complete    | 2026-05-26 |
-| 6. Tool-Call Path | 4/5 | In Progress|  |
+| 6. Tool-Call Path | 5/5 | Complete   | 2026-05-27 |
 | 7. Embeddings | 0/TBD | Not started | - |
 | 8. Plugin Hook Chain | 0/TBD | Not started | - |
 | 9. Distribution | 0/TBD | Not started | - |
