@@ -174,17 +174,42 @@ type sseEmitter struct {
 	blockIndex  int
 	currentKind canonical.ChunkKind
 	blockOpen   bool
-	// toolUseEmitted is set true once a content_block_delta carrying
-	// an input_json_delta has been written. finalizeStream consults
-	// this flag and overrides the message_delta stop_reason to
-	// "tool_use" — per Anthropic spec, the SDK expects stop_reason:
-	// tool_use whenever the response contains a tool_use block,
-	// regardless of the engine's mapped StopReason.
+	// toolUseEmitted is set true once a tool_use content_block_start
+	// has been written (regardless of whether a populated delta
+	// followed). finalizeStream consults this flag and overrides the
+	// message_delta stop_reason to "tool_use" — per Anthropic spec,
+	// the SDK expects stop_reason: tool_use whenever the response
+	// contains a tool_use block, regardless of the engine's mapped
+	// StopReason.
 	//
 	// D-05 single-goroutine invariant: this field is touched ONLY
 	// inside the select-loop goroutine (applyChunk -> finalizeStream).
 	// No mutex needed.
 	toolUseEmitted bool
+
+	// pendingToolUseFlush guards the partial_json concat hazard
+	// surfaced by pi-ai's anthropic-shared.ts parser (and the official
+	// @anthropic-ai/sdk MessageStream). ACP can emit a placeholder
+	// `tool_call` notification (Args=nil) as a block-header
+	// announcement, followed by a `tool_call_chunk` carrying the
+	// actual args; both translate to canonical.ChunkKindToolCall with
+	// the same toolCallId. Emitting `input_json_delta` for BOTH
+	// produces `partial_json:"{}"` then `partial_json:"{...}"` on the
+	// wire, and the SDK parser tries to parse `{}{...}` as a single
+	// JSON value — failing at position 2.
+	//
+	// Discipline: at most ONE input_json_delta per tool_use content
+	// block, carrying the FINAL populated args. Placeholder chunks
+	// open the block but defer the delta (this flag goes true). The
+	// next populated chunk emits the delta and clears the flag. If
+	// the block closes (kind transition OR finalizeStream) with the
+	// flag still set — a zero-arg tool, or a stream that only ever
+	// sent placeholders — flushPendingToolUseIfNeeded emits one
+	// `partial_json:"{}"` so the SDK parser has exactly one
+	// well-formed JSON value to parse.
+	//
+	// D-05 single-goroutine invariant applies.
+	pendingToolUseFlush bool
 }
 
 // writeEvent emits one named SSE frame using the canonical
@@ -281,6 +306,13 @@ func (e *sseEmitter) applyChunk(c canonical.Chunk) error {
 
 	// Step 2: close + bump on kind transition.
 	if e.blockOpen && c.Kind != e.currentKind {
+		// Zero-arg / placeholder-only flush: if the closing block is a
+		// tool_use that never received populated args, emit one
+		// `partial_json:"{}"` delta so the SDK parser doesn't choke on
+		// an empty accumulator. No-op for text/thought blocks.
+		if err := e.flushPendingToolUseIfNeeded(); err != nil {
+			return err
+		}
 		if err := e.writeEvent("content_block_stop", contentBlockStop{
 			Type:  "content_block_stop",
 			Index: e.blockIndex,
@@ -302,6 +334,14 @@ func (e *sseEmitter) applyChunk(c canonical.Chunk) error {
 		}
 		e.currentKind = c.Kind
 		e.blockOpen = true
+		// A tool_use block has now been declared on the wire — the
+		// stop_reason finalizer override fires regardless of whether
+		// a populated input_json_delta follows. Set the pending-flush
+		// flag so an unaccompanied placeholder still flushes "{}".
+		if c.Kind == canonical.ChunkKindToolCall {
+			e.toolUseEmitted = true
+			e.pendingToolUseFlush = true
+		}
 	}
 
 	// Step 4: emit the kind-specific delta.
@@ -325,29 +365,53 @@ func (e *sseEmitter) applyChunk(c canonical.Chunk) error {
 			Delta: thinkingDelta{Type: "thinking_delta", Thinking: c.Thought.Content},
 		})
 	case canonical.ChunkKindToolCall:
-		// Phase 6 Plan 04 Task 2 (D-07): emit ONE content_block_delta
-		// carrying the full args as input_json_delta.partial_json.
-		// kiro emits tool args atomically per D-06 — no chunking
-		// needed. After successful emit, set toolUseEmitted so
-		// finalizeStream overrides stop_reason to "tool_use".
+		// Phase 6 Plan 04 Task 2 (D-07): emit at most ONE
+		// content_block_delta carrying the full args as
+		// input_json_delta.partial_json per tool_use block. kiro emits
+		// tool args atomically per D-06 — but ACP can announce the
+		// block via a `tool_call` notification (Args=nil) FIRST and
+		// then deliver the payload via `tool_call_chunk` for the same
+		// toolCallId. Both translate to ChunkKindToolCall; the SDK
+		// parser concatenates partial_json deltas and would parse
+		// `{}{...}` as a single value — failing at position 2.
+		//
+		// Discipline: placeholder chunks (Args nil/empty) defer the
+		// delta via pendingToolUseFlush (set in step 3 on block
+		// open). The first populated chunk emits the delta and
+		// clears the flag. Subsequent populated chunks for the same
+		// block are dropped (D-06 atomicity invariant — first wins).
+		// Block close (kind transition or finalizeStream) flushes a
+		// single `{}` delta if the flag is still set.
 		if c.ToolCall == nil {
 			return nil
 		}
-		// WR-02 (Phase 6 review): unify on the same nil-args discipline
-		// used by toolUseBlockHeader.Input (pointer-to-empty-map). Normalize
-		// a nil Args map to an empty map BEFORE Marshal so the wire never
-		// carries "null" inside partial_json — Anthropic's @anthropic-ai/sdk
-		// MessageStream parser rejects partial_json:"null". An empty
-		// non-nil map already marshals to "{}", so this is a no-op there.
-		args := c.ToolCall.Args
-		if args == nil {
-			args = map[string]any{}
+		hasArgs := len(c.ToolCall.Args) > 0
+		if !hasArgs {
+			// Placeholder/announcement: block opened via step 3 with
+			// `"input":{}` in content_block_start. Defer the delta.
+			e.logger.Debug("anthropic: sse tool_call placeholder; deferring partial_json",
+				"id", c.ToolCall.ID, "name", c.ToolCall.Name)
+			return nil
 		}
-		argsJSON, err := json.Marshal(args)
+		if !e.pendingToolUseFlush {
+			// A populated delta has already been emitted for this
+			// block. Emitting another would concatenate on the SDK
+			// side and break parsing. kiro is contracted to emit
+			// args atomically (D-06); this guards against a
+			// misbehaving stream and against future regressions of
+			// the placeholder-then-populated shape.
+			e.logger.Debug("anthropic: sse tool_call subsequent populated chunk dropped (D-06 atomicity)",
+				"id", c.ToolCall.ID, "name", c.ToolCall.Name)
+			return nil
+		}
+		argsJSON, err := json.Marshal(c.ToolCall.Args)
 		if err != nil {
 			// Defensive: if Args contains a pathological value
 			// (chan, function), encoding/json will fail. Log + drop
 			// the delta rather than tear down the whole stream.
+			// pendingToolUseFlush stays true so a `{}` flushes at
+			// block close — the SDK parser never sees a missing
+			// delta.
 			e.logger.Debug("anthropic: sse tool_call args marshal failed; dropping delta",
 				"err", err, "name", c.ToolCall.Name)
 			return nil
@@ -359,11 +423,47 @@ func (e *sseEmitter) applyChunk(c canonical.Chunk) error {
 		}); err != nil {
 			return err
 		}
-		e.toolUseEmitted = true
+		e.pendingToolUseFlush = false
 		return nil
 	}
 	// Unsupported kinds short-circuited at step 1; this is defensive.
 	return nil
+}
+
+// flushPendingToolUseIfNeeded emits a single `partial_json:"{}"`
+// input_json_delta when a tool_use block is closing without ever
+// receiving a populated content_block_delta. Two cases trigger this:
+//
+//  1. Zero-arg tool calls (the tool takes no parameters; kiro emits
+//     one `tool_call` notification with Args=nil and never follows
+//     up with a `tool_call_chunk`).
+//  2. A stream that emits only placeholder chunks for a block — the
+//     deferred-delta discipline in applyChunk skipped every one.
+//
+// Without this flush, pi-ai's anthropic-shared.ts (and the official
+// @anthropic-ai/sdk MessageStream) would see an empty accumulator
+// on content_block_stop and JSON.parse("") would throw. Emitting
+// `{}` gives the parser exactly one well-formed value — an empty
+// input object, matching the SDK's expectation for parameterless
+// tool calls.
+//
+// No-op when pendingToolUseFlush is false (a populated delta already
+// emitted) OR when the closing block is not a tool_use (defensive —
+// the flag is only ever set for tool_use blocks).
+func (e *sseEmitter) flushPendingToolUseIfNeeded() error {
+	if !e.pendingToolUseFlush {
+		return nil
+	}
+	e.pendingToolUseFlush = false
+	if e.currentKind != canonical.ChunkKindToolCall {
+		// Defensive: flag should only be set inside a tool_use block.
+		return nil
+	}
+	return e.writeEvent("content_block_delta", contentBlockDelta{
+		Type:  "content_block_delta",
+		Index: e.blockIndex,
+		Delta: inputJSONDelta{Type: "input_json_delta", PartialJSON: "{}"},
+	})
 }
 
 // runSSEEmitter is the entry point for the SSE streaming branch. It
@@ -492,6 +592,11 @@ func runSSEEmitterLoop(ctx context.Context, e *sseEmitter, run RunHandle, ticker
 func finalizeStream(e *sseEmitter, run RunHandle) error {
 	if e.blockOpen {
 		// Best-effort close; the stream is ending either way.
+		// Flush a `partial_json:"{}"` first if the closing block is a
+		// tool_use that never received populated args — the SDK
+		// parser otherwise sees an empty accumulator on
+		// content_block_stop and fails.
+		_ = e.flushPendingToolUseIfNeeded()
 		_ = e.writeEvent("content_block_stop", contentBlockStop{
 			Type:  "content_block_stop",
 			Index: e.blockIndex,

@@ -372,6 +372,195 @@ func TestApplyChunk_ThinkingDeltaPayloadShape(t *testing.T) {
 }
 
 // ----------------------------------------------------------------------------
+// applyChunk — tool_use placeholder/populated discipline
+//
+// Regression coverage for the partial_json concat bug: kiro emits a
+// `tool_call` notification with Args=nil (block-header announcement),
+// followed by a `tool_call_chunk` with Args populated. Both translate
+// to canonical.ChunkKindToolCall with the same ID. The buggy renderer
+// emitted TWO `input_json_delta` deltas (`{}` then `{...}`), the SDK
+// parser concatenated them, and parsing `{}{...}` failed at position 2.
+//
+// Contract: at most ONE input_json_delta per tool_use content block,
+// carrying the FINAL populated args. Placeholder chunks (nil/empty
+// args) open the block without emitting a delta. If a block closes
+// without ever receiving populated args (zero-arg tool corner case),
+// a single `partial_json:"{}"` flush is emitted at close time so the
+// SDK parser has exactly one well-formed JSON value to parse.
+// ----------------------------------------------------------------------------
+
+// TestApplyChunk_ToolCall_PlaceholderThenPopulated reproduces the
+// exact failure mode reported against pi-ai's anthropic-shared.ts
+// parser: "Unexpected non-whitespace character after JSON at position
+// 2 (line 1 column 3)". Drives the placeholder + populated pair and
+// asserts the wire carries EXACTLY ONE input_json_delta with the
+// final args; no `{}{...}` shape on partial_json.
+func TestApplyChunk_ToolCall_PlaceholderThenPopulated(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	cf := newCountingFlusher()
+	e := newEmitter(cf)
+
+	// Two ChunkKindToolCall with the same toolCallId — first is the
+	// kiro-emitted `tool_call` announcement (Args=nil), second is the
+	// `tool_call_chunk` carrying the actual args atomically.
+	chunks := []canonical.Chunk{
+		{Kind: canonical.ChunkKindToolCall, ToolCall: &canonical.ToolCallChunk{
+			ID:   "toolu_01",
+			Name: "read",
+			Args: nil,
+		}},
+		{Kind: canonical.ChunkKindToolCall, ToolCall: &canonical.ToolCallChunk{
+			ID:   "toolu_01",
+			Name: "read",
+			Args: map[string]any{"filePath": "CLAUDE.md"},
+		}},
+	}
+	for _, c := range chunks {
+		if err := e.applyChunk(c); err != nil {
+			t.Fatalf("applyChunk: %v", err)
+		}
+	}
+
+	body := cf.Body()
+
+	// Event sequence: exactly content_block_start + ONE content_block_delta.
+	// Two deltas would mean we're emitting both the placeholder and the
+	// populated args separately — the bug.
+	events := sseEventLines(body)
+	want := []string{
+		"content_block_start",
+		"content_block_delta",
+	}
+	if !equalSlice(events, want) {
+		t.Errorf("events: got %v, want %v (exactly one input_json_delta per tool_use block)", events, want)
+	}
+
+	// Wire-shape guards: partial_json must contain the FINAL populated
+	// args, NEVER the placeholder `{}` followed by a second delta.
+	if !strings.Contains(body, `"partial_json":"{\"filePath\":\"CLAUDE.md\"}"`) {
+		t.Errorf("wire missing expected partial_json with populated args; body:\n%s", body)
+	}
+	// Pi-AI / Anthropic SDK parsers concatenate partial_json deltas
+	// and parse the result. `{}` followed by anything is invalid JSON.
+	if strings.Contains(body, `"partial_json":"{}"`) {
+		t.Errorf("wire carries forbidden `\"partial_json\":\"{}\"` for placeholder chunk (concat bug — Anthropic SDK rejects `{}{...}`); body:\n%s", body)
+	}
+
+	// State invariants: block stays open, toolUseEmitted is true (so
+	// the stop_reason finalizer override fires), block index unbumped.
+	if !e.blockOpen {
+		t.Error("blockOpen: got false, want true (block stays open through same-kind chunks)")
+	}
+	if !e.toolUseEmitted {
+		t.Error("toolUseEmitted: got false, want true (tool_use block opened, finalizer override required)")
+	}
+	if e.blockIndex != 0 {
+		t.Errorf("blockIndex: got %d, want 0 (same-kind chunks must not bump)", e.blockIndex)
+	}
+}
+
+// TestApplyChunk_ToolCall_PlaceholderOnly_FlushesEmptyObject covers
+// the zero-arg-tool corner case: a tool that takes no arguments.
+// Kiro emits one `tool_call` with Args=nil and no follow-up chunk.
+// Without a flush at close time, the SDK parser would see empty
+// partial_json and fail to parse. The fix emits a single `{}` delta
+// at content_block_stop time so the parser gets a valid empty object.
+func TestApplyChunk_ToolCall_PlaceholderOnly_FlushesEmptyObject(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	cf := newCountingFlusher()
+	e := newEmitter(cf)
+
+	// Single placeholder chunk, then a kind transition to text to
+	// force a content_block_stop (the flush path).
+	chunks := []canonical.Chunk{
+		{Kind: canonical.ChunkKindToolCall, ToolCall: &canonical.ToolCallChunk{
+			ID:   "toolu_zero",
+			Name: "now",
+			Args: nil,
+		}},
+		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "done"}},
+	}
+	for _, c := range chunks {
+		if err := e.applyChunk(c); err != nil {
+			t.Fatalf("applyChunk: %v", err)
+		}
+	}
+
+	body := cf.Body()
+
+	// Sequence: content_block_start(tool_use), content_block_delta(`{}`
+	// flushed at close), content_block_stop, content_block_start(text),
+	// content_block_delta(text).
+	events := sseEventLines(body)
+	want := []string{
+		"content_block_start",
+		"content_block_delta",
+		"content_block_stop",
+		"content_block_start",
+		"content_block_delta",
+	}
+	if !equalSlice(events, want) {
+		t.Errorf("events: got %v, want %v (zero-arg flush at close emits `{}`)", events, want)
+	}
+
+	// The flush delta carries `partial_json:"{}"` exactly once.
+	if !strings.Contains(body, `"partial_json":"{}"`) {
+		t.Errorf("wire missing zero-arg flush `\"partial_json\":\"{}\"`; body:\n%s", body)
+	}
+
+	if e.blockIndex != 1 {
+		t.Errorf("blockIndex: got %d, want 1 (one kind transition)", e.blockIndex)
+	}
+}
+
+// TestApplyChunk_ToolCall_TwoPopulatedSameBlock_SecondDropped guards
+// against D-06 atomicity violations: kiro is contracted to emit args
+// atomically. If a misbehaving stream sends TWO populated chunks for
+// the same block, the SECOND must be dropped — emitting it would
+// recreate the same concat-broken JSON the placeholder fix prevents.
+func TestApplyChunk_ToolCall_TwoPopulatedSameBlock_SecondDropped(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	cf := newCountingFlusher()
+	e := newEmitter(cf)
+
+	chunks := []canonical.Chunk{
+		{Kind: canonical.ChunkKindToolCall, ToolCall: &canonical.ToolCallChunk{
+			ID:   "toolu_dup",
+			Name: "read",
+			Args: map[string]any{"filePath": "a.md"},
+		}},
+		{Kind: canonical.ChunkKindToolCall, ToolCall: &canonical.ToolCallChunk{
+			ID:   "toolu_dup",
+			Name: "read",
+			Args: map[string]any{"filePath": "b.md"}, // different value — first wins
+		}},
+	}
+	for _, c := range chunks {
+		if err := e.applyChunk(c); err != nil {
+			t.Fatalf("applyChunk: %v", err)
+		}
+	}
+
+	body := cf.Body()
+
+	events := sseEventLines(body)
+	want := []string{
+		"content_block_start",
+		"content_block_delta",
+	}
+	if !equalSlice(events, want) {
+		t.Errorf("events: got %v, want %v (D-06 atomicity — second populated chunk dropped)", events, want)
+	}
+	// First populated chunk wins on the wire.
+	if !strings.Contains(body, `"partial_json":"{\"filePath\":\"a.md\"}"`) {
+		t.Errorf("wire missing first-wins partial_json `a.md`; body:\n%s", body)
+	}
+	if strings.Contains(body, `"filePath\":\"b.md\"`) {
+		t.Errorf("wire leaked second populated chunk `b.md` (atomicity violation); body:\n%s", body)
+	}
+}
+
+// ----------------------------------------------------------------------------
 // runSSEEmitterLoop — ping interleave, ctx cancel, finalize
 // ----------------------------------------------------------------------------
 
