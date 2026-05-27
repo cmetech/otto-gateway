@@ -466,3 +466,187 @@ func TestWire_AutoModelPassesThrough(t *testing.T) {
 		t.Errorf("req.Model for auto: got %q, want %q", req.Model, "auto")
 	}
 }
+
+// ----------------------------------------------------------------------------
+// Phase 6 Plan 04 Task 1 — tools[] decode + tool_choice polymorphic decode (D-14)
+// Closes the TODO(Phase 6) block inside wireToChatRequest.
+// ----------------------------------------------------------------------------
+
+// TestWireToChatRequest_Tools_Anthropic verifies that anthropicToolSpec
+// entries are translated into canonical.ToolSpec with Parameters
+// populated directly from the wire's input_schema field.
+func TestWireToChatRequest_Tools_Anthropic(t *testing.T) {
+	logger, _ := captureLogger()
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"location": map[string]any{"type": "string"},
+		},
+		"required": []any{"location"},
+	}
+	wire := &anthropicMessagesRequest{
+		Model:     "auto",
+		MaxTokens: 256,
+		Messages: []anthropicWireMessage{
+			{Role: "user", Content: json.RawMessage(`"hi"`)},
+		},
+		Tools: []anthropicToolSpec{
+			{Name: "get_weather", Description: "look up weather", InputSchema: schema},
+		},
+	}
+	req := wireToChatRequest(wire, newTestRequest(t, ""), logger)
+	if len(req.Tools) != 1 {
+		t.Fatalf("req.Tools: got %d, want 1; tools=%+v", len(req.Tools), req.Tools)
+	}
+	got := req.Tools[0]
+	if got.Name != "get_weather" {
+		t.Errorf("Tools[0].Name: got %q, want %q", got.Name, "get_weather")
+	}
+	if got.Description != "look up weather" {
+		t.Errorf("Tools[0].Description: got %q, want %q", got.Description, "look up weather")
+	}
+	if got.Parameters == nil {
+		t.Fatal("Tools[0].Parameters: nil (input_schema should map directly)")
+	}
+	if v, _ := got.Parameters["type"].(string); v != "object" {
+		t.Errorf("Tools[0].Parameters[type]: got %v, want object", got.Parameters["type"])
+	}
+	props, ok := got.Parameters["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("Tools[0].Parameters[properties]: got %T, want map[string]any", got.Parameters["properties"])
+	}
+	if _, ok := props["location"]; !ok {
+		t.Errorf("Tools[0].Parameters.properties.location: missing")
+	}
+}
+
+// TestWireToChatRequest_Tools_DropEmptyName guards the defensive
+// skip-on-empty-name path. Anthropic spec requires `name`; clients that
+// omit it should produce no canonical tool entry rather than a partially-
+// populated ToolSpec.
+func TestWireToChatRequest_Tools_DropEmptyName(t *testing.T) {
+	logger, _ := captureLogger()
+	wire := &anthropicMessagesRequest{
+		Model:     "auto",
+		MaxTokens: 256,
+		Messages: []anthropicWireMessage{
+			{Role: "user", Content: json.RawMessage(`"hi"`)},
+		},
+		Tools: []anthropicToolSpec{
+			{Name: "", Description: "no name"},
+			{Name: "real_tool", InputSchema: map[string]any{"type": "object"}},
+		},
+	}
+	req := wireToChatRequest(wire, newTestRequest(t, ""), logger)
+	if len(req.Tools) != 1 {
+		t.Fatalf("req.Tools: got %d, want 1 (empty-name dropped); tools=%+v", len(req.Tools), req.Tools)
+	}
+	if req.Tools[0].Name != "real_tool" {
+		t.Errorf("Tools[0].Name: got %q, want %q", req.Tools[0].Name, "real_tool")
+	}
+}
+
+// TestWireToChatRequest_Tools_Empty_Anthropic verifies that the absence
+// of tools[] leaves req.Tools nil — no spurious empty-slice allocation.
+func TestWireToChatRequest_Tools_Empty_Anthropic(t *testing.T) {
+	logger, _ := captureLogger()
+	wire := &anthropicMessagesRequest{
+		Model:     "auto",
+		MaxTokens: 256,
+		Messages: []anthropicWireMessage{
+			{Role: "user", Content: json.RawMessage(`"hi"`)},
+		},
+	}
+	req := wireToChatRequest(wire, newTestRequest(t, ""), logger)
+	if req.Tools != nil {
+		t.Errorf("req.Tools: got %+v, want nil (no tools[] in wire)", req.Tools)
+	}
+	if req.ToolChoice != nil {
+		t.Errorf("req.ToolChoice: got %+v, want nil (no tool_choice in wire)", req.ToolChoice)
+	}
+}
+
+// TestWireToChatRequest_ToolChoice_Auto verifies `{"type":"auto"}`
+// decodes into canonical.ToolChoice{Type:"auto"}.
+func TestWireToChatRequest_ToolChoice_Auto(t *testing.T) {
+	logger, _ := captureLogger()
+	wire := &anthropicMessagesRequest{
+		Model:      "auto",
+		MaxTokens:  256,
+		Messages:   []anthropicWireMessage{{Role: "user", Content: json.RawMessage(`"hi"`)}},
+		ToolChoice: json.RawMessage(`{"type":"auto"}`),
+	}
+	req := wireToChatRequest(wire, newTestRequest(t, ""), logger)
+	if req.ToolChoice == nil {
+		t.Fatal("req.ToolChoice: nil; want {Type:auto}")
+	}
+	if req.ToolChoice.Type != "auto" || req.ToolChoice.Name != "" {
+		t.Errorf("req.ToolChoice: got %+v, want {Type:auto,Name:\"\"}", req.ToolChoice)
+	}
+}
+
+// TestWireToChatRequest_ToolChoice_Any_PreservedVerbatim is the REVIEW
+// MEDIUM tool_choice coverage test. Anthropic uses 'any' where OpenAI
+// uses 'required'; this gateway preserves both losslessly in canonical
+// rather than silently mapping. Future engine/hook code that wants to
+// treat them as semantic equivalents must do that translation
+// explicitly — the adapter MUST NOT smear the distinction at the wire
+// boundary.
+func TestWireToChatRequest_ToolChoice_Any_PreservedVerbatim(t *testing.T) {
+	logger, _ := captureLogger()
+	wire := &anthropicMessagesRequest{
+		Model:      "auto",
+		MaxTokens:  256,
+		Messages:   []anthropicWireMessage{{Role: "user", Content: json.RawMessage(`"hi"`)}},
+		ToolChoice: json.RawMessage(`{"type":"any"}`),
+	}
+	req := wireToChatRequest(wire, newTestRequest(t, ""), logger)
+	if req.ToolChoice == nil {
+		t.Fatal("req.ToolChoice: nil; want {Type:any}")
+	}
+	if req.ToolChoice.Type != "any" {
+		t.Errorf("req.ToolChoice.Type: got %q, want \"any\" (NOT silently mapped to \"required\")", req.ToolChoice.Type)
+	}
+	// Downstream consumers see req.ToolChoice.Type == "any" as-is.
+	// Anything else here would be a semantic loss.
+	if req.ToolChoice.Type == "required" {
+		t.Error("req.ToolChoice.Type: silently normalized to \"required\" — Anthropic 'any' must be preserved verbatim")
+	}
+}
+
+// TestWireToChatRequest_ToolChoice_NamedTool verifies
+// `{"type":"tool","name":"get_weather"}` decodes into
+// canonical.ToolChoice{Type:"tool", Name:"get_weather"}.
+func TestWireToChatRequest_ToolChoice_NamedTool(t *testing.T) {
+	logger, _ := captureLogger()
+	wire := &anthropicMessagesRequest{
+		Model:      "auto",
+		MaxTokens:  256,
+		Messages:   []anthropicWireMessage{{Role: "user", Content: json.RawMessage(`"hi"`)}},
+		ToolChoice: json.RawMessage(`{"type":"tool","name":"get_weather"}`),
+	}
+	req := wireToChatRequest(wire, newTestRequest(t, ""), logger)
+	if req.ToolChoice == nil {
+		t.Fatal("req.ToolChoice: nil; want {Type:tool,Name:get_weather}")
+	}
+	if req.ToolChoice.Type != "tool" || req.ToolChoice.Name != "get_weather" {
+		t.Errorf("req.ToolChoice: got %+v, want {Type:tool,Name:get_weather}", req.ToolChoice)
+	}
+}
+
+// TestWireToChatRequest_ToolChoice_Unknown verifies that unknown-shape
+// tool_choice values (numeric, etc.) accept-and-ignore — leave
+// req.ToolChoice nil rather than reject the whole request.
+func TestWireToChatRequest_ToolChoice_Unknown(t *testing.T) {
+	logger, _ := captureLogger()
+	wire := &anthropicMessagesRequest{
+		Model:      "auto",
+		MaxTokens:  256,
+		Messages:   []anthropicWireMessage{{Role: "user", Content: json.RawMessage(`"hi"`)}},
+		ToolChoice: json.RawMessage(`42`),
+	}
+	req := wireToChatRequest(wire, newTestRequest(t, ""), logger)
+	if req.ToolChoice != nil {
+		t.Errorf("req.ToolChoice: got %+v, want nil (unknown shape accept-and-ignore)", req.ToolChoice)
+	}
+}
