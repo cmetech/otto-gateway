@@ -267,9 +267,12 @@ func TestApplyChunk_UnsupportedKindDropped_NoIndexBump(t *testing.T) {
 	cf := newCountingFlusher()
 	e := newEmitter(cf)
 
+	// Phase 6 Plan 04: ChunkKindToolCall is now SUPPORTED (D-07);
+	// ChunkKindPlan is the remaining dormant kind that exercises the
+	// drop-without-state-change contract.
 	chunks := []canonical.Chunk{
 		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "ok"}},
-		{Kind: canonical.ChunkKindToolCall, ToolCall: &canonical.ToolCallChunk{Name: "tool", Args: map[string]any{"x": 1}}},
+		{Kind: canonical.ChunkKindPlan, Plan: &canonical.PlanChunk{Content: "plan"}},
 		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "more"}},
 	}
 	for _, c := range chunks {
@@ -279,7 +282,7 @@ func TestApplyChunk_UnsupportedKindDropped_NoIndexBump(t *testing.T) {
 	}
 
 	events := sseEventLines(cf.Body())
-	// Expected: block 0 opens, text "ok" delta, tool_call dropped (NO
+	// Expected: block 0 opens, text "ok" delta, plan dropped (NO
 	// stop, NO start, NO index bump), text "more" delta on block 0.
 	want := []string{
 		"content_block_start",

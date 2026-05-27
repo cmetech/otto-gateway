@@ -82,6 +82,32 @@ type thinkingDelta struct {
 	Thinking string `json:"thinking"`
 }
 
+// toolUseBlockHeader is the content_block payload for a tool_use
+// block start (Phase 6 Plan 04 Task 2, D-07 Anthropic exception).
+//
+// Input is *map[string]any (not map[string]any) per the CR-01
+// pattern (RESEARCH Pitfall 1) — the pointer-to-empty-map is the
+// load-bearing trick that makes encoding/json emit `"input":{}`
+// rather than `"input":null` (the default Go encoding of a nil map)
+// or dropping the field via omitempty (len==0 maps would otherwise
+// vanish). Anthropic's @anthropic-ai/sdk MessageStream parser
+// REJECTS null input on tool_use blocks.
+type toolUseBlockHeader struct {
+	Type  string          `json:"type"`
+	ID    string          `json:"id"`
+	Name  string          `json:"name"`
+	Input *map[string]any `json:"input,omitempty"`
+}
+
+// inputJSONDelta is the payload for a `content_block_delta` whose
+// delta carries tool_use args as a JSON string fragment. PartialJSON
+// carries the full serialized args in ONE delta — kiro emits tool
+// args atomically per D-06 / D-07, so no chunking is needed.
+type inputJSONDelta struct {
+	Type        string `json:"type"`
+	PartialJSON string `json:"partial_json"`
+}
+
 // contentBlockDelta is the payload for `event: content_block_delta`.
 // Delta is `any` because the inner shape varies per block kind
 // (textDelta for text, thinkingDelta for thinking).
@@ -148,6 +174,17 @@ type sseEmitter struct {
 	blockIndex  int
 	currentKind canonical.ChunkKind
 	blockOpen   bool
+	// toolUseEmitted is set true once a content_block_delta carrying
+	// an input_json_delta has been written. finalizeStream consults
+	// this flag and overrides the message_delta stop_reason to
+	// "tool_use" — per Anthropic spec, the SDK expects stop_reason:
+	// tool_use whenever the response contains a tool_use block,
+	// regardless of the engine's mapped StopReason.
+	//
+	// D-05 single-goroutine invariant: this field is touched ONLY
+	// inside the select-loop goroutine (applyChunk -> finalizeStream).
+	// No mutex needed.
+	toolUseEmitted bool
 }
 
 // writeEvent emits one named SSE frame using the canonical
@@ -210,12 +247,35 @@ func (e *sseEmitter) applyChunk(c canonical.Chunk) error {
 		header = textBlockHeader{Type: "text", Text: ""}
 	case canonical.ChunkKindThought:
 		header = thinkingBlockHeader{Type: "thinking", Thinking: ""}
+	case canonical.ChunkKindToolCall:
+		// Phase 6 Plan 04 Task 2 (D-07 Anthropic exception): kiro-native
+		// tool_call chunks render as NATIVE tool_use content blocks on
+		// the Anthropic wire (NOT as `[tool: <name>]\n` narration text
+		// like Ollama/OpenAI). Defensive: drop if ToolCall payload is
+		// nil (shouldn't happen on canonical chunks but adapters have
+		// been bitten by nil pointers before).
+		if c.ToolCall == nil {
+			e.logger.Debug("anthropic: sse tool_call chunk with nil payload; dropping")
+			return nil
+		}
+		// CR-01 (Pitfall 1): pointer-to-empty-map preserves
+		// `"input":{}` through encoding/json.omitempty rather than
+		// emitting `"input":null` (default for nil map) or dropping
+		// the field (default for len==0 map). The pointer indirection
+		// is the load-bearing trick — do NOT shortcut to
+		// `map[string]any{}` directly.
+		emptyMap := map[string]any{}
+		header = toolUseBlockHeader{
+			Type:  "tool_use",
+			ID:    c.ToolCall.ID,
+			Name:  c.ToolCall.Name,
+			Input: &emptyMap,
+		}
 	default:
-		// ChunkKindToolCall / ChunkKindPlan dormant in Phase 3.1 —
-		// drop with debug log. NO state change (block stays open at
-		// its current index; next supported chunk resumes the prior
-		// block).
-		e.logger.Debug("anthropic: sse unsupported chunk kind dropped (Phase 3.1)", "kind", c.Kind)
+		// ChunkKindPlan dormant in Phase 6 — drop with debug log. NO
+		// state change (block stays open at its current index; next
+		// supported chunk resumes the prior block).
+		e.logger.Debug("anthropic: sse unsupported chunk kind dropped", "kind", c.Kind)
 		return nil
 	}
 
@@ -264,6 +324,41 @@ func (e *sseEmitter) applyChunk(c canonical.Chunk) error {
 			Index: e.blockIndex,
 			Delta: thinkingDelta{Type: "thinking_delta", Thinking: c.Thought.Content},
 		})
+	case canonical.ChunkKindToolCall:
+		// Phase 6 Plan 04 Task 2 (D-07): emit ONE content_block_delta
+		// carrying the full args as input_json_delta.partial_json.
+		// kiro emits tool args atomically per D-06 — no chunking
+		// needed. After successful emit, set toolUseEmitted so
+		// finalizeStream overrides stop_reason to "tool_use".
+		if c.ToolCall == nil {
+			return nil
+		}
+		argsJSON, err := json.Marshal(c.ToolCall.Args)
+		if err != nil {
+			// Defensive: if Args contains a pathological value
+			// (chan, function), encoding/json will fail. Log + drop
+			// the delta rather than tear down the whole stream.
+			e.logger.Debug("anthropic: sse tool_call args marshal failed; dropping delta",
+				"err", err, "name", c.ToolCall.Name)
+			return nil
+		}
+		// If Args was nil/empty, json.Marshal produces "null" — coerce
+		// to "{}" so the wire carries a valid empty object literal
+		// inside partial_json. (Defensive: kiro should not emit a
+		// nil Args alongside a tool_call, but the CR-01 contract
+		// downstream expects an object shape end-to-end.)
+		if string(argsJSON) == "null" {
+			argsJSON = []byte("{}")
+		}
+		if err := e.writeEvent("content_block_delta", contentBlockDelta{
+			Type:  "content_block_delta",
+			Index: e.blockIndex,
+			Delta: inputJSONDelta{Type: "input_json_delta", PartialJSON: string(argsJSON)},
+		}); err != nil {
+			return err
+		}
+		e.toolUseEmitted = true
+		return nil
 	}
 	// Unsupported kinds short-circuited at step 1; this is defensive.
 	return nil
@@ -427,10 +522,24 @@ func finalizeStream(e *sseEmitter, run RunHandle) error {
 		stopReason = final.StopReason
 	}
 
+	// Phase 6 Plan 04 Task 2 (D-07): if a tool_use content_block_delta
+	// was emitted during this stream, override the wire stop_reason to
+	// "tool_use" regardless of the engine's mapped StopReason.
+	// Anthropic spec mandates this — the SDK keys its tool-use
+	// dispatch on stop_reason:"tool_use" in message_delta, and any
+	// other value would break loop24-client's flow control.
+	var mappedStop *string
+	if e.toolUseEmitted {
+		s := "tool_use"
+		mappedStop = &s
+	} else {
+		mappedStop = mapStopReason(stopReason)
+	}
+
 	if err := e.writeEvent("message_delta", messageDelta{
 		Type: "message_delta",
 		Delta: messageDeltaInner{
-			StopReason:   mapStopReason(stopReason),
+			StopReason:   mappedStop,
 			StopSequence: nil,
 		},
 		Usage: messageDeltaUsage{OutputTokens: 0}, // D-12 honest zeros

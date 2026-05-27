@@ -259,17 +259,18 @@ func TestSSE_Golden_ToolUse(t *testing.T) {
 	// Block-index discipline (Pitfall 7): exactly one bump on the
 	// text -> tool_use kind transition. Scan data lines for the
 	// `"index":N` field on each frame and assert the sequence is
-	// 0,0,0,0,1,1,1 (content_block_start, content_block_delta,
+	// 0,0,0,1,1,1 (content_block_start, content_block_delta,
 	// content_block_stop for block 0; then content_block_start,
 	// content_block_delta, content_block_stop for block 1; the
-	// message_delta/message_stop frames have no index field).
+	// message_start / message_delta / message_stop frames have no
+	// index field).
 	idxRe := regexp.MustCompile(`"index":(\d+)`)
 	matches := idxRe.FindAllSubmatch(body, -1)
 	gotIdx := make([]string, 0, len(matches))
 	for _, m := range matches {
 		gotIdx = append(gotIdx, string(m[1]))
 	}
-	wantIdx := []string{"0", "0", "0", "0", "1", "1", "1"}
+	wantIdx := []string{"0", "0", "0", "1", "1", "1"}
 	if !equalSlice(gotIdx, wantIdx) {
 		t.Errorf("block-index sequence: got %v, want %v (Pitfall 7: exactly one bump per kind transition)", gotIdx, wantIdx)
 	}

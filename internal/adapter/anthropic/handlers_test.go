@@ -51,7 +51,87 @@ func (f *fakeEngine) Run(_ context.Context, req *canonical.ChatRequest) (RunHand
 	if f.runErr != nil {
 		return nil, f.runErr
 	}
-	return f.runHandle, nil
+	if f.runHandle != nil {
+		return f.runHandle, nil
+	}
+	// Phase 6 Plan 04: the non-streaming handler now routes through
+	// CollectAnthropicChat → eng.Run instead of eng.Collect. Tests
+	// that only set collectResp (the legacy convention) keep working
+	// by synthesizing a single-shot RunHandle from collectResp:
+	// replay each ContentPart as a chunk (text → ChunkKindText,
+	// thinking → ChunkKindThought, tool_use → ChunkKindToolCall),
+	// then close so CollectAnthropicChat's aggregator reassembles
+	// the same ChatResponse.
+	if f.collectResp != nil {
+		return synthesizeRunHandleFromCollectResp(f.collectResp, f.collectErr), nil
+	}
+	if f.collectErr != nil {
+		// No canned response but an error: surface via Stream.Result().
+		ch := make(chan canonical.Chunk)
+		close(ch)
+		return &fakeRunHandle{stream: &fakeStream{chunks: ch, err: f.collectErr}}, nil
+	}
+	return nil, nil
+}
+
+// synthesizeRunHandleFromCollectResp converts a *canonical.ChatResponse
+// (the legacy fakeEngine.collectResp shape) into a single-shot
+// RunHandle so the Phase 6 Plan 04 CollectAnthropicChat aggregator
+// reproduces the same response from the chunk stream. Preserves
+// per-test scripted error: passing a non-nil err propagates via
+// Stream.Result() so the handler's error branch still fires.
+func synthesizeRunHandleFromCollectResp(resp *canonical.ChatResponse, scriptedErr error) *fakeRunHandle {
+	var chunks []canonical.Chunk
+	for _, part := range resp.Message.Content {
+		switch part.Kind {
+		case canonical.ContentKindText:
+			chunks = append(chunks, canonical.Chunk{
+				Kind: canonical.ChunkKindText,
+				Text: &canonical.TextChunk{Content: part.Text},
+			})
+		case canonical.ContentKindThinking:
+			chunks = append(chunks, canonical.Chunk{
+				Kind:    canonical.ChunkKindThought,
+				Thought: &canonical.ThoughtChunk{Content: part.Text},
+			})
+		case canonical.ContentKindToolUse:
+			if part.ToolUse != nil {
+				chunks = append(chunks, canonical.Chunk{
+					Kind: canonical.ChunkKindToolCall,
+					ToolCall: &canonical.ToolCallChunk{
+						ID:   part.ToolUse.ID,
+						Name: part.ToolUse.Name,
+						Args: part.ToolUse.Input,
+					},
+				})
+			}
+		}
+	}
+	// Also replay any preexisting ToolCalls (some tests construct
+	// these without a corresponding ContentKindToolUse part).
+	for _, tc := range resp.Message.ToolCalls {
+		chunks = append(chunks, canonical.Chunk{
+			Kind: canonical.ChunkKindToolCall,
+			ToolCall: &canonical.ToolCallChunk{
+				ID:   tc.ID,
+				Name: tc.Name,
+				Args: tc.Arguments,
+			},
+		})
+	}
+	ch := make(chan canonical.Chunk, len(chunks))
+	for _, c := range chunks {
+		ch <- c
+	}
+	close(ch)
+	return &fakeRunHandle{
+		stream: &fakeStream{
+			chunks: ch,
+			final:  &canonical.FinalResult{StopReason: resp.StopReason},
+			err:    scriptedErr,
+		},
+		sessionID: "synthesized",
+	}
 }
 
 // fakeStream is a minimal Stream — chunk channel closes immediately,
@@ -310,8 +390,16 @@ func TestHandleMessages_Happy_NonStreaming(t *testing.T) {
 	if resp.Usage.InputTokens != 0 || resp.Usage.OutputTokens != 0 {
 		t.Errorf("usage: got %+v, want zeros (D-12)", resp.Usage)
 	}
-	if eng.collectN != 1 {
-		t.Errorf("collectN: got %d, want 1", eng.collectN)
+	// Phase 6 Plan 04 Task 2: the non-streaming handler now routes
+	// through CollectAnthropicChat -> eng.Run (NOT eng.Collect). The
+	// invocation count moved from collectN to runN. Both assertions
+	// belt-and-suspenders: collectN must stay 0 to prove the swap is
+	// in place; runN must be 1 to prove the new path is exercised.
+	if eng.collectN != 0 {
+		t.Errorf("collectN: got %d, want 0 (handler routes through eng.Run, not eng.Collect)", eng.collectN)
+	}
+	if eng.runN != 1 {
+		t.Errorf("runN: got %d, want 1 (CollectAnthropicChat invokes eng.Run)", eng.runN)
 	}
 }
 

@@ -128,11 +128,18 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := eng.Collect(r.Context(), req)
+	// Phase 6 Plan 04 Task 2 (D-07 exception to the per-surface
+	// Message.ToolCalls population contract): call the Anthropic-local
+	// CollectAnthropicChat aggregator instead of eng.Collect. This is
+	// what populates Message.ToolCalls + ContentKindToolUse parts
+	// from kiro-native ChunkKindToolCall chunks on the non-streaming
+	// path — Anthropic's wire protocol has tool_use as a native
+	// first-class element and the SDK expects it that way.
+	resp, err := CollectAnthropicChat(r.Context(), eng, req)
 	if err != nil {
 		// T-02-33: log the raw error structurally; respond with a
 		// neutral generic message that cannot echo request content.
-		a.cfg.Logger.Error("anthropic: engine.Collect error", "err", err)
+		a.cfg.Logger.Error("anthropic: CollectAnthropicChat error", "err", err)
 		writeError(w, http.StatusInternalServerError, errAPI, "internal error")
 		return
 	}
