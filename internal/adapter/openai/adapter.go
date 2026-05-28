@@ -62,6 +62,16 @@ type RunHandle interface {
 	// returning false is expected on the disconnect path — Cancel is
 	// idempotent. (CONTEXT.md D-06, RESEARCH.md Pattern 2 Option A)
 	StopWatchdog() func() bool
+	// ShortCircuitResponse returns the *canonical.ChatResponse a
+	// PreHook supplied to short-circuit the chain, or nil when ACP was
+	// engaged normally. The streaming branch in handlers.go uses this
+	// (Phase 08.1 INTEG-01 fix) to convert a PreHook short-circuit into a
+	// pre-header 401 + native JSON envelope instead of opening an empty
+	// SSE stream. Non-streaming OpenAI paths use
+	// resp.StopReason == canonical.StopError on the eng.Collect-returned
+	// response (handlers.go:165-168) — the dual-discriminator split is
+	// documented in 08.1-PATTERNS.md.
+	ShortCircuitResponse() *canonical.ChatResponse
 }
 
 // Stream is the consumer-defined chunk-delivery interface returned by

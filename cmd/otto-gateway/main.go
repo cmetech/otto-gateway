@@ -941,6 +941,12 @@ func (h ollamaRunHandleAdapter) StopWatchdog() func() bool {
 	return h.run.StopWatchdog()
 }
 
+// ShortCircuitResponse satisfies ollama.RunHandle.ShortCircuitResponse
+// (Phase 08.1 INTEG-01). Delegates to the concrete *engine.Run accessor.
+func (h ollamaRunHandleAdapter) ShortCircuitResponse() *canonical.ChatResponse {
+	return h.run.ShortCircuitResponse()
+}
+
 // openaiRunHandleAdapter adapts *engine.Run to openai.RunHandle.
 // Mirrors anthropicRunHandleAdapter — same structural-compatibility
 // reasoning for engine.Stream → openai.Stream assignment.
@@ -958,4 +964,10 @@ func (h openaiRunHandleAdapter) SessionID() string {
 
 func (h openaiRunHandleAdapter) StopWatchdog() func() bool {
 	return h.run.StopWatchdog()
+}
+
+// ShortCircuitResponse satisfies openai.RunHandle.ShortCircuitResponse
+// (Phase 08.1 INTEG-01). Delegates to the concrete *engine.Run accessor.
+func (h openaiRunHandleAdapter) ShortCircuitResponse() *canonical.ChatResponse {
+	return h.run.ShortCircuitResponse()
 }

@@ -43,6 +43,7 @@ type fakeRunHandle struct {
 func (h *fakeRunHandle) Stream() Stream       { return h.stream }
 func (h *fakeRunHandle) SessionID() string    { return h.sessionID }
 func (h *fakeRunHandle) StopWatchdog() func() bool { return func() bool { return true } }
+func (h *fakeRunHandle) ShortCircuitResponse() *canonical.ChatResponse { return nil }
 
 // newFakeRunHandle builds a fakeRunHandle whose stream channel is pre-populated
 // with chunks, then closed. result is the FinalResult returned by Result().

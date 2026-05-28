@@ -45,6 +45,9 @@ type testRunHandleAdapter struct{ run *engine.Run }
 func (h testRunHandleAdapter) Stream() Stream         { return h.run.Stream() }
 func (h testRunHandleAdapter) SessionID() string      { return h.run.SessionID() }
 func (h testRunHandleAdapter) StopWatchdog() func() bool { return h.run.StopWatchdog() }
+func (h testRunHandleAdapter) ShortCircuitResponse() *canonical.ChatResponse {
+	return h.run.ShortCircuitResponse()
+}
 
 // resolveKiroCLI gates integration tests on (1) OTTO_INTEGRATION=1 in
 // the env AND (2) either OTTO_KIRO_BIN pointing at a kiro-cli binary

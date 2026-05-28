@@ -190,6 +190,21 @@ func (a *Adapter) handleChat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// Phase 08.1 INTEG-01 D-01..D-04: PreHook short-circuit must be
+	// caught BEFORE runNDJSONEmitter opens NDJSON headers, otherwise
+	// the bad-bearer case emits a benign empty 200 stream instead of
+	// 401. Mirrors the non-streaming sibling at handlers.go:147-150
+	// and the canonical template at anthropic/collect.go:66-73.
+	if sc := run.ShortCircuitResponse(); sc != nil {
+		// Watchdog is nil on the short-circuit path (engine.go:150);
+		// guard the deref per D-03 / Pitfall 4. Mirrors
+		// anthropic/collect.go:69-71.
+		if stop := run.StopWatchdog(); stop != nil {
+			stop()
+		}
+		writeError(w, http.StatusUnauthorized, shortCircuitMessage(sc))
+		return
+	}
 	start := time.Now()
 	if emitErr := runNDJSONEmitter(streamCtx, cancelFn, w, run, wire.Model, true, start, a.cfg.Logger, req); emitErr != nil {
 		a.cfg.Logger.Debug("ollama: ndjson chat emitter error", "err", emitErr)
@@ -312,6 +327,19 @@ func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 	run, err := eng.Run(streamCtx, req)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	// Phase 08.1 INTEG-01 D-01..D-04: PreHook short-circuit must be
+	// caught BEFORE runNDJSONEmitter opens NDJSON headers. Mirrors the
+	// non-streaming sibling at handlers.go:297-300 and the handleChat
+	// site above. Pitfall 6: handleGenerate is an INDEPENDENT streaming
+	// branch from handleChat — both must carry the guard.
+	if sc := run.ShortCircuitResponse(); sc != nil {
+		// D-03 / Pitfall 4: nil-guard the watchdog stop function.
+		if stop := run.StopWatchdog(); stop != nil {
+			stop()
+		}
+		writeError(w, http.StatusUnauthorized, shortCircuitMessage(sc))
 		return
 	}
 	start := time.Now()

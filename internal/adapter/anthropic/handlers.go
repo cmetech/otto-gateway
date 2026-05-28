@@ -183,6 +183,20 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, errAPI, "internal error")
 			return
 		}
+		// Phase 08.1 INTEG-01 D-01..D-04: PreHook short-circuit must be
+		// caught BEFORE runSSEEmitter opens SSE headers, otherwise the
+		// bad-bearer case emits a benign empty 200 SSE stream instead of
+		// 401. Mirrors the non-streaming sibling at handlers.go:220-223
+		// (the same surface, non-streaming path) and collect.go:66-73.
+		if sc := runHandle.ShortCircuitResponse(); sc != nil {
+			// D-03 / Pitfall 4: nil-guard the watchdog stop function
+			// (watchdog is nil on a short-circuit Run — engine.go:150).
+			if stop := runHandle.StopWatchdog(); stop != nil {
+				stop()
+			}
+			writeError(w, http.StatusUnauthorized, errAuthentication, shortCircuitMessage(sc))
+			return
+		}
 		if err := runSSEEmitter(streamCtx, w, runHandle, wire.Model, a.cfg.Logger); err != nil {
 			// runSSEEmitter has already written SSE headers + frames
 			// (the error path inside the emitter handles its own

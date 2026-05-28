@@ -120,6 +120,9 @@ type realRunHandle struct{ run *engine.Run }
 func (h realRunHandle) Stream() Stream         { return h.run.Stream() }
 func (h realRunHandle) SessionID() string      { return h.run.SessionID() }
 func (h realRunHandle) StopWatchdog() func() bool { return h.run.StopWatchdog() }
+func (h realRunHandle) ShortCircuitResponse() *canonical.ChatResponse {
+	return h.run.ShortCircuitResponse()
+}
 
 // ----------------------------------------------------------------------------
 // Fake engine for automated round-trip tests (no kiro-cli required)
