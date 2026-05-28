@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"time"
@@ -105,12 +106,22 @@ func (h *handler) snapshotHandler(w http.ResponseWriter, r *http.Request) {
 	// Derive status from pool counts.
 	snap.Status = computeStatus(snap)
 
+	// WR-05 mitigation: encode into a buffer first so an encoder failure
+	// can still surface as a clean 500 instead of a truncated 200 body.
+	// In practice json.Marshal on this shape is highly unlikely to fail
+	// (no custom MarshalJSON paths, no unsupported types), but the cost
+	// of buffering one snapshot is negligible.
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(snap); err != nil {
+		h.deps.Logger.Error("admin: snapshot encode", "err", err)
+		http.Error(w, "admin snapshot encode failed", http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(snap); err != nil {
-		// Cannot write error response after WriteHeader — just log it.
-		h.deps.Logger.Error("admin: snapshot encode", "err", err)
+	if _, err := w.Write(buf.Bytes()); err != nil {
+		h.deps.Logger.Debug("admin: snapshot write", "err", err)
 	}
 }
 

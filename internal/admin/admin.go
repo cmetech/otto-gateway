@@ -13,6 +13,7 @@
 package admin
 
 import (
+	"bytes"
 	"log/slog"
 	"net/http"
 	"time"
@@ -130,6 +131,11 @@ func Handler(deps Deps) http.Handler {
 // The template is executed against a struct containing version and commit
 // strings baked in at render time; live pool/session data is hydrated
 // by admin.js polling /admin/api/snapshot every 30s (D-06).
+//
+// WR-05 mitigation: render into a bytes.Buffer first so a template
+// execution failure (corrupted embed, panic recovered as error) can
+// still emit a clean 500 Internal Server Error envelope rather than
+// committing 200 OK with truncated HTML on the wire.
 func (h *handler) pageHandler(w http.ResponseWriter, r *http.Request) {
 	data := struct {
 		Version string
@@ -138,12 +144,18 @@ func (h *handler) pageHandler(w http.ResponseWriter, r *http.Request) {
 		Version: h.deps.Version,
 		Commit:  h.deps.Commit,
 	}
+	var buf bytes.Buffer
+	if err := pageTemplate.Execute(&buf, data); err != nil {
+		// Nothing committed to the wire yet — return a clean 500.
+		h.deps.Logger.Error("admin: page render", "err", err)
+		http.Error(w, "admin page render failed", http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	if err := pageTemplate.Execute(w, data); err != nil {
-		// Cannot write error response after WriteHeader — just log it.
-		// The partial HTML body has already been written; the browser
-		// will see a truncated page rather than an error envelope.
-		h.deps.Logger.Error("admin: page render", "err", err)
+	if _, err := w.Write(buf.Bytes()); err != nil {
+		// Header already committed — log only. The client connection
+		// likely went away; no recovery path exists.
+		h.deps.Logger.Debug("admin: page write", "err", err)
 	}
 }
