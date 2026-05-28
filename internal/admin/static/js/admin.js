@@ -472,6 +472,14 @@
   }
 
   // appendLine adds a log line to the viewport (T-6.1-16: textContent only).
+  //
+  // WR-06 mitigation: persist parsed.level (including the null case) via
+  // dataset.level so the level-filter re-derive paths read the same source
+  // of truth as the initial render. The prior code only stored a CSS class
+  // for non-null + non-info levels, so re-derivation from classList could
+  // not distinguish `level=null` (parser could not determine) from
+  // `level=info` — making initial-render and re-render filter behavior
+  // diverge for non-slog log entries (e.g., raw subprocess panic dumps).
   function appendLine(line, parsed) {
     var vp = document.querySelector('[data-log-viewport]');
     if (!vp) return;
@@ -485,6 +493,9 @@
     if (parsed.level && parsed.level !== 'info') {
       div.classList.add('is-' + parsed.level);
     }
+    // WR-06: persist the parsed level (or 'unknown' for null) so filter
+    // handlers can recover the exact value without inferring from class.
+    div.dataset.level = parsed.level || 'unknown';
     div.textContent = line;  // textContent — never innerHTML (T-6.1-16)
     if (!matchesFilters(parsed, line)) {
       div.style.display = 'none';
@@ -495,6 +506,18 @@
     while (vp.children.length > 1000) {
       vp.removeChild(vp.firstChild);
     }
+  }
+
+  // levelFromElement reads the persisted parsed level (WR-06) from an
+  // already-rendered log-line element. Returns null when the parser could
+  // not determine the level (dataset.level === 'unknown'), or the level
+  // string otherwise. Both level-filter and grep-filter re-derive paths
+  // call this so they agree with the initial-render decision in
+  // matchesFilters.
+  function levelFromElement(el) {
+    var v = el.dataset.level;
+    if (!v || v === 'unknown') return null;
+    return v;
   }
 
   // autoScroll scrolls the viewport to the bottom.
@@ -581,6 +604,9 @@
   }
 
   // Level dropdown: re-evaluate all existing log lines on change.
+  // WR-06: read the persisted level from dataset.level (set by appendLine)
+  // so this path agrees with the initial-render filter decision even when
+  // the parser could not determine the level (null).
   function initLevelFilter() {
     var sel = document.querySelector('[data-log-level]');
     if (!sel) return;
@@ -592,13 +618,7 @@
       var lines = vp.querySelectorAll('.otto-log-line');
       for (var i = 0; i < lines.length; i++) {
         var el = lines[i];
-        // Re-derive level from class list.
-        var level = null;
-        if (el.classList.contains('is-debug')) level = 'debug';
-        else if (el.classList.contains('is-warn')) level = 'warn';
-        else if (el.classList.contains('is-error')) level = 'error';
-        else level = 'info';
-        var parsed = { level: level };
+        var parsed = { level: levelFromElement(el) };
         var line = el.textContent;
         el.style.display = matchesFilters(parsed, line) ? '' : 'none';
       }
@@ -628,17 +648,14 @@
           }
         }
         // Re-evaluate existing DOM lines with the new filter.
+        // WR-06: read persisted level via levelFromElement instead of
+        // inferring from classList (which loses the null case).
         var vp = document.querySelector('[data-log-viewport]');
         if (!vp) return;
         var lines = vp.querySelectorAll('.otto-log-line');
         for (var i = 0; i < lines.length; i++) {
           var el = lines[i];
-          var level = null;
-          if (el.classList.contains('is-debug')) level = 'debug';
-          else if (el.classList.contains('is-warn')) level = 'warn';
-          else if (el.classList.contains('is-error')) level = 'error';
-          else level = 'info';
-          var parsed = { level: level };
+          var parsed = { level: levelFromElement(el) };
           var line = el.textContent;
           el.style.display = matchesFilters(parsed, line) ? '' : 'none';
         }
