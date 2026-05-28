@@ -301,6 +301,17 @@ function Invoke-Run {
     & $BinPath
 }
 
+# Show-Version delegates to the binary's --version handler so the wrapper
+# and the binary cannot disagree. The version string is the same one
+# baked into the binary at build time via the Makefile's `-X` ldflag.
+function Show-Version {
+    if (-not (Test-Path $BinPath -PathType Leaf)) {
+        Write-Error "$BinPath not found."
+        exit 1
+    }
+    & $BinPath --version
+}
+
 function New-RandomHex {
     param([int]$Bytes = 32)
     $buf = New-Object byte[] $Bytes
@@ -456,6 +467,7 @@ Commands:
   logs                Tail both stdout and stderr log files
   run [flags]         Run gateway in foreground
   env [-ShowSecrets]  Print the resolved gateway env that would be passed
+  version             Print the gateway binary version (delegates to bin\otto-gateway --version)
 
 Gateway config flags (for start | restart | run | env):
   -Pii MODE           off | replace | mask | hash | drop
@@ -487,5 +499,6 @@ switch ($Command) {
     "logs"    { Get-Logs }
     "run"     { Invoke-Run }
     "env"     { Show-Env }
+    "version" { Show-Version }
     default   { Show-Usage }
 }

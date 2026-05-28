@@ -351,6 +351,17 @@ run() {
     exec "$OTTO_BIN"
 }
 
+# show_version delegates to the binary's --version handler so the wrapper
+# and the binary cannot disagree. The version string is the same one
+# baked into the binary at build time via the Makefile's `-X` ldflag.
+show_version() {
+    if [[ ! -x "$OTTO_BIN" ]]; then
+        echo "Error: $OTTO_BIN not found or not executable." >&2
+        exit 1
+    fi
+    "$OTTO_BIN" --version
+}
+
 # gen_random_hex N → 2*N hex characters from a CSPRNG. Prefers openssl
 # (universally present on macOS, package-available on Linux); falls back
 # to /dev/urandom + od for minimalist environments.
@@ -542,6 +553,7 @@ Commands:
   run [flags]         Run gateway in foreground
   env [--show-secrets]
                       Print the resolved gateway env that would be passed
+  version             Print the gateway binary version (delegates to bin/otto-gateway --version)
 
 Gateway config flags (for start | restart | run | env):
   --pii MODE          off | replace | mask | hash | drop
@@ -591,5 +603,6 @@ case "$CMD" in
     stop)    stop ;;
     status)  status ;;
     logs)    logs "${1:-}" ;;
+    version) show_version ;;
     *)       usage ;;
 esac
