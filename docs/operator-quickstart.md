@@ -331,6 +331,45 @@ The gateway reads env vars once at startup. After any config change, you must `.
 
 ---
 
+## Publishing a build
+
+Developers push releases to the team Artifactory + MinIO with `./scripts/publish.sh` from the repo root. The script is publish-only — it never touches `dist/`, never spawns the gateway, and never installs anything. Real uploads stay a manual operator action; CI runs the dry-run only.
+
+### Prereqs
+
+- `mc` on `PATH` (`brew install minio-mc`) plus a configured alias (default name `myminio`).
+- `jq` on `PATH` (`brew install jq`).
+- `curl` on `PATH` (universally present on macOS, Linux, and Windows).
+- mTLS client cert at `../secrets/certs/{client.pem,client-key.pem}` relative to the repo root. Override via `ARTIFACTORY_CERT_PATH` / `ARTIFACTORY_KEY_PATH`.
+- `ARTIFACTORY_API_KEY` set in env or exported from your shell profile (`~/.zshrc`, `~/.bashrc`, `~/.profile`). The `-k <key>` flag overrides both.
+
+### Examples
+
+```bash
+make package-all                        # produce dist/ first
+./scripts/publish.sh -n                 # dry-run: print plan, don't upload
+./scripts/publish.sh                    # publish to both destinations
+./scripts/publish.sh -d minio           # MinIO only
+./scripts/publish.sh -v v1.5.0          # tagged release
+```
+
+The plan summary block names every destination + total MB + the log path before any upload runs. Default-`-d` (omitted) auto-narrows to whichever destination is available; explicit `-d both` is a hard error if either prereq is missing.
+
+### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | All uploads + verifications passed |
+| 1 | Bad flags / missing prereqs / manifest disagreement |
+| 2 | Release set incomplete in source dir (run `make package-all`) |
+| 3 | Upload failed (any destination, any file) |
+| 4 | Upload succeeded but verification failed |
+| 130 | Interrupted (SIGINT/SIGTERM) |
+
+Full design: `docs/superpowers/specs/2026-05-28-otto-gateway-publish-script-design.md`.
+
+---
+
 ## Verifying your download
 
 If the release came with a `SHA256SUMS-<version>.txt` file, verify the archive before extracting:

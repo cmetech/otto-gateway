@@ -159,3 +159,64 @@ jobs:
               exit 1
             fi
           done
+
+  # Catches regressions in `make package-all` artifact naming/format by
+  # exercising scripts/publish.sh in dry-run; never performs real uploads.
+  # The publish script is the operator-facing entry point for pushing a
+  # release set to the team Artifactory + MinIO. If its plan block can't
+  # render against a fresh dist/, the release flow is broken before any
+  # operator notices. Real uploads stay a manual operator action.
+  publish-dry-run:
+    name: publish.sh dry-run + Layer-1 tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go (from go.mod)
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # `make package-windows-amd64` needs `zip` and ubuntu-latest does
+      # not ship it preinstalled — cheap safety belt.
+      - name: Install zip
+        run: sudo apt-get update && sudo apt-get install -y zip
+
+      - name: Install shellcheck
+        run: sudo apt-get install -y shellcheck
+
+      - name: Build full release set (make package-all)
+        run: make package-all
+
+      - name: Shellcheck publish scripts
+        run: shellcheck scripts/publish.sh tests/scripts/publish_test.sh
+
+      - name: publish.sh -n (dry-run plan only)
+        run: |
+          set -euo pipefail
+          # CI has no Artifactory cert and no mc alias configured. With
+          # default-d, the script narrows to whichever destination is
+          # available; under ubuntu-latest neither is. Force -d to a
+          # never-fully-resolved destination would still fail prereqs.
+          # Instead we assert the manifest validates and the plan block
+          # would render by simulating a configured mc alias — the spec
+          # contract here is "dry-run prints the plan and exits 0" given
+          # at least one destination is available.
+          #
+          # Configure a stub alias pointing at play.min.io purely so the
+          # alias-list prereq passes; we never upload (the -n flag aborts
+          # before Phase 3).
+          curl -sL https://dl.min.io/client/mc/release/linux-amd64/mc \
+            -o /usr/local/bin/mc && chmod +x /usr/local/bin/mc
+          mc alias set myminio https://play.min.io \
+            Q3AM3UQ867SPQQA43P2F zuf+tfteSlswRu7BJ86wekitnifILbZam1KYY3TG
+          out=$(./scripts/publish.sh -n 2>&1)
+          echo "$out"
+          echo "$out" | grep -q 'otto-gateway publish plan' \
+            || { echo "FAIL: publish.sh -n did not print plan block" >&2; exit 1; }
+
+      - name: Layer-1 dry-run test harness
+        run: ./tests/scripts/publish_test.sh
