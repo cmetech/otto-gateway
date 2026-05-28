@@ -734,7 +734,15 @@ func buildLogger(cfg config.Config) (*slog.Logger, func()) {
 	}
 
 	rotator := &timberjack.Logger{
-		Filename:    logFile,
+		Filename: logFile,
+		// MaxSize is a SAFETY VALVE, not the primary trigger. With daily
+		// rotation a low-traffic laptop install will never hit it, but a
+		// log flood (chatty client, debug=true left on, attacker traffic)
+		// would otherwise grow the active file unboundedly between
+		// midnight rolls. 500 MB caps single-day pathology at ~3.5 GB
+		// across the 7-day retention window — still finite on any modern
+		// laptop disk.
+		MaxSize:     500,                        // MB; safety valve only
 		MaxAge:      7,                          // keep 7 days of rotated logs
 		MaxBackups:  0,                          // age-based pruning only
 		LocalTime:   true,                       // laptop-local timestamps

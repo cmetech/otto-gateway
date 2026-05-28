@@ -33,7 +33,15 @@ param(
     [string]$Auth,
     [string]$EnvFile,
     [switch]$ShowSecrets,
-    [switch]$Follow
+    [switch]$Follow,
+    # init subcommand flags:
+    [string]$Dest,
+    [switch]$Here,
+    [switch]$Force,
+    [switch]$NonInteractive,
+    [string]$AuthToken,
+    [string]$Kiro,
+    [string]$Addr
 )
 
 Set-StrictMode -Version Latest
@@ -110,6 +118,46 @@ function Initialize-Config {
     Apply-CliFlags
 }
 
+# Preflight-Kiro warns (does not abort) if KIRO_CMD does not resolve to
+# an executable. The gateway boots in degraded mode without kiro, so an
+# operator may want a /health-only run for diagnostics.
+function Preflight-Kiro {
+    $kiro = $env:KIRO_CMD
+    if (-not $kiro) {
+        Write-Host "  ⚠  KIRO_CMD is unset — gateway will boot but chat requests will return 503." -ForegroundColor Yellow
+        Write-Host "     Install kiro-cli and set KIRO_CMD in your .env (or shell)." -ForegroundColor Yellow
+        return
+    }
+    $resolved = $false
+    if (Test-Path $kiro -PathType Leaf) { $resolved = $true }
+    elseif (Get-Command $kiro -ErrorAction SilentlyContinue) { $resolved = $true }
+    if (-not $resolved) {
+        Write-Host "  ⚠  KIRO_CMD=`"$kiro`" does not resolve to an executable." -ForegroundColor Yellow
+        Write-Host "     Gateway will boot but chat requests will return 503 until this is fixed." -ForegroundColor Yellow
+    }
+}
+
+# Wait-UntilReady polls $Addr/health up to $TimeoutSec; returns $true on
+# first 2xx, $false on timeout or persistent failure.
+function Wait-UntilReady {
+    param([int]$TimeoutSec = 5)
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    while ((Get-Date) -lt $deadline) {
+        try {
+            $r = Invoke-WebRequest -Uri "$Addr/health" -UseBasicParsing -TimeoutSec 1 -ErrorAction Stop
+            if ($r.StatusCode -ge 200 -and $r.StatusCode -lt 300) { return $true }
+        } catch {
+            # health not up yet — also bail if the process died.
+            if (Test-Path $PidFile) {
+                $p = [int](Get-Content $PidFile -Raw)
+                if (-not (Get-Process -Id $p -ErrorAction SilentlyContinue)) { return $false }
+            }
+        }
+        Start-Sleep -Milliseconds 250
+    }
+    return $false
+}
+
 function Start-Gateway {
     if (Test-Path $PidFile) {
         $existingPid = [int](Get-Content $PidFile -Raw)
@@ -143,6 +191,7 @@ function Start-Gateway {
     # log. The Start-Process sidecars then capture only stderr / pre-
     # logger output / crash trails.
     $env:LOG_FILE = $LogFile
+    Preflight-Kiro
     # -NoNewWindow: prevents a console popup (Pitfall 8 in RESEARCH.md).
     # -PassThru: returns the Process object so we can capture its PID.
     $proc = Start-Process `
@@ -152,9 +201,29 @@ function Start-Gateway {
         -NoNewWindow `
         -PassThru
     $proc.Id | Set-Content $PidFile
-    Write-Host "otto-gateway started (PID $($proc.Id))"
+    Write-Host "otto-gateway starting (PID $($proc.Id))…"
     Write-Host "  log:      $LogFile (rotated daily, 7d retention)"
     Write-Host "  boot/err: $LogBootErr"
+    if (Wait-UntilReady 10) {
+        Write-Host "  ready:    $Addr/health"
+    } else {
+        Write-Host "  ❌  gateway did NOT become ready within 10s." -ForegroundColor Red
+        # Prefer the structured log (where slog calls go when LOG_FILE
+        # is set) and fall back to the boot sidecar.
+        $sourceLog = $null
+        if ((Test-Path $LogFile) -and (Get-Item $LogFile).Length -gt 0) {
+            $sourceLog = $LogFile
+        } elseif ((Test-Path $LogBootErr) -and (Get-Item $LogBootErr).Length -gt 0) {
+            $sourceLog = $LogBootErr
+        }
+        if ($sourceLog) {
+            Write-Host "     Last 20 lines of $sourceLog:" -ForegroundColor Red
+            Get-Content -Tail 20 $sourceLog | ForEach-Object { Write-Host "       $_" -ForegroundColor Red }
+        } else {
+            Write-Host "     (both log files are empty — likely a hung warmup; check KIRO_CMD)" -ForegroundColor Red
+        }
+        exit 1
+    }
 }
 
 function Stop-Gateway {
@@ -214,6 +283,128 @@ function Invoke-Run {
     & $BinPath
 }
 
+function New-RandomHex {
+    param([int]$Bytes = 32)
+    $buf = New-Object byte[] $Bytes
+    [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($buf)
+    -join ($buf | ForEach-Object { $_.ToString('x2') })
+}
+
+function Invoke-Init {
+    # Default dest = $HOME\.otto-gw.env unless -Here or -Dest overrides.
+    $destPath = $Dest
+    if ($Here) { $destPath = ".\.env.otto-gw" }
+    if (-not $destPath) { $destPath = Join-Path $env:USERPROFILE ".otto-gw.env" }
+
+    if ((Test-Path $destPath) -and (-not $Force)) {
+        Write-Error "ERROR: $destPath already exists. Re-run with -Force to overwrite."
+        exit 1
+    }
+
+    # Generate secrets unless overridden.
+    $authTokenValue = if ($AuthToken) { $AuthToken } else { New-RandomHex 32 }
+    $hashKeyValue   = if ($HashKey)   { $HashKey }   else { New-RandomHex 32 }
+
+    # Resolve KIRO_CMD.
+    $kiroValue = $Kiro
+    if (-not $kiroValue -and -not $NonInteractive) {
+        $kiroDefault = (Get-Command kiro -ErrorAction SilentlyContinue).Source
+        $prompt = if ($kiroDefault) { "  kiro-cli path [$kiroDefault]" } else { "  kiro-cli path [press Enter to leave unset]" }
+        $entered = Read-Host $prompt
+        $kiroValue = if ($entered) { $entered } else { $kiroDefault }
+    }
+
+    # Resolve HTTP_ADDR.
+    $addrValue = $Addr
+    if (-not $addrValue -and -not $NonInteractive) {
+        Write-Host "  HTTP listen address — default 127.0.0.1:18080 (safe, no collision)."
+        Write-Host "  Set to 127.0.0.1:11434 if migrating from the Node Ollama proxy."
+        $entered = Read-Host "  HTTP_ADDR [127.0.0.1:18080]"
+        $addrValue = if ($entered) { $entered } else { "127.0.0.1:18080" }
+    }
+    if (-not $addrValue) { $addrValue = "127.0.0.1:18080" }
+
+    # Resolve PII mode.
+    $piiValue = $Pii
+    if (-not $piiValue -and -not $NonInteractive) {
+        Write-Host "  PII redaction — off | replace | mask | hash | drop."
+        Write-Host "  Pick 'replace' for human-readable redaction; 'hash' for log correlation."
+        $entered = Read-Host "  PII mode [off]"
+        $piiValue = if ($entered) { $entered } else { "off" }
+    }
+    if (-not $piiValue) { $piiValue = "off" }
+    $piiEnabled = if ($piiValue -eq "off") { "false" } else { "true" }
+
+    # Ensure parent dir exists.
+    $destDir = Split-Path -Parent $destPath
+    if ($destDir -and -not (Test-Path $destDir)) {
+        New-Item -ItemType Directory -Force -Path $destDir | Out-Null
+    }
+
+    # Build the .env content. Here-string with $-vars expanded.
+    $ts = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+    $kiroLine = if ($kiroValue) { "KIRO_CMD=$kiroValue" } else { "KIRO_CMD=" }
+    $content = @"
+# Generated by 'otto-gw init' on $ts
+# Edit any value; restart the gateway to apply.
+
+# Required — bearer token clients must send as Authorization: Bearer <token>
+AUTH_TOKEN=$authTokenValue
+
+# kiro-cli subprocess wiring. Without this set, chat requests return 503.
+$kiroLine
+
+# HTTP listen address. Default 127.0.0.1:18080; use :11434 for Ollama compat.
+HTTP_ADDR=$addrValue
+
+# ─── Phase 8 hook chain ─────────────────────────────────────────────────────
+# Empty ENABLED_HOOKS = all hooks run in registration order. Comma-list to
+# allowlist (unknown names cause boot failure — typo protection).
+# ENABLED_HOOKS=RequestIDHook,AuthHook,PIIRedactionHook,LoggingHook
+
+PII_REDACTION_ENABLED=$piiEnabled
+PII_REDACTION_MODE=$piiValue
+
+# HMAC-SHA256 key for hash mode. Pre-generated for you; rotate to break
+# attacker log correlation if you suspect a key leak.
+PII_HASH_KEY=$hashKeyValue
+
+# Empty = all six recognizers (Email, IPv4, IPv6, SSN, CreditCard, USPhone).
+# PII_ENABLED_ENTITIES=Email,SSN,CreditCard
+
+# ─── Misc ────────────────────────────────────────────────────────────────────
+# DEBUG=true
+# ALLOWED_IPS=127.0.0.1,::1
+# AUTH_TRUST_XFF=false
+# POOL_SIZE=2
+"@
+    Set-Content -Path $destPath -Value $content -Encoding UTF8
+
+    # Best-effort restrict permissions (Windows doesn't have a 0600 equivalent,
+    # but we can at least ACL the file to the current user only). Optional.
+    try {
+        $acl = Get-Acl $destPath
+        $acl.SetAccessRuleProtection($true, $false)
+        $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+            [System.Security.Principal.WindowsIdentity]::GetCurrent().Name,
+            "FullControl", "Allow"
+        )
+        $acl.AddAccessRule($rule)
+        Set-Acl $destPath $acl
+    } catch {
+        # ACL hardening best-effort only; fall back to default permissions.
+    }
+
+    Write-Host "✓ wrote $destPath"
+    Write-Host "  AUTH_TOKEN:    $($authTokenValue.Substring(0,8))…(generated)"
+    Write-Host "  PII_HASH_KEY:  $($hashKeyValue.Substring(0,8))…(generated)"
+    if ($kiroValue) { Write-Host "  KIRO_CMD:      $kiroValue" } else { Write-Host "  KIRO_CMD:      (unset — chat will 503 until you set it)" }
+    Write-Host "  HTTP_ADDR:     $addrValue"
+    Write-Host "  PII:           $piiValue"
+    Write-Host ""
+    Write-Host "Next: .\scripts\otto-gw.ps1 start"
+}
+
 function Show-Env {
     Initialize-Config
     $keys = @(
@@ -269,6 +460,7 @@ See scripts\.env.otto-gw.example for a starter template.
 }
 
 switch ($Command) {
+    "init"    { Invoke-Init }
     "start"   { Start-Gateway }
     "stop"    { Stop-Gateway }
     "status"  { Get-GatewayStatus }

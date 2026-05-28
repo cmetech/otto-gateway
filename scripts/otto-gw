@@ -143,6 +143,54 @@ load_config() {
     apply_cli_flags
 }
 
+# preflight_kiro warns if KIRO_CMD does not resolve to an executable. We
+# WARN rather than ABORT because the gateway boots in a degraded mode
+# without kiro and the operator may genuinely want a /health-only run
+# (e.g. testing /health/hooks after a config change). Returns 0 always.
+preflight_kiro() {
+    local kiro="${KIRO_CMD:-}"
+    if [[ -z "$kiro" ]]; then
+        echo "  ⚠  KIRO_CMD is unset — gateway will boot but chat requests will return 503." >&2
+        echo "     Install kiro-cli and set KIRO_CMD in your .env (or shell)." >&2
+        return 0
+    fi
+    # Try as absolute path first (covers KIRO_CMD=/abs/path/to/kiro);
+    # fall back to PATH resolution (covers KIRO_CMD=kiro).
+    if [[ -x "$kiro" ]] || command -v "$kiro" >/dev/null 2>&1; then
+        return 0
+    fi
+    echo "  ⚠  KIRO_CMD=\"$kiro\" does not resolve to an executable on PATH or as an absolute path." >&2
+    echo "     Gateway will boot but chat requests will return 503 until this is fixed." >&2
+    return 0
+}
+
+# wait_until_ready polls ${OTTO_ADDR}/health up to $1 seconds (default 5).
+# Returns 0 on first 2xx; 1 on timeout or non-2xx after all retries.
+# Silent on success; on failure tails the last 20 lines of the boot
+# sidecar so the operator sees why the gateway never came up.
+wait_until_ready() {
+    local timeout_s="${1:-5}"
+    if ! command -v curl >/dev/null 2>&1; then
+        # No curl → skip the probe entirely. Operator can `status` manually.
+        return 0
+    fi
+    local deadline=$(( $(date +%s) + timeout_s ))
+    while (( $(date +%s) < deadline )); do
+        if curl -sf -m 1 "${OTTO_ADDR}/health" >/dev/null 2>&1; then
+            return 0
+        fi
+        # Also bail early if the binary already exited (PID file's pid is dead).
+        if [[ -f "$OTTO_PID" ]]; then
+            local p; p=$(cat "$OTTO_PID")
+            if ! kill -0 "$p" 2>/dev/null; then
+                break
+            fi
+        fi
+        sleep 0.25
+    done
+    return 1
+}
+
 start() {
     if [[ -f "$OTTO_PID" ]]; then
         local pid
@@ -177,11 +225,42 @@ start() {
     # log. nohup's redirect then captures only stderr / pre-logger output /
     # crash trails into the small boot sidecar.
     export LOG_FILE="$OTTO_LOG"
+    preflight_kiro
     nohup "$OTTO_BIN" >> "$OTTO_LOG_BOOT" 2>&1 &
     echo $! > "$OTTO_PID"
-    echo "otto-gateway started (PID $(cat "$OTTO_PID"))"
+    echo "otto-gateway starting (PID $(cat "$OTTO_PID"))…"
     echo "  log:      $OTTO_LOG (rotated daily, 7d retention)"
     echo "  boot/err: $OTTO_LOG_BOOT"
+    # Block briefly until /health returns 2xx so the operator sees the
+    # actual ready/failed verdict instead of a phantom "running" PID
+    # they only discover is dead on the next subcommand.
+    #
+    # The 10s budget covers a normal boot (sub-second on a working kiro)
+    # and most warmup paths. A broken KIRO_CMD takes the gateway's
+    # warmupDeadline (30s) to fail; the readiness probe will time out
+    # before that and surface the partial structured-log tail so the
+    # operator sees what's wrong without waiting the full 30s.
+    if wait_until_ready 10; then
+        echo "  ready:    ${OTTO_ADDR}/health"
+    else
+        echo "  ❌  gateway did NOT become ready within 10s." >&2
+        # Prefer the structured log (where slog calls go when LOG_FILE
+        # is set) and fall back to the boot sidecar (where pre-logger
+        # / Go runtime / kiro-cli stderr lands).
+        local source_log=""
+        if [[ -s "$OTTO_LOG" ]]; then
+            source_log="$OTTO_LOG"
+        elif [[ -s "$OTTO_LOG_BOOT" ]]; then
+            source_log="$OTTO_LOG_BOOT"
+        fi
+        if [[ -n "$source_log" ]]; then
+            echo "     Last 20 lines of $source_log:" >&2
+            tail -n 20 "$source_log" | sed 's/^/       /' >&2
+        else
+            echo "     (both log files are empty — likely a hung warmup; check KIRO_CMD)" >&2
+        fi
+        exit 1
+    fi
 }
 
 stop() {
@@ -245,6 +324,158 @@ run() {
     exec "$OTTO_BIN"
 }
 
+# gen_random_hex N → 2*N hex characters from a CSPRNG. Prefers openssl
+# (universally present on macOS, package-available on Linux); falls back
+# to /dev/urandom + od for minimalist environments.
+gen_random_hex() {
+    local nbytes="${1:-32}"
+    if command -v openssl >/dev/null 2>&1; then
+        openssl rand -hex "$nbytes"
+    elif [[ -r /dev/urandom ]]; then
+        head -c "$nbytes" /dev/urandom | od -An -vtx1 | tr -d ' \n'
+    else
+        echo "ERROR: no CSPRNG available (need openssl or /dev/urandom)" >&2
+        return 1
+    fi
+}
+
+# init writes a starter .env file populated with sensible defaults and
+# freshly-generated AUTH_TOKEN + PII_HASH_KEY. Designed as the very
+# first command a new operator runs after extracting the tarball.
+#
+# Flags (all optional; unspecified values are prompted interactively
+# unless --non-interactive is passed):
+#   --dest PATH         where to write (default: $HOME/.otto-gw.env)
+#   --here              shortcut for --dest ./.env.otto-gw
+#   --force             overwrite if dest exists
+#   --auth-token TOK    use TOK instead of generating
+#   --hash-key KEY      use KEY instead of generating
+#   --kiro PATH         KIRO_CMD value
+#   --addr ADDR         HTTP_ADDR value (default 127.0.0.1:18080)
+#   --pii MODE          off|replace|mask|hash|drop  (default off)
+#   --non-interactive   don't prompt; use defaults for anything unset
+init_cmd() {
+    local dest="${HOME}/.otto-gw.env"
+    local force=0
+    local non_interactive=0
+    local arg_auth_token="" arg_hash_key="" arg_kiro="" arg_addr="" arg_pii=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --dest)              dest="$2"; shift 2 ;;
+            --dest=*)            dest="${1#*=}"; shift ;;
+            --here)              dest="./.env.otto-gw"; shift ;;
+            --force)             force=1; shift ;;
+            --non-interactive)   non_interactive=1; shift ;;
+            --auth-token)        arg_auth_token="$2"; shift 2 ;;
+            --auth-token=*)      arg_auth_token="${1#*=}"; shift ;;
+            --hash-key)          arg_hash_key="$2"; shift 2 ;;
+            --hash-key=*)        arg_hash_key="${1#*=}"; shift ;;
+            --kiro)              arg_kiro="$2"; shift 2 ;;
+            --kiro=*)            arg_kiro="${1#*=}"; shift ;;
+            --addr)              arg_addr="$2"; shift 2 ;;
+            --addr=*)            arg_addr="${1#*=}"; shift ;;
+            --pii)               arg_pii="$2"; shift 2 ;;
+            --pii=*)             arg_pii="${1#*=}"; shift ;;
+            *)                   echo "init: unknown flag: $1" >&2; exit 1 ;;
+        esac
+    done
+
+    if [[ -e "$dest" && "$force" -ne 1 ]]; then
+        echo "ERROR: $dest already exists. Re-run with --force to overwrite." >&2
+        exit 1
+    fi
+
+    # Generate secrets (--auth-token / --hash-key override).
+    local auth_token="$arg_auth_token"
+    [[ -z "$auth_token" ]] && auth_token="$(gen_random_hex 32)"
+    local hash_key="$arg_hash_key"
+    [[ -z "$hash_key" ]] && hash_key="$(gen_random_hex 32)"
+
+    # Resolve KIRO_CMD — flag → interactive prompt → suggest `command -v kiro`.
+    local kiro_cmd="$arg_kiro"
+    if [[ -z "$kiro_cmd" && "$non_interactive" -ne 1 ]]; then
+        local kiro_default; kiro_default="$(command -v kiro 2>/dev/null || true)"
+        read -r -p "  kiro-cli path [${kiro_default:-press Enter to leave unset}]: " kiro_cmd
+        [[ -z "$kiro_cmd" ]] && kiro_cmd="$kiro_default"
+    fi
+
+    # Resolve HTTP_ADDR — flag → prompt with Ollama-compat callout.
+    local http_addr="$arg_addr"
+    if [[ -z "$http_addr" && "$non_interactive" -ne 1 ]]; then
+        echo "  HTTP listen address — default 127.0.0.1:18080 (safe, no collision)."
+        echo "  Set to 127.0.0.1:11434 if migrating from the Node Ollama proxy."
+        read -r -p "  HTTP_ADDR [127.0.0.1:18080]: " http_addr
+    fi
+    [[ -z "$http_addr" ]] && http_addr="127.0.0.1:18080"
+
+    # Resolve PII mode — flag → prompt → default off.
+    local pii_mode="$arg_pii"
+    if [[ -z "$pii_mode" && "$non_interactive" -ne 1 ]]; then
+        echo "  PII redaction — off | replace | mask | hash | drop."
+        echo "  Pick 'replace' for human-readable redaction; 'hash' for log correlation."
+        read -r -p "  PII mode [off]: " pii_mode
+    fi
+    [[ -z "$pii_mode" ]] && pii_mode="off"
+
+    local pii_enabled="false"
+    [[ "$pii_mode" != "off" ]] && pii_enabled="true"
+    # If PII mode != hash, pii_hash_key is still written (commented? no, harmless to set)
+    # so the operator can switch to hash mode later without re-running init.
+
+    # Ensure parent dir exists.
+    local dest_dir; dest_dir="$(dirname "$dest")"
+    [[ -n "$dest_dir" && "$dest_dir" != "." ]] && mkdir -p "$dest_dir"
+
+    # Write the .env file. cat-heredoc with quoted EOF so values are
+    # literal (no shell expansion).
+    cat > "$dest" <<EOF
+# Generated by 'otto-gw init' on $(date -u +%Y-%m-%dT%H:%M:%SZ)
+# Edit any value; restart the gateway to apply.
+
+# Required — bearer token clients must send as Authorization: Bearer <token>
+AUTH_TOKEN=$auth_token
+
+# kiro-cli subprocess wiring. Without this set, chat requests return 503.
+KIRO_CMD=$kiro_cmd
+
+# HTTP listen address. Default 127.0.0.1:18080; use :11434 for Ollama compat.
+HTTP_ADDR=$http_addr
+
+# ─── Phase 8 hook chain ─────────────────────────────────────────────────────
+# Empty ENABLED_HOOKS = all hooks run in registration order. Comma-list to
+# allowlist (unknown names cause boot failure — typo protection).
+# ENABLED_HOOKS=RequestIDHook,AuthHook,PIIRedactionHook,LoggingHook
+
+PII_REDACTION_ENABLED=$pii_enabled
+PII_REDACTION_MODE=$pii_mode
+
+# HMAC-SHA256 key for hash mode. Pre-generated for you; rotate to break
+# attacker log correlation if you suspect a key leak.
+PII_HASH_KEY=$hash_key
+
+# Empty = all six recognizers (Email, IPv4, IPv6, SSN, CreditCard, USPhone).
+# PII_ENABLED_ENTITIES=Email,SSN,CreditCard
+
+# ─── Misc ────────────────────────────────────────────────────────────────────
+# DEBUG=true
+# ALLOWED_IPS=127.0.0.1,::1
+# AUTH_TRUST_XFF=false
+# POOL_SIZE=2
+EOF
+
+    chmod 600 "$dest"
+
+    echo "✓ wrote $dest (mode 0600)"
+    echo "  AUTH_TOKEN:    $(echo "$auth_token" | head -c 8)…(generated)"
+    echo "  PII_HASH_KEY:  $(echo "$hash_key" | head -c 8)…(generated)"
+    [[ -n "$kiro_cmd" ]] && echo "  KIRO_CMD:      $kiro_cmd" || echo "  KIRO_CMD:      (unset — chat will 503 until you set it)"
+    echo "  HTTP_ADDR:     $http_addr"
+    echo "  PII:           $pii_mode"
+    echo ""
+    echo "Next: ./scripts/otto-gw start"
+}
+
 # env subcommand: print the resolved gateway-relevant env (KEY=value, one
 # per line). Secrets are masked unless --show-secrets is passed.
 print_env() {
@@ -274,7 +505,9 @@ usage() {
 Usage: otto-gw <command> [flags]
 
 Commands:
-  start [flags]       Start gateway in background
+  init [flags]        First-run setup — generates AUTH_TOKEN + PII_HASH_KEY,
+                      prompts for KIRO_CMD + HTTP_ADDR, writes a .env file.
+  start [flags]       Start gateway in background (waits for /health)
   stop                Stop background gateway
   status              Show gateway status and health
   restart [flags]     Stop then start (re-applies flags / .env)
@@ -290,6 +523,17 @@ Gateway config flags (for start | restart | run | env):
   --hooks LIST        ENABLED_HOOKS allowlist (comma list, empty = all)
   --auth TOKEN        AUTH_TOKEN
   --env-file PATH     Override the default .env search
+
+init flags:
+  --dest PATH         where to write the .env (default $HOME/.otto-gw.env)
+  --here              shortcut for --dest ./.env.otto-gw
+  --force             overwrite if dest exists
+  --kiro PATH         skip the KIRO_CMD prompt
+  --addr ADDR         skip the HTTP_ADDR prompt (default 127.0.0.1:18080)
+  --pii MODE          skip the PII prompt (default off)
+  --auth-token TOK    use TOK instead of generating
+  --hash-key KEY      use KEY instead of generating
+  --non-interactive   don't prompt; use defaults for unspecified values
 
 .env auto-load search:
   1. --env-file PATH                  (CLI override)
@@ -316,6 +560,7 @@ case "$CMD" in
             env)     print_env ;;
         esac
         ;;
+    init)    init_cmd "$@" ;;
     stop)    stop ;;
     status)  status ;;
     logs)    logs "${1:-}" ;;

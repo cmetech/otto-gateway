@@ -17,7 +17,7 @@ PKG_README  := docs/operator-quickstart.md
 
 .PHONY: all build run test test-race lint fmt tidy clean cross ci arch-lint start stop status e2e e2e-list e2e-sdk-setup help \
         cross-darwin-arm64 cross-darwin-amd64 cross-linux-amd64 cross-windows-amd64 \
-        package package-all package-darwin-arm64 package-darwin-amd64 package-linux-amd64 package-windows-amd64
+        package package-all package-checksums package-darwin-arm64 package-darwin-amd64 package-linux-amd64 package-windows-amd64
 
 all: lint test build ## Lint, test, and build for the host platform
 
@@ -95,7 +95,22 @@ package: ## Build a distribution archive for the host OS/arch
 			*) echo "package: unsupported host $$os/$$arch — use cross targets" >&2; exit 1 ;; \
 		esac
 
-package-all: package-darwin-arm64 package-darwin-amd64 package-linux-amd64 package-windows-amd64 ## Build distribution archives for every supported OS/arch
+package-all: package-darwin-arm64 package-darwin-amd64 package-linux-amd64 package-windows-amd64 package-checksums ## Build distribution archives for every supported OS/arch
+
+# package-checksums: produces SHA256SUMS-<version>.txt across every dist/
+# archive. Operators verify with `shasum -a 256 -c SHA256SUMS-<version>.txt`
+# (POSIX) or `Get-FileHash` (PowerShell). Prefer `shasum`; fall back to
+# `sha256sum` on Linux hosts without BSD shasum.
+package-checksums: ## Generate SHA256SUMS-<version>.txt for all archives in dist/
+	@cd $(DIST_DIR) && ( \
+		if command -v shasum >/dev/null 2>&1; then \
+			shasum -a 256 otto_gateway-*-$(VERSION).tar.gz otto_gateway-*-$(VERSION).zip 2>/dev/null; \
+		else \
+			sha256sum otto_gateway-*-$(VERSION).tar.gz otto_gateway-*-$(VERSION).zip 2>/dev/null; \
+		fi \
+	) > SHA256SUMS-$(VERSION).txt
+	@echo "→ $(DIST_DIR)/SHA256SUMS-$(VERSION).txt"
+	@cat $(DIST_DIR)/SHA256SUMS-$(VERSION).txt
 
 # stage_unix($1=goos, $2=goarch, $3=binary-suffix-on-disk):
 # Wipes the staging dir, copies bin/wrappers/template/README/.gitkeep,
@@ -112,12 +127,31 @@ define stage_unix
 	: > $(DIST_DIR)/otto_gateway/logs/.gitkeep
 endef
 
+# codesign_adhoc($1=path): ad-hoc sign with empty identity. Removes the
+# `cannot be opened because Apple cannot check it for malicious software`
+# message on macOS Catalina+ for binaries that have NOT been downloaded
+# (no com.apple.quarantine xattr — the README documents `xattr -d` for
+# the downloaded-tarball case). Does NOT satisfy notarization — full
+# Developer ID + notarytool is needed for that and requires a paid Apple
+# Developer ID, which we deliberately keep out of scope for v1 laptop
+# distribution. Skips silently on Linux/Windows hosts (no codesign).
+define codesign_adhoc
+	@if command -v codesign >/dev/null 2>&1; then \
+		codesign --sign - --force --options runtime --timestamp=none "$(1)" \
+			&& echo "  ad-hoc signed: $(1)"; \
+	else \
+		echo "  (codesign not available on this host — skipping ad-hoc sign of $(1))"; \
+	fi
+endef
+
 package-darwin-arm64: cross-darwin-arm64 $(PKG_README) ## Build otto_gateway-darwin-arm64-<version>.tar.gz
+	$(call codesign_adhoc,$(BUILD_DIR)/$(BINARY)-darwin-arm64)
 	@$(call stage_unix,darwin,arm64,)
 	cd $(DIST_DIR) && tar -czf otto_gateway-darwin-arm64-$(VERSION).tar.gz otto_gateway
 	@echo "→ $(DIST_DIR)/otto_gateway-darwin-arm64-$(VERSION).tar.gz"
 
 package-darwin-amd64: cross-darwin-amd64 $(PKG_README)
+	$(call codesign_adhoc,$(BUILD_DIR)/$(BINARY)-darwin-amd64)
 	@$(call stage_unix,darwin,amd64,)
 	cd $(DIST_DIR) && tar -czf otto_gateway-darwin-amd64-$(VERSION).tar.gz otto_gateway
 	@echo "→ $(DIST_DIR)/otto_gateway-darwin-amd64-$(VERSION).tar.gz"

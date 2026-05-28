@@ -23,38 +23,76 @@ otto_gateway/
 
 ## Prerequisites
 
-- `kiro-cli` installed and on `PATH`, or its absolute path set in `KIRO_CMD`. The gateway is a router — without `kiro-cli` it boots in a degraded mode that returns `503` on every chat request.
+**Required before first start:**
+
+- **`kiro-cli` installed and on `PATH`** (or its absolute path set in `KIRO_CMD`). The gateway is a router — without `kiro-cli` it boots in a degraded mode that returns `503` on every chat request. Install `kiro-cli` per your team's distribution instructions (typically a separate binary or `pip install` / `npm install -g` step) before running the gateway. The wrapper's `start` subcommand warns up-front if `KIRO_CMD` can't be resolved, but does NOT block — degraded boot is intentional so you can still hit `/health` and `/health/hooks` for diagnostics.
+
+**Required by the binary itself:**
+
 - A free local TCP port. Default is `127.0.0.1:18080`; override via `HTTP_ADDR`.
 - For Windows: PowerShell 5.1+ (built into Windows 10/11). If execution policy blocks the script, run `powershell -ExecutionPolicy Bypass -File .\scripts\otto-gw.ps1 <command>`.
+
+**Port-default note for migrators:** the legacy Node Ollama proxy listened on `11434`. The Go gateway picks `18080` instead so it can coexist with a real Ollama install on the same machine. If you're swapping the Node proxy for this gateway and pointing LangFlow (or any Ollama client) at it, set `HTTP_ADDR=127.0.0.1:11434` in your `.env.otto-gw` — the gateway will then take over the Ollama port and your clients need no reconfiguration.
 
 ---
 
 ## Quickstart — macOS / Linux
 
 ```bash
-# One-time setup: copy the config template to your home dir and edit it
-cp scripts/.env.otto-gw.example ~/.otto-gw.env
-# (open ~/.otto-gw.env, uncomment AUTH_TOKEN, KIRO_CMD, and any PII settings)
+# One-time setup — generates random AUTH_TOKEN + PII_HASH_KEY, prompts for
+# KIRO_CMD + HTTP_ADDR, writes ~/.otto-gw.env (mode 0600). Run it once.
+./scripts/otto-gw init
 
-./scripts/otto-gw start         # launch in background; auto-loads ~/.otto-gw.env
-./scripts/otto-gw status        # check PID and /health
+# Day-to-day:
+./scripts/otto-gw start         # launches; waits for /health to come up
+./scripts/otto-gw status        # PID + /health JSON
 ./scripts/otto-gw logs -f       # follow the structured JSON log
-./scripts/otto-gw stop          # send SIGTERM, wait for clean exit
+./scripts/otto-gw stop          # SIGTERM, wait for clean exit
 ```
+
+If `start` reports the gateway didn't become ready, it tails the boot
+sidecar inline so you see the actual error (typically a config typo,
+unknown hook name, hash-mode-without-key, or `KIRO_CMD` missing).
 
 ---
 
 ## Quickstart — Windows
 
 ```powershell
-copy scripts\.env.otto-gw.example "$env:USERPROFILE\.otto-gw.env"
-# (edit the file: notepad "$env:USERPROFILE\.otto-gw.env")
+.\scripts\otto-gw.ps1 init      # generates secrets, prompts for KIRO_CMD + HTTP_ADDR
 
 .\scripts\otto-gw.ps1 start
 .\scripts\otto-gw.ps1 status
-.\scripts\otto-gw.ps1 logs        # follow the structured log
+.\scripts\otto-gw.ps1 logs      # follow the structured log
 .\scripts\otto-gw.ps1 stop
 ```
+
+---
+
+## `init` — non-interactive form for scripts / CI
+
+Both wrappers accept flags so `init` can be driven without prompts:
+
+```bash
+./scripts/otto-gw init \
+  --non-interactive \
+  --kiro /usr/local/bin/kiro \
+  --addr 127.0.0.1:11434 \
+  --pii hash
+```
+
+```powershell
+.\scripts\otto-gw.ps1 init `
+  -NonInteractive `
+  -Kiro "C:\Tools\kiro.exe" `
+  -Addr "127.0.0.1:11434" `
+  -Pii hash
+```
+
+Flags: `--dest PATH` / `-Dest PATH` chooses the output file; `--here` /
+`-Here` writes `./.env.otto-gw` instead of the home directory; `--force`
+/ `-Force` overwrites; `--auth-token`/`-AuthToken` and `--hash-key`/
+`-HashKey` substitute provided values for generated secrets.
 
 ---
 
@@ -168,6 +206,24 @@ Get-Content -Wait .\logs\otto-gateway.boot-err.log    # crash sidecar
 
 ## Troubleshooting
 
+### macOS: "otto-gateway cannot be opened because Apple cannot check it for malicious software"
+
+The binary is ad-hoc signed but NOT notarized by Apple (we deliberately keep notarization out of v1 distribution — it requires a paid Apple Developer account). The macOS Gatekeeper attaches a `com.apple.quarantine` attribute to anything downloaded via a browser or extracted from a downloaded archive, and refuses to launch quarantined binaries from unidentified developers.
+
+Two ways to resolve:
+
+**Option A — strip the quarantine attribute (recommended):**
+
+```bash
+xattr -d com.apple.quarantine bin/otto-gateway
+```
+
+This is one-time per install. The wrapper scripts don't need this since shell scripts aren't gated by Gatekeeper.
+
+**Option B — right-click → Open (per binary, one-time):**
+
+In Finder, control-click `bin/otto-gateway` → Open → "Open" in the dialog. macOS records the exception and subsequent launches via the wrapper work normally.
+
 ### "otto-gateway started" but no log output appears
 
 Check the boot sidecar — the gateway probably failed before its structured logger started up:
@@ -211,6 +267,27 @@ The gateway reads env vars once at startup. After any config change, you must `.
 
 ```bash
 ./scripts/otto-gw env --show-secrets
+```
+
+---
+
+## Verifying your download
+
+If the release came with a `SHA256SUMS-<version>.txt` file, verify the archive before extracting:
+
+```bash
+# macOS / Linux — POSIX
+shasum -a 256 -c SHA256SUMS-<version>.txt 2>&1 | grep otto_gateway-darwin-arm64
+
+# Linux (if shasum isn't installed)
+sha256sum -c SHA256SUMS-<version>.txt
+```
+
+```powershell
+# Windows
+$want = (Select-String -Path .\SHA256SUMS-<version>.txt -Pattern 'windows-amd64' | ForEach-Object { ($_.Line -split '\s+')[0] })
+$got  = (Get-FileHash .\otto_gateway-windows-amd64-<version>.zip -Algorithm SHA256).Hash.ToLower()
+if ($want -eq $got) { "OK" } else { "MISMATCH" }
 ```
 
 ---
