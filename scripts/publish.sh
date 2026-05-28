@@ -339,6 +339,9 @@ check_prereqs() {
     [[ "$want_minio" -eq 1 && "${#minio_gaps[@]}" -eq 0 ]] && minio_ok=1
     [[ "$want_artifactory" -eq 1 && "${#arti_gaps[@]}" -eq 0 ]] && arti_ok=1
 
+    # bash 3.2 + set -u: iterating an empty array via "${arr[@]}" trips
+    # "unbound variable". The "${arr[@]+...}" form expands to nothing
+    # when the array is empty/unset, side-stepping the strictness.
     if [[ -z "$DEST_REQUESTED" ]]; then
         # Default-d: narrow silently if at least one destination is OK.
         if [[ "$minio_ok" -eq 1 && "$arti_ok" -eq 1 ]]; then
@@ -347,17 +350,17 @@ check_prereqs() {
             DEST="minio"
             printf '[warn] artifactory unavailable, narrowing to minio only:\n' >&2
             local g
-            for g in "${arti_gaps[@]}"; do printf '  - %s\n' "$g" >&2; done
+            for g in ${arti_gaps[@]+"${arti_gaps[@]}"}; do printf '  - %s\n' "$g" >&2; done
         elif [[ "$arti_ok" -eq 1 ]]; then
             DEST="artifactory"
             printf '[warn] minio unavailable, narrowing to artifactory only:\n' >&2
             local g
-            for g in "${minio_gaps[@]}"; do printf '  - %s\n' "$g" >&2; done
+            for g in ${minio_gaps[@]+"${minio_gaps[@]}"}; do printf '  - %s\n' "$g" >&2; done
         else
             printf 'Error: no destination available. Missing prereqs:\n' >&2
             local g
-            for g in "${minio_gaps[@]}"; do printf '  minio: %s\n' "$g" >&2; done
-            for g in "${arti_gaps[@]}"; do printf '  artifactory: %s\n' "$g" >&2; done
+            for g in ${minio_gaps[@]+"${minio_gaps[@]}"}; do printf '  minio: %s\n' "$g" >&2; done
+            for g in ${arti_gaps[@]+"${arti_gaps[@]}"}; do printf '  artifactory: %s\n' "$g" >&2; done
             exit 1
         fi
     else
@@ -368,8 +371,8 @@ check_prereqs() {
         if [[ "$total_gaps" -gt 0 ]]; then
             printf 'Error: prereqs missing for -d %s:\n' "$DEST_REQUESTED" >&2
             local g
-            for g in "${minio_gaps[@]}"; do printf '  minio: %s\n' "$g" >&2; done
-            for g in "${arti_gaps[@]}"; do printf '  artifactory: %s\n' "$g" >&2; done
+            for g in ${minio_gaps[@]+"${minio_gaps[@]}"}; do printf '  minio: %s\n' "$g" >&2; done
+            for g in ${arti_gaps[@]+"${arti_gaps[@]}"}; do printf '  artifactory: %s\n' "$g" >&2; done
             exit 1
         fi
         DEST="$DEST_REQUESTED"
