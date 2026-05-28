@@ -7,4 +7,4 @@ require (
 	go.uber.org/goleak v1.3.0
 )
 
-require github.com/oklog/ulid/v2 v2.1.1 // indirect
+require github.com/oklog/ulid/v2 v2.1.1
