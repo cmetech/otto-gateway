@@ -23,8 +23,11 @@ package admin
 import (
 	"bufio"
 	"context"
+	"errors"
+	"io"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -256,28 +259,41 @@ func (t *Tailer) Snapshot() []string {
 // run is the single goroutine that polls the log file for new lines.
 // It opens the file at EOF (D-10 — never backfills historical content),
 // polls for size growth on a TailPollInterval ticker, reads new bytes
-// through bufio.Scanner, and broadcasts each line to all subscribers and
-// into the ring buffer.
+// through bufio.Reader, and broadcasts each completed line to all
+// subscribers and into the ring buffer.
+//
+// Partial-line handling (WR-02): bufio.Reader.ReadString('\n') returns
+// io.EOF with the partial trailing bytes that have no newline yet. We
+// carry those bytes in `partialLine` across ticks; the NEXT tick reads
+// the rest and prepends `partialLine` so the line is emitted exactly
+// once when the terminator finally arrives. The previous bufio.Scanner
+// implementation discarded its internal buffer when recreated each tick,
+// silently dropping partial lines.
 //
 // On rotation (rename+recreate detected via os.Stat + os.SameFile),
-// the file is closed and re-opened at the new file's EOF.
+// the file is closed and re-opened at the new file's EOF. Any in-flight
+// `partialLine` is discarded because it belongs to the old file inode.
 // On missing file or read error, the goroutine logs once per tick at
 // DEBUG level and retries on the next tick — it never crashes.
 func (t *Tailer) run(ctx context.Context) {
 	var (
-		f          *os.File
-		lastSize   int64
-		scanner    *bufio.Scanner
-		scanBuffer = make([]byte, 0, 64*1024)
+		f           *os.File
+		reader      *bufio.Reader
+		lastSize    int64
+		partialLine string // carry-over bytes with no terminator yet (WR-02)
 	)
 
 	// reopen closes any existing file handle and opens t.path at EOF.
 	// On error, f is set to nil and the tailer retries on the next tick.
+	// Any in-flight partialLine is discarded — it belongs to the prior
+	// file inode and cannot be meaningfully concatenated to the new one.
 	reopen := func() {
 		if f != nil {
 			_ = f.Close()
 			f = nil
 		}
+		reader = nil
+		partialLine = ""
 		nf, err := os.Open(t.path)
 		if err != nil {
 			// File does not exist yet or path is wrong — log at DEBUG
@@ -287,15 +303,16 @@ func (t *Tailer) run(ctx context.Context) {
 			return
 		}
 		// Seek to EOF: D-10 invariant — NEVER backfill historical content.
-		sz, err := nf.Seek(0, 2) // io.SeekEnd == 2
+		sz, err := nf.Seek(0, io.SeekEnd)
 		if err != nil {
 			_ = nf.Close()
 			return
 		}
 		f = nf
 		lastSize = sz
-		scanner = bufio.NewScanner(f)
-		scanner.Buffer(scanBuffer, TailerMaxLineBytes)
+		// 64KB read buffer matches the prior scanner sizing. The
+		// TailerMaxLineBytes cap is enforced separately in readLines.
+		reader = bufio.NewReaderSize(f, 64*1024)
 	}
 
 	reopen()
@@ -340,23 +357,70 @@ func (t *Tailer) run(ctx context.Context) {
 				continue
 			}
 
-			// Read new bytes line by line.
-			for scanner.Scan() {
-				line := scanner.Text()
-				t.broadcast(line)
-			}
-			if err := scanner.Err(); err != nil {
-				// Scanner error (e.g. bufio.ErrTooLong) — reopen.
-				t.logger.Debug("admin: tailer scan error", "err", err)
+			// Read new bytes line by line, carrying partial trailing
+			// bytes (no terminator) into the next tick (WR-02).
+			newPartial, readErr := t.readLines(reader, partialLine)
+			partialLine = newPartial
+			if readErr != nil {
+				// Read error (other than EOF, which readLines swallows).
+				// Reopen to recover; partialLine has been reset above.
+				t.logger.Debug("admin: tailer read error", "err", readErr)
 				reopen()
 				continue
 			}
-
-			// bufio.Scanner returns false at EOF; create a fresh scanner
-			// for the next tick so it doesn't stay in a terminal state.
-			scanner = bufio.NewScanner(f)
-			scanner.Buffer(scanBuffer, TailerMaxLineBytes)
 			lastSize = st.Size()
+		}
+	}
+}
+
+// readLines reads from r until io.EOF, broadcasting each \n-terminated
+// line. The returned string is any trailing bytes with no terminator —
+// the caller must carry it back into the next call so a partial line
+// is emitted exactly once when its terminator finally arrives (WR-02).
+//
+// `carry` is the partialLine accumulated from the previous tick; it is
+// prepended to the first line read so the terminator from the current
+// tick completes the prior tick's partial bytes.
+//
+// Lines exceeding TailerMaxLineBytes are truncated to the cap and a
+// DEBUG log is emitted; this matches the prior bufio.Scanner behavior
+// where bufio.ErrTooLong triggered a reopen. We keep the file open here
+// so a single oversized record does not lose subsequent lines.
+//
+// Returns the new partial-line carry (possibly "") plus any non-EOF
+// read error.
+func (t *Tailer) readLines(r *bufio.Reader, carry string) (string, error) {
+	current := carry
+	for {
+		chunk, err := r.ReadString('\n')
+		if len(chunk) > 0 {
+			current += chunk
+			// Enforce the per-line size cap to bound memory growth in
+			// case a log producer never emits a newline. If the carry
+			// exceeds TailerMaxLineBytes, truncate it and emit a marker.
+			if len(current) > TailerMaxLineBytes && !strings.HasSuffix(current, "\n") {
+				t.logger.Debug("admin: tailer line exceeds max",
+					"bytes", len(current), "max", TailerMaxLineBytes)
+				t.broadcast(current[:TailerMaxLineBytes])
+				current = ""
+				continue
+			}
+			if strings.HasSuffix(current, "\n") {
+				// Strip the trailing \n (and an optional preceding \r
+				// from CRLF-terminated logs) to match the prior
+				// bufio.Scanner.Text() semantics.
+				line := strings.TrimSuffix(current, "\n")
+				line = strings.TrimSuffix(line, "\r")
+				t.broadcast(line)
+				current = ""
+			}
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				// Carry any trailing partial bytes into the next tick.
+				return current, nil
+			}
+			return current, err
 		}
 	}
 }

@@ -375,6 +375,78 @@ func TestAdmin_TailerRotation(t *testing.T) {
 	}
 }
 
+// TestAdmin_TailerPartialLinePersistsAcrossTicks asserts WR-02 mitigation:
+// a write whose trailing bytes have no \n terminator must not be silently
+// dropped when the tailer's read loop hits EOF. The partial bytes must be
+// carried across ticks so that when the writer finally appends the \n the
+// full line is emitted exactly once.
+func TestAdmin_TailerPartialLinePersistsAcrossTicks(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	dir := t.TempDir()
+	logPath := dir + "/test.log"
+	f, err := os.Create(logPath)
+	if err != nil {
+		t.Fatalf("create log: %v", err)
+	}
+	f.Close()
+
+	tailer := NewTailer(logPath, discardLogger())
+	sub := tailer.Subscribe(t.Context())
+	defer tailer.Unsubscribe(sub)
+
+	// Let the tailer open and seek to EOF.
+	time.Sleep(400 * time.Millisecond)
+
+	// Write a complete line followed by a partial line (no trailing \n).
+	wf, err := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatalf("open for append: %v", err)
+	}
+	if _, err := wf.WriteString("INFO step 1\nINFO step 2 in progress"); err != nil {
+		t.Fatalf("write partial: %v", err)
+	}
+	wf.Close()
+
+	// Step 1 should arrive on the next poll tick.
+	line1 := waitLine(sub.C, 1500*time.Millisecond)
+	if line1 != "INFO step 1" {
+		t.Fatalf("expected 'INFO step 1', got %q", line1)
+	}
+
+	// Step 2's partial bytes must NOT have been delivered yet (no \n).
+	// Give the tailer a couple more ticks to confirm it does not
+	// surface the partial line prematurely.
+	select {
+	case unexpected := <-sub.C:
+		t.Fatalf("partial line surfaced before terminator: %q", unexpected)
+	case <-time.After(500 * time.Millisecond):
+		// Good — partial line correctly held back.
+	}
+
+	// Now complete the line. The carry-over bytes from the prior tick
+	// must concatenate with this write so we see the full line ONCE.
+	wf2, err := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatalf("open for append 2: %v", err)
+	}
+	if _, err := wf2.WriteString("\nINFO step 3\n"); err != nil {
+		t.Fatalf("write completion: %v", err)
+	}
+	wf2.Close()
+
+	got := waitLines(sub.C, 2, 2*time.Second)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 lines after completion, got %d: %v", len(got), got)
+	}
+	if got[0] != "INFO step 2 in progress" {
+		t.Errorf("expected full line 'INFO step 2 in progress', got %q (partial bytes lost?)", got[0])
+	}
+	if got[1] != "INFO step 3" {
+		t.Errorf("expected 'INFO step 3', got %q", got[1])
+	}
+}
+
 func TestAdmin_TailerMissingFileGracefulRetry(t *testing.T) {
 	defer goleak.VerifyNone(t)
 
