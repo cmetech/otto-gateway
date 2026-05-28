@@ -21,8 +21,8 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.HTTPAddr != "127.0.0.1:18080" {
 		t.Errorf("HTTPAddr: got %q, want %q", cfg.HTTPAddr, "127.0.0.1:18080")
 	}
-	if cfg.KiroCmd != "kiro-cli" {
-		t.Errorf("KiroCmd: got %q, want %q", cfg.KiroCmd, "kiro-cli")
+	if cfg.KiroCmd != "kiro" {
+		t.Errorf("KiroCmd: got %q, want %q", cfg.KiroCmd, "kiro")
 	}
 	if len(cfg.KiroArgs) != 1 || cfg.KiroArgs[0] != "acp" {
 		t.Errorf("KiroArgs: got %v, want [acp]", cfg.KiroArgs)
