@@ -75,3 +75,11 @@ func (p *Pool) AllSlotsSnapshot() []*Slot {
 func (p *Pool) ClosingChan() <-chan struct{} {
 	return p.closing
 }
+
+// RecordSpawnErrForTesting is the test seam for the otherwise-internal
+// recordSpawnErr capture path. Lets HealthSummary tests assert the
+// surfaced wire shape without standing up a fake factory that drives a
+// real respawn failure end-to-end.
+func (p *Pool) RecordSpawnErrForTesting(err error) {
+	p.recordSpawnErr(err)
+}

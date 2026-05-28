@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"otto-gateway/internal/acp"
 	"otto-gateway/internal/canonical"
@@ -80,6 +81,16 @@ type Pool struct {
 	// shutdown teardown. goleak gate in testmain_test.go enforces clean
 	// watcher exit on Close.
 	closing chan struct{}
+
+	// lastSpawnErr / lastSpawnErrAt record the most recent GENUINE
+	// respawn failure (ctx-cancellation paths are deliberately excluded
+	// so caller-disconnect during a slow spawn does not surface as a
+	// pool incident). Surfaced via HealthSummary() → GET /health/pool so
+	// operators see WHY the pool shrank without grepping logs. Guarded
+	// by mu; never cleared on subsequent success — keep as forensic
+	// historical context (operators read lastSpawnErrAt for recency).
+	lastSpawnErr   string
+	lastSpawnErrAt time.Time
 }
 
 // New constructs a Pool with the given Config. The slots channel is
@@ -239,6 +250,7 @@ func (p *Pool) respawnSlot(ctx context.Context, slot *Slot) error {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return fmt.Errorf("pool: respawn slot %s aborted: %w", slot.Label, err)
 		}
+		p.recordSpawnErr(err)
 		return fmt.Errorf("pool: respawn slot %s: spawn: %w", slot.Label, err)
 	}
 	// Step 3: initialise the NEW client. On failure close it to avoid
@@ -249,6 +261,7 @@ func (p *Pool) respawnSlot(ctx context.Context, slot *Slot) error {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return fmt.Errorf("pool: respawn slot %s aborted: %w", slot.Label, err)
 		}
+		p.recordSpawnErr(err)
 		return fmt.Errorf("pool: respawn slot %s: initialize: %w", slot.Label, err)
 	}
 	// Step 4: replace under p.mu. Short critical section — no client
@@ -325,6 +338,63 @@ func (p *Pool) Stats() Stats {
 		Alive: alive,
 		Busy:  busy,
 	}
+}
+
+// HealthSummary is the richer pool snapshot returned by HealthSummary()
+// and surfaced via GET /health/pool. Adds Healthy + LastSpawnError* to
+// the Stats fields so monitors get a single-field "is the pool serving?"
+// signal alongside the diagnostic context for why it isn't.
+type HealthSummary struct {
+	Size           int       // configured cfg.Size
+	Alive          int       // !dead && Client != nil count
+	Busy           int       // checked-out count
+	Healthy        bool      // Size == 0 (degraded by design) OR Alive > 0
+	LastSpawnError string    // most recent genuine respawn failure; empty if none
+	LastSpawnErrAt time.Time // when the error above was recorded; zero if none
+}
+
+// HealthSummary returns the pool snapshot used by GET /health/pool.
+// Single mu acquisition for consistency between Alive/Busy/Healthy and
+// the lastSpawnErr fields. Healthy semantics deliberately treat the
+// "no KIRO_CMD configured" startup mode (Size == 0) as healthy — that
+// is the operator's intentional degraded-mode choice, not a failure.
+func (p *Pool) HealthSummary() HealthSummary {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	alive := 0
+	for _, s := range p.all {
+		if s != nil && s.Client != nil && !s.dead {
+			alive++
+		}
+	}
+	busy := len(p.all) - len(p.slots)
+	if busy < 0 {
+		busy = 0
+	}
+	return HealthSummary{
+		Size:           p.cfg.Size,
+		Alive:          alive,
+		Busy:           busy,
+		Healthy:        p.cfg.Size == 0 || alive > 0,
+		LastSpawnError: p.lastSpawnErr,
+		LastSpawnErrAt: p.lastSpawnErrAt,
+	}
+}
+
+// recordSpawnErr captures the most recent GENUINE respawn failure
+// (ctx-cancellation paths skip this — they are not pool incidents,
+// just normal caller-disconnect during a slow spawn). Called from
+// respawnSlot. NEVER cleared on a subsequent success: keep as a
+// forensic field so operators can see what went wrong and when, even
+// after a self-recovery. Recency is communicated via LastSpawnErrAt.
+func (p *Pool) recordSpawnErr(err error) {
+	if err == nil {
+		return
+	}
+	p.mu.Lock()
+	p.lastSpawnErr = err.Error()
+	p.lastSpawnErrAt = time.Now().UTC()
+	p.mu.Unlock()
 }
 
 // Close shuts the pool down idempotently. Subsequent calls return nil

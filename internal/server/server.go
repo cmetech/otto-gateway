@@ -114,6 +114,15 @@ type Config struct {
 	// without importing internal/plugin into server (TRST-04). When
 	// nil, the handler renders {"hooks": []}.
 	Hooks HooksDescriptionSource
+
+	// PoolHealth is the consumer-defined source for GET /health/pool —
+	// the "is the pool actually serving requests?" probe distinct from
+	// the basic Stats() surfaced by /health. The cmd/otto-gateway
+	// cmdPoolHealthAdapter wraps *pool.Pool to satisfy this without
+	// importing internal/pool here (TRST-04). When nil, the handler
+	// returns the canonical {"pool": {"size":0,...,"healthy":true}}
+	// envelope (no pool wired = degraded by design = healthy).
+	PoolHealth PoolHealthSource
 }
 
 // Server wraps the chi router and HTTP server with structured logging.
@@ -126,6 +135,7 @@ type Server struct {
 	start      time.Time
 	pool       PoolStatsSource
 	poolDetail PoolDetailSource
+	poolHealth PoolHealthSource // GET /health/pool — pool serving-health probe
 	registry   RegistryStatsSource
 	hooks      HooksDescriptionSource // Phase 8 OBSV-04 — GET /health/hooks introspection
 	addr       string
@@ -196,6 +206,7 @@ func NewFromConfig(cfg Config) *Server {
 		start:      time.Now(),
 		pool:       cfg.Pool,
 		poolDetail: cfg.PoolDetail,
+		poolHealth: cfg.PoolHealth,
 		registry:   cfg.Registry,
 		hooks:      cfg.Hooks, // Phase 8 OBSV-04
 		addr:       cfg.HTTPAddr,
@@ -225,6 +236,13 @@ func NewFromConfig(cfg Config) *Server {
 	s.router.MethodFunc(http.MethodPost, "/health/hooks", s.hooksHandler)
 	s.router.MethodFunc(http.MethodPut, "/health/hooks", s.hooksHandler)
 	s.router.MethodFunc(http.MethodDelete, "/health/hooks", s.hooksHandler)
+	// /health/pool — pool serving-health probe (the "is the pool
+	// actually serving requests?" signal distinct from basic /health).
+	// Same auth-exempt + 405-on-mutate posture as /health/hooks.
+	s.router.Get("/health/pool", s.poolHandler)
+	s.router.MethodFunc(http.MethodPost, "/health/pool", s.poolHandler)
+	s.router.MethodFunc(http.MethodPut, "/health/pool", s.poolHandler)
+	s.router.MethodFunc(http.MethodDelete, "/health/pool", s.poolHandler)
 	if cfg.OllamaVersionHandler != nil && cfg.OllamaVersionPath != "" {
 		// Codex M-4: register /api/version on the OUTER router so it
 		// stays exempt. The adapter does NOT register /version on its

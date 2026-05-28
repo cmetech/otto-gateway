@@ -6,12 +6,88 @@ This README is for **operators running the binary on a laptop**. Developers buil
 
 ---
 
+## Install — first-time setup
+
+Six steps, ~3 minutes. Each step links to a deeper section if you need details.
+
+### 1. Verify the download (recommended)
+
+If your release came with a `SHA256SUMS-<version>.txt` file, check the archive before extracting. Recipes for POSIX + Windows are in [Verifying your download](#verifying-your-download) further down. Skip this step at your own risk if you trust the source.
+
+### 2. Extract the archive
+
+```bash
+tar -xzf otto_gateway-<os>-<arch>-<version>.tar.gz     # macOS / Linux
+cd otto_gateway
+```
+
+```powershell
+Expand-Archive otto_gateway-windows-amd64-<version>.zip
+cd otto_gateway
+```
+
+You should now see the layout described in [What's in the box](#whats-in-the-box).
+
+### 3. (macOS only) Remove the quarantine attribute
+
+If you downloaded the archive via a browser, macOS Gatekeeper will refuse to launch the binary the first time. Strip the quarantine attribute once:
+
+```bash
+xattr -d com.apple.quarantine bin/otto-gateway
+```
+
+Full context in [Troubleshooting → macOS](#macos-otto-gateway-cannot-be-opened-because-apple-cannot-check-it-for-malicious-software).
+
+### 4. Install kiro-cli
+
+The gateway is a router — without `kiro-cli` it boots in a degraded mode that returns `503` on every chat request. Install `kiro-cli` per your team's distribution instructions and confirm:
+
+```bash
+command -v kiro    # macOS / Linux
+```
+
+```powershell
+Get-Command kiro   # Windows
+```
+
+If `kiro-cli` lives somewhere not on `PATH`, note its absolute path — `init` will prompt for it in the next step.
+
+### 5. Run `init`
+
+Generates a random `AUTH_TOKEN` + `PII_HASH_KEY`, prompts for `KIRO_CMD`, `HTTP_ADDR`, and PII mode, then writes `~/.otto-gw.env` (mode `0600`):
+
+```bash
+./scripts/otto-gw init           # macOS / Linux
+```
+
+```powershell
+.\scripts\otto-gw.ps1 init       # Windows
+```
+
+For non-interactive installs (CI, image baking, etc.) see [`init` — non-interactive form](#init--non-interactive-form-for-scripts--ci).
+
+### 6. Start
+
+```bash
+./scripts/otto-gw start          # macOS / Linux
+```
+
+```powershell
+.\scripts\otto-gw.ps1 start      # Windows
+```
+
+The wrapper waits for `/health` to come up before returning. On failure it tails the last 20 lines of the structured log inline so you see the actual error (config typo, hash-mode-without-key, port conflict, etc.) without grepping. Hit `http://localhost:18080/health` in a browser to confirm.
+
+**Day two:** see [Common operator tasks](#common-operator-tasks) for enabling PII, rotating the hash key, changing the listen port, and filtering the hook chain.
+
+---
+
 ## What's in the box
 
 ```
 otto_gateway/
   bin/otto-gateway        the gateway binary (single static executable)
-  scripts/otto-gw         POSIX wrapper (start | stop | status | restart | logs | run | env)
+  scripts/otto-gw         POSIX wrapper (init | start | stop | status | restart | logs | run | env)
   scripts/otto-gw.ps1     Windows PowerShell wrapper (same subcommands)
   scripts/.env.otto-gw.example
                           starter template for the persistent config file
@@ -25,7 +101,7 @@ otto_gateway/
 
 **Required before first start:**
 
-- **`kiro-cli` installed and on `PATH`** (or its absolute path set in `KIRO_CMD`). The gateway is a router — without `kiro-cli` it boots in a degraded mode that returns `503` on every chat request. Install `kiro-cli` per your team's distribution instructions (typically a separate binary or `pip install` / `npm install -g` step) before running the gateway. The wrapper's `start` subcommand warns up-front if `KIRO_CMD` can't be resolved, but does NOT block — degraded boot is intentional so you can still hit `/health` and `/health/hooks` for diagnostics.
+- **`kiro-cli` installed and on `PATH`** (or its absolute path set in `KIRO_CMD`). Step 4 of [Install](#install--first-time-setup) covers this. The gateway is a router — without `kiro-cli` it boots in a degraded mode that returns `503` on every chat request. The wrapper's `start` subcommand warns up-front if `KIRO_CMD` can't be resolved, but does NOT block — degraded boot is intentional so you can still hit `/health`, `/health/hooks`, and `/health/pool` for diagnostics.
 
 **Required by the binary itself:**
 
@@ -36,36 +112,20 @@ otto_gateway/
 
 ---
 
-## Quickstart — macOS / Linux
+## Day-to-day subcommands
+
+Once installed (see [Install](#install--first-time-setup)), the day-to-day surface is the same on every OS:
 
 ```bash
-# One-time setup — generates random AUTH_TOKEN + PII_HASH_KEY, prompts for
-# KIRO_CMD + HTTP_ADDR, writes ~/.otto-gw.env (mode 0600). Run it once.
-./scripts/otto-gw init
-
-# Day-to-day:
 ./scripts/otto-gw start         # launches; waits for /health to come up
 ./scripts/otto-gw status        # PID + /health JSON
 ./scripts/otto-gw logs -f       # follow the structured JSON log
+./scripts/otto-gw restart       # stop + start (re-applies flags / .env)
 ./scripts/otto-gw stop          # SIGTERM, wait for clean exit
+./scripts/otto-gw env           # preview what would be passed; secrets masked
 ```
 
-If `start` reports the gateway didn't become ready, it tails the boot
-sidecar inline so you see the actual error (typically a config typo,
-unknown hook name, hash-mode-without-key, or `KIRO_CMD` missing).
-
----
-
-## Quickstart — Windows
-
-```powershell
-.\scripts\otto-gw.ps1 init      # generates secrets, prompts for KIRO_CMD + HTTP_ADDR
-
-.\scripts\otto-gw.ps1 start
-.\scripts\otto-gw.ps1 status
-.\scripts\otto-gw.ps1 logs      # follow the structured log
-.\scripts\otto-gw.ps1 stop
-```
+On Windows substitute `.\scripts\otto-gw.ps1 <command>` and drop `-f` (the PowerShell `logs` always follows).
 
 ---
 
@@ -295,7 +355,15 @@ if ($want -eq $got) { "OK" } else { "MISMATCH" }
 ## Reference
 
 - Default address: `http://127.0.0.1:18080`
-- Health probe: `GET /health` (auth-exempt, returns JSON)
+- Health probe: `GET /health` (auth-exempt, returns JSON — "gateway is up")
+- Pool serving-health probe: `GET /health/pool` (auth-exempt — the "are workers actually serving requests?" signal). Body:
+  ```json
+  {"pool": {
+    "size": 2, "alive": 2, "busy": 0, "healthy": true,
+    "last_spawn_error": "...", "last_spawn_error_at": "2026-05-28T11:42:13Z"
+  }}
+  ```
+  `healthy: false` when `size > 0 && alive == 0` — i.e., the pool was configured but every worker died and failed to respawn. `last_spawn_error*` are present only when at least one respawn has failed; they are historical / forensic (not cleared by subsequent success). Monitor `healthy` for a single-field "page me" signal.
 - Hook chain introspection: `GET /health/hooks` (auth-exempt, returns the live chain — no secrets, no regex sources)
 - All three API surfaces:
   - **Ollama**: `POST /api/chat`, `POST /api/generate` (and standard companion endpoints)

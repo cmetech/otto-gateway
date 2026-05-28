@@ -431,6 +431,13 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 	if a.pool != nil {
 		poolForServer = poolStatsAdapter{pool: a.pool}
 	}
+	// /health/pool — pool serving-health probe. Nil-safe: when the pool
+	// is unwired (KIRO_CMD unset → degraded mode), the handler renders
+	// the canonical "no pool wired = healthy" envelope from a nil source.
+	var poolHealthForServer server.PoolHealthSource
+	if a.pool != nil {
+		poolHealthForServer = cmdPoolHealthAdapter{pool: a.pool}
+	}
 	// Plan 05-03: build the PoolDetailSource + RegistryStatsSource
 	// bridges for /health/agents (D-14/D-15/D-16). Both are nil-safe —
 	// when KIRO_CMD is unset the pool / registry are also nil and the
@@ -508,6 +515,7 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 		Surfaces:             surfaces,
 		Pool:                 poolForServer,
 		PoolDetail:           poolDetailForServer, // Plan 05-03 D-15
+		PoolHealth:           poolHealthForServer, // /health/pool — pool serving-health probe
 		Registry:             registryForServer,   // Plan 05-03 D-14/D-16
 		AdminHandler:         adminHandler,        // Phase 6.1 admin observability UI
 		Hooks:                hooksDescriptionAdapter{chain: chain}, // Phase 8 OBSV-04 — /health/hooks
@@ -626,6 +634,36 @@ func (a adminRegistryAdapter) Detail() []admin.SnapshotSess {
 			LastUsed: r.LastUsed,
 			Model:    r.Model,
 		}
+	}
+	return out
+}
+
+// cmdPoolHealthAdapter wraps *pool.Pool to satisfy
+// server.PoolHealthSource. Same one-line bridge pattern as
+// poolStatsAdapter — converts pool.HealthSummary's runtime fields into
+// server.PoolHealth's JSON-tagged wire fields without importing
+// internal/pool into server (TRST-04). The structurally-identical
+// types are intentional: server owns the wire shape, pool owns the
+// runtime type.
+type cmdPoolHealthAdapter struct {
+	pool *pool.Pool
+}
+
+func (a cmdPoolHealthAdapter) Health() server.PoolHealth {
+	h := a.pool.HealthSummary()
+	out := server.PoolHealth{
+		Size:           h.Size,
+		Alive:          h.Alive,
+		Busy:           h.Busy,
+		Healthy:        h.Healthy,
+		LastSpawnError: h.LastSpawnError,
+	}
+	// Pointer so encoding/json's omitempty actually omits when no
+	// spawn failure has been recorded (struct-zero time.Time would
+	// serialize as 0001-01-01T00:00:00Z otherwise).
+	if !h.LastSpawnErrAt.IsZero() {
+		ts := h.LastSpawnErrAt
+		out.LastSpawnErrAt = &ts
 	}
 	return out
 }
