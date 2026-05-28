@@ -87,19 +87,19 @@ Requirements for initial release. Each maps to roadmap phases (see Traceability)
 ### Build — Distribution and cross-compile
 
 - [ ] **BLD-01**: `make build` produces a host-platform binary at `bin/loop24-gateway`. `make cross` produces `linux/amd64` and `windows/amd64` binaries.
-- [ ] **BLD-02**: Cross-compilation works from macOS dev box with vanilla `go build` + `GOOS`/`GOARCH` env vars. No `cross`, no `cargo-zigbuild`, no MinGW. `CGO_ENABLED=0` enforced for release builds.
-- [ ] **BLD-03**: Binary embeds version via `-ldflags="-X main.version=$VERSION"`. `/api/version` returns the embedded value.
-- [ ] **BLD-04**: Release binaries are stripped (`-ldflags="-s -w"`) and statically linked. Target: ≤25 MB per binary.
+- [x] **BLD-02**: Cross-compilation works from macOS dev box with vanilla `go build` + `GOOS`/`GOARCH` env vars. No `cross`, no `cargo-zigbuild`, no MinGW. `CGO_ENABLED=0` enforced for release builds.
+- [x] **BLD-03**: Binary embeds version via `-ldflags="-X main.version=$VERSION"`. `/api/version` returns the embedded value.
+- [x] **BLD-04**: Release binaries are stripped (`-ldflags="-s -w"`) and statically linked. Target: ≤25 MB per binary.
 
 ### Trust gates — Lint, test, security
 
 - [ ] **TRST-01**: `golangci-lint` strict config (errcheck, errorlint, gosec, staticcheck, revive, wrapcheck, ineffassign, unused, unparam, nilerr, noctx, bodyclose) — warnings are CI hard failures. No `//nolint:` without inline justification.
 - [ ] **TRST-02**: `govulncheck` scans deps on every PR and nightly on `main`.
 - [ ] **TRST-03**: `go test -race ./...` runs in CI. Race detector always on.
-- [ ] **TRST-04**: Architectural boundaries enforced via `go-arch-lint` (or equivalent): `internal/adapter/*` cannot import `internal/engine`; `internal/canonical` imports nothing under `internal/`.
-- [ ] **TRST-05**: `goleak` checks goroutine leaks in handler-level tests. `goleak.VerifyTestMain` at top of test packages.
-- [ ] **TRST-06**: Property tests (`pgregory.net/rapid` or stdlib `testing/quick`) for `buildAcpBlocks` (Ollama and OpenAI variants) and `coerceToolCall`. Round-trip + never-panic invariants.
-- [ ] **TRST-07**: `Example_` functions in `_test.go` document non-obvious functions (`coerceToolCall`, `pickCwd`, `buildAcpBlocks`); validated via `go test -run Example`.
+- [x] **TRST-04**: Architectural boundaries enforced via `go-arch-lint` (or equivalent): `internal/adapter/*` cannot import `internal/engine`; `internal/canonical` imports nothing under `internal/`.
+- [x] **TRST-05**: `goleak` checks goroutine leaks in handler-level tests. `goleak.VerifyTestMain` at top of test packages.
+- [x] **TRST-06**: Property tests (`pgregory.net/rapid` or stdlib `testing/quick`) for `buildAcpBlocks` (Ollama and OpenAI variants) and `coerceToolCall`. Round-trip + never-panic invariants. _(Function was renamed `buildAcpBlocks` → `buildBlocks` during Phase 1.1 ACP wire alignment — property tests live in `internal/engine/build_acp_property_test.go`.)_
+- [x] **TRST-07**: `Example_` functions in `_test.go` document non-obvious functions (`coerceToolCall`, `pickCwd`, `buildAcpBlocks`); validated via `go test -run Example`. _(`Example_buildBlocks` reflects the post-rename function name.)_
 - [ ] **TRST-08**: Pre-commit hooks installed (`gitleaks`, `golangci-lint`, `go mod tidy`, trailing-whitespace, etc.).
 
 ## v2 Requirements
@@ -200,16 +200,16 @@ Populated by the roadmapper from `.planning/ROADMAP.md`. Updated as phases compl
 | OBSV-02 | Phase 5 | Complete |
 | OBSV-03 | Phase 8 | Pending |
 | BLD-01 | Phase 1 | Pending |
-| BLD-02 | Phase 9 | Pending |
-| BLD-03 | Phase 9 | Pending |
-| BLD-04 | Phase 9 | Pending |
+| BLD-02 | Phase 9 | Complete |
+| BLD-03 | Phase 9 | Complete |
+| BLD-04 | Phase 9 | Complete |
 | TRST-01 | Phase 1 | Pending |
 | TRST-02 | Phase 1 | Pending |
 | TRST-03 | Phase 1 | Pending |
-| TRST-04 | Phase 9 | Pending |
-| TRST-05 | Phase 9 | Pending |
-| TRST-06 | Phase 9 | Pending |
-| TRST-07 | Phase 9 | Pending |
+| TRST-04 | Phase 9 | Complete |
+| TRST-05 | Phase 9 | Complete |
+| TRST-06 | Phase 9 | Complete |
+| TRST-07 | Phase 9 | Complete |
 | TRST-08 | Phase 1 | Pending |
 
 **Coverage:**

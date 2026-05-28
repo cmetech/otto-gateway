@@ -34,7 +34,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 6: Tool-Call Path** - Canonical tool calls rendered per-surface, with `coerceToolCall` for plain-JSON-as-text (completed 2026-05-27)
 - [x] **Phase 6.1: Admin Observability UI** *(INSERTED)* - Dark-mode `/admin` page rendering `/health` + `/health/agents` with the OTTO brand palette; auto-refresh polling; nice-to-have live log tail (completed 2026-05-28)
 - [x] **Phase 8: Plugin Hook Chain** - `PreHook`/`PostHook` over canonical types, with RequestID, Auth, Logging registered (completed 2026-05-28)
-- [ ] **Phase 9: Distribution** - Cross-compile Linux+Windows from macOS, full trust-gate CI matrix gating merges
+- [x] **Phase 9: Distribution** - Cross-compile Linux+Windows from macOS, full trust-gate CI matrix gating merges (completed 2026-05-28)
 
 ## Phase Details
 
@@ -385,7 +385,7 @@ Plans:
   4. `go-arch-lint` (or equivalent) enforces in CI that `internal/adapter/*` does not import `internal/engine` and `internal/canonical` imports nothing under `internal/`.
   5. `goleak.VerifyTestMain` is wired into handler-level test packages; `Example_` functions document and validate `coerceToolCall`, `pickCwd`, and `buildAcpBlocks`.
 
-**Plans:** TBD
+**Plans:** Closed out via `/gsd-quick` (260528-d84) rather than a full phase plan, because cross-compile, version embedding, packaging, codesign, and arch-lint enforcement were already shipped as side-quests during Phases 6.1 / 8 closeout work. The quick close-out filled the three remaining trust-gate items (TRST-05 goleak coverage in `auth` / `config` / `cmd`; TRST-06 property tests for `buildBlocks` + `CoerceToolCall`; TRST-07 `Example_buildBlocks` confirmed pre-existing) and landed the `.github/workflows/ci.yml` merge gate (SC3) — the headline deliverable that bound the phase together.
 
 ## Progress
 
@@ -403,4 +403,4 @@ Phases execute in numeric order: 1 → 1.1 → 2 → 3 → 3.1 → 4 → 5 → 6
 | 6. Tool-Call Path | 5/5 | Complete    | 2026-05-27 |
 | 6.1. Admin Observability UI (INSERTED) | 4/4 | Complete   | 2026-05-28 |
 | 8. Plugin Hook Chain | 5/5 | Complete   | 2026-05-28 |
-| 9. Distribution | 0/TBD | Not started | - |
+| 9. Distribution | n/a (via /gsd-quick 260528-d84) | Complete | 2026-05-28 |
