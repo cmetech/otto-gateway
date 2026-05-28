@@ -371,6 +371,20 @@ Plans:
 
 **Plans:** 5/5 plans complete
 
+### Phase 08.1: Close gap: INTEG-01 streaming-mode PreHook short-circuit + v1.5 audit WARNINGs (CI sequence, /admin auth posture, T-8-AUTH-BYPASS stub coverage, REQUIREMENTS.md traceability) (INSERTED)
+
+**Goal:** Close the v1.5 milestone audit's BLOCKER and four WARNINGs in one phase: (a) Slice A — fix INTEG-01 streaming-mode PreHook short-circuit so bad-bearer `stream:true` requests return pre-header 401 + native JSON envelope across all three surfaces (Ollama, OpenAI, Anthropic) instead of empty 200 SSE/NDJSON streams; (b) Slice B — close WARNING-01 (CI/Makefile explicit trust-gate sequence per brief §3.12), WARNING-02 (`/admin` auth-exempt-by-design annotation in PROJECT.md + REQUIREMENTS.md + docs/operating.md), WARNING-03 (REQUIREMENTS.md traceability refresh: add PLUG-06 + OBSV-04 rows, correct "58 total" → "62 total", flip ~50 checkboxes per audit Final Status), WARNING-04 (T-8-AUTH-BYPASS list-mode-stub bypass annotation in REQUIREMENTS.md AUTH-01/02 + docs/operating.md).
+**Requirements**: PLUG-02, PLUG-04, PLUG-06, STRM-01, STRM-02, ANTH-01, ANTH-02, AUTH-01, AUTH-02, OBSV-04, TRST-01, TRST-02, TRST-03, TRST-04, TRST-05, TRST-06, TRST-07, TRST-08, BLD-03
+**Depends on:** Phase 8
+**Plans:** 5 plans
+
+Plans:
+- [ ] 08.1-01-PLAN.md — Slice A integration: add ShortCircuitResponse to ollama+openai RunHandle interfaces, forward through main.go shims, propagate test-fake stubs, insert short-circuit guards in all four streaming handler sites (atomic commit)
+- [ ] 08.1-02-PLAN.md — Slice A tests: four adapter-level streaming short-circuit tests (Ollama×2 per Pitfall 6, OpenAI×1, Anthropic×1) plus three new stream:true rows on TestE2E_BadBearer_AllThreeSurfaces
+- [ ] 08.1-03-PLAN.md — Slice B WARNING-01: explicit fmt-check/vet/build/examples targets in Makefile and the canonical brief §3.12 sequence in .github/workflows/ci.yml
+- [ ] 08.1-04-PLAN.md — Slice B WARNING-02 + WARNING-04 docs: Security carve-outs annotation in PROJECT.md and Auth posture quick reference subsection in docs/operating.md
+- [ ] 08.1-05-PLAN.md — Slice B WARNING-03 broad refresh: add PLUG-06 + OBSV-04 rows, correct coverage comment, flip ~50 checkboxes per audit Final Status, annotate AUTH-01/02 with carve-out language (D-15 + D-17)
+
 ### Phase 9: Distribution
 
 **Goal:** A single static binary cross-compiles cleanly from macOS to `linux/amd64` and `windows/amd64`, with the full trust-gate suite running in CI on every PR + nightly on main. This is the headline value of the Go port — one binary, no cgo, no platform-specific build tooling.
