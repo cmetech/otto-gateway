@@ -41,7 +41,7 @@ type Config struct {
 	// HTTP_ADDR=127.0.0.1:11434 to take over the Ollama port once the JS
 	// proxy is fully retired.
 	HTTPAddr string
-	// KiroCmd is the kiro-cli binary name or path (default "kiro").
+	// KiroCmd is the kiro-cli binary name or path (default "kiro-cli").
 	KiroCmd string
 	// KiroArgs is the list of arguments passed to kiro-cli (default ["acp"]).
 	KiroArgs []string
@@ -163,7 +163,7 @@ func Load() (Config, error) {
 	var errs []error
 
 	httpAddr := getEnvStr("HTTP_ADDR", "127.0.0.1:18080")
-	kiroCmd := getEnvStr("KIRO_CMD", "kiro")
+	kiroCmd := getEnvStr("KIRO_CMD", "kiro-cli")
 	kiroArgs := getEnvStrSlice("KIRO_ARGS", []string{"acp"})
 	kiroCWD := getEnvStr("KIRO_CWD", "")
 

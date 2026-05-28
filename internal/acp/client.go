@@ -34,7 +34,7 @@ var ErrSubprocessExited = errors.New("acp: subprocess exited")
 type Config struct {
 	// Logger is required; all ACP client events are structured-logged here.
 	Logger *slog.Logger
-	// Command is the kiro-cli binary path or name (default "kiro").
+	// Command is the kiro-cli binary path or name (default "kiro-cli").
 	Command string
 	// Args are the arguments passed to kiro-cli (default ["acp"]).
 	Args []string
@@ -49,7 +49,7 @@ type Config struct {
 // applyDefaults fills in zero-value Config fields with documented defaults.
 func (c *Config) applyDefaults() {
 	if c.Command == "" {
-		c.Command = "kiro"
+		c.Command = "kiro-cli"
 	}
 	if len(c.Args) == 0 {
 		c.Args = []string{"acp"}
