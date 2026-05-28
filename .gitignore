@@ -38,6 +38,8 @@ tmp/
 
 # Local Claude / Kiro state (skills + commands are versioned; runtime state is not)
 .claude/settings.local.json
+.bg-shell/
+.otto/
 
 # E2E artifacts (generated; the SDK source files + pnpm-lock.yaml stay tracked)
 tests/e2e/reports/
