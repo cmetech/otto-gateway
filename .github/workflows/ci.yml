@@ -35,7 +35,7 @@ env:
   # Pinned tool versions. Bump together with the local toolchain.
   GOLANGCI_LINT_VERSION: v1.62.2
   GO_ARCH_LINT_VERSION:  v1.15.0
-  GOVULNCHECK_VERSION:   latest
+  GOVULNCHECK_VERSION:   v1.1.4
 
 jobs:
   lint-test-arch:
