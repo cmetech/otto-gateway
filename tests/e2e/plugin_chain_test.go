@@ -223,8 +223,16 @@ func TestE2E_PIIRedaction_Email(t *testing.T) {
 //
 // Boots the gateway with AUTH_TOKEN=validtoken; sends a request to
 // each surface with Authorization: Bearer wrongtoken; asserts each
-// surface returns its native error envelope (Ollama plain JSON;
-// OpenAI {error:{message,type}}; Anthropic {type:error, error:{...}}).
+// surface returns its native error envelope:
+//   - Ollama: {"error":"<string>"}                                   (flat string field)
+//   - OpenAI: {"error":{"message":"<string>","type":"<string>"}}     (nested object)
+//   - Anthropic: {"type":"error","error":{"type":"<string>","message":"<string>"}}
+//
+// The per-surface JSON shape is asserted by decoding into a typed
+// struct and checking the discriminating keys — substring matches on
+// the literal `"error"` would also fire on Anthropic's outer `"type":
+// "error"` discriminator, so the typed decode is the only correct way
+// to prove each surface renders its own native envelope.
 //
 // Skipped when kiro-cli is unavailable (bootGateway resolution).
 func TestE2E_BadBearer_AllThreeSurfaces(t *testing.T) {
@@ -237,25 +245,58 @@ func TestE2E_BadBearer_AllThreeSurfaces(t *testing.T) {
 		path    string
 		headers map[string]string
 		body    string
-		// errorPath is a JSON path-ish substring the response body
-		// must contain. The full envelope-shape parsing is too
-		// brittle for an e2e assertion; we look for the per-surface
-		// signature.
-		errorSig string
+		// assertEnvelope decodes the response body and asserts the
+		// surface's native error-envelope shape. Each callback uses
+		// the t.Errorf in scope to record per-surface key mismatches.
+		assertEnvelope func(t *testing.T, body []byte)
 	}{
 		{
 			name: "ollama",
 			path: "/api/chat",
 			body: `{"model":"auto","messages":[{"role":"user","content":"hi"}],"stream":false}`,
-			// Ollama renders {"error":"..."} as a flat string field.
-			errorSig: `"error"`,
+			assertEnvelope: func(t *testing.T, body []byte) {
+				// Ollama: {"error":"<string>"} — flat string field.
+				var env struct {
+					Error *string `json:"error"`
+				}
+				if err := json.Unmarshal(body, &env); err != nil {
+					t.Fatalf("ollama: decode envelope: %v; body=%s", err, body)
+				}
+				if env.Error == nil {
+					t.Errorf("ollama: missing top-level \"error\" string field; body=%s", body)
+					return
+				}
+				if *env.Error == "" {
+					t.Errorf("ollama: \"error\" field is empty; body=%s", body)
+				}
+			},
 		},
 		{
 			name: "openai",
 			path: "/v1/chat/completions",
 			body: `{"model":"auto","messages":[{"role":"user","content":"hi"}]}`,
-			// OpenAI nests {"error":{"message":..., "type":...}}.
-			errorSig: `"error"`,
+			assertEnvelope: func(t *testing.T, body []byte) {
+				// OpenAI: {"error":{"message":"...","type":"..."}}.
+				var env struct {
+					Error *struct {
+						Message string `json:"message"`
+						Type    string `json:"type"`
+					} `json:"error"`
+				}
+				if err := json.Unmarshal(body, &env); err != nil {
+					t.Fatalf("openai: decode envelope: %v; body=%s", err, body)
+				}
+				if env.Error == nil {
+					t.Errorf("openai: missing top-level \"error\" object; body=%s", body)
+					return
+				}
+				if env.Error.Message == "" {
+					t.Errorf("openai: error.message empty; body=%s", body)
+				}
+				if env.Error.Type == "" {
+					t.Errorf("openai: error.type empty; body=%s", body)
+				}
+			},
 		},
 		{
 			name: "anthropic",
@@ -264,8 +305,32 @@ func TestE2E_BadBearer_AllThreeSurfaces(t *testing.T) {
 				"anthropic-version": "2023-06-01",
 			},
 			body: `{"model":"auto","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`,
-			// Anthropic renders {"type":"error", "error":{"type":..., "message":...}}.
-			errorSig: `"error"`,
+			assertEnvelope: func(t *testing.T, body []byte) {
+				// Anthropic: {"type":"error","error":{"type":"...","message":"..."}}.
+				var env struct {
+					Type  string `json:"type"`
+					Error *struct {
+						Type    string `json:"type"`
+						Message string `json:"message"`
+					} `json:"error"`
+				}
+				if err := json.Unmarshal(body, &env); err != nil {
+					t.Fatalf("anthropic: decode envelope: %v; body=%s", err, body)
+				}
+				if env.Type != "error" {
+					t.Errorf("anthropic: outer \"type\" got %q, want \"error\"; body=%s", env.Type, body)
+				}
+				if env.Error == nil {
+					t.Errorf("anthropic: missing nested \"error\" object; body=%s", body)
+					return
+				}
+				if env.Error.Type == "" {
+					t.Errorf("anthropic: error.type empty; body=%s", body)
+				}
+				if env.Error.Message == "" {
+					t.Errorf("anthropic: error.message empty; body=%s", body)
+				}
+			},
 		},
 	}
 	for _, tc := range cases {
@@ -292,8 +357,8 @@ func TestE2E_BadBearer_AllThreeSurfaces(t *testing.T) {
 			// SC1 acceptance: the response is a non-2xx with the
 			// surface's native error envelope. The exact status code
 			// is per-surface (Anthropic uses 401; OpenAI uses 401;
-			// Ollama may use 401 or 403); we assert non-2xx and the
-			// error-envelope signature.
+			// Ollama may use 401 or 403); we assert non-2xx and then
+			// decode the per-surface native envelope.
 			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 				t.Errorf("%s: got 2xx (%d), want non-2xx (AuthHook short-circuit)", tc.name, resp.StatusCode)
 			}
@@ -301,10 +366,7 @@ func TestE2E_BadBearer_AllThreeSurfaces(t *testing.T) {
 			if err != nil {
 				t.Fatalf("readBody: %v", err)
 			}
-			body := string(bodyBytes)
-			if !strings.Contains(body, tc.errorSig) {
-				t.Errorf("%s: response missing error signature %q; body=%s", tc.name, tc.errorSig, body)
-			}
+			tc.assertEnvelope(t, bodyBytes)
 		})
 	}
 }
@@ -448,6 +510,69 @@ func TestE2E_EnabledHooks_Filter_PreservesOrder(t *testing.T) {
 	}
 	if second != "LoggingHook" {
 		t.Errorf("Hooks[1].name: got %q, want %q", second, "LoggingHook")
+	}
+}
+
+// TestE2E_EnabledHooks_AuthFilteredOut_Returns200 — Scenario 10
+// (Task 7 step 5b automated). Proves the SC5 allowlist semantics
+// have real teeth: with AuthHook filtered OUT of ENABLED_HOOKS, an
+// unauthenticated request through a surface no longer short-circuits
+// at 401 — the chain skips the auth gate entirely.
+//
+// Boots with AUTH_TOKEN=e2e-token set (default from bootGateway) AND
+// ENABLED_HOOKS=RequestIDHook,LoggingHook (AuthHook deliberately
+// absent). Sends POST /api/chat WITHOUT any Authorization header.
+//
+// Acceptance is asymmetric on purpose: we cannot guarantee a 2xx
+// response (the engine may still reject the request for unrelated
+// reasons — model resolution, kiro warmup, etc.), but we CAN
+// guarantee the response is NOT 401, because the only producer of
+// 401 in the v1 chain is AuthHook (per adapter handler comments at
+// anthropic/handlers.go and openai/errors.go). A 401 here would
+// prove AuthHook ran despite being filtered out — which is exactly
+// the bug this test guards against.
+func TestE2E_EnabledHooks_AuthFilteredOut_Returns200(t *testing.T) {
+	gateOrSkip(t)
+	baseURL, cleanup := bootGateway(t, map[string]string{
+		// AUTH_TOKEN is also stamped by bootGateway's default env;
+		// we restate it here as documentation that the token IS
+		// configured — the only reason a request without a bearer
+		// would succeed is the AuthHook absence, not auth-disabled.
+		"AUTH_TOKEN":    "e2e-token",
+		"ENABLED_HOOKS": "RequestIDHook,LoggingHook",
+	})
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		baseURL+"/api/chat",
+		strings.NewReader(`{"model":"auto","messages":[{"role":"user","content":"hi"}],"stream":false}`))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	// Deliberately NO Authorization header. With AuthHook in the chain
+	// this would short-circuit at 401; with AuthHook filtered out the
+	// request must flow past the auth gate.
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	bodyBytes, _ := readBody(resp)
+	if resp.StatusCode == http.StatusUnauthorized {
+		t.Errorf("got 401 with AuthHook filtered out via ENABLED_HOOKS — AuthHook still firing? body=%s", bodyBytes)
+	}
+	// Belt-and-suspenders: the response body must NOT contain an
+	// AuthHook-shaped envelope. The discriminator is the OpenAI/
+	// Anthropic auth-error type literal (Ollama's auth envelope is a
+	// plain {"error":"<string>"} that we cannot distinguish from a
+	// generic engine error by shape alone, so we rely on the status
+	// assertion above).
+	if strings.Contains(string(bodyBytes), `"authentication_error"`) {
+		t.Errorf("body contains \"authentication_error\" with AuthHook filtered out; body=%s", bodyBytes)
 	}
 }
 
