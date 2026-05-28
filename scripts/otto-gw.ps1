@@ -132,7 +132,8 @@ function Initialize-Config {
 function Preflight-Kiro {
     $kiro = $env:KIRO_CMD
     if (-not $kiro) {
-        $found = (Get-Command kiro -ErrorAction SilentlyContinue).Source
+        $cmd = Get-Command kiro -ErrorAction SilentlyContinue
+        $found = if ($cmd) { $cmd.Source } else { $null }
         if ($found) {
             $env:KIRO_CMD = $found
             Write-Host "  ✓  KIRO_CMD auto-detected: $found" -ForegroundColor DarkGray
@@ -325,7 +326,8 @@ function Invoke-Init {
     # Resolve KIRO_CMD.
     $kiroValue = $Kiro
     if (-not $kiroValue -and -not $NonInteractive) {
-        $kiroDefault = (Get-Command kiro -ErrorAction SilentlyContinue).Source
+        $cmd = Get-Command kiro -ErrorAction SilentlyContinue
+        $kiroDefault = if ($cmd) { $cmd.Source } else { $null }
         $prompt = if ($kiroDefault) { "  kiro-cli path [$kiroDefault]" } else { "  kiro-cli path [press Enter to leave unset]" }
         $entered = Read-Host $prompt
         $kiroValue = if ($entered) { $entered } else { $kiroDefault }
