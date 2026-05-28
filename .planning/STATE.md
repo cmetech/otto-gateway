@@ -1,10 +1,10 @@
 ---
 gsd_state_version: 1.0
 milestone: v1.5
-milestone_name: milestone
-status: complete
-last_updated: "2026-05-28T13:39:04.797Z"
-last_activity: 2026-05-28 -- Phase 9 closed via /gsd-quick (260528-d84); v1.5 milestone complete
+milestone_name: audit WARNINGs
+status: planning
+last_updated: "2026-05-28T16:23:33.579Z"
+last_activity: 2026-05-28 -- v1.5 milestone audit complete (gaps_found); Phase 8.1 inserted
 progress:
   total_phases: 11
   completed_phases: 10
@@ -24,11 +24,11 @@ See: .planning/PROJECT.md (updated 2026-05-23)
 
 ## Current Position
 
-Phase: 9 (Distribution + Trust-gate gating) — COMPLETE
-Plan: n/a (closed via /gsd-quick 260528-d84)
-Status: v1.5 milestone complete — ready for `/gsd-audit-milestone` + `/gsd-complete-milestone`
-Next: `/gsd-audit-milestone` to validate completion against intent; then `/gsd-complete-milestone` to archive and start v1.6
-Last activity: 2026-05-28 -- Phase 08 execution started
+Phase: 8.1 (URGENT INSERTED — close gap INTEG-01 streaming PreHook short-circuit + v1.5 audit WARNINGs)
+Plan: n/a (awaiting `/gsd-plan-phase 8.1`)
+Status: v1.5 audit found gaps — INTEG-01 (BLOCKER) + 4 WARNINGs; closure phase 8.1 inserted; audit report at .planning/v1.5-MILESTONE-AUDIT.md
+Next: `/gsd-discuss-phase 8.1` to gather context, then `/gsd-plan-phase 8.1`, then `/gsd-execute-phase 8.1`
+Last activity: 2026-05-28 -- v1.5 milestone audit complete (gaps_found); Phase 8.1 inserted
 
 Progress: [░░░░░░░░░░] 0%
 
@@ -67,6 +67,7 @@ Progress: [░░░░░░░░░░] 0%
 - Phase 8 edited: edited fields: goal, requirements (+PLUG-06), success_criteria (+SC6 PIIRedactionHook)
 - Phase 8 edited: edited fields: requirements (+OBSV-04), success_criteria (+SC7 GET /health/hooks view-only)
 - Phase 6.1 inserted after Phase 6: Admin Observability UI — dark-mode /admin page rendering /health + /health/agents with brand palette; auto-refresh polling; live log tail nice-to-have (URGENT)
+- Phase 8.1 inserted after Phase 8: Close gap: INTEG-01 streaming-mode PreHook short-circuit + v1.5 audit WARNINGs (URGENT)
 
 ### Decisions
 
@@ -109,6 +110,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-05-27T22:45:45.771Z
-Stopped at: Phase 6.1 plans approved (verification passed)
-Resume file: .planning/phases/06.1-admin-observability-ui/06.1-01-PLAN.md
+Last session: 2026-05-28T16:23:33.573Z
+Stopped at: Phase 08.1 context gathered
+Resume file: .planning/phases/08.1-close-gap-integ-01-streaming-mode-prehook-short-circuit-v1-5/08.1-CONTEXT.md
