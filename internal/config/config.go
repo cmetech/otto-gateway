@@ -107,6 +107,45 @@ type Config struct {
 	// SESSION_TICK_INTERVAL_MS via getEnvDuration (accepts ms-integer
 	// OR Go duration string).
 	SessionTickInterval time.Duration
+
+	// EnabledHooks is the comma-split allowlist of hook type names enabled
+	// at boot (Phase 8 D-02). Default empty = all hooks in the chain
+	// enabled (matches AUTH_TOKEN semantics — permissive default). A name
+	// NOT present in main.go's chain literal causes chain.Filter to return
+	// an error at boot (typo-fail-fast — the load-bearing case is
+	// ENABLED_HOOKS=PIIRedaction silently disabling PII redaction by
+	// missing the "Hook" suffix). Note: typo validation happens at
+	// chain.Filter in main.go (it needs the runtime chain to know what's
+	// valid); config.Load only parses the SHAPE. Loaded from ENABLED_HOOKS.
+	EnabledHooks []string
+
+	// PIIRedactionEnabled controls whether PIIRedactionHook does WORK when
+	// invoked (Phase 8 D-02 two-knob model). Composes with EnabledHooks:
+	// ENABLED_HOOKS controls whether the hook IS in the chain at all;
+	// PII_REDACTION_ENABLED controls whether the hook does work when
+	// invoked. Default false (operator must explicitly opt in to PII
+	// scrubbing). Loaded from PII_REDACTION_ENABLED.
+	PIIRedactionEnabled bool
+
+	// PIIEnabledEntities is the comma-split list of recognizer Names that
+	// PIIRedactionHook applies. Empty = all six recognizers active. An
+	// unknown name causes Load() to return an error (typo-fail-fast).
+	// Loaded from PII_ENABLED_ENTITIES.
+	PIIEnabledEntities []string
+
+	// PIIRedactionMode is "replace" | "mask" | "hash" | "drop" (Phase 8
+	// D-05). Default "replace". An unknown value causes Load() to return
+	// an error. mode=hash with empty PIIHashKey is ALSO a boot error
+	// (T-8-HASH-BOOT mitigation — RESEARCH Pitfall 6; no silent unkeyed
+	// HMAC fallback). Loaded from PII_REDACTION_MODE.
+	PIIRedactionMode string
+
+	// PIIHashKey is the HMAC-SHA256 key for PII_REDACTION_MODE=hash
+	// (Phase 8 D-05). Required when Mode=="hash"; otherwise unused.
+	// Loaded from PII_HASH_KEY. Rotating this key invalidates prior
+	// correlation tokens (intentional — key-rotation tool for suspected
+	// log leak; documented in docs/operating.md).
+	PIIHashKey string
 }
 
 // LogLevel returns the slog.Level implied by the Debug flag.
@@ -196,6 +235,35 @@ func Load() (Config, error) {
 		errs = append(errs, err)
 	}
 
+	// Phase 8 D-02 / D-05: five new env keys for the plugin chain.
+	// ENABLED_HOOKS shape-only (chain.Filter does the typo check at
+	// boot — see main.go). PII_* knobs validated here for shape +
+	// mode-hash-requires-key invariant.
+	enabledHooks := getEnvStrSliceComma("ENABLED_HOOKS", nil)
+
+	piiEnabled, err := getEnvBool("PII_REDACTION_ENABLED", false)
+	if err != nil {
+		errs = append(errs, err)
+	}
+
+	piiEntities := getEnvStrSliceComma("PII_ENABLED_ENTITIES", nil)
+	if err := validatePIIEntities(piiEntities); err != nil {
+		errs = append(errs, fmt.Errorf("PII_ENABLED_ENTITIES: %w", err))
+	}
+
+	piiMode := getEnvStr("PII_REDACTION_MODE", "replace")
+	if err := validatePIIMode(piiMode); err != nil {
+		errs = append(errs, fmt.Errorf("PII_REDACTION_MODE: %w", err))
+	}
+
+	piiHashKey := getEnvStr("PII_HASH_KEY", "")
+	// D-05 / Pitfall 6 / T-8-HASH-BOOT: mode=hash with empty key →
+	// refuse to start. No silent unkeyed HMAC fallback (which would be
+	// rainbow-table-trivial).
+	if piiMode == "hash" && piiHashKey == "" {
+		errs = append(errs, fmt.Errorf("PII_REDACTION_MODE=hash requires PII_HASH_KEY"))
+	}
+
 	if len(errs) > 0 {
 		return Config{}, fmt.Errorf("config: invalid env vars: %w", errors.Join(errs...))
 	}
@@ -218,6 +286,11 @@ func Load() (Config, error) {
 		SessionTTL:          sessionTTL,
 		SessionMax:          sessionMax,
 		SessionTickInterval: sessionTickInterval,
+		EnabledHooks:        enabledHooks,
+		PIIRedactionEnabled: piiEnabled,
+		PIIEnabledEntities:  piiEntities,
+		PIIRedactionMode:    piiMode,
+		PIIHashKey:          piiHashKey,
 	}, nil
 }
 
@@ -361,6 +434,61 @@ func splitCommaTrim(v string) []string {
 		}
 	}
 	return out
+}
+
+// validatePIIMode rejects unknown PII_REDACTION_MODE values fail-fast
+// with a clear error naming both the offending value and the four
+// accepted modes (Phase 8 D-05 typo-fail-fast).
+//
+// Allowed: "replace" | "mask" | "hash" | "drop". The four-mode set is
+// hand-coded here rather than imported from internal/plugin/pii because
+// (a) the set is part of the env-var contract operators see, so it is
+// owned by config; (b) doing so avoids a config→plugin_pii arch-lint
+// edge (TRST-04 boundary stays clean — config is upstream of the
+// plugin layer in the dep graph).
+func validatePIIMode(m string) error {
+	switch m {
+	case "replace", "mask", "hash", "drop":
+		return nil
+	default:
+		return fmt.Errorf("unknown mode %q (allowed: replace, mask, hash, drop)", m)
+	}
+}
+
+// validatePIIEntities rejects any name not in the canonical six-entity
+// recognizer set (Email, IPv4, IPv6, SSN, CreditCard, USPhone). Empty
+// input returns nil (default = all entities active per D-02).
+//
+// The allowlist is hand-coded here for the same TRST-04 / arch-lint
+// reason as validatePIIMode — the six entity names are part of the
+// env-var contract surfaced to operators in docs/operating.md. When
+// internal/plugin/pii/recognizers.go ships a new recognizer, the
+// docstring there + this validator + the operator docs all change
+// together (intentional triple-check). Drift would surface as
+// TestLoad_PIIEnabledEntities_Parsing failing if a new entity is
+// shipped without updating this list.
+func validatePIIEntities(names []string) error {
+	if len(names) == 0 {
+		return nil
+	}
+	allowed := map[string]struct{}{
+		"Email":      {},
+		"IPv4":       {},
+		"IPv6":       {},
+		"SSN":        {},
+		"CreditCard": {},
+		"USPhone":    {},
+	}
+	var errs []error
+	for _, n := range names {
+		if _, ok := allowed[n]; !ok {
+			errs = append(errs, fmt.Errorf("unknown entity %q (allowed: Email, IPv4, IPv6, SSN, CreditCard, USPhone)", n))
+		}
+	}
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	return nil
 }
 
 // validateEnabledSurfaces checks every entry in surfaces against the
