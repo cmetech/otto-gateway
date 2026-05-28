@@ -48,6 +48,10 @@ dist/
 
 # Local Claude / Kiro state (skills + commands are versioned; runtime state is not)
 .claude/settings.local.json
+# Subagent worktree isolation state — created when Claude Code spawns
+# Agent calls with isolation="worktree". These are throwaway git worktrees
+# that get reaped on shutdown; never commit them.
+.claude/worktrees/
 .bg-shell/
 .otto/
 
