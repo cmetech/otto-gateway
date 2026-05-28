@@ -124,22 +124,22 @@ function Initialize-Config {
 }
 
 # Preflight-Kiro resolves KIRO_CMD before the gateway launches:
-#   1. If unset → auto-detect 'kiro' on PATH and silently set
+#   1. If unset → auto-detect 'kiro-cli' on PATH and silently set
 #      $env:KIRO_CMD. Surfaces a brief "auto-detected" line.
 #   2. If set but doesn't resolve → warn (don't abort).
 #   3. If set and resolves → silent (happy path).
-# Degraded boot is non-fatal — /health endpoints work without kiro.
+# Degraded boot is non-fatal — /health endpoints work without kiro-cli.
 function Preflight-Kiro {
     $kiro = $env:KIRO_CMD
     if (-not $kiro) {
-        $cmd = Get-Command kiro -ErrorAction SilentlyContinue
+        $cmd = Get-Command kiro-cli -ErrorAction SilentlyContinue
         $found = if ($cmd) { $cmd.Source } else { $null }
         if ($found) {
             $env:KIRO_CMD = $found
             Write-Host "  ✓  KIRO_CMD auto-detected: $found" -ForegroundColor DarkGray
             return
         }
-        Write-Host "  ⚠  KIRO_CMD is unset and 'kiro' is not on PATH — gateway will boot but chat requests will return 503." -ForegroundColor Yellow
+        Write-Host "  ⚠  KIRO_CMD is unset and 'kiro-cli' is not on PATH — gateway will boot but chat requests will return 503." -ForegroundColor Yellow
         Write-Host "     Install kiro-cli OR set KIRO_CMD in your .env (or shell)." -ForegroundColor Yellow
         return
     }
@@ -326,7 +326,7 @@ function Invoke-Init {
     # Resolve KIRO_CMD.
     $kiroValue = $Kiro
     if (-not $kiroValue -and -not $NonInteractive) {
-        $cmd = Get-Command kiro -ErrorAction SilentlyContinue
+        $cmd = Get-Command kiro-cli -ErrorAction SilentlyContinue
         $kiroDefault = if ($cmd) { $cmd.Source } else { $null }
         $prompt = if ($kiroDefault) { "  kiro-cli path [$kiroDefault]" } else { "  kiro-cli path [press Enter to leave unset]" }
         $entered = Read-Host $prompt

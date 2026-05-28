@@ -149,14 +149,14 @@ load_config() {
 }
 
 # preflight_kiro resolves KIRO_CMD before the gateway launches:
-#   1. If KIRO_CMD is unset → auto-detect `kiro` on PATH and silently
+#   1. If KIRO_CMD is unset → auto-detect `kiro-cli` on PATH and silently
 #      set KIRO_CMD. Surfaces a brief "auto-detected" line so the
 #      operator sees what just happened without having to inspect
 #      /api/version or the log.
 #   2. If KIRO_CMD is set but doesn't resolve → warn (don't abort).
 #   3. If KIRO_CMD is set and resolves → silent (happy path).
 #
-# Degraded boot (no kiro found) is non-fatal because /health,
+# Degraded boot (no kiro-cli found) is non-fatal because /health,
 # /health/hooks, and /health/pool all work without it — operators may
 # genuinely want a diagnostic-only run. Returns 0 always.
 preflight_kiro() {
@@ -165,19 +165,19 @@ preflight_kiro() {
         # Auto-detect before warning. command -v handles both absolute
         # paths (a hash-table lookup miss) and PATH resolution.
         local found
-        found="$(command -v kiro 2>/dev/null || true)"
+        found="$(command -v kiro-cli 2>/dev/null || true)"
         if [[ -n "$found" ]]; then
             export KIRO_CMD="$found"
             echo "  ✓  KIRO_CMD auto-detected: $found"
             return 0
         fi
-        echo "  ⚠  KIRO_CMD is unset and 'kiro' is not on PATH — gateway will boot but chat requests will return 503." >&2
+        echo "  ⚠  KIRO_CMD is unset and 'kiro-cli' is not on PATH — gateway will boot but chat requests will return 503." >&2
         echo "     Install kiro-cli OR set KIRO_CMD in your .env (or shell)." >&2
         return 0
     fi
     # KIRO_CMD is set — validate it resolves to an executable. Try as
-    # absolute path first (covers KIRO_CMD=/abs/path/to/kiro); fall
-    # back to PATH resolution (covers KIRO_CMD=kiro).
+    # absolute path first (covers KIRO_CMD=/abs/path/to/kiro-cli); fall
+    # back to PATH resolution (covers KIRO_CMD=kiro-cli).
     if [[ -x "$kiro" ]] || command -v "$kiro" >/dev/null 2>&1; then
         return 0
     fi
@@ -419,10 +419,10 @@ init_cmd() {
     local hash_key="$arg_hash_key"
     [[ -z "$hash_key" ]] && hash_key="$(gen_random_hex 32)"
 
-    # Resolve KIRO_CMD — flag → interactive prompt → suggest `command -v kiro`.
+    # Resolve KIRO_CMD — flag → interactive prompt → suggest `command -v kiro-cli`.
     local kiro_cmd="$arg_kiro"
     if [[ -z "$kiro_cmd" && "$non_interactive" -ne 1 ]]; then
-        local kiro_default; kiro_default="$(command -v kiro 2>/dev/null || true)"
+        local kiro_default; kiro_default="$(command -v kiro-cli 2>/dev/null || true)"
         read -r -p "  kiro-cli path [${kiro_default:-press Enter to leave unset}]: " kiro_cmd
         [[ -z "$kiro_cmd" ]] && kiro_cmd="$kiro_default"
     fi
