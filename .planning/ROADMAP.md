@@ -317,6 +317,7 @@ Plans:
 **Requirements:** OBSV-* (no new IDs — surfaces existing `/health`, `/health/agents` data through HTML/CSS)
 
 **Brand palette** (from `oscar-adminui/src/layouts/UserThemeOptions.js` `customColors`):
+
 - Primary accent: `#FAD22D` (brand yellow/gold)
 - Body background: `#28243D` (dark purple-navy)
 - Card/paper surface: `#3A3A3A`
@@ -377,12 +378,22 @@ Plans:
 **Requirements**: PLUG-02, PLUG-04, PLUG-06, STRM-01, STRM-02, ANTH-01, ANTH-02, AUTH-01, AUTH-02, OBSV-04, TRST-01, TRST-02, TRST-03, TRST-04, TRST-05, TRST-06, TRST-07, TRST-08, BLD-03
 **Depends on:** Phase 8
 **Plans:** 5 plans
-
 Plans:
+**Wave 1**
+
 - [ ] 08.1-01-PLAN.md — Slice A integration: add ShortCircuitResponse to ollama+openai RunHandle interfaces, forward through main.go shims, propagate test-fake stubs, insert short-circuit guards in all four streaming handler sites (atomic commit)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 08.1-02-PLAN.md — Slice A tests: four adapter-level streaming short-circuit tests (Ollama×2 per Pitfall 6, OpenAI×1, Anthropic×1) plus three new stream:true rows on TestE2E_BadBearer_AllThreeSurfaces
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
 - [ ] 08.1-03-PLAN.md — Slice B WARNING-01: explicit fmt-check/vet/build/examples targets in Makefile and the canonical brief §3.12 sequence in .github/workflows/ci.yml
 - [ ] 08.1-04-PLAN.md — Slice B WARNING-02 + WARNING-04 docs: Security carve-outs annotation in PROJECT.md and Auth posture quick reference subsection in docs/operating.md
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
 - [ ] 08.1-05-PLAN.md — Slice B WARNING-03 broad refresh: add PLUG-06 + OBSV-04 rows, correct coverage comment, flip ~50 checkboxes per audit Final Status, annotate AUTH-01/02 with carve-out language (D-15 + D-17)
 
 ### Phase 9: Distribution

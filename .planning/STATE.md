@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.5
 milestone_name: audit WARNINGs
-status: planning
-last_updated: "2026-05-28T16:23:33.579Z"
-last_activity: 2026-05-28 -- v1.5 milestone audit complete (gaps_found); Phase 8.1 inserted
+status: executing
+last_updated: "2026-05-28T17:03:10.366Z"
+last_activity: 2026-05-28 -- Phase 08.1 planning complete
 progress:
-  total_phases: 11
-  completed_phases: 10
-  total_plans: 49
-  completed_plans: 44
-  percent: 91
+  total_phases: 2
+  completed_phases: 0
+  total_plans: 5
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
@@ -26,9 +26,9 @@ See: .planning/PROJECT.md (updated 2026-05-23)
 
 Phase: 8.1 (URGENT INSERTED — close gap INTEG-01 streaming PreHook short-circuit + v1.5 audit WARNINGs)
 Plan: n/a (awaiting `/gsd-plan-phase 8.1`)
-Status: v1.5 audit found gaps — INTEG-01 (BLOCKER) + 4 WARNINGs; closure phase 8.1 inserted; audit report at .planning/v1.5-MILESTONE-AUDIT.md
+Status: Ready to execute
 Next: `/gsd-discuss-phase 8.1` to gather context, then `/gsd-plan-phase 8.1`, then `/gsd-execute-phase 8.1`
-Last activity: 2026-05-28 -- v1.5 milestone audit complete (gaps_found); Phase 8.1 inserted
+Last activity: 2026-05-28 -- Phase 08.1 planning complete
 
 Progress: [░░░░░░░░░░] 0%
 
