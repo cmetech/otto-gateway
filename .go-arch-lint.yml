@@ -149,6 +149,13 @@ deps:
     mayDependOn:
       - canonical
       - plugin
+      - engine  # Phase 8 PLUG-06 / 08-04 Task 5: PIIRedactionHook
+                # implements engine.PreHook (compile-time assertion
+                # `var _ engine.PreHook = (*PIIRedactionHook)(nil)`).
+                # Implementing engine.PreHook without depending on
+                # the engine package is impossible in Go, so the dep
+                # is honest. Mirrors the parent `plugin` component's
+                # rationale for the same edge.
   pool:
     anyVendorDeps: true
     mayDependOn:
