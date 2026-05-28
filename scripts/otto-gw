@@ -26,7 +26,11 @@ set -euo pipefail
 
 OTTO_BIN="${OTTO_BIN:-./bin/otto-gateway}"
 OTTO_PID="${OTTO_PID:-/tmp/otto-gateway.pid}"
-OTTO_LOG="${OTTO_LOG:-/tmp/otto-gateway.log}"
+# OTTO_LOG = the structured rotated log the gateway owns (via timberjack).
+# OTTO_LOG_BOOT = a small sidecar that captures crash output + kiro-cli
+# stderr + any pre-logger panic — rarely consulted, invaluable on incident.
+OTTO_LOG="${OTTO_LOG:-./logs/otto-gateway.log}"
+OTTO_LOG_BOOT="${OTTO_LOG_BOOT:-${OTTO_LOG%.log}-boot.log}"
 OTTO_ADDR="${OTTO_ADDR:-http://localhost:18080}"
 
 # Default .env search order. First hit wins; --env-file or OTTO_ENV_FILE overrides.
@@ -150,6 +154,13 @@ start() {
         rm -f "$OTTO_PID"
     fi
     load_config
+    # Ensure the log directory exists — supports the packaged layout
+    # (otto_gateway/logs/) and any custom OTTO_LOG path the operator set.
+    local log_dir
+    log_dir="$(dirname "$OTTO_LOG")"
+    if [[ -n "$log_dir" && "$log_dir" != "." ]]; then
+        mkdir -p "$log_dir"
+    fi
     # Gateway env vars are inherited from the current environment
     # automatically — no explicit forwarding needed. Documented set:
     #   KIRO_CMD, KIRO_ARGS, KIRO_CWD           — kiro-cli subprocess wiring
@@ -161,9 +172,16 @@ start() {
     #   ENABLED_HOOKS, PII_REDACTION_ENABLED,   — Phase 8 hook chain knobs
     #   PII_ENABLED_ENTITIES, PII_REDACTION_MODE,
     #   PII_HASH_KEY
-    nohup "$OTTO_BIN" >> "$OTTO_LOG" 2>&1 &
+    #   LOG_FILE                                — daily-rotated log path (timberjack)
+    # LOG_FILE points the gateway's structured slog output at the rotated
+    # log. nohup's redirect then captures only stderr / pre-logger output /
+    # crash trails into the small boot sidecar.
+    export LOG_FILE="$OTTO_LOG"
+    nohup "$OTTO_BIN" >> "$OTTO_LOG_BOOT" 2>&1 &
     echo $! > "$OTTO_PID"
     echo "otto-gateway started (PID $(cat "$OTTO_PID"))"
+    echo "  log:      $OTTO_LOG (rotated daily, 7d retention)"
+    echo "  boot/err: $OTTO_LOG_BOOT"
 }
 
 stop() {

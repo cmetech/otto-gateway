@@ -35,6 +35,12 @@ private.*
 # Caches / temp
 tmp/
 .tmp/
+
+# Runtime log directory — rotated by the gateway via timberjack.
+# Keep the directory in the tree (so the packaged layout works on fresh
+# clones) but ignore the contents.
+logs/*
+!logs/.gitkeep
 **/temp/
 
 # Local Claude / Kiro state (skills + commands are versioned; runtime state is not)

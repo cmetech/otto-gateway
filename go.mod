@@ -8,3 +8,8 @@ require (
 )
 
 require github.com/oklog/ulid/v2 v2.1.1
+
+require (
+	github.com/DeRuina/timberjack v1.4.5 // indirect
+	github.com/klauspost/compress v1.17.11 // indirect
+)

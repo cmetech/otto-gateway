@@ -110,33 +110,40 @@ anything you pass via `--pii` / `--hash-key` / etc. wins over both.
 
 ## File Locations
 
+The defaults match the packaged distribution layout (`otto_gateway/`
+extracted from the release tarball/zip). All paths are project-local so
+the same `./scripts/otto-gw` call works from the package root regardless
+of OS.
+
 | File | macOS / Linux default | Windows default |
 |------|-----------------------|-----------------|
 | Binary | `./bin/otto-gateway` | `.\bin\otto-gateway.exe` |
 | PID file | `/tmp/otto-gateway.pid` | `%TEMP%\otto-gateway.pid` |
-| Log file (stdout) | `/tmp/otto-gateway.log` | `%TEMP%\otto-gateway.log` |
-| Log file (stderr) | merged into stdout | `%TEMP%\otto-gateway-err.log` |
+| Structured log (rotated) | `./logs/otto-gateway.log` | `.\logs\otto-gateway.log` |
+| Rotated backups | `./logs/otto-gateway-<timestamp>.log.gz` | `.\logs\otto-gateway-<timestamp>.log.gz` |
+| Boot/crash sidecar | `./logs/otto-gateway-boot.log` (stdout+stderr) | `.\logs\otto-gateway.boot-out.log` + `.boot-err.log` |
 
-On macOS/Linux, stdout and stderr are both redirected to the single log
-file via `nohup ... >> $OTTO_LOG 2>&1`. On Windows, `Start-Process`
-cannot redirect both streams to the same file, so stdout and stderr go
-to separate files. The `logs` subcommand tails both files simultaneously
-using background jobs.
+The gateway owns the structured log file directly via timberjack
+(daily rotation, 7-day retention, gzip). The boot sidecar captures
+only pre-logger output and stderr (kiro-cli subprocess + Go panics) —
+it's small and rarely consulted, but invaluable on incident.
 
 ## Environment Variable Overrides
 
-These variables control the wrapper scripts. Set them in your shell
-before calling the script.
+These variables control the wrapper scripts. Set them in your shell,
+your `.env.otto-gw`, or via wrapper flags (see *Gateway config flags*
+above).
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `OTTO_BIN` | `./bin/otto-gateway` (macOS/Linux) / `.\bin\otto-gateway.exe` (Windows) | Path to the gateway binary |
 | `OTTO_PID` | `/tmp/otto-gateway.pid` (macOS/Linux) / `%TEMP%\otto-gateway.pid` (Windows) | PID file location |
-| `OTTO_LOG` | `/tmp/otto-gateway.log` (macOS/Linux) / `%TEMP%\otto-gateway.log` (Windows) | Log file location (stdout) |
-| `OTTO_LOGERR` | `%TEMP%\otto-gateway-err.log` | Stderr log file location — Windows only; not applicable on macOS/Linux where stderr is merged into stdout |
-| `OTTO_ADDR` | `http://localhost:18080` | Gateway address used by the `status` subcommand for the `/health` probe |
+| `OTTO_LOG` | `./logs/otto-gateway.log` | Structured log file path. Auto-exported to the binary as `LOG_FILE` for daily timberjack rotation. |
+| `OTTO_LOG_BOOT` | `${OTTO_LOG%.log}-boot.log` (POSIX) | Boot/crash sidecar that captures the gateway's stderr (kiro-cli + panics). |
+| `OTTO_LOGOUT` / `OTTO_LOGERR` | `<log>.boot-out.log` / `<log>.boot-err.log` (Windows) | Boot sidecars (Windows requires separate stdout / stderr files). |
+| `OTTO_ADDR` | `http://localhost:18080` | Gateway address used by the `status` subcommand for the `/health` probe. |
 
-Example — redirect logs to a project-specific directory:
+Example — point logs at a project-specific directory:
 
 ```bash
 export OTTO_LOG=~/Projects/otto/gateway.log
@@ -300,22 +307,49 @@ is a single JSON object with keys `time`, `level`, `msg`, and
 request-scoped keys (`request_id`, `method`, `path`, `status`,
 `duration`).
 
-Viewing logs:
+### File layout
+
+| File | Default path | Role |
+|------|-------------|------|
+| Structured log | `./logs/otto-gateway.log` | Daily-rotated JSON (`LOG_FILE` env). The file the admin UI tails and the one operators read. |
+| Rotated backups | `./logs/otto-gateway-2026-05-28T00-00-00.log.gz` | One per day; up to 7 retained; gzip-compressed. |
+| Boot/crash sidecar (POSIX) | `./logs/otto-gateway-boot.log` | Captures stderr — kiro-cli subprocess output, pre-logger errors, Go runtime panics. |
+| Boot sidecars (Windows) | `./logs/otto-gateway.boot-out.log` + `.boot-err.log` | Same role; Windows requires separate stdout / stderr redirection files. |
+
+Override the structured log path with `OTTO_LOG` (wrapper) or `LOG_FILE`
+(direct binary invocation). The wrapper auto-exports `LOG_FILE=$OTTO_LOG`
+and `mkdir -p $(dirname $OTTO_LOG)` on `start`.
+
+### Rotation contract
+
+- **Trigger:** `00:00` local time (daily). No size-based rotation in v1.
+- **Retention:** 7 days. Files older than 7 days are pruned automatically by timberjack's mill goroutine.
+- **Compression:** gzip on the rotated backup.
+- **Filename pattern:** `<base>-<timestamp>.<ext>.gz` (timberjack default).
+- **Live tail safety:** the admin UI's tailer uses `os.Stat` + `os.SameFile` to detect the inode change on rotation and reopens the new active file at EOF without dropping the connection. Verified by `TestAdmin_TailerSurvivesTimberjackRotate`.
+
+### Viewing logs
 
 ```bash
-./scripts/otto-gw logs        # last 50 lines (macOS/Linux)
-./scripts/otto-gw logs -f     # follow (macOS/Linux)
-.\scripts\otto-gw.ps1 logs    # tail both stdout + stderr (Windows)
+./scripts/otto-gw logs        # last 50 lines of the structured log
+./scripts/otto-gw logs -f     # follow the structured log
+
+# Crash diagnostics:
+tail -f ./logs/otto-gateway-boot.log    # macOS/Linux
 ```
 
-On macOS/Linux, stdout and stderr are merged into a single file, so
-`logs` shows all output. On Windows, `logs` tails both
-`%TEMP%\otto-gateway.log` and `%TEMP%\otto-gateway-err.log`
-simultaneously.
+```powershell
+.\scripts\otto-gw.ps1 logs    # follow the structured log (Windows)
+# Crash diagnostics — paths printed at start time and visible in `logs` output:
+Get-Content -Wait .\logs\otto-gateway.boot-err.log
+```
 
-> **Note:** Log files are not rotated. For extended development
-> sessions, truncate manually: `> /tmp/otto-gateway.log` (macOS/Linux)
-> or `Clear-Content $env:TEMP\otto-gateway.log` (Windows).
+### Direct-binary behavior (no wrapper)
+
+Running `./bin/otto-gateway` without `LOG_FILE` keeps the legacy stdout
+JSON behavior — useful for `make run`, ad-hoc dev, and the e2e suite
+(which captures stdout). Set `LOG_FILE=./logs/otto-gateway.log` to
+enable rotation when invoking the binary directly.
 
 ## Admin Observability UI
 

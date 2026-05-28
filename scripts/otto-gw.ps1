@@ -41,9 +41,16 @@ $ErrorActionPreference = 'Stop'
 
 $BinPath    = if ($env:OTTO_BIN)    { $env:OTTO_BIN }    else { ".\bin\otto-gateway.exe" }
 $PidFile    = if ($env:OTTO_PID)    { $env:OTTO_PID }    else { "$env:TEMP\otto-gateway.pid" }
-$LogFile    = if ($env:OTTO_LOG)    { $env:OTTO_LOG }    else { "$env:TEMP\otto-gateway.log" }
-# stdout and stderr MUST be separate files: Start-Process cannot redirect both to the same file.
-$LogErrFile = if ($env:OTTO_LOGERR) { $env:OTTO_LOGERR } else { "$env:TEMP\otto-gateway-err.log" }
+# $LogFile = structured rotated log the gateway owns via timberjack
+# (LOG_FILE env, daily rotation, 7-day retention).
+$LogFile    = if ($env:OTTO_LOG)    { $env:OTTO_LOG }    else { ".\logs\otto-gateway.log" }
+# Start-Process requires separate files for stdout / stderr redirection
+# AND cannot share a single file across the two streams. Both sidecars
+# here capture only pre-logger / kiro-cli / crash output; stdout sidecar
+# stays essentially empty in normal operation since LOG_FILE routes all
+# structured slog output to $LogFile.
+$LogBootOut = if ($env:OTTO_LOGOUT) { $env:OTTO_LOGOUT } else { [System.IO.Path]::ChangeExtension($LogFile, '.boot-out.log') }
+$LogBootErr = if ($env:OTTO_LOGERR) { $env:OTTO_LOGERR } else { [System.IO.Path]::ChangeExtension($LogFile, '.boot-err.log') }
 $Addr       = if ($env:OTTO_ADDR)   { $env:OTTO_ADDR }   else { "http://localhost:18080" }
 
 $DefaultEnvPaths = @(".\.env.otto-gw", "$env:USERPROFILE\.otto-gw.env")
@@ -113,6 +120,12 @@ function Start-Gateway {
         Remove-Item $PidFile
     }
     Initialize-Config
+    # Ensure log directory exists — supports packaged layout and any
+    # operator OTTO_LOG override.
+    $logDir = Split-Path -Parent $LogFile
+    if ($logDir -and -not (Test-Path $logDir)) {
+        New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+    }
     # Gateway env vars are inherited from the current environment
     # automatically — Start-Process inherits parent env by default.
     # Documented set:
@@ -125,16 +138,23 @@ function Start-Gateway {
     #   ENABLED_HOOKS, PII_REDACTION_ENABLED,   — Phase 8 hook chain knobs
     #   PII_ENABLED_ENTITIES, PII_REDACTION_MODE,
     #   PII_HASH_KEY
+    #   LOG_FILE                                — daily-rotated log path (timberjack)
+    # LOG_FILE points the gateway's structured slog output at the rotated
+    # log. The Start-Process sidecars then capture only stderr / pre-
+    # logger output / crash trails.
+    $env:LOG_FILE = $LogFile
     # -NoNewWindow: prevents a console popup (Pitfall 8 in RESEARCH.md).
     # -PassThru: returns the Process object so we can capture its PID.
     $proc = Start-Process `
         -FilePath $BinPath `
-        -RedirectStandardOutput $LogFile `
-        -RedirectStandardError $LogErrFile `
+        -RedirectStandardOutput $LogBootOut `
+        -RedirectStandardError $LogBootErr `
         -NoNewWindow `
         -PassThru
     $proc.Id | Set-Content $PidFile
     Write-Host "otto-gateway started (PID $($proc.Id))"
+    Write-Host "  log:      $LogFile (rotated daily, 7d retention)"
+    Write-Host "  boot/err: $LogBootErr"
 }
 
 function Stop-Gateway {
@@ -181,16 +201,11 @@ function Restart-Gateway {
 }
 
 function Get-Logs {
-    # Tail BOTH stdout and stderr simultaneously (Gemini MEDIUM fix / consensus).
-    # Start-Process cannot redirect stdout and stderr to the same file, so they
-    # are in separate files. Use background jobs to tail both concurrently.
-    $j1 = Start-Job { Get-Content -Wait $using:LogFile }
-    $j2 = Start-Job { Get-Content -Wait $using:LogErrFile }
-    try {
-        Wait-Job $j1, $j2 | Receive-Job -Wait
-    } finally {
-        Remove-Job $j1, $j2 -Force
-    }
+    # Tail the structured rotated log. The two boot sidecars are
+    # diagnostics-only (crash + kiro-cli stderr) — operators rarely
+    # need to watch them live; surface their paths instead.
+    Write-Host "(boot sidecars: $LogBootOut, $LogBootErr)" -ForegroundColor DarkGray
+    Get-Content -Wait $LogFile
 }
 
 function Invoke-Run {

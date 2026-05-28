@@ -31,8 +31,12 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"slices"
+	"strings"
 	"time"
+
+	"github.com/DeRuina/timberjack"
 
 	"otto-gateway/internal/adapter/anthropic"
 	"otto-gateway/internal/adapter/ollama"
@@ -73,7 +77,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	logger := buildLogger(cfg)
+	logger, closeLogger := buildLogger(cfg)
+	defer closeLogger()
 
 	// Auth-mode startup log line (T-02-31 mitigation + Codex H-7
 	// surfaces XFF trust mode so operators see it).
@@ -452,10 +457,12 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 	// rather than exporting server.Server.start; uptime drifts by a few ms,
 	// acceptable per CONTEXT.md.
 	//
-	// Per Pitfall 7: OTTO_LOG defaults to /tmp/otto-gateway.log when unset;
-	// the tailer (wired in Plan 03) handles missing-file gracefully via a
-	// degraded "Waiting for log activity…" UX. Plan 01 does NOT yet start
-	// the tailer — LogPath is populated for forward-compatibility.
+	// Tailer log path resolution (Phase 8 follow-up — log rotation):
+	//   1. LOG_FILE if set (the canonical env the gateway logger writes to)
+	//   2. OTTO_LOG (legacy / wrapper-set path, retained for back-compat)
+	//   3. ./logs/otto-gateway.log (matches the packaged distribution layout)
+	// The tailer's inode-tracking reopen (internal/admin/tail.go) keeps
+	// streaming across timberjack's daily rotation without UI interruption.
 	var adminPoolDetail admin.PoolDetailSource
 	if poolDetailForServer != nil {
 		adminPoolDetail = adminPoolDetailAdapter{src: poolDetailForServer}
@@ -464,6 +471,8 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 	if registryForServer != nil {
 		adminRegistry = adminRegistryAdapter{src: registryForServer}
 	}
+	tailerLogPath := envOrDefault("LOG_FILE",
+		envOrDefault("OTTO_LOG", "./logs/otto-gateway.log"))
 	adminHandler := admin.Handler(admin.Deps{
 		Logger:     logger,
 		Version:    version.Version,
@@ -471,7 +480,7 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 		Start:      time.Now(),
 		PoolDetail: adminPoolDetail,
 		Registry:   adminRegistry,
-		LogPath:    envOrDefault("OTTO_LOG", "/tmp/otto-gateway.log"),
+		LogPath:    tailerLogPath,
 	})
 
 	// Boot log surfaces the resolved surface set so operators see
@@ -689,10 +698,53 @@ func envOrDefault(key, def string) string {
 // buildLogger constructs the root *slog.Logger from the loaded config.
 // D-15: never call slog.SetDefault. Logger is constructed once here and
 // injected everywhere via package Config structs.
-func buildLogger(cfg config.Config) *slog.Logger {
-	return slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: cfg.LogLevel(),
-	}))
+//
+// Output sink is selected by the LOG_FILE env var:
+//   - LOG_FILE unset → write JSON lines to os.Stdout (terminal/dev path;
+//     also the contract the e2e harness depends on for stdout capture).
+//   - LOG_FILE set   → write through a timberjack.Logger with daily
+//     rotation at 00:00 local time and 7 days of compressed backups.
+//
+// The wrapper scripts (scripts/otto-gw, scripts/otto-gw.ps1) auto-set
+// LOG_FILE to ./logs/otto-gateway.log on `start`/`restart` and leave it
+// unset on `run`, so the same binary serves both background and
+// foreground UX without a flag. The returned closer drains and closes
+// any open rotation handles; the caller MUST defer it.
+func buildLogger(cfg config.Config) (*slog.Logger, func()) {
+	noop := func() {}
+	opts := &slog.HandlerOptions{Level: cfg.LogLevel()}
+
+	logFile := strings.TrimSpace(os.Getenv("LOG_FILE"))
+	if logFile == "" {
+		return slog.New(slog.NewJSONHandler(os.Stdout, opts)), noop
+	}
+
+	// Ensure the parent directory exists. The wrapper does this too,
+	// but a direct binary invocation with LOG_FILE=/path/that/dne.log
+	// should not silently lose every log line.
+	if dir := filepath.Dir(logFile); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			// Fall back to stdout rather than silently dropping logs.
+			// The error itself surfaces on first write attempt below.
+			slog.New(slog.NewJSONHandler(os.Stderr, nil)).
+				Warn("LOG_FILE parent mkdir failed; falling back to stdout",
+					"path", logFile, "err", err)
+			return slog.New(slog.NewJSONHandler(os.Stdout, opts)), noop
+		}
+	}
+
+	rotator := &timberjack.Logger{
+		Filename:    logFile,
+		MaxAge:      7,                          // keep 7 days of rotated logs
+		MaxBackups:  0,                          // age-based pruning only
+		LocalTime:   true,                       // laptop-local timestamps
+		Compression: "gzip",                     // compress rotated files
+		RotateAt:    []string{"00:00"},          // daily at local midnight
+		FileMode:    0o644,
+	}
+
+	logger := slog.New(slog.NewJSONHandler(rotator, opts))
+	return logger, func() { _ = rotator.Close() }
 }
 
 // anthropicEngineAdapter wraps a concrete *engine.Engine and adapts
