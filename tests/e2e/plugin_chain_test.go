@@ -234,6 +234,17 @@ func TestE2E_PIIRedaction_Email(t *testing.T) {
 // "error"` discriminator, so the typed decode is the only correct way
 // to prove each surface renders its own native envelope.
 //
+// Phase 08.1 INTEG-01 (Plan 02 Task 2): extended in-place per D-09 with
+// three additional stream:true rows — ollama_stream, openai_stream,
+// anthropic_stream — exercising the Plan 01 short-circuit guards on the
+// streaming branches. The six rows now run in one binary boot. D-10
+// asserts the full wire-shape contract on each streaming row: 401 +
+// Content-Type: application/json + native error envelope + zero SSE/NDJSON
+// byte markers (no `data: `, no `event: `, no `"done":true`). The
+// assertEnvelope signature was widened to (t, body, ct) so each callback
+// can assert the Content-Type header value directly — Pattern F harness
+// signature widening per 08.1-PATTERNS.md.
+//
 // Skipped when kiro-cli is unavailable (bootGateway resolution).
 func TestE2E_BadBearer_AllThreeSurfaces(t *testing.T) {
 	gateOrSkip(t)
@@ -246,16 +257,23 @@ func TestE2E_BadBearer_AllThreeSurfaces(t *testing.T) {
 		headers map[string]string
 		body    string
 		// assertEnvelope decodes the response body and asserts the
-		// surface's native error-envelope shape. Each callback uses
-		// the t.Errorf in scope to record per-surface key mismatches.
-		assertEnvelope func(t *testing.T, body []byte)
+		// surface's native error-envelope shape AND any per-surface
+		// wire-shape invariants (Content-Type, negative byte markers).
+		// The ct parameter is the response's Content-Type header value,
+		// surfaced here so streaming rows can assert it without each
+		// callback re-reading the header out of an out-of-scope resp.
+		// Each callback uses the t.Errorf in scope to record per-surface
+		// key mismatches.
+		assertEnvelope func(t *testing.T, body []byte, ct string)
 	}{
 		{
 			name: "ollama",
 			path: "/api/chat",
 			body: `{"model":"auto","messages":[{"role":"user","content":"hi"}],"stream":false}`,
-			assertEnvelope: func(t *testing.T, body []byte) {
+			assertEnvelope: func(t *testing.T, body []byte, _ string) {
 				// Ollama: {"error":"<string>"} — flat string field.
+				// Non-streaming row: ct unused; the pre-08.1 assertion
+				// set did not check Content-Type, preserved verbatim.
 				var env struct {
 					Error *string `json:"error"`
 				}
@@ -275,8 +293,9 @@ func TestE2E_BadBearer_AllThreeSurfaces(t *testing.T) {
 			name: "openai",
 			path: "/v1/chat/completions",
 			body: `{"model":"auto","messages":[{"role":"user","content":"hi"}]}`,
-			assertEnvelope: func(t *testing.T, body []byte) {
+			assertEnvelope: func(t *testing.T, body []byte, _ string) {
 				// OpenAI: {"error":{"message":"...","type":"..."}}.
+				// Non-streaming row: ct unused, preserved verbatim.
 				var env struct {
 					Error *struct {
 						Message string `json:"message"`
@@ -305,8 +324,9 @@ func TestE2E_BadBearer_AllThreeSurfaces(t *testing.T) {
 				"anthropic-version": "2023-06-01",
 			},
 			body: `{"model":"auto","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`,
-			assertEnvelope: func(t *testing.T, body []byte) {
+			assertEnvelope: func(t *testing.T, body []byte, _ string) {
 				// Anthropic: {"type":"error","error":{"type":"...","message":"..."}}.
+				// Non-streaming row: ct unused, preserved verbatim.
 				var env struct {
 					Type  string `json:"type"`
 					Error *struct {
@@ -329,6 +349,142 @@ func TestE2E_BadBearer_AllThreeSurfaces(t *testing.T) {
 				}
 				if env.Error.Message == "" {
 					t.Errorf("anthropic: error.message empty; body=%s", body)
+				}
+			},
+		},
+		// ============================================================
+		// Phase 08.1 INTEG-01 Plan 02 Task 2 — three stream:true rows
+		// exercising the Plan 01 short-circuit guards on the streaming
+		// branches. Per D-09 these are added in-place (six rows in one
+		// binary boot, not a separate test). Per D-12 NO positive-control
+		// (happy-path streaming) rows are added — already covered by
+		// Phase 4 D-09.
+		// ============================================================
+		{
+			name: "ollama_stream",
+			path: "/api/chat",
+			body: `{"model":"auto","messages":[{"role":"user","content":"hi"}],"stream":true}`,
+			assertEnvelope: func(t *testing.T, body []byte, ct string) {
+				// Wire-invariant 1: Content-Type MUST be application/json.
+				// Any application/x-ndjson leak is a T-08.1-HEADER-LEAK
+				// regression (Pitfall 3 — guard moved after a header write).
+				if !strings.HasPrefix(ct, "application/json") {
+					t.Errorf("ollama_stream: Content-Type got %q, want application/json prefix (NDJSON leak == header-leak regression); body=%s", ct, body)
+				}
+				// Wire-invariant 2: body MUST NOT contain `"done":true`
+				// (the load-bearing NDJSON terminator for Ollama).
+				if bytes.Contains(body, []byte(`"done":true`)) {
+					t.Errorf("ollama_stream: body contains NDJSON marker `\"done\":true` — T-08.1-HEADER-LEAK regression; body=%s", body)
+				}
+				// Wire-invariant 3: body decodes as flat Ollama envelope.
+				var env struct {
+					Error *string `json:"error"`
+				}
+				if err := json.Unmarshal(body, &env); err != nil {
+					t.Fatalf("ollama_stream: decode envelope: %v; body=%s", err, body)
+				}
+				if env.Error == nil {
+					t.Errorf("ollama_stream: missing top-level \"error\" string field; body=%s", body)
+					return
+				}
+				if *env.Error == "" {
+					t.Errorf("ollama_stream: \"error\" field is empty (T-08.1-EMPTY-BODY); body=%s", body)
+				}
+			},
+		},
+		{
+			name: "openai_stream",
+			path: "/v1/chat/completions",
+			body: `{"model":"auto","messages":[{"role":"user","content":"hi"}],"stream":true}`,
+			assertEnvelope: func(t *testing.T, body []byte, ct string) {
+				// Wire-invariant 1: Content-Type MUST be application/json.
+				// Any text/event-stream leak is a T-08.1-HEADER-LEAK
+				// regression.
+				if !strings.HasPrefix(ct, "application/json") {
+					t.Errorf("openai_stream: Content-Type got %q, want application/json prefix (SSE leak == header-leak regression); body=%s", ct, body)
+				}
+				// Wire-invariant 2: body MUST NOT contain `data: ` or
+				// `data: [DONE]` — the load-bearing SSE markers for OpenAI.
+				if bytes.Contains(body, []byte("data: ")) {
+					t.Errorf("openai_stream: body contains SSE marker \"data: \" — T-08.1-HEADER-LEAK regression; body=%s", body)
+				}
+				if bytes.Contains(body, []byte("data: [DONE]")) {
+					t.Errorf("openai_stream: body contains SSE terminator \"data: [DONE]\" — T-08.1-HEADER-LEAK regression; body=%s", body)
+				}
+				// Wire-invariant 3: body decodes as nested OpenAI envelope;
+				// Error.Type MUST equal "authentication_error" (Pitfall 5
+				// / T-08.1-WIRE-TYPE-DRIFT — Pi SDK keys on this constant).
+				var env struct {
+					Error *struct {
+						Message string `json:"message"`
+						Type    string `json:"type"`
+					} `json:"error"`
+				}
+				if err := json.Unmarshal(body, &env); err != nil {
+					t.Fatalf("openai_stream: decode envelope: %v; body=%s", err, body)
+				}
+				if env.Error == nil {
+					t.Errorf("openai_stream: missing top-level \"error\" object; body=%s", body)
+					return
+				}
+				if env.Error.Type != "authentication_error" {
+					t.Errorf("openai_stream: error.type got %q, want \"authentication_error\" (Pitfall 5 / T-08.1-WIRE-TYPE-DRIFT); body=%s", env.Error.Type, body)
+				}
+				if env.Error.Message == "" {
+					t.Errorf("openai_stream: error.message empty (T-08.1-EMPTY-BODY); body=%s", body)
+				}
+			},
+		},
+		{
+			name: "anthropic_stream",
+			path: "/v1/messages",
+			headers: map[string]string{
+				"anthropic-version": "2023-06-01",
+			},
+			body: `{"model":"auto","max_tokens":16,"messages":[{"role":"user","content":"hi"}],"stream":true}`,
+			assertEnvelope: func(t *testing.T, body []byte, ct string) {
+				// Wire-invariant 1: Content-Type MUST be application/json.
+				// Any text/event-stream leak is a T-08.1-HEADER-LEAK
+				// regression.
+				if !strings.HasPrefix(ct, "application/json") {
+					t.Errorf("anthropic_stream: Content-Type got %q, want application/json prefix (SSE leak == header-leak regression); body=%s", ct, body)
+				}
+				// Wire-invariant 2: body MUST NOT contain `event: ` — per
+				// RESEARCH.md the load-bearing Anthropic SSE marker (stream
+				// opens with `event: message_start\n`). Both the bare
+				// prefix and the full marker are checked.
+				if bytes.Contains(body, []byte("event: ")) {
+					t.Errorf("anthropic_stream: body contains SSE marker \"event: \" — T-08.1-HEADER-LEAK regression (load-bearing for Anthropic); body=%s", body)
+				}
+				if bytes.Contains(body, []byte("event: message_start")) {
+					t.Errorf("anthropic_stream: body contains SSE marker \"event: message_start\" — T-08.1-HEADER-LEAK regression; body=%s", body)
+				}
+				// Wire-invariant 3: body decodes as double-wrapped
+				// Anthropic envelope; outer type=="error", inner
+				// Error.Type=="authentication_error" (Pitfall 5 /
+				// T-08.1-WIRE-TYPE-DRIFT — @anthropic-ai/sdk keys on this).
+				var env struct {
+					Type  string `json:"type"`
+					Error *struct {
+						Type    string `json:"type"`
+						Message string `json:"message"`
+					} `json:"error"`
+				}
+				if err := json.Unmarshal(body, &env); err != nil {
+					t.Fatalf("anthropic_stream: decode envelope: %v; body=%s", err, body)
+				}
+				if env.Type != "error" {
+					t.Errorf("anthropic_stream: outer \"type\" got %q, want \"error\"; body=%s", env.Type, body)
+				}
+				if env.Error == nil {
+					t.Errorf("anthropic_stream: missing nested \"error\" object; body=%s", body)
+					return
+				}
+				if env.Error.Type != "authentication_error" {
+					t.Errorf("anthropic_stream: error.type got %q, want \"authentication_error\" (Pitfall 5 / T-08.1-WIRE-TYPE-DRIFT); body=%s", env.Error.Type, body)
+				}
+				if env.Error.Message == "" {
+					t.Errorf("anthropic_stream: error.message empty (T-08.1-EMPTY-BODY); body=%s", body)
 				}
 			},
 		},
@@ -359,14 +515,21 @@ func TestE2E_BadBearer_AllThreeSurfaces(t *testing.T) {
 			// is per-surface (Anthropic uses 401; OpenAI uses 401;
 			// Ollama may use 401 or 403); we assert non-2xx and then
 			// decode the per-surface native envelope.
+			//
+			// Phase 08.1 INTEG-01 D-10: the streaming rows
+			// (ollama_stream / openai_stream / anthropic_stream)
+			// additionally assert Content-Type == application/json plus
+			// per-surface negative byte-marker absence inside
+			// assertEnvelope — see each callback above.
 			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 				t.Errorf("%s: got 2xx (%d), want non-2xx (AuthHook short-circuit)", tc.name, resp.StatusCode)
 			}
+			ct := resp.Header.Get("Content-Type")
 			bodyBytes, err := readBody(resp)
 			if err != nil {
 				t.Fatalf("readBody: %v", err)
 			}
-			tc.assertEnvelope(t, bodyBytes)
+			tc.assertEnvelope(t, bodyBytes, ct)
 		})
 	}
 }
