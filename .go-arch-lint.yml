@@ -124,6 +124,13 @@ deps:
                 # engine.PreHook / engine.PostHook without depending on
                 # the package is impossible in Go, so the dep is honest
                 # (08-RESEARCH Open Question 1 recommendation).
+      - plugin_pii  # Phase 8 D-04 API seam: LoggingHook (in plugin/)
+                    # reads pii.SummaryFromContext to emit the
+                    # `redacted={Email:2, SSN:1}` slog field.
+                    # plugin_pii does NOT import plugin in slice 3
+                    # (summary.go is stdlib-only); slice 4 adds the
+                    # reverse direction for redaction-event logging.
+                    # Both directions are explicitly allowed by D-04.
   plugin_pii:
     anyVendorDeps: true
     mayDependOn:
