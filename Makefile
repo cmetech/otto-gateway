@@ -15,7 +15,7 @@ DIST_DIR    := dist
 PKG_SCRIPTS := scripts/otto-gw scripts/otto-gw.ps1 scripts/.env.otto-gw.example
 PKG_README  := docs/operator-quickstart.md
 
-.PHONY: all build run test test-race lint fmt tidy clean cross ci arch-lint start stop status e2e e2e-list e2e-sdk-setup help \
+.PHONY: all build run test test-race lint fmt fmt-check vet examples tidy clean cross ci arch-lint start stop status e2e e2e-list e2e-sdk-setup help \
         cross-darwin-arm64 cross-darwin-amd64 cross-linux-amd64 cross-windows-amd64 \
         package package-all package-checksums package-darwin-arm64 package-darwin-amd64 package-linux-amd64 package-windows-amd64
 
@@ -39,6 +39,35 @@ lint: ## Run golangci-lint
 
 fmt: ## Format Go sources (gofumpt preferred; falls back to gofmt)
 	@if command -v gofumpt >/dev/null 2>&1; then gofumpt -w .; else gofmt -w .; fi
+
+# Brief §3.12 trust-gate step 1: read-only formatting verification. Unlike `fmt`
+# (write-mode), `fmt-check` is CI-safe — it produces no side effects and exits
+# non-zero on any diff so misformatted code blocks the gate.
+fmt-check: ## Verify gofumpt formatting (brief §3.12 step 1 — fails on diff)
+	@if command -v gofumpt >/dev/null 2>&1; then \
+		diff="$$(gofumpt -d . 2>&1)"; \
+		tool="gofumpt"; \
+	else \
+		diff="$$(gofmt -d . 2>&1)"; \
+		tool="gofmt"; \
+	fi; \
+	if [ -n "$$diff" ]; then \
+		echo "FAIL: $$tool reports formatting diffs (brief §3.12):"; \
+		echo "$$diff"; \
+		exit 1; \
+	fi
+
+# Brief §3.12 trust-gate step 2: go vet. golangci-lint's govet linter already
+# covers this, but the brief calls for an explicit step so the gate sequence is
+# legible in both Makefile + CI logs (Phase 08.1 D-16).
+vet: ## Run go vet (brief §3.12 step 2 — explicit even though govet linter covers it)
+	go vet ./...
+
+# Brief §3.12 trust-gate step 7: Example tests. Go's `Example_*` functions are
+# runnable, output-validated, and surface in godoc; the brief gates them
+# separately from the regular test suite to make the convention visible.
+examples: ## Run go Example tests (brief §3.12 step 7)
+	go test -run Example ./...
 
 tidy: ## Tidy go.mod / go.sum
 	go mod tidy
@@ -170,7 +199,12 @@ package-windows-amd64: cross-windows-amd64 $(PKG_README)
 arch-lint: ## Check architecture boundaries (requires go-arch-lint@v1.15.0)
 	$(shell go env GOPATH)/bin/go-arch-lint check --project-path .
 
-ci: lint test-race arch-lint ## Full CI gate (lint + race-tests + govulncheck + arch-lint)
+# Brief §3.12 canonical trust-gate sequence (Phase 08.1 D-16): fmt-check → vet
+# → build → lint → test-race → arch-lint → examples → govulncheck → cross. Each
+# target gates the next via Make's dependency ordering; govulncheck stays as a
+# recipe step because it has no separate target. `cross` is intentionally NOT
+# a dependency — CI runs it in a parallel job (see .github/workflows/ci.yml).
+ci: fmt-check vet build lint test-race arch-lint examples ## Full CI gate (brief §3.12 canonical sequence)
 	$(shell go env GOPATH)/bin/govulncheck ./...
 
 start: ## Start gateway in background (wrapper script)
