@@ -193,12 +193,14 @@ Populated by the roadmapper from `.planning/ROADMAP.md`. Updated as phases compl
 | PLUG-03 | Phase 8 | Pending |
 | PLUG-04 | Phase 8 | Pending |
 | PLUG-05 | Phase 8 | Pending |
+| PLUG-06 | Phase 8 | Complete |
 | AUTH-01 | Phase 2 | Pending |
 | AUTH-02 | Phase 2 | Pending |
 | AUTH-03 | Phase 2 | Pending |
 | OBSV-01 | Phase 2 | Pending |
 | OBSV-02 | Phase 5 | Complete |
 | OBSV-03 | Phase 8 | Pending |
+| OBSV-04 | Phase 8 | Complete |
 | BLD-01 | Phase 1 | Pending |
 | BLD-02 | Phase 9 | Complete |
 | BLD-03 | Phase 9 | Complete |
@@ -213,12 +215,12 @@ Populated by the roadmapper from `.planning/ROADMAP.md`. Updated as phases compl
 | TRST-08 | Phase 1 | Pending |
 
 **Coverage:**
-- v1 requirements: 58 total
-- Mapped to phases: 58 ✓
+- v1 requirements: 62 total
+- Mapped to phases: 62 ✓
 - Unmapped: 0 ✓
 
-> Note: an earlier draft of this file listed "53 total" requirements; the actual count of REQ-IDs above is 58. Corrected here as part of the roadmap traceability pass.
+> Note: an earlier draft of this file listed "53 total" requirements; the actual count of REQ-IDs above is 62 (after the v1.5 close-out added PLUG-06 + OBSV-04 to the traceability table). Corrected in Phase 08.1 D-14.
 
 ---
 *Requirements defined: 2026-05-23*
-*Last updated: 2026-05-23 — Traceability populated by roadmapper; all 58 v1 REQ-IDs mapped to phases 1–9.*
+*Last updated: 2026-05-28 — Traceability refreshed in Phase 08.1 D-14; PLUG-06 + OBSV-04 added; all 62 v1 REQ-IDs mapped to phases 1–9.*
