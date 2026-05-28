@@ -107,6 +107,13 @@ type Config struct {
 	// NOT affect existing exempt or SurfaceMount registrations per
 	// D-15/D-16; verified by server_admin_test.go.
 	AdminHandler http.Handler
+
+	// Hooks is the read-only chain introspection source consumed by GET
+	// /health/hooks (Phase 8 OBSV-04 / SC7). The cmd/otto-gateway
+	// hooksDescriptionAdapter wraps *plugin.Chain to satisfy this
+	// without importing internal/plugin into server (TRST-04). When
+	// nil, the handler renders {"hooks": []}.
+	Hooks HooksDescriptionSource
 }
 
 // Server wraps the chi router and HTTP server with structured logging.
@@ -120,6 +127,7 @@ type Server struct {
 	pool       PoolStatsSource
 	poolDetail PoolDetailSource
 	registry   RegistryStatsSource
+	hooks      HooksDescriptionSource // Phase 8 OBSV-04 — GET /health/hooks introspection
 	addr       string
 }
 
@@ -189,6 +197,7 @@ func NewFromConfig(cfg Config) *Server {
 		pool:       cfg.Pool,
 		poolDetail: cfg.PoolDetail,
 		registry:   cfg.Registry,
+		hooks:      cfg.Hooks, // Phase 8 OBSV-04
 		addr:       cfg.HTTPAddr,
 	}
 	s.router = chi.NewRouter()
@@ -203,6 +212,19 @@ func NewFromConfig(cfg Config) *Server {
 	// alongside /health. The detail endpoint exposes full session ids
 	// verbatim (D-17) for operator dashboards.
 	s.router.Get("/health/agents", s.agentsHandler)
+	// Phase 8 OBSV-04 / SC7: /health/hooks is auth-exempt, registered on
+	// the OUTER router alongside /health and /health/agents. View-only —
+	// no runtime mutate path (PROJECT.md line 108; SC7). Restart to
+	// change config. hooksHandler returns 405 on POST/PUT/DELETE as
+	// defense-in-depth even though chi's .Get() already restricts to GET.
+	s.router.Get("/health/hooks", s.hooksHandler)
+	// Phase 8 SC7 belt-and-suspenders: registering mutating verbs
+	// explicitly to return 405 (instead of relying on chi's
+	// MethodNotAllowedHandler default) so the no-mutate-path contract
+	// is visible at the route table.
+	s.router.MethodFunc(http.MethodPost, "/health/hooks", s.hooksHandler)
+	s.router.MethodFunc(http.MethodPut, "/health/hooks", s.hooksHandler)
+	s.router.MethodFunc(http.MethodDelete, "/health/hooks", s.hooksHandler)
 	if cfg.OllamaVersionHandler != nil && cfg.OllamaVersionPath != "" {
 		// Codex M-4: register /api/version on the OUTER router so it
 		// stays exempt. The adapter does NOT register /version on its
