@@ -150,15 +150,24 @@ func (f *fakeStream) Chunks() <-chan canonical.Chunk          { return f.chunks 
 func (f *fakeStream) Result() (*canonical.FinalResult, error) { return f.final, f.err }
 
 // fakeRunHandle wraps fakeStream.
+//
+// scResp is the synthetic ShortCircuitResponse return value used by Plan 02
+// (Phase 08.1 INTEG-01) handler short-circuit tests. Default zero-value nil
+// preserves every pre-08.1 test's behavior: ShortCircuitResponse() returns
+// nil → handler falls through to runSSEEmitter as before. Tests that need to
+// exercise the streaming short-circuit guard at handlers.go
+// (handleMessages ~187-199) set scResp to a non-nil *canonical.ChatResponse
+// before calling the handler.
 type fakeRunHandle struct {
 	stream    Stream
 	sessionID string
+	scResp    *canonical.ChatResponse
 }
 
 func (f *fakeRunHandle) Stream() Stream                                   { return f.stream }
 func (f *fakeRunHandle) SessionID() string                                { return f.sessionID }
 func (f *fakeRunHandle) StopWatchdog() func() bool                        { return nil }
-func (f *fakeRunHandle) ShortCircuitResponse() *canonical.ChatResponse    { return nil }
+func (f *fakeRunHandle) ShortCircuitResponse() *canonical.ChatResponse    { return f.scResp }
 
 // ----------------------------------------------------------------------------
 // HTTP helpers

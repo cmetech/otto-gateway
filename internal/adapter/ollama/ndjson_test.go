@@ -35,15 +35,24 @@ func (s *fakeStream) Result() (*canonical.FinalResult, error) {
 }
 
 // fakeRunHandle wraps a fakeStream and satisfies the RunHandle interface.
+//
+// scResp is the synthetic ShortCircuitResponse return value used by Plan 02
+// (Phase 08.1 INTEG-01) handler short-circuit tests. Default zero-value nil
+// preserves every Plan 01 / pre-08.1 test's behavior: ShortCircuitResponse()
+// returns nil → handler falls through to runNDJSONEmitter as before. Tests
+// that need to exercise the streaming short-circuit guard at handlers.go
+// (handleChat ~193-207, handleGenerate ~331-343) set scResp to a non-nil
+// *canonical.ChatResponse before calling the handler.
 type fakeRunHandle struct {
 	stream    *fakeStream
 	sessionID string
+	scResp    *canonical.ChatResponse
 }
 
 func (h *fakeRunHandle) Stream() Stream       { return h.stream }
 func (h *fakeRunHandle) SessionID() string    { return h.sessionID }
 func (h *fakeRunHandle) StopWatchdog() func() bool { return func() bool { return true } }
-func (h *fakeRunHandle) ShortCircuitResponse() *canonical.ChatResponse { return nil }
+func (h *fakeRunHandle) ShortCircuitResponse() *canonical.ChatResponse { return h.scResp }
 
 // newFakeRunHandle builds a fakeRunHandle whose stream channel is pre-populated
 // with chunks, then closed. result is the FinalResult returned by Result().
