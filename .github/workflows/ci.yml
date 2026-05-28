@@ -52,6 +52,32 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # Phase 08.1 WARNING-01: explicit trust-gate sequence per
+      # docs/briefs/go_port_brief.md §3.12. The local Makefile holds the
+      # canonical sequence (`make ci`); CI duplicates the leading steps
+      # (gofumpt -d → go vet → go build) for in-log readability before
+      # delegating golangci-lint + arch-lint + test-race to the action /
+      # make targets below. Keeping both sides explicit prevents drift
+      # — see Phase 08.1 D-16.
+      - name: Install gofumpt
+        run: go install mvdan.cc/gofumpt@latest
+
+      - name: Format check (gofumpt -d)
+        run: |
+          set -euo pipefail
+          diff="$(gofumpt -d .)"
+          if [ -n "$diff" ]; then
+            echo "FAIL: gofumpt reports formatting diffs (brief §3.12 step 1):"
+            echo "$diff"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build (host)
+        run: go build ./...
+
       # golangci-lint via its dedicated action so it brings its own
       # binary cache and version pin in one place. `make lint` calls
       # `golangci-lint run ./...` directly; this action covers that
@@ -72,6 +98,12 @@ jobs:
 
       - name: Test (-race)
         run: make test-race
+
+      # Brief §3.12 step 7 — Example tests. Surfaced as its own step so
+      # broken godoc-runnable examples fail with a clear log line rather
+      # than being buried inside the test-race batch (Phase 08.1 D-16).
+      - name: Example tests
+        run: go test -run Example ./...
 
       - name: Architecture boundaries
         # `make arch-lint` invokes the binary via $(go env GOPATH)/bin
