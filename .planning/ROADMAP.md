@@ -32,7 +32,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 4: Streaming** - NDJSON (Ollama) and SSE (OpenAI + Anthropic) off one canonical chunk channel, with disconnect cancellation (completed 2026-05-25)
 - [x] **Phase 5: Pool + Stateful Sessions** - Warm `POOL_SIZE` pool plus `X-Session-Id` registry, both visible on `/health/agents` (plans 3/3 shipped 2026-05-26; verification gaps_found — gap-closure plans 05-04 (SC3 root-cause + fix) + 05-05 (PHASE5-PERF.md skeleton + manual gates) appended 2026-05-26) (completed 2026-05-26)
 - [x] **Phase 6: Tool-Call Path** - Canonical tool calls rendered per-surface, with `coerceToolCall` for plain-JSON-as-text (completed 2026-05-27)
-- [ ] **Phase 6.1: Admin Observability UI** *(INSERTED)* - Dark-mode `/admin` page rendering `/health` + `/health/agents` with the OTTO brand palette; auto-refresh polling; nice-to-have live log tail
+- [x] **Phase 6.1: Admin Observability UI** *(INSERTED)* - Dark-mode `/admin` page rendering `/health` + `/health/agents` with the OTTO brand palette; auto-refresh polling; nice-to-have live log tail (completed 2026-05-28)
 - [ ] **Phase 8: Plugin Hook Chain** - `PreHook`/`PostHook` over canonical types, with RequestID, Auth, Logging registered
 - [ ] **Phase 9: Distribution** - Cross-compile Linux+Windows from macOS, full trust-gate CI matrix gating merges
 
@@ -334,7 +334,7 @@ Plans:
   5. Templates + CSS + JS ship as compiled-in assets via `embed.FS` — `go build` from a fresh checkout produces one binary; no external file dependencies at runtime; cross-compile from macOS to `linux/amd64` and `windows/amd64` still succeeds with `CGO_ENABLED=0`.
   6. **Nice-to-have (deferrable):** live log tail at `/admin/logs` via SSE that streams new `/tmp/otto-gateway.log` lines as they appear. Must not hold an exclusive file handle, must tolerate log rotation (re-open on read error), and must be implementable without altering any existing log-writing path. If this can't be done cleanly inside the slice's budget, defer to a follow-up.
 
-**Plans:** 3/4 plans executed
+**Plans:** 4/4 plans complete
 
 Plans:
 **Wave 1**
@@ -351,7 +351,7 @@ Plans:
 
 **Wave 4** *(blocked on Waves 1+2+3 — phase exit)*
 
-- [ ] 06.1-04-PLAN.md — Slice D verification: make cross green (CGO_ENABLED=0 linux/amd64 + windows/amd64.exe), binary-size delta ≤30KB, full manual UAT in browser (all 6 ROADMAP SC bars including dead-slot visual contract + log rotation), docs/operating.md Admin UI section
+- [x] 06.1-04-PLAN.md — Slice D verification: make cross green (CGO_ENABLED=0 linux/amd64 + windows/amd64.exe), binary-size delta ≤30KB, full manual UAT in browser (all 6 ROADMAP SC bars including dead-slot visual contract + log rotation), docs/operating.md Admin UI section
 
 ### Phase 8: Plugin Hook Chain
 
@@ -401,6 +401,6 @@ Phases execute in numeric order: 1 → 1.1 → 2 → 3 → 3.1 → 4 → 5 → 6
 | 4. Streaming | 4/4 | Complete   | 2026-05-25 |
 | 5. Pool + Stateful Sessions | 5/5 | Complete    | 2026-05-26 |
 | 6. Tool-Call Path | 5/5 | Complete    | 2026-05-27 |
-| 6.1. Admin Observability UI (INSERTED) | 3/4 | In Progress|  |
+| 6.1. Admin Observability UI (INSERTED) | 4/4 | Complete   | 2026-05-28 |
 | 8. Plugin Hook Chain | 0/TBD | Not started | - |
 | 9. Distribution | 0/TBD | Not started | - |
