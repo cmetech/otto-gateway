@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v1.5
 milestone_name: audit WARNINGs
 status: executing
-last_updated: "2026-05-28T17:03:10.366Z"
-last_activity: 2026-05-28 -- Phase 08.1 planning complete
+last_updated: "2026-05-28T17:46:58.178Z"
+last_activity: 2026-05-28 -- Phase 08.1 execution started
 progress:
   total_phases: 2
   completed_phases: 0
@@ -20,15 +20,15 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-23)
 
 **Core value:** All three API surfaces (OpenAI for Pi SDK, Ollama for LangFlow, Anthropic for loop24-client/GSD Pi) serve their respective clients without those clients knowing kiro-cli exists, with one place to enforce policy.
-**Current focus:** v1.5 milestone complete (Phase 9 closed 2026-05-28)
+**Current focus:** Phase 08.1 — close-gap-integ-01-streaming-mode-prehook-short-circuit-v1-5
 
 ## Current Position
 
-Phase: 8.1 (URGENT INSERTED — close gap INTEG-01 streaming PreHook short-circuit + v1.5 audit WARNINGs)
-Plan: n/a (awaiting `/gsd-plan-phase 8.1`)
-Status: Ready to execute
+Phase: 08.1 (close-gap-integ-01-streaming-mode-prehook-short-circuit-v1-5) — EXECUTING
+Plan: 1 of 5
+Status: Executing Phase 08.1
 Next: `/gsd-discuss-phase 8.1` to gather context, then `/gsd-plan-phase 8.1`, then `/gsd-execute-phase 8.1`
-Last activity: 2026-05-28 -- Phase 08.1 planning complete
+Last activity: 2026-05-28 -- Phase 08.1 execution started
 
 Progress: [░░░░░░░░░░] 0%
 

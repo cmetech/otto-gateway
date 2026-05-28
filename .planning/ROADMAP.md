@@ -377,11 +377,11 @@ Plans:
 **Goal:** Close the v1.5 milestone audit's BLOCKER and four WARNINGs in one phase: (a) Slice A — fix INTEG-01 streaming-mode PreHook short-circuit so bad-bearer `stream:true` requests return pre-header 401 + native JSON envelope across all three surfaces (Ollama, OpenAI, Anthropic) instead of empty 200 SSE/NDJSON streams; (b) Slice B — close WARNING-01 (CI/Makefile explicit trust-gate sequence per brief §3.12), WARNING-02 (`/admin` auth-exempt-by-design annotation in PROJECT.md + REQUIREMENTS.md + docs/operating.md), WARNING-03 (REQUIREMENTS.md traceability refresh: add PLUG-06 + OBSV-04 rows, correct "58 total" → "62 total", flip ~50 checkboxes per audit Final Status), WARNING-04 (T-8-AUTH-BYPASS list-mode-stub bypass annotation in REQUIREMENTS.md AUTH-01/02 + docs/operating.md).
 **Requirements**: PLUG-02, PLUG-04, PLUG-06, STRM-01, STRM-02, ANTH-01, ANTH-02, AUTH-01, AUTH-02, OBSV-04, TRST-01, TRST-02, TRST-03, TRST-04, TRST-05, TRST-06, TRST-07, TRST-08, BLD-03
 **Depends on:** Phase 8
-**Plans:** 5 plans
+**Plans:** 1/5 plans executed
 Plans:
 **Wave 1**
 
-- [ ] 08.1-01-PLAN.md — Slice A integration: add ShortCircuitResponse to ollama+openai RunHandle interfaces, forward through main.go shims, propagate test-fake stubs, insert short-circuit guards in all four streaming handler sites (atomic commit)
+- [x] 08.1-01-PLAN.md — Slice A integration: add ShortCircuitResponse to ollama+openai RunHandle interfaces, forward through main.go shims, propagate test-fake stubs, insert short-circuit guards in all four streaming handler sites (atomic commit)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
