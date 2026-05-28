@@ -11,7 +11,8 @@ func TestCanonicalTypes_PresenceAndZeroValues(t *testing.T) {
 	if s != StopUnknown {
 		t.Errorf("zero StopReason: got %v, want StopUnknown (%v)", s, StopUnknown)
 	}
-	// All six constants must be distinct.
+	// All seven constants must be distinct (StopError added in Phase 8
+	// Plan 08-02 Task 3 for AuthHook's short-circuit envelope).
 	all := []StopReason{
 		StopUnknown,
 		StopEndTurn,
@@ -19,16 +20,17 @@ func TestCanonicalTypes_PresenceAndZeroValues(t *testing.T) {
 		StopMaxTurnRequests,
 		StopRefusal,
 		StopCancelled,
+		StopError,
 	}
 	seen := make(map[StopReason]bool, len(all))
 	for _, v := range all {
 		if seen[v] {
-			t.Errorf("StopReason value %v appears more than once in {StopUnknown, StopEndTurn, StopMaxTokens, StopMaxTurnRequests, StopRefusal, StopCancelled}", v)
+			t.Errorf("StopReason value %v appears more than once in {StopUnknown, StopEndTurn, StopMaxTokens, StopMaxTurnRequests, StopRefusal, StopCancelled, StopError}", v)
 		}
 		seen[v] = true
 	}
-	if len(seen) != 6 {
-		t.Errorf("expected 6 distinct StopReason values, got %d", len(seen))
+	if len(seen) != 7 {
+		t.Errorf("expected 7 distinct StopReason values, got %d", len(seen))
 	}
 
 	// (2) ModelInfo: zero value is empty struct; fields round-trip.

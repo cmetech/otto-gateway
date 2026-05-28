@@ -24,4 +24,11 @@ const (
 	StopRefusal
 	// StopCancelled means the turn was cancelled by the client.
 	StopCancelled
+	// StopError means the turn ended because of a synthetic short-circuit
+	// from a Pre hook (e.g., AuthHook's authentication-error envelope).
+	// The accompanying Message.Content[0].Text carries the user-facing
+	// reason; per-surface adapters detect StopError and render the native
+	// error shape (Anthropic {type:"error", ...}, OpenAI {error:{...}},
+	// Ollama {error:"..."}). Phase 8 PLUG-03 / 08-02 Task 3.
+	StopError
 )
