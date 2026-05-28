@@ -1,14 +1,143 @@
 #!/usr/bin/env bash
 # scripts/otto-gw — POSIX lifecycle manager for otto-gateway on macOS/Linux.
 # Renamed from scripts/otto to avoid collision with the otto CLI binary.
-# Subcommands: start | stop | status | restart | logs [-f] | run
-# Env overrides: OTTO_BIN, OTTO_PID, OTTO_LOG, OTTO_ADDR
+#
+# Subcommands:
+#   start | stop | status | restart | logs [-f] | run | env
+#
+# Wrapper env overrides (where logs/pids/binary live):
+#   OTTO_BIN, OTTO_PID, OTTO_LOG, OTTO_ADDR
+#
+# Gateway config flags (for start | restart | run):
+#   --pii MODE          off | replace | mask | hash | drop
+#                         off → PII_REDACTION_ENABLED=false
+#                         others → PII_REDACTION_ENABLED=true PII_REDACTION_MODE=MODE
+#   --hash-key KEY      PII_HASH_KEY=KEY (required when --pii hash)
+#   --entities LIST     PII_ENABLED_ENTITIES=LIST (e.g. Email,SSN)
+#   --hooks LIST        ENABLED_HOOKS=LIST (allowlist; empty = all)
+#   --auth TOKEN        AUTH_TOKEN=TOKEN
+#
+# .env loader (laptop-friendly persistence):
+#   Loads the first match of:  ./.env.otto-gw  →  $HOME/.otto-gw.env
+#   Override with --env-file PATH or OTTO_ENV_FILE=PATH.
+#   CLI flags WIN over .env values; .env wins over inherited shell env
+#   only for keys the .env actually sets.
 set -euo pipefail
 
 OTTO_BIN="${OTTO_BIN:-./bin/otto-gateway}"
 OTTO_PID="${OTTO_PID:-/tmp/otto-gateway.pid}"
 OTTO_LOG="${OTTO_LOG:-/tmp/otto-gateway.log}"
 OTTO_ADDR="${OTTO_ADDR:-http://localhost:18080}"
+
+# Default .env search order. First hit wins; --env-file or OTTO_ENV_FILE overrides.
+DEFAULT_ENV_PATHS=("./.env.otto-gw" "$HOME/.otto-gw.env")
+
+# resolve_env_file returns the path of the .env file to source, or empty.
+# Honors --env-file override (already parsed into $ENV_FILE_OVERRIDE) and
+# OTTO_ENV_FILE before falling back to DEFAULT_ENV_PATHS.
+resolve_env_file() {
+    if [[ -n "${ENV_FILE_OVERRIDE:-}" ]]; then
+        echo "$ENV_FILE_OVERRIDE"
+        return 0
+    fi
+    if [[ -n "${OTTO_ENV_FILE:-}" ]]; then
+        echo "$OTTO_ENV_FILE"
+        return 0
+    fi
+    for path in "${DEFAULT_ENV_PATHS[@]}"; do
+        if [[ -f "$path" ]]; then
+            echo "$path"
+            return 0
+        fi
+    done
+    # No match — explicit return 0 keeps `set -e` callers safe.
+    return 0
+}
+
+# load_env_file sources KEY=value lines from $1. Tolerates blank lines
+# and # comments. Quoted values are honored. Does NOT execute arbitrary
+# shell — we parse line-by-line and `export` each key explicitly so the
+# .env file behaves as data, not code (no `$(...)` or backticks).
+load_env_file() {
+    local file="$1"
+    [[ -f "$file" ]] || return 0
+    local line key val
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        # Strip leading whitespace.
+        line="${line#"${line%%[![:space:]]*}"}"
+        # Skip blanks and comments.
+        [[ -z "$line" || "$line" == \#* ]] && continue
+        # Strip optional leading "export ".
+        line="${line#export }"
+        # Must contain '='.
+        [[ "$line" == *=* ]] || continue
+        key="${line%%=*}"
+        val="${line#*=}"
+        # Strip surrounding single or double quotes (one layer only).
+        if [[ "$val" == \"*\" ]] || [[ "$val" == \'*\' ]]; then
+            val="${val:1:${#val}-2}"
+        fi
+        export "$key=$val"
+    done < "$file"
+}
+
+# apply_cli_flags overrides exported vars with any --pii / --hash-key /
+# etc. that came in on the command line. Called AFTER load_env_file so
+# flags win.
+apply_cli_flags() {
+    if [[ -n "${FLAG_PII_MODE:-}" ]]; then
+        if [[ "$FLAG_PII_MODE" == "off" ]]; then
+            export PII_REDACTION_ENABLED="false"
+        else
+            export PII_REDACTION_ENABLED="true"
+            export PII_REDACTION_MODE="$FLAG_PII_MODE"
+        fi
+    fi
+    if [[ -n "${FLAG_HASH_KEY:-}" ]]; then export PII_HASH_KEY="$FLAG_HASH_KEY"; fi
+    if [[ -n "${FLAG_ENTITIES:-}" ]]; then export PII_ENABLED_ENTITIES="$FLAG_ENTITIES"; fi
+    if [[ -n "${FLAG_HOOKS:-}" ]];    then export ENABLED_HOOKS="$FLAG_HOOKS"; fi
+    if [[ -n "${FLAG_AUTH:-}" ]];     then export AUTH_TOKEN="$FLAG_AUTH"; fi
+    return 0
+}
+
+# parse_flags reads a remaining-args array (positional after the
+# subcommand) and populates the FLAG_* globals + ENV_FILE_OVERRIDE.
+# `--show-secrets` is only meaningful for the `env` subcommand but is
+# parsed uniformly so callers can preview "what would happen with
+# secrets visible." Anything not recognised → `unknown flag` exit.
+parse_flags() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --pii)           FLAG_PII_MODE="$2"; shift 2 ;;
+            --pii=*)         FLAG_PII_MODE="${1#*=}"; shift ;;
+            --hash-key)      FLAG_HASH_KEY="$2"; shift 2 ;;
+            --hash-key=*)    FLAG_HASH_KEY="${1#*=}"; shift ;;
+            --entities)      FLAG_ENTITIES="$2"; shift 2 ;;
+            --entities=*)    FLAG_ENTITIES="${1#*=}"; shift ;;
+            --hooks)         FLAG_HOOKS="$2"; shift 2 ;;
+            --hooks=*)       FLAG_HOOKS="${1#*=}"; shift ;;
+            --auth)          FLAG_AUTH="$2"; shift 2 ;;
+            --auth=*)        FLAG_AUTH="${1#*=}"; shift ;;
+            --env-file)      ENV_FILE_OVERRIDE="$2"; shift 2 ;;
+            --env-file=*)    ENV_FILE_OVERRIDE="${1#*=}"; shift ;;
+            --show-secrets)  FLAG_SHOW_SECRETS=1; shift ;;
+            *)               echo "unknown flag: $1" >&2; exit 1 ;;
+        esac
+    done
+}
+
+# load_config is the standard pre-launch hook: resolve .env → source it
+# → apply flag overrides. Idempotent; safe to call from start/restart/
+# run/env.
+load_config() {
+    local env_file
+    env_file="$(resolve_env_file)"
+    if [[ -n "$env_file" ]]; then
+        load_env_file "$env_file"
+        echo "loaded env file: $env_file" >&2
+    fi
+    apply_cli_flags
+}
 
 start() {
     if [[ -f "$OTTO_PID" ]]; then
@@ -20,16 +149,18 @@ start() {
         fi
         rm -f "$OTTO_PID"
     fi
+    load_config
     # Gateway env vars are inherited from the current environment
-    # automatically — no explicit forwarding needed. Documented set
-    # (Plan 02-06 wrapper expansion):
-    #   KIRO_CMD, KIRO_ARGS, KIRO_CWD     — kiro-cli subprocess wiring
-    #   DEBUG, HTTP_ADDR, PING_INTERVAL  — runtime knobs
-    #   AUTH_TOKEN, ALLOWED_IPS           — auth + IP allowlist (Phase 2)
-    #   AUTH_TRUST_XFF                    — opt-in XFF trust (Codex H-7)
-    #   POOL_SIZE                         — warm-pool size (Phase 2)
-    #   OLLAMA_PATH_PREFIX                — Ollama route prefix (default /api)
-    #   OPENAI_PATH_PREFIX                — OpenAI route prefix (Phase 3 forward seam)
+    # automatically — no explicit forwarding needed. Documented set:
+    #   KIRO_CMD, KIRO_ARGS, KIRO_CWD           — kiro-cli subprocess wiring
+    #   DEBUG, HTTP_ADDR, PING_INTERVAL         — runtime knobs
+    #   AUTH_TOKEN, ALLOWED_IPS                 — auth + IP allowlist (Phase 2)
+    #   AUTH_TRUST_XFF                          — opt-in XFF trust (Codex H-7)
+    #   POOL_SIZE                               — warm-pool size (Phase 2)
+    #   OLLAMA_PATH_PREFIX, OPENAI_PATH_PREFIX  — route prefixes
+    #   ENABLED_HOOKS, PII_REDACTION_ENABLED,   — Phase 8 hook chain knobs
+    #   PII_ENABLED_ENTITIES, PII_REDACTION_MODE,
+    #   PII_HASH_KEY
     nohup "$OTTO_BIN" >> "$OTTO_LOG" 2>&1 &
     echo $! > "$OTTO_PID"
     echo "otto-gateway started (PID $(cat "$OTTO_PID"))"
@@ -91,30 +222,84 @@ logs() {
 }
 
 run() {
+    load_config
     # Foreground execution — inherits all env vars from the calling shell.
     exec "$OTTO_BIN"
 }
 
+# env subcommand: print the resolved gateway-relevant env (KEY=value, one
+# per line). Secrets are masked unless --show-secrets is passed.
+print_env() {
+    load_config
+    local show_secrets="${FLAG_SHOW_SECRETS:-0}"
+    local k v masked
+    for k in ENABLED_HOOKS PII_REDACTION_ENABLED PII_REDACTION_MODE \
+             PII_ENABLED_ENTITIES PII_HASH_KEY AUTH_TOKEN ALLOWED_IPS \
+             AUTH_TRUST_XFF HTTP_ADDR KIRO_CMD KIRO_ARGS KIRO_CWD \
+             POOL_SIZE DEBUG; do
+        v="${!k:-}"
+        if [[ -z "$v" ]]; then
+            continue
+        fi
+        if [[ "$show_secrets" != "1" ]] && [[ "$k" == "AUTH_TOKEN" || "$k" == "PII_HASH_KEY" ]]; then
+            # Show only first 4 chars + char count, never the literal.
+            masked="${v:0:4}…(${#v} chars)"
+            echo "$k=$masked"
+        else
+            echo "$k=$v"
+        fi
+    done
+}
+
 usage() {
-    echo "Usage: $(basename "$0") <command>" >&2
-    echo "" >&2
-    echo "Commands:" >&2
-    echo "  start       Start gateway in background" >&2
-    echo "  stop        Stop background gateway" >&2
-    echo "  status      Show gateway status and health" >&2
-    echo "  restart     Stop then start" >&2
-    echo "  logs [-f]   Tail gateway log (optional -f to follow)" >&2
-    echo "  run         Run gateway in foreground" >&2
+    cat >&2 <<'EOF'
+Usage: otto-gw <command> [flags]
+
+Commands:
+  start [flags]       Start gateway in background
+  stop                Stop background gateway
+  status              Show gateway status and health
+  restart [flags]     Stop then start (re-applies flags / .env)
+  logs [-f]           Tail gateway log (optional -f to follow)
+  run [flags]         Run gateway in foreground
+  env [--show-secrets]
+                      Print the resolved gateway env that would be passed
+
+Gateway config flags (for start | restart | run | env):
+  --pii MODE          off | replace | mask | hash | drop
+  --hash-key KEY      PII_HASH_KEY (required when --pii hash)
+  --entities LIST     PII_ENABLED_ENTITIES (comma list)
+  --hooks LIST        ENABLED_HOOKS allowlist (comma list, empty = all)
+  --auth TOKEN        AUTH_TOKEN
+  --env-file PATH     Override the default .env search
+
+.env auto-load search:
+  1. --env-file PATH                  (CLI override)
+  2. $OTTO_ENV_FILE                   (env override)
+  3. ./.env.otto-gw                   (project-local)
+  4. $HOME/.otto-gw.env               (per-user)
+
+Precedence (highest first): CLI flag → .env file → inherited shell env.
+
+See scripts/.env.otto-gw.example for a starter template.
+EOF
     exit 1
 }
 
 CMD="${1:-}"
+if [[ -n "$CMD" ]]; then shift; fi
 case "$CMD" in
-    start)   start ;;
+    start|restart|run|env)
+        parse_flags "$@"
+        case "$CMD" in
+            start)   start ;;
+            restart) restart ;;
+            run)     run ;;
+            env)     print_env ;;
+        esac
+        ;;
     stop)    stop ;;
     status)  status ;;
-    restart) restart ;;
-    logs)    logs "${2:-}" ;;
-    run)     run ;;
+    logs)    logs "${1:-}" ;;
     *)       usage ;;
 esac

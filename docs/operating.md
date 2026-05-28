@@ -52,6 +52,61 @@ If PowerShell blocks execution due to execution policy, run via:
 | `restart` | `stop` then `start` — race-free because `stop` waits for process exit before returning |
 | `logs [-f]` | Tail the log file; pass `-f` to follow (macOS/Linux); Windows tails both stdout and stderr files simultaneously |
 | `run` | Run gateway in the foreground — equivalent to invoking the binary directly |
+| `env` | Print the resolved gateway env (the keys that would be passed to the binary). Secrets are masked by default; pass `--show-secrets` (bash) or `-ShowSecrets` (PowerShell) to print literals. |
+
+## Gateway config flags (flags + .env)
+
+The wrapper script accepts a small set of high-leverage flags so you don't
+have to remember the underlying env-var names. Flags are valid on `start`,
+`restart`, `run`, and `env`.
+
+| Flag (bash) | Flag (PowerShell) | Underlying env | Notes |
+|-------------|-------------------|----------------|-------|
+| `--pii MODE` | `-Pii MODE` | `PII_REDACTION_ENABLED` + `PII_REDACTION_MODE` | `MODE` ∈ `off,replace,mask,hash,drop`. `off` sets `PII_REDACTION_ENABLED=false`; any other mode sets `=true` and the mode. |
+| `--hash-key KEY` | `-HashKey KEY` | `PII_HASH_KEY` | Required when `--pii hash` (boot error otherwise). |
+| `--entities LIST` | `-Entities LIST` | `PII_ENABLED_ENTITIES` | Comma list. Empty = all six recognizers. |
+| `--hooks LIST` | `-Hooks LIST` | `ENABLED_HOOKS` | Allowlist; empty = all hooks. |
+| `--auth TOKEN` | `-Auth TOKEN` | `AUTH_TOKEN` | Comma-separated for rotation. |
+| `--env-file PATH` | `-EnvFile PATH` | _(loader)_ | Override the .env search. |
+
+**.env auto-load** — the wrapper looks for the first match of:
+
+1. `--env-file PATH` / `-EnvFile PATH` (CLI override)
+2. `$OTTO_ENV_FILE` (env override)
+3. `./.env.otto-gw` (project-local)
+4. `$HOME/.otto-gw.env` (per-user; `$env:USERPROFILE\.otto-gw.env` on Windows)
+
+If a match is found it is sourced before the binary starts. Format is the
+standard `KEY=value` per line; `#` comments and blank lines are skipped;
+`export KEY=value` is also tolerated. A template lives at
+`scripts/.env.otto-gw.example` — copy it and uncomment the lines you need.
+
+**Precedence (highest first):** CLI flag → .env file → inherited shell env.
+The .env loader only sets keys it actually contains; anything you already
+exported in the shell is preserved unless the .env overrides it, and
+anything you pass via `--pii` / `--hash-key` / etc. wins over both.
+
+**Examples:**
+
+```bash
+# Verify what would be passed to the gateway, no launch.
+./scripts/otto-gw env
+
+# Enable hash-mode PII with a fresh key, restart.
+./scripts/otto-gw restart --pii hash --hash-key "$(openssl rand -hex 32)"
+
+# Run in foreground, filter the chain to RequestID + Logging only.
+./scripts/otto-gw run --hooks RequestIDHook,LoggingHook
+
+# Use a project-local .env (committed) plus override one knob.
+./scripts/otto-gw start --env-file ./deploy/local.env --pii replace
+```
+
+```powershell
+.\scripts\otto-gw.ps1 env
+.\scripts\otto-gw.ps1 restart -Pii hash -HashKey (-join ((48..57) + (97..102) | Get-Random -Count 64 | % {[char]$_}))
+.\scripts\otto-gw.ps1 run -Hooks "RequestIDHook,LoggingHook"
+```
 
 ## File Locations
 
@@ -91,8 +146,9 @@ export OTTO_PID=~/Projects/otto/gateway.pid
 
 ## Gateway Environment Variables
 
-These are set in your shell before calling the wrapper; they pass
-through to the gateway binary unchanged.
+Reference for what the gateway binary itself accepts. For day-to-day
+laptop use, prefer the wrapper flags + `.env.otto-gw` described above —
+this table is the underlying contract every knob maps to.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
