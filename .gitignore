@@ -41,6 +41,9 @@ tmp/
 # clones) but ignore the contents.
 logs/*
 !logs/.gitkeep
+
+# Distribution archive staging (make package / make package-all output).
+dist/
 **/temp/
 
 # Local Claude / Kiro state (skills + commands are versioned; runtime state is not)
