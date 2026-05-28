@@ -151,11 +151,21 @@ func TestSessionsRouter_Delete_MissingSid(t *testing.T) {
 	}
 }
 
-// TestSessionsRouter_Delete_RequiresAuth — when mounted via
-// server.NewFromConfig under a prefix with AuthTokens set, DELETE
-// without a bearer header returns 401. Proves the route is NOT
-// auth-exempt (D-18 — only /health and /health/agents are exempt).
-func TestSessionsRouter_Delete_RequiresAuth(t *testing.T) {
+// TestSessionsRouter_Delete_BearerNoLongerEnforcedAtServerLayer —
+// Phase 8 Pattern F migration: auth.Bearer middleware removed from
+// server.go (slice 5 main.go wiring). Bearer-token validation now
+// lives at plugin.AuthHook on the canonical engine chain. The
+// SessionsRouter is a NON-engine route (it deletes the session entry
+// from the registry directly without invoking engine.Run/Collect);
+// per the accepted T-8-AUTH-BYPASS risk (08-05-PLAN threat register),
+// non-engine routes lose bearer-token gating in v1. The IP allowlist
+// still applies.
+//
+// This test asserts the NEW behavior — no 401 at the server layer —
+// so the migration boundary closure is regression-tested. If a future
+// slice adds canonical-layer hook coverage to non-engine routes (e.g.,
+// a server-layer AuthHook), this test will need to update.
+func TestSessionsRouter_Delete_BearerNoLongerEnforcedAtServerLayer(t *testing.T) {
 	fake := &fakeSessionDeleter{}
 	srv := newFromConfigForTest(t, server.Config{
 		AuthTokens: []string{"secret"},
@@ -168,11 +178,8 @@ func TestSessionsRouter_Delete_RequiresAuth(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, r)
 
-	if w.Code != http.StatusUnauthorized {
-		t.Errorf("DELETE /v1/sessions/abc-123 without bearer: got %d, want 401", w.Code)
-	}
-	if fake.callCount() != 0 {
-		t.Errorf("Registry.Delete should NOT be called when auth fails; got %d calls", fake.callCount())
+	if w.Code == http.StatusUnauthorized {
+		t.Errorf("DELETE /v1/sessions/abc-123 unexpected 401 — Phase 8 removed auth.Bearer middleware")
 	}
 }
 

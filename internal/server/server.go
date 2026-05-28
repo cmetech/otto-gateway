@@ -263,10 +263,27 @@ func NewFromConfig(cfg Config) *Server {
 		// Capture prefix for the closure.
 		p := prefix
 		s.router.Route(p, func(r chi.Router) {
-			r.Use(auth.Bearer(auth.Config{
-				Logger: logger,
-				Tokens: cfg.AuthTokens,
-			}))
+			// Phase 8 PLUG-03 / Pattern F: auth.Bearer middleware
+			// REMOVED here. Bearer-token validation now happens at the
+			// canonical layer via plugin.AuthHook (slice 2 + slice 5
+			// chain wiring in main.go). The adapter handlers stamp the
+			// credential onto ctx via canonical.WithBearerToken BEFORE
+			// engine entry; AuthHook reads via BearerTokenFromContext
+			// and short-circuits on bad/missing token. The per-surface
+			// adapter renders the canonical short-circuit envelope as
+			// its native error shape.
+			//
+			// auth.IPAllowlist STAYS — it is surface-agnostic IP
+			// gatekeeping that runs BEFORE the engine and does not
+			// need canonical semantics (CONTEXT.md PLUG-04).
+			//
+			// Accepted v1 risk (T-8-AUTH-BYPASS, plan 08-05): non-
+			// engine routes (e.g., /api/tags, /api/ps, /api/show) lose
+			// bearer-token gating. These are read-only catalog stubs
+			// that don't reach the engine; the IPAllowlist still
+			// applies. Operators who need bearer auth on these
+			// endpoints can restore auth.Bearer in a downstream
+			// configuration.
 			r.Use(auth.IPAllowlist(auth.Config{
 				Logger:             logger,
 				AllowedPrefixes:    cfg.AllowedPrefixes,

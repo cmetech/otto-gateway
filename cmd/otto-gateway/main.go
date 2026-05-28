@@ -41,6 +41,8 @@ import (
 	"otto-gateway/internal/canonical"
 	"otto-gateway/internal/config"
 	"otto-gateway/internal/engine"
+	"otto-gateway/internal/plugin"
+	"otto-gateway/internal/plugin/pii"
 	"otto-gateway/internal/pool"
 	"otto-gateway/internal/server"
 	"otto-gateway/internal/session"
@@ -154,6 +156,45 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 		}
 	}
 
+	// Phase 8 D-01 — hardcoded plugin chain literal (no Register/factory
+	// indirection). Adding a 5th hook = one line in this slice. The
+	// PRE chain runs in registration order: RequestID → Auth → PII →
+	// Logging (D-04). The POST chain has LoggingHook as the only entry
+	// (RequestIDHook + AuthHook + PIIRedactionHook are Pre-only;
+	// LoggingHook bridges Pre→Post via its sync.Map keyed by
+	// request_id per slice 3's design).
+	//
+	// LoggingHook is intentionally reused as the SAME instance for
+	// both Pre (last) and Post (only) — its per-instance sync.Map
+	// bridges Pre→Post timings via request_id. /health/hooks dedup
+	// (slice 5 Task 4) elides the duplicate row.
+	loggingHook := &plugin.LoggingHook{Logger: logger}
+	chain := plugin.Chain{
+		Pre: []engine.PreHook{
+			&plugin.RequestIDHook{Logger: logger},
+			&plugin.AuthHook{Tokens: cfg.AuthToken},
+			&pii.PIIRedactionHook{
+				Recognizers:     filterRecognizers(pii.Recognizers, cfg.PIIEnabledEntities),
+				Enabled:         cfg.PIIRedactionEnabled,
+				Mode:            cfg.PIIRedactionMode,
+				HashKey:         []byte(cfg.PIIHashKey),
+				EnabledEntities: cfg.PIIEnabledEntities,
+			},
+			loggingHook,
+		},
+		Post: []engine.PostHook{
+			loggingHook,
+		},
+	}
+	// D-02 typo-fail-fast — Filter validates the allowlist names
+	// against the runtime chain. Unknown names produce a boot error
+	// containing literal substring "unknown hook" naming each offender.
+	filteredChain, filterErr := chain.Filter(cfg.EnabledHooks)
+	if filterErr != nil {
+		return nil, func() {}, fmt.Errorf("chain filter: %w", filterErr)
+	}
+	chain = filteredChain
+
 	if cfg.KiroCmd != "" {
 		a.pool = pool.New(pool.Config{
 			Logger:       logger,
@@ -178,6 +219,8 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 			Logger:     logger,
 			ACP:        a.pool,
 			DefaultCWD: cfg.KiroCWD,
+			PreHooks:   chain.Pre,
+			PostHooks:  chain.Post,
 		})
 
 		// Plan 05-03: construct the dedicated-session registry alongside
@@ -236,6 +279,8 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 				Logger:     logger,
 				ACP:        entry,
 				DefaultCWD: cfg.KiroCWD,
+				PreHooks:   chain.Pre,  // Phase 8 — per-session chain
+				PostHooks:  chain.Post, // Phase 8 — per-session chain
 			})}
 		}
 		openaiEngineForSession = func(entry *session.Entry) openai.Engine {
@@ -243,6 +288,8 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 				Logger:     logger,
 				ACP:        entry,
 				DefaultCWD: cfg.KiroCWD,
+				PreHooks:   chain.Pre,  // Phase 8
+				PostHooks:  chain.Post, // Phase 8
 			})}
 		}
 		anthropicEngineForSession = func(entry *session.Entry) anthropic.Engine {
@@ -250,6 +297,8 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 				Logger:     logger,
 				ACP:        entry,
 				DefaultCWD: cfg.KiroCWD,
+				PreHooks:   chain.Pre,  // Phase 8
+				PostHooks:  chain.Post, // Phase 8
 			})}
 		}
 	}
@@ -452,6 +501,7 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 		PoolDetail:           poolDetailForServer, // Plan 05-03 D-15
 		Registry:             registryForServer,   // Plan 05-03 D-14/D-16
 		AdminHandler:         adminHandler,        // Phase 6.1 admin observability UI
+		Hooks:                hooksDescriptionAdapter{chain: chain}, // Phase 8 OBSV-04 — /health/hooks
 	})
 
 	return a, cleanup, nil
@@ -566,6 +616,61 @@ func (a adminRegistryAdapter) Detail() []admin.SnapshotSess {
 			Busy:     r.Busy,
 			LastUsed: r.LastUsed,
 			Model:    r.Model,
+		}
+	}
+	return out
+}
+
+// hooksDescriptionAdapter wraps plugin.Chain to satisfy
+// server.HooksDescriptionSource without importing internal/plugin into
+// the server package (TRST-04). Same one-line bridge pattern as
+// poolStatsAdapter / poolDetailAdapter — the field-by-field copy
+// happens at the cmd-level boundary.
+type hooksDescriptionAdapter struct {
+	chain plugin.Chain
+}
+
+func (h hooksDescriptionAdapter) Describe() (pre, post []server.HookDescription) {
+	pluginPre, pluginPost := h.chain.Describe()
+	return convertHookDescriptions(pluginPre), convertHookDescriptions(pluginPost)
+}
+
+// convertHookDescriptions field-copies []plugin.HookDescription to
+// []server.HookDescription. The two types are structurally identical
+// (both ship `{Name, Kind, Enabled, Config}` with the same JSON
+// tags); the copy preserves the TRST-04 boundary.
+func convertHookDescriptions(in []plugin.HookDescription) []server.HookDescription {
+	out := make([]server.HookDescription, len(in))
+	for i, x := range in {
+		out[i] = server.HookDescription{
+			Name:    x.Name,
+			Kind:    x.Kind,
+			Enabled: x.Enabled,
+			Config:  x.Config,
+		}
+	}
+	return out
+}
+
+// filterRecognizers returns the subset of recognizers whose Name
+// appears in entities. Empty entities returns recognizers unchanged
+// (default = all six recognizers active per D-02). The PIIRedactionHook
+// also internally filters via EnabledEntities at request time; this
+// pre-filter is a startup-time efficiency to avoid handing the hook
+// recognizers it will only skip — and keeps the /health/hooks
+// `config.entities` list and the actual active set in sync.
+func filterRecognizers(recognizers []pii.Recognizer, entities []string) []pii.Recognizer {
+	if len(entities) == 0 {
+		return recognizers
+	}
+	allow := make(map[string]struct{}, len(entities))
+	for _, e := range entities {
+		allow[e] = struct{}{}
+	}
+	out := make([]pii.Recognizer, 0, len(recognizers))
+	for _, r := range recognizers {
+		if _, ok := allow[r.Name]; ok {
+			out = append(out, r)
 		}
 	}
 	return out

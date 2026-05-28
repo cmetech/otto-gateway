@@ -296,23 +296,37 @@ func TestExemptRoutes_BypassAuth(t *testing.T) {
 	}
 }
 
-// TestProtectedRoutes_RequireAuth — bearer must be present for the
-// /api sub-tree. Asserts both the 401 path and the 200 path with the
-// correct bearer.
-func TestProtectedRoutes_RequireAuth(t *testing.T) {
+// TestProtectedRoutes_BearerNoLongerEnforcedAtServerLayer — Phase 8
+// migration: bearer-token validation moved from server.go's auth.Bearer
+// chi middleware to plugin.AuthHook on the canonical chain (see
+// 08-PATTERNS Pattern F + slice 5 main.go wiring). At the server
+// layer the stub adapter no longer sees a 401 when AUTH_TOKEN is set
+// and no bearer is supplied — that gate now lives at the engine layer
+// (AuthHook reads canonical.BearerTokenFromContext, short-circuits via
+// canonical.StopError envelope, and the per-surface adapter renders
+// the native error shape).
+//
+// This test asserts the BEFORE-MIGRATION behavior is gone: the stub
+// adapter responds 200 to a no-bearer POST because there is no engine
+// in this test (and therefore no AuthHook). IP allowlist still
+// applies — see TestIPAllowlist_DenyPath. End-to-end coverage of the
+// 401-via-AuthHook flow lives in tests/e2e/plugin_chain_test.go
+// (TestE2E_BadBearer_AllThreeSurfaces).
+func TestProtectedRoutes_BearerNoLongerEnforcedAtServerLayer(t *testing.T) {
 	srv := newFromConfigForTest(t, server.Config{
 		AuthTokens: []string{"s3cret"},
 	})
 
-	// Without bearer.
+	// Without bearer: 200 (gate moved to AuthHook on the engine chain).
 	r1 := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/chat", strings.NewReader(`{}`))
 	w1 := httptest.NewRecorder()
 	srv.ServeHTTP(w1, r1)
-	if w1.Code != http.StatusUnauthorized {
-		t.Errorf("POST /api/chat without bearer: got %d, want 401", w1.Code)
+	if w1.Code != http.StatusOK {
+		t.Errorf("POST /api/chat without bearer (post-Phase-8): got %d, want 200 (gate moved to AuthHook)", w1.Code)
 	}
 
-	// With valid bearer.
+	// With valid bearer: still 200 — the credential is now stamped
+	// onto ctx by the adapter but not validated at the server layer.
 	r2 := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/chat", strings.NewReader(`{}`))
 	r2.Header.Set("Authorization", "Bearer s3cret")
 	w2 := httptest.NewRecorder()
@@ -432,9 +446,15 @@ func (f fakePoolSource) Stats() server.PoolStats { return f.stats }
 // ---------------------------------------------------------------------------
 
 // TestNewFromConfig_AnthropicMount asserts the D-17 parallel mount: an
-// Anthropic SurfaceMount at prefix "/v1" is served behind the same
-// auth.Bearer + auth.IPAllowlist chain as the Ollama surface.
-// Unauthenticated → 401; authenticated → 200.
+// Anthropic SurfaceMount at prefix "/v1" is served alongside the Ollama
+// surface. Post-Phase-8: bearer-token validation MOVED to AuthHook on
+// the canonical engine chain (slice 5 + Pattern F migration). The
+// server-layer auth.Bearer middleware is gone; the IP allowlist still
+// applies. End-to-end 401-via-AuthHook coverage lives in
+// tests/e2e/plugin_chain_test.go TestE2E_BadBearer_AllThreeSurfaces.
+//
+// This test asserts the mount STRUCTURE (anthropic on /v1, ollama on
+// /api, both reachable) — no longer the bearer-401 contract.
 func TestNewFromConfig_AnthropicMount(t *testing.T) {
 	srv := newFromConfigForTest(t, server.Config{
 		AuthTokens: []string{"s3cret"},
@@ -444,31 +464,32 @@ func TestNewFromConfig_AnthropicMount(t *testing.T) {
 		},
 	})
 
-	// Without bearer.
+	// Anthropic mount is reachable (200) — bearer requirement is
+	// enforced one layer deeper at AuthHook now, not here.
 	r1 := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/messages", strings.NewReader(`{}`))
 	w1 := httptest.NewRecorder()
 	srv.ServeHTTP(w1, r1)
-	if w1.Code != http.StatusUnauthorized {
-		t.Errorf("POST /v1/messages without bearer: got %d, want 401 (body=%s)", w1.Code, w1.Body.String())
+	if w1.Code != http.StatusOK {
+		t.Errorf("POST /v1/messages (post-Phase-8): got %d, want 200 (bearer gate moved to AuthHook)", w1.Code)
 	}
 
-	// With valid bearer.
+	// Bearer header passes through to the engine layer harmlessly.
 	r2 := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/messages", strings.NewReader(`{}`))
 	r2.Header.Set("Authorization", "Bearer s3cret")
 	w2 := httptest.NewRecorder()
 	srv.ServeHTTP(w2, r2)
 	if w2.Code != http.StatusOK {
-		t.Errorf("POST /v1/messages with valid bearer: got %d, want 200; body=%s", w2.Code, w2.Body.String())
+		t.Errorf("POST /v1/messages with bearer: got %d, want 200; body=%s", w2.Code, w2.Body.String())
 	}
 
-	// With valid x-api-key (D-15 dual-header path applied to the
-	// anthropic mount because the SAME auth.Bearer middleware is wired).
+	// x-api-key still parses harmlessly (D-15 path is handled at the
+	// adapter layer for the canonical ctx-stamp).
 	r3 := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/messages", strings.NewReader(`{}`))
 	r3.Header.Set("x-api-key", "s3cret")
 	w3 := httptest.NewRecorder()
 	srv.ServeHTTP(w3, r3)
 	if w3.Code != http.StatusOK {
-		t.Errorf("POST /v1/messages with valid x-api-key: got %d, want 200; body=%s", w3.Code, w3.Body.String())
+		t.Errorf("POST /v1/messages with x-api-key: got %d, want 200; body=%s", w3.Code, w3.Body.String())
 	}
 }
 
