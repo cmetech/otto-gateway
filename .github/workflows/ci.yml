@@ -1,0 +1,129 @@
+# OTTO Gateway — CI gate (Phase 9 SC3).
+#
+# Runs the same trust-gate suite the local `make ci` already executes,
+# plus a cross-compile smoke that confirms every supported OS/arch
+# still builds clean from a single host. Gates pushes to main and PRs
+# targeting main. Single-job sequential rather than matrix because
+# the workflow is fast (<5 min on cached runners) and the linear
+# output is easier to read in PR review.
+#
+# Why the version pin policy: actions/setup-go reads go.mod for the Go
+# version (go-version-file), which keeps the workflow in sync with
+# whatever the repo declares. golangci-lint, go-arch-lint, and
+# govulncheck are pinned to specific versions so a release in any of
+# them does not break CI overnight — bump them deliberately when
+# upgrading the local make-target tooling.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel in-flight runs on the same ref when a newer commit lands.
+# Prevents stacked CI cost on rapid pushes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Pinned tool versions. Bump together with the local toolchain.
+  GOLANGCI_LINT_VERSION: v1.62.2
+  GO_ARCH_LINT_VERSION:  v1.15.0
+  GOVULNCHECK_VERSION:   latest
+
+jobs:
+  lint-test-arch:
+    name: lint + test-race + arch-lint + govulncheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go (from go.mod)
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # golangci-lint via its dedicated action so it brings its own
+      # binary cache and version pin in one place. `make lint` calls
+      # `golangci-lint run ./...` directly; this action covers that
+      # invocation without re-installing the binary.
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
+          args: --timeout=5m
+
+      - name: Install go-arch-lint
+        run: |
+          go install github.com/fe3dback/go-arch-lint@${{ env.GO_ARCH_LINT_VERSION }}
+
+      - name: Install govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@${{ env.GOVULNCHECK_VERSION }}
+
+      - name: Test (-race)
+        run: make test-race
+
+      - name: Architecture boundaries
+        # `make arch-lint` invokes the binary via $(go env GOPATH)/bin
+        # which is on PATH after go install (setup-go arranges this).
+        run: make arch-lint
+
+      - name: Vulnerability scan
+        run: govulncheck ./...
+
+  cross-compile-smoke:
+    name: cross-compile (darwin arm64+amd64, linux amd64, windows amd64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Decoupled from lint-test-arch so a failure in one surfaces
+    # independently in the PR check list. Both must pass for merge.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go (from go.mod)
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: make cross (all four targets)
+        # `make cross` produces:
+        #   bin/otto-gateway-darwin-arm64
+        #   bin/otto-gateway-darwin-amd64
+        #   bin/otto-gateway-linux-amd64
+        #   bin/otto-gateway-windows-amd64.exe
+        # All CGO_ENABLED=0 + -ldflags="-s -w" + statically linked.
+        # ≤25 MB per binary (BLD-04 contract; current artifacts ~11 MB).
+        run: make cross
+
+      - name: Verify all four binaries exist
+        run: |
+          set -euo pipefail
+          for bin in \
+            bin/otto-gateway-darwin-arm64 \
+            bin/otto-gateway-darwin-amd64 \
+            bin/otto-gateway-linux-amd64 \
+            bin/otto-gateway-windows-amd64.exe; do
+            test -f "$bin" || { echo "missing: $bin" >&2; exit 1; }
+            size_bytes=$(stat -c%s "$bin")
+            size_mb=$(( size_bytes / 1024 / 1024 ))
+            echo "$bin → ${size_mb} MB"
+            # BLD-04 ≤25 MB safety net. Bumps would mean cgo/heavy
+            # deps slipped in; surface here before download UX
+            # regresses for end users.
+            if [ "$size_mb" -gt 25 ]; then
+              echo "FAIL: $bin exceeds 25 MB cap (BLD-04)" >&2
+              exit 1
+            fi
+          done
