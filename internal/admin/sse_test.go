@@ -74,6 +74,32 @@ func TestAdmin_WriteSSELine_MultilinePayload(t *testing.T) {
 			payload:   "part1\npart2",
 			want:      "event: log\ndata: part1\ndata: part2\n\n",
 		},
+		{
+			// WR-01: EventSource spec treats \r as a line terminator just like \n.
+			// A lone \r in a payload (progress-bar overwrites, raw subprocess
+			// stdout, Windows-formatted logs missing the \n half of \r\n) would
+			// split mid-data on the client without normalization.
+			name:      "lone CR is normalized to a multi-line data split (WR-01)",
+			eventName: "log",
+			payload:   "hello\rworld",
+			want:      "event: log\ndata: hello\ndata: world\n\n",
+		},
+		{
+			// WR-01: CRLF collapses to a single LF — must produce TWO data
+			// segments (not three: empty between \r and \n).
+			name:      "CRLF normalizes to single LF, no empty segment (WR-01)",
+			eventName: "log",
+			payload:   "hello\r\nworld",
+			want:      "event: log\ndata: hello\ndata: world\n\n",
+		},
+		{
+			// WR-01: Mixed CRLF + lone CR + LF must all funnel through the
+			// same splitter.
+			name:      "mixed terminators all split (WR-01)",
+			eventName: "log",
+			payload:   "a\r\nb\rc\nd",
+			want:      "event: log\ndata: a\ndata: b\ndata: c\ndata: d\n\n",
+		},
 	}
 
 	for _, tc := range tests {

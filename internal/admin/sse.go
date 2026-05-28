@@ -175,6 +175,15 @@ func sseLoop(
 // become a new event boundary on the client). This is required by the SSE
 // spec for multi-line payloads anyway.
 //
+// EventSource line-terminator handling (HTML spec §parsing-an-event-stream):
+// the client treats \r, \n, AND \r\n as line terminators. A log line
+// containing a bare \r (progress-bar overwrites, raw subprocess stdout,
+// Windows-formatted logs missing the \n half) would split mid-data on
+// the client and produce truncated visible text plus spurious fields.
+// Normalize \r\n → \n and lone \r → \n BEFORE the strings.Split below
+// so all three terminator forms route through the same multi-line
+// splitter and never reach the client as inline terminators.
+//
 // Empty payload emits `data:\n\n` (an empty data field with a terminator).
 //
 // The function accepts io.Writer so it can be called with both
@@ -187,6 +196,12 @@ func writeSSELine(w io.Writer, eventName, payload string) {
 		_, _ = fmt.Fprint(w, "data:\n\n")
 		return
 	}
+	// Normalize CRLF and lone CR to LF so the split below handles all
+	// three EventSource line terminator forms (\r, \n, \r\n).
+	// Order matters: collapse \r\n first so we don't double-split a CRLF
+	// into two segments.
+	payload = strings.ReplaceAll(payload, "\r\n", "\n")
+	payload = strings.ReplaceAll(payload, "\r", "\n")
 	// Split on \n so embedded newlines produce separate data: lines within
 	// the same event frame (T-6.1-13: operator log line containing \n
 	// cannot inject a new SSE frame boundary).
