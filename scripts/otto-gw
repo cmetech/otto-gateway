@@ -36,7 +36,7 @@ OTTO_PID="${OTTO_PID:-${OTTO_STATE_DIR}/otto-gateway.pid}"
 # stderr + any pre-logger panic — rarely consulted, invaluable on incident.
 OTTO_LOG="${OTTO_LOG:-./logs/otto-gateway.log}"
 OTTO_LOG_BOOT="${OTTO_LOG_BOOT:-${OTTO_LOG%.log}-boot.log}"
-OTTO_ADDR="${OTTO_ADDR:-http://localhost:18080}"
+OTTO_ADDR="${OTTO_ADDR:-http://127.0.0.1:18080}"
 
 # Default .env search order. First hit wins; --env-file or OTTO_ENV_FILE overrides.
 DEFAULT_ENV_PATHS=("./.env.otto-gw" "$HOME/.otto-gw.env")
