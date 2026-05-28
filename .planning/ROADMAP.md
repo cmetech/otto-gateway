@@ -33,7 +33,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 5: Pool + Stateful Sessions** - Warm `POOL_SIZE` pool plus `X-Session-Id` registry, both visible on `/health/agents` (plans 3/3 shipped 2026-05-26; verification gaps_found — gap-closure plans 05-04 (SC3 root-cause + fix) + 05-05 (PHASE5-PERF.md skeleton + manual gates) appended 2026-05-26) (completed 2026-05-26)
 - [x] **Phase 6: Tool-Call Path** - Canonical tool calls rendered per-surface, with `coerceToolCall` for plain-JSON-as-text (completed 2026-05-27)
 - [x] **Phase 6.1: Admin Observability UI** *(INSERTED)* - Dark-mode `/admin` page rendering `/health` + `/health/agents` with the OTTO brand palette; auto-refresh polling; nice-to-have live log tail (completed 2026-05-28)
-- [ ] **Phase 8: Plugin Hook Chain** - `PreHook`/`PostHook` over canonical types, with RequestID, Auth, Logging registered
+- [x] **Phase 8: Plugin Hook Chain** - `PreHook`/`PostHook` over canonical types, with RequestID, Auth, Logging registered (completed 2026-05-28)
 - [ ] **Phase 9: Distribution** - Cross-compile Linux+Windows from macOS, full trust-gate CI matrix gating merges
 
 ## Phase Details
@@ -369,7 +369,7 @@ Plans:
   6. `PIIRedactionHook` (Pre) walks every `canonical.ChatRequest.Messages[].ContentParts[].Text` and applies a registered set of `Recognizer{Name, Pattern *regexp.Regexp, Validate func(string) bool}` entries — six built-in recognizers (Email, IPv4, IPv6 via `net.ParseIP`, SSN with range filter, Credit Card with Luhn check, US Phone) — replacing matches with `<ENTITY>` tokens (or counter-suffixed `<EMAIL_1>` form to preserve referential identity within a prompt). All patterns are compiled at package init (no per-request compile). Env knobs: `PII_REDACTION_ENABLED` (bool, default off), `PII_ENABLED_ENTITIES` (comma list of entity names, default all six), `PII_REDACTION_MODE` (`replace|mask|hash|drop`, default `replace`). Adding a seventh recognizer requires only appending one `Recognizer{}` entry to the registry — no changes to the hook itself, the chain runner, or any caller. Pure-Go, no cgo, no external deps.
   7. `GET /health/hooks` (read-only, exempt from auth like `/health` and `/health/agents`) returns the registered chain in registration order as JSON: each entry includes `name`, `kind` (`Pre`, `Post`, or `Pre,Post`), `enabled` (bool reflecting `ENABLED_HOOKS`), and an optional `config` object exposing safe-to-publish settings (e.g. `PIIRedactionHook` exposes `entities` and `mode`; `AuthHook` exposes no secrets). The endpoint is view-only — there is no runtime mutate path in v1; configuration changes require a restart.
 
-**Plans:** TBD
+**Plans:** 5/5 plans complete
 
 ### Phase 9: Distribution
 
@@ -402,5 +402,5 @@ Phases execute in numeric order: 1 → 1.1 → 2 → 3 → 3.1 → 4 → 5 → 6
 | 5. Pool + Stateful Sessions | 5/5 | Complete    | 2026-05-26 |
 | 6. Tool-Call Path | 5/5 | Complete    | 2026-05-27 |
 | 6.1. Admin Observability UI (INSERTED) | 4/4 | Complete   | 2026-05-28 |
-| 8. Plugin Hook Chain | 0/TBD | Not started | - |
+| 8. Plugin Hook Chain | 5/5 | Complete   | 2026-05-28 |
 | 9. Distribution | 0/TBD | Not started | - |
