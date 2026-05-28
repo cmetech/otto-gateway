@@ -118,14 +118,23 @@ function Initialize-Config {
     Apply-CliFlags
 }
 
-# Preflight-Kiro warns (does not abort) if KIRO_CMD does not resolve to
-# an executable. The gateway boots in degraded mode without kiro, so an
-# operator may want a /health-only run for diagnostics.
+# Preflight-Kiro resolves KIRO_CMD before the gateway launches:
+#   1. If unset → auto-detect 'kiro' on PATH and silently set
+#      $env:KIRO_CMD. Surfaces a brief "auto-detected" line.
+#   2. If set but doesn't resolve → warn (don't abort).
+#   3. If set and resolves → silent (happy path).
+# Degraded boot is non-fatal — /health endpoints work without kiro.
 function Preflight-Kiro {
     $kiro = $env:KIRO_CMD
     if (-not $kiro) {
-        Write-Host "  ⚠  KIRO_CMD is unset — gateway will boot but chat requests will return 503." -ForegroundColor Yellow
-        Write-Host "     Install kiro-cli and set KIRO_CMD in your .env (or shell)." -ForegroundColor Yellow
+        $found = (Get-Command kiro -ErrorAction SilentlyContinue).Source
+        if ($found) {
+            $env:KIRO_CMD = $found
+            Write-Host "  ✓  KIRO_CMD auto-detected: $found" -ForegroundColor DarkGray
+            return
+        }
+        Write-Host "  ⚠  KIRO_CMD is unset and 'kiro' is not on PATH — gateway will boot but chat requests will return 503." -ForegroundColor Yellow
+        Write-Host "     Install kiro-cli OR set KIRO_CMD in your .env (or shell)." -ForegroundColor Yellow
         return
     }
     $resolved = $false

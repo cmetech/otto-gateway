@@ -143,19 +143,36 @@ load_config() {
     apply_cli_flags
 }
 
-# preflight_kiro warns if KIRO_CMD does not resolve to an executable. We
-# WARN rather than ABORT because the gateway boots in a degraded mode
-# without kiro and the operator may genuinely want a /health-only run
-# (e.g. testing /health/hooks after a config change). Returns 0 always.
+# preflight_kiro resolves KIRO_CMD before the gateway launches:
+#   1. If KIRO_CMD is unset → auto-detect `kiro` on PATH and silently
+#      set KIRO_CMD. Surfaces a brief "auto-detected" line so the
+#      operator sees what just happened without having to inspect
+#      /api/version or the log.
+#   2. If KIRO_CMD is set but doesn't resolve → warn (don't abort).
+#   3. If KIRO_CMD is set and resolves → silent (happy path).
+#
+# Degraded boot (no kiro found) is non-fatal because /health,
+# /health/hooks, and /health/pool all work without it — operators may
+# genuinely want a diagnostic-only run. Returns 0 always.
 preflight_kiro() {
     local kiro="${KIRO_CMD:-}"
     if [[ -z "$kiro" ]]; then
-        echo "  ⚠  KIRO_CMD is unset — gateway will boot but chat requests will return 503." >&2
-        echo "     Install kiro-cli and set KIRO_CMD in your .env (or shell)." >&2
+        # Auto-detect before warning. command -v handles both absolute
+        # paths (a hash-table lookup miss) and PATH resolution.
+        local found
+        found="$(command -v kiro 2>/dev/null || true)"
+        if [[ -n "$found" ]]; then
+            export KIRO_CMD="$found"
+            echo "  ✓  KIRO_CMD auto-detected: $found"
+            return 0
+        fi
+        echo "  ⚠  KIRO_CMD is unset and 'kiro' is not on PATH — gateway will boot but chat requests will return 503." >&2
+        echo "     Install kiro-cli OR set KIRO_CMD in your .env (or shell)." >&2
         return 0
     fi
-    # Try as absolute path first (covers KIRO_CMD=/abs/path/to/kiro);
-    # fall back to PATH resolution (covers KIRO_CMD=kiro).
+    # KIRO_CMD is set — validate it resolves to an executable. Try as
+    # absolute path first (covers KIRO_CMD=/abs/path/to/kiro); fall
+    # back to PATH resolution (covers KIRO_CMD=kiro).
     if [[ -x "$kiro" ]] || command -v "$kiro" >/dev/null 2>&1; then
         return 0
     fi

@@ -101,7 +101,7 @@ otto_gateway/
 
 **Required before first start:**
 
-- **`kiro-cli` installed and on `PATH`** (or its absolute path set in `KIRO_CMD`). Step 4 of [Install](#install--first-time-setup) covers this. The gateway is a router — without `kiro-cli` it boots in a degraded mode that returns `503` on every chat request. The wrapper's `start` subcommand warns up-front if `KIRO_CMD` can't be resolved, but does NOT block — degraded boot is intentional so you can still hit `/health`, `/health/hooks`, and `/health/pool` for diagnostics.
+- **`kiro-cli` installed and on `PATH`** (or its absolute path set in `KIRO_CMD`). Step 4 of [Install](#install--first-time-setup) covers this. The gateway is a router — without `kiro-cli` it boots in a degraded mode that returns `503` on every chat request. The wrapper auto-detects `kiro` on `PATH` if `KIRO_CMD` is unset and prints `✓ KIRO_CMD auto-detected: <path>` on `start`; only if both are missing does it warn. Degraded boot is intentional — you can still hit `/health`, `/health/hooks`, and `/health/pool` for diagnostics without `kiro`.
 
 **Required by the binary itself:**
 
