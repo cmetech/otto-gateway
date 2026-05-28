@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 # scripts/otto-gw.ps1 - PowerShell lifecycle manager for otto-gateway on Windows.
 # Renamed from scripts/otto.ps1 to avoid collision with the otto CLI binary.
 #
@@ -234,7 +234,7 @@ function Start-Gateway {
             $sourceLog = $LogBootErr
         }
         if ($sourceLog) {
-            Write-Host "     Last 20 lines of $sourceLog:" -ForegroundColor Red
+            Write-Host "     Last 20 lines of ${sourceLog}:" -ForegroundColor Red
             Get-Content -Tail 20 $sourceLog | ForEach-Object { Write-Host "       $_" -ForegroundColor Red }
         } else {
             Write-Host "     (both log files are empty — likely a hung warmup; check KIRO_CMD)" -ForegroundColor Red
