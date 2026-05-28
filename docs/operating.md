@@ -42,6 +42,27 @@ make build
 If PowerShell blocks execution due to execution policy, run via:
 `powershell -ExecutionPolicy Bypass -File .\scripts\otto-gw.ps1 start`
 
+## Auth posture
+
+### Auth posture quick reference
+
+Otto Gateway enforces bearer-token auth via `AuthHook` on all model-execution
+routes. Two routes are exempt by intentional design; document them here so
+operators don't surface them on untrusted networks.
+
+- **`/admin` UI is auth-exempt by design** (Phase 6.1 D-01). Bind the gateway
+  to localhost or front with reverse-proxy auth in production. See
+  `### v1 no-auth posture` below (under `## Admin Observability UI`) for full
+  rationale and operator guidance.
+- **Ollama list-mode stubs bypass `AuthHook`** — `/api/tags`, `/api/ps`,
+  `/api/show`, `/api/copy`, `/api/delete`, `/api/pull`, `/api/push`,
+  `/api/create` — because they don't route through the canonical engine. The
+  IP allowlist (`ALLOWED_IPS`) still applies. Accepted v1 risk — see
+  `#### Accepted v1 risks` below (under `### Phase 8 — Plugin chain (hooks)`).
+
+**Do not expose `:11434/admin` or the Ollama list-mode endpoints on untrusted
+networks without operator-side mitigation.**
+
 ## Subcommands
 
 | Subcommand | Description |
