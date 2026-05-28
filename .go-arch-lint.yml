@@ -97,6 +97,21 @@ deps:
                 # for the canonical-layer AuthHook. Header-parse helper only;
                 # auth.Bearer middleware stays in the server router until
                 # slice 5 removes it.
+      - plugin  # Phase 8 OBSV-03 / 08-05 Task 4b: read X-Request-Id off
+                # the inbound request, mint via plugin.NewRequestID()
+                # when absent, and stamp ctx via plugin.WithRequestID
+                # BEFORE engine.Run/engine.Collect. Mirrors the
+                # canonical.WithBearerToken stamp for the bearer
+                # credential. Required so LoggingHook's sync.Map keyed
+                # by request_id (slice 3) + PIIRedactionHook's summary
+                # stash (slice 4) share a non-empty correlation key.
+      - plugin_pii  # Phase 8 D-04 / 08-05 Task 4b: stamp the per-request
+                    # *pii.Summary via pii.WithSummary BEFORE engine
+                    # entry so PIIRedactionHook (populator) and
+                    # LoggingHook (consumer) share one pointer via ctx.
+                    # Without this stamp PIIRedactionHook falls back to
+                    # a local Summary (counter bookkeeping correct) but
+                    # LoggingHook omits the `redacted` slog attr.
   adapter_anthropic:
     anyVendorDeps: true
     mayDependOn:
@@ -106,6 +121,10 @@ deps:
                 # adapter_ollama. Anthropic checks x-api-key first per
                 # Phase 3.1 D-15, then falls back to auth.ExtractToken
                 # for the Bearer path.
+      - plugin  # Phase 8 OBSV-03 / 08-05 Task 4b: same X-Request-Id
+                # ctx-stamp rationale as adapter_ollama.
+      - plugin_pii  # Phase 8 D-04 / 08-05 Task 4b: same pii.Summary
+                    # ctx-stamp rationale as adapter_ollama.
   adapter_openai:
     anyVendorDeps: true
     mayDependOn:
@@ -118,6 +137,10 @@ deps:
       - auth    # Phase 8 PLUG-03 / 08-02 Task 4: same rationale as
                 # adapter_ollama — call auth.ExtractToken to stamp the
                 # bearer credential on ctx for AuthHook.
+      - plugin  # Phase 8 OBSV-03 / 08-05 Task 4b: same X-Request-Id
+                # ctx-stamp rationale as adapter_ollama.
+      - plugin_pii  # Phase 8 D-04 / 08-05 Task 4b: same pii.Summary
+                    # ctx-stamp rationale as adapter_ollama.
   auth:
     anyVendorDeps: true
   canonical:

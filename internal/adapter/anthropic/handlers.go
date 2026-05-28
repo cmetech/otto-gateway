@@ -7,8 +7,25 @@ import (
 
 	"otto-gateway/internal/auth"
 	"otto-gateway/internal/canonical"
+	"otto-gateway/internal/plugin"
+	"otto-gateway/internal/plugin/pii"
 	"otto-gateway/internal/session"
 )
+
+// stampPluginCtx is the shared per-request ctx-stamp for the Anthropic
+// surface. Honors inbound X-Request-Id (mints ULID when absent) and
+// stamps a fresh *pii.Summary so PIIRedactionHook + LoggingHook share
+// one pointer via ctx. Mirrors the ollama / openai helpers. Phase 8
+// OBSV-03 / D-04 slice 5 Task 4b.
+func stampPluginCtx(ctx context.Context, r *http.Request) context.Context {
+	reqID := r.Header.Get("X-Request-Id")
+	if reqID == "" {
+		reqID = plugin.NewRequestID()
+	}
+	ctx = plugin.WithRequestID(ctx, reqID)
+	ctx = pii.WithSummary(ctx, pii.NewSummary())
+	return ctx
+}
 
 // PHASE 6 INVARIANT: Anthropic does NOT call engine.CoerceToolCall.
 //
@@ -129,6 +146,9 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 		token = auth.ExtractToken(r)
 	}
 	ctx := canonical.WithBearerToken(r.Context(), token)
+	// Phase 8 OBSV-03 / D-04 — request_id + pii.Summary ctx-stamp
+	// (slice 5 Task 4b). Same shape as ollama / openai stamps.
+	ctx = stampPluginCtx(ctx, r)
 
 	// Plan 05-03 D-04..D-11: X-Session-Id branch.
 	eng, entry, sErr := a.resolveEngine(r)

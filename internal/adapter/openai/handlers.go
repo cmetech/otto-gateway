@@ -9,8 +9,25 @@ import (
 	"otto-gateway/internal/auth"
 	"otto-gateway/internal/canonical"
 	"otto-gateway/internal/engine"
+	"otto-gateway/internal/plugin"
+	"otto-gateway/internal/plugin/pii"
 	"otto-gateway/internal/session"
 )
+
+// stampPluginCtx is the shared per-request ctx-stamp for the OpenAI
+// surface. Honors inbound X-Request-Id (mints ULID when absent) and
+// stamps a fresh *pii.Summary so PIIRedactionHook + LoggingHook share
+// one pointer via ctx. Mirrors the ollama-side helper. Phase 8
+// OBSV-03 / D-04 slice 5 Task 4b.
+func stampPluginCtx(ctx context.Context, r *http.Request) context.Context {
+	reqID := r.Header.Get("X-Request-Id")
+	if reqID == "" {
+		reqID = plugin.NewRequestID()
+	}
+	ctx = plugin.WithRequestID(ctx, reqID)
+	ctx = pii.WithSummary(ctx, pii.NewSummary())
+	return ctx
+}
 
 // handleChatCompletions handles POST /chat/completions.
 //
@@ -61,6 +78,9 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 	// migration boundary. T-8-AUTH-4: never log the raw token — the
 	// stamp is silent.
 	ctx := canonical.WithBearerToken(r.Context(), auth.ExtractToken(r))
+	// Phase 8 OBSV-03 / D-04 — request_id + pii.Summary ctx-stamp
+	// (slice 5 Task 4b). Mirrors handleChat in ollama.
+	ctx = stampPluginCtx(ctx, r)
 
 	// Plan 05-03 D-04..D-11: X-Session-Id branch.
 	eng, entry, sErr := a.resolveEngine(r)
@@ -197,6 +217,10 @@ func (a *Adapter) handleCompletions(w http.ResponseWriter, r *http.Request) {
 	// handleChatCompletions; AuthHook on the chain validates uniformly
 	// for both endpoints. See 08-PATTERNS.md Pattern F.
 	ctx := canonical.WithBearerToken(r.Context(), auth.ExtractToken(r))
+	// Phase 8 OBSV-03 / D-04 — request_id + pii.Summary ctx-stamp
+	// (slice 5 Task 4b). Mirrors handleChat in ollama. Both
+	// handleChatCompletions and handleCompletions stamp here.
+	ctx = stampPluginCtx(ctx, r)
 
 	// Plan 05-03: X-Session-Id branch (same shape as handleChatCompletions).
 	eng, entry, sErr := a.resolveEngine(r)

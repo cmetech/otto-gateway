@@ -11,8 +11,26 @@ import (
 	"otto-gateway/internal/auth"
 	"otto-gateway/internal/canonical"
 	"otto-gateway/internal/engine"
+	"otto-gateway/internal/plugin"
+	"otto-gateway/internal/plugin/pii"
 	"otto-gateway/internal/session"
 )
+
+// stampPluginCtx is the shared per-request ctx-stamp shape used by
+// both /api/chat and /api/generate. It honors an inbound X-Request-Id
+// header, mints a fresh ULID via plugin.NewRequestID when absent, and
+// stamps a fresh per-request *pii.Summary so the PIIRedactionHook
+// (populator) and LoggingHook (consumer) share the same pointer via
+// ctx. Phase 8 OBSV-03 / D-04 production-path seam (slice 5 Task 4b).
+func stampPluginCtx(ctx context.Context, r *http.Request) context.Context {
+	reqID := r.Header.Get("X-Request-Id")
+	if reqID == "" {
+		reqID = plugin.NewRequestID()
+	}
+	ctx = plugin.WithRequestID(ctx, reqID)
+	ctx = pii.WithSummary(ctx, pii.NewSummary())
+	return ctx
+}
 
 // Body-cap sizes per endpoint (Codex M-5 / threat T-02-29). Chat and
 // generate accept large LangFlow transcripts; show is small; stubs are
@@ -57,6 +75,12 @@ func (a *Adapter) handleChat(w http.ResponseWriter, r *http.Request) {
 	// migration boundary. T-8-AUTH-4: never log the raw token — the
 	// stamp is silent.
 	ctx := canonical.WithBearerToken(r.Context(), auth.ExtractToken(r))
+	// Phase 8 OBSV-03 / D-04 — stamp the per-request request_id +
+	// pii.Summary onto ctx BEFORE engine entry so RequestIDHook
+	// honors the inbound id, LoggingHook's sync.Map keyed by
+	// request_id stays correlation-safe, and PIIRedactionHook +
+	// LoggingHook share one *Summary pointer (slice 5 Task 4b).
+	ctx = stampPluginCtx(ctx, r)
 
 	// Plan 05-03 D-04..D-11: when X-Session-Id is present AND the registry
 	// + factory closure are wired, route through a per-request engine bound
@@ -206,6 +230,9 @@ func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 	// See handleChat for the migration-boundary rationale (08-PATTERNS
 	// Pattern F). T-8-AUTH-4: token never logged.
 	ctx := canonical.WithBearerToken(r.Context(), auth.ExtractToken(r))
+	// Phase 8 OBSV-03 / D-04 — request_id + pii.Summary ctx-stamp
+	// (slice 5 Task 4b). See handleChat for the full rationale.
+	ctx = stampPluginCtx(ctx, r)
 
 	// Plan 05-03: X-Session-Id branch (same shape as handleChat).
 	eng, entry, sErr := a.resolveEngine(r)
