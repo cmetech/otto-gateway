@@ -172,8 +172,9 @@ func TestOpenAI_StreamingShortCircuit_ChatCompletions(t *testing.T) {
 	// T-08.1-HEADER-LEAK regression detector — text/event-stream MUST
 	// NOT leak from runSSEEmitter).
 	ct := resp.Header.Get("Content-Type")
-	if !strings.HasPrefix(ct, "application/json") {
-		t.Errorf("Content-Type: got %q, want application/json prefix (text/event-stream leak == header-leak regression)", ct)
+	if ct != "application/json" {
+		t.Errorf("Content-Type: got %q, want exactly %q (Pitfall 3 / T-08.1-HEADER-LEAK — text/event-stream leak OR charset suffix == regression)",
+			ct, "application/json")
 	}
 	// Wire-invariant 3: body decodes as OpenAI nested envelope; Error.Type
 	// == "authentication_error" (T-08.1-WIRE-TYPE-DRIFT regression detector
