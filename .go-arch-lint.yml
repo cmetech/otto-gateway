@@ -91,11 +91,21 @@ deps:
                 # those code paths); CoerceToolCall is a package-level
                 # function with no engine state, so the direct import is
                 # acceptable per the Phase 6 per-surface contract.
+      - auth    # Phase 8 PLUG-03 / 08-02 Task 4: call auth.ExtractToken
+                # to parse the bearer credential off Authorization / x-api-key
+                # headers and stamp it on ctx via canonical.WithBearerToken
+                # for the canonical-layer AuthHook. Header-parse helper only;
+                # auth.Bearer middleware stays in the server router until
+                # slice 5 removes it.
   adapter_anthropic:
     anyVendorDeps: true
     mayDependOn:
       - canonical
       - session
+      - auth    # Phase 8 PLUG-03 / 08-02 Task 4: same rationale as
+                # adapter_ollama. Anthropic checks x-api-key first per
+                # Phase 3.1 D-15, then falls back to auth.ExtractToken
+                # for the Bearer path.
   adapter_openai:
     anyVendorDeps: true
     mayDependOn:
@@ -105,6 +115,9 @@ deps:
                 # engine.CoerceToolCall is a stateless package-level
                 # function invoked from both the non-streaming handler
                 # path and the streaming end-of-stream coerce path.
+      - auth    # Phase 8 PLUG-03 / 08-02 Task 4: same rationale as
+                # adapter_ollama — call auth.ExtractToken to stamp the
+                # bearer credential on ctx for AuthHook.
   auth:
     anyVendorDeps: true
   canonical:

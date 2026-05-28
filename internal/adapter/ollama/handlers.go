@@ -8,6 +8,8 @@ import (
 	"runtime/debug"
 	"time"
 
+	"otto-gateway/internal/auth"
+	"otto-gateway/internal/canonical"
 	"otto-gateway/internal/engine"
 	"otto-gateway/internal/session"
 )
@@ -47,6 +49,15 @@ func (a *Adapter) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	req := wireToChatRequest(&wire, r)
 
+	// Phase 8 PLUG-03 — stamp the bearer credential onto ctx so AuthHook
+	// (canonical-layer Pre hook) can validate. The auth.Bearer chi
+	// middleware remains active (defense-in-depth during slice-5 wiring);
+	// when AuthHook is wired into the chain in main.go, the middleware
+	// will be removed in one atomic commit. See 08-PATTERNS.md Pattern F
+	// migration boundary. T-8-AUTH-4: never log the raw token — the
+	// stamp is silent.
+	ctx := canonical.WithBearerToken(r.Context(), auth.ExtractToken(r))
+
 	// Plan 05-03 D-04..D-11: when X-Session-Id is present AND the registry
 	// + factory closure are wired, route through a per-request engine bound
 	// to the dedicated *session.Entry. Empty sid OR missing wiring falls
@@ -74,7 +85,7 @@ func (a *Adapter) handleChat(w http.ResponseWriter, r *http.Request) {
 	if !streamEnabled(wire.Stream) {
 		// stream:false — non-streaming path: collect and return a single JSON object.
 		start := time.Now()
-		resp, err := eng.Collect(r.Context(), req)
+		resp, err := eng.Collect(ctx, req)
 		if err != nil {
 			// T-02-33: log the raw error structurally; respond with a
 			// neutral generic message that cannot echo request content.
@@ -115,17 +126,19 @@ func (a *Adapter) handleChat(w http.ResponseWriter, r *http.Request) {
 	// req.Tools available.
 	//
 	// D-07: derive a cancelFn so emitNDJSONChunk can signal write failure
-	// back to the engine watchdog via context cancellation.
-	ctx, cancelFn := context.WithCancel(r.Context())
+	// back to the engine watchdog via context.cancellation. Derive from the
+	// bearer-stamped ctx so AuthHook still sees the credential when the
+	// chain runs inside eng.Run on the streaming path.
+	streamCtx, cancelFn := context.WithCancel(ctx)
 	defer cancelFn()
 
-	run, err := eng.Run(ctx, req)
+	run, err := eng.Run(streamCtx, req)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	start := time.Now()
-	if emitErr := runNDJSONEmitter(ctx, cancelFn, w, run, wire.Model, true, start, a.cfg.Logger, req); emitErr != nil {
+	if emitErr := runNDJSONEmitter(streamCtx, cancelFn, w, run, wire.Model, true, start, a.cfg.Logger, req); emitErr != nil {
 		a.cfg.Logger.Debug("ollama: ndjson chat emitter error", "err", emitErr)
 	}
 }
@@ -189,6 +202,11 @@ func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 
 	req := wireGenerateToChatRequest(&wire, r)
 
+	// Phase 8 PLUG-03 — stamp bearer credential onto ctx for AuthHook.
+	// See handleChat for the migration-boundary rationale (08-PATTERNS
+	// Pattern F). T-8-AUTH-4: token never logged.
+	ctx := canonical.WithBearerToken(r.Context(), auth.ExtractToken(r))
+
 	// Plan 05-03: X-Session-Id branch (same shape as handleChat).
 	eng, entry, sErr := a.resolveEngine(r)
 	if sErr != nil {
@@ -208,7 +226,7 @@ func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 	if !streamEnabled(wire.Stream) {
 		// stream:false — non-streaming path: collect and return a single JSON object.
 		start := time.Now()
-		resp, err := eng.Collect(r.Context(), req)
+		resp, err := eng.Collect(ctx, req)
 		if err != nil {
 			// T-02-33: log the raw error structurally; respond with a
 			// neutral generic message that cannot echo request content.
@@ -224,11 +242,12 @@ func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 
 	// stream:true (default when absent) — NDJSON streaming path (Phase 4).
 	// D-07: derive a cancelFn so emitNDJSONChunk can signal write failure back
-	// to the engine watchdog via context cancellation.
-	ctx, cancelFn := context.WithCancel(r.Context())
+	// to the engine watchdog via context cancellation. Derive from the
+	// bearer-stamped ctx so AuthHook sees the credential.
+	streamCtx, cancelFn := context.WithCancel(ctx)
 	defer cancelFn()
 
-	run, err := eng.Run(ctx, req)
+	run, err := eng.Run(streamCtx, req)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -237,7 +256,7 @@ func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 	// Generate has no tools[] — pass req so the emitter signature stays
 	// uniform; the streaming-coerce buffering logic only activates when
 	// len(req.Tools) > 0 so this is a no-op for /api/generate in practice.
-	if emitErr := runNDJSONEmitter(ctx, cancelFn, w, run, wire.Model, false, start, a.cfg.Logger, req); emitErr != nil {
+	if emitErr := runNDJSONEmitter(streamCtx, cancelFn, w, run, wire.Model, false, start, a.cfg.Logger, req); emitErr != nil {
 		a.cfg.Logger.Debug("ollama: ndjson generate emitter error", "err", emitErr)
 	}
 }

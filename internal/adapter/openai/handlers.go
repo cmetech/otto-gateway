@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"otto-gateway/internal/auth"
 	"otto-gateway/internal/canonical"
 	"otto-gateway/internal/engine"
 	"otto-gateway/internal/session"
@@ -52,6 +53,15 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 
 	req := wireToChatRequest(&wire, r)
 
+	// Phase 8 PLUG-03 — stamp the bearer credential onto ctx so AuthHook
+	// (canonical-layer Pre hook) can validate. The auth.Bearer chi
+	// middleware remains active (defense-in-depth during slice-5 wiring);
+	// when AuthHook is wired into the chain in main.go, the middleware
+	// will be removed in one atomic commit. See 08-PATTERNS.md Pattern F
+	// migration boundary. T-8-AUTH-4: never log the raw token — the
+	// stamp is silent.
+	ctx := canonical.WithBearerToken(r.Context(), auth.ExtractToken(r))
+
 	// Plan 05-03 D-04..D-11: X-Session-Id branch.
 	eng, entry, sErr := a.resolveEngine(r)
 	if sErr != nil {
@@ -73,6 +83,8 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 		// D-07: create a derived context so that a write failure in
 		// runSSEEmitter cancels the derived ctx (via defer cancelFn), which
 		// the D-06 watchdog observes and translates into session/cancel.
+		// Derive from the bearer-stamped ctx so AuthHook sees the
+		// credential when the chain runs inside eng.Run.
 		//
 		// Phase 6 (REVIEW HIGH #1 + iteration-3 sawKiroNativeToolCall):
 		// the streaming branch threads the canonical `req` pointer down
@@ -82,9 +94,9 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 		// composes. Iteration 3: sse.go also tracks sawKiroNativeToolCall
 		// and skips coerce when true (prevents the iteration-2 double-fire
 		// regression).
-		ctx, cancelFn := context.WithCancel(r.Context())
+		streamCtx, cancelFn := context.WithCancel(ctx)
 		defer cancelFn()
-		runHandle, err := eng.Run(ctx, req)
+		runHandle, err := eng.Run(streamCtx, req)
 		if err != nil {
 			// engine.Run failed BEFORE any SSE headers were written — safe to
 			// respond with a normal JSON 500 envelope (T-02-33: log raw, generic message).
@@ -92,7 +104,7 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 			writeError(w, http.StatusInternalServerError, errAPI, "internal error")
 			return
 		}
-		if err := runSSEEmitter(ctx, w, runHandle, req, wire.Model, a.cfg.Logger); err != nil {
+		if err := runSSEEmitter(streamCtx, w, runHandle, req, wire.Model, a.cfg.Logger); err != nil {
 			// runSSEEmitter has already written SSE headers + at least some frames.
 			// We cannot send a JSON 500 after WriteHeader; log at debug and let
 			// the truncated stream stand (Pitfall 3 / A5).
@@ -102,7 +114,7 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Non-streaming path (SC1 curl use case).
-	resp, err := eng.Collect(r.Context(), req)
+	resp, err := eng.Collect(ctx, req)
 	if err != nil {
 		// T-02-33: log raw error, respond with generic message.
 		a.cfg.Logger.Error("openai: engine.Collect error", "err", err)
@@ -181,6 +193,11 @@ func (a *Adapter) handleCompletions(w http.ResponseWriter, r *http.Request) {
 		WorkingDirOverride: r.Header.Get("X-Working-Dir"),
 	}
 
+	// Phase 8 PLUG-03 — same bearer-credential ctx-stamp as
+	// handleChatCompletions; AuthHook on the chain validates uniformly
+	// for both endpoints. See 08-PATTERNS.md Pattern F.
+	ctx := canonical.WithBearerToken(r.Context(), auth.ExtractToken(r))
+
 	// Plan 05-03: X-Session-Id branch (same shape as handleChatCompletions).
 	eng, entry, sErr := a.resolveEngine(r)
 	if sErr != nil {
@@ -197,7 +214,7 @@ func (a *Adapter) handleCompletions(w http.ResponseWriter, r *http.Request) {
 		defer entry.MarkUsed()
 	}
 
-	resp, err := eng.Collect(r.Context(), req)
+	resp, err := eng.Collect(ctx, req)
 	if err != nil {
 		// T-02-33: log raw error, respond with generic message.
 		a.cfg.Logger.Error("openai: completions engine.Collect error", "err", err)

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net/http"
 
+	"otto-gateway/internal/auth"
+	"otto-gateway/internal/canonical"
 	"otto-gateway/internal/session"
 )
 
@@ -106,6 +108,28 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 
 	req := wireToChatRequest(&wire, r, a.cfg.Logger)
 
+	// Phase 8 PLUG-03 — stamp the bearer credential onto ctx so AuthHook
+	// (canonical-layer Pre hook) can validate. The auth.Bearer chi
+	// middleware remains active (defense-in-depth during slice-5 wiring);
+	// when AuthHook is wired into the chain in main.go, the middleware
+	// will be removed in one atomic commit. See 08-PATTERNS.md Pattern F
+	// migration boundary.
+	//
+	// Anthropic dual-header per Phase 3.1 D-15: x-api-key takes
+	// precedence (Anthropic SDK convention), with Bearer fallback via
+	// auth.ExtractToken. This MIRRORS the Bearer middleware's
+	// precedence (Authorization-wins) but with the per-surface
+	// inversion the Anthropic SDK expects on the way IN. AuthHook
+	// validates whichever token the adapter resolved here — the
+	// per-surface precedence does NOT leak into the canonical layer.
+	//
+	// T-8-AUTH-4: never log the raw token — the stamp is silent.
+	token := r.Header.Get("x-api-key")
+	if token == "" {
+		token = auth.ExtractToken(r)
+	}
+	ctx := canonical.WithBearerToken(r.Context(), token)
+
 	// Plan 05-03 D-04..D-11: X-Session-Id branch.
 	eng, entry, sErr := a.resolveEngine(r)
 	if sErr != nil {
@@ -126,9 +150,11 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 		// D-07: create a derived context so that a write failure in
 		// runSSEEmitter cancels the derived ctx (via defer cancelFn), which
 		// the D-06 watchdog observes and translates into session/cancel.
-		ctx, cancelFn := context.WithCancel(r.Context())
+		// Derive from the bearer-stamped ctx so AuthHook sees the
+		// credential when the chain runs inside eng.Run.
+		streamCtx, cancelFn := context.WithCancel(ctx)
 		defer cancelFn()
-		runHandle, err := eng.Run(ctx, req)
+		runHandle, err := eng.Run(streamCtx, req)
 		if err != nil {
 			// Engine.Run failed BEFORE any SSE headers were written —
 			// respond with a normal JSON 500 envelope (T-02-33: never
@@ -137,7 +163,7 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, errAPI, "internal error")
 			return
 		}
-		if err := runSSEEmitter(ctx, w, runHandle, wire.Model, a.cfg.Logger); err != nil {
+		if err := runSSEEmitter(streamCtx, w, runHandle, wire.Model, a.cfg.Logger); err != nil {
 			// runSSEEmitter has already written SSE headers + frames
 			// (the error path inside the emitter handles its own
 			// `event: error` frame on mid-stream Result() errors —
@@ -158,7 +184,7 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// from kiro-native ChunkKindToolCall chunks on the non-streaming
 	// path — Anthropic's wire protocol has tool_use as a native
 	// first-class element and the SDK expects it that way.
-	resp, err := CollectAnthropicChat(r.Context(), eng, req)
+	resp, err := CollectAnthropicChat(ctx, eng, req)
 	if err != nil {
 		// T-02-33: log the raw error structurally; respond with a
 		// neutral generic message that cannot echo request content.

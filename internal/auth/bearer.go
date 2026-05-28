@@ -16,9 +16,13 @@ import (
 // <token>` ONLY when the Authorization header is absent or non-Bearer.
 // Authorization wins when both are present — a request with a bad
 // Bearer alongside a stolen x-api-key is rejected. The extraction is
-// delegated to extractToken (declared below) so the contract has a
-// single source of truth that both the middleware and the package's
-// whitebox tests exercise.
+// delegated to ExtractToken (declared below) so the contract has a
+// single source of truth that the middleware, the package's whitebox
+// tests, AND the per-surface adapter handlers (Phase 8 Plan 08-02
+// Task 4) exercise. The helper was renamed from `extractToken` to
+// `ExtractToken` in slice 08-02 so the three adapter packages can call
+// it directly when stamping the bearer credential onto ctx for the
+// canonical-layer AuthHook.
 //
 // When cfg.Tokens is empty (len == 0), the middleware is a passthrough
 // (matches the Node reference behaviour when AUTH_TOKEN is unset, per D-14).
@@ -37,7 +41,7 @@ func Bearer(cfg Config) func(http.Handler) http.Handler {
 				return
 			}
 
-			provided := extractToken(r)
+			provided := ExtractToken(r)
 			if provided == "" {
 				writeOllamaError(w, http.StatusUnauthorized, "Invalid or missing API key")
 				return
@@ -59,7 +63,7 @@ func Bearer(cfg Config) func(http.Handler) http.Handler {
 	}
 }
 
-// extractToken implements the D-15 dual-header precedence contract:
+// ExtractToken implements the D-15 dual-header precedence contract:
 // try `Authorization: Bearer <token>` first, fall back to `x-api-key:
 // <token>` only when Authorization is absent or non-Bearer. Returns
 // the empty string when neither path yields a credential. The scheme
@@ -76,10 +80,17 @@ func Bearer(cfg Config) func(http.Handler) http.Handler {
 // holds for ALL RFC-valid spellings — a downgrade attacker cannot
 // bypass the guard by lowercasing the scheme.
 //
+// EXPORTED in Phase 8 Plan 08-02 Task 4 so the per-surface adapter
+// handlers (ollama, openai) can extract the bearer credential and
+// stamp it onto ctx via canonical.WithBearerToken for the
+// canonical-layer AuthHook to consume. The Anthropic adapter handles
+// its own dual-header precedence (x-api-key first per the surface's
+// SDK convention) and calls ExtractToken only for the Bearer fallback.
+//
 // The package-private auth_internal_test.go pins this contract with
 // table-driven cases; TestBearer_DualHeader in auth_test.go validates
 // the same contract end-to-end through the middleware.
-func extractToken(r *http.Request) string {
+func ExtractToken(r *http.Request) string {
 	const bearerPrefix = "Bearer "
 	authHeader := r.Header.Get("Authorization")
 	// RFC 7235 §2.1 + RFC 6750: the auth-scheme token is case-insensitive.
