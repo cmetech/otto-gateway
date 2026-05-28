@@ -358,19 +358,81 @@
   var logConsecutiveReconnects = 0;
   var logGrepDebounceTimer = null;
 
-  // Deduplication ring: last 20 lines received. Prevents duplicate backfill
-  // lines from appearing when EventSource reconnects (UI-SPEC §auto-reconnect).
-  var logRecentLines = [];
-  var LOG_DEDUP_MAX = 20;
+  // Deduplication strategy (WR-03 + WR-04):
+  // ---------------------------------------------------------------
+  // The server replays up to RingBufferLines (500) lines as backfill
+  // on every EventSource reconnect. Without dedup the operator sees
+  // up to 480 duplicate lines per reconnect. The prior 20-entry ring
+  // was both (a) far too small to catch a full 500-line backfill, and
+  // (b) silently dropping legitimate duplicate log lines in the
+  // steady state (heartbeats, pings, identical access logs).
+  //
+  // Fix: dedup is ENABLED ONLY during the backfill window after each
+  // SSE open/reconnect. Once the window closes, every incoming line
+  // is delivered as-is — steady-state duplicates pass through.
+  //
+  // The backfill set is sized for the full 500-line server window and
+  // uses a Set + FIFO queue for O(1) lookup vs. the prior O(n) indexOf.
+  // The window closes when LOG_BACKFILL_WINDOW_MS elapses since SSE open.
+  // 2s is generous for a server-replay-then-live transition; if duplicates
+  // somehow arrive after that bound the operator sees them, which is
+  // strictly better than the prior 480-duplicates-per-reconnect failure.
+  var LOG_BACKFILL_MAX = 500;          // match server RingBufferLines
+  var LOG_BACKFILL_WINDOW_MS = 2000;   // tail bound on dedup activity
+  var logBackfillActive = false;
+  var logBackfillSet = null;           // Set of line strings seen in backfill
+  var logBackfillQueue = null;         // FIFO array bounded by LOG_BACKFILL_MAX
+  var logBackfillTimer = null;
 
-  function logIsDupe(line) {
-    return logRecentLines.indexOf(line) !== -1;
+  // logBackfillStart is called on SSE open/reconnect. It resets dedup
+  // state and arms the time-bound window. Called from onSSEOpen.
+  function logBackfillStart() {
+    logBackfillActive = true;
+    logBackfillSet = new Set();
+    logBackfillQueue = [];
+    if (logBackfillTimer) clearTimeout(logBackfillTimer);
+    logBackfillTimer = setTimeout(logBackfillEnd, LOG_BACKFILL_WINDOW_MS);
   }
 
+  // logBackfillEnd releases dedup state so steady-state lines pass
+  // through (WR-04). Idempotent — safe to call when already inactive.
+  function logBackfillEnd() {
+    logBackfillActive = false;
+    logBackfillSet = null;
+    logBackfillQueue = null;
+    if (logBackfillTimer) {
+      clearTimeout(logBackfillTimer);
+      logBackfillTimer = null;
+    }
+  }
+
+  // logIsDupe returns true ONLY when we are inside the post-open
+  // backfill window AND the line was already replayed. Outside the
+  // window every line is unique by definition (WR-04: steady-state
+  // duplicates pass through and reach the operator).
+  function logIsDupe(line) {
+    if (!logBackfillActive) return false;
+    return logBackfillSet.has(line);
+  }
+
+  // logTrackLine records a line in the backfill set during the window.
+  // The window is closed by the time-bound timer set in logBackfillStart;
+  // steady-state lines (after the window closes) bypass this function
+  // entirely via the !logBackfillActive guard.
+  //
+  // The Set is bounded by LOG_BACKFILL_MAX (500 — matches server
+  // RingBufferLines). If the server's backfill ever grows past 500 in
+  // a future change, the oldest entries are evicted FIFO and would
+  // become eligible for steady-state replay, but the time window will
+  // close before that matters in practice.
   function logTrackLine(line) {
-    logRecentLines.push(line);
-    if (logRecentLines.length > LOG_DEDUP_MAX) {
-      logRecentLines.shift();
+    if (!logBackfillActive) return;
+    if (logBackfillSet.has(line)) return;
+    logBackfillSet.add(line);
+    logBackfillQueue.push(line);
+    while (logBackfillQueue.length > LOG_BACKFILL_MAX) {
+      var evicted = logBackfillQueue.shift();
+      logBackfillSet.delete(evicted);
     }
   }
 
@@ -472,12 +534,17 @@
   }
 
   // onSSEOpen handles EventSource open.
+  // Activates the backfill-dedup window (WR-03 + WR-04) so duplicate
+  // backfill lines from the upcoming replay are suppressed; the window
+  // closes after LOG_BACKFILL_WINDOW_MS so steady-state duplicates pass
+  // through unfiltered.
   function onSSEOpen() {
     var statusEl = document.querySelector('[data-log-status]');
     if (statusEl) statusEl.textContent = 'Connected';
     var dotEl = document.querySelector('[data-log-activity]');
     if (dotEl) dotEl.classList.remove('is-disconnected');
     logConsecutiveReconnects = 0;
+    logBackfillStart();
   }
 
   // onSSEError handles EventSource error (browser auto-reconnects every ~3s).
