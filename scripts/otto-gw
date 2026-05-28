@@ -6,7 +6,7 @@
 #   start | stop | status | restart | logs [-f] | run | env
 #
 # Wrapper env overrides (where logs/pids/binary live):
-#   OTTO_BIN, OTTO_PID, OTTO_LOG, OTTO_ADDR
+#   OTTO_BIN, OTTO_PID, OTTO_LOG, OTTO_LOG_BOOT, OTTO_STATE_DIR, OTTO_ADDR
 #
 # Gateway config flags (for start | restart | run):
 #   --pii MODE          off | replace | mask | hash | drop
@@ -25,7 +25,12 @@
 set -euo pipefail
 
 OTTO_BIN="${OTTO_BIN:-./bin/otto-gateway}"
-OTTO_PID="${OTTO_PID:-/tmp/otto-gateway.pid}"
+# OTTO_PID lives under .otto/gw/ (project-local) rather than /tmp/ — some
+# laptop setups (sandboxed shells, hardened tmp policies, network drives
+# mapped to /tmp) make /tmp non-writable. The .otto/ namespace is shared
+# with the OTTER client; we nest under gw/ to avoid name collisions.
+OTTO_STATE_DIR="${OTTO_STATE_DIR:-./.otto/gw}"
+OTTO_PID="${OTTO_PID:-${OTTO_STATE_DIR}/otto-gateway.pid}"
 # OTTO_LOG = the structured rotated log the gateway owns (via timberjack).
 # OTTO_LOG_BOOT = a small sidecar that captures crash output + kiro-cli
 # stderr + any pre-logger panic — rarely consulted, invaluable on incident.
@@ -219,12 +224,17 @@ start() {
         rm -f "$OTTO_PID"
     fi
     load_config
-    # Ensure the log directory exists — supports the packaged layout
-    # (otto_gateway/logs/) and any custom OTTO_LOG path the operator set.
-    local log_dir
+    # Ensure the log + state directories exist before launch. Supports
+    # both the packaged otto_gateway/{logs,.otto/gw}/ layout and any
+    # custom OTTO_LOG / OTTO_PID paths the operator set.
+    local log_dir state_dir
     log_dir="$(dirname "$OTTO_LOG")"
     if [[ -n "$log_dir" && "$log_dir" != "." ]]; then
         mkdir -p "$log_dir"
+    fi
+    state_dir="$(dirname "$OTTO_PID")"
+    if [[ -n "$state_dir" && "$state_dir" != "." ]]; then
+        mkdir -p "$state_dir"
     fi
     # Gateway env vars are inherited from the current environment
     # automatically — no explicit forwarding needed. Documented set:

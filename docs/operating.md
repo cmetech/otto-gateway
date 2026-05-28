@@ -118,7 +118,7 @@ of OS.
 | File | macOS / Linux default | Windows default |
 |------|-----------------------|-----------------|
 | Binary | `./bin/otto-gateway` | `.\bin\otto-gateway.exe` |
-| PID file | `/tmp/otto-gateway.pid` | `%TEMP%\otto-gateway.pid` |
+| PID file | `./.otto/gw/otto-gateway.pid` | `.\.otto\gw\otto-gateway.pid` |
 | Structured log (rotated) | `./logs/otto-gateway.log` | `.\logs\otto-gateway.log` |
 | Rotated backups | `./logs/otto-gateway-<timestamp>.log.gz` | `.\logs\otto-gateway-<timestamp>.log.gz` |
 | Boot/crash sidecar | `./logs/otto-gateway-boot.log` (stdout+stderr) | `.\logs\otto-gateway.boot-out.log` + `.boot-err.log` |
@@ -137,7 +137,8 @@ above).
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `OTTO_BIN` | `./bin/otto-gateway` (macOS/Linux) / `.\bin\otto-gateway.exe` (Windows) | Path to the gateway binary |
-| `OTTO_PID` | `/tmp/otto-gateway.pid` (macOS/Linux) / `%TEMP%\otto-gateway.pid` (Windows) | PID file location |
+| `OTTO_PID` | `./.otto/gw/otto-gateway.pid` | Full PID file path (overrides `OTTO_STATE_DIR` if both are set). |
+| `OTTO_STATE_DIR` | `./.otto/gw` | Directory the wrapper uses for runtime state. PID file lives inside; nested under `.otto/` to share the namespace with the OTTER client without colliding (subdir = `gw/`). Override to relocate state outside the project (e.g., `$HOME/.local/state/otto-gw` for FHS-friendly setups). |
 | `OTTO_LOG` | `./logs/otto-gateway.log` | Structured log file path. Auto-exported to the binary as `LOG_FILE` for daily timberjack rotation. |
 | `OTTO_LOG_BOOT` | `${OTTO_LOG%.log}-boot.log` (POSIX) | Boot/crash sidecar that captures the gateway's stderr (kiro-cli + panics). |
 | `OTTO_LOGOUT` / `OTTO_LOGERR` | `<log>.boot-out.log` / `<log>.boot-err.log` (Windows) | Boot sidecars (Windows requires separate stdout / stderr files). |

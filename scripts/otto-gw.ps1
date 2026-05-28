@@ -6,7 +6,7 @@
 #   start | stop | status | restart | logs | run | env
 #
 # Wrapper env overrides (where logs/pids/binary live):
-#   $env:OTTO_BIN, $env:OTTO_PID, $env:OTTO_LOG, $env:OTTO_ADDR
+#   $env:OTTO_BIN, $env:OTTO_PID, $env:OTTO_LOG, $env:OTTO_STATE_DIR, $env:OTTO_ADDR
 #
 # Gateway config flags (for start | restart | run | env):
 #   -Pii MODE          off | replace | mask | hash | drop
@@ -48,7 +48,12 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $BinPath    = if ($env:OTTO_BIN)    { $env:OTTO_BIN }    else { ".\bin\otto-gateway.exe" }
-$PidFile    = if ($env:OTTO_PID)    { $env:OTTO_PID }    else { "$env:TEMP\otto-gateway.pid" }
+# PID file lives under .otto\gw\ (project-local) rather than %TEMP%. Some
+# locked-down Windows environments (Group Policy, AppLocker, mapped
+# network temp) make %TEMP% unreliable. The .otto\ namespace is shared
+# with the OTTER client; we nest under gw\ to avoid collisions.
+$StateDir   = if ($env:OTTO_STATE_DIR) { $env:OTTO_STATE_DIR } else { ".\.otto\gw" }
+$PidFile    = if ($env:OTTO_PID)    { $env:OTTO_PID }    else { "$StateDir\otto-gateway.pid" }
 # $LogFile = structured rotated log the gateway owns via timberjack
 # (LOG_FILE env, daily rotation, 7-day retention).
 $LogFile    = if ($env:OTTO_LOG)    { $env:OTTO_LOG }    else { ".\logs\otto-gateway.log" }
@@ -177,11 +182,14 @@ function Start-Gateway {
         Remove-Item $PidFile
     }
     Initialize-Config
-    # Ensure log directory exists — supports packaged layout and any
-    # operator OTTO_LOG override.
+    # Ensure log + state directories exist before launch.
     $logDir = Split-Path -Parent $LogFile
     if ($logDir -and -not (Test-Path $logDir)) {
         New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+    }
+    $stateDir = Split-Path -Parent $PidFile
+    if ($stateDir -and -not (Test-Path $stateDir)) {
+        New-Item -ItemType Directory -Force -Path $stateDir | Out-Null
     }
     # Gateway env vars are inherited from the current environment
     # automatically — Start-Process inherits parent env by default.
