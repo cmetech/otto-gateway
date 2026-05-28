@@ -57,6 +57,21 @@ func CollectAnthropicChat(ctx context.Context, eng Engine, req *canonical.ChatRe
 		return nil, fmt.Errorf("anthropic: collect: %w", err)
 	}
 
+	// Phase 8 SC1 short-circuit: if a PreHook (e.g., AuthHook) returned
+	// a synthesized response, return it verbatim. The chunk-based
+	// aggregator below would otherwise see an empty stream and drop
+	// the hook's user-facing message — handleMessages then detects
+	// StopReason == canonical.StopError and renders the Anthropic
+	// error envelope.
+	if shortCircuit := run.ShortCircuitResponse(); shortCircuit != nil {
+		// Stop the watchdog for parity (it was nil on a short-circuit
+		// Run, but the call is nil-safe).
+		if stop := run.StopWatchdog(); stop != nil {
+			stop()
+		}
+		return shortCircuit, nil
+	}
+
 	var (
 		sb        strings.Builder
 		thoughtSB strings.Builder

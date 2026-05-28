@@ -63,6 +63,13 @@ type RunHandle interface {
 	// returning false is expected on the disconnect path — Cancel is
 	// idempotent. (CONTEXT.md D-06, RESEARCH.md Pattern 2 Option A)
 	StopWatchdog() func() bool
+	// ShortCircuitResponse returns the *canonical.ChatResponse a
+	// PreHook supplied to short-circuit the chain, or nil when ACP was
+	// engaged normally. CollectAnthropicChat uses this to recover the
+	// hook's verbatim response body (Phase 8 SC1) — the chunk-based
+	// aggregator would otherwise drop it because the short-circuit Run
+	// has an empty chunk stream.
+	ShortCircuitResponse() *canonical.ChatResponse
 }
 
 // Stream is the consumer-defined chunk-delivery interface returned by

@@ -760,6 +760,12 @@ func (h anthropicRunHandleAdapter) StopWatchdog() func() bool {
 	return h.run.StopWatchdog()
 }
 
+// ShortCircuitResponse satisfies anthropic.RunHandle.ShortCircuitResponse
+// (Phase 8 SC1). Delegates to the concrete *engine.Run accessor.
+func (h anthropicRunHandleAdapter) ShortCircuitResponse() *canonical.ChatResponse {
+	return h.run.ShortCircuitResponse()
+}
+
 // openaiEngineAdapter wraps a concrete *engine.Engine and adapts its Run
 // signature to openai.Engine. Mirrors anthropicEngineAdapter exactly —
 // same Go return-type-invariance rationale (cmd-level seam, TRST-04).

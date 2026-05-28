@@ -16,6 +16,23 @@ import (
 	"otto-gateway/internal/session"
 )
 
+// shortCircuitMessage extracts the user-facing error message from a
+// PreHook short-circuit envelope (canonical.StopError). The message
+// is in Message.Content[0].Text (slice 2's AuthHook synthesizeAuthError
+// pattern). Falls back to a generic string if the envelope is
+// malformed. Phase 8 SC1.
+func shortCircuitMessage(resp *canonical.ChatResponse) string {
+	if resp == nil {
+		return "request rejected"
+	}
+	for _, part := range resp.Message.Content {
+		if part.Kind == canonical.ContentKindText && part.Text != "" {
+			return part.Text
+		}
+	}
+	return "request rejected"
+}
+
 // stampPluginCtx is the shared per-request ctx-stamp shape used by
 // both /api/chat and /api/generate. It honors an inbound X-Request-Id
 // header, mints a fresh ULID via plugin.NewRequestID when absent, and
@@ -117,6 +134,18 @@ func (a *Adapter) handleChat(w http.ResponseWriter, r *http.Request) {
 			// surfaces (handlers.go:165-167 / handlers.go:107-110).
 			a.cfg.Logger.Error("ollama: engine.Collect error", "err", err)
 			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		// Phase 8 SC1: detect a PreHook short-circuit envelope
+		// (StopReason == StopError) and render the per-surface error
+		// envelope rather than treating it as a normal assistant
+		// response. AuthHook (slice 2) returns this on bad/missing
+		// bearer; future Pre hooks (rate-limit, content-mod) will use
+		// the same discriminator. Status code is 401 because the only
+		// v1 producer is AuthHook; future hooks producing StopError
+		// for non-auth reasons would need a status-mapping helper.
+		if resp != nil && resp.StopReason == canonical.StopError {
+			writeError(w, http.StatusUnauthorized, shortCircuitMessage(resp))
 			return
 		}
 		// Phase 6 D-01: invoke CoerceToolCall on the non-streaming path
@@ -261,6 +290,12 @@ func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 			// surfaces (handlers.go:165-167 / handlers.go:107-110).
 			a.cfg.Logger.Error("ollama: engine.Collect error", "err", err)
 			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		// Phase 8 SC1: same StopError short-circuit detection as
+		// handleChat above.
+		if resp != nil && resp.StopReason == canonical.StopError {
+			writeError(w, http.StatusUnauthorized, shortCircuitMessage(resp))
 			return
 		}
 		writeJSON(w, generateResponseToWire(resp, start, wire.Model))

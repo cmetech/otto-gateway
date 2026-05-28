@@ -45,6 +45,10 @@ const (
 	// errAPI — HTTP 500 / 503. Engine errors, pool errors, missing KIRO_CMD.
 	// Message is always generic — T-02-33 forbids echoing the raw err string.
 	errAPI = "api_error"
+	// errAuthentication — HTTP 401. Phase 8 SC1: rendered when AuthHook
+	// short-circuits via canonical.StopError. The string is load-bearing
+	// — openai SDK clients raise AuthenticationError on this type.
+	errAuthentication = "authentication_error"
 )
 
 // writeError writes the OpenAI error envelope with the given HTTP status.

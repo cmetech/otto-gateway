@@ -131,6 +131,15 @@ func (r *Run) Stream() Stream { return r.stream }
 // Empty string when a PreHook short-circuited and ACP was never touched.
 func (r *Run) SessionID() string { return r.sessionID }
 
+// ShortCircuitResponse returns the *canonical.ChatResponse a PreHook
+// supplied to short-circuit the chain (Codex H-4), or nil when the
+// Run was NOT short-circuited (i.e., ACP was engaged normally). This
+// is the supported way for non-Collect callers (e.g., adapter-local
+// aggregators like CollectAnthropicChat) to recover the PreHook's
+// verbatim response body without ranging the empty chunk stream.
+// Phase 8 SC1 — Anthropic surface short-circuit rendering.
+func (r *Run) ShortCircuitResponse() *canonical.ChatResponse { return r.response }
+
 // StopWatchdog returns the context.AfterFunc stop function registered in
 // Run(). Callers (Collect, NDJSON/SSE emitters) invoke the returned
 // function after natural stream completion to prevent the watchdog goroutine

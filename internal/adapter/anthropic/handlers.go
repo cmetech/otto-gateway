@@ -212,8 +212,32 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, errAPI, "internal error")
 		return
 	}
+	// Phase 8 SC1: detect a PreHook short-circuit envelope
+	// (StopReason == canonical.StopError) and render the Anthropic
+	// error envelope. AuthHook is the v1 producer (bad/missing
+	// bearer); future Pre hooks use the same discriminator. Status
+	// 401 because the only v1 producer is AuthHook.
+	if resp != nil && resp.StopReason == canonical.StopError {
+		writeError(w, http.StatusUnauthorized, errAuthentication, shortCircuitMessage(resp))
+		return
+	}
 
 	writeJSON(w, chatResponseToMessage(resp, wire.Model))
+}
+
+// shortCircuitMessage extracts the user-facing error message from a
+// canonical.StopError envelope (slice 2 AuthHook synthesizeAuthError
+// shape: Message.Content[0].Text). Phase 8 SC1.
+func shortCircuitMessage(resp *canonical.ChatResponse) string {
+	if resp == nil {
+		return "request rejected"
+	}
+	for _, part := range resp.Message.Content {
+		if part.Kind == canonical.ContentKindText && part.Text != "" {
+			return part.Text
+		}
+	}
+	return "request rejected"
 }
 
 // resolveEngine implements the Plan 05-03 X-Session-Id branch for the

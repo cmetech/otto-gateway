@@ -136,9 +136,10 @@ func (r realEngineAdapter) Run(
 
 type realRunHandle struct{ run *engine.Run }
 
-func (h realRunHandle) Stream() Stream         { return h.run.Stream() }
-func (h realRunHandle) SessionID() string      { return h.run.SessionID() }
-func (h realRunHandle) StopWatchdog() func() bool { return h.run.StopWatchdog() }
+func (h realRunHandle) Stream() Stream                                { return h.run.Stream() }
+func (h realRunHandle) SessionID() string                             { return h.run.SessionID() }
+func (h realRunHandle) StopWatchdog() func() bool                     { return h.run.StopWatchdog() }
+func (h realRunHandle) ShortCircuitResponse() *canonical.ChatResponse { return h.run.ShortCircuitResponse() }
 
 // TestIntegration_RealKiroCLI_NonStreaming — Plan 03.1-04 Task 2.
 //

@@ -14,6 +14,21 @@ import (
 	"otto-gateway/internal/session"
 )
 
+// shortCircuitMessage extracts the user-facing error message from a
+// canonical.StopError envelope (slice 2 AuthHook synthesizeAuthError
+// shape: Message.Content[0].Text). Phase 8 SC1.
+func shortCircuitMessage(resp *canonical.ChatResponse) string {
+	if resp == nil {
+		return "request rejected"
+	}
+	for _, part := range resp.Message.Content {
+		if part.Kind == canonical.ContentKindText && part.Text != "" {
+			return part.Text
+		}
+	}
+	return "request rejected"
+}
+
 // stampPluginCtx is the shared per-request ctx-stamp for the OpenAI
 // surface. Honors inbound X-Request-Id (mints ULID when absent) and
 // stamps a fresh *pii.Summary so PIIRedactionHook + LoggingHook share
@@ -141,6 +156,16 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, errAPI, "internal error")
 		return
 	}
+	// Phase 8 SC1: detect a PreHook short-circuit envelope
+	// (StopReason == StopError) and render the per-surface error
+	// envelope. AuthHook is the v1 producer (bad/missing bearer);
+	// future Pre hooks (rate-limit, content-mod) use the same
+	// discriminator. Status 401 because AuthHook is the only v1
+	// producer.
+	if resp != nil && resp.StopReason == canonical.StopError {
+		writeError(w, http.StatusUnauthorized, errAuthentication, shortCircuitMessage(resp))
+		return
+	}
 
 	// Phase 6 D-01: invoke CoerceToolCall on the non-streaming path
 	// between aggregation and per-surface render. The function mutates
@@ -243,6 +268,11 @@ func (a *Adapter) handleCompletions(w http.ResponseWriter, r *http.Request) {
 		// T-02-33: log raw error, respond with generic message.
 		a.cfg.Logger.Error("openai: completions engine.Collect error", "err", err)
 		writeError(w, http.StatusInternalServerError, errAPI, "internal error")
+		return
+	}
+	// Phase 8 SC1: short-circuit detection — same as handleChatCompletions.
+	if resp != nil && resp.StopReason == canonical.StopError {
+		writeError(w, http.StatusUnauthorized, errAuthentication, shortCircuitMessage(resp))
 		return
 	}
 
