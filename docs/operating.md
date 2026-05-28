@@ -103,6 +103,111 @@ through to the gateway binary unchanged.
 | `DEBUG` | `false` | Enable debug-level JSON logging. Accepts `1`, `true`, `0`, or `false`. |
 | `PING_INTERVAL` | `60000` | ACP ping interval. Default: 60 s. Integer values are treated as milliseconds (e.g., `60000` = 60 s); Go duration strings are also accepted (e.g., `"90s"`, `"2m"`). |
 
+### Phase 8 — Plugin chain (hooks)
+
+Phase 8 ships four canonical-layer hooks (RequestIDHook, AuthHook,
+LoggingHook, PIIRedactionHook) wired into a hardcoded chain in
+`cmd/otto-gateway/main.go`. The chain runs on every request that
+reaches the engine, in registration order:
+`RequestID → Auth → PII → Logging` (Pre), with LoggingHook also on
+Post for timing + structured exit records.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ENABLED_HOOKS` | _(empty = all enabled)_ | Comma-split allowlist of hook type names enabled at boot. Default empty means every hook in `main.go`'s slice runs (default-permissive, matches `AUTH_TOKEN` semantics). A name that does not match any registered hook causes the gateway to **refuse to start** with stderr/stdout containing `unknown hook: "<name>"`. Typo-fail-fast — `ENABLED_HOOKS=PIIRedaction` (missing the `Hook` suffix) would silently disable PII redaction; the boot error prevents this. **Registration order is preserved**: `ENABLED_HOOKS=LoggingHook,RequestIDHook` runs as `[RequestIDHook, LoggingHook]`, not the allowlist order. |
+| `PII_REDACTION_ENABLED` | `false` | Master switch for `PIIRedactionHook`. When `false` (default), the hook is present in the chain (visible via `GET /health/hooks`) but is inert — operator must explicitly opt in. Two-knob composition with `ENABLED_HOOKS`: `ENABLED_HOOKS` controls whether the hook is in the chain at all; `PII_REDACTION_ENABLED` controls whether it does work when invoked. |
+| `PII_ENABLED_ENTITIES` | _(empty = all six)_ | Comma-split list of recognizer names. Default empty = all six recognizers active (`Email`, `IPv4`, `IPv6`, `SSN`, `CreditCard`, `USPhone`). Unknown names → boot error. |
+| `PII_REDACTION_MODE` | `replace` | One of `replace`, `mask`, `hash`, `drop`. `replace` substitutes `<EMAIL_N>` tokens with a per-canonical-value counter; `mask` substitutes a partial obfuscation (e.g., `co***@cm***.io`); `hash` substitutes `<EMAIL:h-XXXXXXXX>` with the first 8 hex chars of `HMAC-SHA256(PII_HASH_KEY, canonical(value))`; `drop` substitutes an empty string. Unknown values → boot error. |
+| `PII_HASH_KEY` | _(empty)_ | HMAC-SHA256 key for `PII_REDACTION_MODE=hash`. **Required when mode is `hash`** — boot error otherwise (no silent unkeyed-HMAC fallback). Rotating this key invalidates prior correlation tokens — feature, not a bug: rotate to break attacker correlation if a key leak is suspected. |
+
+#### Restart-to-apply rule (SC7)
+
+Hook configuration is read-only at runtime. There is **no admin
+endpoint** to mutate hooks, env vars, or chain composition. Restart
+the gateway to change configuration. The introspection endpoint
+`GET /health/hooks` shows the registered chain in registration order
+so operators can confirm policy.
+
+```bash
+curl -s http://localhost:18080/health/hooks | jq
+```
+
+The response shape (single flat `hooks` array, registration order;
+LoggingHook appears once with `kind: "Pre,Post"` per the dedup
+convention):
+
+```json
+{
+  "hooks": [
+    {"name": "RequestIDHook", "kind": "Pre", "enabled": true, "config": {...}},
+    {"name": "AuthHook", "kind": "Pre", "enabled": true, "config": {"token_count": 1}},
+    {"name": "PIIRedactionHook", "kind": "Pre", "enabled": true, "config": {"enabled": false, "mode": "replace", "entities": [...]}},
+    {"name": "LoggingHook", "kind": "Pre,Post", "enabled": true, "config": {"level": "INFO"}}
+  ]
+}
+```
+
+The `config` field is a whitelist — it NEVER contains secrets (no
+`AUTH_TOKEN` value, no `PII_HASH_KEY` value, no recognizer regex
+sources). This is enforced by each hook's `Describe()` method and
+audited end-to-end by `tests/e2e/plugin_chain_test.go`.
+
+#### Boot-error refusal conditions
+
+These conditions cause the gateway to exit non-zero before the
+listener accepts:
+
+- `ENABLED_HOOKS` contains a name that does not match any registered
+  hook → stderr/stdout contains `unknown hook`.
+- `PII_ENABLED_ENTITIES` contains an unknown entity name → boot
+  error names `PII_ENABLED_ENTITIES` and the offender.
+- `PII_REDACTION_MODE` is not one of `replace`, `mask`, `hash`,
+  `drop` → boot error names `PII_REDACTION_MODE` and the offender.
+- `PII_REDACTION_MODE=hash` AND `PII_HASH_KEY` is empty/unset →
+  boot error names `PII_HASH_KEY`. The unkeyed mode is a
+  rainbow-table-trivial security trap; the operator must
+  explicitly provide a key.
+
+#### Hash-key rotation as a feature
+
+Rotating `PII_HASH_KEY` is the operational tool for breaking
+attacker correlation if a log leak is suspected:
+
+```bash
+# Day 0
+export PII_HASH_KEY="initial-32-byte-key-padding-here!!"
+./scripts/otto-gw restart
+# logs now show <EMAIL:h-5e114e4d> for corey@cmetech.io
+
+# Day N — leak suspected, rotate
+export PII_HASH_KEY="rotated-32-byte-key-padding-here!!"
+./scripts/otto-gw restart
+# logs now show <EMAIL:h-XXXXXXXX> (different tag) for the same value
+```
+
+After rotation, prior tags become non-correlating — the attacker
+cannot tie pre- and post-rotation log entries to the same canonical
+value. Rotate via your secrets management system on any suspected
+leak event.
+
+#### Accepted v1 risks
+
+- **T-8-AUTH-BYPASS (non-engine routes lose bearer-token gating).**
+  Phase 8 moved bearer-token validation from the `auth.Bearer` chi
+  middleware to `plugin.AuthHook` on the canonical engine chain.
+  Non-engine routes (e.g., `/api/tags`, `/api/ps`, `/api/show`,
+  `DELETE /v1/sessions/:id`) consequently lose bearer-token gating at
+  the server layer. The IP allowlist (`ALLOWED_IPS`) still applies.
+  These are read-only catalog stubs / direct-registry operations —
+  they do NOT reach the engine and have no PII surface. If your
+  threat model requires bearer auth on these endpoints, run a
+  patched server-layer middleware in a downstream configuration.
+- **T-8-AUTH-BYPASS via `ENABLED_HOOKS` without `AuthHook`.** If you
+  set `ENABLED_HOOKS=RequestIDHook,LoggingHook` (deliberately
+  excluding AuthHook), bearer authentication is DISABLED even when
+  `AUTH_TOKEN` is set. The operator's explicit choice; documented
+  here so the implication is clear.
+
 Example — run with a custom binary path and debug logging:
 
 ```bash
