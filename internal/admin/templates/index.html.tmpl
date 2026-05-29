@@ -108,9 +108,20 @@
         <span class="otto-newest-badge" data-log-newest hidden></span>
       </div>
 
-      <!-- Log viewport: monospace, fixed-height, scrollable, aria-live -->
+      <!-- Log viewport: 4-column grid, fixed-height, scrollable, aria-live.
+           Header row is rendered ONCE here and stays sticky as rows scroll;
+           appendLine() in admin.js builds .otto-log-row / .otto-log-row-fallback
+           children inside this same viewport. data-log-viewport remains on the
+           OUTER scroll container so document.querySelector('[data-log-viewport]')
+           keeps working unchanged. -->
       <div class="otto-log-viewport" data-log-viewport
            role="log" aria-live="polite" aria-relevant="additions">
+        <div class="otto-log-header-row">
+          <div class="otto-log-cell otto-log-cell-time">Time</div>
+          <div class="otto-log-cell otto-log-cell-level">Level</div>
+          <div class="otto-log-cell otto-log-cell-source">Source</div>
+          <div class="otto-log-cell otto-log-cell-message">Message</div>
+        </div>
         <div class="otto-log-empty" data-log-empty>Waiting for log activity…</div>
       </div>
 
