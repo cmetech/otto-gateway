@@ -19,6 +19,7 @@ If you only ever run on one OS and your machine is unsurprising, the quickstart 
 - [The .env file](#the-env-file)
 - [Wrapper choice tradeoff table](#wrapper-choice-tradeoff-table)
 - [Upgrade behavior](#upgrade-behavior)
+- [Uninstall](#uninstall)
 - [Common install pitfalls](#common-install-pitfalls)
 - [Verifying install](#verifying-install)
 - [Where to go next](#where-to-go-next)
@@ -320,6 +321,61 @@ These live in your home directory, not the install. Upgrades cannot touch them r
 ### Windows-only re-run of setup.bat
 
 After a fresh extract on Windows, re-run `scripts\setup.bat` once. The newly-extracted files carry fresh MOTW Zone.Identifier streams that PowerShell will treat as "untrusted" — `Unblock-File` clears them. (Execution policy is per-user, not per-file, so the second `Set-ExecutionPolicy` line is a no-op once you have already accepted it from the first install — but the MOTW strip is necessary every time.)
+
+---
+
+## Uninstall
+
+OTTO Gateway is not installed via a package manager — there is no installer database to uninstall from. Removal is two-and-a-half steps: stop the gateway, delete the extracted folder, delete the per-user `.env` file. Everything the gateway writes at runtime lives inside the extracted folder (PID file under `.otto\gw\` or `.otto/gw/`, logs under `logs/`, the optional project-local `.env.otto-gw`), so deleting the folder takes all of it with it. The per-user `.env` lives in your home directory and survives folder deletion — you remove it separately.
+
+Below are the per-OS exact-command checklists. They assume a vanilla install with default paths; if you set `OTTO_LOG`, `OTTO_PID`, `OTTO_STATE_DIR`, or `LOG_FILE` to a custom location, also delete from there.
+
+### macOS / Linux
+
+```bash
+# 1. Stop the gateway (cleans up its own PID file).
+cd /path/to/otto_gateway
+./scripts/otto-gw stop                  # OK if it says "not running"
+
+# 2. Delete the extracted install folder.
+cd ..
+rm -rf otto_gateway/
+
+# 3. Delete the per-user .env file (skip if you want to keep your config).
+rm -f ~/.otto-gw.env
+```
+
+That is the whole removal. The gateway never writes anywhere else by default — no `launchctl`, no `systemd` unit, no entries under `/usr/local/`, no shell-profile edits.
+
+### Windows
+
+```powershell
+# 1. Stop the gateway (cleans up its own PID file).
+cd C:\Users\<you>\software\otto_gateway
+.\scripts\otto-gw.bat stop              # OK if it says "not running"
+
+# 2. Delete the extracted install folder.
+cd ..
+Remove-Item -Recurse -Force .\otto_gateway
+
+# 3. Delete the per-user .env file (skip if you want to keep your config).
+Remove-Item -Force "$env:USERPROFILE\.otto-gw.env"
+```
+
+The `Set-ExecutionPolicy RemoteSigned -Scope CurrentUser` that `setup.bat` applied during install persists across uninstall — it is a per-user PowerShell setting, not part of OTTO. If you want to revert it explicitly:
+
+```powershell
+Set-ExecutionPolicy Restricted -Scope CurrentUser    # back to Windows default
+```
+
+Most operators leave the policy as-is; `RemoteSigned` is a sensible long-term default and other tools benefit from it too. There are no Start Menu entries, scheduled tasks, services, or registry keys to clean up — none are created by install.
+
+### What is NOT removed by the above
+
+- Any logs you exported elsewhere (e.g. via `OTTO_LOG=D:\splunk\otto.log`).
+- Custom env files outside the two default paths (e.g. `--env-file C:\config\otto.env`).
+- `kiro-cli` itself — OTTO Gateway is a router, not an installer. Remove `kiro-cli` per its own uninstall instructions if you no longer need it.
+- The compressed rotated archives under `logs\` if you copied them to a long-term retention location before deleting the install folder.
 
 ---
 
