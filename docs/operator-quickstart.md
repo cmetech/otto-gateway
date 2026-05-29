@@ -38,6 +38,23 @@ xattr -d com.apple.quarantine bin/otto-gateway
 
 Full context in [Troubleshooting → macOS](#macos-otto-gateway-cannot-be-opened-because-apple-cannot-check-it-for-malicious-software).
 
+### 3b. (Windows only) Run setup.bat once
+
+Double-click `scripts\setup.bat` from File Explorer. It strips the
+Mark-of-the-Web (MOTW) `Zone.Identifier` streams that Windows attaches to
+files extracted from a downloaded archive (PowerShell otherwise refuses
+to run them as "untrusted"), then sets your `CurrentUser` execution
+policy to `RemoteSigned` so subsequent wrapper invocations work without
+flags.
+
+After setup, three equivalent ways to run subcommands:
+
+- `.\scripts\otto-gw.ps1 <command>` — the PowerShell wrapper
+- `.\scripts\otto-gw.bat <command>` — cmd.exe-friendly dispatcher
+- `.\scripts\start.bat` / `stop.bat` / `status.bat` — double-clickable per-command shortcuts
+
+Full context in [Troubleshooting → Windows: setup.bat says "Setup hit an error"](#windows-setupbat-says-setup-hit-an-error-or-otto-gwps1-still-refuses-to-run) if the per-machine ExecutionPolicy is Group-Policy-locked.
+
 ### 4. Install kiro-cli
 
 The gateway is a router — without `kiro-cli` it boots in a degraded mode that returns `503` on every chat request. Install `kiro-cli` per your team's distribution instructions and confirm:
@@ -283,6 +300,23 @@ This is one-time per install. The wrapper scripts don't need this since shell sc
 **Option B — right-click → Open (per binary, one-time):**
 
 In Finder, control-click `bin/otto-gateway` → Open → "Open" in the dialog. macOS records the exception and subsequent launches via the wrapper work normally.
+
+### Windows: setup.bat says "Setup hit an error" or otto-gw.ps1 still refuses to run
+
+If your organization sets PowerShell `ExecutionPolicy` at the
+`LocalMachine` or `MachinePolicy` scope via Group Policy, those scopes
+override anything `setup.bat` writes to `CurrentUser`. You can still
+invoke the wrapper with a per-invocation bypass (this works because
+cmd.exe is not subject to PowerShell execution policy):
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\otto-gw.ps1 <command>
+```
+
+The `.\scripts\otto-gw.bat` dispatcher already uses this exact form
+internally, so `.\scripts\otto-gw.bat <command>` (and the per-command
+`.bat` shortcuts) also work in Group-Policy-locked environments without
+any further intervention.
 
 ### "otto-gateway started" but no log output appears
 
