@@ -51,23 +51,30 @@ type RegistryStatsSource interface {
 //     which is acceptable.
 //   - PoolDetail: nil-safe; when nil the snapshot returns pool.size=0.
 //   - Registry: nil-safe; when nil the snapshot returns sessions=[].
-//   - LogPath: path to the gateway log file consumed by the tailer in Plan 03.
-//     Wired in Plan 01 for forward-compatibility; the tailer is not started
-//     until Plan 03.
+//   - LogPaths: name→path map of tailable log sources (quick 260529-ll2).
+//     Empty / nil means no sources are available; snapshot renders
+//     log_sources: [] and SSE /logs/stream returns 400 for any source
+//     value.
+//   - LogPathOrder: the deterministic order LogPaths keys appear in the
+//     admin UI dropdown and the snapshot log_sources array. The first
+//     entry is the default SSE source. Filling LogPaths without
+//     LogPathOrder means the SSE handler cannot resolve sources (the
+//     validation uses slices.Contains on LogPathOrder).
 type Deps struct {
-	Logger     *slog.Logger
-	Version    string
-	Commit     string
-	Start      time.Time
-	PoolDetail PoolDetailSource
-	Registry   RegistryStatsSource
-	LogPath    string
+	Logger       *slog.Logger
+	Version      string
+	Commit       string
+	Start        time.Time
+	PoolDetail   PoolDetailSource
+	Registry     RegistryStatsSource
+	LogPaths     map[string]string
+	LogPathOrder []string
 }
 
 // handler holds the runtime state for the admin sub-router.
 type handler struct {
-	deps   Deps
-	tailer *Tailer // wired in Plan 03 via NewTailer(deps.LogPath, deps.Logger)
+	deps    Deps
+	tailers *TailerRegistry // quick 260529-ll2: replaces single *Tailer
 }
 
 // Handler returns a chi.Router mounting the admin sub-routes. The caller
@@ -89,11 +96,13 @@ func Handler(deps Deps) http.Handler {
 
 	h := &handler{deps: deps}
 
-	// Insertion point 1: construct the shared Tailer.
-	// NewTailer does NOT start a goroutine — the first SSE Subscribe does.
-	// This wiring does not affect the Plan 01 PageHandler/SnapshotHandler tests
-	// because goleak only fires when a goroutine is actually started.
-	h.tailer = NewTailer(deps.LogPath, deps.Logger)
+	// Quick 260529-ll2: replace the single eager *Tailer with a lazy
+	// TailerRegistry. Subscribe-time Get(name, path) constructs each
+	// per-source *Tailer the first time it's requested; subsequent
+	// requests share the cached instance. NewTailerRegistry does NOT
+	// start any goroutine — the underlying NewTailer does that on the
+	// first Subscribe call.
+	h.tailers = NewTailerRegistry(deps.Logger)
 
 	r := chi.NewRouter()
 

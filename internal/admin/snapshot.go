@@ -11,14 +11,21 @@ import (
 // It composes pool detail + session detail into one atomic snapshot taken at
 // one instant on the server (D-05 — single aggregator endpoint).
 // Snake_case JSON tags are the load-bearing wire contract.
+//
+// LogSources is the deterministic-order list of tailable log sources the
+// UI dropdown populates from (quick 260529-ll2). Empty array (not null)
+// when no sources are configured — defensive-copied from
+// Deps.LogPathOrder so a snapshot consumer mutating the slice cannot
+// reach into the live admin Deps.
 type AdminSnapshot struct {
-	Status        string        `json:"status"`
-	Version       string        `json:"version"`
-	Commit        string        `json:"commit"`
-	UptimeSeconds float64       `json:"uptime_seconds"`
-	GeneratedAt   time.Time     `json:"generated_at"`
-	Pool          SnapshotPool  `json:"pool"`
+	Status        string         `json:"status"`
+	Version       string         `json:"version"`
+	Commit        string         `json:"commit"`
+	UptimeSeconds float64        `json:"uptime_seconds"`
+	GeneratedAt   time.Time      `json:"generated_at"`
+	Pool          SnapshotPool   `json:"pool"`
 	Sessions      []SnapshotSess `json:"sessions"`
+	LogSources    []string       `json:"log_sources"`
 }
 
 // SnapshotPool is the pool sub-object of AdminSnapshot.
@@ -102,6 +109,13 @@ func (h *handler) snapshotHandler(w http.ResponseWriter, r *http.Request) {
 			snap.Sessions = []SnapshotSess{}
 		}
 	}
+
+	// Quick 260529-ll2 — log sources. Defensive copy via append so a
+	// caller that mutates the snapshot slice does not reach into
+	// h.deps.LogPathOrder. Empty Deps.LogPathOrder renders [] (not
+	// null) because the JSON encoder marshals a zero-length non-nil
+	// slice as an empty array.
+	snap.LogSources = append([]string{}, h.deps.LogPathOrder...)
 
 	// Derive status from pool counts.
 	snap.Status = computeStatus(snap)

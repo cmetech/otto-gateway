@@ -425,6 +425,72 @@ func (t *Tailer) readLines(r *bufio.Reader, carry string) (string, error) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// TailerRegistry — quick 260529-ll2 multi-source extension
+// ---------------------------------------------------------------------------
+
+// TailerRegistry is a lazy name→*Tailer cache (quick 260529-ll2).
+//
+// Each (name, path) pair maps to one *Tailer instance. Get is the only
+// constructor: the first call for a given name builds a new *Tailer via
+// NewTailer(path, logger) and caches it; subsequent calls with the same
+// name return the cached pointer (the path argument on subsequent calls
+// is IGNORED — read-only registry, D-10 lifetime). This means an
+// operator who reconfigures CHAT_TRACE_FILE mid-process still streams
+// from the original path; the gateway restart is the lifecycle for path
+// changes.
+//
+// Lazy construction matters because we should never spin up a tailer
+// goroutine for a source no SSE client has subscribed to (e.g., the
+// chat-trace source when CHAT_TRACE=true but no operator opens the
+// admin UI on that channel).
+//
+// Concurrency: mu.Lock spans the map check + insert so concurrent
+// Get(name, _) calls from racing SSE handlers see the same cached
+// pointer. The pattern is identical to sync.Once-per-key but avoids
+// the extra map[string]*sync.Once allocation since admin Get traffic
+// is shaped by SSE-handler frequency (sparse, not hot).
+type TailerRegistry struct {
+	mu     sync.Mutex
+	byName map[string]*Tailer
+	logger *slog.Logger
+}
+
+// NewTailerRegistry constructs an empty registry rooted at logger. The
+// logger is forwarded to every per-source *Tailer constructed via Get
+// so all tailers share one structured-log destination.
+//
+// A nil logger is permitted (defensive); each underlying *Tailer.run
+// will dereference logger on read/rotation paths, so callers SHOULD
+// pass a real logger. admin.Handler already substitutes slog.Default
+// for nil at the Deps layer.
+func NewTailerRegistry(logger *slog.Logger) *TailerRegistry {
+	return &TailerRegistry{
+		byName: make(map[string]*Tailer),
+		logger: logger,
+	}
+}
+
+// Get returns the *Tailer associated with name, constructing one
+// lazily on first call via NewTailer(path, registry.logger).
+// Subsequent calls with the same name return the cached pointer; the
+// path argument is consulted ONLY on the first call (see TailerRegistry
+// docstring for the rationale).
+//
+// Empty name is permitted but discouraged — it creates a single
+// shared cached entry under the "" key, which is rarely what callers
+// want.
+func (r *TailerRegistry) Get(name, path string) *Tailer {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if t, ok := r.byName[name]; ok {
+		return t
+	}
+	t := NewTailer(path, r.logger)
+	r.byName[name] = t
+	return t
+}
+
 // broadcast pushes line into the ring buffer and fans it out to all
 // current subscribers. All channel sends happen while holding t.mu so that
 // close(sub.C) in Unsubscribe (also under t.mu) and sub.closed checks are

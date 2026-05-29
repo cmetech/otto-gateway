@@ -159,7 +159,18 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 	// closure may therefore observe an already-drained pool. That is
 	// load-bearing benign; do not "optimise" by skipping the second
 	// Close.
+	// chatTraceRotator is the dedicated timberjack rotator for the
+	// quick-260529-ll2 chat-trace.log sink. It's nil when
+	// cfg.ChatTrace=false (no file opened on disk). The cleanup
+	// closure below closes it BEFORE the registry/pool teardowns so
+	// a crash in those drains the chat-trace write buffer first.
+	var chatTraceRotator *timberjack.Logger
 	cleanup := func() {
+		if chatTraceRotator != nil {
+			if err := chatTraceRotator.Close(); err != nil {
+				logger.Error("chat-trace: rotator close", "err", err)
+			}
+		}
 		if a.registry != nil {
 			if err := a.registry.Close(); err != nil {
 				logger.Error("session: registry close", "err", err)
@@ -202,9 +213,50 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 			loggingHook,
 		},
 	}
+
+	// Quick 260529-ll2 — ChatTraceHook wiring.
+	// INVARIANT: ChatTraceHook is first in Pre to observe pre-redaction
+	// content. Do not reorder. Symmetric position in Post (last) so it
+	// also observes the canonical response AFTER LoggingHook has stamped
+	// its records. Cleanup of the dedicated timberjack rotator is wired
+	// into the cleanup closure above (chatTraceRotator close before
+	// registry/pool close so a crash in those still drains the trace
+	// buffer).
+	//
+	// The insertion uses an explicit slice-prepend
+	// (`append([]engine.PreHook{chatTrace}, chain.Pre...)`) NOT a
+	// "find the right index" pattern. A future refactor that grows the
+	// chain literal cannot silently demote ChatTraceHook past
+	// PIIRedactionHook this way — the prepend is positional, not
+	// content-driven (T-ll2-07 mitigation).
+	if cfg.ChatTrace {
+		chatTraceRotator = &timberjack.Logger{
+			Filename:    cfg.ChatTraceFile,
+			MaxSize:     100,
+			MaxAge:      cfg.ChatTraceMaxAgeDays,
+			MaxBackups:  0,
+			LocalTime:   true,
+			Compression: "gzip",
+			RotateAt:    []string{"00:00"},
+			FileMode:    0o600,
+		}
+		chatTrace := &plugin.ChatTraceHook{
+			Writer:  chatTraceRotator,
+			Enabled: true,
+			Logger:  logger,
+		}
+		// "ChatTraceHook is first in Pre to observe pre-redaction content. Do not reorder."
+		chain.Pre = append([]engine.PreHook{chatTrace}, chain.Pre...)
+		chain.Post = append(chain.Post, chatTrace)
+	}
+
 	// D-02 typo-fail-fast — Filter validates the allowlist names
 	// against the runtime chain. Unknown names produce a boot error
 	// containing literal substring "unknown hook" naming each offender.
+	// ChatTraceHook is in the chain only when cfg.ChatTrace=true; the
+	// config layer (config.Load) silently drops "ChatTraceHook" from
+	// EnabledHooks when CHAT_TRACE=false so an allowlisted entry does
+	// not fail boot.
 	filteredChain, filterErr := chain.Filter(cfg.EnabledHooks)
 	if filterErr != nil {
 		return nil, func() {}, fmt.Errorf("chain filter: %w", filterErr)
@@ -489,16 +541,35 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 	if registryForServer != nil {
 		adminRegistry = adminRegistryAdapter{src: registryForServer}
 	}
-	tailerLogPath := envOrDefault("LOG_FILE",
+	// Quick 260529-ll2 — admin Log Tail multi-source paths.
+	//
+	// "main" is the canonical gateway log (LOG_FILE / OTTO_LOG / default
+	// distribution path). "boot-err" is the boot-time stderr capture
+	// the wrapper scripts write to (script convention: same dir as
+	// LOG_FILE, "-boot.log" suffix; operator can override via
+	// OTTO_LOG_BOOT). "chat-trace" is included ONLY when CHAT_TRACE=true
+	// so the UI surfaces only sources that have a tailable file on disk.
+	mainLogPath := envOrDefault("LOG_FILE",
 		envOrDefault("OTTO_LOG", "./logs/otto-gateway.log"))
+	bootLogPath := envOrDefault("OTTO_LOG_BOOT", stripExt(mainLogPath)+"-boot.log")
+	logPaths := map[string]string{
+		"main":     mainLogPath,
+		"boot-err": bootLogPath,
+	}
+	logPathOrder := []string{"main", "boot-err"}
+	if cfg.ChatTrace {
+		logPaths["chat-trace"] = cfg.ChatTraceFile
+		logPathOrder = append(logPathOrder, "chat-trace")
+	}
 	adminHandler := admin.Handler(admin.Deps{
-		Logger:     logger,
-		Version:    version.Version,
-		Commit:     version.Commit(),
-		Start:      time.Now(),
-		PoolDetail: adminPoolDetail,
-		Registry:   adminRegistry,
-		LogPath:    tailerLogPath,
+		Logger:       logger,
+		Version:      version.Version,
+		Commit:       version.Commit(),
+		Start:        time.Now(),
+		PoolDetail:   adminPoolDetail,
+		Registry:     adminRegistry,
+		LogPaths:     logPaths,
+		LogPathOrder: logPathOrder,
 	})
 
 	// Boot log surfaces the resolved surface set so operators see
@@ -742,6 +813,13 @@ func envOrDefault(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// stripExt returns p with the final file extension removed. Used by the
+// admin Log Tail boot-log default derivation (quick 260529-ll2):
+// OTTO_LOG_BOOT defaults to LOG_FILE without its extension + "-boot.log".
+func stripExt(p string) string {
+	return strings.TrimSuffix(p, filepath.Ext(p))
 }
 
 // buildLogger constructs the root *slog.Logger from the loaded config.

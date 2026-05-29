@@ -96,6 +96,10 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 	// Phase 8 OBSV-03 / D-04 — request_id + pii.Summary ctx-stamp
 	// (slice 5 Task 4b). Mirrors handleChat in ollama.
 	ctx = stampPluginCtx(ctx, r)
+	// Quick 260529-ll2 — surface stamp for ChatTraceHook correlation.
+	// Placed AFTER stampPluginCtx so request_id is already on ctx when
+	// SurfaceFromContext fires inside ChatTraceHook.Before.
+	ctx = plugin.WithSurface(ctx, "openai")
 
 	// Plan 05-03 D-04..D-11: X-Session-Id branch.
 	eng, entry, sErr := a.resolveEngine(r)
@@ -259,6 +263,8 @@ func (a *Adapter) handleCompletions(w http.ResponseWriter, r *http.Request) {
 	// (slice 5 Task 4b). Mirrors handleChat in ollama. Both
 	// handleChatCompletions and handleCompletions stamp here.
 	ctx = stampPluginCtx(ctx, r)
+	// Quick 260529-ll2 — surface stamp for ChatTraceHook correlation.
+	ctx = plugin.WithSurface(ctx, "openai")
 
 	// Plan 05-03: X-Session-Id branch (same shape as handleChatCompletions).
 	eng, entry, sErr := a.resolveEngine(r)

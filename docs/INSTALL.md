@@ -381,6 +381,16 @@ Most operators leave the policy as-is; `RemoteSigned` is a sensible long-term de
 
 ## Common install pitfalls
 
+### CHAT_TRACE captures raw user content — file permissions and retention
+
+OTTO Gateway ships with an optional `ChatTraceHook` (gated by `CHAT_TRACE=true` in `.env.otto-gw`) that writes one NDJSON `pre_chain_in` record per chat-shaped request to a dedicated `chat-trace.log`. The pre-record captures the **post-adapter canonical request BEFORE PII redaction runs**, which means the file contains the raw prompt the client actually sent — including any email, phone number, SSN, credit-card number, or other PII the user typed. This is the entire point of the feature (operators debugging "what did the client actually ask the gateway") and also its biggest risk.
+
+The gateway mitigates this on the file system: `chat-trace.log` is opened with mode `0o600` (owner read/write only — never group or world) and the timberjack rotator prunes old archives at 3 days by default (`CHAT_TRACE_MAX_AGE_DAYS=3`), rotating daily at local midnight with gzip compression. Setting `CHAT_TRACE=false` (or simply leaving it unset, which is the default) keeps the file from being created on disk at all — no rotator is opened, no records are written.
+
+**Operators MUST NOT ship `chat-trace.log` to centralized log aggregators without a redaction sidecar.** The hash-mode PII redaction (`PII_REDACTION_MODE=hash` + `PII_HASH_KEY`) is the gateway's offered correlation primitive when aggregation is required; running a separate batch redactor on rotated `*.log.gz` archives before they leave the host is the alternative. See `scripts/.env.otto-gw.example` for the full set of `CHAT_TRACE_*` knobs and recommended defaults.
+
+If you only want chat tracing for a short debugging window, the recommended pattern is: enable `CHAT_TRACE=true`, reproduce the issue, copy the relevant NDJSON line out, then flip it back to `CHAT_TRACE=false` and restart the gateway. The 3-day rotation window will prune the captured file on its own; no manual cleanup is required if you don't want it earlier than that.
+
 ### Windows: `.ps1` blocked as untrusted, or `setup.bat` did not run
 
 **Cause.** Windows attached MOTW Zone.Identifier streams to every file in the archive (because the archive arrived via a browser or any other download path Gatekeeper considers untrusted). PowerShell refuses to run `.ps1` files with MOTW unless your execution policy is `Bypass` or the files are unblocked.

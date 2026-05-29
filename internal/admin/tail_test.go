@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -542,4 +543,69 @@ func TestAdmin_TailerSlowSubscriberDrops(t *testing.T) {
 		t.Error("Snapshot is empty — tailer appears blocked by slow subscriber")
 	}
 	_ = received // may be 0 depending on timing; Snapshot growth is the key assertion
+}
+
+// ---------------------------------------------------------------------------
+// TailerRegistry tests (quick 260529-ll2)
+// ---------------------------------------------------------------------------
+
+// TestTailerRegistry_LazyCreation asserts that the registry constructs
+// exactly one *Tailer per unique name and returns the cached pointer on
+// subsequent Get calls. Different names produce different pointers.
+func TestTailerRegistry_LazyCreation(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	reg := NewTailerRegistry(discardLogger())
+
+	t1a := reg.Get("main", "/tmp/a.log")
+	t1b := reg.Get("main", "/tmp/a.log")
+	if t1a != t1b {
+		t.Errorf("Get(\"main\", _) must return the same pointer on subsequent calls; got %p vs %p", t1a, t1b)
+	}
+
+	t2 := reg.Get("boot-err", "/tmp/b.log")
+	if t2 == t1a {
+		t.Errorf("Get(\"boot-err\", _) must return a different pointer from \"main\"; both are %p", t1a)
+	}
+
+	// Path on the second call is ignored — the cached instance carries
+	// the original path. This is the read-only registry contract (D-10).
+	t1c := reg.Get("main", "/tmp/different-path.log")
+	if t1c != t1a {
+		t.Errorf("Get(\"main\", _) must ignore path on cached lookup; got %p, want %p", t1c, t1a)
+	}
+	if t1c.path != "/tmp/a.log" {
+		t.Errorf("cached tailer path mutated; got %q, want /tmp/a.log", t1c.path)
+	}
+}
+
+// TestTailerRegistry_Concurrent asserts that 100 racing goroutines
+// calling Get("main", path) all receive the same *Tailer pointer. The
+// registry's mu.Lock around the map check + insert is the load-bearing
+// invariant.
+func TestTailerRegistry_Concurrent(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	reg := NewTailerRegistry(discardLogger())
+	const N = 100
+	results := make([]*Tailer, N)
+	var wg sync.WaitGroup
+	wg.Add(N)
+	for i := 0; i < N; i++ {
+		go func(idx int) {
+			defer wg.Done()
+			results[idx] = reg.Get("main", "/tmp/concurrent.log")
+		}(i)
+	}
+	wg.Wait()
+
+	first := results[0]
+	if first == nil {
+		t.Fatal("first concurrent Get returned nil")
+	}
+	for i, p := range results {
+		if p != first {
+			t.Errorf("Get %d returned %p, want %p (race in lazy cache)", i, p, first)
+		}
+	}
 }

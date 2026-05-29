@@ -92,8 +92,13 @@
         <span class="otto-log-status" data-log-status>Connecting…</span>
       </div>
 
-      <!-- Control row: level filter, regex grep, pause/resume, newest badge -->
+      <!-- Control row: source dropdown, level filter, regex grep, pause/resume, newest badge -->
       <div class="otto-log-controls">
+        <!-- Source selector (quick 260529-ll2). Populated from
+             /admin/api/snapshot's log_sources field on the first poll;
+             switching source closes the existing SSE stream and opens
+             a new one against /admin/logs/stream?source=<name>. -->
+        <select class="otto-select" data-log-source aria-label="Log file"></select>
         <select class="otto-select" data-log-level aria-label="Log level filter">
           <option value="all">All levels</option>
           <option value="debug">Debug</option>
