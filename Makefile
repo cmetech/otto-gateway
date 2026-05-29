@@ -14,6 +14,7 @@ DIST_DIR    := dist
 # top-level README.md is developer-facing); the packager renames it.
 PKG_SCRIPTS := scripts/otto-gw scripts/otto-gw.ps1 scripts/.env.otto-gw.example
 PKG_README  := docs/operator-quickstart.md
+PKG_INSTALL := docs/INSTALL.md
 
 .PHONY: all build run test test-race lint fmt fmt-check vet examples tidy clean cross ci arch-lint start stop status e2e e2e-list e2e-sdk-setup help \
         cross-darwin-arm64 cross-darwin-amd64 cross-linux-amd64 cross-windows-amd64 \
@@ -153,6 +154,7 @@ define stage_unix
 	cp scripts/otto-gw scripts/otto-gw.ps1 scripts/otto-gw.bat scripts/setup.bat scripts/start.bat scripts/stop.bat scripts/status.bat scripts/.env.otto-gw.example $(DIST_DIR)/otto_gateway/scripts/
 	chmod 755 $(DIST_DIR)/otto_gateway/scripts/otto-gw
 	cp $(PKG_README) $(DIST_DIR)/otto_gateway/README.md
+	cp $(PKG_INSTALL) $(DIST_DIR)/otto_gateway/INSTALL.md
 	: > $(DIST_DIR)/otto_gateway/logs/.gitkeep
 endef
 
@@ -173,24 +175,24 @@ define codesign_adhoc
 	fi
 endef
 
-package-darwin-arm64: cross-darwin-arm64 $(PKG_README) ## Build otto_gateway-darwin-arm64-<version>.tar.gz
+package-darwin-arm64: cross-darwin-arm64 $(PKG_README) $(PKG_INSTALL) ## Build otto_gateway-darwin-arm64-<version>.tar.gz
 	$(call codesign_adhoc,$(BUILD_DIR)/$(BINARY)-darwin-arm64)
 	@$(call stage_unix,darwin,arm64,)
 	cd $(DIST_DIR) && tar -czf otto_gateway-darwin-arm64-$(VERSION).tar.gz otto_gateway
 	@echo "→ $(DIST_DIR)/otto_gateway-darwin-arm64-$(VERSION).tar.gz"
 
-package-darwin-amd64: cross-darwin-amd64 $(PKG_README)
+package-darwin-amd64: cross-darwin-amd64 $(PKG_README) $(PKG_INSTALL)
 	$(call codesign_adhoc,$(BUILD_DIR)/$(BINARY)-darwin-amd64)
 	@$(call stage_unix,darwin,amd64,)
 	cd $(DIST_DIR) && tar -czf otto_gateway-darwin-amd64-$(VERSION).tar.gz otto_gateway
 	@echo "→ $(DIST_DIR)/otto_gateway-darwin-amd64-$(VERSION).tar.gz"
 
-package-linux-amd64: cross-linux-amd64 $(PKG_README)
+package-linux-amd64: cross-linux-amd64 $(PKG_README) $(PKG_INSTALL)
 	@$(call stage_unix,linux,amd64,)
 	cd $(DIST_DIR) && tar -czf otto_gateway-linux-amd64-$(VERSION).tar.gz otto_gateway
 	@echo "→ $(DIST_DIR)/otto_gateway-linux-amd64-$(VERSION).tar.gz"
 
-package-windows-amd64: cross-windows-amd64 $(PKG_README)
+package-windows-amd64: cross-windows-amd64 $(PKG_README) $(PKG_INSTALL)
 	@$(call stage_unix,windows,amd64,.exe)
 	@command -v zip >/dev/null 2>&1 || { echo "ERROR: zip not installed (required for Windows package)" >&2; exit 1; }
 	cd $(DIST_DIR) && zip -r -q otto_gateway-windows-amd64-$(VERSION).zip otto_gateway

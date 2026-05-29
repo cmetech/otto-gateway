@@ -8,6 +8,8 @@ This README is for **operators running the binary on a laptop**. Developers buil
 
 ## Install — first-time setup
 
+> **Need deeper install/upgrade context?** See [`./INSTALL.md`](./INSTALL.md) (shipped in every release archive) for per-OS first-run checklists, the `.env` cwd-independent location recommendations, the wrapper choice tradeoff table, upgrade behavior, and verification commands with expected output. This README stays focused on the happy-path install — INSTALL.md owns the nuance.
+
 Six steps, ~3 minutes. Each step links to a deeper section if you need details.
 
 ### 1. Verify the download (recommended)
