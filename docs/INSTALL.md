@@ -343,6 +343,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\otto-gw.ps1 <cmd>
 
 The MOTW strip from step 1 of `setup.bat` still ran successfully even if the execution-policy step failed; you can verify by checking for absence of `Zone.Identifier` alternate data streams (`dir /R bin\otto-gateway.exe` should not list `:Zone.Identifier:$DATA`).
 
+### Windows: `boot-err.log` shows `scheduled rotation failed: ... being used by another process`
+
+**Cause.** The gateway uses [timberjack](https://github.com/DeRuina/timberjack) for daily log rotation at local midnight. On Windows, `os.Rename` refuses to rename a file that any process has open for writing — and the gateway itself holds `logs\otto-gateway.log` open continuously. POSIX permits this; Windows does not. So the exact-midnight rotation often fails and timberjack writes a single-line error to stderr, which the wrapper captures to `logs\otto-gateway.boot-err.log`.
+
+**Is it actually broken?** No. timberjack retries on its next mill tick once the handle settles, typically within a few hours, and you will see a `otto-gateway-YYYY-MM-DDTHH-MM-SS.SSS-time.log.gz` appear in `logs\` named with the *actual* rotation time, not the scheduled time. Every log line from the failed-rotation window lands in either the rotated archive or the new active file — no data loss, no retention impact (pruning is age-based on file mtime, not on the embedded timestamp). The 500MB safety valve also still triggers normally if a chatty client floods the file.
+
+**When to worry.** A `boot-err.log` growing by many lines per day (one line per failed retry attempt), no `*-time.log.gz` files appearing across multiple days, or the active `otto-gateway.log` growing past 500MB with no rotation. Any of those indicates the file handle is permanently wedged and the operator should restart the gateway (`.\scripts\otto-gw.bat restart`).
+
+**Verifying the steady state.** Each morning you should see one new `*-time.log.gz` covering the previous day. The first line of `otto-gateway.boot-err.log` can be a one-time rotation error from that day's midnight attempt — that is expected on Windows and self-heals.
+
 ### macOS: "otto-gateway cannot be opened because Apple cannot check it for malicious software"
 
 **Cause.** The binary is ad-hoc signed but NOT notarized by Apple (notarization requires a paid Apple Developer ID, which v1 distribution deliberately keeps out of scope). macOS Gatekeeper attaches `com.apple.quarantine` to anything downloaded via a browser or extracted from a downloaded archive, and refuses to launch quarantined binaries from unidentified developers.
