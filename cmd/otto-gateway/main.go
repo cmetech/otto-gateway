@@ -80,6 +80,17 @@ func main() {
 	logger, closeLogger := buildLogger(cfg)
 	defer closeLogger()
 
+	// Surface which env file (if any) the wrapper sourced. The bash and
+	// PowerShell wrappers export OTTO_ENV_FILE_LOADED with the resolved
+	// path so operators can confirm in the structured log which file is
+	// actually in effect (project-local vs per-user vs CLI override).
+	// Empty when the binary is started without a wrapper.
+	if envFile := os.Getenv("OTTO_ENV_FILE_LOADED"); envFile != "" {
+		logger.Info("env file loaded", "path", envFile)
+	} else {
+		logger.Info("env file loaded", "path", "(none — inherited environment only)")
+	}
+
 	// Auth-mode startup log line (T-02-31 mitigation + Codex H-7
 	// surfaces XFF trust mode so operators see it).
 	logger.Info(

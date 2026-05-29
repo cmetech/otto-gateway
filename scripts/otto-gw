@@ -144,6 +144,10 @@ load_config() {
     if [[ -n "$env_file" ]]; then
         load_env_file "$env_file"
         echo "loaded env file: $env_file" >&2
+        # Surface the resolved path to the gateway so it can log at INFO
+        # which file the wrapper actually used. The binary reads this from
+        # os.Getenv("OTTO_ENV_FILE_LOADED") at startup.
+        export OTTO_ENV_FILE_LOADED="$env_file"
     fi
     apply_cli_flags
 }

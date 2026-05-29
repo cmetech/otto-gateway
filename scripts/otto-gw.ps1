@@ -119,6 +119,10 @@ function Initialize-Config {
     if ($envFilePath) {
         Import-DotEnv -Path $envFilePath
         Write-Host "loaded env file: $envFilePath" -ForegroundColor DarkGray
+        # Surface the resolved path to the gateway so it can log at INFO
+        # which file the wrapper actually used. The binary reads this from
+        # os.Getenv("OTTO_ENV_FILE_LOADED") at startup.
+        $env:OTTO_ENV_FILE_LOADED = $envFilePath
     }
     Apply-CliFlags
 }
