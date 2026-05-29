@@ -315,6 +315,10 @@
         renderSummary(snap);
         renderSlots(snap.pool ? snap.pool.slots : []);
         renderSessions(snap.sessions || []);
+        // Quick 260529-ll2 — populate the source dropdown from
+        // snap.log_sources. populateLogSources no-ops when the list is
+        // unchanged so operator selection survives across polls.
+        populateLogSources(snap.log_sources || []);
       })
       .catch(function () {
         consecutiveFailures++;
@@ -357,6 +361,17 @@
   var logLevelFilter = 'all';      // 'all' | 'debug' | 'info' | 'warn' | 'error'
   var logConsecutiveReconnects = 0;
   var logGrepDebounceTimer = null;
+
+  // Quick 260529-ll2 — multi-source Log Tail state.
+  // currentLogSource is the name passed in /admin/logs/stream?source=.
+  // logSourceLastJSON is a stringified-array cache used by
+  // populateLogSources to no-op when the snapshot's log_sources field
+  // hasn't changed (so operator selection survives across polls).
+  // logEventSource holds the active EventSource so the source switcher
+  // can close it before opening a new one.
+  var currentLogSource = 'main';
+  var logSourceLastJSON = '';
+  var logEventSource = null;
 
   // Deduplication strategy (WR-03 + WR-04):
   // ---------------------------------------------------------------
@@ -643,7 +658,7 @@
   // through unfiltered.
   function onSSEOpen() {
     var statusEl = document.querySelector('[data-log-status]');
-    if (statusEl) statusEl.textContent = 'Connected';
+    if (statusEl) statusEl.textContent = 'Connected — ' + currentLogSource;
     var dotEl = document.querySelector('[data-log-activity]');
     if (dotEl) dotEl.classList.remove('is-disconnected');
     logConsecutiveReconnects = 0;
@@ -748,6 +763,97 @@
     });
   }
 
+  // Quick 260529-ll2 — populate the source dropdown from the
+  // snapshot's log_sources array. No-op when the list is unchanged so
+  // operator mid-session selection is preserved across snapshot polls.
+  // T-6.1-16: builds <option> elements via document.createElement +
+  // textContent/value assignment — NEVER innerHTML.
+  function populateLogSources(sources) {
+    var serialized = JSON.stringify(sources || []);
+    if (serialized === logSourceLastJSON) {
+      return;
+    }
+    logSourceLastJSON = serialized;
+    var sel = document.querySelector('[data-log-source]');
+    if (!sel) return;
+    // Clear existing options without using innerHTML.
+    while (sel.firstChild) sel.removeChild(sel.firstChild);
+    if (!sources || sources.length === 0) {
+      return;
+    }
+    for (var i = 0; i < sources.length; i++) {
+      var opt = document.createElement('option');
+      opt.value = sources[i];
+      opt.textContent = sources[i];
+      sel.appendChild(opt);
+    }
+    // Default selection: "main" if present, else first entry.
+    var defaultSource = sources.indexOf('main') >= 0 ? 'main' : sources[0];
+    // Honor an existing currentLogSource if it's still in the list
+    // (operator selected a source that survived the snapshot refresh).
+    if (sources.indexOf(currentLogSource) < 0) {
+      currentLogSource = defaultSource;
+    }
+    sel.value = currentLogSource;
+  }
+
+  // Quick 260529-ll2 — remove all .otto-log-row / .otto-log-row-fallback
+  // children from the viewport while PRESERVING the sticky header row and
+  // re-showing the empty placeholder. Used when switching source — the
+  // operator should see a clean viewport before the new SSE backfill
+  // arrives. NodeList-to-array conversion avoids live-collection
+  // mutation issues during removal.
+  function clearLogViewport() {
+    var vp = document.querySelector('[data-log-viewport]');
+    if (!vp) return;
+    var rows = Array.prototype.slice.call(
+      vp.querySelectorAll('.otto-log-row, .otto-log-row-fallback'));
+    for (var i = 0; i < rows.length; i++) {
+      vp.removeChild(rows[i]);
+    }
+    var empty = document.querySelector('[data-log-empty]');
+    if (empty) empty.hidden = false;
+  }
+
+  // Quick 260529-ll2 — open (or re-open) the SSE stream against the
+  // current source. Idempotent: closing the existing logEventSource
+  // before assignment is safe if the prior value was null.
+  function openLogStream() {
+    if (logEventSource) {
+      try { logEventSource.close(); } catch (e) {
+        // ignore — best-effort close
+      }
+      logEventSource = null;
+    }
+    logEventSource = new EventSource(
+      '/admin/logs/stream?source=' + encodeURIComponent(currentLogSource));
+    logEventSource.addEventListener('log', onLogEvent);
+    logEventSource.addEventListener('ping', function () { /* keepalive */ });
+    logEventSource.onopen = onSSEOpen;
+    logEventSource.onerror = onSSEError;
+  }
+
+  // Quick 260529-ll2 — source dropdown change handler.
+  // (1) update currentLogSource; (2) clear the viewport; (3) reset
+  // backfill dedup + newest-buffer + badge; (4) update status text;
+  // (5) open a new EventSource against the new source. All operations
+  // are best-effort and idempotent — failing any one of them should
+  // not leave the UI wedged.
+  function initLogSourceSelector() {
+    var sel = document.querySelector('[data-log-source]');
+    if (!sel) return;
+    sel.addEventListener('change', function () {
+      currentLogSource = sel.value;
+      clearLogViewport();
+      logBackfillEnd();
+      logNewestBuffer = [];
+      updateNewestBadge();
+      var statusEl = document.querySelector('[data-log-status]');
+      if (statusEl) statusEl.textContent = 'Connecting to ' + currentLogSource + '…';
+      openLogStream();
+    });
+  }
+
   // Initialise EventSource and wire up controls on DOMContentLoaded.
   // This block runs after the snapshot polling init so the setInterval
   // registrations are not disturbed.
@@ -755,12 +861,8 @@
     initPauseButton();
     initLevelFilter();
     initGrepFilter();
-
-    var es = new EventSource('/admin/logs/stream');
-    es.addEventListener('log', onLogEvent);
-    es.addEventListener('ping', function () { /* keepalive — no-op */ });
-    es.onopen = onSSEOpen;
-    es.onerror = onSSEError;
+    initLogSourceSelector();
+    openLogStream();
   }
 
   // ---------------------------------------------------------------------------
