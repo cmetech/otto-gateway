@@ -17,8 +17,11 @@ If you only ever run on one OS and your machine is unsurprising, the quickstart 
 - [First-run checklist: Linux](#first-run-checklist-linux)
 - [First-run checklist: Windows](#first-run-checklist-windows)
 - [The .env file](#the-env-file)
+  - [init flag reference](#init-flag-reference)
 - [Wrapper choice tradeoff table](#wrapper-choice-tradeoff-table)
 - [Upgrade behavior](#upgrade-behavior)
+  - [How to upgrade (step-by-step)](#how-to-upgrade-step-by-step)
+  - [Re-running init on an upgraded install](#re-running-init-on-an-upgraded-install)
 - [Uninstall](#uninstall)
 - [Common install pitfalls](#common-install-pitfalls)
 - [Verifying install](#verifying-install)
@@ -245,6 +248,35 @@ For any single config key, the value the gateway sees is determined by:
 2. **`.env` file** — whichever file the loader resolved.
 3. **Inherited shell environment** (lowest) — only used for keys neither the CLI nor the `.env` set.
 
+### init flag reference
+
+The `init` subcommand generates an `.env` file with sensible defaults and pregenerated secrets. POSIX names (`--flag`) and PowerShell names (`-Flag`) are listed together; pick the form for your wrapper.
+
+| Flag | What it does |
+| --- | --- |
+| `--dest PATH` / `-Dest PATH` | Write to a specific path. Default per OS: `$HOME/.otto-gw.env` (POSIX), `$env:USERPROFILE\.otto-gw.env` (Windows). |
+| `--here` / `-Here` | Shortcut for `--dest ./.env.otto-gw` — write project-local instead of per-user. |
+| `--force` / `-Force` | Overwrite an existing dest. On re-init this triggers **value preservation** (see [Re-running init on an upgraded install](#re-running-init-on-an-upgraded-install)) — your existing values become the prompt defaults instead of cold-starting. |
+| `--non-interactive` / `-NonInteractive` | Suppress all prompts; use defaults or existing-file values for anything not supplied via flag. |
+| `--kiro PATH` / `-Kiro PATH` | Skip the `KIRO_CMD` prompt. |
+| `--addr ADDR` / `-Addr ADDR` | Skip the `HTTP_ADDR` prompt (default `127.0.0.1:18080`). |
+| `--pii MODE` / `-Pii MODE` | Skip the PII mode prompt. One of `off`, `replace`, `mask`, `hash`, `drop` (default `off`). |
+| `--auth-enabled` / `-AuthEnabled` | Enable bearer-token auth. Default off — when disabled the `AUTH_TOKEN=` line is pregenerated but written commented out, so flipping the leading `#` enables it without re-running init. |
+| `--auth-token TOK` / `-AuthToken TOK` | Use TOK instead of generating a random token. Implies `--auth-enabled`. |
+| `--chat-trace` / `-ChatTrace` | Enable chat-trace NDJSON tracer. Default off — when enabled, every chat request writes two NDJSON records (pre-redaction request + post-chain response) to a separate `chat-trace.log` (mode `0600`, 3-day retention). Records contain **raw user content** — treat the file as sensitive. |
+| `--hash-key KEY` / `-HashKey KEY` | Use KEY instead of generating a random PII hash key. Useful when restoring an install from backup and you need to preserve `hash`-mode log correlation tags across the rebuild. |
+| `--regenerate-secrets` / `-RegenerateSecrets` | On re-init (`--force` against an existing dest), mint fresh `AUTH_TOKEN` + `PII_HASH_KEY` instead of reusing the existing ones. Use for post-leak rotation. **Breaks every client carrying the old token and unlinks all prior hash-mode log correlations** — explicit by design. |
+
+**Defaults shipped by init (cold start):**
+
+| Field | Default | Why |
+| --- | --- | --- |
+| Auth | **disabled** | Laptop-friendly default; pregenerated token in the file as a comment so enabling is one `#` removal. |
+| PII redaction | **off** | Trade-free for non-sensitive prototyping. |
+| Chat-trace | **disabled** | Records sensitive raw content; opt-in only. |
+| `ENABLED_HOOKS` | All four hooks listed | The day-one shipped chain. Listed uncommented so the active surface is discoverable. Disabled hooks are no-op passthroughs via the two-knob design (e.g. `AUTH_TOKEN` empty → `AuthHook` returns immediately). |
+| `HTTP_ADDR` | `127.0.0.1:18080` | No collision with anything else common on a dev box. |
+
 ---
 
 ## Wrapper choice tradeoff table
@@ -270,6 +302,54 @@ Multiple ways to invoke the gateway. Pick the one that matches your workflow.
 ## Upgrade behavior
 
 The supported upgrade path is "extract the new archive over the old install location." The semantics differ subtly between the POSIX `tar` and Windows `Expand-Archive` paths — read both rows for the OS you operate on.
+
+### How to upgrade (step-by-step)
+
+Same pattern on every OS: stop the gateway, extract the new archive **on top of** the existing `otto_gateway/` folder (do not delete the old folder first), restart. The extract overlays the version-locked files (binary, wrappers, READMEs) while leaving your runtime state (`.env`, `logs/`, `.otto/gw/`) untouched. You do **not** re-run `init` — your existing `.env` carries forward.
+
+**macOS / Linux:**
+
+```bash
+cd /path/containing/otto_gateway   # the parent dir, NOT otto_gateway/ itself
+./otto_gateway/scripts/otto-gw stop          # OK if "not running"
+tar -xzf otto_gateway-darwin-arm64-<version>.tar.gz   # overlays into ./otto_gateway/
+cd otto_gateway
+xattr -d com.apple.quarantine bin/otto-gateway 2>/dev/null || true   # macOS only
+./scripts/otto-gw start
+./scripts/otto-gw version                    # confirm the new version is live
+```
+
+**Windows (PowerShell):**
+
+```powershell
+cd C:\path\containing\otto_gateway          # parent of otto_gateway\
+.\otto_gateway\scripts\otto-gw.bat stop      # OK if "not running"
+Expand-Archive -Force otto_gateway-windows-amd64-<version>.zip
+cd otto_gateway
+.\scripts\setup.bat                          # re-strip MOTW on newly-extracted files
+.\scripts\otto-gw.bat start
+.\scripts\otto-gw.bat version                # confirm
+```
+
+The `setup.bat` re-run on Windows is necessary because Mark-of-the-Web Zone.Identifier streams are attached to every freshly-extracted file. Execution policy is per-user and persists across upgrades, so only the MOTW strip half of `setup.bat` is doing real work the second time.
+
+### Re-running init on an upgraded install
+
+You normally do **not** need to re-run `init` after an upgrade — your `.env` keeps working as-is. The one case to re-run is when a new version adds a new config knob (like `CHAT_TRACE` in v1.5.6) that you want surfaced in your file with the official commented template above it.
+
+When you do re-run, `init --force` / `init -Force` now preserves your existing values instead of cold-starting:
+
+```bash
+./scripts/otto-gw init --force --non-interactive
+```
+
+- Existing `AUTH_TOKEN`, `PII_HASH_KEY`, `KIRO_CMD`, `HTTP_ADDR`, `PII_REDACTION_MODE`, `CHAT_TRACE` state — **preserved**.
+- New fields introduced by the upgraded wrapper — **added** with sensible defaults (commented if off).
+- Comment formatting / section dividers — **refreshed** from the new template.
+
+Secrets are reused bit-for-bit unless you explicitly pass `--regenerate-secrets` / `-RegenerateSecrets`. Use that flag when rotating after a suspected leak; do not use it casually because every client carrying the old `AUTH_TOKEN` will start getting 401s and every prior hash-mode log correlation tag becomes un-linkable to live data.
+
+The interactive form (`init --force` without `--non-interactive`) prompts for every field with the existing value as the default — hit Enter to keep, type to change.
 
 ### What is replaced on extract
 
