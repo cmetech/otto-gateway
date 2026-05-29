@@ -31,16 +31,31 @@ make stop
 
 ## Quick Start (Windows)
 
-```powershell
-make build
+If you extracted a release tarball/zip, double-click `scripts\setup.bat`
+once to strip Mark-of-the-Web from the unpacked files and set the
+`CurrentUser` PowerShell execution policy to `RemoteSigned` — after that,
+PowerShell scripts run without any per-invocation bypass.
 
-.\scripts\otto-gw.ps1 start
+```powershell
+.\scripts\setup.bat              # one-time, post-extract
+
+.\scripts\otto-gw.ps1 start      # PowerShell wrapper
 .\scripts\otto-gw.ps1 status
 .\scripts\otto-gw.ps1 stop
 ```
 
-If PowerShell blocks execution due to execution policy, run via:
+Three equivalent surfaces ship in every release archive:
+
+- `.\scripts\otto-gw.ps1 <cmd>` — PowerShell wrapper (subcommands: `init`, `start`, `stop`, `status`, `restart`, `logs`, `run`, `env`, `version`).
+- `.\scripts\otto-gw.bat <cmd>` — cmd.exe dispatcher. Mirrors the PowerShell wrapper's subcommand surface and passes `-ExecutionPolicy Bypass -File` internally, so it works on a fresh extract even before `setup.bat` has run.
+- `.\scripts\start.bat`, `stop.bat`, `status.bat` — Explorer-double-clickable per-command shortcuts that delegate to the dispatcher.
+
+If your organization locks PowerShell `ExecutionPolicy` at the `LocalMachine` or `MachinePolicy` scope via Group Policy, those scopes override anything `setup.bat` writes to `CurrentUser`. The `.bat` dispatcher already uses a per-invocation bypass internally, so it continues to work in Group-Policy-locked environments without any further intervention. As a manual fallback, you can also invoke the PowerShell wrapper directly:
 `powershell -ExecutionPolicy Bypass -File .\scripts\otto-gw.ps1 start`
+
+For dev builds (running from a `make build` working tree, not a release
+archive), the `setup.bat` step is unnecessary — only release-archive
+extracts get tagged with Mark-of-the-Web.
 
 ## Auth posture
 
