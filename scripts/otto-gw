@@ -90,6 +90,47 @@ load_env_file() {
     done < "$file"
 }
 
+# extract_env_any reads $1, finds the first KEY=value line for $2 (matching
+# both uncommented `KEY=...` and commented `# KEY=...` forms), strips
+# quotes, and echoes the value. Returns 0 on hit, 1 on miss. Same parser
+# as load_env_file but does NOT export and does NOT skip commented lines —
+# used by `init --force` to recover existing values from a prior install
+# so AUTH_TOKEN / PII_HASH_KEY can be preserved across re-init.
+extract_env_any() {
+    local file="$1" key="$2"
+    [[ -f "$file" ]] || return 1
+    local line val
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line#"${line%%[![:space:]]*}"}"
+        [[ -z "$line" ]] && continue
+        # Strip ONE leading '#' + optional whitespace so commented lines match.
+        if [[ "$line" == \#* ]]; then
+            line="${line#\#}"
+            line="${line#"${line%%[![:space:]]*}"}"
+        fi
+        line="${line#export }"
+        [[ "$line" == "$key="* ]] || continue
+        val="${line#"$key="}"
+        if [[ "$val" == \"*\" ]] || [[ "$val" == \'*\' ]]; then
+            val="${val:1:${#val}-2}"
+        fi
+        printf '%s\n' "$val"
+        return 0
+    done < "$file"
+    return 1
+}
+
+# env_is_uncommented returns 0 if KEY= appears UNCOMMENTED in $1, else 1.
+# Used by re-init to derive auth_enabled (uncommented AUTH_TOKEN) and
+# chat_trace_enabled (uncommented CHAT_TRACE=true) state from the
+# existing file without conflating "value present but disabled" with
+# "value present and active".
+env_is_uncommented() {
+    local file="$1" key="$2"
+    [[ -f "$file" ]] || return 1
+    grep -qE "^[[:space:]]*(export[[:space:]]+)?${key}=" "$file"
+}
+
 # apply_cli_flags overrides exported vars with any --pii / --hash-key /
 # etc. that came in on the command line. Called AFTER load_env_file so
 # flags win.
@@ -398,13 +439,19 @@ gen_random_hex() {
 #   --auth-enabled      enable bearer-token auth (default off; AUTH_TOKEN
 #                       line is pregenerated but written commented when
 #                       disabled so flipping a '#' enables it later)
+#   --chat-trace        enable chat-trace NDJSON tracer (default off; records
+#                       raw user content to chat-trace.log -- sensitive)
+#   --regenerate-secrets  on re-init (--force on an existing dest), mint
+#                       fresh AUTH_TOKEN + PII_HASH_KEY. Default on re-init
+#                       is to PRESERVE the existing secrets so clients and
+#                       hash-mode correlation don't break.
 #   --non-interactive   don't prompt; use defaults for anything unset
 init_cmd() {
     local dest="${HOME}/.otto-gw.env"
     local force=0
     local non_interactive=0
     local arg_auth_token="" arg_hash_key="" arg_kiro="" arg_addr="" arg_pii=""
-    local arg_auth_enabled=0
+    local arg_auth_enabled=0 arg_chat_trace=0 arg_regenerate_secrets=0
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -416,6 +463,8 @@ init_cmd() {
             --auth-enabled)      arg_auth_enabled=1; shift ;;
             --auth-token)        arg_auth_token="$2"; arg_auth_enabled=1; shift 2 ;;
             --auth-token=*)      arg_auth_token="${1#*=}"; arg_auth_enabled=1; shift ;;
+            --chat-trace)        arg_chat_trace=1; shift ;;
+            --regenerate-secrets) arg_regenerate_secrets=1; shift ;;
             --hash-key)          arg_hash_key="$2"; shift 2 ;;
             --hash-key=*)        arg_hash_key="${1#*=}"; shift ;;
             --kiro)              arg_kiro="$2"; shift 2 ;;
@@ -433,49 +482,142 @@ init_cmd() {
         exit 1
     fi
 
-    # Generate secrets (--auth-token / --hash-key override).
-    local auth_token="$arg_auth_token"
-    [[ -z "$auth_token" ]] && auth_token="$(gen_random_hex 32)"
-    local hash_key="$arg_hash_key"
-    [[ -z "$hash_key" ]] && hash_key="$(gen_random_hex 32)"
-
-    # Resolve KIRO_CMD — flag → interactive prompt → suggest `command -v kiro-cli`.
-    local kiro_cmd="$arg_kiro"
-    if [[ -z "$kiro_cmd" && "$non_interactive" -ne 1 ]]; then
-        local kiro_default; kiro_default="$(command -v kiro-cli 2>/dev/null || true)"
-        read -r -p "  kiro-cli path [${kiro_default:-press Enter to leave unset}]: " kiro_cmd
-        [[ -z "$kiro_cmd" ]] && kiro_cmd="$kiro_default"
+    # Re-init detection: --force on an existing dest. Parse existing values
+    # so they can serve as prompt/non-interactive defaults (CLI flag wins;
+    # existing-file value is the next-best default; cold-start default is
+    # only used when neither is present). Secrets (AUTH_TOKEN, PII_HASH_KEY)
+    # are reused verbatim unless --regenerate-secrets — avoids invalidating
+    # client tokens and breaking hash-mode log correlation on a casual
+    # `init --force` to e.g. flip PII mode.
+    local reinit=0
+    local existing_kiro="" existing_addr="" existing_pii_mode=""
+    local existing_auth_token="" existing_hash_key=""
+    local existing_auth_enabled="" existing_chat_trace=""
+    if [[ "$force" -eq 1 && -e "$dest" ]]; then
+        if [[ ! -r "$dest" ]]; then
+            echo "ERROR: $dest exists but is not readable. Check file permissions." >&2
+            exit 1
+        fi
+        reinit=1
+        existing_kiro="$(extract_env_any "$dest" KIRO_CMD 2>/dev/null || true)"
+        existing_addr="$(extract_env_any "$dest" HTTP_ADDR 2>/dev/null || true)"
+        existing_pii_mode="$(extract_env_any "$dest" PII_REDACTION_MODE 2>/dev/null || true)"
+        existing_auth_token="$(extract_env_any "$dest" AUTH_TOKEN 2>/dev/null || true)"
+        existing_hash_key="$(extract_env_any "$dest" PII_HASH_KEY 2>/dev/null || true)"
+        if env_is_uncommented "$dest" AUTH_TOKEN; then
+            existing_auth_enabled=1
+        else
+            existing_auth_enabled=0
+        fi
+        # CHAT_TRACE is "enabled" only when the line is uncommented AND the
+        # value parses to true. Anything else (commented, "false", missing)
+        # → disabled.
+        if env_is_uncommented "$dest" CHAT_TRACE; then
+            local existing_chat_val
+            existing_chat_val="$(extract_env_any "$dest" CHAT_TRACE 2>/dev/null || true)"
+            case "$existing_chat_val" in
+                true|TRUE|True|1|yes) existing_chat_trace=1 ;;
+                *)                    existing_chat_trace=0 ;;
+            esac
+        else
+            existing_chat_trace=0
+        fi
+        echo "re-init detected: preserving existing values where unchanged"
+        if [[ "$arg_regenerate_secrets" -eq 1 ]]; then
+            echo "regenerating AUTH_TOKEN and PII_HASH_KEY (existing values discarded)"
+        else
+            echo "(use --regenerate-secrets to mint new AUTH_TOKEN / PII_HASH_KEY)"
+        fi
     fi
 
-    # Resolve HTTP_ADDR — flag → prompt with Ollama-compat callout.
+    # Generate secrets — precedence: CLI flag > existing-file value (re-init,
+    # unless --regenerate-secrets) > fresh random.
+    local auth_token="$arg_auth_token"
+    local auth_token_preserved=0
+    if [[ -z "$auth_token" ]]; then
+        if [[ "$reinit" -eq 1 && "$arg_regenerate_secrets" -ne 1 && -n "$existing_auth_token" ]]; then
+            auth_token="$existing_auth_token"
+            auth_token_preserved=1
+        else
+            auth_token="$(gen_random_hex 32)"
+        fi
+    fi
+    local hash_key="$arg_hash_key"
+    local hash_key_preserved=0
+    if [[ -z "$hash_key" ]]; then
+        if [[ "$reinit" -eq 1 && "$arg_regenerate_secrets" -ne 1 && -n "$existing_hash_key" ]]; then
+            hash_key="$existing_hash_key"
+            hash_key_preserved=1
+        else
+            hash_key="$(gen_random_hex 32)"
+        fi
+    fi
+
+    # Resolve KIRO_CMD — precedence: CLI flag > existing-file value (re-init)
+    # > interactive prompt with `command -v kiro-cli` suggestion > empty.
+    local kiro_cmd="$arg_kiro"
+    if [[ -z "$kiro_cmd" ]]; then
+        if [[ -n "$existing_kiro" ]]; then
+            if [[ "$non_interactive" -eq 1 ]]; then
+                kiro_cmd="$existing_kiro"
+            else
+                read -r -p "  kiro-cli path [$existing_kiro]: " kiro_cmd
+                [[ -z "$kiro_cmd" ]] && kiro_cmd="$existing_kiro"
+            fi
+        elif [[ "$non_interactive" -ne 1 ]]; then
+            local kiro_default; kiro_default="$(command -v kiro-cli 2>/dev/null || true)"
+            read -r -p "  kiro-cli path [${kiro_default:-press Enter to leave unset}]: " kiro_cmd
+            [[ -z "$kiro_cmd" ]] && kiro_cmd="$kiro_default"
+        fi
+    fi
+
+    # Resolve HTTP_ADDR — precedence: CLI flag > existing > prompt > default.
     local http_addr="$arg_addr"
-    if [[ -z "$http_addr" && "$non_interactive" -ne 1 ]]; then
-        echo "  HTTP listen address — default 127.0.0.1:18080 (safe, no collision)."
-        echo "  Set to 127.0.0.1:11434 if migrating from the Node Ollama proxy."
-        read -r -p "  HTTP_ADDR [127.0.0.1:18080]: " http_addr
+    if [[ -z "$http_addr" ]]; then
+        if [[ -n "$existing_addr" ]]; then
+            if [[ "$non_interactive" -eq 1 ]]; then
+                http_addr="$existing_addr"
+            else
+                read -r -p "  HTTP_ADDR [$existing_addr]: " http_addr
+                [[ -z "$http_addr" ]] && http_addr="$existing_addr"
+            fi
+        elif [[ "$non_interactive" -ne 1 ]]; then
+            echo "  HTTP listen address -- default 127.0.0.1:18080 (safe, no collision)."
+            echo "  Set to 127.0.0.1:11434 if migrating from the Node Ollama proxy."
+            read -r -p "  HTTP_ADDR [127.0.0.1:18080]: " http_addr
+        fi
     fi
     [[ -z "$http_addr" ]] && http_addr="127.0.0.1:18080"
 
-    # Resolve PII mode — flag → prompt → default off.
+    # Resolve PII mode — precedence: CLI flag > existing > prompt > "off".
     local pii_mode="$arg_pii"
-    if [[ -z "$pii_mode" && "$non_interactive" -ne 1 ]]; then
-        echo "  PII redaction -- off | replace | mask | hash | drop."
-        echo "  Pick 'replace' for human-readable redaction; 'hash' for log correlation."
-        read -r -p "  PII mode [off]: " pii_mode
+    if [[ -z "$pii_mode" ]]; then
+        if [[ -n "$existing_pii_mode" ]]; then
+            if [[ "$non_interactive" -eq 1 ]]; then
+                pii_mode="$existing_pii_mode"
+            else
+                read -r -p "  PII mode [$existing_pii_mode]: " pii_mode
+                [[ -z "$pii_mode" ]] && pii_mode="$existing_pii_mode"
+            fi
+        elif [[ "$non_interactive" -ne 1 ]]; then
+            echo "  PII redaction -- off | replace | mask | hash | drop."
+            echo "  Pick 'replace' for human-readable redaction; 'hash' for log correlation."
+            read -r -p "  PII mode [off]: " pii_mode
+        fi
     fi
     [[ -z "$pii_mode" ]] && pii_mode="off"
 
     local pii_enabled="false"
     [[ "$pii_mode" != "off" ]] && pii_enabled="true"
-    # If PII mode != hash, pii_hash_key is still written (commented? no, harmless to set)
-    # so the operator can switch to hash mode later without re-running init.
 
-    # Resolve AUTH mode -- flag (--auth-enabled / --auth-token) → prompt → default off.
-    # When disabled, AUTH_TOKEN is still pregenerated but the line is written
-    # commented out so the operator can enable it later by deleting the leading
-    # '#' without re-running init.
+    # Resolve AUTH state — precedence: CLI flag (--auth-enabled / --auth-token)
+    # > existing-file state (uncommented = enabled) > interactive prompt > off.
     local auth_enabled="$arg_auth_enabled"
-    if [[ "$auth_enabled" -eq 0 && "$non_interactive" -ne 1 ]]; then
+    if [[ "$auth_enabled" -eq 0 && -n "$existing_auth_enabled" ]]; then
+        auth_enabled="$existing_auth_enabled"
+        # On re-init, also honor the existing state without re-prompting unless
+        # the operator passed an explicit flag (handled by the precedence above).
+    elif [[ "$auth_enabled" -eq 0 && "$non_interactive" -ne 1 ]]; then
         echo "  Bearer-token auth -- when enabled, every request must carry"
         echo "  'Authorization: Bearer <token>'. Off is fine for local/laptop use."
         read -r -p "  Enable auth? [y/N]: " auth_reply
@@ -487,6 +629,29 @@ init_cmd() {
     local auth_token_prefix=""
     if [[ "$auth_enabled" -ne 1 ]]; then
         auth_token_prefix="# "
+    fi
+
+    # Resolve CHAT_TRACE state — precedence: --chat-trace flag > existing-file
+    # state (uncommented + true = enabled) > interactive prompt > off.
+    local chat_trace="$arg_chat_trace"
+    if [[ "$chat_trace" -eq 0 && -n "$existing_chat_trace" ]]; then
+        chat_trace="$existing_chat_trace"
+    elif [[ "$chat_trace" -eq 0 && "$non_interactive" -ne 1 ]]; then
+        echo "  Chat-trace -- records raw user content (pre-redaction) to a"
+        echo "  separate chat-trace.log for debugging. Sensitive: 0600 mode,"
+        echo "  3-day default retention. Off is fine for normal use."
+        read -r -p "  Enable chat-trace? [y/N]: " chat_reply
+        case "$chat_reply" in
+            [Yy]|[Yy][Ee][Ss]) chat_trace=1 ;;
+            *) chat_trace=0 ;;
+        esac
+    fi
+    local chat_trace_prefix=""
+    local chat_trace_value="false"
+    if [[ "$chat_trace" -eq 1 ]]; then
+        chat_trace_value="true"
+    else
+        chat_trace_prefix="# "
     fi
 
     # Ensure parent dir exists.
@@ -526,6 +691,16 @@ PII_HASH_KEY=$hash_key
 # Empty = all six recognizers (Email, IPv4, IPv6, SSN, CreditCard, USPhone).
 # PII_ENABLED_ENTITIES=Email,SSN,CreditCard
 
+# --- Chat-trace -------------------------------------------------------------
+# When enabled, every chat-shaped request writes two NDJSON lines to a
+# dedicated chat-trace.log (one pre-chain capturing the RAW pre-redaction
+# request, one post-chain with the response). Sensitive content -- file is
+# created mode 0600 (owner-only). DO NOT ship to centralized log aggregators
+# without a redaction sidecar. Default 3-day retention.
+${chat_trace_prefix}CHAT_TRACE=$chat_trace_value
+# CHAT_TRACE_FILE=./logs/otto-gateway-chat-trace.log
+# CHAT_TRACE_MAX_AGE_DAYS=3
+
 # --- Misc -------------------------------------------------------------------
 # DEBUG=true
 # ALLOWED_IPS=127.0.0.1,::1
@@ -537,14 +712,27 @@ EOF
 
     echo "✓ wrote $dest (mode 0600)"
     if [[ "$auth_enabled" -eq 1 ]]; then
-        echo "  AUTH:          enabled (AUTH_TOKEN=$(echo "$auth_token" | head -c 8)…)"
+        if [[ "$auth_token_preserved" -eq 1 ]]; then
+            echo "  AUTH:          enabled (token preserved from prior install)"
+        else
+            echo "  AUTH:          enabled (AUTH_TOKEN=$(echo "$auth_token" | head -c 8)…)"
+        fi
     else
         echo "  AUTH:          disabled (AUTH_TOKEN line commented; pregenerated token in file)"
     fi
-    echo "  PII_HASH_KEY:  $(echo "$hash_key" | head -c 8)…(generated)"
+    if [[ "$hash_key_preserved" -eq 1 ]]; then
+        echo "  PII_HASH_KEY:  preserved (existing key reused)"
+    else
+        echo "  PII_HASH_KEY:  $(echo "$hash_key" | head -c 8)…(generated)"
+    fi
     [[ -n "$kiro_cmd" ]] && echo "  KIRO_CMD:      $kiro_cmd" || echo "  KIRO_CMD:      (unset -- chat will 503 until you set it)"
     echo "  HTTP_ADDR:     $http_addr"
     echo "  PII:           $pii_mode"
+    if [[ "$chat_trace" -eq 1 ]]; then
+        echo "  CHAT_TRACE:    enabled (raw content to chat-trace.log -- sensitive)"
+    else
+        echo "  CHAT_TRACE:    disabled"
+    fi
     echo ""
     echo "Next: ./scripts/otto-gw start"
 }
@@ -601,7 +789,9 @@ Gateway config flags (for start | restart | run | env):
 init flags:
   --dest PATH         where to write the .env (default $HOME/.otto-gw.env)
   --here              shortcut for --dest ./.env.otto-gw
-  --force             overwrite if dest exists
+  --force             overwrite if dest exists (on re-init: existing values
+                      are preserved as defaults; secrets reused unchanged
+                      unless --regenerate-secrets)
   --kiro PATH         skip the KIRO_CMD prompt
   --addr ADDR         skip the HTTP_ADDR prompt (default 127.0.0.1:18080)
   --pii MODE          skip the PII prompt (default off)
@@ -609,6 +799,12 @@ init flags:
                       pregenerated but commented when disabled, so flipping
                       the '#' enables it without re-running init)
   --auth-token TOK    use TOK instead of generating (implies --auth-enabled)
+  --chat-trace        enable chat-trace NDJSON tracer (default off; records
+                      raw user content -- sensitive)
+  --regenerate-secrets  on re-init, mint fresh AUTH_TOKEN + PII_HASH_KEY.
+                      Default behavior on re-init preserves existing values
+                      to avoid invalidating clients / breaking hash-mode
+                      log correlation. Use after a key leak.
   --hash-key KEY      use KEY instead of generating
   --non-interactive   don't prompt; use defaults for unspecified values
 

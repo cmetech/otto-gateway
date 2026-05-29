@@ -40,6 +40,8 @@ param(
     [switch]$Force,
     [switch]$NonInteractive,
     [switch]$AuthEnabled,
+    [switch]$ChatTrace,
+    [switch]$RegenerateSecrets,
     [string]$AuthToken,
     [string]$Kiro,
     [string]$Addr
@@ -324,6 +326,44 @@ function New-RandomHex {
     -join ($buf | ForEach-Object { $_.ToString('x2') })
 }
 
+function Read-DotEnvAsHashtable {
+    # Returns @{ KEY = value; ... } for every KEY=value line in $Path,
+    # including commented (# KEY=value) lines. Used by init -Force to
+    # recover existing values from a prior install. Same parser shape as
+    # Import-DotEnv, but no $env: mutation.
+    param([Parameter(Mandatory)][string]$Path)
+    $result = @{}
+    if (-not (Test-Path $Path)) { return $result }
+    Get-Content -LiteralPath $Path | ForEach-Object {
+        $line = $_.TrimStart()
+        if (-not $line) { return }
+        if ($line.StartsWith('#')) {
+            $line = $line.Substring(1).TrimStart()
+            if (-not $line) { return }
+        }
+        if ($line -match '^\s*export\s+') { $line = $line -replace '^\s*export\s+', '' }
+        if ($line -notmatch '=') { return }
+        $key, $val = $line -split '=', 2
+        $val = $val.Trim()
+        if (($val.StartsWith('"') -and $val.EndsWith('"')) -or `
+            ($val.StartsWith("'") -and $val.EndsWith("'"))) {
+            $val = $val.Substring(1, $val.Length - 2)
+        }
+        $result[$key.Trim()] = $val
+    }
+    return $result
+}
+
+function Test-EnvKeyUncommented {
+    # Returns $true when KEY= appears uncommented in $Path. Used to derive
+    # auth_enabled / chat_trace_enabled state without conflating
+    # "value present but disabled" with "value present and active".
+    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$Key)
+    if (-not (Test-Path $Path)) { return $false }
+    $pattern = "^\s*(export\s+)?${Key}="
+    return ((Select-String -Path $Path -Pattern $pattern -Quiet) -eq $true)
+}
+
 function Invoke-Init {
     # Default dest = $HOME\.otto-gw.env unless -Here or -Dest overrides.
     $destPath = $Dest
@@ -335,52 +375,141 @@ function Invoke-Init {
         exit 1
     }
 
-    # Generate secrets unless overridden.
-    $authTokenValue = if ($AuthToken) { $AuthToken } else { New-RandomHex 32 }
-    $hashKeyValue   = if ($HashKey)   { $HashKey }   else { New-RandomHex 32 }
-
-    # Resolve KIRO_CMD.
-    $kiroValue = $Kiro
-    if (-not $kiroValue -and -not $NonInteractive) {
-        $cmd = Get-Command kiro-cli -ErrorAction SilentlyContinue
-        $kiroDefault = if ($cmd) { $cmd.Source } else { $null }
-        $prompt = if ($kiroDefault) { "  kiro-cli path [$kiroDefault]" } else { "  kiro-cli path [press Enter to leave unset]" }
-        $entered = Read-Host $prompt
-        $kiroValue = if ($entered) { $entered } else { $kiroDefault }
+    # Re-init detection: -Force on an existing dest. Parse existing values so
+    # they can serve as prompt/non-interactive defaults (CLI flag wins;
+    # existing-file value next; cold-start default last). Secrets reused
+    # unless -RegenerateSecrets (so a casual re-init doesn't invalidate
+    # client bearer tokens or break hash-mode log correlation).
+    $reinit = $false
+    $existing = @{}
+    $existingAuthOn = $null
+    $existingChatTraceOn = $null
+    if ($Force -and (Test-Path $destPath)) {
+        try {
+            $existing = Read-DotEnvAsHashtable -Path $destPath
+        } catch {
+            Write-Error "ERROR: $destPath exists but could not be parsed: $_"
+            exit 1
+        }
+        $reinit = $true
+        $existingAuthOn = Test-EnvKeyUncommented -Path $destPath -Key 'AUTH_TOKEN'
+        if (Test-EnvKeyUncommented -Path $destPath -Key 'CHAT_TRACE') {
+            $existingChatTraceOn = ($existing['CHAT_TRACE'] -match '^(true|1|yes)$')
+        } else {
+            $existingChatTraceOn = $false
+        }
+        Write-Host "re-init detected: preserving existing values where unchanged"
+        if ($RegenerateSecrets) {
+            Write-Host "regenerating AUTH_TOKEN and PII_HASH_KEY (existing values discarded)"
+        } else {
+            Write-Host "(use -RegenerateSecrets to mint new AUTH_TOKEN / PII_HASH_KEY)"
+        }
     }
 
-    # Resolve HTTP_ADDR.
+    # Generate / preserve secrets — flag > existing (re-init, unless
+    # -RegenerateSecrets) > fresh random.
+    $authTokenPreserved = $false
+    $hashKeyPreserved   = $false
+    if ($AuthToken) {
+        $authTokenValue = $AuthToken
+    } elseif ($reinit -and -not $RegenerateSecrets -and $existing.ContainsKey('AUTH_TOKEN') -and $existing['AUTH_TOKEN']) {
+        $authTokenValue     = $existing['AUTH_TOKEN']
+        $authTokenPreserved = $true
+    } else {
+        $authTokenValue = New-RandomHex 32
+    }
+    if ($HashKey) {
+        $hashKeyValue = $HashKey
+    } elseif ($reinit -and -not $RegenerateSecrets -and $existing.ContainsKey('PII_HASH_KEY') -and $existing['PII_HASH_KEY']) {
+        $hashKeyValue     = $existing['PII_HASH_KEY']
+        $hashKeyPreserved = $true
+    } else {
+        $hashKeyValue = New-RandomHex 32
+    }
+
+    # Resolve KIRO_CMD -- flag > existing > prompt with Get-Command suggestion.
+    $kiroValue = $Kiro
+    if (-not $kiroValue) {
+        if ($existing.ContainsKey('KIRO_CMD') -and $existing['KIRO_CMD']) {
+            if ($NonInteractive) {
+                $kiroValue = $existing['KIRO_CMD']
+            } else {
+                $entered   = Read-Host "  kiro-cli path [$($existing['KIRO_CMD'])]"
+                $kiroValue = if ($entered) { $entered } else { $existing['KIRO_CMD'] }
+            }
+        } elseif (-not $NonInteractive) {
+            $cmd = Get-Command kiro-cli -ErrorAction SilentlyContinue
+            $kiroDefault = if ($cmd) { $cmd.Source } else { $null }
+            $prompt = if ($kiroDefault) { "  kiro-cli path [$kiroDefault]" } else { "  kiro-cli path [press Enter to leave unset]" }
+            $entered = Read-Host $prompt
+            $kiroValue = if ($entered) { $entered } else { $kiroDefault }
+        }
+    }
+
+    # Resolve HTTP_ADDR -- flag > existing > prompt > default.
     $addrValue = $Addr
-    if (-not $addrValue -and -not $NonInteractive) {
-        Write-Host "  HTTP listen address — default 127.0.0.1:18080 (safe, no collision)."
-        Write-Host "  Set to 127.0.0.1:11434 if migrating from the Node Ollama proxy."
-        $entered = Read-Host "  HTTP_ADDR [127.0.0.1:18080]"
-        $addrValue = if ($entered) { $entered } else { "127.0.0.1:18080" }
+    if (-not $addrValue) {
+        if ($existing.ContainsKey('HTTP_ADDR') -and $existing['HTTP_ADDR']) {
+            if ($NonInteractive) {
+                $addrValue = $existing['HTTP_ADDR']
+            } else {
+                $entered   = Read-Host "  HTTP_ADDR [$($existing['HTTP_ADDR'])]"
+                $addrValue = if ($entered) { $entered } else { $existing['HTTP_ADDR'] }
+            }
+        } elseif (-not $NonInteractive) {
+            Write-Host "  HTTP listen address -- default 127.0.0.1:18080 (safe, no collision)."
+            Write-Host "  Set to 127.0.0.1:11434 if migrating from the Node Ollama proxy."
+            $entered = Read-Host "  HTTP_ADDR [127.0.0.1:18080]"
+            $addrValue = if ($entered) { $entered } else { "127.0.0.1:18080" }
+        }
     }
     if (-not $addrValue) { $addrValue = "127.0.0.1:18080" }
 
-    # Resolve PII mode.
+    # Resolve PII mode -- flag > existing > prompt > "off".
     $piiValue = $Pii
-    if (-not $piiValue -and -not $NonInteractive) {
-        Write-Host "  PII redaction -- off | replace | mask | hash | drop."
-        Write-Host "  Pick 'replace' for human-readable redaction; 'hash' for log correlation."
-        $entered = Read-Host "  PII mode [off]"
-        $piiValue = if ($entered) { $entered } else { "off" }
+    if (-not $piiValue) {
+        if ($existing.ContainsKey('PII_REDACTION_MODE') -and $existing['PII_REDACTION_MODE']) {
+            if ($NonInteractive) {
+                $piiValue = $existing['PII_REDACTION_MODE']
+            } else {
+                $entered  = Read-Host "  PII mode [$($existing['PII_REDACTION_MODE'])]"
+                $piiValue = if ($entered) { $entered } else { $existing['PII_REDACTION_MODE'] }
+            }
+        } elseif (-not $NonInteractive) {
+            Write-Host "  PII redaction -- off | replace | mask | hash | drop."
+            Write-Host "  Pick 'replace' for human-readable redaction; 'hash' for log correlation."
+            $entered = Read-Host "  PII mode [off]"
+            $piiValue = if ($entered) { $entered } else { "off" }
+        }
     }
     if (-not $piiValue) { $piiValue = "off" }
     $piiEnabled = if ($piiValue -eq "off") { "false" } else { "true" }
 
-    # Resolve AUTH mode -- -AuthEnabled / -AuthToken implies on; otherwise prompt.
-    # When disabled, AUTH_TOKEN is still pregenerated but the line is written
-    # commented out so the operator can enable later by deleting the leading '#'.
+    # Resolve AUTH state -- flag > existing-file state (uncommented = on) > prompt > off.
     $authOn = $AuthEnabled.IsPresent -or ($AuthToken -ne $null -and $AuthToken -ne "")
-    if (-not $authOn -and -not $NonInteractive) {
+    if (-not $authOn -and $existingAuthOn -ne $null) {
+        $authOn = $existingAuthOn
+    } elseif (-not $authOn -and -not $NonInteractive) {
         Write-Host "  Bearer-token auth -- when enabled, every request must carry"
         Write-Host "  'Authorization: Bearer <token>'. Off is fine for local/laptop use."
         $entered = Read-Host "  Enable auth? [y/N]"
         if ($entered -match '^(y|yes)$') { $authOn = $true }
     }
     $authPrefix = if ($authOn) { "" } else { "# " }
+
+    # Resolve CHAT_TRACE state -- flag > existing > prompt > off.
+    $chatOn = $ChatTrace.IsPresent
+    if (-not $chatOn -and $existingChatTraceOn -ne $null) {
+        $chatOn = $existingChatTraceOn
+    } elseif (-not $chatOn -and -not $NonInteractive) {
+        Write-Host "  Chat-trace -- records raw user content (pre-redaction) to a"
+        Write-Host "  separate chat-trace.log for debugging. Sensitive: 0600 mode,"
+        Write-Host "  3-day default retention. Off is fine for normal use."
+        $entered = Read-Host "  Enable chat-trace? [y/N]"
+        if ($entered -match '^(y|yes)$') { $chatOn = $true }
+    }
+    $chatPrefix = if ($chatOn) { "" } else { "# " }
+    $chatValue  = if ($chatOn) { "true" } else { "false" }
 
     # Ensure parent dir exists.
     $destDir = Split-Path -Parent $destPath
@@ -422,6 +551,16 @@ PII_HASH_KEY=$hashKeyValue
 # Empty = all six recognizers (Email, IPv4, IPv6, SSN, CreditCard, USPhone).
 # PII_ENABLED_ENTITIES=Email,SSN,CreditCard
 
+# --- Chat-trace -------------------------------------------------------------
+# When enabled, every chat-shaped request writes two NDJSON lines to a
+# dedicated chat-trace.log (one pre-chain capturing the RAW pre-redaction
+# request, one post-chain with the response). Sensitive content -- file is
+# created mode 0600 (owner-only). DO NOT ship to centralized log aggregators
+# without a redaction sidecar. Default 3-day retention.
+${chatPrefix}CHAT_TRACE=$chatValue
+# CHAT_TRACE_FILE=./logs/otto-gateway-chat-trace.log
+# CHAT_TRACE_MAX_AGE_DAYS=3
+
 # --- Misc -------------------------------------------------------------------
 # DEBUG=true
 # ALLOWED_IPS=127.0.0.1,::1
@@ -447,14 +586,27 @@ PII_HASH_KEY=$hashKeyValue
 
     Write-Host "✓ wrote $destPath"
     if ($authOn) {
-        Write-Host "  AUTH:          enabled (AUTH_TOKEN=$($authTokenValue.Substring(0,8))…)"
+        if ($authTokenPreserved) {
+            Write-Host "  AUTH:          enabled (token preserved from prior install)"
+        } else {
+            Write-Host "  AUTH:          enabled (AUTH_TOKEN=$($authTokenValue.Substring(0,8))…)"
+        }
     } else {
         Write-Host "  AUTH:          disabled (AUTH_TOKEN line commented; pregenerated token in file)"
     }
-    Write-Host "  PII_HASH_KEY:  $($hashKeyValue.Substring(0,8))…(generated)"
+    if ($hashKeyPreserved) {
+        Write-Host "  PII_HASH_KEY:  preserved (existing key reused)"
+    } else {
+        Write-Host "  PII_HASH_KEY:  $($hashKeyValue.Substring(0,8))…(generated)"
+    }
     if ($kiroValue) { Write-Host "  KIRO_CMD:      $kiroValue" } else { Write-Host "  KIRO_CMD:      (unset -- chat will 503 until you set it)" }
     Write-Host "  HTTP_ADDR:     $addrValue"
     Write-Host "  PII:           $piiValue"
+    if ($chatOn) {
+        Write-Host "  CHAT_TRACE:    enabled (raw content to chat-trace.log -- sensitive)"
+    } else {
+        Write-Host "  CHAT_TRACE:    disabled"
+    }
     Write-Host ""
     Write-Host "Next: .\scripts\otto-gw.ps1 start"
 }
@@ -504,13 +656,20 @@ Gateway config flags (for start | restart | run | env):
 init flags (for the 'init' subcommand):
   -Dest PATH          where to write the .env (default `$env:USERPROFILE\.otto-gw.env)
   -Here               shortcut for -Dest .\.env.otto-gw
-  -Force              overwrite if dest exists
+  -Force              overwrite if dest exists (on re-init: existing values
+                      preserved as defaults; secrets reused unchanged unless
+                      -RegenerateSecrets)
   -Kiro PATH          skip the KIRO_CMD prompt
   -Addr ADDR          skip the HTTP_ADDR prompt (default 127.0.0.1:18080)
   -Pii MODE           skip the PII prompt (default off)
   -AuthEnabled        enable bearer-token auth (default off; AUTH_TOKEN line
                       pregenerated but commented when disabled)
   -AuthToken TOK      use TOK instead of generating (implies -AuthEnabled)
+  -ChatTrace          enable chat-trace NDJSON tracer (default off; records
+                      raw user content -- sensitive)
+  -RegenerateSecrets  on re-init, mint fresh AUTH_TOKEN + PII_HASH_KEY.
+                      Default preserves existing values to avoid invalidating
+                      clients / breaking hash-mode log correlation.
   -HashKey KEY        use KEY instead of generating
   -NonInteractive     don't prompt; use defaults for unspecified values
 
