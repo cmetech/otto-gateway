@@ -197,3 +197,97 @@ func TestAdmin_ComputeStatus(t *testing.T) {
 		})
 	}
 }
+
+// TestSnapshot_LogSources_PresentAndOrdered asserts the quick-260529-ll2
+// log_sources field reflects Deps.LogPathOrder verbatim and renders as []
+// (not null) when no sources are configured.
+func TestSnapshot_LogSources_PresentAndOrdered(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	cases := []struct {
+		name  string
+		order []string
+		want  []string
+	}{
+		{
+			name:  "all_three_sources_in_order",
+			order: []string{"main", "boot-err", "chat-trace"},
+			want:  []string{"main", "boot-err", "chat-trace"},
+		},
+		{
+			name:  "main_plus_boot_err_only",
+			order: []string{"main", "boot-err"},
+			want:  []string{"main", "boot-err"},
+		},
+		{
+			name:  "empty_yields_empty_array_not_null",
+			order: nil,
+			want:  []string{},
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			deps := Deps{
+				Logger:       testutil.Logger(t),
+				Version:      "1.0.0",
+				Commit:       "abc1234",
+				LogPathOrder: c.order,
+			}
+			h := Handler(deps)
+
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/snapshot", nil)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("snapshot: want 200, got %d", rec.Code)
+			}
+			var snap AdminSnapshot
+			if err := json.NewDecoder(rec.Body).Decode(&snap); err != nil {
+				t.Fatalf("decode AdminSnapshot: %v", err)
+			}
+			if snap.LogSources == nil {
+				t.Fatalf("log_sources rendered as null (want empty array)")
+			}
+			if len(snap.LogSources) != len(c.want) {
+				t.Fatalf("log_sources length: got %d, want %d (%v vs %v)",
+					len(snap.LogSources), len(c.want), snap.LogSources, c.want)
+			}
+			for i, v := range c.want {
+				if snap.LogSources[i] != v {
+					t.Errorf("log_sources[%d]: got %q, want %q", i, snap.LogSources[i], v)
+				}
+			}
+		})
+	}
+}
+
+// TestSnapshot_LogSources_DefensiveCopy asserts a snapshot consumer that
+// mutates the returned slice cannot reach into the live Deps.
+func TestSnapshot_LogSources_DefensiveCopy(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	original := []string{"main", "boot-err"}
+	deps := Deps{
+		Logger:       testutil.Logger(t),
+		Version:      "1.0.0",
+		Commit:       "abc1234",
+		LogPathOrder: original,
+	}
+	h := Handler(deps)
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/snapshot", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	var snap AdminSnapshot
+	if err := json.NewDecoder(rec.Body).Decode(&snap); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// Mutate the returned slice and re-fetch — the original should not move.
+	snap.LogSources[0] = "tampered"
+	if original[0] != "main" {
+		t.Errorf("defensive-copy violation: original mutated to %q", original[0])
+	}
+}

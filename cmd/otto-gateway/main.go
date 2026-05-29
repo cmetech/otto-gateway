@@ -489,16 +489,20 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 	if registryForServer != nil {
 		adminRegistry = adminRegistryAdapter{src: registryForServer}
 	}
+	// Quick 260529-ll2: shimmed to the new LogPaths/LogPathOrder Deps
+	// shape; the proper multi-source wiring (main, boot-err, chat-trace)
+	// lands with Task 4 when the chat-trace rotator is constructed.
 	tailerLogPath := envOrDefault("LOG_FILE",
 		envOrDefault("OTTO_LOG", "./logs/otto-gateway.log"))
 	adminHandler := admin.Handler(admin.Deps{
-		Logger:     logger,
-		Version:    version.Version,
-		Commit:     version.Commit(),
-		Start:      time.Now(),
-		PoolDetail: adminPoolDetail,
-		Registry:   adminRegistry,
-		LogPath:    tailerLogPath,
+		Logger:       logger,
+		Version:      version.Version,
+		Commit:       version.Commit(),
+		Start:        time.Now(),
+		PoolDetail:   adminPoolDetail,
+		Registry:     adminRegistry,
+		LogPaths:     map[string]string{"main": tailerLogPath},
+		LogPathOrder: []string{"main"},
 	})
 
 	// Boot log surfaces the resolved surface set so operators see

@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 )
@@ -72,6 +73,27 @@ func (h *handler) sseHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Quick 260529-ll2 — resolve the source query param BEFORE writing
+	// SSE headers so an unknown source returns a clean 400 JSON envelope
+	// instead of opening a benign empty event-stream connection.
+	// Empty / absent source defaults to "main" (the first entry in
+	// LogPathOrder per the conventional UI contract). The allowlist check
+	// uses slices.Contains on LogPathOrder so the strict order in Deps
+	// IS the authoritative valid set — keeping LogPaths and LogPathOrder
+	// in sync at construction time is the caller's responsibility.
+	source := r.URL.Query().Get("source")
+	if source == "" {
+		source = "main"
+	}
+	if !slices.Contains(h.deps.LogPathOrder, source) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = fmt.Fprintf(w, `{"error":"unknown source: %s"}`, source)
+		return
+	}
+	path := h.deps.LogPaths[source]
+	tailer := h.tailers.Get(source, path)
+
 	// Set SSE headers BEFORE writing any body (Pitfall 3 — nginx buffering).
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -79,14 +101,15 @@ func (h *handler) sseHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Accel-Buffering", "no") // disable nginx buffering
 	w.WriteHeader(http.StatusOK)
 
-	// Subscribe to the shared tailer. defer Unsubscribe guarantees cleanup
-	// on any exit path (ctx cancel, write error, subscriber channel closed).
-	sub := h.tailer.Subscribe(r.Context())
-	defer h.tailer.Unsubscribe(sub)
+	// Subscribe to the resolved tailer. defer Unsubscribe guarantees
+	// cleanup on any exit path (ctx cancel, write error, subscriber
+	// channel closed).
+	sub := tailer.Subscribe(r.Context())
+	defer tailer.Unsubscribe(sub)
 
 	// Snapshot the ring buffer for backfill AFTER subscribing so we don't
 	// miss any lines that arrive between subscribe and snapshot.
-	snapshot := h.tailer.Snapshot()
+	snapshot := tailer.Snapshot()
 
 	// Start the keepalive ticker.
 	ticker := time.NewTicker(SSEKeepaliveInterval)
