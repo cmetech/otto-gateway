@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"os"
 	"reflect"
 	"sort"
 	"strings"
@@ -503,5 +504,113 @@ func TestLoad_AnthropicPathPrefix_Override(t *testing.T) {
 	}
 	if cfg.AnthropicPathPrefix != "/anthropic/v1" {
 		t.Errorf("AnthropicPathPrefix: got %q, want %q", cfg.AnthropicPathPrefix, "/anthropic/v1")
+	}
+}
+
+// --- CHAT_TRACE coverage (quick 260529-ll2) -----------------------------
+
+func TestLoad_ChatTrace_DefaultDisabled(t *testing.T) {
+	// t.Setenv: cannot use t.Parallel().
+	// CHAT_TRACE defaults to false so the two-knob design stays safe-
+	// by-default (raw user content never written without operator opt-in).
+	t.Setenv("CHAT_TRACE", "")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+	if cfg.ChatTrace {
+		t.Errorf("ChatTrace: got true, want false (default-disabled)")
+	}
+	if cfg.ChatTraceMaxAgeDays != 3 {
+		t.Errorf("ChatTraceMaxAgeDays: got %d, want 3 (default)", cfg.ChatTraceMaxAgeDays)
+	}
+}
+
+func TestLoad_ChatTraceFile_DefaultFromLogFile(t *testing.T) {
+	// t.Setenv: cannot use t.Parallel().
+	// When LOG_FILE is set, the chat-trace default sibling-file derivation
+	// must use the same directory + basename + "-chat-trace.log" suffix.
+	t.Setenv("LOG_FILE", "/tmp/x/y.log")
+	t.Setenv("CHAT_TRACE_FILE", "")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+	want := "/tmp/x/y-chat-trace.log"
+	if cfg.ChatTraceFile != want {
+		t.Errorf("ChatTraceFile: got %q, want %q", cfg.ChatTraceFile, want)
+	}
+}
+
+func TestLoad_ChatTraceFile_DefaultWhenLogFileUnset(t *testing.T) {
+	// t.Setenv: cannot use t.Parallel().
+	// When LOG_FILE is unset, default to the packaged distribution path.
+	t.Setenv("LOG_FILE", "")
+	t.Setenv("CHAT_TRACE_FILE", "")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+	want := "./logs/otto-gateway-chat-trace.log"
+	if cfg.ChatTraceFile != want {
+		t.Errorf("ChatTraceFile: got %q, want %q", cfg.ChatTraceFile, want)
+	}
+}
+
+func TestLoad_ChatTraceMaxAgeDays_InvalidParse_Errors(t *testing.T) {
+	// t.Setenv: cannot use t.Parallel().
+	// Set-but-unparseable CHAT_TRACE_MAX_AGE_DAYS must surface as a Load
+	// error (matches getEnvInt semantics for POOL_SIZE et al.).
+	t.Setenv("CHAT_TRACE_MAX_AGE_DAYS", "not-a-number")
+	_, err := config.Load()
+	if err == nil {
+		t.Fatal("Load() should return an error for CHAT_TRACE_MAX_AGE_DAYS=not-a-number, got nil")
+	}
+	if !strings.Contains(err.Error(), "CHAT_TRACE_MAX_AGE_DAYS") {
+		t.Errorf("error should name the offending env var, got: %v", err)
+	}
+}
+
+func TestLoad_ChatTrace_RejectsUnwritableParent(t *testing.T) {
+	// t.Setenv: cannot use t.Parallel().
+	// When CHAT_TRACE=true and the resolved CHAT_TRACE_FILE parent
+	// directory cannot be created (e.g., a regular FILE already exists at
+	// the parent path), Load must return an error naming the env var and
+	// the failed parent.
+	t.Setenv("CHAT_TRACE", "true")
+	// Create a regular file at a path; then ask CHAT_TRACE_FILE to live
+	// "inside" that path so MkdirAll fails.
+	tmp := t.TempDir()
+	blocker := tmp + "/blocker"
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write blocker: %v", err)
+	}
+	t.Setenv("CHAT_TRACE_FILE", blocker+"/sub/chat-trace.log")
+	_, err := config.Load()
+	if err == nil {
+		t.Fatal("Load() should return an error when CHAT_TRACE_FILE parent is unwritable, got nil")
+	}
+	if !strings.Contains(err.Error(), "CHAT_TRACE_FILE") {
+		t.Errorf("error should name CHAT_TRACE_FILE, got: %v", err)
+	}
+}
+
+func TestLoad_ChatTrace_AllowsChatTraceHookInAllowlist_WhenDisabled(t *testing.T) {
+	// t.Setenv: cannot use t.Parallel().
+	// Forward-compat: when CHAT_TRACE=false but operator left
+	// ChatTraceHook in their ENABLED_HOOKS allowlist, Load must SILENTLY
+	// drop the entry rather than fail chain.Filter at boot. main.go does
+	// not wire ChatTraceHook into the chain when CHAT_TRACE=false, so
+	// chain.Filter would otherwise error on a missing hook.
+	t.Setenv("CHAT_TRACE", "false")
+	t.Setenv("ENABLED_HOOKS", "ChatTraceHook,LoggingHook")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+	for _, h := range cfg.EnabledHooks {
+		if h == "ChatTraceHook" {
+			t.Errorf("EnabledHooks should drop ChatTraceHook when CHAT_TRACE=false; got %v", cfg.EnabledHooks)
+		}
 	}
 }

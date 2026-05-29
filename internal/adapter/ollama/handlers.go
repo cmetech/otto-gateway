@@ -98,6 +98,8 @@ func (a *Adapter) handleChat(w http.ResponseWriter, r *http.Request) {
 	// request_id stays correlation-safe, and PIIRedactionHook +
 	// LoggingHook share one *Summary pointer (slice 5 Task 4b).
 	ctx = stampPluginCtx(ctx, r)
+	// Quick 260529-ll2 — surface stamp for ChatTraceHook correlation.
+	ctx = plugin.WithSurface(ctx, "ollama")
 
 	// Plan 05-03 D-04..D-11: when X-Session-Id is present AND the registry
 	// + factory closure are wired, route through a per-request engine bound
@@ -277,6 +279,8 @@ func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 	// Phase 8 OBSV-03 / D-04 — request_id + pii.Summary ctx-stamp
 	// (slice 5 Task 4b). See handleChat for the full rationale.
 	ctx = stampPluginCtx(ctx, r)
+	// Quick 260529-ll2 — surface stamp for ChatTraceHook correlation.
+	ctx = plugin.WithSurface(ctx, "ollama")
 
 	// Plan 05-03: X-Session-Id branch (same shape as handleChat).
 	eng, entry, sErr := a.resolveEngine(r)

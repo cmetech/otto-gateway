@@ -10,6 +10,8 @@ import (
 	"log/slog"
 	"net/netip"
 	"os"
+	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -146,6 +148,31 @@ type Config struct {
 	// correlation tokens (intentional — key-rotation tool for suspected
 	// log leak; documented in docs/operating.md).
 	PIIHashKey string
+
+	// ChatTrace enables the ChatTraceHook NDJSON tracer (quick 260529-ll2).
+	// Default false. When true, main.go constructs a dedicated
+	// timberjack rotator at ChatTraceFile and prepends ChatTraceHook to
+	// chain.Pre so the hook observes the post-adapter canonical request
+	// BEFORE PIIRedactionHook mutates it. SENSITIVE — the file contains
+	// raw user prompts. Two-knob safety: when this is false, no file is
+	// opened on disk and no NDJSON records are written. Loaded from
+	// CHAT_TRACE.
+	ChatTrace bool
+
+	// ChatTraceFile is the on-disk path of the chat-trace NDJSON log
+	// (quick 260529-ll2). Default-derived: if LOG_FILE is set, this is
+	// the LOG_FILE basename with the "-chat-trace.log" suffix in the
+	// same directory; else "./logs/otto-gateway-chat-trace.log". The
+	// timberjack rotator opens this file with mode 0o600 (T-ll2-01
+	// mitigation). Loaded from CHAT_TRACE_FILE.
+	ChatTraceFile string
+
+	// ChatTraceMaxAgeDays is the timberjack MaxAge in days for chat-
+	// trace.log rotation pruning (quick 260529-ll2). Default 3. Rolling
+	// over daily at 00:00 with 3-day retention bounds the sensitive
+	// content exposure window (T-ll2-05 DoS / T-ll2-01 leak mitigation).
+	// Loaded from CHAT_TRACE_MAX_AGE_DAYS.
+	ChatTraceMaxAgeDays int
 }
 
 // LogLevel returns the slog.Level implied by the Debug flag.
@@ -264,8 +291,43 @@ func Load() (Config, error) {
 		errs = append(errs, fmt.Errorf("PII_REDACTION_MODE=hash requires PII_HASH_KEY"))
 	}
 
+	// Quick 260529-ll2 — ChatTraceHook env knobs. Two-knob: CHAT_TRACE
+	// toggles work-doing; CHAT_TRACE_FILE / CHAT_TRACE_MAX_AGE_DAYS
+	// tune the rotator. The writable-parent check only runs when
+	// CHAT_TRACE=true so the default ./logs/ path is never created on
+	// disabled installs.
+	chatTrace, err := getEnvBool("CHAT_TRACE", false)
+	if err != nil {
+		errs = append(errs, err)
+	}
+	logFileForDerive := strings.TrimSpace(os.Getenv("LOG_FILE"))
+	chatTraceFile := getEnvStr("CHAT_TRACE_FILE", deriveChatTraceFile(logFileForDerive))
+	chatTraceMaxAgeDays, err := getEnvInt("CHAT_TRACE_MAX_AGE_DAYS", 3)
+	if err != nil {
+		errs = append(errs, err)
+	}
+	if chatTrace {
+		if dir := filepath.Dir(chatTraceFile); dir != "" && dir != "." {
+			if mkErr := os.MkdirAll(dir, 0o755); mkErr != nil {
+				errs = append(errs, fmt.Errorf("CHAT_TRACE_FILE: parent unwritable %q: %w", dir, mkErr))
+			}
+		}
+	}
+
 	if len(errs) > 0 {
 		return Config{}, fmt.Errorf("config: invalid env vars: %w", errors.Join(errs...))
+	}
+
+	// Quick 260529-ll2 — typo-fail-fast carry-forward: when CHAT_TRACE=false
+	// the hook is naturally absent from the chain in main.go, but operators
+	// may legitimately include "ChatTraceHook" in their ENABLED_HOOKS
+	// allowlist (forward-compat). Silently drop the entry so chain.Filter
+	// does not error on a hook that the boot path never wired. When
+	// CHAT_TRACE=true the entry is honored as written.
+	if !chatTrace && slices.Contains(enabledHooks, "ChatTraceHook") {
+		enabledHooks = slices.DeleteFunc(enabledHooks, func(s string) bool {
+			return s == "ChatTraceHook"
+		})
 	}
 
 	return Config{
@@ -291,7 +353,31 @@ func Load() (Config, error) {
 		PIIEnabledEntities:  piiEntities,
 		PIIRedactionMode:    piiMode,
 		PIIHashKey:          piiHashKey,
+		ChatTrace:           chatTrace,
+		ChatTraceFile:       chatTraceFile,
+		ChatTraceMaxAgeDays: chatTraceMaxAgeDays,
 	}, nil
+}
+
+// deriveChatTraceFile builds the default CHAT_TRACE_FILE path from the
+// resolved LOG_FILE env value. Sibling-file convention: same directory,
+// same basename minus extension, "-chat-trace.log" suffix. When
+// logFile is empty, returns the documented packaged-default path
+// "./logs/otto-gateway-chat-trace.log".
+//
+// Used by Load() for the CHAT_TRACE_FILE default, so an operator who
+// sets LOG_FILE=/var/log/otto/otto-gateway.log gets a co-located
+// chat-trace at /var/log/otto/otto-gateway-chat-trace.log without
+// further configuration — same directory permissions, same rotation
+// destination, same operator-cognitive home.
+func deriveChatTraceFile(logFile string) string {
+	logFile = strings.TrimSpace(logFile)
+	if logFile == "" {
+		return "./logs/otto-gateway-chat-trace.log"
+	}
+	ext := filepath.Ext(logFile)
+	base := strings.TrimSuffix(logFile, ext)
+	return base + "-chat-trace.log"
 }
 
 // LoadArgs resolves configuration from env+defaults via Load(), then overlays
