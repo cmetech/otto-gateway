@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v1.5
 milestone_name: audit WARNINGs
 status: executing
-last_updated: "2026-05-28T17:46:58.178Z"
-last_activity: 2026-05-28 -- Phase 08.1 execution started
+last_updated: "2026-05-29T15:22:00.000Z"
+last_activity: 2026-05-29 -- Completed quick task 260529-f8r: Log Tail panel CSS-grid table view + pool-slot 4-col fix
 progress:
   total_phases: 2
   completed_phases: 0
@@ -103,6 +103,7 @@ None yet.
 | 260528-rom | Windows operator .bat surface: setup.bat (one-time MOTW strip + execution policy fix) + otto-gw.bat (cmd.exe dispatcher) + start/stop/status.bat (Explorer shortcuts); Makefile + operator-quickstart.md updated; bats shipped in all 4 packages (ASCII no-BOM); single atomic commit | 2026-05-28 | 86b76ac | [260528-rom-windows-operator-bat-surface](./quick/260528-rom-windows-operator-bat-surface/) |
 | 260528-tbg | docs/INSTALL.md install/upgrade reference (481 lines, UTF-8 no BOM, TOC + per-OS checklists + .env load order + wrapper tradeoff table + upgrade behavior + pitfalls + verification commands); Makefile PKG_INSTALL declaration; operator-quickstart.md cross-reference; shipped in all 4 dist archives | 2026-05-28 | 07f4f46 | [260528-tbg-ship-docs-install-md-as-part-of-every-di](./quick/260528-tbg-ship-docs-install-md-as-part-of-every-di/) |
 | 260528-d84 | Phase 9 close-out: goleak coverage gaps + property tests for buildBlocks/CoerceToolCall + .github/workflows/ci.yml + ROADMAP/REQUIREMENTS housekeeping; v1.5 milestone closed | 2026-05-28 | 91dd162 | [260528-d84-phase-9-closeout-goleak-property-tests-e](./quick/260528-d84-phase-9-closeout-goleak-property-tests-e/) |
+| 260529-f8r | Admin Log Tail panel → 4-column CSS-grid table (Time/Level/Source/Message) with sticky header, level chips, wrapping message cells, dataset.raw grep plumbing, full-width fallback row; pool-slot grid bumped to 4 columns at desktop | 2026-05-29 | 4d8c147 | [260529-f8r-convert-log-tail-panel-to-css-grid-table](./quick/260529-f8r-convert-log-tail-panel-to-css-grid-table/) |
 
 ## Deferred Items
 
