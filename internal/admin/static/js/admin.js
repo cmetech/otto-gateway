@@ -436,9 +436,13 @@
     }
   }
 
-  // Parse a slog log line to extract the level field.
-  // Supports both slog text format ("level=INFO ...") and JSON
-  // ({"level":"INFO",...}). Returns { level: 'info'|'debug'|'warn'|'error'|null }.
+  // Parse a slog log line into {level, time, msg, source, raw}. Supports both
+  // slog text format ("time=… level=INFO msg=… logger=…") and JSON
+  // ({"level":"INFO","time":"…","msg":"…","logger":"…"}). The `raw` field is
+  // always the original line argument — load-bearing for grep re-derive
+  // (filters match against raw, not concatenated cell text).
+  //
+  // source: prefer `logger`, fall back to `source` for both branches.
   function parseLogLine(line) {
     // Try JSON first (slog JSON handler output).
     if (line.charAt(0) === '{') {
@@ -446,7 +450,15 @@
         var obj = JSON.parse(line);
         var lv = obj.level;
         if (typeof lv === 'string') {
-          return { level: lv.toLowerCase(), msg: line };
+          return {
+            level: lv.toLowerCase(),
+            time: typeof obj.time === 'string' ? obj.time : '',
+            msg: typeof obj.msg === 'string' ? obj.msg : '',
+            source: typeof obj.logger === 'string'
+              ? obj.logger
+              : (typeof obj.source === 'string' ? obj.source : ''),
+            raw: line
+          };
         }
       } catch (e) {
         // fall through to text parsing
@@ -455,9 +467,29 @@
     // slog text handler: "time=… level=INFO msg=…"
     var match = /\blevel=([A-Za-z]+)/.exec(line);
     if (match) {
-      return { level: match[1].toLowerCase(), msg: line };
+      // Best-effort field extraction. The value group accepts either a
+      // double-quoted span (which may contain spaces) or a bare \S+ token.
+      function unquote(s) {
+        if (typeof s !== 'string' || s.length < 2) return s || '';
+        if (s.charAt(0) === '"' && s.charAt(s.length - 1) === '"') {
+          return s.slice(1, -1);
+        }
+        return s;
+      }
+      var tm = /\btime=("[^"]*"|\S+)/.exec(line);
+      var mg = /\bmsg=("[^"]*"|\S+)/.exec(line);
+      // source: prefer `logger`, fall back to `source`
+      var src = /\blogger=("[^"]*"|\S+)/.exec(line);
+      if (!src) src = /\bsource=("[^"]*"|\S+)/.exec(line);
+      return {
+        level: match[1].toLowerCase(),
+        time: tm ? unquote(tm[1]) : '',
+        msg: mg ? unquote(mg[1]) : '',
+        source: src ? unquote(src[1]) : '',
+        raw: line
+      };
     }
-    return { level: null, msg: line };
+    return { level: null, time: '', msg: '', source: '', raw: line };
   }
 
   // matchesFilters returns true if the line passes both level and grep filters.
@@ -471,15 +503,16 @@
     return true;
   }
 
-  // appendLine adds a log line to the viewport (T-6.1-16: textContent only).
+  // appendLine adds a log entry to the viewport as a 4-cell grid row
+  // (Time | Level | Source | Message), or as a single full-width fallback
+  // row when the line cannot be parsed at all (T-6.1-16: textContent only,
+  // never raw-HTML APIs).
   //
-  // WR-06 mitigation: persist parsed.level (including the null case) via
-  // dataset.level so the level-filter re-derive paths read the same source
-  // of truth as the initial render. The prior code only stored a CSS class
-  // for non-null + non-info levels, so re-derivation from classList could
-  // not distinguish `level=null` (parser could not determine) from
-  // `level=info` — making initial-render and re-render filter behavior
-  // diverge for non-slog log entries (e.g., raw subprocess panic dumps).
+  // WR-06: persist parsed.level (including the null case) via dataset.level
+  // so the level-filter re-derive paths read the same source of truth as
+  // the initial render. dataset.raw mirrors the original SSE line so the
+  // grep filter matches what it was matching BEFORE the grid refactor
+  // (not the concatenated cell text).
   function appendLine(line, parsed) {
     var vp = document.querySelector('[data-log-viewport]');
     if (!vp) return;
@@ -488,23 +521,70 @@
     var empty = document.querySelector('[data-log-empty]');
     if (empty) empty.hidden = true;
 
-    var div = document.createElement('div');
-    div.className = 'otto-log-line';
-    if (parsed.level && parsed.level !== 'info') {
-      div.classList.add('is-' + parsed.level);
-    }
-    // WR-06: persist the parsed level (or 'unknown' for null) so filter
-    // handlers can recover the exact value without inferring from class.
-    div.dataset.level = parsed.level || 'unknown';
-    div.textContent = line;  // textContent — never innerHTML (T-6.1-16)
-    if (!matchesFilters(parsed, line)) {
-      div.style.display = 'none';
-    }
-    vp.appendChild(div);
+    var row;
+    // Fallback: parser found nothing usable — render the raw line as one
+    // full-width cell spanning all 4 columns so nothing is silently dropped.
+    if (parsed.level === null && parsed.time === '' && parsed.msg === '') {
+      row = document.createElement('div');
+      row.className = 'otto-log-row-fallback';
+      row.dataset.level = 'unknown';
+      row.dataset.raw = parsed.raw;
+      var fallbackCell = document.createElement('div');
+      fallbackCell.className = 'otto-log-cell otto-log-cell-fallback';
+      fallbackCell.textContent = parsed.raw;  // textContent only (T-6.1-16)
+      row.appendChild(fallbackCell);
+    } else {
+      // Standard 4-cell grid row.
+      row = document.createElement('div');
+      row.className = 'otto-log-row';
+      row.dataset.level = parsed.level || 'unknown';
+      row.dataset.raw = parsed.raw;
 
-    // Trim DOM to last 1000 nodes to prevent unbounded memory growth (T-6.1-17).
-    while (vp.children.length > 1000) {
-      vp.removeChild(vp.firstChild);
+      var timeCell = document.createElement('div');
+      timeCell.className = 'otto-log-cell otto-log-cell-time';
+      timeCell.textContent = parsed.time || '';
+
+      var levelCell = document.createElement('div');
+      levelCell.className = 'otto-log-cell otto-log-cell-level';
+      var chip = document.createElement('span');
+      var levelKey = parsed.level || 'unknown';
+      chip.className = 'otto-log-level-chip is-' + levelKey;
+      // Chip text: uppercase level name, or "?" for unknown.
+      chip.textContent = parsed.level ? parsed.level.toUpperCase() : '?';
+      levelCell.appendChild(chip);
+
+      var sourceCell = document.createElement('div');
+      sourceCell.className = 'otto-log-cell otto-log-cell-source';
+      sourceCell.textContent = parsed.source || '';
+
+      var msgCell = document.createElement('div');
+      msgCell.className = 'otto-log-cell otto-log-cell-message';
+      // If msg is empty (e.g., the line had a level but no msg field) fall
+      // back to the raw line so the operator still sees content.
+      msgCell.textContent = parsed.msg || parsed.raw;
+
+      row.appendChild(timeCell);
+      row.appendChild(levelCell);
+      row.appendChild(sourceCell);
+      row.appendChild(msgCell);
+    }
+
+    // Filter visibility — pass parsed.raw so the grep regex still matches
+    // the original SSE line (not the concatenated cell text). With
+    // display: contents on .otto-log-row{,-fallback}, setting style.display
+    // = 'none' on the row hides all of its grid-cell children.
+    if (!matchesFilters(parsed, parsed.raw)) {
+      row.style.display = 'none';
+    }
+    vp.appendChild(row);
+
+    // Trim DOM to last 1000 LOG rows (the header row + empty placeholder
+    // must never be evicted). Count via the row classes so the header stays
+    // pinned at the top of the viewport regardless of how many lines arrive.
+    while (vp.querySelectorAll('.otto-log-row, .otto-log-row-fallback').length > 1000) {
+      var victim = vp.querySelector('.otto-log-row, .otto-log-row-fallback');
+      if (!victim) break;
+      vp.removeChild(victim);
     }
   }
 
@@ -612,14 +692,16 @@
     if (!sel) return;
     sel.addEventListener('change', function () {
       logLevelFilter = sel.value;
-      // Walk existing DOM nodes and set display accordingly.
+      // Walk existing DOM nodes and set display accordingly. Read dataset.raw
+      // (set by appendLine) instead of el.textContent — grep regex must see
+      // the original SSE line, not the concatenated cell text.
       var vp = document.querySelector('[data-log-viewport]');
       if (!vp) return;
-      var lines = vp.querySelectorAll('.otto-log-line');
+      var lines = vp.querySelectorAll('.otto-log-row, .otto-log-row-fallback');
       for (var i = 0; i < lines.length; i++) {
         var el = lines[i];
         var parsed = { level: levelFromElement(el) };
-        var line = el.textContent;
+        var line = el.dataset.raw || '';
         el.style.display = matchesFilters(parsed, line) ? '' : 'none';
       }
     });
@@ -649,14 +731,17 @@
         }
         // Re-evaluate existing DOM lines with the new filter.
         // WR-06: read persisted level via levelFromElement instead of
-        // inferring from classList (which loses the null case).
+        // inferring from classList (which loses the null case). Read
+        // dataset.raw (set by appendLine) so the grep regex matches the
+        // original SSE line, NOT the concatenated cell text — this is the
+        // load-bearing correctness invariant for the grid refactor.
         var vp = document.querySelector('[data-log-viewport]');
         if (!vp) return;
-        var lines = vp.querySelectorAll('.otto-log-line');
+        var lines = vp.querySelectorAll('.otto-log-row, .otto-log-row-fallback');
         for (var i = 0; i < lines.length; i++) {
           var el = lines[i];
           var parsed = { level: levelFromElement(el) };
-          var line = el.textContent;
+          var line = el.dataset.raw || '';
           el.style.display = matchesFilters(parsed, line) ? '' : 'none';
         }
       }, 150);

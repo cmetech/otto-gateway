@@ -502,36 +502,107 @@ body {
   flex-wrap: wrap;
 }
 
-/* Log viewport: monospace 12px, fixed height, overflow scroll (Plan 03) */
+/* Log viewport: 4-column CSS grid (Time | Level | Source | Message),
+ * fixed height, overflow scroll. The viewport is the grid CONTAINER;
+ * the in-template header row and JS-appended .otto-log-row / .otto-log-row-fallback
+ * use `display: contents` so their cells participate directly in this grid. */
 .otto-log-viewport {
   height: 480px;
   overflow-y: auto;
+  display: grid;
+  grid-template-columns: minmax(0, max-content) minmax(0, max-content) minmax(0, max-content) 1fr;
+  align-content: start;
   font: 400 12px/1.5 var(--otto-font-mono);
   color: var(--otto-fg);
   background: var(--otto-bg);
-  padding: var(--otto-space-sm) var(--otto-space-base);
 }
 
-/* Empty state shown before any lines arrive */
+/* Sticky header row — children participate in the parent grid via display: contents.
+ * Each header cell must individually set position: sticky + matching --otto-bg
+ * background so scrolling rows are visually clipped behind it. */
+.otto-log-header-row { display: contents; }
+
+.otto-log-header-row .otto-log-cell {
+  position: sticky;
+  top: 0;
+  background: var(--otto-bg);
+  z-index: 1;
+  padding: 4px var(--otto-space-sm);
+  font: 600 11px/1.4 var(--otto-font-ui);
+  color: var(--otto-muted);
+  border-bottom: 1px solid var(--otto-border);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* JS-appended log row — display: contents pushes its 4 cells into the grid. */
+.otto-log-row { display: contents; }
+
+/* Default cell styling: tight padding, nowrap so time/level/source stay on one line. */
+.otto-log-cell {
+  padding: 2px var(--otto-space-sm);
+  white-space: nowrap;
+}
+
+/* Message cell wraps long content inside its column (no horizontal scroll). */
+.otto-log-cell-message {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Fallback row for unparseable raw lines: one full-width cell spanning all 4 cols. */
+.otto-log-row-fallback { display: contents; }
+
+.otto-log-row-fallback .otto-log-cell-fallback {
+  grid-column: 1 / -1;
+  padding: 2px var(--otto-space-sm);
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--otto-muted);
+}
+
+/* Empty state shown before any lines arrive — span all 4 grid columns. */
 .otto-log-empty {
+  grid-column: 1 / -1;
   color: var(--otto-muted);
   text-align: center;
   padding: var(--otto-space-lg);
   font: 400 14px/1.5 var(--otto-font-ui);
 }
 
-/* Individual log line (Plan 03) */
-.otto-log-line {
-  white-space: pre-wrap;
-  word-break: break-all;
-  padding: 2px 0;
+/* Level chip — inline pill inside the Level cell. Color lives on the chip,
+ * NOT the row, so the rest of the row stays in the default fg color. */
+.otto-log-level-chip {
+  display: inline-block;
+  padding: 0 6px;
+  border-radius: 4px;
+  font: 600 10px/1.6 var(--otto-font-ui);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
-/* Log-line level color variants (D-12 / T-6.1-16) */
-.otto-log-line.is-debug { color: var(--otto-muted); }  /* DEBUG: #A0A0A0 */
-.otto-log-line.is-info  { color: var(--otto-fg); }     /* INFO:  #FAFAFA (default) */
-.otto-log-line.is-warn  { color: var(--otto-warning); } /* WARN:  #FF8C0A */
-.otto-log-line.is-error { color: var(--otto-failed); }  /* ERROR: #FF3232 */
+/* Per-level chip palette — uses existing tokens for theme parity. */
+.otto-log-level-chip.is-debug {
+  color: var(--otto-bg);
+  background: var(--otto-muted);
+}
+.otto-log-level-chip.is-info {
+  color: var(--otto-bg);
+  background: var(--otto-fg);
+}
+.otto-log-level-chip.is-warn {
+  color: var(--otto-bg);
+  background: var(--otto-warning);
+}
+.otto-log-level-chip.is-error {
+  color: var(--otto-bg);
+  background: var(--otto-failed);
+}
+.otto-log-level-chip.is-unknown {
+  color: var(--otto-muted);
+  background: transparent;
+  border: 1px solid var(--otto-border);
+}
 
 /* Regex invalid-pattern hint (Plan 03) */
 .otto-grep-hint {
