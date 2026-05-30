@@ -586,7 +586,8 @@ func TestRunSSEEmitterLoop_PingInterleave(t *testing.T) {
 	// Drive the loop in a goroutine so we can sequence the inputs.
 	done := make(chan error, 1)
 	go func() {
-		done <- runSSEEmitterLoop(context.Background(), e, runHandle, tickerC)
+		_, err := runSSEEmitterLoop(context.Background(), e, runHandle, tickerC)
+		done <- err
 	}()
 
 	// Give the goroutine a brief moment to process the ping. Polling
@@ -655,7 +656,8 @@ func TestRunSSEEmitterLoop_CtxCancelTerminatesCleanly(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- runSSEEmitterLoop(ctx, e, runHandle, tickerC)
+		_, err := runSSEEmitterLoop(ctx, e, runHandle, tickerC)
+		done <- err
 	}()
 
 	// Wait for the chunk to be processed (block_start + delta visible).
@@ -713,7 +715,7 @@ func TestRunSSEEmitterLoop_ResultError(t *testing.T) {
 	}
 	tickerC := make(chan time.Time)
 
-	err := runSSEEmitterLoop(context.Background(), e, runHandle, tickerC)
+	_, err := runSSEEmitterLoop(context.Background(), e, runHandle, tickerC)
 	if err == nil || !strings.Contains(err.Error(), "upstream blew up") {
 		t.Errorf("error: got %v, want wraps 'upstream blew up'", err)
 	}
@@ -753,7 +755,7 @@ func TestRunSSEEmitterLoop_ResultError_BlockOpen_StopFirst(t *testing.T) {
 	}
 	tickerC := make(chan time.Time)
 
-	_ = runSSEEmitterLoop(context.Background(), e, runHandle, tickerC)
+	_, _ = runSSEEmitterLoop(context.Background(), e, runHandle, tickerC)
 	events := sseEventLines(cf.Body())
 
 	// Expect: content_block_start, content_block_delta, content_block_stop, error.
@@ -775,7 +777,7 @@ func TestRunSSEEmitter_NoFlusherError(t *testing.T) {
 	nfw := &nonFlusherWriter{headerMap: http.Header{}}
 	runHandle := newRunHandle()
 
-	err := runSSEEmitter(context.Background(), nfw, runHandle, "auto", nullLogger())
+	_, err := runSSEEmitter(context.Background(), nfw, runHandle, "auto", nullLogger())
 	if err == nil || !strings.Contains(err.Error(), "response writer is not flusher") {
 		t.Errorf("error: got %v, want 'response writer is not flusher'", err)
 	}
@@ -809,7 +811,7 @@ func TestRunSSEEmitter_EndToEnd_Headers(t *testing.T) {
 		canonical.Chunk{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "hi"}},
 	)
 
-	err := runSSEEmitter(context.Background(), rec, runHandle, "auto", nullLogger())
+	_, err := runSSEEmitter(context.Background(), rec, runHandle, "auto", nullLogger())
 	if err != nil {
 		t.Fatalf("runSSEEmitter: %v", err)
 	}
@@ -861,7 +863,7 @@ func TestSSEEmitter_FlushCountEqualsWriteEvents(t *testing.T) {
 	}
 	tickerC := make(chan time.Time)
 
-	if err := runSSEEmitterLoop(context.Background(), e, runHandle, tickerC); err != nil {
+	if _, err := runSSEEmitterLoop(context.Background(), e, runHandle, tickerC); err != nil {
 		t.Fatalf("loop: %v", err)
 	}
 
@@ -899,7 +901,7 @@ func TestFinalize_MessageDeltaPayload(t *testing.T) {
 	}
 	tickerC := make(chan time.Time)
 
-	if err := runSSEEmitterLoop(context.Background(), e, runHandle, tickerC); err != nil {
+	if _, err := runSSEEmitterLoop(context.Background(), e, runHandle, tickerC); err != nil {
 		t.Fatalf("loop: %v", err)
 	}
 
@@ -951,7 +953,7 @@ func TestFinalize_NilFinalResult_FallsBackToStopUnknown(t *testing.T) {
 	}
 	tickerC := make(chan time.Time)
 
-	if err := runSSEEmitterLoop(context.Background(), e, runHandle, tickerC); err != nil {
+	if _, err := runSSEEmitterLoop(context.Background(), e, runHandle, tickerC); err != nil {
 		t.Fatalf("loop: %v", err)
 	}
 	// Find the message_delta data frame.

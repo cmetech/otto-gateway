@@ -156,11 +156,26 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 			writeError(w, http.StatusUnauthorized, errAuthentication, shortCircuitMessage(sc))
 			return
 		}
-		if err := runSSEEmitter(streamCtx, w, runHandle, req, wire.Model, a.cfg.Logger); err != nil {
+		resp, err := runSSEEmitter(streamCtx, w, runHandle, req, wire.Model, a.cfg.Logger)
+		if err != nil {
 			// runSSEEmitter has already written SSE headers + at least some frames.
 			// We cannot send a JSON 500 after WriteHeader; log at debug and let
 			// the truncated stream stand (Pitfall 3 / A5).
 			a.cfg.Logger.Debug("openai: sse emitter terminated", "err", err)
+		}
+		// Quick 260530-df2 — fire PostHooks on the aggregated response.
+		// resp is non-nil even on disconnect / mid-stream Result()
+		// error so PostHooks observe forensics. Hook errors are logged
+		// at WARN and SWALLOWED (T-df2-02): the stream is over from
+		// the client's perspective. The /completions shim (which
+		// silently downgrades stream:true to false) routes through
+		// eng.Collect and so PostHooks fire there via Collect's
+		// existing traversal — no change needed for that path.
+		if resp != nil {
+			if pErr := eng.RunPostHooks(streamCtx, req, resp); pErr != nil {
+				a.cfg.Logger.Warn("openai: posthook error after streaming completion",
+					"err", pErr, "surface", "openai.chat")
+			}
 		}
 		return
 	}

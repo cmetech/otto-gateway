@@ -223,6 +223,36 @@ func (e *Engine) Run(ctx context.Context, req *canonical.ChatRequest) (*Run, err
 	}, nil
 }
 
+// RunPostHooks invokes the PostHook chain against an externally-aggregated
+// response. Used by streaming adapters that bypass Collect's chunk loop
+// (they range Stream().Chunks() themselves while emitting wire frames)
+// and by the Anthropic adapter's CollectAnthropicChat (which has its own
+// aggregator per D-07). Iterates in registration order; first non-nil
+// error aborts with the same "engine: posthook: ..." wrapping Collect
+// uses.
+//
+// Idempotency contract: callers MUST NOT call this method when also
+// calling Collect — Collect already runs PostHooks. The two are
+// alternatives. The streaming adapters call Run + RunPostHooks; the
+// non-streaming Ollama/OpenAI adapters call Collect; the non-streaming
+// Anthropic adapter calls CollectAnthropicChat which calls RunPostHooks
+// at its tail. There is no path that invokes both — verified by the
+// per-surface double-fire guard tests in 260530-df2 Task 5.
+//
+// Nil-resp defensive contract: streaming adapters may invoke this on a
+// partial/empty aggregation (or nil) if the stream produced zero chunks
+// and the adapter elected not to build a synthetic response. Production
+// PostHooks (LoggingHook, ChatTraceHook) already nil-guard their resp
+// access; this method passes the nil through without panicking.
+func (e *Engine) RunPostHooks(ctx context.Context, req *canonical.ChatRequest, resp *canonical.ChatResponse) error {
+	for _, h := range e.cfg.PostHooks {
+		if hookErr := h.After(ctx, req, resp); hookErr != nil {
+			return fmt.Errorf("engine: posthook: %w", hookErr)
+		}
+	}
+	return nil
+}
+
 // newCompletedRun builds a *Run that carries a PreHook-supplied response
 // without engaging ACP. Collect (collect.go) detects r.response != nil
 // and returns *response directly. The stream is an empty/closed shim

@@ -428,6 +428,132 @@ func TestEngine_PostHook_ErrorPropagation(t *testing.T) {
 	}
 }
 
+// --- Quick 260530-df2 — Engine.RunPostHooks tests ---
+//
+// RunPostHooks is the streaming-adapter-facing companion to Collect's
+// PostHook traversal. Streaming adapters bypass Collect (they range
+// Stream().Chunks() themselves while emitting wire frames) and so the
+// PostHook traversal at collect.go:118-122 never fires on streaming
+// requests. RunPostHooks closes that gap by exposing the same
+// iteration discipline as a callable method. Tests pin the
+// idempotency, error-wrap, ordering, and stop-on-first-error contracts.
+
+// TestEngine_RunPostHooks_FiresInOrder asserts the chain iterates in
+// registration order. Both fakePostHooks see the call; the test cannot
+// guard on a wall-clock ordering because the slice iteration is
+// deterministic by construction — we instead assert called=true on
+// each and rely on the StopsOnFirstError test to prove first-element
+// runs before second-element (etc.).
+func TestEngine_RunPostHooks_FiresInOrder(t *testing.T) {
+	a := &fakePostHook{}
+	b := &fakePostHook{}
+	ack := &fakeACP{}
+	e := newTestEngine(t, ack, withPostHooks(a, b))
+
+	resp := &canonical.ChatResponse{
+		Message: canonical.Message{
+			Role:    canonical.RoleAssistant,
+			Content: []canonical.ContentPart{{Kind: canonical.ContentKindText, Text: "ok"}},
+		},
+		StopReason: canonical.StopEndTurn,
+	}
+	if err := e.RunPostHooks(context.Background(), simpleUserReq("hi", "auto"), resp); err != nil {
+		t.Fatalf("RunPostHooks: %v", err)
+	}
+	if !a.called {
+		t.Error("first PostHook.After was not called")
+	}
+	if !b.called {
+		t.Error("second PostHook.After was not called")
+	}
+}
+
+// TestEngine_RunPostHooks_PropagatesError asserts the wrap prefix
+// matches collect.go:120 verbatim: "engine: posthook: <inner>". A
+// downstream caller (adapter handler) keys log filters on this prefix.
+func TestEngine_RunPostHooks_PropagatesError(t *testing.T) {
+	post := &fakePostHook{err: errors.New("posthook failed")}
+	ack := &fakeACP{}
+	e := newTestEngine(t, ack, withPostHooks(post))
+
+	err := e.RunPostHooks(context.Background(), simpleUserReq("hi", "auto"), &canonical.ChatResponse{})
+	if err == nil {
+		t.Fatal("RunPostHooks: expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "engine: posthook:") {
+		t.Errorf("error wrap prefix: got %q, want substring 'engine: posthook:'", err.Error())
+	}
+	if !strings.Contains(err.Error(), "posthook failed") {
+		t.Errorf("error wrap inner: got %q, want substring 'posthook failed'", err.Error())
+	}
+}
+
+// TestEngine_RunPostHooks_NilResp asserts the defensive contract: a
+// streaming adapter that completed with zero chunks may invoke
+// RunPostHooks on a partial/empty aggregation (or nil if it chooses).
+// The hook must receive resp=nil without panic; production hooks
+// (LoggingHook, ChatTraceHook) already nil-guard their resp access.
+func TestEngine_RunPostHooks_NilResp(t *testing.T) {
+	var captured *canonical.ChatResponse
+	post := &fakePostHook{mutate: func(r *canonical.ChatResponse) { captured = r }}
+	ack := &fakeACP{}
+	e := newTestEngine(t, ack, withPostHooks(post))
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("RunPostHooks panicked on nil resp: %v", r)
+		}
+	}()
+
+	if err := e.RunPostHooks(context.Background(), simpleUserReq("hi", "auto"), nil); err != nil {
+		t.Fatalf("RunPostHooks: %v", err)
+	}
+	if !post.called {
+		t.Error("PostHook.After was not called on nil resp")
+	}
+	if captured != nil {
+		t.Errorf("captured resp: got %v, want nil", captured)
+	}
+}
+
+// TestEngine_RunPostHooks_EmptyChain asserts no work is done when
+// cfg.PostHooks is nil/empty.
+func TestEngine_RunPostHooks_EmptyChain(t *testing.T) {
+	ack := &fakeACP{}
+	e := newTestEngine(t, ack)
+	if err := e.RunPostHooks(context.Background(), simpleUserReq("hi", "auto"), &canonical.ChatResponse{}); err != nil {
+		t.Fatalf("RunPostHooks empty chain: %v", err)
+	}
+}
+
+// TestEngine_RunPostHooks_StopsOnFirstError asserts that a non-nil
+// error from hook N aborts the loop — hook N+1 is NOT called. This
+// mirrors collect.go's traversal exactly.
+func TestEngine_RunPostHooks_StopsOnFirstError(t *testing.T) {
+	a := &fakePostHook{}
+	b := &fakePostHook{err: errors.New("b failed")}
+	c := &fakePostHook{}
+	ack := &fakeACP{}
+	e := newTestEngine(t, ack, withPostHooks(a, b, c))
+
+	err := e.RunPostHooks(context.Background(), simpleUserReq("hi", "auto"), &canonical.ChatResponse{})
+	if err == nil {
+		t.Fatal("RunPostHooks: expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "b failed") {
+		t.Errorf("error: got %q, want substring 'b failed'", err.Error())
+	}
+	if !a.called {
+		t.Error("first hook was not called")
+	}
+	if !b.called {
+		t.Error("second (erroring) hook was not called")
+	}
+	if c.called {
+		t.Error("third hook was called despite second hook returning error")
+	}
+}
+
 // TestEngine_PostHook_RunsOnPreHookShortCircuit asserts that PostHooks
 // run AFTER a PreHook short-circuit response too — so logging/audit
 // hooks still see the synthesized response (Codex H-5).

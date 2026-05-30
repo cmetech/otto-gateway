@@ -42,6 +42,12 @@ type Engine interface {
 	// stream:true branch of handleMessages (Plan 03.1-03 wires the real
 	// SSE emitter; Plan 03.1-02 ships a forward-compatible stub).
 	Run(ctx context.Context, req *canonical.ChatRequest) (RunHandle, error)
+	// RunPostHooks invokes the PostHook chain against an externally-
+	// aggregated response. Quick 260530-df2: the SSE streaming branch and
+	// CollectAnthropicChat both bypass engine.Collect's chunk loop, so
+	// PostHooks never fired on those code paths. RunPostHooks closes the
+	// gap. *engine.Engine.RunPostHooks structurally satisfies this.
+	RunPostHooks(ctx context.Context, req *canonical.ChatRequest, resp *canonical.ChatResponse) error
 }
 
 // RunHandle is the consumer-defined handle the adapter receives from

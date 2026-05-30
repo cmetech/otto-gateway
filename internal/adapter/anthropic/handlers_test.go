@@ -35,6 +35,17 @@ type fakeEngine struct {
 	lastReq  *canonical.ChatRequest
 	collectN int
 	runN     int
+
+	// Quick 260530-df2 — RunPostHooks observation. postErr is returned
+	// to the caller (the handler / CollectAnthropicChat) so tests can
+	// exercise the WARN-and-swallow streaming path AND the
+	// propagate-as-error non-streaming path. lastPostResp captures the
+	// resp pointer the hook chain was called with so tests can assert
+	// aggregator content shape. postN counts invocations for double-
+	// fire guards.
+	postErr      error
+	lastPostResp *canonical.ChatResponse
+	postN        int
 }
 
 func (f *fakeEngine) Collect(_ context.Context, req *canonical.ChatRequest) (*canonical.ChatResponse, error) {
@@ -44,6 +55,18 @@ func (f *fakeEngine) Collect(_ context.Context, req *canonical.ChatRequest) (*ca
 		return nil, f.collectErr
 	}
 	return f.collectResp, nil
+}
+
+// RunPostHooks records the invocation and returns the scripted error
+// (default nil). Quick 260530-df2: streaming adapters (and the
+// non-streaming Anthropic CollectAnthropicChat path) call this method
+// after aggregation. Tests assert postN == 1 for the per-surface
+// double-fire guards and capture lastPostResp to assert aggregator
+// content shape.
+func (f *fakeEngine) RunPostHooks(_ context.Context, _ *canonical.ChatRequest, resp *canonical.ChatResponse) error {
+	f.postN++
+	f.lastPostResp = resp
+	return f.postErr
 }
 
 func (f *fakeEngine) Run(_ context.Context, req *canonical.ChatRequest) (RunHandle, error) {

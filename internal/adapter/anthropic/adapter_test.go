@@ -24,6 +24,14 @@ func (notImplementedEngine) Run(_ context.Context, _ *canonical.ChatRequest) (Ru
 	return nil, errors.New("not implemented")
 }
 
+// RunPostHooks is a no-op for these wiring-only tests. Quick 260530-df2
+// added the method to the Engine interface; this fake never invokes
+// PostHooks (the routes-only tests never reach the post-aggregation
+// stage).
+func (notImplementedEngine) RunPostHooks(_ context.Context, _ *canonical.ChatRequest, _ *canonical.ChatResponse) error {
+	return nil
+}
+
 // TestNew_DefaultsNilLogger asserts that constructing with a zero-valued
 // Config (no Logger) does not panic and the resulting Adapter has a
 // usable defensive logger. (Engine remains nil — that's intentional;

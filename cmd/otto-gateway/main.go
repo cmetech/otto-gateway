@@ -920,6 +920,17 @@ func (a anthropicEngineAdapter) Run(ctx context.Context, req *canonical.ChatRequ
 	return anthropicRunHandleAdapter{run: run}, nil
 }
 
+// RunPostHooks delegates to *engine.Engine.RunPostHooks (quick
+// 260530-df2). The error is already wrapped at the engine layer with
+// "engine: posthook: ..." so the adapter wraps once more for symmetry
+// with Collect/Run.
+func (a anthropicEngineAdapter) RunPostHooks(ctx context.Context, req *canonical.ChatRequest, resp *canonical.ChatResponse) error {
+	if err := a.engine.RunPostHooks(ctx, req, resp); err != nil {
+		return fmt.Errorf("anthropic engine post hooks: %w", err)
+	}
+	return nil
+}
+
 // anthropicRunHandleAdapter adapts *engine.Run to anthropic.RunHandle.
 // engine.Run.Stream() returns engine.Stream (interface); anthropic
 // declares its own Stream interface that is structurally compatible
@@ -979,6 +990,15 @@ func (a openaiEngineAdapter) Run(ctx context.Context, req *canonical.ChatRequest
 	return openaiRunHandleAdapter{run: run}, nil
 }
 
+// RunPostHooks delegates to *engine.Engine.RunPostHooks (quick
+// 260530-df2). Mirrors anthropicEngineAdapter.RunPostHooks.
+func (a openaiEngineAdapter) RunPostHooks(ctx context.Context, req *canonical.ChatRequest, resp *canonical.ChatResponse) error {
+	if err := a.engine.RunPostHooks(ctx, req, resp); err != nil {
+		return fmt.Errorf("openai engine post hooks: %w", err)
+	}
+	return nil
+}
+
 // ollamaEngineAdapter wraps a concrete *engine.Engine and adapts its Run
 // signature to ollama.Engine. Mirrors anthropicEngineAdapter exactly —
 // same Go return-type-invariance rationale: *engine.Engine.Run returns
@@ -1009,6 +1029,15 @@ func (a ollamaEngineAdapter) Run(ctx context.Context, req *canonical.ChatRequest
 		return nil, fmt.Errorf("ollama engine run: %w", err)
 	}
 	return ollamaRunHandleAdapter{run: run}, nil
+}
+
+// RunPostHooks delegates to *engine.Engine.RunPostHooks (quick
+// 260530-df2). Mirrors anthropicEngineAdapter.RunPostHooks.
+func (a ollamaEngineAdapter) RunPostHooks(ctx context.Context, req *canonical.ChatRequest, resp *canonical.ChatResponse) error {
+	if err := a.engine.RunPostHooks(ctx, req, resp); err != nil {
+		return fmt.Errorf("ollama engine post hooks: %w", err)
+	}
+	return nil
 }
 
 // ollamaRunHandleAdapter adapts *engine.Run to ollama.RunHandle.

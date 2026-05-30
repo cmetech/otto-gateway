@@ -28,6 +28,25 @@ type fakeEngine struct {
 	runChunks []canonical.Chunk
 	// runErr, if non-nil, is returned directly by Engine.Run before any streaming.
 	runErr error
+
+	// Quick 260530-df2 — RunPostHooks observation. postN counts
+	// invocations (per-surface double-fire guard). lastPostResp
+	// captures the resp the hook chain was called with so tests can
+	// assert aggregator content shape. postErr (default nil) is the
+	// error returned to the caller — handlers swallow + WARN-log on
+	// streaming, but the test can verify the swallow contract.
+	postN        int
+	lastPostResp *canonical.ChatResponse
+	postErr      error
+}
+
+// RunPostHooks records the invocation. Quick 260530-df2 wired the
+// streaming branches of handleChat / handleGenerate to call this after
+// runNDJSONEmitter returns.
+func (f *fakeEngine) RunPostHooks(_ context.Context, _ *canonical.ChatRequest, resp *canonical.ChatResponse) error {
+	f.postN++
+	f.lastPostResp = resp
+	return f.postErr
 }
 
 func (f *fakeEngine) Collect(_ context.Context, req *canonical.ChatRequest) (*canonical.ChatResponse, error) {

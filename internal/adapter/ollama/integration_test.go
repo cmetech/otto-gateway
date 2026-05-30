@@ -40,6 +40,13 @@ func (a testEngineAdapter) Run(ctx context.Context, req *canonical.ChatRequest) 
 	return testRunHandleAdapter{run: run}, nil
 }
 
+// RunPostHooks delegates to *engine.Engine.RunPostHooks (quick
+// 260530-df2) so the integration adapter satisfies the expanded Engine
+// interface.
+func (a testEngineAdapter) RunPostHooks(ctx context.Context, req *canonical.ChatRequest, resp *canonical.ChatResponse) error {
+	return a.eng.RunPostHooks(ctx, req, resp)
+}
+
 type testRunHandleAdapter struct{ run *engine.Run }
 
 func (h testRunHandleAdapter) Stream() Stream         { return h.run.Stream() }

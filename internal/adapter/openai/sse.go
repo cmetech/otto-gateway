@@ -137,6 +137,17 @@ type sseEmitter struct {
 	// coerce — coerce requires the JSON to be the entire response, and
 	// a split stream (prose first, JSON second) violates that.
 	textFlushed bool
+
+	// Quick 260530-df2 — post-stream aggregator. Captures EVERY text
+	// fragment written or buffered so the canonical response handed to
+	// RunPostHooks after stream completion has populated Content.
+	// Without this, LoggingHook.After + ChatTraceHook.After observe an
+	// empty resp shell and the post_chain_out NDJSON record loses its
+	// product value. The coerce-hit path uses the synthetic resp
+	// (already carries Message.ToolCalls) instead of this aggregator.
+	//
+	// D-05 single-goroutine invariant applies.
+	aggregatedText strings.Builder
 }
 
 // writeData marshals payload to JSON and writes it as "data: <json>\n\n" +
@@ -285,6 +296,11 @@ func (e *sseEmitter) applyTextChunk(c canonical.Chunk) error {
 			return err
 		}
 		e.deferredTextFrames = append(e.deferredTextFrames, frame)
+		// Quick 260530-df2 — even buffered text aggregates so the
+		// post-stream PostHook sees populated Content on the
+		// coerce-miss flush path. On coerce-hit, finalize uses the
+		// synthetic resp instead and this aggregation is moot.
+		e.aggregatedText.WriteString(frag)
 		return nil
 	}
 
@@ -292,11 +308,17 @@ func (e *sseEmitter) applyTextChunk(c canonical.Chunk) error {
 	// future JSON-shaped chunk in this stream cannot retroactively
 	// start buffering.
 	e.textFlushed = true
-	return e.writeData(e.buildChunk(chunkChoice{
+	if err := e.writeData(e.buildChunk(chunkChoice{
 		Index:        0,
 		Delta:        chunkDelta{Content: frag},
 		FinishReason: nil,
-	}))
+	})); err != nil {
+		return err
+	}
+	// Quick 260530-df2 — aggregate flushed text for the post-stream
+	// PostHook canonical response.
+	e.aggregatedText.WriteString(frag)
+	return nil
 }
 
 // applyToolCallChunk handles a ChunkKindToolCall. Phase 6 REVIEW HIGH #2
@@ -317,11 +339,19 @@ func (e *sseEmitter) applyToolCallChunk(c canonical.Chunk) error {
 	}
 	narration := fmt.Sprintf("[tool: %s]\n", name)
 	e.sawKiroNativeToolCall = true
-	return e.writeData(e.buildChunk(chunkChoice{
+	if err := e.writeData(e.buildChunk(chunkChoice{
 		Index:        0,
 		Delta:        chunkDelta{Content: narration},
 		FinishReason: nil,
-	}))
+	})); err != nil {
+		return err
+	}
+	// Quick 260530-df2 — aggregate the narration text into Content so
+	// the post-stream PostHook canonical response carries the
+	// kiro-native tool_call visibility (mirrors ollama's narration-
+	// aggregate path).
+	e.aggregatedText.WriteString(narration)
+	return nil
 }
 
 // runSSEEmitter is the entry point for the SSE streaming branch of
@@ -344,8 +374,12 @@ func (e *sseEmitter) applyToolCallChunk(c canonical.Chunk) error {
 //     WITHOUT emitting [DONE] (truncated stream is acceptable per A5; OpenAI
 //     has no error-frame contract — Pitfall 3).
 //
-// Returns nil on clean stream completion ([DONE] emitted), ctx.Err() on
-// client disconnect, or a wrapped write/marshal error.
+// Returns the aggregated canonical response (non-nil even on
+// disconnect / mid-stream Result() error so PostHooks observe
+// forensics — quick 260530-df2) alongside the error. Error is nil on
+// clean completion, ctx.Err() on disconnect, a wrapped emitter error
+// otherwise. The Flusher-assertion failure returns (nil, err) BEFORE
+// any aggregation.
 //
 // Phase 6 (REVIEW HIGH #1 + iteration-3 sawKiroNativeToolCall): the
 // emitter accepts `req *canonical.ChatRequest` so end-of-stream coerce
@@ -354,12 +388,12 @@ func (e *sseEmitter) applyToolCallChunk(c canonical.Chunk) error {
 // is false at stream close — kiro-native ChunkKindToolCall renders as
 // text-delta narration (per HIGH #2 two-path rule) and trips the
 // sawKiroNativeToolCall flag so end-of-stream coerce is skipped.
-func runSSEEmitter(ctx context.Context, w http.ResponseWriter, run RunHandle, req *canonical.ChatRequest, model string, logger *slog.Logger) error {
+func runSSEEmitter(ctx context.Context, w http.ResponseWriter, run RunHandle, req *canonical.ChatRequest, model string, logger *slog.Logger) (*canonical.ChatResponse, error) {
 	// Assert Flusher BEFORE any write so the caller can fall back to JSON 500
 	// if the ResponseWriter does not support streaming (Pitfall 2 + anthropic analog).
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		return errors.New("openai: response writer is not flusher")
+		return nil, errors.New("openai: response writer is not flusher")
 	}
 
 	// Set streaming headers BEFORE WriteHeader(200) — order matters (Pitfall 2).
@@ -384,8 +418,10 @@ func runSSEEmitter(ctx context.Context, w http.ResponseWriter, run RunHandle, re
 		case <-ctx.Done():
 			// Client disconnected. Debug-log with session context, return ctx error.
 			// Do NOT emit [DONE] — the stream tore down before natural end.
+			// Quick 260530-df2: return the partial aggregated response so
+			// handlers fire PostHooks for forensics + duration_ms.
 			e.logger.Debug("openai: sse client disconnect", "session_id", run.SessionID())
-			return fmt.Errorf("openai: sse ctx: %w", ctx.Err())
+			return e.aggregatedResponse(canonical.StopUnknown, nil), fmt.Errorf("openai: sse ctx: %w", ctx.Err())
 
 		case c, ok := <-chunks:
 			if !ok {
@@ -393,9 +429,34 @@ func runSSEEmitter(ctx context.Context, w http.ResponseWriter, run RunHandle, re
 				return finalizeSSE(e, run)
 			}
 			if err := e.applyChunk(c); err != nil {
-				return err
+				return e.aggregatedResponse(canonical.StopUnknown, nil), err
 			}
 		}
+	}
+}
+
+// aggregatedResponse builds a *canonical.ChatResponse from the post-
+// stream aggregator state. Quick 260530-df2: mirrors
+// assembleChatResponse (engine/collect.go) — text part always at
+// Content[0]. When syntheticToolCalls is non-nil (coerce hit path),
+// the synthesized ToolCalls slice is attached to Message.ToolCalls so
+// PostHooks observe the same final canonical shape the wire produced.
+func (e *sseEmitter) aggregatedResponse(stop canonical.StopReason, syntheticToolCalls []canonical.ToolCall) *canonical.ChatResponse {
+	model := ""
+	if e.req != nil {
+		model = e.req.Model
+	}
+	content := []canonical.ContentPart{
+		{Kind: canonical.ContentKindText, Text: e.aggregatedText.String()},
+	}
+	return &canonical.ChatResponse{
+		Model: model,
+		Message: canonical.Message{
+			Role:      canonical.RoleAssistant,
+			Content:   content,
+			ToolCalls: syntheticToolCalls,
+		},
+		StopReason: stop,
 	}
 }
 
@@ -417,14 +478,15 @@ func runSSEEmitter(ctx context.Context, w http.ResponseWriter, run RunHandle, re
 //
 // On run.Stream().Result() error: log at debug, stop WITHOUT emitting
 // finish_reason or [DONE] (truncated stream — Pitfall 3 / A5).
-func finalizeSSE(e *sseEmitter, run RunHandle) error {
+func finalizeSSE(e *sseEmitter, run RunHandle) (*canonical.ChatResponse, error) {
 	final, rerr := run.Stream().Result()
 	if rerr != nil {
 		// Mid-stream / terminal engine error after headers: cannot send JSON 500.
 		// Log at debug (not error — the stream just cut off; the client-side
 		// will see a truncated stream, which is acceptable per A5).
+		// Quick 260530-df2: return the partial aggregation for forensics.
 		e.logger.Debug("openai: sse stream result error", "err", rerr)
-		return fmt.Errorf("openai: sse stream result: %w", rerr)
+		return e.aggregatedResponse(canonical.StopUnknown, nil), fmt.Errorf("openai: sse stream result: %w", rerr)
 	}
 
 	// D-06 teardown: stop() prevents the AfterFunc goroutine from emitting a
@@ -437,7 +499,7 @@ func finalizeSSE(e *sseEmitter, run RunHandle) error {
 	// If no text chunks arrived at all, the role delta was never sent.
 	// Emit it now so the stream is always role-first (API contract).
 	if err := e.ensureRoleSent(); err != nil {
-		return err
+		return e.aggregatedResponse(canonical.StopUnknown, nil), err
 	}
 
 	stopReason := canonical.StopUnknown
@@ -445,36 +507,47 @@ func finalizeSSE(e *sseEmitter, run RunHandle) error {
 		stopReason = final.StopReason
 	}
 
-	// Phase 6 iteration-3 skip-or-coerce-or-flush triage.
+	// Phase 6 iteration-3 skip-or-coerce-or-flush triage. Track the
+	// coerce-synthesized ToolCalls for the post-stream aggregator
+	// (quick 260530-df2) — if coerce hit, the canonical response
+	// handed to RunPostHooks should carry the ToolCalls slice.
+	var syntheticToolCalls []canonical.ToolCall
 	switch {
 	case e.sawKiroNativeToolCall:
 		// Iteration-3 HIGH #2 fix: kiro-native ran during the stream.
 		// SKIP coerce. Flush any buffered text frames in order, then
 		// emit terminal finish_reason from canonical StopReason.
 		if err := e.flushDeferred(); err != nil {
-			return err
+			return e.aggregatedResponse(stopReason, nil), err
 		}
 		if err := e.emitTerminalFrame(stopReason); err != nil {
-			return err
+			return e.aggregatedResponse(stopReason, nil), err
 		}
 	case !e.buffering:
 		// No buffered text → no streaming-coerce candidate.
 		if err := e.emitTerminalFrame(stopReason); err != nil {
-			return err
+			return e.aggregatedResponse(stopReason, nil), err
 		}
 	default:
 		// Buffered candidate text + no kiro-native → try coerce.
-		if err := e.tryStreamingCoerce(stopReason); err != nil {
-			return err
+		// tryStreamingCoerce returns the synthesized ToolCalls when
+		// coerce hit so the post-stream aggregator can include them.
+		tc, err := e.tryStreamingCoerce(stopReason)
+		if err != nil {
+			return e.aggregatedResponse(stopReason, nil), err
 		}
+		syntheticToolCalls = tc
 	}
 
 	// Literal [DONE] terminator — no JSON marshalling needed.
 	if _, err := fmt.Fprintf(e.w, "data: [DONE]\n\n"); err != nil {
-		return fmt.Errorf("openai: write [DONE]: %w", err)
+		return e.aggregatedResponse(stopReason, syntheticToolCalls), fmt.Errorf("openai: write [DONE]: %w", err)
 	}
 	e.flusher.Flush()
-	return nil
+	// Quick 260530-df2 — clean completion: hand the aggregated response
+	// (with coerce-synthesized ToolCalls when applicable) to the
+	// caller, which fires RunPostHooks on it.
+	return e.aggregatedResponse(stopReason, syntheticToolCalls), nil
 }
 
 // flushDeferred releases any buffered text frames in order. Used on the
@@ -505,9 +578,17 @@ func (e *sseEmitter) emitTerminalFrame(stopReason canonical.StopReason) error {
 // tryStreamingCoerce builds a synthetic *canonical.ChatResponse from
 // the buffered text and runs engine.CoerceToolCall. On HIT: emit the
 // multi-frame native delta.tool_calls SSE sequence per D-07 OpenAI +
-// terminal finish_reason:"tool_calls". On MISS: release the buffered
-// text frames in order + emit terminal finish_reason from StopReason.
-func (e *sseEmitter) tryStreamingCoerce(stopReason canonical.StopReason) error {
+// terminal finish_reason:"tool_calls", and return the synthesized
+// ToolCalls slice so the caller (finalizeSSE) can include them on
+// the post-stream PostHook canonical response. On MISS: release the
+// buffered text frames in order + emit terminal finish_reason from
+// StopReason, and return nil ToolCalls.
+//
+// Quick 260530-df2: returning the ToolCalls slice (rather than just
+// nil/error) lets PostHooks observe the same final canonical shape
+// the wire produced — the coerce-hit case is what populates
+// Message.ToolCalls.
+func (e *sseEmitter) tryStreamingCoerce(stopReason canonical.StopReason) ([]canonical.ToolCall, error) {
 	syntheticResp := &canonical.ChatResponse{
 		Message: canonical.Message{
 			Role: canonical.RoleAssistant,
@@ -522,9 +603,9 @@ func (e *sseEmitter) tryStreamingCoerce(stopReason canonical.StopReason) error {
 	if !engine.CoerceToolCall(e.req, syntheticResp) {
 		// Coerce miss — release buffered frames + emit terminal.
 		if err := e.flushDeferred(); err != nil {
-			return err
+			return nil, err
 		}
-		return e.emitTerminalFrame(stopReason)
+		return nil, e.emitTerminalFrame(stopReason)
 	}
 
 	// Coerce hit — discard buffered frames and emit the multi-frame
@@ -537,7 +618,7 @@ func (e *sseEmitter) tryStreamingCoerce(stopReason canonical.StopReason) error {
 	if len(syntheticResp.Message.ToolCalls) == 0 {
 		// Defensive — CoerceToolCall returning true contractually appends
 		// at least one ToolCall, but guard the read anyway (REVIEW LOW #7).
-		return e.emitTerminalFrame(stopReason)
+		return nil, e.emitTerminalFrame(stopReason)
 	}
 	tc := syntheticResp.Message.ToolCalls[0]
 
@@ -556,7 +637,7 @@ func (e *sseEmitter) tryStreamingCoerce(stopReason canonical.StopReason) error {
 		},
 		FinishReason: nil,
 	})); err != nil {
-		return err
+		return nil, err
 	}
 
 	// Frame C: arguments JSON-string (single atom, no splits — Pitfall 2).
@@ -576,14 +657,17 @@ func (e *sseEmitter) tryStreamingCoerce(stopReason canonical.StopReason) error {
 		},
 		FinishReason: nil,
 	})); err != nil {
-		return err
+		return nil, err
 	}
 
 	// Terminal finish_reason:"tool_calls" frame.
 	fr := "tool_calls"
-	return e.writeData(e.buildChunk(chunkChoice{
+	if err := e.writeData(e.buildChunk(chunkChoice{
 		Index:        0,
 		Delta:        chunkDelta{}, // empty delta on final frame
 		FinishReason: &fr,
-	}))
+	})); err != nil {
+		return nil, err
+	}
+	return syntheticResp.Message.ToolCalls, nil
 }

@@ -476,3 +476,9 @@ func (c *captureEngine) Collect(_ context.Context, req *canonical.ChatRequest) (
 func (c *captureEngine) Run(_ context.Context, _ *canonical.ChatRequest) (RunHandle, error) {
 	return nil, errors.New("captureEngine: Run not expected")
 }
+
+// RunPostHooks is a no-op — completions tests only verify the
+// non-streaming /completions path which goes through Collect, not Run.
+func (c *captureEngine) RunPostHooks(_ context.Context, _ *canonical.ChatRequest, _ *canonical.ChatResponse) error {
+	return nil
+}

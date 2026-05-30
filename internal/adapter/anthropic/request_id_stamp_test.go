@@ -46,6 +46,12 @@ func (c *anthropicCaptureEngine) Run(ctx context.Context, _ *canonical.ChatReque
 	return &fakeRunHandle{stream: &fakeStream{chunks: ch, final: &canonical.FinalResult{StopReason: canonical.StopEndTurn}}}, nil
 }
 
+// RunPostHooks is a no-op — the request-id stamp tests only care about
+// the ctx Run receives, not the PostHook chain.
+func (c *anthropicCaptureEngine) RunPostHooks(_ context.Context, _ *canonical.ChatRequest, _ *canonical.ChatResponse) error {
+	return nil
+}
+
 func newAnthropicCaptureAdapter(eng *anthropicCaptureEngine) *Adapter {
 	return New(Config{Engine: eng})
 }

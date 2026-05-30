@@ -110,6 +110,15 @@ func (f *parityFakeEngine) Collect(_ context.Context, req *canonical.ChatRequest
 	}, nil
 }
 
+// RunPostHooks is a no-op for parity tests. Quick 260530-df2 added the
+// method to the Engine interface; the parity suite asserts content
+// shape equivalence, not PostHook behavior — Task 2 dedicated tests
+// (TestCollectAnthropicChat_PostHooksFire,
+// TestCollectAnthropicChat_PostHooksFireOnShortCircuit) cover that.
+func (f *parityFakeEngine) RunPostHooks(_ context.Context, _ *canonical.ChatRequest, _ *canonical.ChatResponse) error {
+	return nil
+}
+
 // Run yields a single-shot scripted stream from the same chunk list.
 // CollectAnthropicChat consumes this path. WR-03: when errOnRun=true
 // and err is set, Run surfaces err directly so the Run-error wrap

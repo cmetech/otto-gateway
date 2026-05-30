@@ -91,6 +91,13 @@ func (f *shortCircuitFakeEngine) Run(_ context.Context, _ *canonical.ChatRequest
 	return f.runHandle, nil
 }
 
+// RunPostHooks is a no-op for the short-circuit tests. The short-
+// circuit guard fires BEFORE runNDJSONEmitter opens headers, so the
+// streaming PostHook call site (Task 3 step 2) is unreachable here.
+func (f *shortCircuitFakeEngine) RunPostHooks(_ context.Context, _ *canonical.ChatRequest, _ *canonical.ChatResponse) error {
+	return nil
+}
+
 // newShortCircuitRunHandle constructs a fakeRunHandle whose
 // ShortCircuitResponse() yields newAuthErrorResp(). The stream channel is
 // closed (empty) — when the short-circuit guard fires, the emitter is never

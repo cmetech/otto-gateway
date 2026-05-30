@@ -41,6 +41,12 @@ import (
 type Engine interface {
 	Collect(ctx context.Context, req *canonical.ChatRequest) (*canonical.ChatResponse, error)
 	Run(ctx context.Context, req *canonical.ChatRequest) (RunHandle, error)
+	// RunPostHooks invokes the PostHook chain against an externally-
+	// aggregated response. Quick 260530-df2: the NDJSON streaming branch
+	// bypasses engine.Collect's chunk loop, so PostHooks never fired on
+	// streaming requests. RunPostHooks closes the gap.
+	// *engine.Engine.RunPostHooks structurally satisfies this.
+	RunPostHooks(ctx context.Context, req *canonical.ChatRequest, resp *canonical.ChatResponse) error
 }
 
 // RunHandle is the consumer-defined handle the adapter receives from

@@ -117,7 +117,7 @@ func driveGolden(t *testing.T, chunks []canonical.Chunk, final *canonical.FinalR
 		sessionID: "session_golden",
 	}
 	rec := httptest.NewRecorder()
-	if err := runSSEEmitter(context.Background(), rec, runHandle, "auto", nullLogger()); err != nil {
+	if _, err := runSSEEmitter(context.Background(), rec, runHandle, "auto", nullLogger()); err != nil {
 		t.Fatalf("runSSEEmitter: %v", err)
 	}
 	return rec.Body.Bytes()
