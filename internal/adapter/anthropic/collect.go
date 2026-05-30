@@ -69,6 +69,15 @@ func CollectAnthropicChat(ctx context.Context, eng Engine, req *canonical.ChatRe
 		if stop := run.StopWatchdog(); stop != nil {
 			stop()
 		}
+		// Quick 260530-df2: fire PostHooks on the short-circuit
+		// response too — mirrors engine.Collect at collect.go:114-122
+		// (Codex H-5). Without this, an AuthHook-synthesized 401 would
+		// never reach LoggingHook.After / ChatTraceHook.After. The
+		// error IS propagated (non-streaming path holds the bytes —
+		// see the normal-tail comment block below for the rationale).
+		if pErr := eng.RunPostHooks(ctx, req, shortCircuit); pErr != nil {
+			return nil, fmt.Errorf("anthropic: collect (short-circuit): %w", pErr)
+		}
 		return shortCircuit, nil
 	}
 
@@ -130,7 +139,23 @@ func CollectAnthropicChat(ctx context.Context, eng Engine, req *canonical.ChatRe
 		stop()
 	}
 
-	return assembleAnthropicChatResponse(req, sb.String(), thoughtSB.String(), toolParts, toolCalls, final), nil
+	resp := assembleAnthropicChatResponse(req, sb.String(), thoughtSB.String(), toolParts, toolCalls, final)
+	// Quick 260530-df2 — non-streaming Anthropic PostHook gap fix.
+	// CollectAnthropicChat is the D-07 exception path that bypassed
+	// engine.Collect's PostHook traversal. Wiring RunPostHooks here
+	// closes the gap so LoggingHook.After + ChatTraceHook.After fire
+	// on the non-streaming Anthropic surface just like every other
+	// surface.
+	//
+	// DIVERGENCE from the streaming WARN-and-swallow contract: the
+	// non-streaming path holds the response bytes — they have NOT been
+	// written to the wire yet, so a PostHook error CAN be propagated
+	// to the caller (handlers.go) which then renders a 500. This
+	// mirrors engine.Collect at collect.go:118-122 verbatim.
+	if pErr := eng.RunPostHooks(ctx, req, resp); pErr != nil {
+		return nil, fmt.Errorf("anthropic: collect: %w", pErr)
+	}
+	return resp, nil
 }
 
 // assembleAnthropicChatResponse builds a canonical.ChatResponse from

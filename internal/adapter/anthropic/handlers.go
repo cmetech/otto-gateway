@@ -199,7 +199,8 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusUnauthorized, errAuthentication, shortCircuitMessage(sc))
 			return
 		}
-		if err := runSSEEmitter(streamCtx, w, runHandle, wire.Model, a.cfg.Logger); err != nil {
+		resp, err := runSSEEmitter(streamCtx, w, runHandle, wire.Model, a.cfg.Logger)
+		if err != nil {
 			// runSSEEmitter has already written SSE headers + frames
 			// (the error path inside the emitter handles its own
 			// `event: error` frame on mid-stream Result() errors —
@@ -209,6 +210,21 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 			// after WriteHeader). ctx cancel is a normal disconnect,
 			// not an error — but still useful to log at debug.
 			a.cfg.Logger.Debug("anthropic: sse emitter terminated", "err", err)
+		}
+		// Quick 260530-df2 — fire PostHooks on the aggregated response
+		// so LoggingHook.After + ChatTraceHook.After + any audit hook
+		// observes every streaming request. PostHook errors are logged
+		// at WARN and SWALLOWED: the stream is over from the client's
+		// perspective (bytes are on the wire), and a misbehaving hook
+		// MUST NOT tear down a completed request (T-df2-02). The
+		// non-streaming path (CollectAnthropicChat) propagates the
+		// error instead — the divergence is documented in
+		// collect.go's tail call site.
+		if resp != nil {
+			if pErr := eng.RunPostHooks(streamCtx, req, resp); pErr != nil {
+				a.cfg.Logger.Warn("anthropic: posthook error after streaming completion",
+					"err", pErr)
+			}
 		}
 		return
 	}

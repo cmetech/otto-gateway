@@ -134,6 +134,16 @@ func (r realEngineAdapter) Run(
 	return realRunHandle{run: run}, nil
 }
 
+// RunPostHooks delegates to *engine.Engine.RunPostHooks added in quick
+// 260530-df2 so the integration adapter satisfies the expanded Engine
+// interface. No additional wrap — RunPostHooks already returns a
+// "engine: posthook: ..." wrapped error on hook failure.
+func (r realEngineAdapter) RunPostHooks(
+	ctx context.Context, req *canonical.ChatRequest, resp *canonical.ChatResponse,
+) error {
+	return r.engine.RunPostHooks(ctx, req, resp)
+}
+
 type realRunHandle struct{ run *engine.Run }
 
 func (h realRunHandle) Stream() Stream                                { return h.run.Stream() }

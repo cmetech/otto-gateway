@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"otto-gateway/internal/canonical"
@@ -210,6 +211,26 @@ type sseEmitter struct {
 	//
 	// D-05 single-goroutine invariant applies.
 	pendingToolUseFlush bool
+
+	// Quick 260530-df2 — streaming aggregator state. Mirrors
+	// CollectAnthropicChat (collect.go:75-119) so the canonical
+	// response handed to RunPostHooks after stream completion has the
+	// SAME content shape the non-streaming path produces — text +
+	// thinking + tool_use parts on Message.Content, ToolCalls populated
+	// per the D-07 Anthropic exception.
+	//
+	// The load-bearing correctness risk identified in the plan is
+	// aggregator richness: if these fields are stop-reason-only,
+	// post_chain_out records ship empty content[] and chat-trace.log
+	// loses its entire response-side observation product value.
+	//
+	// D-05 single-goroutine invariant applies — only applyChunk and
+	// aggregatedResponse touch these fields, both inside the
+	// runSSEEmitterLoop goroutine.
+	aggText      strings.Builder
+	aggThought   strings.Builder
+	aggToolParts []canonical.ContentPart
+	aggToolCalls []canonical.ToolCall
 }
 
 // writeEvent emits one named SSE frame using the canonical
@@ -350,20 +371,34 @@ func (e *sseEmitter) applyChunk(c canonical.Chunk) error {
 		if c.Text == nil {
 			return nil
 		}
-		return e.writeEvent("content_block_delta", contentBlockDelta{
+		if err := e.writeEvent("content_block_delta", contentBlockDelta{
 			Type:  "content_block_delta",
 			Index: e.blockIndex,
 			Delta: textDelta{Type: "text_delta", Text: c.Text.Content},
-		})
+		}); err != nil {
+			return err
+		}
+		// Quick 260530-df2 — mirror CollectAnthropicChat: accumulate
+		// successful text deltas so the canonical response handed to
+		// RunPostHooks carries the concatenated content.
+		e.aggText.WriteString(c.Text.Content)
+		return nil
 	case canonical.ChunkKindThought:
 		if c.Thought == nil {
 			return nil
 		}
-		return e.writeEvent("content_block_delta", contentBlockDelta{
+		if err := e.writeEvent("content_block_delta", contentBlockDelta{
 			Type:  "content_block_delta",
 			Index: e.blockIndex,
 			Delta: thinkingDelta{Type: "thinking_delta", Thinking: c.Thought.Content},
-		})
+		}); err != nil {
+			return err
+		}
+		// Quick 260530-df2 — mirror CollectAnthropicChat: thinking text
+		// accumulates separately from regular text so the canonical
+		// response's Content[1] thinking part is populated.
+		e.aggThought.WriteString(c.Thought.Content)
+		return nil
 	case canonical.ChunkKindToolCall:
 		// Phase 6 Plan 04 Task 2 (D-07): emit at most ONE
 		// content_block_delta carrying the full args as
@@ -424,10 +459,64 @@ func (e *sseEmitter) applyChunk(c canonical.Chunk) error {
 			return err
 		}
 		e.pendingToolUseFlush = false
+		// Quick 260530-df2 — populated tool_use chunk: append a
+		// ContentKindToolUse part AND a Message.ToolCall entry so the
+		// canonical response handed to RunPostHooks mirrors
+		// CollectAnthropicChat's D-07 shape (collect.go:92-115).
+		e.aggToolParts = append(e.aggToolParts, canonical.ContentPart{
+			Kind: canonical.ContentKindToolUse,
+			ToolUse: &canonical.ToolUsePart{
+				ID:    c.ToolCall.ID,
+				Name:  c.ToolCall.Name,
+				Input: c.ToolCall.Args,
+			},
+		})
+		e.aggToolCalls = append(e.aggToolCalls, canonical.ToolCall{
+			ID:        c.ToolCall.ID,
+			Name:      c.ToolCall.Name,
+			Arguments: c.ToolCall.Args,
+		})
 		return nil
 	}
 	// Unsupported kinds short-circuited at step 1; this is defensive.
 	return nil
+}
+
+// aggregatedResponse builds the canonical.ChatResponse from the
+// per-stream aggregator state. Mirrors
+// assembleAnthropicChatResponse (collect.go:147-181) — text part
+// ALWAYS present at Content[0], thinking appended when non-empty,
+// tool_use parts appended after; Message.ToolCalls populated
+// separately per the D-07 Anthropic exception.
+//
+// Quick 260530-df2: this method exists so handlers.go can hand
+// the aggregated response to RunPostHooks after the streaming branch
+// completes. Without it, LoggingHook.After observes an empty resp and
+// chat-trace.log's post_chain_out record has no content[].
+func (e *sseEmitter) aggregatedResponse(req *canonical.ChatRequest, stop canonical.StopReason) *canonical.ChatResponse {
+	model := ""
+	if req != nil {
+		model = req.Model
+	}
+	content := []canonical.ContentPart{
+		{Kind: canonical.ContentKindText, Text: e.aggText.String()},
+	}
+	if e.aggThought.Len() > 0 {
+		content = append(content, canonical.ContentPart{
+			Kind: canonical.ContentKindThinking,
+			Text: e.aggThought.String(),
+		})
+	}
+	content = append(content, e.aggToolParts...)
+	return &canonical.ChatResponse{
+		Model: model,
+		Message: canonical.Message{
+			Role:      canonical.RoleAssistant,
+			Content:   content,
+			ToolCalls: e.aggToolCalls,
+		},
+		StopReason: stop,
+	}
 }
 
 // flushPendingToolUseIfNeeded emits a single `partial_json:"{}"`
@@ -480,16 +569,23 @@ func (e *sseEmitter) flushPendingToolUseIfNeeded() error {
 // call runSSEEmitterLoop directly to avoid the 15-second real-time
 // wait (see sse_test.go).
 //
-// Returns nil on a clean stream completion (message_stop emitted),
-// ctx.Err() on client-disconnect, the underlying error on Result()
-// failure, or any wrapped writeEvent error.
-func runSSEEmitter(ctx context.Context, w http.ResponseWriter, run RunHandle, model string, logger *slog.Logger) error {
+// Returns the aggregated canonical response (built from chunk
+// aggregation; non-nil on both clean completion AND mid-stream errors
+// / ctx-cancel so operators can still observe partial results via
+// PostHooks — quick 260530-df2) alongside the error.
+//
+// Error contract: nil error on clean stream completion (message_stop
+// emitted), ctx.Err() on client-disconnect, the underlying error on
+// Result() failure, or any wrapped writeEvent error. The Flusher-
+// assertion failure short-circuits BEFORE any aggregation work, so
+// the response is nil in that single case.
+func runSSEEmitter(ctx context.Context, w http.ResponseWriter, run RunHandle, model string, logger *slog.Logger) (*canonical.ChatResponse, error) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		// Caller (handlers.go) is responsible for translating this into
 		// a JSON 500 envelope. We have NOT written any bytes yet so the
 		// caller is free to call writeError.
-		return errors.New("anthropic: response writer is not flusher")
+		return nil, errors.New("anthropic: response writer is not flusher")
 	}
 
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -521,7 +617,11 @@ func runSSEEmitter(ctx context.Context, w http.ResponseWriter, run RunHandle, mo
 			Usage:        usage{InputTokens: 0, OutputTokens: 0},
 		},
 	}); err != nil {
-		return err
+		// Even on message_start write failure we return the (empty)
+		// aggregated response so handlers can observe the failed
+		// request via PostHooks. StopUnknown matches the empty-content
+		// case.
+		return e.aggregatedResponse(nil, canonical.StopUnknown), err
 	}
 
 	ticker := time.NewTicker(PingInterval)
@@ -553,17 +653,22 @@ func runSSEEmitter(ctx context.Context, w http.ResponseWriter, run RunHandle, mo
 // On ctx.Done: debug-log the disconnect and return ctx.Err(). No
 // message_delta/message_stop is emitted — the stream tore down
 // before the natural end.
-func runSSEEmitterLoop(ctx context.Context, e *sseEmitter, run RunHandle, tickerC <-chan time.Time) error {
+func runSSEEmitterLoop(ctx context.Context, e *sseEmitter, run RunHandle, tickerC <-chan time.Time) (*canonical.ChatResponse, error) {
 	chunks := run.Stream().Chunks()
 	for {
 		select {
 		case <-ctx.Done():
+			// Quick 260530-df2 — disconnect path: return the partial
+			// aggregated response so handlers can fire PostHooks with
+			// whatever was assembled. Operators want forensics +
+			// duration_ms even on disconnect (T-df2-03 sync.Map leak
+			// mitigation requires the After call to LoadAndDelete).
 			e.logger.Debug("anthropic: sse client disconnect", "session_id", run.SessionID())
-			return fmt.Errorf("anthropic: sse ctx: %w", ctx.Err())
+			return e.aggregatedResponse(nil, canonical.StopUnknown), fmt.Errorf("anthropic: sse ctx: %w", ctx.Err())
 
 		case <-tickerC:
 			if err := e.writeEvent("ping", pingEvent{Type: "ping"}); err != nil {
-				return err
+				return e.aggregatedResponse(nil, canonical.StopUnknown), err
 			}
 
 		case c, ok := <-chunks:
@@ -571,7 +676,7 @@ func runSSEEmitterLoop(ctx context.Context, e *sseEmitter, run RunHandle, ticker
 				return finalizeStream(e, run)
 			}
 			if err := e.applyChunk(c); err != nil {
-				return err
+				return e.aggregatedResponse(nil, canonical.StopUnknown), err
 			}
 		}
 	}
@@ -589,7 +694,7 @@ func runSSEEmitterLoop(ctx context.Context, e *sseEmitter, run RunHandle, ticker
 //     after the error frame (SDK treats error as terminal).
 //   - Result() success → emit message_delta (with mapped stop_reason)
 //   - message_stop + return nil.
-func finalizeStream(e *sseEmitter, run RunHandle) error {
+func finalizeStream(e *sseEmitter, run RunHandle) (*canonical.ChatResponse, error) {
 	if e.blockOpen {
 		// Best-effort close; the stream is ending either way.
 		// Flush a `partial_json:"{}"` first if the closing block is a
@@ -610,8 +715,12 @@ func finalizeStream(e *sseEmitter, run RunHandle) error {
 		// SDK treats `event: error` as the terminal frame; emitting
 		// message_stop after it would race with the SDK's error
 		// dispatch and produce a confusing user-visible state.
+		//
+		// Quick 260530-df2: still return the partial aggregated
+		// response so handlers can fire PostHooks on the terminal-
+		// error path. Operators want forensics on partial completion.
 		writeSSEError(e.w, e.flusher, errAPI, "stream terminated")
-		return fmt.Errorf("anthropic: sse stream result: %w", rerr)
+		return e.aggregatedResponse(nil, canonical.StopUnknown), fmt.Errorf("anthropic: sse stream result: %w", rerr)
 	}
 
 	// D-06 teardown: prevent watchdog from firing spurious Cancel after natural
@@ -651,8 +760,15 @@ func finalizeStream(e *sseEmitter, run RunHandle) error {
 		},
 		Usage: messageDeltaUsage{OutputTokens: 0}, // D-12 honest zeros
 	}); err != nil {
-		return err
+		return e.aggregatedResponse(nil, stopReason), err
 	}
 
-	return e.writeEvent("message_stop", messageStop{Type: "message_stop"})
+	if err := e.writeEvent("message_stop", messageStop{Type: "message_stop"}); err != nil {
+		return e.aggregatedResponse(nil, stopReason), err
+	}
+	// Quick 260530-df2 — clean stream completion: return the fully-
+	// aggregated canonical response so handlers.go (after Task 2 step 3)
+	// hands it to eng.RunPostHooks. Without this, LoggingHook.After
+	// observes nothing and chat-trace.log's post_chain_out is missing.
+	return e.aggregatedResponse(nil, stopReason), nil
 }
