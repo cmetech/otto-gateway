@@ -47,6 +47,11 @@ func (c *openaiCaptureEngine) Run(ctx context.Context, _ *canonical.ChatRequest)
 	}, nil
 }
 
+// RunPostHooks is a no-op — request-id stamp tests only care about ctx.
+func (c *openaiCaptureEngine) RunPostHooks(_ context.Context, _ *canonical.ChatRequest, _ *canonical.ChatResponse) error {
+	return nil
+}
+
 func newOpenAICaptureAdapter(eng *openaiCaptureEngine) *Adapter {
 	// discardWriter is declared in adapter.go (production code).
 	return New(Config{

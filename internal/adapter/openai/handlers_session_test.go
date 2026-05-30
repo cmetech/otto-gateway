@@ -86,6 +86,11 @@ func (s *sessionEngine) Run(ctx context.Context, req *canonical.ChatRequest) (Ru
 	return s.inner.Run(ctx, req)
 }
 
+// RunPostHooks delegates to the inner Engine.
+func (s *sessionEngine) RunPostHooks(ctx context.Context, req *canonical.ChatRequest, resp *canonical.ChatResponse) error {
+	return s.inner.RunPostHooks(ctx, req, resp)
+}
+
 // newSessionTestAdapter wraps newFakeAdapter with the session wiring.
 func newSessionTestAdapter(poolEng *fakeEngine, reg SessionRegistry, sessionEng *sessionEngine) *Adapter {
 	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{}))

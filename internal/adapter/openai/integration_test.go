@@ -115,6 +115,15 @@ func (r realEngineAdapter) Run(
 	return realRunHandle{run: run}, nil
 }
 
+// RunPostHooks delegates to *engine.Engine.RunPostHooks (quick
+// 260530-df2) so the integration adapter satisfies the expanded Engine
+// interface.
+func (r realEngineAdapter) RunPostHooks(
+	ctx context.Context, req *canonical.ChatRequest, resp *canonical.ChatResponse,
+) error {
+	return r.engine.RunPostHooks(ctx, req, resp)
+}
+
 type realRunHandle struct{ run *engine.Run }
 
 func (h realRunHandle) Stream() Stream         { return h.run.Stream() }
@@ -129,12 +138,22 @@ func (h realRunHandle) ShortCircuitResponse() *canonical.ChatResponse {
 // ----------------------------------------------------------------------------
 
 // fakeEngine is an in-process fake that returns scripted responses.
+//
+// Quick 260530-df2 — RunPostHooks observation. postN counts hook
+// invocations (per-surface double-fire guard). lastPostResp captures
+// the resp pointer so tests can assert aggregator content shape.
+// postErr (default nil) is returned to the caller — handlers swallow +
+// WARN-log on streaming, propagate on Collect.
 type fakeEngine struct {
 	collectResp *canonical.ChatResponse
 	collectErr  error
 	runChunks   []canonical.Chunk
 	runFinal    *canonical.FinalResult
 	runErr      error
+
+	postN        int
+	lastPostResp *canonical.ChatResponse
+	postErr      error
 }
 
 func (f *fakeEngine) Collect(_ context.Context, _ *canonical.ChatRequest) (*canonical.ChatResponse, error) {
@@ -157,6 +176,15 @@ func (f *fakeEngine) Run(_ context.Context, _ *canonical.ChatRequest) (RunHandle
 		},
 		sessionID: "session_fake",
 	}, nil
+}
+
+// RunPostHooks records the invocation. Quick 260530-df2 wired the
+// streaming branch of handleChatCompletions to call this after
+// runSSEEmitter returns.
+func (f *fakeEngine) RunPostHooks(_ context.Context, _ *canonical.ChatRequest, resp *canonical.ChatResponse) error {
+	f.postN++
+	f.lastPostResp = resp
+	return f.postErr
 }
 
 // newFakeAdapter constructs an *Adapter with a scripted fake engine.
