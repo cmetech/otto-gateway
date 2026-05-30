@@ -72,6 +72,20 @@ type emitterState struct {
 	deferredTextLines     [][]byte
 	sawKiroNativeToolCall bool
 	textFlushed           bool
+
+	// Quick 260530-df2 — post-stream aggregator. Captures EVERY text
+	// fragment written (or buffered) plus every thinking fragment, so
+	// the canonical response handed to RunPostHooks after stream
+	// completion has the same content shape engine.Collect produces
+	// for non-streaming requests. Without this, LoggingHook.After +
+	// ChatTraceHook.After observe an empty Message.Content shell and
+	// the post_chain_out NDJSON record loses its product value.
+	//
+	// D-05 single-goroutine invariant applies — only emitNDJSONChunk /
+	// finalizeNDJSON touch these fields, both inside the
+	// runNDJSONEmitter goroutine.
+	aggregatedText     strings.Builder
+	aggregatedThinking strings.Builder
 }
 
 // shouldBuffer decides whether to start buffering. Returns true when:
@@ -149,7 +163,15 @@ func emitNDJSONChunk(w http.ResponseWriter, flusher http.Flusher, c canonical.Ch
 			},
 			Done: false,
 		}
-		return marshalAndWrite(w, flusher, payload, cancelFn)
+		if err := marshalAndWrite(w, flusher, payload, cancelFn); err != nil {
+			return err
+		}
+		// Quick 260530-df2 — aggregate thinking for the post-stream
+		// canonical response. Mirrors engine.Collect's thoughtSB.
+		if state != nil {
+			state.aggregatedThinking.WriteString(c.Thought.Content)
+		}
+		return nil
 
 	case canonical.ChunkKindToolCall:
 		// REVIEW HIGH #2 + iteration-3 fix to HIGH #2: kiro-native tool_call
@@ -178,7 +200,18 @@ func emitNDJSONChunk(w http.ResponseWriter, flusher http.Flusher, c canonical.Ch
 			},
 			Done: false,
 		}
-		return marshalAndWrite(w, flusher, payload, cancelFn)
+		if err := marshalAndWrite(w, flusher, payload, cancelFn); err != nil {
+			return err
+		}
+		// Quick 260530-df2 — aggregate the narration into Content text
+		// so the post-stream canonical response carries the kiro-native
+		// tool_call visibility for PostHooks. Mirrors engine.Collect's
+		// `[tool: name]\n` narration text (collect.go ChunkKindToolCall
+		// branch).
+		if state != nil {
+			state.aggregatedText.WriteString(narration)
+		}
+		return nil
 
 	default:
 		// Unknown chunk kind — drop silently.
@@ -214,7 +247,17 @@ func emitTextChunk(w http.ResponseWriter, flusher http.Flusher, text, model stri
 				Done:      false,
 			}
 		}
-		return marshalAndWrite(w, flusher, payload, cancelFn)
+		if err := marshalAndWrite(w, flusher, payload, cancelFn); err != nil {
+			return err
+		}
+		// Quick 260530-df2 — aggregate text for the post-stream
+		// canonical response. Even on /api/generate (state == nil)
+		// the aggregator would be useful for PostHooks; the state==nil
+		// branch here pre-dates df2 and is preserved for parity.
+		if state != nil {
+			state.aggregatedText.WriteString(text)
+		}
+		return nil
 	}
 
 	// Streaming-coerce buffering decision (REVIEW HIGH #1):
@@ -237,7 +280,13 @@ func emitTextChunk(w http.ResponseWriter, flusher http.Flusher, text, model stri
 				},
 				Done: false,
 			}
-			return marshalAndWrite(w, flusher, payload, cancelFn)
+			if err := marshalAndWrite(w, flusher, payload, cancelFn); err != nil {
+				return err
+			}
+			// Quick 260530-df2 — aggregate non-buffered text for the
+			// post-stream canonical response.
+			state.aggregatedText.WriteString(text)
+			return nil
 		}
 		// First time we see JSON-shape — enter buffering.
 		state.buffering = true
@@ -246,6 +295,11 @@ func emitTextChunk(w http.ResponseWriter, flusher http.Flusher, text, model stri
 	// Buffering branch: accumulate into the text buffer AND build the
 	// would-be NDJSON line for later flush. Do NOT write or flush yet.
 	state.textBuffer.WriteString(text)
+	// Quick 260530-df2 — also aggregate into the post-stream canonical
+	// response builder. If coerce hits at finalizeNDJSON, the post-stream
+	// response uses the synthesized resp instead; if coerce misses (or
+	// is skipped), this aggregated text is what PostHooks observe.
+	state.aggregatedText.WriteString(text)
 	payload := ndjsonChatLine{
 		Model:     model,
 		CreatedAt: now,
@@ -306,14 +360,18 @@ func marshalAndWrite(w http.ResponseWriter, flusher http.Flusher, payload any, c
 // emitter state (D-05 single-goroutine invariant). The watchdog goroutine
 // (context.AfterFunc in engine.go) MUST NOT touch these (Pitfall 8).
 //
-// Returns nil on clean stream completion (done:true emitted), ctx.Err() on
-// client disconnect, or a wrapped write/marshal error.
-func runNDJSONEmitter(ctx context.Context, cancelFn context.CancelFunc, w http.ResponseWriter, run RunHandle, model string, isChat bool, start time.Time, logger *slog.Logger, req *canonical.ChatRequest) error {
+// Returns the aggregated canonical response (non-nil even on disconnect
+// / mid-stream error so PostHooks can observe forensics — quick
+// 260530-df2) alongside the error. Error is nil on clean stream
+// completion (done:true emitted), ctx.Err() on client disconnect, or a
+// wrapped write/marshal error. The Flusher-assertion failure returns
+// (nil, err) BEFORE any aggregation.
+func runNDJSONEmitter(ctx context.Context, cancelFn context.CancelFunc, w http.ResponseWriter, run RunHandle, model string, isChat bool, start time.Time, logger *slog.Logger, req *canonical.ChatRequest) (*canonical.ChatResponse, error) {
 	// Assert Flusher BEFORE any write so the caller can fall back to JSON 500
 	// when the ResponseWriter does not support streaming (Pitfall 2).
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		return errors.New("ollama: response writer is not flusher")
+		return nil, errors.New("ollama: response writer is not flusher")
 	}
 
 	// Set streaming headers BEFORE WriteHeader(200) — order matters (Pitfall 2).
@@ -332,8 +390,12 @@ func runNDJSONEmitter(ctx context.Context, cancelFn context.CancelFunc, w http.R
 			// Client disconnected or context canceled. Debug-log with session
 			// context. Do NOT call cancelFn or Cancel — the watchdog (D-06)
 			// handles ACP.Cancel via context.AfterFunc in engine.go.
+			//
+			// Quick 260530-df2 — disconnect path: return the partial
+			// aggregated response so handlers fire PostHooks with whatever
+			// was assembled. Operators want forensics + duration_ms.
 			logger.Debug("ollama: ndjson client disconnect", "session_id", run.SessionID())
-			return fmt.Errorf("ollama: ndjson ctx: %w", ctx.Err())
+			return aggregateOllamaResponse(req, state, canonical.StopUnknown), fmt.Errorf("ollama: ndjson ctx: %w", ctx.Err())
 
 		case c, ok := <-chunks:
 			if !ok {
@@ -342,9 +404,47 @@ func runNDJSONEmitter(ctx context.Context, cancelFn context.CancelFunc, w http.R
 			}
 			if err := emitNDJSONChunk(w, flusher, c, model, isChat, cancelFn, state, req); err != nil {
 				// cancelFn was already called inside emitNDJSONChunk on write error.
-				return err
+				// Quick 260530-df2 — still return the partial aggregation
+				// so handlers can fire PostHooks for forensics.
+				return aggregateOllamaResponse(req, state, canonical.StopUnknown), err
 			}
 		}
+	}
+}
+
+// aggregateOllamaResponse builds a *canonical.ChatResponse from the
+// emitter state for the post-stream PostHook chain. Quick 260530-df2:
+// mirrors engine.Collect's assembleChatResponse (collect.go:147-175) so
+// the canonical response handed to RunPostHooks has the same content
+// shape the non-streaming path produces.
+//
+// Tool-call handling differs from anthropic because ollama's wire shape
+// has tool_calls only on the done:true line — ChunkKindToolCall is
+// rendered as `[tool: name]\n` narration text per Phase 6 REVIEW HIGH #2.
+// When the streaming-coerce path hits (coerce-synthesized ToolCalls
+// populated on a synthetic resp built inside finalizeNDJSON), the
+// finalize caller uses that synthetic resp instead of this builder.
+func aggregateOllamaResponse(req *canonical.ChatRequest, state *emitterState, stop canonical.StopReason) *canonical.ChatResponse {
+	model := ""
+	if req != nil {
+		model = req.Model
+	}
+	content := []canonical.ContentPart{
+		{Kind: canonical.ContentKindText, Text: state.aggregatedText.String()},
+	}
+	if state.aggregatedThinking.Len() > 0 {
+		content = append(content, canonical.ContentPart{
+			Kind: canonical.ContentKindThinking,
+			Text: state.aggregatedThinking.String(),
+		})
+	}
+	return &canonical.ChatResponse{
+		Model: model,
+		Message: canonical.Message{
+			Role:    canonical.RoleAssistant,
+			Content: content,
+		},
+		StopReason: stop,
 	}
 }
 
@@ -374,13 +474,15 @@ func runNDJSONEmitter(ctx context.Context, cancelFn context.CancelFunc, w http.R
 //  4. Calls chatResponseToWire or generateResponseToWire to build the final
 //     line, sets Done=true and DoneReason from final.StopReason, marshals
 //     and writes.
-func finalizeNDJSON(w http.ResponseWriter, flusher http.Flusher, run RunHandle, model string, isChat bool, start time.Time, logger *slog.Logger, state *emitterState, req *canonical.ChatRequest) error {
+func finalizeNDJSON(w http.ResponseWriter, flusher http.Flusher, run RunHandle, model string, isChat bool, start time.Time, logger *slog.Logger, state *emitterState, req *canonical.ChatRequest) (*canonical.ChatResponse, error) {
 	final, rerr := run.Stream().Result()
 	if rerr != nil {
 		// Mid-stream / terminal engine error after headers: cannot send JSON 500.
 		// Debug-log and return; no done:true line (D-05 truncation).
+		// Quick 260530-df2: still return the partial aggregation so
+		// PostHooks fire for forensics + duration_ms.
 		logger.Debug("ollama: ndjson stream result error", "err", rerr)
-		return fmt.Errorf("ollama: ndjson stream result: %w", rerr)
+		return aggregateOllamaResponse(req, state, canonical.StopUnknown), fmt.Errorf("ollama: ndjson stream result: %w", rerr)
 	}
 
 	// D-06 teardown: prevent watchdog from emitting spurious Cancel after natural
@@ -408,7 +510,7 @@ func finalizeNDJSON(w http.ResponseWriter, flusher http.Flusher, run RunHandle, 
 			// ran (narration already emitted), plus any incidental
 			// JSON-shaped text that wasn't a coerce target".
 			if err := releaseBufferedLines(w, flusher, state.deferredTextLines); err != nil {
-				return err
+				return aggregateOllamaResponse(req, state, stopReason), err
 			}
 		} else if state.buffering {
 			// Coerce path: build a synthetic resp from the accumulated text
@@ -436,7 +538,7 @@ func finalizeNDJSON(w http.ResponseWriter, flusher http.Flusher, run RunHandle, 
 				// Coerce missed — release the buffered text lines and fall
 				// through to the standard done:true emission.
 				if err := releaseBufferedLines(w, flusher, state.deferredTextLines); err != nil {
-					return err
+					return aggregateOllamaResponse(req, state, stopReason), err
 				}
 			}
 		}
@@ -466,13 +568,27 @@ func finalizeNDJSON(w http.ResponseWriter, flusher http.Flusher, run RunHandle, 
 
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("ollama: ndjson marshal final: %w", err)
+		return aggregateOllamaResponse(req, state, stopReason), fmt.Errorf("ollama: ndjson marshal final: %w", err)
 	}
 	if _, err := fmt.Fprintf(w, "%s\n", body); err != nil {
-		return fmt.Errorf("ollama: ndjson write final: %w", err)
+		return aggregateOllamaResponse(req, state, stopReason), fmt.Errorf("ollama: ndjson write final: %w", err)
 	}
 	flusher.Flush()
-	return nil
+	// Quick 260530-df2 — clean stream completion: build the canonical
+	// response handed to RunPostHooks. Coerce hit → use the synthetic
+	// resp (already has Message.ToolCalls populated). Otherwise use the
+	// aggregator (text + thinking).
+	var postResp *canonical.ChatResponse
+	if coerceFired && syntheticResp != nil {
+		postResp = syntheticResp
+		if req != nil {
+			postResp.Model = req.Model // mirror chatResponseToWire model echo
+		}
+		postResp.StopReason = stopReason
+	} else {
+		postResp = aggregateOllamaResponse(req, state, stopReason)
+	}
+	return postResp, nil
 }
 
 // releaseBufferedLines flushes the deferred text lines to the wire in order.

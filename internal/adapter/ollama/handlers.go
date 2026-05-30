@@ -208,8 +208,23 @@ func (a *Adapter) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	start := time.Now()
-	if emitErr := runNDJSONEmitter(streamCtx, cancelFn, w, run, wire.Model, true, start, a.cfg.Logger, req); emitErr != nil {
+	resp, emitErr := runNDJSONEmitter(streamCtx, cancelFn, w, run, wire.Model, true, start, a.cfg.Logger, req)
+	if emitErr != nil {
 		a.cfg.Logger.Debug("ollama: ndjson chat emitter error", "err", emitErr)
+	}
+	// Quick 260530-df2 — fire PostHooks on the aggregated response.
+	// resp is non-nil even on disconnect / mid-stream Result() error
+	// (the emitter returns the partial aggregation for forensics).
+	// PostHook errors are logged at WARN and swallowed: the stream is
+	// over from the client's perspective, and a misbehaving hook MUST
+	// NOT tear down a request whose bytes are already on the wire
+	// (T-df2-02). Surface tag distinguishes /api/chat from
+	// /api/generate at log-analysis time.
+	if resp != nil {
+		if pErr := eng.RunPostHooks(streamCtx, req, resp); pErr != nil {
+			a.cfg.Logger.Warn("ollama: posthook error after streaming completion",
+				"err", pErr, "surface", "ollama.chat")
+		}
 	}
 }
 
@@ -350,8 +365,18 @@ func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 	// Generate has no tools[] — pass req so the emitter signature stays
 	// uniform; the streaming-coerce buffering logic only activates when
 	// len(req.Tools) > 0 so this is a no-op for /api/generate in practice.
-	if emitErr := runNDJSONEmitter(streamCtx, cancelFn, w, run, wire.Model, false, start, a.cfg.Logger, req); emitErr != nil {
+	resp, emitErr := runNDJSONEmitter(streamCtx, cancelFn, w, run, wire.Model, false, start, a.cfg.Logger, req)
+	if emitErr != nil {
 		a.cfg.Logger.Debug("ollama: ndjson generate emitter error", "err", emitErr)
+	}
+	// Quick 260530-df2 — same WARN-and-swallow PostHook contract as
+	// handleChat. The /api/generate surface gets the same canonical-layer
+	// observation.
+	if resp != nil {
+		if pErr := eng.RunPostHooks(streamCtx, req, resp); pErr != nil {
+			a.cfg.Logger.Warn("ollama: posthook error after streaming completion",
+				"err", pErr, "surface", "ollama.generate")
+		}
 	}
 }
 

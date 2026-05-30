@@ -45,6 +45,11 @@ func (c *captureEngine) Run(ctx context.Context, _ *canonical.ChatRequest) (RunH
 	return newFakeRunHandle(nil, final, nil), nil
 }
 
+// RunPostHooks is a no-op — request-id stamp tests only care about ctx.
+func (c *captureEngine) RunPostHooks(_ context.Context, _ *canonical.ChatRequest, _ *canonical.ChatResponse) error {
+	return nil
+}
+
 func newCaptureAdapter(t *testing.T, eng *captureEngine) *Adapter {
 	t.Helper()
 	return New(Config{Engine: eng, Version: "0.0.0-test", Commit: "abc1234"})

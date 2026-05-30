@@ -91,6 +91,12 @@ func (s *sessionEngine) Run(ctx context.Context, req *canonical.ChatRequest) (Ru
 	return s.inner.Run(ctx, req)
 }
 
+// RunPostHooks delegates to the inner Engine so session tests observe
+// the same PostHook chain behavior as the pool path.
+func (s *sessionEngine) RunPostHooks(ctx context.Context, req *canonical.ChatRequest, resp *canonical.ChatResponse) error {
+	return s.inner.RunPostHooks(ctx, req, resp)
+}
+
 // newTestAdapterWithSession returns an Adapter wired with a pool engine,
 // a registry, and an EngineForSession factory that returns the supplied
 // sessionEng for any *session.Entry. (Test seam — production wiring
