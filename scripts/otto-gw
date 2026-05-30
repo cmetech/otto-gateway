@@ -654,6 +654,16 @@ init_cmd() {
         chat_trace_prefix="# "
     fi
 
+    # When chat-trace is enabled, ChatTraceHook must be in ENABLED_HOOKS
+    # (chain.Filter strips it otherwise). Prepend so the load-bearing
+    # "first in Pre" invariant is preserved. The config-level symmetric
+    # rule (config.go) also handles this at runtime, but writing the
+    # accurate list to the file keeps the operator-facing surface honest.
+    local enabled_hooks_value="RequestIDHook,AuthHook,PIIRedactionHook,LoggingHook"
+    if [[ "$chat_trace" -eq 1 ]]; then
+        enabled_hooks_value="ChatTraceHook,RequestIDHook,AuthHook,PIIRedactionHook,LoggingHook"
+    fi
+
     # Ensure parent dir exists.
     local dest_dir; dest_dir="$(dirname "$dest")"
     [[ -n "$dest_dir" && "$dest_dir" != "." ]] && mkdir -p "$dest_dir"
@@ -677,9 +687,10 @@ HTTP_ADDR=$http_addr
 
 # --- Phase 8 hook chain -----------------------------------------------------
 # Empty ENABLED_HOOKS = all hooks run in registration order. Comma-list to
-# allowlist (unknown names cause boot failure -- typo protection). The four
-# hooks below are the day-one shipped set; edit to subset for diagnostics.
-ENABLED_HOOKS=RequestIDHook,AuthHook,PIIRedactionHook,LoggingHook
+# allowlist (unknown names cause boot failure -- typo protection). The list
+# below reflects your init choices; ChatTraceHook is included when
+# CHAT_TRACE=true so chain.Filter doesn't silently strip it.
+ENABLED_HOOKS=$enabled_hooks_value
 
 PII_REDACTION_ENABLED=$pii_enabled
 PII_REDACTION_MODE=$pii_mode

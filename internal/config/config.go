@@ -322,12 +322,32 @@ func Load() (Config, error) {
 	// the hook is naturally absent from the chain in main.go, but operators
 	// may legitimately include "ChatTraceHook" in their ENABLED_HOOKS
 	// allowlist (forward-compat). Silently drop the entry so chain.Filter
-	// does not error on a hook that the boot path never wired. When
-	// CHAT_TRACE=true the entry is honored as written.
+	// does not error on a hook that the boot path never wired.
 	if !chatTrace && slices.Contains(enabledHooks, "ChatTraceHook") {
 		enabledHooks = slices.DeleteFunc(enabledHooks, func(s string) bool {
 			return s == "ChatTraceHook"
 		})
+	}
+
+	// Symmetric inverse rule (260530 fix): when CHAT_TRACE=true and the
+	// operator has set an explicit ENABLED_HOOKS allowlist (non-empty),
+	// auto-prepend "ChatTraceHook" if absent. Without this, an operator
+	// who enables CHAT_TRACE but forgets to add "ChatTraceHook" to their
+	// allowlist gets a wired-but-filtered hook and zero chat-trace
+	// records on disk — confusing because the rotator IS constructed in
+	// main.go but Before() is never called once chain.Filter strips it.
+	//
+	// Prepend (not append) preserves the load-bearing chain-order
+	// invariant: ChatTraceHook MUST be first in Pre so it observes the
+	// pre-redaction request shape (trace.go KEY CORRECTNESS INVARIANT).
+	//
+	// The len(enabledHooks)>0 guard is critical: empty allowlist means
+	// "run every hook in registration order" (default-permissive), and
+	// the hook is already in the chain via main.go — auto-injecting
+	// into an empty list would change semantics from "all hooks" to
+	// "only ChatTraceHook".
+	if chatTrace && len(enabledHooks) > 0 && !slices.Contains(enabledHooks, "ChatTraceHook") {
+		enabledHooks = append([]string{"ChatTraceHook"}, enabledHooks...)
 	}
 
 	return Config{

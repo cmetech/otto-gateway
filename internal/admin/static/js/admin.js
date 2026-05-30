@@ -129,7 +129,12 @@
       el.textContent = 'Dead — respawning…';
     } else if (slot.current_session_id) {
       el.classList.add('is-busy');
-      el.textContent = 'Busy — session ' + shortId(slot.current_session_id);
+      // "ACP session" disambiguates from the operator-level X-Session-Id
+      // counter at the top: this id is kiro-cli's internal ACP session for
+      // the subprocess on this slot, surfaces for every in-flight request
+      // (stateless or stateful), and is NOT the same as the "Stateful
+      // sessions" counter (which only tracks X-Session-Id registry entries).
+      el.textContent = 'Busy — ACP session ' + shortId(slot.current_session_id);
     } else {
       el.textContent = 'Idle';
     }
@@ -458,6 +463,13 @@
   // (filters match against raw, not concatenated cell text).
   //
   // source: prefer `logger`, fall back to `source` for both branches.
+  //
+  // 260530 enrichment: the JSON branch also extracts the common slog
+  // access-log fields (method, path, status, duration_ms, request_id)
+  // so appendLine can render `msg METHOD PATH STATUS DURATIONms` instead
+  // of just `msg`. For an HTTP access line where msg="request", showing
+  // only the msg field is useless because every line shares that value;
+  // surfacing the structural fields makes the Log Tail actually scannable.
   function parseLogLine(line) {
     // Try JSON first (slog JSON handler output).
     if (line.charAt(0) === '{') {
@@ -472,6 +484,11 @@
             source: typeof obj.logger === 'string'
               ? obj.logger
               : (typeof obj.source === 'string' ? obj.source : ''),
+            method: typeof obj.method === 'string' ? obj.method : '',
+            path: typeof obj.path === 'string' ? obj.path : '',
+            status: (typeof obj.status === 'number') ? obj.status : null,
+            duration_ms: (typeof obj.duration_ms === 'number') ? obj.duration_ms : null,
+            request_id: typeof obj.request_id === 'string' ? obj.request_id : '',
             raw: line
           };
         }
@@ -491,20 +508,62 @@
         }
         return s;
       }
+      function bareNum(s) {
+        if (typeof s !== 'string') return null;
+        var n = parseInt(s, 10);
+        return isNaN(n) ? null : n;
+      }
       var tm = /\btime=("[^"]*"|\S+)/.exec(line);
       var mg = /\bmsg=("[^"]*"|\S+)/.exec(line);
-      // source: prefer `logger`, fall back to `source`
       var src = /\blogger=("[^"]*"|\S+)/.exec(line);
       if (!src) src = /\bsource=("[^"]*"|\S+)/.exec(line);
+      var meth = /\bmethod=("[^"]*"|\S+)/.exec(line);
+      var pth = /\bpath=("[^"]*"|\S+)/.exec(line);
+      var stat = /\bstatus=(\S+)/.exec(line);
+      var dur = /\bduration_ms=(\S+)/.exec(line);
+      var rid = /\brequest_id=("[^"]*"|\S+)/.exec(line);
       return {
         level: match[1].toLowerCase(),
         time: tm ? unquote(tm[1]) : '',
         msg: mg ? unquote(mg[1]) : '',
         source: src ? unquote(src[1]) : '',
+        method: meth ? unquote(meth[1]) : '',
+        path: pth ? unquote(pth[1]) : '',
+        status: stat ? bareNum(stat[1]) : null,
+        duration_ms: dur ? bareNum(dur[1]) : null,
+        request_id: rid ? unquote(rid[1]) : '',
         raw: line
       };
     }
-    return { level: null, time: '', msg: '', source: '', raw: line };
+    return {
+      level: null, time: '', msg: '', source: '',
+      method: '', path: '', status: null, duration_ms: null, request_id: '',
+      raw: line
+    };
+  }
+
+  // enrichedMessage returns the string that should appear in the Message
+  // cell for a parsed line. When access-log fields are present (method +
+  // path), the structural shape is appended so HTTP request lines are
+  // self-describing. Otherwise the raw msg is returned unchanged.
+  //
+  // The order is deliberate: msg first (preserves grep-by-message muscle
+  // memory), then method/path (the most useful identifiers), then status
+  // (success/error at a glance), then duration. Examples:
+  //   "request GET /health 200 0ms"
+  //   "request POST /v1/messages 401 2ms"
+  function enrichedMessage(parsed) {
+    var out = parsed.msg || '';
+    if (parsed.method && parsed.path) {
+      out += ' ' + parsed.method + ' ' + parsed.path;
+    }
+    if (parsed.status !== null && parsed.status !== undefined) {
+      out += ' ' + String(parsed.status);
+    }
+    if (parsed.duration_ms !== null && parsed.duration_ms !== undefined) {
+      out += ' ' + String(parsed.duration_ms) + 'ms';
+    }
+    return out;
   }
 
   // matchesFilters returns true if the line passes both level and grep filters.
@@ -574,9 +633,12 @@
 
       var msgCell = document.createElement('div');
       msgCell.className = 'otto-log-cell otto-log-cell-message';
-      // If msg is empty (e.g., the line had a level but no msg field) fall
-      // back to the raw line so the operator still sees content.
-      msgCell.textContent = parsed.msg || parsed.raw;
+      // 260530 enrichment: render `msg METHOD PATH STATUS DURATIONms` when
+      // the access-log structural fields are present; otherwise just msg.
+      // Fall back to the raw line when both msg and the enriched form would
+      // be empty (line had a level but no msg or structured fields).
+      var display = enrichedMessage(parsed);
+      msgCell.textContent = display || parsed.raw;
 
       row.appendChild(timeCell);
       row.appendChild(levelCell);

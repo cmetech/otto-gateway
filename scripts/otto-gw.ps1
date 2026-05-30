@@ -511,6 +511,16 @@ function Invoke-Init {
     $chatPrefix = if ($chatOn) { "" } else { "# " }
     $chatValue  = if ($chatOn) { "true" } else { "false" }
 
+    # Mirror bash: when chat-trace is enabled, ChatTraceHook must be in
+    # ENABLED_HOOKS or chain.Filter strips it. Prepend to preserve the
+    # "first in Pre" invariant. config.Load also enforces this at runtime,
+    # but writing the accurate list to disk keeps the file honest.
+    $enabledHooksValue = if ($chatOn) {
+        "ChatTraceHook,RequestIDHook,AuthHook,PIIRedactionHook,LoggingHook"
+    } else {
+        "RequestIDHook,AuthHook,PIIRedactionHook,LoggingHook"
+    }
+
     # Ensure parent dir exists.
     $destDir = Split-Path -Parent $destPath
     if ($destDir -and -not (Test-Path $destDir)) {
@@ -537,9 +547,10 @@ HTTP_ADDR=$addrValue
 
 # --- Phase 8 hook chain -----------------------------------------------------
 # Empty ENABLED_HOOKS = all hooks run in registration order. Comma-list to
-# allowlist (unknown names cause boot failure -- typo protection). The four
-# hooks below are the day-one shipped set; edit to subset for diagnostics.
-ENABLED_HOOKS=RequestIDHook,AuthHook,PIIRedactionHook,LoggingHook
+# allowlist (unknown names cause boot failure -- typo protection). The list
+# below reflects your init choices; ChatTraceHook is included when
+# CHAT_TRACE=true so chain.Filter doesn't silently strip it.
+ENABLED_HOOKS=$enabledHooksValue
 
 PII_REDACTION_ENABLED=$piiEnabled
 PII_REDACTION_MODE=$piiValue

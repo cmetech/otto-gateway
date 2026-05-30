@@ -37,9 +37,13 @@
       <span class="otto-summary-value" data-pool-summary>—</span>
     </div>
 
-    <!-- Sessions active (hydrated by JS on first poll) -->
+    <!-- Stateful sessions count (hydrated by JS on first poll).
+         Counts entries in session.Registry -- only X-Session-Id stateful
+         sessions, NOT every in-flight request. Stateless requests show
+         up as a "busy" pool slot instead. Label disambiguates from the
+         slot-level ACP session id on the pool cards. -->
     <div class="otto-summary-item">
-      <span class="otto-summary-label">Sessions active</span>
+      <span class="otto-summary-label">Stateful sessions</span>
       <span class="otto-summary-value" data-sessions-count>—</span>
     </div>
 
