@@ -75,7 +75,11 @@ $LogFile    = if ($env:OTTO_LOG)    { $env:OTTO_LOG }    else { Join-Path $Insta
 # structured slog output to $LogFile.
 $LogBootOut = if ($env:OTTO_LOGOUT) { $env:OTTO_LOGOUT } else { [System.IO.Path]::ChangeExtension($LogFile, '.boot-out.log') }
 $LogBootErr = if ($env:OTTO_LOGERR) { $env:OTTO_LOGERR } else { [System.IO.Path]::ChangeExtension($LogFile, '.boot-err.log') }
-$Addr       = if ($env:OTTO_ADDR)   { $env:OTTO_ADDR }   else { "http://127.0.0.1:18080" }
+# Health-check base URL (scheme + host:port). Distinct from the -Addr init
+# param (a bare host:port for HTTP_ADDR) — they MUST NOT share a name, or this
+# line clobbers the param and init writes HTTP_ADDR with an http:// scheme,
+# which Go's net.Listen rejects ("too many colons in address").
+$HealthUrl  = if ($env:OTTO_ADDR)   { $env:OTTO_ADDR }   else { "http://127.0.0.1:18080" }
 
 $DefaultEnvPaths = @(".\.env.otto-gw", "$env:USERPROFILE\.otto-gw.env")
 
@@ -167,14 +171,14 @@ function Preflight-Kiro {
     }
 }
 
-# Wait-UntilReady polls $Addr/health up to $TimeoutSec; returns $true on
+# Wait-UntilReady polls $HealthUrl/health up to $TimeoutSec; returns $true on
 # first 2xx, $false on timeout or persistent failure.
 function Wait-UntilReady {
     param([int]$TimeoutSec = 5)
     $deadline = (Get-Date).AddSeconds($TimeoutSec)
     while ((Get-Date) -lt $deadline) {
         try {
-            $r = Invoke-WebRequest -Uri "$Addr/health" -UseBasicParsing -TimeoutSec 1 -ErrorAction Stop
+            $r = Invoke-WebRequest -Uri "$HealthUrl/health" -UseBasicParsing -TimeoutSec 1 -ErrorAction Stop
             if ($r.StatusCode -ge 200 -and $r.StatusCode -lt 300) { return $true }
         } catch {
             # health not up yet — also bail if the process died.
@@ -238,7 +242,7 @@ function Start-Gateway {
     Write-Host "  log:      $LogFile (rotated daily, 7d retention)"
     Write-Host "  boot/err: $LogBootErr"
     if (Wait-UntilReady 10) {
-        Write-Host "  ready:    $Addr/health"
+        Write-Host "  ready:    $HealthUrl/health"
     } else {
         Write-Host "  ❌  gateway did NOT become ready within 10s." -ForegroundColor Red
         # Prefer the structured log (where slog calls go when LOG_FILE
@@ -290,7 +294,7 @@ function Get-GatewayStatus {
     }
     Write-Host "otto-gateway: running (PID $storedPid)"
     try {
-        $health = Invoke-RestMethod -Uri "$Addr/health" -TimeoutSec 3
+        $health = Invoke-RestMethod -Uri "$HealthUrl/health" -TimeoutSec 3
         $health | ConvertTo-Json -Depth 5
     } catch {
         Write-Host "(health check failed: $_)"
