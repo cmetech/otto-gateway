@@ -654,6 +654,10 @@ func runSSEEmitter(ctx context.Context, w http.ResponseWriter, run RunHandle, mo
 // message_delta/message_stop is emitted — the stream tore down
 // before the natural end.
 func runSSEEmitterLoop(ctx context.Context, e *sseEmitter, run RunHandle, tickerC <-chan time.Time) (*canonical.ChatResponse, error) {
+	// firstChunkSeen is a one-shot guard so the anthropic.sse.first_chunk
+	// DEBUG marker fires exactly once per stream — a high-throughput
+	// response must not flood the log. Stack-local, no cross-stream state.
+	var firstChunkSeen bool
 	chunks := run.Stream().Chunks()
 	for {
 		select {
@@ -674,6 +678,10 @@ func runSSEEmitterLoop(ctx context.Context, e *sseEmitter, run RunHandle, ticker
 		case c, ok := <-chunks:
 			if !ok {
 				return finalizeStream(e, run)
+			}
+			if !firstChunkSeen {
+				firstChunkSeen = true
+				e.logger.Debug("anthropic.sse.first_chunk", "session_id", run.SessionID(), "kind", c.Kind)
 			}
 			if err := e.applyChunk(c); err != nil {
 				return e.aggregatedResponse(nil, canonical.StopUnknown), err

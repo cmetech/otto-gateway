@@ -93,6 +93,18 @@ type Pool struct {
 	lastSpawnErrAt time.Time
 }
 
+// debugLog is the nil-safe DEBUG emitter for pool observability markers
+// (pool.acquire / pool.release). cfg.Logger is documented as optional
+// (see Config.Logger doc); calling a method on a nil *slog.Logger would
+// panic, so guard the call here. Production callers (main.go) always
+// wire a real logger; tests may construct a bare Config{}.
+func (p *Pool) debugLog(msg string, attrs ...any) {
+	if p.cfg.Logger == nil {
+		return
+	}
+	p.cfg.Logger.Debug(msg, attrs...)
+}
+
 // New constructs a Pool with the given Config. The slots channel is
 // allocated with capacity = cfg.Size (after applyDefaults). No subprocess
 // is spawned until Warmup runs.
@@ -483,6 +495,7 @@ func (p *Pool) NewSession(ctx context.Context, cwd string) (string, error) {
 	case <-ctx.Done():
 		return "", fmt.Errorf("pool: acquire cancelled: %w", ctx.Err())
 	}
+	p.debugLog("pool.acquire", "slot", slot.Label)
 
 	// Phase 5 D-01/D-02/D-03: dead-slot detection + lazy synchronous
 	// re-spawn. The per-slot exit-watcher (exit_watcher.go) flips
@@ -568,6 +581,7 @@ func (p *Pool) Prompt(ctx context.Context, sid string, blocks []canonical.Block)
 			return
 		}
 		p.slots <- s
+		p.debugLog("pool.release", "slot", s.Label, "session_id", sid)
 	}
 
 	// ctx-watcher goroutine — Codex M-3. If ctx cancels BEFORE Result()
@@ -643,6 +657,7 @@ func (p *Pool) releaseSlotForSession(sid string) {
 	p.mu.Unlock()
 	if ok {
 		p.slots <- slot
+		p.debugLog("pool.release", "slot", slot.Label, "session_id", sid)
 	}
 }
 
