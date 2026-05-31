@@ -34,9 +34,11 @@ func TestAdmin_PageHandler(t *testing.T) {
 	defer goleak.VerifyNone(t)
 
 	deps := Deps{
-		Logger:  testutil.Logger(t),
-		Version: "1.2.3",
-		Commit:  "abc1234",
+		Logger:    testutil.Logger(t),
+		Version:   "1.2.3",
+		Commit:    "abc1234",
+		Debug:     true,
+		ChatTrace: true,
 	}
 	h := Handler(deps)
 
@@ -58,6 +60,18 @@ func TestAdmin_PageHandler(t *testing.T) {
 	// Page title check per behavior contract.
 	if !strings.Contains(body, "OTTO Gateway") {
 		t.Errorf("body missing expected page title containing 'OTTO Gateway'")
+	}
+
+	// Feature-flag visibility (quick 260531-ebi): the summary strip must show
+	// the literal Debug + Chat-trace labels and their rendered on/off state.
+	// Debug and ChatTrace are both true above, so both render "on".
+	for _, want := range []string{"Debug", "Chat-trace"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing required feature-flag label %q", want)
+		}
+	}
+	if !strings.Contains(body, ">on<") {
+		t.Errorf("body missing rendered 'on' state for an enabled feature flag")
 	}
 
 	// Summary strip data-* hooks per behavior contract.

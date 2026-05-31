@@ -60,6 +60,12 @@ type RegistryStatsSource interface {
 //     entry is the default SSE source. Filling LogPaths without
 //     LogPathOrder means the SSE handler cannot resolve sources (the
 //     validation uses slices.Contains on LogPathOrder).
+//   - Debug: mirrors cfg.Debug — whether DEBUG-level structured logging is
+//     enabled. Surfaced in the snapshot JSON and the HTML page so operators
+//     can tell at a glance whether verbose logging is on.
+//   - ChatTrace: mirrors cfg.ChatTrace — whether the SENSITIVE chat-trace
+//     tracer is enabled. When on, raw prompts are written to disk; surfacing
+//     this is a safety affordance so operators are not surprised by it.
 type Deps struct {
 	Logger       *slog.Logger
 	Version      string
@@ -69,6 +75,8 @@ type Deps struct {
 	Registry     RegistryStatsSource
 	LogPaths     map[string]string
 	LogPathOrder []string
+	Debug        bool
+	ChatTrace    bool
 }
 
 // handler holds the runtime state for the admin sub-router.
@@ -147,11 +155,15 @@ func Handler(deps Deps) http.Handler {
 // committing 200 OK with truncated HTML on the wire.
 func (h *handler) pageHandler(w http.ResponseWriter, r *http.Request) {
 	data := struct {
-		Version string
-		Commit  string
+		Version   string
+		Commit    string
+		Debug     bool
+		ChatTrace bool
 	}{
-		Version: h.deps.Version,
-		Commit:  h.deps.Commit,
+		Version:   h.deps.Version,
+		Commit:    h.deps.Commit,
+		Debug:     h.deps.Debug,
+		ChatTrace: h.deps.ChatTrace,
 	}
 	var buf bytes.Buffer
 	if err := pageTemplate.Execute(&buf, data); err != nil {

@@ -31,6 +31,20 @@
       <span class="otto-summary-value text-mono">{{.Version}}</span>
     </div>
 
+    <!-- Debug logging enablement (baked in at render time — does not poll) -->
+    <div class="otto-summary-item">
+      <span class="otto-summary-label">Debug</span>
+      <span class="otto-summary-value">{{if .Debug}}on{{else}}off{{end}}</span>
+    </div>
+
+    <!-- Chat-trace enablement (baked in at render time — does not poll).
+         SENSITIVE: when on, raw prompts are written to disk. Surfaced as a
+         safety affordance so operators are not surprised by it. -->
+    <div class="otto-summary-item">
+      <span class="otto-summary-label">Chat-trace</span>
+      <span class="otto-summary-value">{{if .ChatTrace}}on{{else}}off{{end}}</span>
+    </div>
+
     <!-- Pool counts (hydrated by JS on first poll) -->
     <div class="otto-summary-item">
       <span class="otto-summary-label">Pool</span>

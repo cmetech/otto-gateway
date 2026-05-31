@@ -458,6 +458,19 @@ status() {
     [[ -n "$uptime" ]]  && echo "  uptime:   $(humanize_uptime "$uptime")"
     [[ -n "$size$alive$busy" ]] && echo "  pool:     size=${size:-0}, alive=${alive:-0}, busy=${busy:-0}"
     [[ -n "$active" ]]  && echo "  sessions: active=$active"
+
+    # Feature-flag enablement comes from the admin snapshot, NOT /health
+    # (which is D-12 byte-shape locked). The admin endpoint is auth-exempt,
+    # so no token is needed. Best-effort like the health probe above: if it
+    # is unreachable we skip the lines silently rather than failing status.
+    local snap dbg trace
+    snap="$(curl -sf "${OTTO_ADDR}/admin/api/snapshot" 2>/dev/null || true)"
+    [[ -n "$snap" ]] || return 0
+    # JSON booleans have no surrounding quotes — match true|false literally.
+    dbg="$(printf '%s' "$snap"   | sed -n 's/.*"debug"[[:space:]]*:[[:space:]]*\(true\|false\).*/\1/p')"
+    trace="$(printf '%s' "$snap" | sed -n 's/.*"chat_trace"[[:space:]]*:[[:space:]]*\(true\|false\).*/\1/p')"
+    [[ -n "$dbg" ]]   && echo "  debug:      $([[ "$dbg" == "true" ]] && echo on || echo off)"
+    [[ -n "$trace" ]] && echo "  chat-trace: $([[ "$trace" == "true" ]] && echo on || echo off)"
 }
 
 # humanize_uptime turns whole seconds into a compact Hh Mm Ss form.
