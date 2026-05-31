@@ -613,7 +613,9 @@ init_cmd() {
     fi
     [[ -z "$http_addr" ]] && http_addr="127.0.0.1:18080"
 
-    # Resolve PII mode — precedence: CLI flag > existing > prompt > "off".
+    # Resolve PII mode — precedence: CLI flag > existing > prompt > "hash".
+    # Default is hash: redaction ON with per-install HMAC tags so the same
+    # value correlates across log lines (PII_HASH_KEY is auto-generated below).
     local pii_mode="$arg_pii"
     if [[ -z "$pii_mode" ]]; then
         if [[ -n "$existing_pii_mode" ]]; then
@@ -625,11 +627,11 @@ init_cmd() {
             fi
         elif [[ "$non_interactive" -ne 1 ]]; then
             echo "  PII redaction -- off | replace | mask | hash | drop."
-            echo "  Pick 'replace' for human-readable redaction; 'hash' for log correlation."
-            read -r -p "  PII mode [off]: " pii_mode
+            echo "  'hash' (default) correlates values across logs; 'replace' is human-readable; 'off' disables."
+            read -r -p "  PII mode [hash]: " pii_mode
         fi
     fi
-    [[ -z "$pii_mode" ]] && pii_mode="off"
+    [[ -z "$pii_mode" ]] && pii_mode="hash"
 
     local pii_enabled="false"
     [[ "$pii_mode" != "off" ]] && pii_enabled="true"

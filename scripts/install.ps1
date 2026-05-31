@@ -92,7 +92,7 @@ try {
     if ((Test-Path $userEnv) -or (Test-Path $projEnv)) {
         Info "Existing config found — preserving it (skipping init)."
     } else {
-        Info "Writing default config (no auth, 127.0.0.1:18080, all hooks, chat-trace off) ..."
+        Info "Writing default config (no auth, 127.0.0.1:18080, all hooks, PII redaction=hash, chat-trace off) ..."
         & $bat init -NonInteractive
     }
 

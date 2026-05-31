@@ -495,12 +495,14 @@ function Invoke-Init {
             }
         } elseif (-not $NonInteractive) {
             Write-Host "  PII redaction -- off | replace | mask | hash | drop."
-            Write-Host "  Pick 'replace' for human-readable redaction; 'hash' for log correlation."
-            $entered = Read-Host "  PII mode [off]"
-            $piiValue = if ($entered) { $entered } else { "off" }
+            Write-Host "  'hash' (default) correlates values across logs; 'replace' is human-readable; 'off' disables."
+            $entered = Read-Host "  PII mode [hash]"
+            $piiValue = if ($entered) { $entered } else { "hash" }
         }
     }
-    if (-not $piiValue) { $piiValue = "off" }
+    # Default is hash: redaction ON with per-install HMAC tags so the same
+    # value correlates across log lines (PII_HASH_KEY is auto-generated above).
+    if (-not $piiValue) { $piiValue = "hash" }
     $piiEnabled = if ($piiValue -eq "off") { "false" } else { "true" }
     # PII_REDACTION_MODE must be a valid mode (replace|mask|hash|drop) even when
     # redaction is disabled -- config.Load validates it unconditionally. "off"
