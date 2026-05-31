@@ -24,17 +24,34 @@
 #   only for keys the .env actually sets.
 set -euo pipefail
 
-OTTO_BIN="${OTTO_BIN:-./bin/otto-gateway}"
-# OTTO_PID lives under .otto/gw/ (project-local) rather than /tmp/ — some
-# laptop setups (sandboxed shells, hardened tmp policies, network drives
-# mapped to /tmp) make /tmp non-writable. The .otto/ namespace is shared
+# Resolve this script's own install root, following symlinks. The one-liner
+# installer exposes `otto-gw` via a PATH symlink (e.g.
+# ~/.local/bin/otto-gw -> ~/.otto-gw/scripts/otto-gw), so the wrapper may run
+# from any cwd. Default paths anchor to the install root (the dir above
+# scripts/), NOT the caller's cwd — env overrides below still win. This also
+# matches the legacy "cd into the extracted folder, run ./scripts/otto-gw"
+# flow, where install root == cwd.
+_otto_source="${BASH_SOURCE[0]}"
+while [[ -h "$_otto_source" ]]; do
+    _otto_dir="$(cd -P "$(dirname "$_otto_source")" >/dev/null 2>&1 && pwd)"
+    _otto_source="$(readlink "$_otto_source")"
+    [[ "$_otto_source" != /* ]] && _otto_source="$_otto_dir/$_otto_source"
+done
+OTTO_SCRIPT_DIR="$(cd -P "$(dirname "$_otto_source")" >/dev/null 2>&1 && pwd)"
+OTTO_INSTALL_ROOT="$(cd -P "$OTTO_SCRIPT_DIR/.." >/dev/null 2>&1 && pwd)"
+unset _otto_source _otto_dir
+
+OTTO_BIN="${OTTO_BIN:-$OTTO_INSTALL_ROOT/bin/otto-gateway}"
+# OTTO_PID lives under .otto/gw/ (anchored to the install root) rather than
+# /tmp/ — some laptop setups (sandboxed shells, hardened tmp policies, network
+# drives mapped to /tmp) make /tmp non-writable. The .otto/ namespace is shared
 # with the OTTER client; we nest under gw/ to avoid name collisions.
-OTTO_STATE_DIR="${OTTO_STATE_DIR:-./.otto/gw}"
+OTTO_STATE_DIR="${OTTO_STATE_DIR:-$OTTO_INSTALL_ROOT/.otto/gw}"
 OTTO_PID="${OTTO_PID:-${OTTO_STATE_DIR}/otto-gateway.pid}"
 # OTTO_LOG = the structured rotated log the gateway owns (via timberjack).
 # OTTO_LOG_BOOT = a small sidecar that captures crash output + kiro-cli
 # stderr + any pre-logger panic — rarely consulted, invaluable on incident.
-OTTO_LOG="${OTTO_LOG:-./logs/otto-gateway.log}"
+OTTO_LOG="${OTTO_LOG:-$OTTO_INSTALL_ROOT/logs/otto-gateway.log}"
 OTTO_LOG_BOOT="${OTTO_LOG_BOOT:-${OTTO_LOG%.log}-boot.log}"
 OTTO_ADDR="${OTTO_ADDR:-http://127.0.0.1:18080}"
 

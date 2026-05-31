@@ -50,16 +50,24 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$BinPath    = if ($env:OTTO_BIN)    { $env:OTTO_BIN }    else { ".\bin\otto-gateway.exe" }
-# PID file lives under .otto\gw\ (project-local) rather than %TEMP%. Some
+# Resolve this script's own install root. The one-liner installer exposes
+# otto-gw via $OTTO_HOME\scripts on PATH (otto-gw.bat -> this .ps1), so the
+# wrapper may run from any cwd. Default paths anchor to the install root (the
+# dir above scripts\), NOT the caller's cwd — env overrides below still win.
+# This also matches the legacy "cd into the extracted folder, run it" flow,
+# where install root == cwd. $PSScriptRoot is the dir containing this .ps1.
+$InstallRoot = Split-Path -Parent $PSScriptRoot
+
+$BinPath    = if ($env:OTTO_BIN)    { $env:OTTO_BIN }    else { Join-Path $InstallRoot 'bin\otto-gateway.exe' }
+# PID file lives under .otto\gw\ (install-root-local) rather than %TEMP%. Some
 # locked-down Windows environments (Group Policy, AppLocker, mapped
 # network temp) make %TEMP% unreliable. The .otto\ namespace is shared
 # with the OTTER client; we nest under gw\ to avoid collisions.
-$StateDir   = if ($env:OTTO_STATE_DIR) { $env:OTTO_STATE_DIR } else { ".\.otto\gw" }
+$StateDir   = if ($env:OTTO_STATE_DIR) { $env:OTTO_STATE_DIR } else { Join-Path $InstallRoot '.otto\gw' }
 $PidFile    = if ($env:OTTO_PID)    { $env:OTTO_PID }    else { "$StateDir\otto-gateway.pid" }
 # $LogFile = structured rotated log the gateway owns via timberjack
 # (LOG_FILE env, daily rotation, 7-day retention).
-$LogFile    = if ($env:OTTO_LOG)    { $env:OTTO_LOG }    else { ".\logs\otto-gateway.log" }
+$LogFile    = if ($env:OTTO_LOG)    { $env:OTTO_LOG }    else { Join-Path $InstallRoot 'logs\otto-gateway.log' }
 # Start-Process requires separate files for stdout / stderr redirection
 # AND cannot share a single file across the two streams. Both sidecars
 # here capture only pre-logger / kiro-cli / crash output; stdout sidecar
