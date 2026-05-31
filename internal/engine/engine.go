@@ -181,6 +181,7 @@ func (e *Engine) Run(ctx context.Context, req *canonical.ChatRequest) (*Run, err
 	if err != nil {
 		return nil, fmt.Errorf("engine: new session: %w", err)
 	}
+	e.cfg.Logger.Debug("engine.new_session.ok", "session_id", sid, "cwd", cwd)
 
 	// (5) optional SetModel (D-05).
 	if req.Model != "" && req.Model != "auto" {
@@ -196,6 +197,7 @@ func (e *Engine) Run(ctx context.Context, req *canonical.ChatRequest) (*Run, err
 		e.cfg.ACP.Cancel(sid)
 		return nil, fmt.Errorf("engine: prompt: %w", err)
 	}
+	e.cfg.Logger.Debug("engine.prompt.sent", "session_id", sid, "blocks", len(blocks))
 
 	// D-06 in CONTEXT.md: engine-owned watchdog fires session/cancel if the
 	// request ctx terminates before the stream closes naturally.

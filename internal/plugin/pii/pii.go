@@ -49,6 +49,7 @@ package pii
 
 import (
 	"context"
+	"log/slog"
 
 	"otto-gateway/internal/canonical"
 	"otto-gateway/internal/engine"
@@ -74,6 +75,11 @@ type PIIRedactionHook struct {
 	Mode            string
 	HashKey         []byte
 	EnabledEntities []string
+	// Logger is the slog target for observability DEBUG lines (e.g.,
+	// pii.redact.done). nil-falls-back to slog.Default() at first use.
+	// Wired by main.go for the production-path adapter; tests may leave
+	// nil — defensive fallback keeps the hook side-effect-free.
+	Logger *slog.Logger
 }
 
 // Name reports the filter-discovery name for chain.Filter (08-PATTERNS
@@ -149,6 +155,17 @@ func (h *PIIRedactionHook) activeRecognizers() []Recognizer {
 		}
 	}
 	return out
+}
+
+// logger returns h.Logger if set, otherwise slog.Default(). Per-call
+// fallback (never cached) so changes to slog.Default at boot are seen.
+// Mirrors LoggingHook.logger() (internal/plugin/logging.go) — the canonical
+// nil-default pattern across canonical-layer hooks.
+func (h *PIIRedactionHook) logger() *slog.Logger {
+	if h.Logger != nil {
+		return h.Logger
+	}
+	return slog.Default()
 }
 
 // Before is the PreHook entry. Algorithm:
@@ -249,6 +266,12 @@ func (h *PIIRedactionHook) Before(ctx context.Context, req *canonical.ChatReques
 			}
 		}
 	}
+
+	// request_id intentionally omitted to avoid plugin→pii→plugin import cycle; correlate via timestamps + active_recognizers count.
+	h.logger().Debug("pii.redact.done",
+		"active_recognizers", len(recs),
+		"mode", h.Mode,
+	)
 
 	return nil, nil
 }
