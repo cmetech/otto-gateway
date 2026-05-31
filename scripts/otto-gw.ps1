@@ -44,12 +44,18 @@ param(
     [switch]$RegenerateSecrets,
     [string]$AuthToken,
     [string]$Kiro,
-    [string]$Addr,
-    [switch]$Debug
+    [string]$Addr
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+# -Debug is PowerShell's reserved common parameter (this is an advanced function
+# because of [Parameter()] above), so we can't declare our own. Detect whether
+# the caller passed it, then neutralize $DebugPreference so it never prompts —
+# we only use -Debug as a boolean to flip the gateway into DEBUG logging.
+$DebugRequested = $PSBoundParameters.ContainsKey('Debug')
+$DebugPreference = 'SilentlyContinue'
 
 # Resolve this script's own install root. The one-liner installer exposes
 # otto-gw via $OTTO_HOME\scripts on PATH (otto-gw.bat -> this .ps1), so the
@@ -128,7 +134,7 @@ function Apply-CliFlags {
     if ($Entities) { $env:PII_ENABLED_ENTITIES = $Entities }
     if ($Hooks)    { $env:ENABLED_HOOKS        = $Hooks }
     if ($Auth)     { $env:AUTH_TOKEN           = $Auth }
-    if ($Debug)    { $env:DEBUG                = 'true' }
+    if ($DebugRequested) { $env:DEBUG          = 'true' }
 }
 
 function Initialize-Config {
