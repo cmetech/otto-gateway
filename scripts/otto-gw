@@ -354,28 +354,76 @@ start() {
     fi
 }
 
-stop() {
-    if [[ ! -f "$OTTO_PID" ]]; then
-        echo "otto-gateway is not running (no PID file)" >&2
-        exit 1
-    fi
-    local pid
-    pid=$(cat "$OTTO_PID")
-    if ! kill -0 "$pid" 2>/dev/null; then
-        echo "otto-gateway: stopped (stale PID)"
-        rm -f "$OTTO_PID"
-        exit 0
-    fi
-    kill "$pid"
-    # Wait for the process to exit before removing the PID file.
-    # This eliminates the restart race (Codex MEDIUM fix).
-    local i=0
-    while kill -0 "$pid" 2>/dev/null && [[ "$i" -lt 100 ]]; do
+# _wait_for_exit PID — block up to ~10s for PID to leave the process table.
+# Eliminates the restart race (Codex MEDIUM fix).
+_wait_for_exit() {
+    local p="$1" i=0
+    while kill -0 "$p" 2>/dev/null && [[ "$i" -lt 100 ]]; do
         sleep 0.1
         i=$((i + 1))
     done
-    rm -f "$OTTO_PID"
+}
+
+# gateway_pids — print PIDs of the running otto-gateway *binary* (one per line).
+# Prefers pgrep; degrades to `ps | grep` where pgrep is absent. Matches the
+# full binary path (e.g. ~/.otto-gw/bin/otto-gateway), not the bare name, so it
+# can't accidentally match a log tail (logs/otto-gateway.log) or this wrapper
+# (otto-gw). The wrapper always execs the binary by absolute path, so a running
+# instance's argv carries it.
+gateway_pids() {
+    if command -v pgrep >/dev/null 2>&1; then
+        pgrep -f "$OTTO_BIN" 2>/dev/null
+    else
+        # `grep -v grep` drops the matcher's own line; the ps header has no
+        # match so it falls out naturally. -A/-o pid,args is BSD+GNU portable;
+        # -F keeps the path a literal (its dots aren't treated as regex).
+        # shellcheck disable=SC2009  # pgrep is the preferred path above; this is the fallback
+        ps -A -o pid,args 2>/dev/null \
+            | grep -F "$OTTO_BIN" \
+            | grep -v grep \
+            | awk '{print $1}'
+    fi
+}
+
+# stop_by_name REASON — fallback when the PID file can't drive the stop (older
+# wrapper wrote it elsewhere, or the gateway was launched in the foreground via
+# 'run'). Returns 0 if it signalled at least one process, 1 if none were found.
+stop_by_name() {
+    local pids fp
+    pids="$(gateway_pids)"
+    [[ -n "$pids" ]] || return 1
+    echo "otto-gateway: $1; stopping running process(es) by name"
+    for fp in $pids; do
+        kill "$fp" 2>/dev/null || true
+        _wait_for_exit "$fp"
+    done
     echo "otto-gateway stopped"
+    return 0
+}
+
+# stop returns 0 when the gateway is (now) stopped, 1 when nothing was running.
+# It uses `return` rather than `exit` so restart() can proceed to start().
+stop() {
+    if [[ -f "$OTTO_PID" ]]; then
+        local pid
+        pid=$(cat "$OTTO_PID")
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid"
+            _wait_for_exit "$pid"
+            rm -f "$OTTO_PID"
+            echo "otto-gateway stopped"
+            return 0
+        fi
+        # Stale file: a live instance may still be running without it.
+        rm -f "$OTTO_PID"
+        stop_by_name "stale PID" && return 0
+        echo "otto-gateway: stopped (stale PID)"
+        return 0
+    fi
+    # No PID file at all — try to match the running binary by name.
+    stop_by_name "no PID file" && return 0
+    echo "otto-gateway is not running (no PID file)" >&2
+    return 1
 }
 
 status() {
@@ -422,7 +470,7 @@ humanize_uptime() {
 }
 
 restart() {
-    stop
+    stop || true   # a not-running gateway is fine; restart should still start it
     start
 }
 

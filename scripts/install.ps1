@@ -58,7 +58,11 @@ try {
     $bat = Join-Path $OttoHome 'scripts\otto-gw.bat'
     if (Test-Path $bat) {
         Info "Stopping running gateway (if any) ..."
-        & $bat stop *> $null
+        # Best-effort, like the POSIX 'stop ... || true'. The wrapper writes to
+        # stderr when there's no PID file; under $ErrorActionPreference='Stop'
+        # that surfaces as a terminating NativeCommandError, so swallow it.
+        try { & $bat stop 2>&1 | Out-Null } catch { }
+        $global:LASTEXITCODE = 0
     }
 
     # Expand-Archive has no strip-components: expand to temp, move inner folder up.

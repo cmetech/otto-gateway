@@ -265,22 +265,45 @@ function Start-Gateway {
     }
 }
 
-function Stop-Gateway {
-    if (-not (Test-Path $PidFile)) {
-        Write-Error "otto-gateway is not running (no PID file)"
-        exit 1
+# Stop-GatewayByName — fallback when the PID file can't drive the stop (older
+# wrapper wrote it elsewhere, or the gateway was launched in the foreground via
+# 'run'). Matches the binary name (otto-gateway), which never collides with this
+# wrapper (otto-gw). Get-Process is native, so no pgrep/grep dependency here.
+# Returns $true if it killed at least one process, $false if none were found.
+function Stop-GatewayByName {
+    param([string]$Reason)
+    $name = [System.IO.Path]::GetFileNameWithoutExtension($BinPath)
+    $procs = @(Get-Process -Name $name -ErrorAction SilentlyContinue)
+    if ($procs.Count -eq 0) { return $false }
+    Write-Host "otto-gateway: $Reason; stopping running process(es) by name"
+    foreach ($p in $procs) {
+        try { $p.Kill(); $p.WaitForExit(10000) | Out-Null } catch { }
     }
-    $storedPid = [int](Get-Content $PidFile -Raw)
-    $proc = Get-Process -Id $storedPid -ErrorAction SilentlyContinue
-    if (-not $proc) {
-        Write-Host "otto-gateway: stopped (stale PID)"
-        Remove-Item $PidFile -ErrorAction SilentlyContinue
-        exit 0
-    }
-    $proc.Kill()
-    $proc.WaitForExit(10000) | Out-Null  # wait up to 10s for clean exit
-    Remove-Item $PidFile -ErrorAction SilentlyContinue
     Write-Host "otto-gateway stopped"
+    return $true
+}
+
+function Stop-Gateway {
+    if (Test-Path $PidFile) {
+        $storedPid = [int](Get-Content $PidFile -Raw)
+        $proc = Get-Process -Id $storedPid -ErrorAction SilentlyContinue
+        if ($proc) {
+            $proc.Kill()
+            $proc.WaitForExit(10000) | Out-Null  # wait up to 10s for clean exit
+            Remove-Item $PidFile -ErrorAction SilentlyContinue
+            Write-Host "otto-gateway stopped"
+            return
+        }
+        # Stale file: a live instance may still be running without it.
+        Remove-Item $PidFile -ErrorAction SilentlyContinue
+        if (Stop-GatewayByName 'stale PID') { return }
+        Write-Host "otto-gateway: stopped (stale PID)"
+        return
+    }
+    # No PID file at all — try to match the running binary by name.
+    if (Stop-GatewayByName 'no PID file') { return }
+    Write-Error "otto-gateway is not running (no PID file)"
+    exit 1
 }
 
 function Get-GatewayStatus {
@@ -314,7 +337,15 @@ function Get-GatewayStatus {
 }
 
 function Restart-Gateway {
-    Stop-Gateway
+    # Best-effort stop, mirroring the POSIX 'stop || true; start': a gateway
+    # that isn't running is fine — restart should still start it. When there's
+    # no PID file we stop by name directly so Stop-Gateway's fatal no-PID 'exit'
+    # can't abort the restart.
+    if (Test-Path $PidFile) {
+        Stop-Gateway
+    } else {
+        Stop-GatewayByName 'no PID file' | Out-Null
+    }
     Start-Gateway
 }
 
