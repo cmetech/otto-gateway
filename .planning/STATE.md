@@ -106,6 +106,7 @@ None yet.
 | 260528-d84 | Phase 9 close-out: goleak coverage gaps + property tests for buildBlocks/CoerceToolCall + .github/workflows/ci.yml + ROADMAP/REQUIREMENTS housekeeping; v1.5 milestone closed | 2026-05-28 | 91dd162 | [260528-d84-phase-9-closeout-goleak-property-tests-e](./quick/260528-d84-phase-9-closeout-goleak-property-tests-e/) |
 | 260529-f8r | Admin Log Tail panel → 4-column CSS-grid table (Time/Level/Source/Message) with sticky header, level chips, wrapping message cells, dataset.raw grep plumbing, full-width fallback row; pool-slot grid bumped to 4 columns at desktop | 2026-05-29 | 4d8c147 | [260529-f8r-convert-log-tail-panel-to-css-grid-table](./quick/260529-f8r-convert-log-tail-panel-to-css-grid-table/) |
 | 260531-ebi | Surface DEBUG + chat-trace enablement: debug/chat_trace booleans cfg→admin.Deps→snapshot JSON + HTML summary strip; otto-gw status (POSIX + PowerShell) reads /admin/api/snapshot (not D-12-locked /health); BSD-sed portability fix for bool parse | 2026-05-31 | eb639ef | [260531-ebi-surface-debug-and-chat-trace-enablement-](./quick/260531-ebi-surface-debug-and-chat-trace-enablement-/) |
+| 260531-f1i | Align scripts/.env.otto-gw.example with OOB install defaults so it is the golden-copy config reference (active-key set verified identical to `init --non-interactive`); foundation for env-merge-on-upgrade | 2026-05-31 | 645a79a | [260531-f1i-align-env-template-golden-copy](./quick/260531-f1i-align-env-template-golden-copy/) |
 
 ## Deferred Items
 
