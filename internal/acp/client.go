@@ -296,6 +296,12 @@ func New(cfg Config) (*Client, error) {
 		cancel()
 		return nil, fmt.Errorf("acp: stdout pipe: %w", err)
 	}
+	// 260531-ra6 RA6-02: place the kiro-cli child in its own process
+	// group on darwin/linux so exec.CommandContext's SIGKILL-on-ctx-cancel
+	// is delivered to the leader (and, via the leader's pgrp, to any
+	// grandchildren). No-op on Windows. Build-tagged in
+	// pool_pgid_{unix,windows}.go.
+	applyPgidAttr(cmd)
 	if err := cmd.Start(); err != nil {
 		cancel()
 		return nil, fmt.Errorf("acp: start %q: %w", cfg.Command, err)
