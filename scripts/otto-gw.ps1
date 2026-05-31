@@ -281,6 +281,88 @@ function Start-Gateway {
 # 'run'). Matches the binary name (otto-gateway), which never collides with this
 # wrapper (otto-gw). Get-Process is native, so no pgrep/grep dependency here.
 # Returns $true if it killed at least one process, $false if none were found.
+# Repair-KiroOrphans — 260531-ra6 RA6-03 (Windows mirror of bash
+# reap_kiro_orphans). Belt-and-suspenders cleanup for hard-crash paths
+# (segfault, OOM, Stop-Process -Force of the gateway) that bypass the
+# normal subprocess teardown. Called from the tail of Stop-Gateway and
+# Stop-GatewayByName; $script:KiroReapDone keeps it idempotent within
+# a single invocation.
+#
+# Safety: matches strictly against the resolved $env:KIRO_CMD absolute
+# path via Win32_Process.ExecutablePath (with a CommandLine -like
+# secondary check when ExecutablePath is null). Never matches by name
+# substring — a kiro-cli the operator runs OUTSIDE the gateway is
+# untouched. Also refuses to signal our own pid ($PID) or the parent
+# session pid.
+$script:KiroReapDone = $false
+function Repair-KiroOrphans {
+    if ($script:KiroReapDone) { return }
+    $script:KiroReapDone = $true
+
+    # Stop-Gateway does NOT call Initialize-Config; load .env locally so
+    # $env:KIRO_CMD is in scope without changing Stop-Gateway's startup
+    # behaviour. Same defensive pattern as the POSIX side.
+    $envFilePath = Resolve-EnvFile
+    if ($envFilePath) { Import-DotEnv -Path $envFilePath }
+
+    if (-not $env:KIRO_CMD) { return }
+
+    # Resolve $env:KIRO_CMD to an absolute path so the Win32_Process
+    # ExecutablePath comparison is exact. Bare names go through
+    # Get-Command which honors $env:PATH; already-absolute paths fall
+    # through unchanged.
+    $kiroPath = $null
+    $cmdInfo  = Get-Command $env:KIRO_CMD -ErrorAction SilentlyContinue
+    if ($cmdInfo -and $cmdInfo.Source) { $kiroPath = $cmdInfo.Source }
+    if (-not $kiroPath) { $kiroPath = $env:KIRO_CMD }
+
+    # 2s grace for any pending teardown signals to deliver and exit
+    # children cleanly before we start swinging.
+    Start-Sleep -Seconds 2
+
+    # Primary match: ExecutablePath -ieq $kiroPath (case-insensitive
+    # equality; Windows file paths are case-insensitive). Secondary
+    # match: ExecutablePath -eq $null with CommandLine -like the
+    # resolved path (some kernel-mode processes hide ExecutablePath).
+    $procsPrimary = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue `
+        | Where-Object { $_.ExecutablePath -and ($_.ExecutablePath -ieq $kiroPath) })
+    $procsFallback = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue `
+        | Where-Object { (-not $_.ExecutablePath) -and $_.CommandLine -and ($_.CommandLine -like "*$kiroPath*") })
+
+    # Union + de-dupe by ProcessId.
+    $byPid = @{}
+    foreach ($p in $procsPrimary)  { if ($p) { $byPid[[int]$p.ProcessId] = $p } }
+    foreach ($p in $procsFallback) { if ($p) { $byPid[[int]$p.ProcessId] = $p } }
+
+    # Refuse to signal our own pid or session ancestors (best-effort:
+    # $PID is the wrapper; the parent shell's pid would be a deeper
+    # caller — out of scope for the lightweight ancestry check).
+    $ourPid = $PID
+    $procs  = @($byPid.Values | Where-Object { [int]$_.ProcessId -ne $ourPid })
+
+    if ($procs.Count -eq 0) { return }
+
+    $pidList = ($procs | ForEach-Object { $_.ProcessId }) -join ' '
+    Write-Host "otto-gw: reaping stray kiro-cli orphans: $pidList"
+
+    # SIGTERM-equivalent: Stop-Process without -Force (cooperative).
+    foreach ($p in $procs) {
+        try { Stop-Process -Id ([int]$p.ProcessId) -ErrorAction SilentlyContinue } catch { }
+    }
+    Start-Sleep -Seconds 2
+
+    # Re-scan; force-kill any survivors.
+    $survivors = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue `
+        | Where-Object {
+            ($_.ExecutablePath -and ($_.ExecutablePath -ieq $kiroPath)) -or `
+            ((-not $_.ExecutablePath) -and $_.CommandLine -and ($_.CommandLine -like "*$kiroPath*"))
+        } | Where-Object { [int]$_.ProcessId -ne $ourPid })
+    foreach ($s in $survivors) {
+        try { Stop-Process -Id ([int]$s.ProcessId) -Force -ErrorAction SilentlyContinue } catch { }
+    }
+    Write-Host "otto-gw: kiro-cli orphans reaped"
+}
+
 function Stop-GatewayByName {
     param([string]$Reason)
     $name = [System.IO.Path]::GetFileNameWithoutExtension($BinPath)
@@ -291,6 +373,7 @@ function Stop-GatewayByName {
         try { $p.Kill(); $p.WaitForExit(10000) | Out-Null } catch { }
     }
     Write-Host "otto-gateway stopped"
+    Repair-KiroOrphans
     return $true
 }
 
@@ -303,12 +386,14 @@ function Stop-Gateway {
             $proc.WaitForExit(10000) | Out-Null  # wait up to 10s for clean exit
             Remove-Item $PidFile -ErrorAction SilentlyContinue
             Write-Host "otto-gateway stopped"
+            Repair-KiroOrphans
             return
         }
         # Stale file: a live instance may still be running without it.
         Remove-Item $PidFile -ErrorAction SilentlyContinue
         if (Stop-GatewayByName 'stale PID') { return }
         Write-Host "otto-gateway: stopped (stale PID)"
+        Repair-KiroOrphans
         return
     }
     # No PID file at all — try to match the running binary by name.
@@ -750,7 +835,7 @@ Usage: .\scripts\otto-gw.ps1 <command> [flags]
 
 Commands:
   start [flags]       Start gateway in background
-  stop                Stop background gateway
+  stop                Stop background gateway (also reaps any stray $env:KIRO_CMD subprocesses)
   status              Show gateway status and health
   restart [flags]     Stop then start (re-applies flags / .env)
   logs                Tail both stdout and stderr log files

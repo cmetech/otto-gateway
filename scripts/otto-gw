@@ -405,6 +405,101 @@ gateway_pids() {
     fi
 }
 
+# _reap_kiro_done is the one-shot guard so reap_kiro_orphans() only runs
+# its env-load + ps-scan once per `otto-gw` invocation. stop() calls into
+# stop_by_name() on stale-PID fallback, and both invoke reap_kiro_orphans
+# at their tail — without this guard the operator would see the scan
+# attempted twice on the same invocation.
+_reap_kiro_done=""
+
+# reap_kiro_orphans — 260531-ra6 RA6-03. Belt-and-suspenders cleanup for
+# hard-crash paths (segfault, OOM, SIGKILL of the gateway) where the
+# Task 2 process-group cascade cannot help. Called from the tail of
+# stop() and stop_by_name(); the _reap_kiro_done sentinel keeps it
+# idempotent within a single wrapper invocation.
+#
+# Safety: matches strictly against the resolved $KIRO_CMD absolute path
+# (never the bare "kiro" or "kiro-cli" basename), so a kiro-cli the
+# operator runs OUTSIDE the gateway is untouched. Also refuses to
+# signal our own pid or any ancestor pid (best-effort: $$ + $PPID).
+reap_kiro_orphans() {
+    [[ -n "$_reap_kiro_done" ]] && return 0
+    _reap_kiro_done=1
+
+    # stop() does not invoke load_config (start() does); load .env locally
+    # so $KIRO_CMD is in scope without changing stop()'s startup behaviour.
+    local env_file
+    env_file="$(resolve_env_file)"
+    [[ -n "$env_file" ]] && load_env_file "$env_file"
+
+    # No KIRO_CMD configured ⇒ nothing to reap. Silent return.
+    [[ -n "${KIRO_CMD:-}" ]] || return 0
+
+    # Resolve to absolute path so the ps command-field match is exact.
+    # Operators commonly set KIRO_CMD to a bare name ("kiro-cli") and rely
+    # on PATH resolution — the running subprocess's argv[0] will be the
+    # absolute path the OS resolved. `command -v` resolves bare names;
+    # for an already-absolute KIRO_CMD it echoes the same value.
+    local kiro_path
+    kiro_path="$(command -v "$KIRO_CMD" 2>/dev/null || true)"
+    [[ -n "$kiro_path" ]] || kiro_path="$KIRO_CMD"
+
+    # 2s grace for any SIGTERM that already went out (Task 2 pgrp cascade,
+    # the gateway's own shutdown, etc.) to deliver and exit children
+    # cleanly before we start swinging signals around.
+    sleep 2
+
+    # Scan ps for processes whose command field EXACTLY equals $kiro_path.
+    # `ps -eo pid,command` is supported on both BSD (macOS) and GNU (Linux);
+    # awk's $2 == cmd matches the command field exactly (basename or full
+    # path, whichever the OS recorded). NEVER substring-match — we MUST
+    # NOT kill kiro-cli processes the operator is running outside the
+    # gateway (T-ra6-01).
+    local pids self ancestors fp
+    pids="$(ps -eo pid,command 2>/dev/null \
+        | awk -v cmd="$kiro_path" '$2 == cmd {print $1}')"
+
+    [[ -n "$pids" ]] || return 0
+
+    # Sanity: never signal our own shell pid or its parent. Trim and
+    # filter. (We don't walk the full ancestor chain — $$ and $PPID
+    # cover the realistic risk; a kiro-cli pid colliding with a deeper
+    # ancestor would require KIRO_CMD itself to be the parent shell,
+    # which is nonsensical.)
+    self="$$"
+    ancestors=" $self $PPID "
+    local filtered=""
+    for fp in $pids; do
+        if [[ " $ancestors " == *" $fp "* ]]; then
+            continue
+        fi
+        filtered="${filtered:+$filtered }$fp"
+    done
+    pids="$filtered"
+    [[ -n "$pids" ]] || return 0
+
+    echo "otto-gw: reaping stray kiro-cli orphans: $pids"
+    for fp in $pids; do
+        kill "$fp" 2>/dev/null || true
+    done
+    sleep 2
+
+    # Re-scan; SIGKILL any survivors.
+    local survivors=""
+    survivors="$(ps -eo pid,command 2>/dev/null \
+        | awk -v cmd="$kiro_path" '$2 == cmd {print $1}')"
+    if [[ -n "$survivors" ]]; then
+        local sf
+        for sf in $survivors; do
+            if [[ " $ancestors " == *" $sf "* ]]; then
+                continue
+            fi
+            kill -KILL "$sf" 2>/dev/null || true
+        done
+    fi
+    echo "otto-gw: kiro-cli orphans reaped"
+}
+
 # stop_by_name REASON — fallback when the PID file can't drive the stop (older
 # wrapper wrote it elsewhere, or the gateway was launched in the foreground via
 # 'run'). Returns 0 if it signalled at least one process, 1 if none were found.
@@ -418,6 +513,7 @@ stop_by_name() {
         _wait_for_exit "$fp"
     done
     echo "otto-gateway stopped"
+    reap_kiro_orphans
     return 0
 }
 
@@ -432,12 +528,14 @@ stop() {
             _wait_for_exit "$pid"
             rm -f "$OTTO_PID"
             echo "otto-gateway stopped"
+            reap_kiro_orphans
             return 0
         fi
         # Stale file: a live instance may still be running without it.
         rm -f "$OTTO_PID"
         stop_by_name "stale PID" && return 0
         echo "otto-gateway: stopped (stale PID)"
+        reap_kiro_orphans
         return 0
     fi
     # No PID file at all — try to match the running binary by name.
@@ -895,7 +993,7 @@ Commands:
   init [flags]        First-run setup — generates AUTH_TOKEN + PII_HASH_KEY,
                       prompts for KIRO_CMD + HTTP_ADDR, writes a .env file.
   start [flags]       Start gateway in background (waits for /health)
-  stop                Stop background gateway
+  stop                Stop background gateway (also reaps any stray $KIRO_CMD subprocesses)
   status              Show gateway status and health
   restart [flags]     Stop then start (re-applies flags / .env)
   logs [-f]           Tail gateway log (optional -f to follow)
