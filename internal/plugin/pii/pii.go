@@ -36,7 +36,7 @@
 // constructed each invocation and discarded on return. The same value
 // in the same request shares a counter slot (preserving intra-prompt
 // referential identity per RESEARCH Pitfall 4: 'corey@x.com' appearing
-// twice → both render as '<EMAIL_1>'); a different value in the same
+// twice → both render as '[EMAIL_1]'); a different value in the same
 // request gets the next number; a new request resets the counter.
 //
 // T-8-PII discipline (in-place, no copies): req is mutated via index

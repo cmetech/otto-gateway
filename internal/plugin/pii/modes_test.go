@@ -1,7 +1,7 @@
 // Phase 8 Plan 08-04 Task 1 — Wave 0 scaffold for pii.ApplyMode (D-05).
 //
 // Tests exercise the four redaction modes:
-//   - replace → "<ENTITY>" or counter-suffixed "<ENTITY_N>"
+//   - replace → "[ENTITY]" or counter-suffixed "[ENTITY_N]"
 //   - mask    → partial obfuscation (docs/algorithm in modes.go)
 //   - hash    → HMAC-SHA256 of canonical(value) keyed by PII_HASH_KEY,
 //               truncated to 8 hex chars (D-05 + T-8-HASH mitigation)
@@ -26,17 +26,17 @@ import (
 var testHashKey = []byte("test-key-32-bytes-padding-here!!")
 
 // TestApplyMode_Replace asserts the replace mode shape. When counter
-// is 0, the token is "<ENTITY>"; when counter > 0, the token is
-// "<ENTITY_N>" (counter-suffix path).
+// is 0, the token is "[ENTITY]"; when counter > 0, the token is
+// "[ENTITY_N]" (counter-suffix path).
 func TestApplyMode_Replace(t *testing.T) {
-	if got := ApplyMode("replace", "Email", "corey@cmetech.io", 0, nil); got != "<EMAIL>" {
-		t.Errorf("replace counter=0: got %q, want %q", got, "<EMAIL>")
+	if got := ApplyMode("replace", "Email", "corey@cmetech.io", 0, nil); got != "[EMAIL]" {
+		t.Errorf("replace counter=0: got %q, want %q", got, "[EMAIL]")
 	}
-	if got := ApplyMode("replace", "Email", "corey@cmetech.io", 1, nil); got != "<EMAIL_1>" {
-		t.Errorf("replace counter=1: got %q, want %q", got, "<EMAIL_1>")
+	if got := ApplyMode("replace", "Email", "corey@cmetech.io", 1, nil); got != "[EMAIL_1]" {
+		t.Errorf("replace counter=1: got %q, want %q", got, "[EMAIL_1]")
 	}
-	if got := ApplyMode("replace", "Email", "corey@cmetech.io", 7, nil); got != "<EMAIL_7>" {
-		t.Errorf("replace counter=7: got %q, want %q", got, "<EMAIL_7>")
+	if got := ApplyMode("replace", "Email", "corey@cmetech.io", 7, nil); got != "[EMAIL_7]" {
+		t.Errorf("replace counter=7: got %q, want %q", got, "[EMAIL_7]")
 	}
 }
 
@@ -66,7 +66,7 @@ func TestApplyMode_Mask(t *testing.T) {
 func TestApplyMode_Hash_HMAC_SHA256_NotRawSHA256(t *testing.T) {
 	value := "corey@cmetech.io"
 	tag := ApplyMode("hash", "Email", value, 0, testHashKey)
-	wantTag := "<EMAIL:h-5e114e4d>"
+	wantTag := "[EMAIL:h-5e114e4d]"
 	if tag != wantTag {
 		t.Errorf("hash tag: got %q, want %q (HMAC-SHA256 oracle)", tag, wantTag)
 	}
@@ -93,12 +93,12 @@ func TestApplyMode_Hash_CanonicalForm(t *testing.T) {
 }
 
 // TestApplyMode_Hash_TagLength asserts the 8-hex-char default tag size
-// (D-05). The output shape is "<ENTITY:h-XXXXXXXX>".
+// (D-05). The output shape is "[ENTITY:h-XXXXXXXX]".
 func TestApplyMode_Hash_TagLength(t *testing.T) {
 	tag := ApplyMode("hash", "Email", "corey@cmetech.io", 0, testHashKey)
-	re := regexp.MustCompile(`^<EMAIL:h-[0-9a-f]{8}>$`)
+	re := regexp.MustCompile(`^\[EMAIL:h-[0-9a-f]{8}\]$`)
 	if !re.MatchString(tag) {
-		t.Errorf("hash tag shape: got %q, want <EMAIL:h-XXXXXXXX> (8 hex)", tag)
+		t.Errorf("hash tag shape: got %q, want [EMAIL:h-XXXXXXXX] (8 hex)", tag)
 	}
 }
 
@@ -135,11 +135,11 @@ func TestApplyMode_Drop(t *testing.T) {
 // implementation MUST NOT panic.
 func TestApplyMode_UnknownMode_FallsBackToReplace(t *testing.T) {
 	got := ApplyMode("bogus", "Email", "x@x.com", 0, nil)
-	if got != "<EMAIL>" {
-		t.Errorf("unknown mode: got %q, want %q (replace fallback)", got, "<EMAIL>")
+	if got != "[EMAIL]" {
+		t.Errorf("unknown mode: got %q, want %q (replace fallback)", got, "[EMAIL]")
 	}
 	gotCounter := ApplyMode("bogus", "Email", "x@x.com", 3, nil)
-	if gotCounter != "<EMAIL_3>" {
-		t.Errorf("unknown mode w/ counter: got %q, want %q", gotCounter, "<EMAIL_3>")
+	if gotCounter != "[EMAIL_3]" {
+		t.Errorf("unknown mode w/ counter: got %q, want %q", gotCounter, "[EMAIL_3]")
 	}
 }
