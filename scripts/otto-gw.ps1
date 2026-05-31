@@ -31,6 +31,7 @@ param(
     [string]$Entities,
     [string]$Hooks,
     [string]$Auth,
+    [switch]$Trace,
     [string]$EnvFile,
     [switch]$ShowSecrets,
     [switch]$Follow,
@@ -135,6 +136,10 @@ function Apply-CliFlags {
     if ($Hooks)    { $env:ENABLED_HOOKS        = $Hooks }
     if ($Auth)     { $env:AUTH_TOKEN           = $Auth }
     if ($DebugRequested) { $env:DEBUG          = 'true' }
+    # -Trace implies -Debug plus chat-trace: one switch for full observability.
+    # config.Load auto-prepends ChatTraceHook to ENABLED_HOOKS at runtime when
+    # CHAT_TRACE=true, so the wrapper only needs to set the two env vars.
+    if ($Trace) { $env:DEBUG = 'true'; $env:CHAT_TRACE = 'true' }
 }
 
 function Initialize-Config {
@@ -760,6 +765,7 @@ Gateway config flags (for start | restart | run | env):
   -Hooks LIST         ENABLED_HOOKS allowlist (comma list, empty = all)
   -Auth TOKEN         AUTH_TOKEN
   -Debug              DEBUG=true (debug-level logging) for start | restart | run
+  -Trace              DEBUG=true + CHAT_TRACE=true (debug + chat-trace NDJSON) for start | restart | run
   -EnvFile PATH       Override the default .env search
 
 init flags (for the 'init' subcommand):
