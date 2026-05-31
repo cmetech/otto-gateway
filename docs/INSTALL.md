@@ -13,6 +13,7 @@ If you only ever run on one OS and your machine is unsurprising, the quickstart 
 
 ## Table of contents
 
+- [Quick install (one-liner)](#quick-install-one-liner)
 - [First-run checklist: macOS](#first-run-checklist-macos)
 - [First-run checklist: Linux](#first-run-checklist-linux)
 - [First-run checklist: Windows](#first-run-checklist-windows)
@@ -26,6 +27,37 @@ If you only ever run on one OS and your machine is unsurprising, the quickstart 
 - [Common install pitfalls](#common-install-pitfalls)
 - [Verifying install](#verifying-install)
 - [Where to go next](#where-to-go-next)
+
+---
+
+## Quick install (one-liner)
+
+The fastest path on a machine with internet access. It performs the same steps
+the per-OS checklists below do manually — download, checksum-verify, extract,
+platform-unlock, first-run `init`, PATH-expose — in one command.
+
+**macOS / Linux:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/cmetech/otto-gateway/main/scripts/install.sh | sh
+```
+
+**Windows (PowerShell):**
+
+```powershell
+irm https://raw.githubusercontent.com/cmetech/otto-gateway/main/scripts/install.ps1 | iex
+```
+
+Environment overrides: `OTTO_HOME` (install dir, default `~/.otto-gw` /
+`%USERPROFILE%\.otto-gw`), `OTTO_VERSION` (release tag, default latest).
+
+Re-running the command upgrades in place and preserves your `.env`. The Windows
+installer also sets `CurrentUser` execution policy to `RemoteSigned` and unblocks
+Mark-of-the-Web, and exposes `otto-gw` via the cmd dispatcher (`otto-gw.bat`) so it
+works under any execution policy — `setup.bat` is not needed on the one-liner path.
+
+Prefer the manual archive install (full control, air-gapped, or scripted fleet
+rollout)? Use the per-OS checklists below.
 
 ---
 
@@ -421,6 +453,9 @@ cd /path/to/otto_gateway
 cd ..
 rm -rf otto_gateway/
 
+# 2b. Remove the PATH symlink created by the one-liner installer (skip if you installed manually).
+rm -f ~/.local/bin/otto-gw
+
 # 3. Delete the per-user .env file (skip if you want to keep your config).
 rm -f ~/.otto-gw.env
 ```
@@ -437,6 +472,13 @@ cd C:\Users\<you>\software\otto_gateway
 # 2. Delete the extracted install folder.
 cd ..
 Remove-Item -Recurse -Force .\otto_gateway
+
+# 2b. Remove the scripts dir from your user PATH (one-liner installs only).
+#     Settings > Environment Variables > User > Path > remove the ...\.otto-gw\scripts entry,
+#     or in PowerShell:
+$p = [Environment]::GetEnvironmentVariable('Path','User')
+$keep = ($p -split ';' | Where-Object { $_ -and $_ -notlike '*\.otto-gw\scripts' }) -join ';'
+[Environment]::SetEnvironmentVariable('Path', $keep, 'User')
 
 # 3. Delete the per-user .env file (skip if you want to keep your config).
 Remove-Item -Force "$env:USERPROFILE\.otto-gw.env"

@@ -98,6 +98,31 @@ Layer invariants enforced by the trust-gate config (see brief §3.8):
 
 ## Running
 
+### Quick install (recommended)
+
+**macOS / Linux:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/cmetech/otto-gateway/main/scripts/install.sh | sh
+```
+
+**Windows (PowerShell):**
+
+```powershell
+irm https://raw.githubusercontent.com/cmetech/otto-gateway/main/scripts/install.ps1 | iex
+```
+
+This downloads the latest release, verifies its checksum, installs to `~/.otto-gw`
+(override with `OTTO_HOME`), writes a default config (no auth, `127.0.0.1:18080`,
+all hooks, chat-trace off), and puts `otto-gw` on your PATH. Pin a version with
+`OTTO_VERSION=v1.5.5`. Install `kiro-cli` separately — the gateway returns 503 on
+chat requests without it. See [`docs/INSTALL.md`](docs/INSTALL.md) for the manual
+archive install and per-OS detail.
+
+---
+
+### From source (developers)
+
 Build the binary first, then use the platform wrapper script:
 
 **macOS / Linux:**
