@@ -111,8 +111,8 @@ func TestPIIRedactionHook_EnabledMutatesContentParts(t *testing.T) {
 	if strings.Contains(got, "corey@cmetech.io") {
 		t.Errorf("expected raw email removed; got %q", got)
 	}
-	if !strings.Contains(got, "<EMAIL") {
-		t.Errorf("expected <EMAIL token present; got %q", got)
+	if !strings.Contains(got, "[EMAIL") {
+		t.Errorf("expected [EMAIL token present; got %q", got)
 	}
 }
 
@@ -129,8 +129,8 @@ func TestPIIRedactionHook_LegacyMessageContent_Walked(t *testing.T) {
 		t.Fatalf("Before: %v", err)
 	}
 	got := req.Messages[0].Content[0].Text
-	if !strings.Contains(got, "<CREDITCARD") {
-		t.Errorf("expected <CREDITCARD token in %q", got)
+	if !strings.Contains(got, "[CREDITCARD") {
+		t.Errorf("expected [CREDITCARD token in %q", got)
 	}
 }
 
@@ -171,8 +171,8 @@ func TestPIIRedactionHook_ToolUseInputRecursed(t *testing.T) {
 	}
 	// String leaf "to" redacted.
 	toStr, _ := got["to"].(string)
-	if strings.Contains(toStr, "corey@cmetech.io") || !strings.Contains(toStr, "<EMAIL") {
-		t.Errorf("ToolUse.Input.to: got %q, want <EMAIL token", toStr)
+	if strings.Contains(toStr, "corey@cmetech.io") || !strings.Contains(toStr, "[EMAIL") {
+		t.Errorf("ToolUse.Input.to: got %q, want [EMAIL token", toStr)
 	}
 	// String leaf inside cc slice redacted.
 	ccSlice, _ := got["cc"].([]any)
@@ -180,8 +180,8 @@ func TestPIIRedactionHook_ToolUseInputRecursed(t *testing.T) {
 		t.Fatalf("ToolUse.Input.cc: expected len 1, got %v", ccSlice)
 	}
 	ccStr, _ := ccSlice[0].(string)
-	if strings.Contains(ccStr, "sam@x.com") || !strings.Contains(ccStr, "<EMAIL") {
-		t.Errorf("ToolUse.Input.cc[0]: got %q, want <EMAIL token", ccStr)
+	if strings.Contains(ccStr, "sam@x.com") || !strings.Contains(ccStr, "[EMAIL") {
+		t.Errorf("ToolUse.Input.cc[0]: got %q, want [EMAIL token", ccStr)
 	}
 	// Non-string leaf unchanged.
 	if got["priority"] != float64(1) {
@@ -213,8 +213,8 @@ func TestPIIRedactionHook_ToolResultContentRecursed(t *testing.T) {
 	if strings.Contains(got, "corey@cmetech.io") {
 		t.Errorf("ToolResult.Content: raw email leaked: %q", got)
 	}
-	if !strings.Contains(got, "<EMAIL") {
-		t.Errorf("ToolResult.Content: expected <EMAIL token: %q", got)
+	if !strings.Contains(got, "[EMAIL") {
+		t.Errorf("ToolResult.Content: expected [EMAIL token: %q", got)
 	}
 }
 
@@ -233,8 +233,8 @@ func TestPIIRedactionHook_ChatRequestSystem_Walked(t *testing.T) {
 	if strings.Contains(req.System, "corey@cmetech.io") {
 		t.Errorf("System: raw email leaked: %q", req.System)
 	}
-	if !strings.Contains(req.System, "<EMAIL") {
-		t.Errorf("System: expected <EMAIL token: %q", req.System)
+	if !strings.Contains(req.System, "[EMAIL") {
+		t.Errorf("System: expected [EMAIL token: %q", req.System)
 	}
 }
 
@@ -244,7 +244,7 @@ func TestPIIRedactionHook_ChatRequestSystem_Walked(t *testing.T) {
 func TestPIIRedactionHook_CounterScope_PerRequest(t *testing.T) {
 	hook := freshHook("replace")
 	// Request A: same email twice → both should share the same token
-	// (the planner spec is ambiguous on the exact shape: "<EMAIL_1>"
+	// (the planner spec is ambiguous on the exact shape: "[EMAIL_1]"
 	// for both is the intra-request referential-identity property —
 	// per RESEARCH Pitfall 4. Counter-suffix is active on FIRST match,
 	// so subsequent identical values reuse the counter.)
@@ -260,15 +260,15 @@ func TestPIIRedactionHook_CounterScope_PerRequest(t *testing.T) {
 	}
 	got1 := reqA.Messages[0].Content[0].Text
 	got2 := reqA.Messages[1].Content[0].Text
-	if !strings.Contains(got1, "<EMAIL_1>") {
-		t.Errorf("intra-request first match: got %q, want <EMAIL_1>", got1)
+	if !strings.Contains(got1, "[EMAIL_1]") {
+		t.Errorf("intra-request first match: got %q, want [EMAIL_1]", got1)
 	}
 	// Same value the second time → same canonical-token (per Pitfall 4
 	// "preserves intra-prompt referential identity"). The simplest
 	// canonical implementation reuses the first counter for an
 	// identical canonical value within one request.
-	if !strings.Contains(got2, "<EMAIL_1>") {
-		t.Errorf("intra-request second identical match: got %q, want <EMAIL_1> (referential identity)", got2)
+	if !strings.Contains(got2, "[EMAIL_1]") {
+		t.Errorf("intra-request second identical match: got %q, want [EMAIL_1] (referential identity)", got2)
 	}
 
 	// Request B: fresh ctx + fresh request → counter MUST reset.
@@ -280,8 +280,8 @@ func TestPIIRedactionHook_CounterScope_PerRequest(t *testing.T) {
 		t.Fatalf("Before B: %v", err)
 	}
 	gotB := reqB.Messages[0].Content[0].Text
-	if !strings.Contains(gotB, "<EMAIL_1>") {
-		t.Errorf("cross-request counter reset: got %q, want <EMAIL_1> (counter must reset)", gotB)
+	if !strings.Contains(gotB, "[EMAIL_1]") {
+		t.Errorf("cross-request counter reset: got %q, want [EMAIL_1] (counter must reset)", gotB)
 	}
 }
 

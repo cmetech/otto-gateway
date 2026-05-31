@@ -1,9 +1,9 @@
 // Phase 8 PLUG-06 D-05 — redaction mode dispatch. Four modes:
 //
-//	replace : "<ENTITY>" or counter-suffixed "<ENTITY_N>" when counter > 0.
+//	replace : "[ENTITY]" or counter-suffixed "[ENTITY_N]" when counter > 0.
 //	mask    : partial obfuscation (algorithm documented on maskValue below).
 //	hash    : HMAC-SHA256 of canonical(value) keyed by PII_HASH_KEY,
-//	          truncated to 8 hex chars. Output shape "<ENTITY:h-XXXXXXXX>".
+//	          truncated to 8 hex chars. Output shape "[ENTITY:h-XXXXXXXX]".
 //	drop    : empty string.
 //
 // HMAC NOT raw SHA256 — RESEARCH §Don't-Hand-Roll table + Pitfall 6
@@ -128,7 +128,7 @@ func maskPrefix(s string, n int) string {
 // ApplyMode dispatches on mode and returns the redacted token for a
 // single recognizer match. Counter is the per-request occurrence
 // number for this entity (1, 2, 3, ...); a counter of 0 emits the
-// non-suffixed "<ENTITY>" form.
+// non-suffixed "[ENTITY]" form.
 //
 // Unknown modes log a warning and fall back to "replace" — defense in
 // depth against a slice-5 config validation regression that might let
@@ -138,13 +138,13 @@ func ApplyMode(mode, entity, value string, counter int, hashKey []byte) string {
 	switch mode {
 	case "replace":
 		if counter > 0 {
-			return fmt.Sprintf("<%s_%d>", entUpper, counter)
+			return fmt.Sprintf("[%s_%d]", entUpper, counter)
 		}
-		return fmt.Sprintf("<%s>", entUpper)
+		return fmt.Sprintf("[%s]", entUpper)
 	case "mask":
 		return maskValue(value)
 	case "hash":
-		return fmt.Sprintf("<%s:h-%s>", entUpper, hashTag(hashKey, value))
+		return fmt.Sprintf("[%s:h-%s]", entUpper, hashTag(hashKey, value))
 	case "drop":
 		return ""
 	default:
