@@ -21,6 +21,8 @@ type AdminSnapshot struct {
 	Status        string         `json:"status"`
 	Version       string         `json:"version"`
 	Commit        string         `json:"commit"`
+	Debug         bool           `json:"debug"`
+	ChatTrace     bool           `json:"chat_trace"`
 	UptimeSeconds float64        `json:"uptime_seconds"`
 	GeneratedAt   time.Time      `json:"generated_at"`
 	Pool          SnapshotPool   `json:"pool"`
@@ -65,6 +67,8 @@ type SnapshotSess struct {
 //	  "status": "ok"|"degraded"|"down",
 //	  "version": "...",
 //	  "commit": "...",
+//	  "debug": true|false,
+//	  "chat_trace": true|false,
 //	  "uptime_seconds": 123.4,
 //	  "generated_at": "2026-05-27T19:00:00Z",
 //	  "pool": {"size": N, "alive": A, "busy": B, "slots": [...]},
@@ -81,6 +85,8 @@ func (h *handler) snapshotHandler(w http.ResponseWriter, r *http.Request) {
 	snap := AdminSnapshot{
 		Version:       h.deps.Version,
 		Commit:        h.deps.Commit,
+		Debug:         h.deps.Debug,
+		ChatTrace:     h.deps.ChatTrace,
 		UptimeSeconds: time.Since(h.deps.Start).Seconds(),
 		GeneratedAt:   time.Now().UTC(),
 	}

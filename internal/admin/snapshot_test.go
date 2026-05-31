@@ -36,6 +36,8 @@ func TestAdmin_SnapshotHandler(t *testing.T) {
 				{ID: "sess-abc", Alive: true, Busy: true, LastUsed: time.Now(), Model: &model},
 			},
 		},
+		Debug:     true,
+		ChatTrace: true,
 	}
 	h := Handler(deps)
 
@@ -102,6 +104,15 @@ func TestAdmin_SnapshotHandler(t *testing.T) {
 	if len(snap.Sessions) != 1 {
 		t.Errorf("sessions: want 1 session, got %d", len(snap.Sessions))
 	}
+
+	// Feature-flag assertions (quick 260531-ebi): debug + chat_trace mirror
+	// Deps.Debug / Deps.ChatTrace, both set true above.
+	if !snap.Debug {
+		t.Errorf("debug: want true, got %v", snap.Debug)
+	}
+	if !snap.ChatTrace {
+		t.Errorf("chat_trace: want true, got %v", snap.ChatTrace)
+	}
 }
 
 // TestAdmin_SnapshotNilSafe verifies that the handler constructed with nil
@@ -148,6 +159,15 @@ func TestAdmin_SnapshotNilSafe(t *testing.T) {
 	}
 	if snap.Status != "down" {
 		t.Errorf("status with nil pool: want 'down', got %q", snap.Status)
+	}
+
+	// Feature flags default to false when Deps leaves them unset — proving the
+	// zero-value default (no regression for callers that don't set them).
+	if snap.Debug {
+		t.Errorf("debug: want false (zero-value), got %v", snap.Debug)
+	}
+	if snap.ChatTrace {
+		t.Errorf("chat_trace: want false (zero-value), got %v", snap.ChatTrace)
 	}
 }
 

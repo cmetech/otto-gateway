@@ -570,6 +570,8 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 		Registry:     adminRegistry,
 		LogPaths:     logPaths,
 		LogPathOrder: logPathOrder,
+		Debug:        cfg.Debug,
+		ChatTrace:    cfg.ChatTrace,
 	})
 
 	// Boot log surfaces the resolved surface set so operators see
