@@ -474,14 +474,24 @@ function Invoke-Init {
     if (-not $addrValue) { $addrValue = "127.0.0.1:18080" }
 
     # Resolve PII mode -- flag > existing > prompt > "off".
+    # Two-knob model: a disabled file is "off" regardless of the stored mode,
+    # so re-init preserves "off" instead of resurrecting the placeholder mode
+    # we write when disabled.
+    $existingPiiMode = $null
+    if ($existing.ContainsKey('PII_REDACTION_MODE') -and $existing['PII_REDACTION_MODE']) {
+        $existingPiiMode = $existing['PII_REDACTION_MODE']
+    }
+    if ($existing.ContainsKey('PII_REDACTION_ENABLED') -and $existing['PII_REDACTION_ENABLED'] -match '^(false|FALSE|False|0)$') {
+        $existingPiiMode = 'off'
+    }
     $piiValue = $Pii
     if (-not $piiValue) {
-        if ($existing.ContainsKey('PII_REDACTION_MODE') -and $existing['PII_REDACTION_MODE']) {
+        if ($existingPiiMode) {
             if ($NonInteractive) {
-                $piiValue = $existing['PII_REDACTION_MODE']
+                $piiValue = $existingPiiMode
             } else {
-                $entered  = Read-Host "  PII mode [$($existing['PII_REDACTION_MODE'])]"
-                $piiValue = if ($entered) { $entered } else { $existing['PII_REDACTION_MODE'] }
+                $entered  = Read-Host "  PII mode [$existingPiiMode]"
+                $piiValue = if ($entered) { $entered } else { $existingPiiMode }
             }
         } elseif (-not $NonInteractive) {
             Write-Host "  PII redaction -- off | replace | mask | hash | drop."
@@ -492,6 +502,11 @@ function Invoke-Init {
     }
     if (-not $piiValue) { $piiValue = "off" }
     $piiEnabled = if ($piiValue -eq "off") { "false" } else { "true" }
+    # PII_REDACTION_MODE must be a valid mode (replace|mask|hash|drop) even when
+    # redaction is disabled -- config.Load validates it unconditionally. "off"
+    # is expressed via PII_REDACTION_ENABLED=false, so write a harmless valid
+    # placeholder for the mode when off.
+    $piiModeValue = if ($piiValue -eq "off") { "replace" } else { $piiValue }
 
     # Resolve AUTH state -- flag > existing-file state (uncommented = on) > prompt > off.
     $authOn = $AuthEnabled.IsPresent -or ($AuthToken -ne $null -and $AuthToken -ne "")
@@ -561,7 +576,7 @@ HTTP_ADDR=$addrValue
 ENABLED_HOOKS=$enabledHooksValue
 
 PII_REDACTION_ENABLED=$piiEnabled
-PII_REDACTION_MODE=$piiValue
+PII_REDACTION_MODE=$piiModeValue
 
 # HMAC-SHA256 key for hash mode. Pre-generated for you; rotate to break
 # attacker log correlation if you suspect a key leak.

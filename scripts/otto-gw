@@ -508,7 +508,7 @@ init_cmd() {
     # `init --force` to e.g. flip PII mode.
     local reinit=0
     local existing_kiro="" existing_addr="" existing_pii_mode=""
-    local existing_auth_token="" existing_hash_key=""
+    local existing_auth_token="" existing_hash_key="" existing_pii_enabled=""
     local existing_auth_enabled="" existing_chat_trace=""
     if [[ "$force" -eq 1 && -e "$dest" ]]; then
         if [[ ! -r "$dest" ]]; then
@@ -519,6 +519,13 @@ init_cmd() {
         existing_kiro="$(extract_env_any "$dest" KIRO_CMD 2>/dev/null || true)"
         existing_addr="$(extract_env_any "$dest" HTTP_ADDR 2>/dev/null || true)"
         existing_pii_mode="$(extract_env_any "$dest" PII_REDACTION_MODE 2>/dev/null || true)"
+        existing_pii_enabled="$(extract_env_any "$dest" PII_REDACTION_ENABLED 2>/dev/null || true)"
+        # Two-knob model: a disabled file is "off" regardless of the stored
+        # mode, so re-init preserves "off" instead of resurrecting the
+        # placeholder mode we write when disabled.
+        case "$existing_pii_enabled" in
+            false|FALSE|False|0) existing_pii_mode="off" ;;
+        esac
         existing_auth_token="$(extract_env_any "$dest" AUTH_TOKEN 2>/dev/null || true)"
         existing_hash_key="$(extract_env_any "$dest" PII_HASH_KEY 2>/dev/null || true)"
         if env_is_uncommented "$dest" AUTH_TOKEN; then
@@ -626,6 +633,12 @@ init_cmd() {
 
     local pii_enabled="false"
     [[ "$pii_mode" != "off" ]] && pii_enabled="true"
+    # PII_REDACTION_MODE must be a valid mode (replace|mask|hash|drop) even when
+    # redaction is disabled — config.Load validates it unconditionally. "off"
+    # is expressed via PII_REDACTION_ENABLED=false, so write a harmless valid
+    # placeholder for the mode when off.
+    local pii_mode_value="$pii_mode"
+    [[ "$pii_mode" == "off" ]] && pii_mode_value="replace"
 
     # Resolve AUTH state — precedence: CLI flag (--auth-enabled / --auth-token)
     # > existing-file state (uncommented = enabled) > interactive prompt > off.
@@ -710,7 +723,7 @@ HTTP_ADDR=$http_addr
 ENABLED_HOOKS=$enabled_hooks_value
 
 PII_REDACTION_ENABLED=$pii_enabled
-PII_REDACTION_MODE=$pii_mode
+PII_REDACTION_MODE=$pii_mode_value
 
 # HMAC-SHA256 key for hash mode. Pre-generated for you; rotate to break
 # attacker log correlation if you suspect a key leak.
