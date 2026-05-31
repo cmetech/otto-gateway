@@ -1551,3 +1551,97 @@ func TestPool_HealthSummary_CapturesSpawnError(t *testing.T) {
 		t.Errorf("nil record changed LastSpawnError: %q vs %q", h3.LastSpawnError, h1.LastSpawnError)
 	}
 }
+
+// TestPool_Cancel_ReleasesSlot_WithoutResultDrain — 260531-ra6 RA6-01.
+//
+// Regression for the watchdog-cancel slot-leak path. The existing
+// TestPool_Cancel_ReleasesSlot above asserts the same release contract
+// but also closes the stream and calls Result() afterwards. This test
+// exercises the more aggressive "engine watchdog cancels at 120s while
+// kiro-cli is still blocked in Prompt" path: the stream is NEVER closed
+// from the kiro side, Result() is NEVER called, and the only release
+// driver is Pool.Cancel(sid). Pool.Cancel MUST itself release the slot
+// — it cannot lean on the wrapper's Result-path release because that
+// path will never fire when kiro hangs.
+//
+// Observable symptom (pre-fix): Admin UI Stats() shows Busy == 1 forever
+// after the watchdog fires.
+func TestPool_Cancel_ReleasesSlot_WithoutResultDrain(t *testing.T) {
+	handleCh := make(chan *streamHandle, 1)
+	fc := &fakeClient{}
+	var count int32
+	fc.newSessionFn = func(_ context.Context, _ string) (string, error) {
+		n := atomic.AddInt32(&count, 1)
+		if n == 1 {
+			return "warmup", nil
+		}
+		return "run-c", nil
+	}
+	fc.promptFn = func(_ context.Context, sid string, _ []canonical.Block) (*acp.Stream, error) {
+		s := acp.NewStreamForTest(sid)
+		handleCh <- &streamHandle{stream: s}
+		return s, nil
+	}
+	p := warmedPoolWithFakes(t, []*fakeClient{fc})
+	defer func() { _ = p.Close() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+	sid, err := p.NewSession(ctx, "")
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	if _, err := p.Prompt(ctx, sid, nil); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	h := <-handleCh
+	// Hold the stream open from the kiro side — the test will NOT close
+	// it and will NOT call Result(). The only release path under test
+	// is Pool.Cancel.
+	_ = h
+
+	// Pre-cancel sanity: slot is checked out (Busy == 1).
+	if s := p.Stats(); s.Busy != 1 {
+		t.Fatalf("pre-Cancel Stats.Busy = %d; want 1", s.Busy)
+	}
+
+	p.Cancel(sid)
+
+	// (a) fakeClient.Cancel saw sid.
+	sawSid := false
+	for _, c := range fc.cancelCallList() {
+		if c == sid {
+			sawSid = true
+			break
+		}
+	}
+	if !sawSid {
+		t.Fatalf("fakeClient.Cancel did not see %q; got %v", sid, fc.cancelCallList())
+	}
+
+	// (b) Stats reports Busy == 0 + Alive == 1 within 250ms. This is
+	// the load-bearing assertion — pre-fix the slot stays Busy because
+	// neither the wrapper's Result-path nor the ctx-watcher fired (no
+	// stream close, no ctx cancel).
+	deadline := time.Now().Add(250 * time.Millisecond)
+	var last pool.Stats
+	for time.Now().Before(deadline) {
+		last = p.Stats()
+		if last.Busy == 0 && last.Alive == 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if last.Busy != 0 || last.Alive != 1 {
+		t.Fatalf("Stats after Cancel = %+v; want Busy=0 Alive=1 within 250ms", last)
+	}
+
+	// (c) sessionSlots no longer contains sid.
+	if l := p.SessionSlotsLen(); l != 0 {
+		t.Fatalf("SessionSlotsLen after Cancel = %d; want 0", l)
+	}
+
+	// (d) Close the stream out-of-band so the wrapper's goroutines exit
+	// cleanly under the goleak gate.
+	h.stream.CloseForTest(&acp.FinalResult{StopReason: canonical.StopCancelled}, nil)
+}
