@@ -44,7 +44,8 @@ param(
     [switch]$RegenerateSecrets,
     [string]$AuthToken,
     [string]$Kiro,
-    [string]$Addr
+    [string]$Addr,
+    [switch]$Debug
 )
 
 Set-StrictMode -Version Latest
@@ -127,6 +128,7 @@ function Apply-CliFlags {
     if ($Entities) { $env:PII_ENABLED_ENTITIES = $Entities }
     if ($Hooks)    { $env:ENABLED_HOOKS        = $Hooks }
     if ($Auth)     { $env:AUTH_TOKEN           = $Auth }
+    if ($Debug)    { $env:DEBUG                = 'true' }
 }
 
 function Initialize-Config {
@@ -294,10 +296,20 @@ function Get-GatewayStatus {
     }
     Write-Host "otto-gateway: running (PID $storedPid)"
     try {
-        $health = Invoke-RestMethod -Uri "$HealthUrl/health" -TimeoutSec 3
-        $health | ConvertTo-Json -Depth 5
+        # Invoke-RestMethod returns an already-parsed object (native, no jq).
+        # Format a compact listing; embeddings intentionally omitted.
+        $h = Invoke-RestMethod -Uri "$HealthUrl/health" -TimeoutSec 3
+        $up = [int]$h.uptime_seconds
+        $upStr = if ($up -ge 3600) { "{0}h {1}m {2}s" -f [int]($up/3600), [int](($up%3600)/60), ($up%60) }
+                 elseif ($up -ge 60) { "{0}m {1}s" -f [int]($up/60), ($up%60) }
+                 else { "{0}s" -f $up }
+        Write-Host ("  status:   {0}" -f $h.status)
+        Write-Host ("  version:  {0}" -f $h.version)
+        Write-Host ("  uptime:   {0}" -f $upStr)
+        Write-Host ("  pool:     size={0}, alive={1}, busy={2}" -f $h.pool.size, $h.pool.alive, $h.pool.busy)
+        Write-Host ("  sessions: active={0}" -f $h.sessions.active)
     } catch {
-        Write-Host "(health check failed: $_)"
+        Write-Host "  (health check unreachable at $HealthUrl/health)"
     }
 }
 
@@ -691,6 +703,7 @@ Gateway config flags (for start | restart | run | env):
   -Entities LIST      PII_ENABLED_ENTITIES (comma list)
   -Hooks LIST         ENABLED_HOOKS allowlist (comma list, empty = all)
   -Auth TOKEN         AUTH_TOKEN
+  -Debug              DEBUG=true (debug-level logging) for start | restart | run
   -EnvFile PATH       Override the default .env search
 
 init flags (for the 'init' subcommand):
