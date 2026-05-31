@@ -70,7 +70,7 @@ resolve_version() {
     VERSION=$(fetch_stdout "$OTTO_API_URL" \
         | grep '"tag_name"' \
         | head -n 1 \
-        | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')
+        | sed -n -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p')
     [ -n "$VERSION" ] || err "could not resolve latest release from $OTTO_API_URL (set OTTO_VERSION to override)."
 }
 
@@ -143,7 +143,7 @@ main() {
         warn "$link exists and is not a symlink — leaving it. Run $OTTO_HOME/scripts/otto-gw directly."
     else
         ln -sf "$OTTO_HOME/scripts/otto-gw" "$link"
-        ok "linked otto-gw -> $link"
+        ok "linked $link -> $OTTO_HOME/scripts/otto-gw"
     fi
 
     printf '\n'
