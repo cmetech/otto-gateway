@@ -32,7 +32,7 @@ if ($env:OTTO_VERSION) {
     $version = $env:OTTO_VERSION
 } else {
     $rel = Invoke-RestMethod -UseBasicParsing -Uri $ApiUrl
-    $version = $rel.tag_name
+    $version = if ($rel.PSObject.Properties['tag_name']) { $rel.tag_name } else { $null }
     if (-not $version) { Die "could not resolve latest release from $ApiUrl (set OTTO_VERSION to override)." }
 }
 
@@ -101,7 +101,8 @@ try {
     $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
     if (-not $userPath) { $userPath = '' }
     if (($userPath -split ';') -notcontains $scripts) {
-        [Environment]::SetEnvironmentVariable('Path', ($userPath.TrimEnd(';') + ';' + $scripts), 'User')
+        $newPath = if ($userPath) { $userPath.TrimEnd(';') + ';' + $scripts } else { $scripts }
+        [Environment]::SetEnvironmentVariable('Path', $newPath, 'User')
         Ok "added $scripts to your user PATH (open a new terminal to pick it up)"
     }
 
