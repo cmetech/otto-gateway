@@ -340,6 +340,20 @@ function Get-GatewayStatus {
     } catch {
         Write-Host "  (health check unreachable at $HealthUrl/health)"
     }
+    # Feature-flag enablement comes from the admin snapshot, NOT /health (which
+    # is D-12 byte-shape locked). The admin endpoint is auth-exempt. Wrapped in
+    # its own try/catch so an unreachable admin endpoint does not blank out the
+    # health lines already printed above. Invoke-RestMethod returns a parsed
+    # object, so debug/chat_trace are read directly as booleans.
+    try {
+        $snap = Invoke-RestMethod -Uri "$HealthUrl/admin/api/snapshot" -TimeoutSec 3
+        $dbg   = if ($snap.debug)      { 'on' } else { 'off' }
+        $trace = if ($snap.chat_trace) { 'on' } else { 'off' }
+        Write-Host ("  debug:      {0}" -f $dbg)
+        Write-Host ("  chat-trace: {0}" -f $trace)
+    } catch {
+        # Best-effort: admin snapshot unreachable — skip the flag lines silently.
+    }
 }
 
 function Restart-Gateway {
