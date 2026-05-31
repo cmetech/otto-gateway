@@ -183,6 +183,7 @@ apply_cli_flags() {
     if [[ -n "${FLAG_HOOKS:-}" ]];    then export ENABLED_HOOKS="$FLAG_HOOKS"; fi
     if [[ -n "${FLAG_AUTH:-}" ]];     then export AUTH_TOKEN="$FLAG_AUTH"; fi
     if [[ "${FLAG_DEBUG:-0}" -eq 1 ]]; then export DEBUG="true"; fi
+    if [[ "${FLAG_TRACE:-0}" -eq 1 ]]; then export DEBUG="true"; export CHAT_TRACE="true"; fi
     return 0
 }
 
@@ -208,6 +209,7 @@ parse_flags() {
             --env-file=*)    ENV_FILE_OVERRIDE="${1#*=}"; shift ;;
             --show-secrets)  FLAG_SHOW_SECRETS=1; shift ;;
             --debug)         FLAG_DEBUG=1; shift ;;
+            --trace)         FLAG_TRACE=1; shift ;;
             *)               echo "unknown flag: $1" >&2; exit 1 ;;
         esac
     done
@@ -909,6 +911,7 @@ Gateway config flags (for start | restart | run | env):
   --hooks LIST        ENABLED_HOOKS allowlist (comma list, empty = all)
   --auth TOKEN        AUTH_TOKEN
   --debug             DEBUG=true (debug-level logging) for start | restart | run
+  --trace             DEBUG=true + CHAT_TRACE=true (debug + chat-trace NDJSON) for start | restart | run
   --env-file PATH     Override the default .env search
 
 init flags:
