@@ -143,3 +143,40 @@ func TestApplyMode_UnknownMode_FallsBackToReplace(t *testing.T) {
 		t.Errorf("unknown mode w/ counter: got %q, want %q", gotCounter, "[EMAIL_3]")
 	}
 }
+
+// TestApplyMode_NoAngleBrackets_RegressionForKiroHang is the load-bearing
+// negative regression test for quick 260531-pt8. The previously-used
+// angle-bracketed sentinel shape (LT ENTITY underscore N GT, where LT/GT
+// are the ASCII less-than / greater-than characters) caused kiro-cli /
+// Claude to treat the token as the opening of an XML tag and block
+// waiting for the matching close tag, hanging engine.ACP.Prompt() until
+// the 120s client timeout (diagnosed in quick 260531-oox via DEBUG
+// markers). The fix is the shape itself — square brackets — and this
+// test enforces it negatively:
+// ApplyMode output for both `replace` mode (with and without a counter
+// suffix) and `hash` mode MUST contain NEITHER '<' NOR '>'. Any future
+// change that reintroduces angle brackets to those modes trips here.
+func TestApplyMode_NoAngleBrackets_RegressionForKiroHang(t *testing.T) {
+	value := "corey@cmetech.io"
+	cases := []struct {
+		name    string
+		mode    string
+		counter int
+		hashKey []byte
+	}{
+		{"replace_counter0", "replace", 0, nil},
+		{"replace_counter2", "replace", 2, nil},
+		{"hash_counter0", "hash", 0, testHashKey},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ApplyMode(tc.mode, "Email", value, tc.counter, tc.hashKey)
+			if strings.Contains(got, "<") {
+				t.Errorf("%s: output %q contains '<' — kiro-hang regression (use square brackets)", tc.name, got)
+			}
+			if strings.Contains(got, ">") {
+				t.Errorf("%s: output %q contains '>' — kiro-hang regression (use square brackets)", tc.name, got)
+			}
+		})
+	}
+}

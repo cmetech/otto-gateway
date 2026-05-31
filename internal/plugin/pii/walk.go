@@ -2,7 +2,7 @@
 // content (Message.ContentParts[].Text + ToolUse.Input +
 // ToolResult.Content + ChatRequest.System). Map KEYS are NEVER walked
 // (RESEARCH Pitfall 2 — keys are protocol field names; transforming
-// them would silently rename fields like "email_address" → "<EMAIL>"
+// them would silently rename fields like "email_address" → "[EMAIL]"
 // and break upstream parsers). maxDepth=64 bound (RESEARCH Example 4
 // line 941) protects against pathological tool-result trees triggering
 // stack exhaustion. Non-string leaves (numbers, bools, nil, time.Time,
