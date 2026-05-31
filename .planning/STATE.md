@@ -5,7 +5,7 @@ milestone_name: audit WARNINGs
 status: executing
 stopped_at: context exhaustion at 82% (2026-05-31)
 last_updated: "2026-05-31T15:20:00.000Z"
-last_activity: 2026-05-31 -- quick-260531-fba completed: init template rendering refactor
+last_activity: 2026-05-31 -- quick-260531-o4s completed: add --trace flag to otto-gw
 progress:
   total_phases: 12
   completed_phases: 11
@@ -108,6 +108,7 @@ None yet.
 | 260531-ebi | Surface DEBUG + chat-trace enablement: debug/chat_trace booleans cfg→admin.Deps→snapshot JSON + HTML summary strip; otto-gw status (POSIX + PowerShell) reads /admin/api/snapshot (not D-12-locked /health); BSD-sed portability fix for bool parse | 2026-05-31 | eb639ef | [260531-ebi-surface-debug-and-chat-trace-enablement-](./quick/260531-ebi-surface-debug-and-chat-trace-enablement-/) |
 | 260531-f1i | Align scripts/.env.otto-gw.example with OOB install defaults so it is the golden-copy config reference (active-key set verified identical to `init --non-interactive`); foundation for env-merge-on-upgrade | 2026-05-31 | 645a79a | [260531-f1i-align-env-template-golden-copy](./quick/260531-f1i-align-env-template-golden-copy/) |
 | 260531-fba | Refactor init_cmd() heredoc + PS1 @"..."@ to template-copy + set_env_line: eliminate dual key-list drift; set_env_line helper is building block for env-merge-on-upgrade; shellcheck clean; 7-variant diff clean | 2026-05-31 | de28247 | [260531-fba-refactor-otto-gw-init-to-render-the-env-](./quick/260531-fba-refactor-otto-gw-init-to-render-the-env-/) |
+| 260531-o4s | Add --trace flag to scripts/otto-gw: parse_flags + apply_cli_flags + usage(); exports DEBUG=true + CHAT_TRACE=true for full observability in one flag; shellcheck clean | 2026-05-31 | 7ec090b | [260531-o4s-add-trace-flag-to-otto-gw-enabling-debug](./quick/260531-o4s-add-trace-flag-to-otto-gw-enabling-debug/) |
 
 ## Deferred Items
 
