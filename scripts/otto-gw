@@ -466,9 +466,12 @@ status() {
     local snap dbg trace
     snap="$(curl -sf "${OTTO_ADDR}/admin/api/snapshot" 2>/dev/null || true)"
     [[ -n "$snap" ]] || return 0
-    # JSON booleans have no surrounding quotes — match true|false literally.
-    dbg="$(printf '%s' "$snap"   | sed -n 's/.*"debug"[[:space:]]*:[[:space:]]*\(true\|false\).*/\1/p')"
-    trace="$(printf '%s' "$snap" | sed -n 's/.*"chat_trace"[[:space:]]*:[[:space:]]*\(true\|false\).*/\1/p')"
+    # JSON booleans have no surrounding quotes — capture the bare word. Use a
+    # char class, NOT \(true\|false\): BSD sed (macOS) does not support \|
+    # alternation in BRE and would silently match nothing. The downstream
+    # == "true" test maps anything else (incl. an empty parse) to "off".
+    dbg="$(printf '%s' "$snap"   | sed -n 's/.*"debug"[[:space:]]*:[[:space:]]*\([a-z][a-z]*\).*/\1/p')"
+    trace="$(printf '%s' "$snap" | sed -n 's/.*"chat_trace"[[:space:]]*:[[:space:]]*\([a-z][a-z]*\).*/\1/p')"
     [[ -n "$dbg" ]]   && echo "  debug:      $([[ "$dbg" == "true" ]] && echo on || echo off)"
     [[ -n "$trace" ]] && echo "  chat-trace: $([[ "$trace" == "true" ]] && echo on || echo off)"
 }
