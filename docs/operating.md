@@ -98,7 +98,7 @@ have to remember the underlying env-var names. Flags are valid on `start`,
 
 | Flag (bash) | Flag (PowerShell) | Underlying env | Notes |
 |-------------|-------------------|----------------|-------|
-| `--pii MODE` | `-Pii MODE` | `PII_REDACTION_ENABLED` + `PII_REDACTION_MODE` | `MODE` ∈ `off,replace,mask,hash,drop`. `off` sets `PII_REDACTION_ENABLED=false`; any other mode sets `=true` and the mode. |
+| `--pii MODE` | `-Pii MODE` | `PII_REDACTION_ENABLED` + `PII_REDACTION_MODE` | `MODE` ∈ `off,replace,mask,hash,drop,encrypt`. `off` sets `PII_REDACTION_ENABLED=false`; any other mode sets `=true` and the mode. |
 | `--hash-key KEY` | `-HashKey KEY` | `PII_HASH_KEY` | Required when `--pii hash` (boot error otherwise). |
 | `--entities LIST` | `-Entities LIST` | `PII_ENABLED_ENTITIES` | Comma list. Empty = all six recognizers. |
 | `--hooks LIST` | `-Hooks LIST` | `ENABLED_HOOKS` | Allowlist; empty = all hooks. |
@@ -217,8 +217,10 @@ Post for timing + structured exit records.
 | `ENABLED_HOOKS` | _(empty = all enabled)_ | Comma-split allowlist of hook type names enabled at boot. Default empty means every hook in `main.go`'s slice runs (default-permissive, matches `AUTH_TOKEN` semantics). A name that does not match any registered hook causes the gateway to **refuse to start** with stderr/stdout containing `unknown hook: "<name>"`. Typo-fail-fast — `ENABLED_HOOKS=PIIRedaction` (missing the `Hook` suffix) would silently disable PII redaction; the boot error prevents this. **Registration order is preserved**: `ENABLED_HOOKS=LoggingHook,RequestIDHook` runs as `[RequestIDHook, LoggingHook]`, not the allowlist order. |
 | `PII_REDACTION_ENABLED` | `false` | Master switch for `PIIRedactionHook`. When `false` (default), the hook is present in the chain (visible via `GET /health/hooks`) but is inert — operator must explicitly opt in. Two-knob composition with `ENABLED_HOOKS`: `ENABLED_HOOKS` controls whether the hook is in the chain at all; `PII_REDACTION_ENABLED` controls whether it does work when invoked. |
 | `PII_ENABLED_ENTITIES` | _(empty = all six)_ | Comma-split list of recognizer names. Default empty = all six recognizers active (`Email`, `IPv4`, `IPv6`, `SSN`, `CreditCard`, `USPhone`). Unknown names → boot error. |
-| `PII_REDACTION_MODE` | `replace` | One of `replace`, `mask`, `hash`, `drop`. `replace` substitutes `<EMAIL_N>` tokens with a per-canonical-value counter; `mask` substitutes a partial obfuscation (e.g., `co***@cm***.io`); `hash` substitutes `<EMAIL:h-XXXXXXXX>` with the first 8 hex chars of `HMAC-SHA256(PII_HASH_KEY, canonical(value))`; `drop` substitutes an empty string. Unknown values → boot error. |
+| `PII_REDACTION_MODE` | `replace` | One of `replace`, `mask`, `hash`, `drop`, `encrypt`. `replace` substitutes `[EMAIL_N]` tokens with a per-canonical-value counter; `mask` substitutes a partial obfuscation (e.g., `co***@cm***.io`); `hash` substitutes `[EMAIL:h-XXXXXXXX]` with the first 8 hex chars of `HMAC-SHA256(PII_HASH_KEY, canonical(value))`; `drop` substitutes an empty string; `encrypt` substitutes `[PII:EMAIL:base64url]` with an AES-256-GCM ciphertext that the response Post-hook decrypts back to plaintext before the client sees the response (round-trip). Unknown values → boot error. |
 | `PII_HASH_KEY` | _(empty)_ | HMAC-SHA256 key for `PII_REDACTION_MODE=hash`. **Required when mode is `hash`** — boot error otherwise (no silent unkeyed-HMAC fallback). Rotating this key invalidates prior correlation tokens — feature, not a bug: rotate to break attacker correlation if a key leak is suspected. |
+| `PII_ENCRYPT_KEY` | _(empty)_ | Key for `PII_REDACTION_MODE=encrypt` (or any per-entity encrypt override via `PII_ENTITY_ACTIONS`). Accepts **any non-empty string** — the gateway derives a 32-byte AES-256-GCM key via SHA-256 at boot. **Required when encrypt is active anywhere** — boot error otherwise (no silent fallback). Rotating this key invalidates prior round-trip tokens (in-flight chat history affected; new requests after restart use the new key). |
+| `PII_ENTITY_ACTIONS` | _(empty)_ | Per-entity action overrides. Shape: `Entity:action,Entity:action,...` e.g. `Email:encrypt,SSN:drop`. When non-empty, the listed entities use the specified action instead of the global `PII_REDACTION_MODE`. Unlisted entities fall back to the global mode. Unknown entity names or unknown action values → boot error. Allowed actions: `replace`, `mask`, `hash`, `drop`, `encrypt`. |
 
 #### Restart-to-apply rule (SC7)
 
@@ -262,11 +264,16 @@ listener accepts:
 - `PII_ENABLED_ENTITIES` contains an unknown entity name → boot
   error names `PII_ENABLED_ENTITIES` and the offender.
 - `PII_REDACTION_MODE` is not one of `replace`, `mask`, `hash`,
-  `drop` → boot error names `PII_REDACTION_MODE` and the offender.
+  `drop`, `encrypt` → boot error names `PII_REDACTION_MODE` and the offender.
 - `PII_REDACTION_MODE=hash` AND `PII_HASH_KEY` is empty/unset →
   boot error names `PII_HASH_KEY`. The unkeyed mode is a
   rainbow-table-trivial security trap; the operator must
   explicitly provide a key.
+- `PII_ENTITY_ACTIONS` contains an unknown entity name or action
+  value → boot error names the offending pair.
+- `PII_REDACTION_MODE=encrypt` (or `PII_ENTITY_ACTIONS` contains
+  `:encrypt`) AND `PII_ENCRYPT_KEY` is empty → boot error names
+  `PII_ENCRYPT_KEY`. There is no silent fallback.
 
 #### Hash-key rotation as a feature
 
@@ -456,3 +463,33 @@ ssh -L 11434:localhost:11434 user@gateway-host
 ```
 
 Then visit `http://localhost:11434/admin` in your local browser.
+
+## Known Limitations
+
+### encrypt + streaming clients (planned fix: T-5b)
+
+When `PII_REDACTION_MODE=encrypt` (or any entity is configured for
+`encrypt` via `PII_ENTITY_ACTIONS`), streaming clients (the Pi-SDK
+chat CLI and loop24-client, both of which hard-code `stream: true`)
+currently receive ciphertext tokens in their stream chunks. The PII
+Post hook fires AFTER the stream completes (and decrypts the
+aggregated response), but the bytes are already on the wire by then.
+
+Adapter-layer re-routing (engine `Aggregated()` seam + adapter handler
+updates) is a planned follow-up that will route encrypt-active
+requests through the aggregated path before any bytes hit the wire.
+Until then, encrypt round-trip works correctly for non-streaming
+clients (LangFlow via `/api/chat` with `stream: false`).
+
+### encrypt mode decrypt WARN volume
+
+The Post-hook decrypt sweep emits one `pii.decrypt.failed` WARN per
+malformed token (e.g., when an LLM mangles a ciphertext blob). For a
+response echoing many corrupted tokens, the log volume could be high.
+
+**Operational note (encrypt mode):** Decrypt failures emit one
+`pii.decrypt.failed` WARN per token (with a `reason` attr — one of
+`bad_base64`, `payload_too_short`, `gcm_open`, `decrypt_other`).
+Operators triaging unexpected WARN volume can filter by `reason` to
+distinguish LLM text mangling (`bad_base64`, `gcm_open`) from key
+rotation / corruption (`gcm_open`, `payload_too_short`).
