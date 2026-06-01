@@ -587,6 +587,10 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 		Debug:        cfg.Debug,
 		ChatTrace:    cfg.ChatTrace,
 
+		// Quick 260601-aix — chat-trace location + retention surfaced on /admin/docs.
+		ChatTraceFile:       cfg.ChatTraceFile,
+		ChatTraceMaxAgeDays: cfg.ChatTraceMaxAgeDays,
+
 		// Quick 260601-a3z — runtime cfg surfacing on /admin/about.
 		// Booleans for Auth/IPAllowlist are derived from len() the same
 		// way the "auth mode" startup log line does it (single source of

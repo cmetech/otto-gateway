@@ -18,6 +18,7 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -99,6 +100,12 @@ type Deps struct {
 	OllamaPathPrefix     string
 	OpenAIPathPrefix     string
 	AnthropicPathPrefix  string
+
+	// Chat-trace file location and retention surfaced on /admin/docs
+	// (quick 260601-aix, step 4 of admin UI redesign). Read-only
+	// snapshots of cfg.ChatTraceFile / cfg.ChatTraceMaxAgeDays.
+	ChatTraceFile       string
+	ChatTraceMaxAgeDays int
 }
 
 // handler holds the runtime state for the admin sub-router.
@@ -311,18 +318,167 @@ func (h *handler) aboutHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// docsHandler serves GET /admin/docs — a placeholder page during step 1
-// of the admin UI redesign. Real content lands in a later step. Uses the
-// same WR-05 buffer-then-write pattern as dashboardHandler so a template
+// envVarRow is one row in the /admin/docs environment-variables
+// reference table (quick 260601-aix). CurrentValue is computed by
+// docsHandler at request time from the Deps snapshot (taken at
+// wire-up). AUTH_TOKEN row's CurrentValue is "(set)"/"(unset)" —
+// never the plaintext token characters.
+type envVarRow struct {
+	Name         string
+	Default      string
+	Description  string
+	CurrentValue string
+}
+
+// cliFlagRow is one row in the /admin/docs CLI-flag / env-var
+// mapping table (quick 260601-aix). The flag/env mapping is
+// hand-mirrored from internal/config/config.go LoadArgs() so the
+// admin package does NOT import internal/config (TRST-04 boundary).
+type cliFlagRow struct {
+	Flag       string
+	EnvMapping string
+	Notes      string
+}
+
+// docsData is the render-time view-model for the /admin/docs page
+// (quick 260601-aix). The two table slices are populated in
+// docsHandler from in-handler seed lists; path prefixes and the
+// chat-trace block are copied from h.deps.*.
+type docsData struct {
+	TabActive           string
+	PageTitle           string
+	Version             string
+	Commit              string
+	EnvVars             []envVarRow
+	CliFlags            []cliFlagRow
+	ChatTraceEnabled    bool
+	ChatTraceFile       string
+	ChatTraceMaxAgeDays int
+	OllamaPathPrefix    string
+	OpenAIPathPrefix    string
+	AnthropicPathPrefix string
+}
+
+// docsHandler serves GET /admin/docs — operator reference page with
+// environment variable table (live current values), files & paths,
+// CLI flags, endpoints reference, basic usage, and troubleshooting
+// (quick 260601-aix, step 4 of admin UI redesign). Uses the same
+// WR-05 buffer-then-write pattern as aboutHandler so a template
 // render failure produces a clean 500 rather than a truncated 200.
+//
+// AUTH_TOKEN safety: the AUTH_TOKEN row's CurrentValue is rendered
+// as "(set)" or "(unset)" — never the plaintext token characters.
+// ALLOWED_IPS is rendered as on/off for the same compactness reason
+// (and because rendering CIDR lists in a table is noisy).
 func (h *handler) docsHandler(w http.ResponseWriter, r *http.Request) {
-	data := struct {
-		TabActive string
-		PageTitle string
-	}{
-		TabActive: "docs",
-		PageTitle: "Documentation",
+	boolOnOff := func(b bool) string {
+		if b {
+			return "on"
+		}
+		return "off"
 	}
+	truncate := func(s string, n int) string {
+		if len(s) <= n {
+			return s
+		}
+		return s[:n] + "…"
+	}
+
+	authCurrent := "(unset)"
+	if h.deps.AuthEnabled {
+		authCurrent = "(set)"
+	}
+	allowedIPsCurrent := "(unset)"
+	if h.deps.IPAllowlistEnabled {
+		allowedIPsCurrent = "(set)"
+	}
+	kiroCmdCurrent := h.deps.KiroCmd
+	if kiroCmdCurrent == "" {
+		kiroCmdCurrent = "(unset — degraded mode)"
+	}
+	kiroArgsCurrent := strings.Join(h.deps.KiroArgs, " ")
+	if kiroArgsCurrent == "" {
+		kiroArgsCurrent = "(none)"
+	}
+	kiroArgsCurrent = truncate(kiroArgsCurrent, 40)
+	kiroCwdCurrent := h.deps.KiroCwd
+	if kiroCwdCurrent == "" {
+		kiroCwdCurrent = "(empty)"
+	}
+	streamIdleCurrent := "disabled"
+	if h.deps.StreamIdleTimeoutSec != 0 {
+		streamIdleCurrent = fmt.Sprintf("%ds", h.deps.StreamIdleTimeoutSec)
+	}
+	chatTraceFileCurrent := h.deps.ChatTraceFile
+	if !h.deps.ChatTrace {
+		chatTraceFileCurrent = "(disabled — CHAT_TRACE=false)"
+	}
+
+	envVars := []envVarRow{
+		{Name: "HTTP_ADDR", Default: "127.0.0.1:18080", Description: "HTTP listen address. Set to :18080 to bind all interfaces.", CurrentValue: h.deps.HTTPAddr},
+		{Name: "KIRO_CMD", Default: "kiro-cli", Description: "kiro-cli binary name or path resolved on PATH. Empty value puts the gateway in degraded mode.", CurrentValue: kiroCmdCurrent},
+		{Name: "KIRO_ARGS", Default: "acp", Description: "Whitespace-split argv passed to KIRO_CMD.", CurrentValue: kiroArgsCurrent},
+		{Name: "KIRO_CWD", Default: "(empty)", Description: "Working directory for the kiro-cli subprocess. Empty = inherit gateway cwd.", CurrentValue: kiroCwdCurrent},
+		{Name: "POOL_SIZE", Default: "4", Description: "Number of warm kiro-cli subprocesses kept in the pool.", CurrentValue: strconv.Itoa(h.deps.PoolSize)},
+		{Name: "SESSION_TTL_MS", Default: "1800000 (30m)", Description: "Idle stateful-session reap threshold. Accepts ms-integer (Node parity) or Go duration string.", CurrentValue: h.deps.SessionTTL.String()},
+		{Name: "STREAM_IDLE_TIMEOUT_SEC", Default: "30", Description: "Server-side idle-stream watchdog (0 disables, negative = boot error).", CurrentValue: streamIdleCurrent},
+		{Name: "AUTH_TOKEN", Default: "(unset)", Description: "Comma-split bearer-token allowlist. Empty = auth disabled (Node parity). Rendered as on/off — never the plaintext value.", CurrentValue: authCurrent},
+		{Name: "ALLOWED_IPS", Default: "(unset)", Description: "Comma-split CIDR/IP allowlist. Empty = allow-all (Node parity). Rendered as on/off for compactness.", CurrentValue: allowedIPsCurrent},
+		{Name: "AUTH_TRUST_XFF", Default: "false", Description: "Trust X-Forwarded-For in the IP allowlist check. Enable ONLY behind a known reverse proxy.", CurrentValue: "(see startup log)"},
+		{Name: "DEBUG", Default: "false", Description: "Enables debug-level structured logging (slog JSON).", CurrentValue: boolOnOff(h.deps.Debug)},
+		{Name: "CHAT_TRACE", Default: "false", Description: "SENSITIVE — when true, writes raw user prompts to CHAT_TRACE_FILE.", CurrentValue: boolOnOff(h.deps.ChatTrace)},
+		{Name: "CHAT_TRACE_FILE", Default: "./logs/otto-gateway-chat-trace.log (or sibling of LOG_FILE)", Description: "On-disk path of the chat-trace NDJSON log. Only opened when CHAT_TRACE=true.", CurrentValue: chatTraceFileCurrent},
+		{Name: "CHAT_TRACE_MAX_AGE_DAYS", Default: "3", Description: "timberjack MaxAge in days for chat-trace.log rotation pruning.", CurrentValue: strconv.Itoa(h.deps.ChatTraceMaxAgeDays)},
+		{Name: "OLLAMA_PATH_PREFIX", Default: "/api", Description: "Route prefix mounting the Ollama surface.", CurrentValue: h.deps.OllamaPathPrefix},
+		{Name: "OPENAI_PATH_PREFIX", Default: "/v1", Description: "Route prefix mounting the OpenAI surface.", CurrentValue: h.deps.OpenAIPathPrefix},
+		{Name: "ANTHROPIC_PATH_PREFIX", Default: "/v1", Description: "Route prefix mounting the Anthropic surface (shared with OpenAI; endpoint-level disambiguation).", CurrentValue: h.deps.AnthropicPathPrefix},
+		{Name: "ENABLED_SURFACES", Default: "ollama,anthropic,openai", Description: "Comma-split list of HTTP surfaces constructed at boot.", CurrentValue: "(see startup log)"},
+		{Name: "ENABLED_HOOKS", Default: "(empty = all)", Description: "Comma-split allowlist of plugin hook names. Empty = all hooks in the chain enabled (permissive default).", CurrentValue: "(see startup log)"},
+		{Name: "PII_REDACTION_ENABLED", Default: "false", Description: "Whether PIIRedactionHook does work when invoked.", CurrentValue: "(see startup log)"},
+		{Name: "PII_REDACTION_MODE", Default: "replace", Description: "One of replace / mask / hash / drop. mode=hash REQUIRES PII_HASH_KEY (boot error otherwise).", CurrentValue: "(see startup log)"},
+		{Name: "PII_ENABLED_ENTITIES", Default: "(empty = all six)", Description: "Comma-split allowlist: Email, IPv4, IPv6, SSN, CreditCard, USPhone.", CurrentValue: "(see startup log)"},
+		{Name: "PII_HASH_KEY", Default: "(unset)", Description: "HMAC-SHA256 key required when PII_REDACTION_MODE=hash. Rotating invalidates prior correlation tokens.", CurrentValue: "(see startup log)"},
+		{Name: "SESSION_MAX", Default: "32", Description: "Cap on concurrent stateful sessions. Lazy-create over the cap returns 503.", CurrentValue: "(see startup log)"},
+		{Name: "SESSION_TICK_INTERVAL_MS", Default: "60000 (60s)", Description: "Cadence of the registry reaper goroutine. Test injection seam.", CurrentValue: "(see startup log)"},
+		{Name: "PING_INTERVAL", Default: "60s", Description: "kiro-cli heartbeat interval. Accepts ms-integer or Go duration string.", CurrentValue: "(see startup log)"},
+		{Name: "LOG_FILE", Default: "(unset)", Description: "When set, slog JSON also writes to this rotated file. Empty = stdout/stderr only.", CurrentValue: "(see startup log)"},
+	}
+
+	cliFlags := []cliFlagRow{
+		{Flag: "--http-addr", EnvMapping: "HTTP_ADDR", Notes: "HTTP listen address."},
+		{Flag: "--kiro-cmd", EnvMapping: "KIRO_CMD", Notes: "kiro-cli binary name or path."},
+		{Flag: "--kiro-args", EnvMapping: "KIRO_ARGS", Notes: "Whitespace-split argv."},
+		{Flag: "--kiro-cwd", EnvMapping: "KIRO_CWD", Notes: "Working directory for kiro-cli."},
+		{Flag: "--debug", EnvMapping: "DEBUG", Notes: "Enable debug-level slog output."},
+		{Flag: "--ping-interval", EnvMapping: "PING_INTERVAL", Notes: "Go duration string."},
+		{Flag: "--pool-size", EnvMapping: "POOL_SIZE", Notes: "Warm subprocess count."},
+		{Flag: "--session-ttl", EnvMapping: "SESSION_TTL_MS", Notes: "Go duration; env also accepts ms-integer."},
+		{Flag: "--session-max", EnvMapping: "SESSION_MAX", Notes: "Concurrent stateful-session cap."},
+		{Flag: "--enabled-surfaces", EnvMapping: "ENABLED_SURFACES", Notes: "Comma-split list."},
+		{Flag: "--ollama-path-prefix", EnvMapping: "OLLAMA_PATH_PREFIX", Notes: "Ollama surface route prefix."},
+		{Flag: "--openai-path-prefix", EnvMapping: "OPENAI_PATH_PREFIX", Notes: "OpenAI surface route prefix."},
+		{Flag: "--anthropic-path-prefix", EnvMapping: "ANTHROPIC_PATH_PREFIX", Notes: "Anthropic surface route prefix."},
+		{Flag: "--allowed-ips", EnvMapping: "ALLOWED_IPS", Notes: "Comma-split CIDR/IP allowlist."},
+		{Flag: "--auth-trust-xff", EnvMapping: "AUTH_TRUST_XFF", Notes: "Trust X-Forwarded-For in allowlist check."},
+		{Flag: "--version", EnvMapping: "(n/a)", Notes: "Print version and exit."},
+		{Flag: "(env-only — no flag)", EnvMapping: "AUTH_TOKEN", Notes: "Secret; intentionally env-only (never argv)."},
+	}
+
+	data := docsData{
+		TabActive:           "docs",
+		PageTitle:           "Documentation",
+		Version:             h.deps.Version,
+		Commit:              h.deps.Commit,
+		EnvVars:             envVars,
+		CliFlags:            cliFlags,
+		ChatTraceEnabled:    h.deps.ChatTrace,
+		ChatTraceFile:       h.deps.ChatTraceFile,
+		ChatTraceMaxAgeDays: h.deps.ChatTraceMaxAgeDays,
+		OllamaPathPrefix:    h.deps.OllamaPathPrefix,
+		OpenAIPathPrefix:    h.deps.OpenAIPathPrefix,
+		AnthropicPathPrefix: h.deps.AnthropicPathPrefix,
+	}
+
 	var buf bytes.Buffer
 	if err := docsTemplate.ExecuteTemplate(&buf, "base", data); err != nil {
 		h.deps.Logger.Error("admin: docs render", "err", err)
