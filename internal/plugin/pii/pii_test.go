@@ -383,3 +383,52 @@ func TestPIIRedactionHook_Describe_NoSecrets(t *testing.T) {
 		}
 	}
 }
+
+// PII-ENCRYPT-04 — per-entity action resolution and encryptActive predicate.
+
+func TestActionFor_FallbackToMode(t *testing.T) {
+	h := &PIIRedactionHook{Mode: "mask"}
+	if got := h.actionFor("Email"); got != "mask" {
+		t.Errorf("actionFor with no override: got %q, want %q", got, "mask")
+	}
+}
+
+func TestActionFor_OverrideWins(t *testing.T) {
+	h := &PIIRedactionHook{
+		Mode:          "mask",
+		EntityActions: map[string]string{"Email": "encrypt"},
+	}
+	if got := h.actionFor("Email"); got != "encrypt" {
+		t.Errorf("actionFor with override: got %q, want %q", got, "encrypt")
+	}
+	if got := h.actionFor("SSN"); got != "mask" {
+		t.Errorf("actionFor unlisted entity: got %q, want fallback %q", got, "mask")
+	}
+}
+
+func TestEncryptActive_GlobalMode(t *testing.T) {
+	h := &PIIRedactionHook{Mode: "encrypt"}
+	if !h.encryptActive() {
+		t.Error("encryptActive: Mode=encrypt should report active")
+	}
+}
+
+func TestEncryptActive_EntityOverride(t *testing.T) {
+	h := &PIIRedactionHook{
+		Mode:          "replace",
+		EntityActions: map[string]string{"Email": "encrypt"},
+	}
+	if !h.encryptActive() {
+		t.Error("encryptActive: any encrypt in EntityActions should report active")
+	}
+}
+
+func TestEncryptActive_Inactive(t *testing.T) {
+	h := &PIIRedactionHook{
+		Mode:          "mask",
+		EntityActions: map[string]string{"Email": "drop", "SSN": "hash"},
+	}
+	if h.encryptActive() {
+		t.Error("encryptActive: no encrypt anywhere should report inactive")
+	}
+}

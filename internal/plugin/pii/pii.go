@@ -61,14 +61,20 @@ import (
 //	                   passes pii.Recognizers; tests may inject subsets).
 //	Enabled          — the work-doing toggle (controlled by
 //	                   PII_REDACTION_ENABLED env; D-02 two-knob model).
-//	Mode             — one of "replace" / "mask" / "hash" / "drop"
-//	                   (slice 5 validates).
+//	Mode             — one of "replace" / "mask" / "hash" / "drop" /
+//	                   "encrypt" (slice 5 validates).
 //	HashKey          — the PII_HASH_KEY bytes for hash mode (slice 5
 //	                   validates non-empty when Mode=="hash").
 //	EnabledEntities  — optional allowlist filter; empty means all
 //	                   Recognizers are active. Order in this slice does
 //	                   NOT change recognizer iteration order; it is a
 //	                   set semantically.
+//	EncryptKey       — the 32-byte AES-256-GCM key for encrypt mode
+//	                   (Task 3). Boot validation guarantees non-nil when
+//	                   encrypt is active; nil otherwise.
+//	EntityActions    — optional per-entity action override map (Task 4).
+//	                   Empty = global Mode applies to all recognizers
+//	                   (today's behavior).
 type PIIRedactionHook struct {
 	Recognizers     []Recognizer
 	Enabled         bool
@@ -78,6 +84,11 @@ type PIIRedactionHook struct {
 	// (Mode=="encrypt" or EntityActions[X]=="encrypt"). Nil when encrypt is
 	// not active. Boot validation guarantees non-nil when encrypt IS active.
 	EncryptKey      []byte
+	// EntityActions overrides the global Mode per recognizer Name.
+	// e.g., {"Email":"encrypt","SSN":"mask"} → Email matches use encrypt,
+	// SSN matches use mask, all other entities fall back to Mode.
+	// Empty map reproduces today's behavior exactly (Mode applies to all).
+	EntityActions   map[string]string
 	EnabledEntities []string
 	// Logger is the slog target for observability DEBUG lines (e.g.,
 	// pii.redact.done). nil-falls-back to slog.Default() at first use.
@@ -159,6 +170,30 @@ func (h *PIIRedactionHook) activeRecognizers() []Recognizer {
 		}
 	}
 	return out
+}
+
+// actionFor returns the action this hook should apply to a given
+// entity. EntityActions[entity] wins when set; otherwise h.Mode.
+func (h *PIIRedactionHook) actionFor(entity string) string {
+	if a, ok := h.EntityActions[entity]; ok {
+		return a
+	}
+	return h.Mode
+}
+
+// encryptActive reports whether any active entity is configured for
+// encrypt mode. Used by Before's stream-disable side effect and by
+// After's no-op fast path. Cheap O(len(EntityActions)).
+func (h *PIIRedactionHook) encryptActive() bool {
+	if h.Mode == "encrypt" {
+		return true
+	}
+	for _, a := range h.EntityActions {
+		if a == "encrypt" {
+			return true
+		}
+	}
+	return false
 }
 
 // logger returns h.Logger if set, otherwise slog.Default(). Per-call
