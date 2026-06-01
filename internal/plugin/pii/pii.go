@@ -76,14 +76,14 @@ import (
 //	                   Empty = global Mode applies to all recognizers
 //	                   (today's behavior).
 type PIIRedactionHook struct {
-	Recognizers     []Recognizer
-	Enabled         bool
-	Mode            string
-	HashKey         []byte
+	Recognizers []Recognizer
+	Enabled     bool
+	Mode        string
+	HashKey     []byte
 	// EncryptKey is the 32-byte AES-256-GCM key for the "encrypt" action
 	// (Mode=="encrypt" or EntityActions[X]=="encrypt"). Nil when encrypt is
 	// not active. Boot validation guarantees non-nil when encrypt IS active.
-	EncryptKey      []byte
+	EncryptKey []byte
 	// EntityActions overrides the global Mode per recognizer Name.
 	// e.g., {"Email":"encrypt","SSN":"mask"} → Email matches use encrypt,
 	// SSN matches use mask, all other entities fall back to Mode.
