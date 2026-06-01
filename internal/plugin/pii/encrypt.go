@@ -1,6 +1,6 @@
-// Package pii encrypt — AES-256-GCM round-trip support for the
-// PII_REDACTION_MODE=encrypt action (plus per-entity EntityActions
-// overrides). Pure helpers; no package-level state.
+// AES-256-GCM round-trip support for the PII_REDACTION_MODE=encrypt
+// action (plus per-entity EntityActions overrides). Pure helpers;
+// no package-level state.
 //
 // Spec: docs/superpowers/specs/2026-06-01-pii-encrypt-design.md
 //
