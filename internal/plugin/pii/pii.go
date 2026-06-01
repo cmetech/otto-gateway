@@ -232,6 +232,18 @@ func (h *PIIRedactionHook) Before(ctx context.Context, req *canonical.ChatReques
 		return nil, nil
 	}
 
+	// Encrypt round-trip needs the full response buffered before decrypt
+	// can run, so we flip req.Stream off here. The Post hook (After) runs
+	// in engine.Collect on the aggregated response — streaming branches
+	// would bypass it because their bytes hit the wire before Collect
+	// finishes. Spec §3.1.
+	if h.encryptActive() && req.Stream {
+		req.Stream = false
+		h.logger().Info("pii.encrypt.streaming_disabled",
+			"reason", "decrypt requires aggregated response",
+		)
+	}
+
 	summary, _ := SummaryFromContext(ctx)
 	if summary == nil {
 		// Defensive fallback for paths that didn't stamp ctx (unit
@@ -270,7 +282,9 @@ func (h *PIIRedactionHook) Before(ctx context.Context, req *canonical.ChatReques
 					counters[key] = n
 				}
 				summary.Add(r.Name)
-				return ApplyMode(h.Mode, r.Name, match, n, h.HashKey, h.EncryptKey)
+				// Per-entity action resolution: EntityActions[r.Name]
+				// wins, else h.Mode (Task 4 helper).
+				return ApplyMode(h.actionFor(r.Name), r.Name, match, n, h.HashKey, h.EncryptKey)
 			})
 		}
 		return out

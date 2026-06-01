@@ -432,3 +432,71 @@ func TestEncryptActive_Inactive(t *testing.T) {
 		t.Error("encryptActive: no encrypt anywhere should report inactive")
 	}
 }
+
+// PII-ENCRYPT-05 — Before flips req.Stream when encrypt is active.
+
+func TestBefore_StreamDisabledWhenEncryptActive(t *testing.T) {
+	k, err := DeriveKey("test")
+	if err != nil {
+		t.Fatalf("DeriveKey: %v", err)
+	}
+	h := &PIIRedactionHook{
+		Recognizers: Recognizers,
+		Enabled:     true,
+		Mode:        "encrypt",
+		EncryptKey:  k,
+	}
+	req := &canonical.ChatRequest{Stream: true}
+	if _, err := h.Before(context.Background(), req); err != nil {
+		t.Fatalf("Before: %v", err)
+	}
+	if req.Stream {
+		t.Error("Before: req.Stream should be false after Before when encrypt is active")
+	}
+}
+
+func TestBefore_StreamUnchangedWhenEncryptInactive(t *testing.T) {
+	h := &PIIRedactionHook{
+		Recognizers: Recognizers,
+		Enabled:     true,
+		Mode:        "replace",
+	}
+	req := &canonical.ChatRequest{Stream: true}
+	if _, err := h.Before(context.Background(), req); err != nil {
+		t.Fatalf("Before: %v", err)
+	}
+	if !req.Stream {
+		t.Error("Before: req.Stream should remain true when encrypt is NOT active")
+	}
+}
+
+func TestBefore_PerEntityActionResolution(t *testing.T) {
+	k, err := DeriveKey("test")
+	if err != nil {
+		t.Fatalf("DeriveKey: %v", err)
+	}
+	h := &PIIRedactionHook{
+		Recognizers:   Recognizers,
+		Enabled:       true,
+		Mode:          "mask",
+		EncryptKey:    k,
+		EntityActions: map[string]string{"Email": "encrypt"},
+	}
+	req := &canonical.ChatRequest{
+		System: "contact corey@cmetech.io and 123-45-6789",
+	}
+	if _, err := h.Before(context.Background(), req); err != nil {
+		t.Fatalf("Before: %v", err)
+	}
+	// Email should be encrypted (token shape).
+	if !strings.Contains(req.System, "[PII:Email:") {
+		t.Errorf("Email should be encrypted: got System=%q", req.System)
+	}
+	// SSN should be masked (contains '*'), NOT encrypted.
+	if strings.Contains(req.System, "[PII:SSN:") {
+		t.Errorf("SSN should be masked, not encrypted: got System=%q", req.System)
+	}
+	if !strings.Contains(req.System, "*") {
+		t.Errorf("SSN mask should contain '*': got System=%q", req.System)
+	}
+}
