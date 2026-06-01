@@ -16,6 +16,7 @@
 #   --entities LIST     PII_ENABLED_ENTITIES=LIST (e.g. Email,SSN)
 #   --hooks LIST        ENABLED_HOOKS=LIST (allowlist; empty = all)
 #   --auth TOKEN        AUTH_TOKEN=TOKEN
+#   --idle-timeout SEC  STREAM_IDLE_TIMEOUT_SEC=SEC (0 disables)
 #
 # .env loader (laptop-friendly persistence):
 #   Loads the first match of:  ./.env.otto-gw  →  $HOME/.otto-gw.env
@@ -182,6 +183,7 @@ apply_cli_flags() {
     if [[ -n "${FLAG_ENTITIES:-}" ]]; then export PII_ENABLED_ENTITIES="$FLAG_ENTITIES"; fi
     if [[ -n "${FLAG_HOOKS:-}" ]];    then export ENABLED_HOOKS="$FLAG_HOOKS"; fi
     if [[ -n "${FLAG_AUTH:-}" ]];     then export AUTH_TOKEN="$FLAG_AUTH"; fi
+    if [[ -n "${FLAG_IDLE_TIMEOUT:-}" ]]; then export STREAM_IDLE_TIMEOUT_SEC="$FLAG_IDLE_TIMEOUT"; fi
     if [[ "${FLAG_DEBUG:-0}" -eq 1 ]]; then export DEBUG="true"; fi
     if [[ "${FLAG_TRACE:-0}" -eq 1 ]]; then export DEBUG="true"; export CHAT_TRACE="true"; fi
     return 0
@@ -199,6 +201,8 @@ parse_flags() {
             --pii=*)         FLAG_PII_MODE="${1#*=}"; shift ;;
             --hash-key)      FLAG_HASH_KEY="$2"; shift 2 ;;
             --hash-key=*)    FLAG_HASH_KEY="${1#*=}"; shift ;;
+            --idle-timeout)  FLAG_IDLE_TIMEOUT="$2"; shift 2 ;;
+            --idle-timeout=*) FLAG_IDLE_TIMEOUT="${1#*=}"; shift ;;
             --entities)      FLAG_ENTITIES="$2"; shift 2 ;;
             --entities=*)    FLAG_ENTITIES="${1#*=}"; shift ;;
             --hooks)         FLAG_HOOKS="$2"; shift 2 ;;
@@ -1008,6 +1012,7 @@ Gateway config flags (for start | restart | run | env):
   --entities LIST     PII_ENABLED_ENTITIES (comma list)
   --hooks LIST        ENABLED_HOOKS allowlist (comma list, empty = all)
   --auth TOKEN        AUTH_TOKEN
+  --idle-timeout SEC  STREAM_IDLE_TIMEOUT_SEC (default 30; 0 disables idle watchdog)
   --debug             DEBUG=true (debug-level logging) for start | restart | run
   --trace             DEBUG=true + CHAT_TRACE=true (debug + chat-trace NDJSON) for start | restart | run
   --env-file PATH     Override the default .env search

@@ -16,6 +16,7 @@
 #   -Entities LIST     PII_ENABLED_ENTITIES (comma list)
 #   -Hooks LIST        ENABLED_HOOKS (comma list, empty = all)
 #   -Auth TOKEN        AUTH_TOKEN
+#   -IdleTimeout INT   STREAM_IDLE_TIMEOUT_SEC (default 30; 0 disables idle watchdog)
 #   -EnvFile PATH      Override default .env search
 #   -ShowSecrets       (env subcommand only) print unmasked secrets
 #
@@ -31,6 +32,7 @@ param(
     [string]$Entities,
     [string]$Hooks,
     [string]$Auth,
+    [int]$IdleTimeout = -1,
     [switch]$Trace,
     [string]$EnvFile,
     [switch]$ShowSecrets,
@@ -135,6 +137,9 @@ function Apply-CliFlags {
     if ($Entities) { $env:PII_ENABLED_ENTITIES = $Entities }
     if ($Hooks)    { $env:ENABLED_HOOKS        = $Hooks }
     if ($Auth)     { $env:AUTH_TOKEN           = $Auth }
+    # Quick 260531-ruv: -IdleTimeout INT -> STREAM_IDLE_TIMEOUT_SEC.
+    # Sentinel -1 = "flag not passed"; 0 is the explicit-disable value.
+    if ($IdleTimeout -ge 0) { $env:STREAM_IDLE_TIMEOUT_SEC = $IdleTimeout.ToString() }
     if ($DebugRequested) { $env:DEBUG          = 'true' }
     # -Trace implies -Debug plus chat-trace: one switch for full observability.
     # config.Load auto-prepends ChatTraceHook to ENABLED_HOOKS at runtime when
