@@ -91,7 +91,9 @@ type handler struct {
 //
 // Routes:
 //
-//	GET /             → pageHandler  (renders HTML page from embed.FS template)
+//	GET /             → dashboardHandler (renders dashboard HTML from embed.FS templates)
+//	GET /about        → aboutHandler (About page — placeholder, real content in a later step)
+//	GET /docs         → docsHandler (Docs page — placeholder, real content in a later step)
 //	GET /api/snapshot → snapshotHandler (aggregates pool+session data → JSON)
 //	GET /static/*     → http.FileServer over staticFS (embedded CSS/JS)
 //	GET /logs/stream  → sseHandler (SSE live log tail — D-08/D-09)
@@ -114,8 +116,14 @@ func Handler(deps Deps) http.Handler {
 
 	r := chi.NewRouter()
 
-	// GET / — serve the HTML admin page (template rendered with version/commit).
-	r.Get("/", h.pageHandler)
+	// GET / — serve the dashboard HTML page (template rendered with version/commit).
+	r.Get("/", h.dashboardHandler)
+
+	// GET /about — placeholder About page (real content lands in a later step).
+	r.Get("/about", h.aboutHandler)
+
+	// GET /docs — placeholder Docs page (real content lands in a later step).
+	r.Get("/docs", h.docsHandler)
 
 	// GET /api/snapshot — return unified AdminSnapshot JSON (D-05).
 	r.Get("/api/snapshot", h.snapshotHandler)
@@ -144,7 +152,7 @@ func Handler(deps Deps) http.Handler {
 	return r
 }
 
-// pageHandler serves GET /admin (the rendered HTML page).
+// dashboardHandler serves GET /admin (the rendered dashboard HTML page).
 // The template is executed against a struct containing version and commit
 // strings baked in at render time; live pool/session data is hydrated
 // by admin.js polling /admin/api/snapshot every 30s (D-06).
@@ -153,20 +161,22 @@ func Handler(deps Deps) http.Handler {
 // execution failure (corrupted embed, panic recovered as error) can
 // still emit a clean 500 Internal Server Error envelope rather than
 // committing 200 OK with truncated HTML on the wire.
-func (h *handler) pageHandler(w http.ResponseWriter, r *http.Request) {
+func (h *handler) dashboardHandler(w http.ResponseWriter, r *http.Request) {
 	data := struct {
 		Version   string
 		Commit    string
 		Debug     bool
 		ChatTrace bool
+		TabActive string
 	}{
 		Version:   h.deps.Version,
 		Commit:    h.deps.Commit,
 		Debug:     h.deps.Debug,
 		ChatTrace: h.deps.ChatTrace,
+		TabActive: "dashboard",
 	}
 	var buf bytes.Buffer
-	if err := pageTemplate.Execute(&buf, data); err != nil {
+	if err := dashboardTemplate.ExecuteTemplate(&buf, "base", data); err != nil {
 		// Nothing committed to the wire yet — return a clean 500.
 		h.deps.Logger.Error("admin: page render", "err", err)
 		http.Error(w, "admin page render failed", http.StatusInternalServerError)
@@ -178,5 +188,55 @@ func (h *handler) pageHandler(w http.ResponseWriter, r *http.Request) {
 		// Header already committed — log only. The client connection
 		// likely went away; no recovery path exists.
 		h.deps.Logger.Debug("admin: page write", "err", err)
+	}
+}
+
+// aboutHandler serves GET /admin/about — a placeholder page during step 1
+// of the admin UI redesign. Real content lands in a later step. Uses the
+// same WR-05 buffer-then-write pattern as dashboardHandler so a template
+// render failure produces a clean 500 rather than a truncated 200.
+func (h *handler) aboutHandler(w http.ResponseWriter, r *http.Request) {
+	data := struct {
+		TabActive string
+		PageTitle string
+	}{
+		TabActive: "about",
+		PageTitle: "About",
+	}
+	var buf bytes.Buffer
+	if err := aboutTemplate.ExecuteTemplate(&buf, "base", data); err != nil {
+		h.deps.Logger.Error("admin: about render", "err", err)
+		http.Error(w, "admin about render failed", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	if _, err := w.Write(buf.Bytes()); err != nil {
+		h.deps.Logger.Debug("admin: about write", "err", err)
+	}
+}
+
+// docsHandler serves GET /admin/docs — a placeholder page during step 1
+// of the admin UI redesign. Real content lands in a later step. Uses the
+// same WR-05 buffer-then-write pattern as dashboardHandler so a template
+// render failure produces a clean 500 rather than a truncated 200.
+func (h *handler) docsHandler(w http.ResponseWriter, r *http.Request) {
+	data := struct {
+		TabActive string
+		PageTitle string
+	}{
+		TabActive: "docs",
+		PageTitle: "Documentation",
+	}
+	var buf bytes.Buffer
+	if err := docsTemplate.ExecuteTemplate(&buf, "base", data); err != nil {
+		h.deps.Logger.Error("admin: docs render", "err", err)
+		http.Error(w, "admin docs render failed", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	if _, err := w.Write(buf.Bytes()); err != nil {
+		h.deps.Logger.Debug("admin: docs write", "err", err)
 	}
 }

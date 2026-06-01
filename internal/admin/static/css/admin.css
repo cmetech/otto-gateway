@@ -709,3 +709,92 @@ body {
     overflow-x: auto;
   }
 }
+
+/* -----------------------------------------------------------------------
+ * Quick 260601-98c — admin UI redesign step 1 (structural scaffolding)
+ *
+ * Step 1 is structure-only: header bar, tab nav, theme-toggle button,
+ * and a no-op [data-theme="light"] override block that mirrors the
+ * current dark palette token values. Step 2 will replace the no-op
+ * overrides with a real light palette and a full component restyle.
+ * ----------------------------------------------------------------------- */
+
+/* No-op light-theme override block. Mirrors the same token name/value
+ * pairs as :root so light and dark render IDENTICALLY in step 1. This
+ * exists to prove the [data-theme=...] selector plumbing is wired
+ * end-to-end (pre-paint script → documentElement.dataset.theme → CSS).
+ * Step 2 replaces these values with the real light palette. */
+[data-theme="light"] {
+  --otto-bg: #28243D;
+  --otto-card: #3A3A3A;
+  --otto-fg: #FAFAFA;
+  --otto-muted: #A0A0A0;
+  --otto-border: #4A4A4A;
+  --otto-accent: #FAD22D;
+  --otto-healthy: #0FC373;
+  --otto-warning: #FF8C0A;
+  --otto-failed: #FF3232;
+  --otto-activity: #AF78D2;
+  --otto-link: #1174E6;
+}
+
+/* Header bar (wordmark + theme toggle) */
+.otto-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 1.25rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.otto-header-brand {
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.otto-header-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.otto-theme-toggle {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: inherit;
+  padding: 0.35rem 0.75rem;
+  border-radius: 4px;
+  cursor: pointer;
+  font: inherit;
+}
+
+/* Tab nav strip (Dashboard / About / Docs) */
+.otto-tab-nav {
+  display: flex;
+  gap: 1.5rem;
+  padding: 0 1.25rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.otto-tab {
+  display: inline-block;
+  padding: 0.65rem 0;
+  color: inherit;
+  text-decoration: none;
+  border-bottom: 2px solid transparent;
+}
+
+.otto-tab:hover {
+  opacity: 0.85;
+}
+
+.otto-tab.is-active {
+  border-bottom-color: #FAD22D;
+  font-weight: 600;
+}
+
+/* Coming-soon placeholder card stub (About / Docs in step 1) */
+.otto-coming-soon {
+  padding: 2rem;
+  text-align: center;
+  opacity: 0.75;
+}
