@@ -119,8 +119,8 @@ func main() {
 type app struct {
 	cfg      config.Config
 	logger   *slog.Logger
-	pool     *pool.Pool     // nil when KIRO_CMD unset
-	engine   *engine.Engine // nil when pool is nil
+	pool     *pool.Pool        // nil when KIRO_CMD unset
+	engine   *engine.Engine    // nil when pool is nil
 	registry *session.Registry // nil when KIRO_CMD unset; constructed alongside pool
 	srv      *server.Server
 }
@@ -264,6 +264,12 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 	}
 	chain = filteredChain
 
+	// Quick 260531-ruv: convert raw seconds to time.Duration once,
+	// thread it into the engine + each adapter.Config + each per-
+	// session engine factory. Zero stays zero (helper interprets it
+	// as "disabled"). All five chunk-loop sites read this value.
+	streamIdle := time.Duration(cfg.StreamIdleTimeoutSec) * time.Second
+
 	if cfg.KiroCmd != "" {
 		a.pool = pool.New(pool.Config{
 			Logger:       logger,
@@ -285,11 +291,12 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 		}
 
 		a.engine = engine.New(engine.Config{
-			Logger:     logger,
-			ACP:        a.pool,
-			DefaultCWD: cfg.KiroCWD,
-			PreHooks:   chain.Pre,
-			PostHooks:  chain.Post,
+			Logger:            logger,
+			ACP:               a.pool,
+			DefaultCWD:        cfg.KiroCWD,
+			PreHooks:          chain.Pre,
+			PostHooks:         chain.Post,
+			StreamIdleTimeout: streamIdle,
 		})
 
 		// Plan 05-03: construct the dedicated-session registry alongside
@@ -345,29 +352,32 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 		registryForAdapters = a.registry
 		ollamaEngineForSession = func(entry *session.Entry) ollama.Engine {
 			return ollamaEngineAdapter{engine: engine.New(engine.Config{
-				Logger:     logger,
-				ACP:        entry,
-				DefaultCWD: cfg.KiroCWD,
-				PreHooks:   chain.Pre,  // Phase 8 — per-session chain
-				PostHooks:  chain.Post, // Phase 8 — per-session chain
+				Logger:            logger,
+				ACP:               entry,
+				DefaultCWD:        cfg.KiroCWD,
+				PreHooks:          chain.Pre,  // Phase 8 — per-session chain
+				PostHooks:         chain.Post, // Phase 8 — per-session chain
+				StreamIdleTimeout: streamIdle, // quick 260531-ruv
 			})}
 		}
 		openaiEngineForSession = func(entry *session.Entry) openai.Engine {
 			return openaiEngineAdapter{engine: engine.New(engine.Config{
-				Logger:     logger,
-				ACP:        entry,
-				DefaultCWD: cfg.KiroCWD,
-				PreHooks:   chain.Pre,  // Phase 8
-				PostHooks:  chain.Post, // Phase 8
+				Logger:            logger,
+				ACP:               entry,
+				DefaultCWD:        cfg.KiroCWD,
+				PreHooks:          chain.Pre,  // Phase 8
+				PostHooks:         chain.Post, // Phase 8
+				StreamIdleTimeout: streamIdle, // quick 260531-ruv
 			})}
 		}
 		anthropicEngineForSession = func(entry *session.Entry) anthropic.Engine {
 			return anthropicEngineAdapter{engine: engine.New(engine.Config{
-				Logger:     logger,
-				ACP:        entry,
-				DefaultCWD: cfg.KiroCWD,
-				PreHooks:   chain.Pre,  // Phase 8
-				PostHooks:  chain.Post, // Phase 8
+				Logger:            logger,
+				ACP:               entry,
+				DefaultCWD:        cfg.KiroCWD,
+				PreHooks:          chain.Pre,  // Phase 8
+				PostHooks:         chain.Post, // Phase 8
+				StreamIdleTimeout: streamIdle, // quick 260531-ruv
 			})}
 		}
 	}
@@ -375,14 +385,15 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 	var ollamaAdapter *ollama.Adapter
 	if slices.Contains(cfg.EnabledSurfaces, "ollama") {
 		ollamaAdapter = ollama.New(ollama.Config{
-			Logger:           logger,
-			Engine:           engineForAdapter,
-			ModelCatalog:     catalogForAdapter,
-			Version:          version.Version,
-			Commit:           version.Commit(),
-			Registry:         registryForAdapters,
-			EngineForSession: ollamaEngineForSession,
-			KiroCWD:          cfg.KiroCWD,
+			Logger:            logger,
+			Engine:            engineForAdapter,
+			ModelCatalog:      catalogForAdapter,
+			Version:           version.Version,
+			Commit:            version.Commit(),
+			Registry:          registryForAdapters,
+			EngineForSession:  ollamaEngineForSession,
+			KiroCWD:           cfg.KiroCWD,
+			StreamIdleTimeout: streamIdle, // quick 260531-ruv
 		})
 	}
 
@@ -402,11 +413,12 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 			eng = anthropicEngineAdapter{engine: a.engine}
 		}
 		anthropicAdapter = anthropic.New(anthropic.Config{
-			Logger:           logger,
-			Engine:           eng,
-			Registry:         registryForAdapters,
-			EngineForSession: anthropicEngineForSession,
-			KiroCWD:          cfg.KiroCWD,
+			Logger:            logger,
+			Engine:            eng,
+			Registry:          registryForAdapters,
+			EngineForSession:  anthropicEngineForSession,
+			KiroCWD:           cfg.KiroCWD,
+			StreamIdleTimeout: streamIdle, // quick 260531-ruv
 		})
 	}
 
@@ -429,12 +441,13 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 			cat = a.pool
 		}
 		openaiAdapter = openai.New(openai.Config{
-			Logger:           logger,
-			Engine:           eng,
-			ModelCatalog:     cat,
-			Registry:         registryForAdapters,
-			EngineForSession: openaiEngineForSession,
-			KiroCWD:          cfg.KiroCWD,
+			Logger:            logger,
+			Engine:            eng,
+			ModelCatalog:      cat,
+			Registry:          registryForAdapters,
+			EngineForSession:  openaiEngineForSession,
+			KiroCWD:           cfg.KiroCWD,
+			StreamIdleTimeout: streamIdle, // quick 260531-ruv
 		})
 	}
 
@@ -599,10 +612,10 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 		OllamaVersionHandler: ollamaVersionHandler, // Codex M-4 split accessor
 		Surfaces:             surfaces,
 		Pool:                 poolForServer,
-		PoolDetail:           poolDetailForServer, // Plan 05-03 D-15
-		PoolHealth:           poolHealthForServer, // /health/pool — pool serving-health probe
-		Registry:             registryForServer,   // Plan 05-03 D-14/D-16
-		AdminHandler:         adminHandler,        // Phase 6.1 admin observability UI
+		PoolDetail:           poolDetailForServer,                   // Plan 05-03 D-15
+		PoolHealth:           poolHealthForServer,                   // /health/pool — pool serving-health probe
+		Registry:             registryForServer,                     // Plan 05-03 D-14/D-16
+		AdminHandler:         adminHandler,                          // Phase 6.1 admin observability UI
 		Hooks:                hooksDescriptionAdapter{chain: chain}, // Phase 8 OBSV-04 — /health/hooks
 	})
 
@@ -872,12 +885,12 @@ func buildLogger(cfg config.Config) (*slog.Logger, func()) {
 		// midnight rolls. 500 MB caps single-day pathology at ~3.5 GB
 		// across the 7-day retention window — still finite on any modern
 		// laptop disk.
-		MaxSize:     500,                        // MB; safety valve only
-		MaxAge:      7,                          // keep 7 days of rotated logs
-		MaxBackups:  0,                          // age-based pruning only
-		LocalTime:   true,                       // laptop-local timestamps
-		Compression: "gzip",                     // compress rotated files
-		RotateAt:    []string{"00:00"},          // daily at local midnight
+		MaxSize:     500,               // MB; safety valve only
+		MaxAge:      7,                 // keep 7 days of rotated logs
+		MaxBackups:  0,                 // age-based pruning only
+		LocalTime:   true,              // laptop-local timestamps
+		Compression: "gzip",            // compress rotated files
+		RotateAt:    []string{"00:00"}, // daily at local midnight
 		FileMode:    0o644,
 	}
 

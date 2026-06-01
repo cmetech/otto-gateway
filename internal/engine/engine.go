@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"otto-gateway/internal/canonical"
 )
@@ -76,6 +77,13 @@ type Config struct {
 	// longestCommonParent of file:// resource links). Empty falls
 	// through to os.Getwd in pickCwd (D-16).
 	DefaultCWD string
+	// StreamIdleTimeout is the duration to wait for a chunk before
+	// tearing down the stream (quick 260531-ruv). Zero disables.
+	// Threaded from cfg.StreamIdleTimeoutSec in main.go. Consumed by
+	// Collect (and any future internal chunk loop) via the
+	// RangeChunksWithIdleTimeout helper. Adapters get their own copy
+	// in their respective Config structs.
+	StreamIdleTimeout time.Duration
 	// PreHooks is the Phase 8 PreHook chain. Run iterates in order;
 	// the first non-nil response short-circuits ACP.
 	PreHooks []PreHook

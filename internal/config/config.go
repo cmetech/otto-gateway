@@ -65,6 +65,14 @@ type Config struct {
 	// POOL-01: default 4 for Node parity; Phase 2 shipped a default of 1).
 	// Set-but-unparseable yields a Load() error.
 	PoolSize int
+	// StreamIdleTimeoutSec is the server-side idle-stream watchdog
+	// timeout in seconds (quick 260531-ruv). Default 30. Zero is VALID
+	// and disables the watchdog (legacy hang-forever behavior, opt-in).
+	// Negative or non-integer values cause a boot error (mirrors
+	// PII_REDACTION_MODE typo-fail-fast). Loaded from
+	// STREAM_IDLE_TIMEOUT_SEC. Converted to time.Duration in main.go
+	// and threaded into engine.Config and each adapter.Config.
+	StreamIdleTimeoutSec int
 	// OllamaPathPrefix is the route prefix under which the Ollama adapter is
 	// mounted (default "/api"). Loaded from OLLAMA_PATH_PREFIX.
 	OllamaPathPrefix string
@@ -262,6 +270,18 @@ func Load() (Config, error) {
 		errs = append(errs, err)
 	}
 
+	// Quick 260531-ruv — STREAM_IDLE_TIMEOUT_SEC. Default 30 (seconds).
+	// Zero is VALID (explicit disable). Negative values are a boot error.
+	// Non-integer values bubble up from getEnvInt as a wrapped error
+	// containing "cannot parse" (matches POOL_SIZE / SESSION_MAX shape).
+	streamIdleTimeoutSec, err := getEnvInt("STREAM_IDLE_TIMEOUT_SEC", 30)
+	if err != nil {
+		errs = append(errs, err)
+	}
+	if streamIdleTimeoutSec < 0 {
+		errs = append(errs, fmt.Errorf("STREAM_IDLE_TIMEOUT_SEC: must be >= 0, got %d", streamIdleTimeoutSec))
+	}
+
 	// Phase 8 D-02 / D-05: five new env keys for the plugin chain.
 	// ENABLED_HOOKS shape-only (chain.Filter does the typo check at
 	// boot — see main.go). PII_* knobs validated here for shape +
@@ -351,31 +371,32 @@ func Load() (Config, error) {
 	}
 
 	return Config{
-		HTTPAddr:            httpAddr,
-		KiroCmd:             kiroCmd,
-		KiroArgs:            kiroArgs,
-		KiroCWD:             kiroCWD,
-		Debug:               debug,
-		PingInterval:        pingInterval,
-		AuthToken:           authTokens,
-		AllowedIPs:          allowedIPs,
-		PoolSize:            poolSize,
-		OllamaPathPrefix:    ollamaPath,
-		OpenAIPathPrefix:    openaiPath,
-		AuthTrustXFF:        trustXFF,
-		EnabledSurfaces:     enabledSurfaces,
-		AnthropicPathPrefix: anthropicPath,
-		SessionTTL:          sessionTTL,
-		SessionMax:          sessionMax,
-		SessionTickInterval: sessionTickInterval,
-		EnabledHooks:        enabledHooks,
-		PIIRedactionEnabled: piiEnabled,
-		PIIEnabledEntities:  piiEntities,
-		PIIRedactionMode:    piiMode,
-		PIIHashKey:          piiHashKey,
-		ChatTrace:           chatTrace,
-		ChatTraceFile:       chatTraceFile,
-		ChatTraceMaxAgeDays: chatTraceMaxAgeDays,
+		HTTPAddr:             httpAddr,
+		KiroCmd:              kiroCmd,
+		KiroArgs:             kiroArgs,
+		KiroCWD:              kiroCWD,
+		Debug:                debug,
+		PingInterval:         pingInterval,
+		AuthToken:            authTokens,
+		AllowedIPs:           allowedIPs,
+		PoolSize:             poolSize,
+		StreamIdleTimeoutSec: streamIdleTimeoutSec,
+		OllamaPathPrefix:     ollamaPath,
+		OpenAIPathPrefix:     openaiPath,
+		AuthTrustXFF:         trustXFF,
+		EnabledSurfaces:      enabledSurfaces,
+		AnthropicPathPrefix:  anthropicPath,
+		SessionTTL:           sessionTTL,
+		SessionMax:           sessionMax,
+		SessionTickInterval:  sessionTickInterval,
+		EnabledHooks:         enabledHooks,
+		PIIRedactionEnabled:  piiEnabled,
+		PIIEnabledEntities:   piiEntities,
+		PIIRedactionMode:     piiMode,
+		PIIHashKey:           piiHashKey,
+		ChatTrace:            chatTrace,
+		ChatTraceFile:        chatTraceFile,
+		ChatTraceMaxAgeDays:  chatTraceMaxAgeDays,
 	}, nil
 }
 
