@@ -22,11 +22,18 @@ var assetsFS embed.FS
 // → "css/admin.css" inside the embed rather than "static/css/admin.css".
 var staticFS = mustSub(assetsFS, "static")
 
-// pageTemplate is parsed ONCE at package init from the embedded FS.
-// Re-parsing per request burns CPU for zero benefit — the template is
-// baked into the binary and cannot change at runtime.
-var pageTemplate = template.Must(
-	template.ParseFS(assetsFS, "templates/index.html.tmpl"),
+// Per-page templates are parsed ONCE at package init from the embedded FS.
+// Each template is composed from the shared base layout + a per-page content
+// template. Re-parsing per request burns CPU for zero benefit — the templates
+// are baked into the binary and cannot change at runtime.
+//
+// Handlers execute these via ExecuteTemplate(buf, "base", data) so the
+// {{define "base"}} layout drives rendering and pulls in the page's
+// {{define "content"}} block.
+var (
+	dashboardTemplate = template.Must(template.ParseFS(assetsFS, "templates/base.html.tmpl", "templates/dashboard.html.tmpl"))
+	aboutTemplate     = template.Must(template.ParseFS(assetsFS, "templates/base.html.tmpl", "templates/about.html.tmpl"))
+	docsTemplate      = template.Must(template.ParseFS(assetsFS, "templates/base.html.tmpl", "templates/docs.html.tmpl"))
 )
 
 // mustSub returns fs.Sub(f, dir) or panics. This is init-time only;

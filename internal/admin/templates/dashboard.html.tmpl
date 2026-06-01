@@ -1,12 +1,4 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>OTTO Gateway — Admin</title>
-  <link rel="stylesheet" href="/admin/static/css/admin.css">
-</head>
-<body class="otto-admin">
+{{define "content"}}
 <main class="otto-page">
 
   <!-- Section 1: Summary header strip (Plan 01 — fully populated) -->
@@ -158,5 +150,5 @@
      fields for safe <script> context (html/template T-6.1-01 mitigation). -->
 <script>window.OTTO_ADMIN_CONFIG = { version: {{.Version | js}}, commit: {{.Commit | js}}, pollMs: 30000 };</script>
 <script src="/admin/static/js/admin.js"></script>
-</body>
-</html>
+{{end}}
+{{template "base" .}}

@@ -1,0 +1,26 @@
+{{define "base"}}<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OTTO Gateway — Admin</title>
+  <script>(function(){try{var t=localStorage.getItem('otto-theme');if(t==='light'||t==='dark'){document.documentElement.dataset.theme=t;}}catch(e){}})();</script>
+  <link rel="stylesheet" href="/admin/static/css/admin.css">
+</head>
+<body class="otto-admin">
+  <header class="otto-header">
+    <div class="otto-header-brand">OTTO Gateway</div>
+    <div class="otto-header-actions">
+      <button type="button" class="otto-theme-toggle" data-theme-toggle aria-label="Toggle theme">Theme</button>
+    </div>
+  </header>
+  <nav class="otto-tab-nav" aria-label="Primary">
+    <a class="otto-tab{{if eq .TabActive "dashboard"}} is-active{{end}}"{{if eq .TabActive "dashboard"}} aria-current="page"{{end}} href="/admin/">Dashboard</a>
+    <a class="otto-tab{{if eq .TabActive "about"}} is-active{{end}}"{{if eq .TabActive "about"}} aria-current="page"{{end}} href="/admin/about">About</a>
+    <a class="otto-tab{{if eq .TabActive "docs"}} is-active{{end}}"{{if eq .TabActive "docs"}} aria-current="page"{{end}} href="/admin/docs">Docs</a>
+  </nav>
+  {{template "content" .}}
+  <script>(function(){var b=document.querySelector('[data-theme-toggle]');if(!b)return;b.addEventListener('click',function(){var cur=document.documentElement.dataset.theme||'dark';var next=cur==='dark'?'light':'dark';document.documentElement.dataset.theme=next;try{localStorage.setItem('otto-theme',next);}catch(e){}});})();</script>
+</body>
+</html>
+{{end}}

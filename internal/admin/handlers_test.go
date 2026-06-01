@@ -262,8 +262,14 @@ func TestAdmin_PageHandler_SessionsTableScaffold(t *testing.T) {
 func TestAdmin_AssetsFSContains(t *testing.T) {
 	defer goleak.VerifyNone(t)
 
+	// Quick 260601-98c (admin UI redesign step 1): index.html.tmpl was split into
+	// a shared base layout + per-page templates (dashboard / about / docs). The
+	// embed glob "templates/*.html.tmpl" must still pick all four up.
 	paths := []string{
-		"templates/index.html.tmpl",
+		"templates/base.html.tmpl",
+		"templates/dashboard.html.tmpl",
+		"templates/about.html.tmpl",
+		"templates/docs.html.tmpl",
 		"static/css/admin.css",
 		"static/js/admin.js",
 	}
