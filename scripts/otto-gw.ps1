@@ -585,6 +585,7 @@ function Invoke-Init {
     $existing = @{}
     $existingAuthOn = $null
     $existingChatTraceOn = $null
+    $existingIdleTimeout = ''
     if ($Force -and (Test-Path $destPath)) {
         try {
             $existing = Read-DotEnvAsHashtable -Path $destPath
@@ -598,6 +599,14 @@ function Invoke-Init {
             $existingChatTraceOn = ($existing['CHAT_TRACE'] -match '^(true|1|yes)$')
         } else {
             $existingChatTraceOn = $false
+        }
+        # Quick 260531-t8a — extract existing STREAM_IDLE_TIMEOUT_SEC so
+        # re-init preserves the operator's prior tuning when no flag is
+        # passed. Empty string when the key is absent or commented out.
+        if (Test-EnvKeyUncommented -Path $destPath -Key 'STREAM_IDLE_TIMEOUT_SEC') {
+            $existingIdleTimeout = $existing['STREAM_IDLE_TIMEOUT_SEC']
+        } else {
+            $existingIdleTimeout = ''
         }
         Write-Host "re-init detected: preserving existing values where unchanged"
         if ($RegenerateSecrets) {
@@ -726,6 +735,22 @@ function Invoke-Init {
     }
     $chatValue = if ($chatOn) { "true" } else { "false" }
 
+    # Quick 260531-t8a — resolve STREAM_IDLE_TIMEOUT_SEC. Precedence:
+    # -IdleTimeout flag (>= 0) > existing-file value > default "30" commented.
+    # CLI/existing values are written uncommented (operator tuning preserved);
+    # the default stays commented so it's discoverable without overriding
+    # the binary fallback.
+    if ($IdleTimeout -ge 0) {
+        $idleValue = $IdleTimeout.ToString()
+        $idleCommented = $false
+    } elseif (-not [string]::IsNullOrEmpty($existingIdleTimeout)) {
+        $idleValue = $existingIdleTimeout
+        $idleCommented = $false
+    } else {
+        $idleValue = "30"
+        $idleCommented = $true
+    }
+
     # Mirror bash: when chat-trace is enabled, ChatTraceHook must be in
     # ENABLED_HOOKS or chain.Filter strips it. Prepend to preserve the
     # "first in Pre" invariant. config.Load also enforces this at runtime,
@@ -771,6 +796,7 @@ function Invoke-Init {
     Set-EnvLine -FilePath $destPath -Key 'PII_REDACTION_MODE'    -Value $piiModeValue    -Commented $false
     Set-EnvLine -FilePath $destPath -Key 'PII_HASH_KEY'          -Value $hashKeyValue    -Commented $false
     Set-EnvLine -FilePath $destPath -Key 'CHAT_TRACE'            -Value $chatValue       -Commented (-not $chatOn)
+    Set-EnvLine -FilePath $destPath -Key 'STREAM_IDLE_TIMEOUT_SEC' -Value $idleValue      -Commented $idleCommented
 
     # Best-effort restrict permissions (Windows doesn't have a 0600 equivalent,
     # but we can at least ACL the file to the current user only). Optional.

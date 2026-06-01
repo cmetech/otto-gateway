@@ -704,6 +704,8 @@ init_cmd() {
             --addr=*)            arg_addr="${1#*=}"; shift ;;
             --pii)               arg_pii="$2"; shift 2 ;;
             --pii=*)             arg_pii="${1#*=}"; shift ;;
+            --idle-timeout)      arg_idle_timeout="$2"; shift 2 ;;
+            --idle-timeout=*)    arg_idle_timeout="${1#*=}"; shift ;;
             *)                   echo "init: unknown flag: $1" >&2; exit 1 ;;
         esac
     done
@@ -724,6 +726,7 @@ init_cmd() {
     local existing_kiro="" existing_addr="" existing_pii_mode=""
     local existing_auth_token="" existing_hash_key="" existing_pii_enabled=""
     local existing_auth_enabled="" existing_chat_trace=""
+    local existing_idle_timeout=""
     if [[ "$force" -eq 1 && -e "$dest" ]]; then
         if [[ ! -r "$dest" ]]; then
             echo "ERROR: $dest exists but is not readable. Check file permissions." >&2
@@ -742,6 +745,7 @@ init_cmd() {
         esac
         existing_auth_token="$(extract_env_any "$dest" AUTH_TOKEN 2>/dev/null || true)"
         existing_hash_key="$(extract_env_any "$dest" PII_HASH_KEY 2>/dev/null || true)"
+        existing_idle_timeout="$(extract_env_any "$dest" STREAM_IDLE_TIMEOUT_SEC 2>/dev/null || true)"
         if env_is_uncommented "$dest" AUTH_TOKEN; then
             existing_auth_enabled=1
         else
@@ -892,6 +896,21 @@ init_cmd() {
         chat_trace_value="true"
     fi
 
+    # Resolve STREAM_IDLE_TIMEOUT_SEC — precedence: --idle-timeout flag >
+    # existing-file value > default "30" commented. CLI/existing values are
+    # written uncommented (operator tuning preserved); the default is
+    # commented so it's discoverable but doesn't override the binary
+    # default unless explicitly set.
+    local idle_timeout_value="30"
+    local idle_timeout_commented="1"
+    if [[ -n "${arg_idle_timeout:-}" ]]; then
+        idle_timeout_value="$arg_idle_timeout"
+        idle_timeout_commented="0"
+    elif [[ -n "$existing_idle_timeout" ]]; then
+        idle_timeout_value="$existing_idle_timeout"
+        idle_timeout_commented="0"
+    fi
+
     # When chat-trace is enabled, ChatTraceHook must be in ENABLED_HOOKS
     # (chain.Filter strips it otherwise). Prepend so the load-bearing
     # "first in Pre" invariant is preserved. The config-level symmetric
@@ -935,6 +954,7 @@ init_cmd() {
     set_env_line "$dest" PII_REDACTION_MODE     "$pii_mode_value"      "0"
     set_env_line "$dest" PII_HASH_KEY           "$hash_key"            "0"
     set_env_line "$dest" CHAT_TRACE             "$chat_trace_value"    "$( [[ "$chat_trace" -ne 1 ]] && echo 1 || echo 0 )"
+    set_env_line "$dest" STREAM_IDLE_TIMEOUT_SEC "$idle_timeout_value"  "$idle_timeout_commented"
 
     chmod 600 "$dest"
 
@@ -974,7 +994,7 @@ print_env() {
     for k in ENABLED_HOOKS PII_REDACTION_ENABLED PII_REDACTION_MODE \
              PII_ENABLED_ENTITIES PII_HASH_KEY AUTH_TOKEN ALLOWED_IPS \
              AUTH_TRUST_XFF HTTP_ADDR KIRO_CMD KIRO_ARGS KIRO_CWD \
-             POOL_SIZE DEBUG; do
+             POOL_SIZE STREAM_IDLE_TIMEOUT_SEC DEBUG; do
         v="${!k:-}"
         if [[ -z "$v" ]]; then
             continue
@@ -1026,6 +1046,10 @@ init flags:
   --kiro PATH         skip the KIRO_CMD prompt
   --addr ADDR         skip the HTTP_ADDR prompt (default 127.0.0.1:18080)
   --pii MODE          skip the PII prompt (default off)
+  --idle-timeout SEC  STREAM_IDLE_TIMEOUT_SEC override (default: write
+                      "# STREAM_IDLE_TIMEOUT_SEC=30" commented; the binary
+                      defaults to 30s anyway. Pass a value to write the
+                      line uncommented. 0 disables the watchdog.)
   --auth-enabled      enable bearer-token auth (default off; AUTH_TOKEN line
                       pregenerated but commented when disabled, so flipping
                       the '#' enables it without re-running init)
