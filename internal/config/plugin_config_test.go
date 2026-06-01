@@ -128,14 +128,15 @@ func TestLoad_PIIRedactionMode_Default(t *testing.T) {
 }
 
 // TestLoad_PIIRedactionMode_ValidModes — every documented mode is
-// accepted. PII_HASH_KEY is set alongside to bypass the mode=hash
-// requires-key validation.
+// accepted. PII_HASH_KEY and PII_ENCRYPT_KEY are both set so the
+// mode=hash and mode=encrypt requires-key validations pass.
 func TestLoad_PIIRedactionMode_ValidModes(t *testing.T) {
-	for _, mode := range []string{"replace", "mask", "hash", "drop"} {
+	for _, mode := range []string{"replace", "mask", "hash", "drop", "encrypt"} {
 		mode := mode
 		t.Run(mode, func(t *testing.T) {
 			t.Setenv("PII_REDACTION_MODE", mode)
 			t.Setenv("PII_HASH_KEY", "test-key-32-bytes-padding-here!!")
+			t.Setenv("PII_ENCRYPT_KEY", "any-non-empty-string")
 			cfg, err := config.Load()
 			if err != nil {
 				t.Fatalf("Load PII_REDACTION_MODE=%q: %v", mode, err)

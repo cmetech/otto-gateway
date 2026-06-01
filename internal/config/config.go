@@ -160,7 +160,7 @@ type Config struct {
 	// PIIEntityActions is the per-entity action override map parsed from
 	// PII_ENTITY_ACTIONS. Empty map reproduces today's behavior (global
 	// PIIRedactionMode applies to every recognizer). When non-empty,
-	// EntityActions[entity] wins over PIIRedactionMode for the named
+	// PIIEntityActions[entity] wins over PIIRedactionMode for the named
 	// entities. Unknown entity names or unknown action values cause
 	// Load() to return an error. The five allowed action values are
 	// "replace" | "mask" | "hash" | "drop" | "encrypt".
