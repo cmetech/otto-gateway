@@ -186,31 +186,52 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 	// Phase 8 D-01 — hardcoded plugin chain literal (no Register/factory
 	// indirection). Adding a 5th hook = one line in this slice. The
 	// PRE chain runs in registration order: RequestID → Auth → PII →
-	// Logging (D-04). The POST chain has LoggingHook as the only entry
-	// (RequestIDHook + AuthHook + PIIRedactionHook are Pre-only;
-	// LoggingHook bridges Pre→Post via its sync.Map keyed by
-	// request_id per slice 3's design).
+	// Logging (D-04). The POST chain has PIIRedactionHook + LoggingHook
+	// (RequestIDHook + AuthHook are Pre-only; PIIRedactionHook is a
+	// dual Pre/Post hook — same bridge pattern as LoggingHook — so the
+	// SAME instance is registered in both Pre and Post to carry the
+	// encrypt round-trip decrypt sweep across the response; LoggingHook
+	// bridges Pre→Post via its sync.Map keyed by request_id per slice
+	// 3's design).
 	//
 	// LoggingHook is intentionally reused as the SAME instance for
-	// both Pre (last) and Post (only) — its per-instance sync.Map
+	// both Pre (last) and Post (last) — its per-instance sync.Map
 	// bridges Pre→Post timings via request_id. /health/hooks dedup
 	// (slice 5 Task 4) elides the duplicate row.
+
+	// PII hook is a single instance shared between Pre (encrypt + redact)
+	// and Post (decrypt sweep). Same precedent as loggingHook below.
+	// When encrypt is NOT active anywhere, the Post side is a cheap
+	// no-op (encryptActive() returns false; After returns nil immediately).
+	piiHook := &pii.PIIRedactionHook{
+		Recognizers:     filterRecognizers(pii.Recognizers, cfg.PIIEnabledEntities),
+		Enabled:         cfg.PIIRedactionEnabled,
+		Mode:            cfg.PIIRedactionMode,
+		HashKey:         []byte(cfg.PIIHashKey),
+		EnabledEntities: cfg.PIIEnabledEntities,
+		EntityActions:   cfg.PIIEntityActions,
+		Logger:          logger,
+	}
+	// Derive EncryptKey only when encrypt is active; Config validation
+	// already guarantees PIIEncryptKey is non-empty in that case.
+	if piiHook.Mode == "encrypt" || hasEncryptAction(cfg.PIIEntityActions) {
+		key, err := pii.DeriveKey(cfg.PIIEncryptKey)
+		if err != nil {
+			return nil, func() {}, fmt.Errorf("pii: derive encrypt key: %w", err)
+		}
+		piiHook.EncryptKey = key
+	}
+
 	loggingHook := &plugin.LoggingHook{Logger: logger}
 	chain := plugin.Chain{
 		Pre: []engine.PreHook{
 			&plugin.RequestIDHook{Logger: logger},
 			&plugin.AuthHook{Tokens: cfg.AuthToken},
-			&pii.PIIRedactionHook{
-				Recognizers:     filterRecognizers(pii.Recognizers, cfg.PIIEnabledEntities),
-				Enabled:         cfg.PIIRedactionEnabled,
-				Mode:            cfg.PIIRedactionMode,
-				HashKey:         []byte(cfg.PIIHashKey),
-				EnabledEntities: cfg.PIIEnabledEntities,
-				Logger:          logger,
-			},
+			piiHook,
 			loggingHook,
 		},
 		Post: []engine.PostHook{
+			piiHook, // encrypt round-trip decrypt sweep
 			loggingHook,
 		},
 	}
@@ -840,6 +861,18 @@ func filterRecognizers(recognizers []pii.Recognizer, entities []string) []pii.Re
 		}
 	}
 	return out
+}
+
+// hasEncryptAction returns true if any value in actions is "encrypt".
+// Used to gate EncryptKey derivation — we only call pii.DeriveKey
+// when the encrypt action is actually active.
+func hasEncryptAction(actions map[string]string) bool {
+	for _, a := range actions {
+		if a == "encrypt" {
+			return true
+		}
+	}
+	return false
 }
 
 // envOrDefault returns os.Getenv(key) if non-empty, else def.
