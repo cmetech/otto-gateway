@@ -20,9 +20,13 @@
 #
 # .env loader (laptop-friendly persistence):
 #   Loads the first match of:  ./.env.otto-gw  →  $HOME/.otto-gw.env
-#   Override with --env-file PATH or OTTO_ENV_FILE=PATH.
-#   CLI flags WIN over .env values; .env wins over inherited shell env
-#   only for keys the .env actually sets.
+#   Then chains the first match of:
+#     ./.otto-gw.overrides.env  →  $HOME/.otto-gw.overrides.env
+#   Override either with --env-file PATH / --overrides-file PATH, or with
+#   OTTO_ENV_FILE=PATH / OTTO_OVERRIDES_FILE=PATH.
+#   The overrides file is loaded SECOND; same-key values win (two-file model).
+#   CLI flags WIN over overrides; overrides WIN over .env; .env wins over
+#   inherited shell env only for keys the file actually sets.
 set -euo pipefail
 
 # Resolve this script's own install root, following symlinks. The one-liner
@@ -59,6 +63,14 @@ OTTO_ADDR="${OTTO_ADDR:-http://127.0.0.1:18080}"
 # Default .env search order. First hit wins; --env-file or OTTO_ENV_FILE overrides.
 DEFAULT_ENV_PATHS=("./.env.otto-gw" "$HOME/.otto-gw.env")
 
+# Default .otto-gw.overrides.env search order. Two-file model: .otto-gw.env is the
+# template-copy (overwritten by upgrade-env); the overrides file is the operator's
+# customization layer and is loaded SECOND so its keys win for any shared key.
+# The .env-file and overrides-file flags are DECOUPLED: setting --env-file does
+# NOT auto-resolve a sibling overrides file. Overrides resolution always walks
+# the explicit precedence chain below.
+DEFAULT_OVERRIDES_PATHS=("./.otto-gw.overrides.env" "$HOME/.otto-gw.overrides.env")
+
 # resolve_env_file returns the path of the .env file to source, or empty.
 # Honors --env-file override (already parsed into $ENV_FILE_OVERRIDE) and
 # OTTO_ENV_FILE before falling back to DEFAULT_ENV_PATHS.
@@ -79,6 +91,107 @@ resolve_env_file() {
     done
     # No match — explicit return 0 keeps `set -e` callers safe.
     return 0
+}
+
+# resolve_overrides_file returns the path of the .otto-gw.overrides.env file
+# the wrapper should load (after the primary .env), or empty when no overrides
+# file is present anywhere on the precedence chain. Mirrors resolve_env_file's
+# shape so the loader chaining inside load_config is symmetric.
+#
+# Precedence (highest first):
+#   1. --overrides-file PATH   (parsed into OVERRIDES_FILE_OVERRIDE)
+#   2. $OTTO_OVERRIDES_FILE    (env override)
+#   3. DEFAULT_OVERRIDES_PATHS first hit (./, then $HOME)
+#
+# Returns 0 on hit; returns 0 with empty stdout on miss (callers gate on
+# `[[ -n "$overrides_file" ]]` so a clean miss is a no-op for load_config).
+resolve_overrides_file() {
+    if [[ -n "${OVERRIDES_FILE_OVERRIDE:-}" ]]; then
+        echo "$OVERRIDES_FILE_OVERRIDE"
+        return 0
+    fi
+    if [[ -n "${OTTO_OVERRIDES_FILE:-}" ]]; then
+        echo "$OTTO_OVERRIDES_FILE"
+        return 0
+    fi
+    for path in "${DEFAULT_OVERRIDES_PATHS[@]}"; do
+        if [[ -f "$path" ]]; then
+            echo "$path"
+            return 0
+        fi
+    done
+    return 0
+}
+
+# resolve_template_file returns the path of the .env.otto-gw.example template
+# (the single source of truth for keys + defaults + per-key documentation).
+# Precedence: --template PATH (TEMPLATE_FILE_OVERRIDE) > $OTTO_TEMPLATE_FILE >
+# $OTTO_SCRIPT_DIR/.env.otto-gw.example (sibling to the wrapper). Echoes the
+# resolved path; returns 1 if the resolved candidate does not exist on disk.
+resolve_template_file() {
+    local candidate=""
+    if [[ -n "${TEMPLATE_FILE_OVERRIDE:-}" ]]; then
+        candidate="$TEMPLATE_FILE_OVERRIDE"
+    elif [[ -n "${OTTO_TEMPLATE_FILE:-}" ]]; then
+        candidate="$OTTO_TEMPLATE_FILE"
+    else
+        candidate="$OTTO_SCRIPT_DIR/.env.otto-gw.example"
+    fi
+    if [[ ! -f "$candidate" ]]; then
+        return 1
+    fi
+    echo "$candidate"
+    return 0
+}
+
+# template_keys FILE — emit the ordered list of KEY names found in FILE
+# (template or any env file), one key per line. Matches both uncommented
+# `KEY=...` and commented `# KEY=...` lines, in file order. Prose-only
+# comments (no '=' in the body) and blank lines are skipped. Same parser
+# shape as extract_env_any.
+template_keys() {
+    local file="$1"
+    [[ -f "$file" ]] || return 0
+    local line key
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line#"${line%%[![:space:]]*}"}"
+        [[ -z "$line" ]] && continue
+        # Strip ONE leading '#' + optional whitespace so commented lines match.
+        if [[ "$line" == \#* ]]; then
+            line="${line#\#}"
+            line="${line#"${line%%[![:space:]]*}"}"
+        fi
+        line="${line#export }"
+        [[ "$line" == *=* ]] || continue
+        key="${line%%=*}"
+        # Defensive: a stray "= prose" line with no real key.
+        [[ -n "$key" ]] || continue
+        # Validate: keys must be FULLY shell-identifier-shaped end-to-end.
+        # The `[[ =~ ]]` regex test catches prose like `# Syntax: KEY=value`
+        # (would otherwise become the bogus key "Syntax: KEY"). bash 3.2
+        # supports =~ since 3.0.
+        if [[ ! "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+            continue
+        fi
+        printf '%s\n' "$key"
+    done < "$file"
+}
+
+# env_keys_present FILE — same as template_keys, but the name reads more
+# naturally at the caller site for an arbitrary (non-template) env file.
+# Kept as a thin alias so the upgrade-env diff calculation reads cleanly.
+env_keys_present() {
+    template_keys "$1"
+}
+
+# extract_default_value TEMPLATE KEY — given a template path, return the
+# literal default value the template declares for KEY (whether the line is
+# commented or not). Strips ONE layer of surrounding single or double quotes.
+# Returns 0 on hit, 1 on miss. Used by migrate-to-overrides to decide which
+# operator values differ from the template default and therefore need to be
+# carried over.
+extract_default_value() {
+    extract_env_any "$1" "$2"
 }
 
 # load_env_file sources KEY=value lines from $1. Tolerates blank lines
@@ -156,6 +269,46 @@ set_env_line() {
     ' "$file" > "${file}.tmp" && mv "${file}.tmp" "$file"
 }
 
+# set_overrides_line FILE KEY VALUE — write or update KEY=VALUE in the
+# .otto-gw.overrides.env file. Sibling to set_env_line, but with the
+# overrides-file contract:
+#   - Always writes UNCOMMENTED. The overrides file never carries commented
+#     operator values; absence == "not customized".
+#   - If FILE does not exist, create it with a small header that explains
+#     the two-file model and the load-order win-condition, mode 0600.
+#   - If KEY already exists, rewrite the line in place (awk → tmpfile → mv
+#     pattern, same as set_env_line).
+#   - Mode is always re-asserted to 0600 post-write — overrides hold secrets.
+set_overrides_line() {
+    local file="$1" KEY="$2" VAL="$3"
+    if [[ ! -f "$file" ]]; then
+        local ts
+        ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        {
+            printf '# Generated by '"'"'otto-gw init'"'"' / '"'"'otto-gw migrate-to-overrides'"'"' on %s\n' "$ts"
+            printf '# Operator customizations + secrets. Loaded AFTER .otto-gw.env, so values here WIN.\n'
+            printf '# Safe to hand-edit. Will NEVER be overwritten by '"'"'otto-gw upgrade-env'"'"'.\n'
+            printf '\n'
+        } > "$file"
+        chmod 600 "$file"
+    fi
+    # If the key already exists (commented or not), rewrite it in place.
+    # Otherwise append at end. We use a grep+awk dance so the contract
+    # ("always uncommented") holds whether or not a commented form exists.
+    if grep -qE "^[[:space:]]*#?[[:space:]]*${KEY}=" "$file"; then
+        awk -v key="$KEY" -v val="$VAL" '
+          $0 ~ ("^[[:space:]]*#?[[:space:]]*" key "=") {
+            print key "=" val
+            next
+          }
+          { print }
+        ' "$file" > "${file}.tmp" && mv "${file}.tmp" "$file"
+    else
+        printf '%s=%s\n' "$KEY" "$VAL" >> "$file"
+    fi
+    chmod 600 "$file"
+}
+
 # env_is_uncommented returns 0 if KEY= appears UNCOMMENTED in $1, else 1.
 # Used by re-init to derive auth_enabled (uncommented AUTH_TOKEN) and
 # chat_trace_enabled (uncommented CHAT_TRACE=true) state from the
@@ -195,6 +348,7 @@ apply_cli_flags() {
 # parsed uniformly so callers can preview "what would happen with
 # secrets visible." Anything not recognised → `unknown flag` exit.
 parse_flags() {
+    # shellcheck disable=SC2034  # FLAG_OVERRIDES_DEST is consumed by migrate-to-overrides (Task 3 in 260531-tl1).
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --pii)           FLAG_PII_MODE="$2"; shift 2 ;;
@@ -211,6 +365,16 @@ parse_flags() {
             --auth=*)        FLAG_AUTH="${1#*=}"; shift ;;
             --env-file)      ENV_FILE_OVERRIDE="$2"; shift 2 ;;
             --env-file=*)    ENV_FILE_OVERRIDE="${1#*=}"; shift ;;
+            --overrides-file)     OVERRIDES_FILE_OVERRIDE="$2"; shift 2 ;;
+            --overrides-file=*)   OVERRIDES_FILE_OVERRIDE="${1#*=}"; shift ;;
+            --template)      TEMPLATE_FILE_OVERRIDE="$2"; shift 2 ;;
+            --template=*)    TEMPLATE_FILE_OVERRIDE="${1#*=}"; shift ;;
+            --dest)          FLAG_DEST="$2"; shift 2 ;;
+            --dest=*)        FLAG_DEST="${1#*=}"; shift ;;
+            --overrides-dest)   FLAG_OVERRIDES_DEST="$2"; shift 2 ;;
+            --overrides-dest=*) FLAG_OVERRIDES_DEST="${1#*=}"; shift ;;
+            --dry-run)       FLAG_DRY_RUN=1; shift ;;
+            --yes)           FLAG_YES=1; shift ;;
             --show-secrets)  FLAG_SHOW_SECRETS=1; shift ;;
             --debug)         FLAG_DEBUG=1; shift ;;
             --trace)         FLAG_TRACE=1; shift ;;
@@ -219,11 +383,78 @@ parse_flags() {
     done
 }
 
-# load_config is the standard pre-launch hook: resolve .env → source it
-# → apply flag overrides. Idempotent; safe to call from start/restart/
-# run/env.
+# _deprecation_warn_emitted sentinel for detect_single_file_model — keeps
+# the deprecation WARN line from repeating inside a single wrapper
+# invocation. Mirrors the _reap_kiro_done pattern.
+_deprecation_warn_emitted=""
+
+# detect_single_file_model — emit a one-line deprecation WARN when the
+# operator is running on the legacy single-file install model (no
+# .otto-gw.overrides.env, .otto-gw.env carries uncommented operator
+# values). The WARN goes to stderr to keep structured-log capture clean.
+#
+# Single-file model is detected when ALL of:
+#   1. No .otto-gw.overrides.env on any of the resolved overrides paths.
+#   2. A .otto-gw.env (the single-file form) exists.
+#   3. At least one of AUTH_TOKEN, PII_HASH_KEY, HTTP_ADDR is uncommented
+#      with a non-placeholder value, OR KIRO_CMD is uncommented and
+#      non-empty. These are the keys init writes uncommented and that
+#      meaningfully indicate operator customization (vs. a virgin
+#      template copy).
+#
+# Explicitly NOT an error and NOT auto-migrating — operator decides when
+# to run `otto-gw migrate-to-overrides`. Single-file support is scheduled
+# for removal in v1.7.
+detect_single_file_model() {
+    [[ -n "$_deprecation_warn_emitted" ]] && return 0
+    local env_file overrides_file
+    env_file="$(resolve_env_file)"
+    overrides_file="$(resolve_overrides_file)"
+
+    # Conditions 1 + 2 — clean misses end the check.
+    [[ -n "$env_file" && -f "$env_file" ]] || return 0
+    [[ -z "$overrides_file" || ! -f "$overrides_file" ]] || return 0
+
+    # Condition 3 — at least one operator-set tell-tale key.
+    local has_operator_value=0
+    local k val
+    for k in AUTH_TOKEN PII_HASH_KEY HTTP_ADDR; do
+        if env_is_uncommented "$env_file" "$k"; then
+            val="$(extract_env_any "$env_file" "$k" 2>/dev/null || true)"
+            case "$val" in
+                # Skip the template's placeholder values; they don't count
+                # as "operator-set" for the deprecation heuristic.
+                ""|"replace-me"|"replace-with-32-byte-secret-key-here") ;;
+                *) has_operator_value=1; break ;;
+            esac
+        fi
+    done
+    if [[ "$has_operator_value" -ne 1 ]]; then
+        if env_is_uncommented "$env_file" KIRO_CMD; then
+            val="$(extract_env_any "$env_file" KIRO_CMD 2>/dev/null || true)"
+            [[ -n "$val" ]] && has_operator_value=1
+        fi
+    fi
+    [[ "$has_operator_value" -eq 1 ]] || return 0
+
+    _deprecation_warn_emitted=1
+    echo "otto-gw: legacy single-file .env model detected — run \`otto-gw migrate-to-overrides\` to split secrets/overrides into .otto-gw.overrides.env. Single-file support will be removed in v1.7." >&2
+}
+
+# load_config is the standard pre-launch hook: resolve .env → source it,
+# resolve overrides → source it (last-write-wins, so overrides values win),
+# then apply CLI flag overrides. Idempotent; safe to call from start /
+# restart / run / env.
+#
+# Two-file model (locked in 260531-tl1 CONTEXT.md Decision 1):
+#   1. .otto-gw.env (generated, byte-for-byte template copy, never edited by
+#      operator). load_env_file's `export "$key=$val"` is intentionally
+#      last-write-wins, so any commented line in this file is a no-op.
+#   2. .otto-gw.overrides.env (operator-owned, contains only the keys the
+#      operator wants to set). Loaded SECOND so its KEY= line clobbers the
+#      same KEY= from the generated file (the override mechanism).
 load_config() {
-    local env_file
+    local env_file overrides_file
     env_file="$(resolve_env_file)"
     if [[ -n "$env_file" ]]; then
         load_env_file "$env_file"
@@ -233,6 +464,18 @@ load_config() {
         # os.Getenv("OTTO_ENV_FILE_LOADED") at startup.
         export OTTO_ENV_FILE_LOADED="$env_file"
     fi
+    overrides_file="$(resolve_overrides_file)"
+    if [[ -n "$overrides_file" && -f "$overrides_file" ]]; then
+        load_env_file "$overrides_file"
+        echo "loaded overrides:  $overrides_file" >&2
+        # Sibling of OTTO_ENV_FILE_LOADED — gives the gateway both files for
+        # /api/version + observability without re-walking the resolver chain.
+        export OTTO_OVERRIDES_FILE_LOADED="$overrides_file"
+    fi
+    # One-shot deprecation warning when the legacy single-file model is in use.
+    # The sentinel inside the function keeps the line from repeating across
+    # multiple load_config calls inside one wrapper invocation.
+    detect_single_file_model
     apply_cli_flags
 }
 
@@ -653,6 +896,272 @@ gen_random_hex() {
     fi
 }
 
+# upgrade_env_cmd regenerates the generated `.otto-gw.env` from the
+# `.env.otto-gw.example` template, reporting which keys would be added /
+# orphaned / left unchanged. Operator customizations live in the
+# `.otto-gw.overrides.env` file (loaded last by load_config) and are NEVER
+# touched by this command — the whole point of the two-file model.
+#
+# Subcommand contract (locked in 260531-tl1 CONTEXT.md Decision 3):
+#   - --dry-run   print the diff (added / orphaned / unchanged), exit 0,
+#                 leave disk unchanged.
+#   - default     prompt to overwrite (unless --yes), then regenerate the
+#                 dest file from the template and append the orphan log.
+#   - --yes       skip the confirmation prompt (CI-friendly).
+#   - --template  override template path (handy for unreleased templates).
+#   - --dest      override the resolved `.otto-gw.env` path.
+upgrade_env_cmd() {
+    parse_flags "$@"
+    local template dest
+    if ! template="$(resolve_template_file)"; then
+        echo "ERROR: upgrade-env template not found." >&2
+        echo "       Looked at: ${TEMPLATE_FILE_OVERRIDE:-${OTTO_TEMPLATE_FILE:-$OTTO_SCRIPT_DIR/.env.otto-gw.example}}" >&2
+        exit 1
+    fi
+    dest="${FLAG_DEST:-}"
+    if [[ -z "$dest" ]]; then
+        dest="$(resolve_env_file)"
+    fi
+    # Cold-init fallback: if nothing exists yet, default to project-local.
+    [[ -z "$dest" ]] && dest="${DEFAULT_ENV_PATHS[0]}"
+
+    # Build sorted line-lists for the set-diff. comm requires sorted inputs.
+    local t_sorted c_sorted
+    t_sorted="$(template_keys "$template" | sort -u)"
+    if [[ -f "$dest" ]]; then
+        c_sorted="$(env_keys_present "$dest" | sort -u)"
+    else
+        c_sorted=""
+    fi
+
+    # `comm -23 A B` = lines unique to A (in template, missing from dest) = added.
+    # `comm -13 A B` = lines unique to B (in dest, missing from template) = orphaned.
+    # `comm -12 A B` = lines in both = unchanged.
+    # Process substitution is bash-3.2 safe (it's a bash builtin, not a 4.x feature).
+    local added orphaned unchanged
+    added="$(comm -23 <(printf '%s\n' "$t_sorted") <(printf '%s\n' "$c_sorted") | grep -v '^$' || true)"
+    orphaned="$(comm -13 <(printf '%s\n' "$t_sorted") <(printf '%s\n' "$c_sorted") | grep -v '^$' || true)"
+    unchanged="$(comm -12 <(printf '%s\n' "$t_sorted") <(printf '%s\n' "$c_sorted") | grep -v '^$' || true)"
+
+    local n_added n_orphaned n_unchanged
+    n_added="$(printf '%s\n' "$added"   | grep -c . || true)"
+    n_orphaned="$(printf '%s\n' "$orphaned" | grep -c . || true)"
+    n_unchanged="$(printf '%s\n' "$unchanged" | grep -c . || true)"
+
+    echo "otto-gw upgrade-env:"
+    echo "  template: $template"
+    echo "  dest:     $dest"
+    if [[ "$n_added" -gt 0 ]]; then
+        # Compact: count plus space-joined key list.
+        local joined; joined="$(printf '%s\n' "$added" | tr '\n' ' ' | sed 's/ $//')"
+        echo "  added:     $n_added ($joined)"
+    else
+        echo "  added:     0"
+    fi
+    if [[ "$n_orphaned" -gt 0 ]]; then
+        local joined; joined="$(printf '%s\n' "$orphaned" | tr '\n' ' ' | sed 's/ $//')"
+        echo "  orphaned:  $n_orphaned ($joined)"
+    else
+        echo "  orphaned:  0"
+    fi
+    echo "  unchanged: $n_unchanged"
+
+    if [[ "${FLAG_DRY_RUN:-0}" == "1" ]]; then
+        echo "(dry-run; nothing written)"
+        return 0
+    fi
+
+    # Confirm before overwriting (skip when --yes). A non-existent dest is
+    # effectively a cold init; no confirm needed because nothing is being
+    # destroyed.
+    if [[ "${FLAG_YES:-0}" != "1" && -f "$dest" ]]; then
+        local reply
+        read -r -p "Overwrite $dest with current template? [y/N]: " reply
+        case "$reply" in
+            [Yy]|[Yy][Ee][Ss]) ;;
+            *) echo "cancelled" >&2; exit 1 ;;
+        esac
+    fi
+
+    # Write the orphan log BEFORE overwriting. If a SIGKILL lands between the
+    # log write and the cp, the operator still has their old file AND a log
+    # of what was about to be lost. The default location is per-user (~);
+    # OTTO_UPGRADE_LOG overrides for CI installs without $HOME.
+    local upgrade_log
+    if [[ -n "${OTTO_UPGRADE_LOG:-}" ]]; then
+        upgrade_log="$OTTO_UPGRADE_LOG"
+    elif [[ -n "${HOME:-}" ]]; then
+        upgrade_log="$HOME/.otto-gw.upgrade.log"
+    else
+        # Per Risk #8 in PLAN.md: never silently swallow the orphan log.
+        upgrade_log="./.otto-gw.upgrade.log"
+    fi
+    if [[ "$n_orphaned" -gt 0 ]]; then
+        local ts k v
+        ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        {
+            echo "# $ts upgrade-env removed orphaned keys from $dest"
+            for k in $orphaned; do
+                v="$(extract_env_any "$dest" "$k" 2>/dev/null || echo '<unset>')"
+                echo "$k=$v"
+            done
+            echo "# ---"
+        } >> "$upgrade_log"
+        echo "  orphan values logged to: $upgrade_log"
+    fi
+
+    # Regenerate dest as a literal byte-for-byte copy of the template. The
+    # generated file's contract under the new model is "pure template copy";
+    # the operator's customizations live in .otto-gw.overrides.env (which
+    # we never touch here).
+    cp "$template" "$dest"
+    chmod 644 "$dest"
+    echo "✓ wrote $dest"
+}
+
+# migrate_to_overrides_cmd performs the one-time migration from the legacy
+# single-file model to the two-file (env + overrides) model. Extracts every
+# uncommented key from the current `.otto-gw.env` whose value differs from
+# the template default, writes those to `.otto-gw.overrides.env`, backs up
+# the original `.otto-gw.env`, and regenerates the env file from the
+# template (pure copy under the new contract).
+#
+# Idempotency (locked in 260531-tl1 CONTEXT.md Decision 4): re-running on an
+# already-migrated install is a no-op. The check: overrides file exists AND
+# the current .otto-gw.env is byte-identical to the template (i.e. nothing
+# to migrate).
+#
+# Secrets (AUTH_TOKEN, PII_HASH_KEY) are ALWAYS carried across when
+# uncommented in the source file, even if their value happens to equal the
+# template placeholder — they're load-bearing for client auth + hash-mode
+# correlation, never "default".
+migrate_to_overrides_cmd() {
+    parse_flags "$@"
+    local template dest overrides_dest
+    if ! template="$(resolve_template_file)"; then
+        echo "ERROR: migrate-to-overrides template not found." >&2
+        echo "       Looked at: ${TEMPLATE_FILE_OVERRIDE:-${OTTO_TEMPLATE_FILE:-$OTTO_SCRIPT_DIR/.env.otto-gw.example}}" >&2
+        exit 1
+    fi
+    dest="${FLAG_DEST:-}"
+    if [[ -z "$dest" ]]; then
+        dest="$(resolve_env_file)"
+    fi
+    if [[ -z "$dest" || ! -f "$dest" ]]; then
+        echo "ERROR: migrate-to-overrides: no .otto-gw.env found at ${dest:-<unresolved>}." >&2
+        echo "       Run 'otto-gw init' first, or pass --dest PATH explicitly." >&2
+        exit 1
+    fi
+    # Default overrides location: sibling of $dest with the canonical
+    # overrides name. Honors $FLAG_OVERRIDES_DEST when set.
+    if [[ -n "${FLAG_OVERRIDES_DEST:-}" ]]; then
+        overrides_dest="$FLAG_OVERRIDES_DEST"
+    else
+        local dest_dir; dest_dir="$(dirname "$dest")"
+        # Map the dest filename back to the canonical overrides filename:
+        #   ~/.otto-gw.env       → ~/.otto-gw.overrides.env
+        #   ./.env.otto-gw       → ./.otto-gw.overrides.env
+        # Per-user installs use the dotted "$HOME/.otto-gw.overrides.env"
+        # form; project-local installs use "./.otto-gw.overrides.env". The
+        # default search list (DEFAULT_OVERRIDES_PATHS) honors both shapes,
+        # so the runtime loader picks this up automatically.
+        overrides_dest="$dest_dir/.otto-gw.overrides.env"
+    fi
+
+    # Idempotency: if overrides exists AND dest is bit-identical to the
+    # template, nothing to do. Use diff's exit status rather than parsing
+    # stdout so the check stays terse.
+    if [[ -f "$overrides_dest" ]] && diff -q "$dest" "$template" >/dev/null 2>&1; then
+        echo "already migrated (no-op)"
+        echo "  dest:      $dest"
+        echo "  overrides: $overrides_dest"
+        return 0
+    fi
+
+    # Build the migration list: every uncommented key in dest whose value
+    # differs from the template default. Bash 3.2 — no associative arrays;
+    # use a space-separated string.
+    local migrations=""
+    local k cur def
+    while IFS= read -r k; do
+        [[ -n "$k" ]] || continue
+        env_is_uncommented "$dest" "$k" || continue
+        cur="$(extract_env_any "$dest" "$k" 2>/dev/null || true)"
+        def="$(extract_default_value "$template" "$k" 2>/dev/null || echo "<MISSING>")"
+        if [[ "$cur" != "$def" ]]; then
+            migrations="${migrations:+$migrations }$k"
+        fi
+    done < <(env_keys_present "$dest")
+
+    # Always carry the load-bearing secrets across if they're uncommented in
+    # the source file, even when their value coincidentally matches the
+    # template placeholder. They're per-install and never "default" in any
+    # meaningful sense.
+    for k in AUTH_TOKEN PII_HASH_KEY; do
+        if env_is_uncommented "$dest" "$k"; then
+            case " $migrations " in
+                *" $k "*) ;;
+                *) migrations="${migrations:+$migrations }$k" ;;
+            esac
+        fi
+    done
+
+    if [[ -z "$migrations" ]]; then
+        echo "migrate-to-overrides: nothing to migrate (no operator-set keys differ from template defaults)."
+        echo "  dest:      $dest"
+        echo "  overrides: $overrides_dest"
+        return 0
+    fi
+
+    echo "otto-gw migrate-to-overrides:"
+    echo "  dest:      $dest"
+    echo "  overrides: $overrides_dest"
+    echo "  would migrate: $migrations"
+
+    if [[ "${FLAG_DRY_RUN:-0}" == "1" ]]; then
+        echo "(dry-run; no changes written)"
+        return 0
+    fi
+
+    # Confirm destructive overwrite of $dest. The overrides file is
+    # append-or-create (set_overrides_line) so it's not in the confirm scope.
+    if [[ "${FLAG_YES:-0}" != "1" ]]; then
+        local reply
+        read -r -p "Backup $dest and regenerate from template? [y/N]: " reply
+        case "$reply" in
+            [Yy]|[Yy][Ee][Ss]) ;;
+            *) echo "cancelled" >&2; exit 1 ;;
+        esac
+    fi
+
+    # Backup BEFORE any disk mutation so a SIGKILL leaves the operator with
+    # both files intact and a clear recovery path.
+    local backup
+    backup="${dest}.pre-migrate.$(date -u +%Y%m%dT%H%M%SZ)"
+    cp "$dest" "$backup"
+    echo "  backup: $backup"
+
+    # Write migrations to overrides — set_overrides_line creates the file
+    # with a header + 0600 mode when missing, and re-asserts the mode on
+    # rewrites.
+    local v
+    for k in $migrations; do
+        v="$(extract_env_any "$dest" "$k" 2>/dev/null || true)"
+        set_overrides_line "$overrides_dest" "$k" "$v"
+    done
+
+    # Regenerate dest as a pure template copy (the new contract).
+    cp "$template" "$dest"
+    chmod 644 "$dest"
+
+    # Count words in $migrations safely (avoid wc/tr quirks when empty).
+    local count=0
+    for k in $migrations; do count=$((count + 1)); done
+    echo "✓ migrated $count key(s) to $overrides_dest"
+    echo "✓ regenerated $dest from template"
+    echo "✓ backup at  $backup"
+}
+
 # init writes a starter .env file populated with sensible defaults and
 # freshly-generated AUTH_TOKEN + PII_HASH_KEY. Designed as the very
 # first command a new operator runs after extracting the tarball.
@@ -727,36 +1236,80 @@ init_cmd() {
     local existing_auth_token="" existing_hash_key="" existing_pii_enabled=""
     local existing_auth_enabled="" existing_chat_trace=""
     local existing_idle_timeout=""
+
+    # Pre-resolve the overrides path so existing-value lookup can read from
+    # BOTH dest AND overrides_dest, with overrides winning on conflict
+    # (matches runtime loader precedence). Honors --overrides-dest.
+    local _existing_overrides_dest=""
+    if [[ -n "${FLAG_OVERRIDES_DEST:-}" ]]; then
+        _existing_overrides_dest="$FLAG_OVERRIDES_DEST"
+    else
+        local _existing_dest_dir; _existing_dest_dir="$(dirname "$dest")"
+        _existing_overrides_dest="$_existing_dest_dir/.otto-gw.overrides.env"
+    fi
+
+    # Inline helper: read KEY from $dest first, then $_existing_overrides_dest
+    # (if present); overrides value wins. Echoes the resolved value.
+    _extract_existing() {
+        local _k="$1" _v_dest="" _v_over=""
+        _v_dest="$(extract_env_any "$dest" "$_k" 2>/dev/null || true)"
+        if [[ -f "$_existing_overrides_dest" ]]; then
+            _v_over="$(extract_env_any "$_existing_overrides_dest" "$_k" 2>/dev/null || true)"
+        fi
+        if [[ -n "$_v_over" ]]; then
+            printf '%s' "$_v_over"
+        else
+            printf '%s' "$_v_dest"
+        fi
+    }
+    # Sibling: "is KEY uncommented in EITHER dest or overrides_dest?"
+    _existing_uncommented() {
+        local _k="$1"
+        if env_is_uncommented "$dest" "$_k"; then return 0; fi
+        if [[ -f "$_existing_overrides_dest" ]] && env_is_uncommented "$_existing_overrides_dest" "$_k"; then return 0; fi
+        return 1
+    }
+
     if [[ "$force" -eq 1 && -e "$dest" ]]; then
         if [[ ! -r "$dest" ]]; then
             echo "ERROR: $dest exists but is not readable. Check file permissions." >&2
             exit 1
         fi
         reinit=1
-        existing_kiro="$(extract_env_any "$dest" KIRO_CMD 2>/dev/null || true)"
-        existing_addr="$(extract_env_any "$dest" HTTP_ADDR 2>/dev/null || true)"
-        existing_pii_mode="$(extract_env_any "$dest" PII_REDACTION_MODE 2>/dev/null || true)"
-        existing_pii_enabled="$(extract_env_any "$dest" PII_REDACTION_ENABLED 2>/dev/null || true)"
+        existing_kiro="$(_extract_existing KIRO_CMD)"
+        existing_addr="$(_extract_existing HTTP_ADDR)"
+        existing_pii_mode="$(_extract_existing PII_REDACTION_MODE)"
+        existing_pii_enabled="$(_extract_existing PII_REDACTION_ENABLED)"
         # Two-knob model: a disabled file is "off" regardless of the stored
         # mode, so re-init preserves "off" instead of resurrecting the
         # placeholder mode we write when disabled.
         case "$existing_pii_enabled" in
             false|FALSE|False|0) existing_pii_mode="off" ;;
         esac
-        existing_auth_token="$(extract_env_any "$dest" AUTH_TOKEN 2>/dev/null || true)"
-        existing_hash_key="$(extract_env_any "$dest" PII_HASH_KEY 2>/dev/null || true)"
-        existing_idle_timeout="$(extract_env_any "$dest" STREAM_IDLE_TIMEOUT_SEC 2>/dev/null || true)"
-        if env_is_uncommented "$dest" AUTH_TOKEN; then
+        existing_auth_token="$(_extract_existing AUTH_TOKEN)"
+        existing_hash_key="$(_extract_existing PII_HASH_KEY)"
+        # STREAM_IDLE_TIMEOUT_SEC is only "operator-set" when it's uncommented
+        # in EITHER file. extract_env_any matches commented forms, so without
+        # this gate a virgin install would read "30" out of the template's
+        # commented default and then write it to overrides on re-init — a
+        # Rule-1 bug (Task 3 in 260531-tl1). Keep empty when commented so the
+        # idle-timeout block below leaves the template's commented default
+        # in place.
+        if _existing_uncommented STREAM_IDLE_TIMEOUT_SEC; then
+            existing_idle_timeout="$(_extract_existing STREAM_IDLE_TIMEOUT_SEC)"
+        else
+            existing_idle_timeout=""
+        fi
+        if _existing_uncommented AUTH_TOKEN; then
             existing_auth_enabled=1
         else
             existing_auth_enabled=0
         fi
-        # CHAT_TRACE is "enabled" only when the line is uncommented AND the
-        # value parses to true. Anything else (commented, "false", missing)
-        # → disabled.
-        if env_is_uncommented "$dest" CHAT_TRACE; then
+        # CHAT_TRACE is "enabled" only when the line is uncommented (in
+        # either file) AND the value parses to true.
+        if _existing_uncommented CHAT_TRACE; then
             local existing_chat_val
-            existing_chat_val="$(extract_env_any "$dest" CHAT_TRACE 2>/dev/null || true)"
+            existing_chat_val="$(_extract_existing CHAT_TRACE)"
             case "$existing_chat_val" in
                 true|TRUE|True|1|yes) existing_chat_trace=1 ;;
                 *)                    existing_chat_trace=0 ;;
@@ -922,9 +1475,11 @@ init_cmd() {
     fi
 
     # Ensure template exists — it is the single source of truth for the key list.
-    local template_file="$OTTO_SCRIPT_DIR/.env.otto-gw.example"
-    if [[ ! -f "$template_file" ]]; then
-        echo "ERROR: init template not found: $template_file" >&2
+    # Respect --template if the operator overrode it via parse_flags above.
+    local template_file
+    if ! template_file="$(resolve_template_file)"; then
+        local sought="${TEMPLATE_FILE_OVERRIDE:-${OTTO_TEMPLATE_FILE:-$OTTO_SCRIPT_DIR/.env.otto-gw.example}}"
+        echo "ERROR: init template not found: $sought" >&2
         echo "       The file scripts/.env.otto-gw.example must ship alongside otto-gw." >&2
         exit 1
     fi
@@ -933,47 +1488,126 @@ init_cmd() {
     local dest_dir; dest_dir="$(dirname "$dest")"
     [[ -n "$dest_dir" && "$dest_dir" != "." ]] && mkdir -p "$dest_dir"
 
-    # Copy template, strip instructional header, prepend generated header.
-    # The header is the leading comment-only block up to the first blank line.
-    {
-        printf '# Generated by '"'"'otto-gw init'"'"' on %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-        printf '# Edit any value; restart the gateway to apply.\n'
-        printf '\n'
-        awk 'NR==1 && /^#/ { in_header=1 }
-             in_header && /^$/ { in_header=0; next }
-             in_header { next }
-             { print }' "$template_file"
-    } > "$dest"
+    # Two-file model contract (260531-tl1 CONTEXT.md Decision 5 + Q3):
+    #   - `.otto-gw.env` is ALWAYS a byte-for-byte template copy. No
+    #     set_env_line writes happen against it. mode 0644.
+    #   - `.otto-gw.overrides.env` carries every operator customization
+    #     (uncommented) — secrets always, other knobs only when the
+    #     operator explicitly set them or the install came in via re-init
+    #     migration. mode 0600.
 
-    # Apply per-install resolved values to the template copy.
-    set_env_line "$dest" AUTH_TOKEN             "$auth_token"          "$( [[ "$auth_enabled" -ne 1 ]] && echo 1 || echo 0 )"
-    set_env_line "$dest" KIRO_CMD               "$kiro_cmd"            "0"
-    set_env_line "$dest" HTTP_ADDR              "$http_addr"           "0"
-    set_env_line "$dest" ENABLED_HOOKS          "$enabled_hooks_value" "0"
-    set_env_line "$dest" PII_REDACTION_ENABLED  "$pii_enabled"         "0"
-    set_env_line "$dest" PII_REDACTION_MODE     "$pii_mode_value"      "0"
-    set_env_line "$dest" PII_HASH_KEY           "$hash_key"            "0"
-    set_env_line "$dest" CHAT_TRACE             "$chat_trace_value"    "$( [[ "$chat_trace" -ne 1 ]] && echo 1 || echo 0 )"
-    set_env_line "$dest" STREAM_IDLE_TIMEOUT_SEC "$idle_timeout_value"  "$idle_timeout_commented"
+    # Resolve overrides_dest. Default = sibling of $dest with the canonical
+    # overrides name. Honors --overrides-dest (FLAG_OVERRIDES_DEST).
+    local overrides_dest
+    if [[ -n "${FLAG_OVERRIDES_DEST:-}" ]]; then
+        overrides_dest="$FLAG_OVERRIDES_DEST"
+    else
+        overrides_dest="$dest_dir/.otto-gw.overrides.env"
+    fi
 
-    chmod 600 "$dest"
+    # Pre-flight migration: re-init on a legacy single-file install. If
+    # --force AND $dest exists AND no overrides file is present AND the
+    # dest has uncommented operator values, run a silent migration BEFORE
+    # the normal init flow. This means a v1.6.10 → current `init --force`
+    # auto-migrates without a separate command. One INFO line surfaces
+    # what happened so it's never invisible.
+    if [[ "$reinit" -eq 1 && ! -f "$overrides_dest" ]]; then
+        local pre_migrate_needed=0
+        # Quick heuristic — any of these uncommented (and the secret values
+        # not at the template placeholder) ⇒ migrate.
+        if env_is_uncommented "$dest" AUTH_TOKEN || \
+           env_is_uncommented "$dest" KIRO_CMD || \
+           env_is_uncommented "$dest" PII_HASH_KEY || \
+           env_is_uncommented "$dest" HTTP_ADDR; then
+            pre_migrate_needed=1
+        fi
+        if [[ "$pre_migrate_needed" -eq 1 ]]; then
+            echo "note: detected pre-overrides install — migrating to overrides model"
+            local pre_backup
+            pre_backup="${dest}.pre-migrate.$(date -u +%Y%m%dT%H%M%SZ)"
+            cp "$dest" "$pre_backup"
+            local mk_pre mv_pre def_pre
+            while IFS= read -r mk_pre; do
+                [[ -n "$mk_pre" ]] || continue
+                env_is_uncommented "$dest" "$mk_pre" || continue
+                mv_pre="$(extract_env_any "$dest" "$mk_pre" 2>/dev/null || true)"
+                def_pre="$(extract_default_value "$template_file" "$mk_pre" 2>/dev/null || echo "<MISSING>")"
+                if [[ "$mv_pre" != "$def_pre" ]]; then
+                    set_overrides_line "$overrides_dest" "$mk_pre" "$mv_pre"
+                fi
+            done < <(env_keys_present "$dest")
+            # Always preserve secrets across the auto-migration.
+            for mk_pre in AUTH_TOKEN PII_HASH_KEY; do
+                if env_is_uncommented "$dest" "$mk_pre"; then
+                    mv_pre="$(extract_env_any "$dest" "$mk_pre" 2>/dev/null || true)"
+                    [[ -n "$mv_pre" ]] && set_overrides_line "$overrides_dest" "$mk_pre" "$mv_pre"
+                fi
+            done
+            echo "  pre-init backup: $pre_backup"
+            echo "  overrides:       $overrides_dest"
+        fi
+    fi
 
-    echo "✓ wrote $dest (mode 0600)"
+    # Step 1: regenerate $dest as a byte-for-byte template copy.
+    cp "$template_file" "$dest"
+    chmod 644 "$dest"
+
+    # Step 2: write each operator customization to $overrides_dest. Rules
+    # follow Q3's "always write to overrides" decision:
+    #   - Secrets ALWAYS land in overrides (PII_HASH_KEY always; AUTH_TOKEN
+    #     only when auth is enabled).
+    #   - PII_REDACTION_ENABLED + PII_REDACTION_MODE always land — operator
+    #     decisions even at defaults.
+    #   - Other knobs (HTTP_ADDR, KIRO_CMD, CHAT_TRACE, ENABLED_HOOKS,
+    #     STREAM_IDLE_TIMEOUT_SEC) only when set to a non-default /
+    #     non-empty value.
+    if [[ "$auth_enabled" -eq 1 ]]; then
+        set_overrides_line "$overrides_dest" AUTH_TOKEN "$auth_token"
+    fi
+    set_overrides_line "$overrides_dest" PII_HASH_KEY "$hash_key"
+    set_overrides_line "$overrides_dest" PII_REDACTION_ENABLED "$pii_enabled"
+    set_overrides_line "$overrides_dest" PII_REDACTION_MODE "$pii_mode_value"
+    if [[ -n "$kiro_cmd" ]]; then
+        set_overrides_line "$overrides_dest" KIRO_CMD "$kiro_cmd"
+    fi
+    if [[ -n "$http_addr" ]]; then
+        set_overrides_line "$overrides_dest" HTTP_ADDR "$http_addr"
+    fi
+    if [[ "$chat_trace" -eq 1 ]]; then
+        set_overrides_line "$overrides_dest" CHAT_TRACE "$chat_trace_value"
+        # ChatTraceHook prefix is load-bearing when chat-trace is on
+        # (chain.Filter strips it otherwise); write only when needed.
+        set_overrides_line "$overrides_dest" ENABLED_HOOKS "$enabled_hooks_value"
+    fi
+    if [[ "$idle_timeout_commented" == "0" ]]; then
+        set_overrides_line "$overrides_dest" STREAM_IDLE_TIMEOUT_SEC "$idle_timeout_value"
+    fi
+
+    # set_overrides_line already chmod 600's after each write, but
+    # re-assert for the pre-existing-file case (idempotent).
+    chmod 600 "$overrides_dest" 2>/dev/null || true
+
+    echo "✓ wrote $dest                  (template copy, mode 0644)"
+    echo "✓ wrote $overrides_dest  (operator config + secrets, mode 0600)"
     if [[ "$auth_enabled" -eq 1 ]]; then
         if [[ "$auth_token_preserved" -eq 1 ]]; then
             echo "  AUTH:          enabled (token preserved from prior install)"
         else
-            echo "  AUTH:          enabled (AUTH_TOKEN=$(echo "$auth_token" | head -c 8)…)"
+            echo "  AUTH:          enabled (AUTH_TOKEN=$(echo "$auth_token" | head -c 8)… in overrides)"
         fi
     else
-        echo "  AUTH:          disabled (AUTH_TOKEN line commented; pregenerated token in file)"
+        echo "  AUTH:          disabled (no AUTH_TOKEN in overrides; commented placeholder in .otto-gw.env)"
     fi
     if [[ "$hash_key_preserved" -eq 1 ]]; then
         echo "  PII_HASH_KEY:  preserved (existing key reused)"
     else
         echo "  PII_HASH_KEY:  $(echo "$hash_key" | head -c 8)…(generated)"
     fi
-    [[ -n "$kiro_cmd" ]] && echo "  KIRO_CMD:      $kiro_cmd" || echo "  KIRO_CMD:      (unset -- chat will 503 until you set it)"
+    if [[ -n "$kiro_cmd" ]]; then
+        echo "  KIRO_CMD:      $kiro_cmd"
+    else
+        echo "  KIRO_CMD:      (unset -- chat will 503 until you set it)"
+    fi
     echo "  HTTP_ADDR:     $http_addr"
     echo "  PII:           $pii_mode"
     if [[ "$chat_trace" -eq 1 ]]; then
@@ -1024,6 +1658,15 @@ Commands:
   run [flags]         Run gateway in foreground
   env [--show-secrets]
                       Print the resolved gateway env that would be passed
+  upgrade-env [flags] Regenerate .otto-gw.env from the latest .env.otto-gw.example
+                      template. Operator customizations in .otto-gw.overrides.env
+                      are NEVER touched. --dry-run shows the added / orphaned /
+                      unchanged keys without writing.
+  migrate-to-overrides [flags]
+                      One-time migration from the legacy single-file model:
+                      extract non-default values from .otto-gw.env into
+                      .otto-gw.overrides.env, back up the original, then
+                      regenerate .otto-gw.env from the template. Idempotent.
   version             Print the gateway binary version (delegates to bin/otto-gateway --version)
 
 Gateway config flags (for start | restart | run | env):
@@ -1036,6 +1679,16 @@ Gateway config flags (for start | restart | run | env):
   --debug             DEBUG=true (debug-level logging) for start | restart | run
   --trace             DEBUG=true + CHAT_TRACE=true (debug + chat-trace NDJSON) for start | restart | run
   --env-file PATH     Override the default .env search
+  --overrides-file PATH  Override the default .otto-gw.overrides.env search
+
+upgrade-env / migrate-to-overrides flags:
+  --template PATH     Override the .env.otto-gw.example resolution
+  --dest PATH         Override the resolved .otto-gw.env target (default: the
+                      same path resolve_env_file would pick)
+  --overrides-dest PATH (migrate-to-overrides) override the resolved overrides
+                      target (default: sibling of --dest)
+  --dry-run           Print added / orphaned / unchanged keys; write nothing
+  --yes               Skip the overwrite confirmation prompt (CI-friendly)
 
 init flags:
   --dest PATH         where to write the .env (default $HOME/.otto-gw.env)
@@ -1063,13 +1716,20 @@ init flags:
   --hash-key KEY      use KEY instead of generating
   --non-interactive   don't prompt; use defaults for unspecified values
 
-.env auto-load search:
+.env auto-load search (loaded FIRST):
   1. --env-file PATH                  (CLI override)
   2. $OTTO_ENV_FILE                   (env override)
   3. ./.env.otto-gw                   (project-local)
   4. $HOME/.otto-gw.env               (per-user)
 
-Precedence (highest first): CLI flag → .env file → inherited shell env.
+.otto-gw.overrides.env auto-load search (loaded SECOND; values win on conflict):
+  1. --overrides-file PATH            (CLI override)
+  2. $OTTO_OVERRIDES_FILE             (env override)
+  3. ./.otto-gw.overrides.env         (project-local)
+  4. $HOME/.otto-gw.overrides.env     (per-user)
+
+Precedence (highest first):
+  CLI flag → .otto-gw.overrides.env → .otto-gw.env → inherited shell env.
 
 See scripts/.env.otto-gw.example for a starter template.
 EOF
@@ -1093,5 +1753,7 @@ case "$CMD" in
     status)  status ;;
     logs)    logs "${1:-}" ;;
     version) show_version ;;
+    upgrade-env) upgrade_env_cmd "$@" ;;
+    migrate-to-overrides) migrate_to_overrides_cmd "$@" ;;
     *)       usage ;;
 esac

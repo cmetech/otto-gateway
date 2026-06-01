@@ -22,8 +22,12 @@
 #
 # .env loader (laptop-friendly persistence):
 #   Loads the first match of:  .\.env.otto-gw  →  $HOME\.otto-gw.env
-#   Override with -EnvFile PATH or $env:OTTO_ENV_FILE=PATH.
-#   CLI flags WIN over .env values.
+#   Then chains the first match of:
+#     .\.otto-gw.overrides.env  →  $HOME\.otto-gw.overrides.env
+#   Override either with -EnvFile PATH / -OverridesFile PATH, or with
+#   $env:OTTO_ENV_FILE / $env:OTTO_OVERRIDES_FILE.
+#   The overrides file is loaded SECOND; same-key values win (two-file model).
+#   CLI flags WIN over overrides; overrides WIN over .env.
 
 param(
     [Parameter(Position=0)][string]$Command = "help",
@@ -35,10 +39,15 @@ param(
     [int]$IdleTimeout = -1,
     [switch]$Trace,
     [string]$EnvFile,
+    [string]$OverridesFile,
+    [string]$Template,
     [switch]$ShowSecrets,
     [switch]$Follow,
+    [switch]$DryRun,
+    [switch]$Yes,
     # init subcommand flags:
     [string]$Dest,
+    [string]$OverridesDest,
     [switch]$Here,
     [switch]$Force,
     [switch]$NonInteractive,
@@ -92,12 +101,109 @@ $LogBootErr = if ($env:OTTO_LOGERR) { $env:OTTO_LOGERR } else { [System.IO.Path]
 $HealthUrl  = if ($env:OTTO_ADDR)   { $env:OTTO_ADDR }   else { "http://127.0.0.1:18080" }
 
 $DefaultEnvPaths = @(".\.env.otto-gw", "$env:USERPROFILE\.otto-gw.env")
+# Two-file model (locked in 260531-tl1 CONTEXT.md Decision 1): the overrides
+# file is loaded SECOND so its keys win for any shared key. The .env-file and
+# overrides-file flags are DECOUPLED — setting -EnvFile does NOT auto-resolve
+# a sibling overrides file. Resolution always walks the explicit chain.
+$DefaultOverridesPaths = @(".\.otto-gw.overrides.env", "$env:USERPROFILE\.otto-gw.overrides.env")
 
 function Resolve-EnvFile {
     if ($EnvFile)              { return $EnvFile }
     if ($env:OTTO_ENV_FILE)    { return $env:OTTO_ENV_FILE }
     foreach ($p in $DefaultEnvPaths) {
         if (Test-Path $p) { return $p }
+    }
+    return $null
+}
+
+# Resolve-OverridesFile mirrors Resolve-EnvFile's shape for the .otto-gw.overrides.env
+# layer. Precedence: -OverridesFile > $env:OTTO_OVERRIDES_FILE > project-local
+# > per-user. Returns $null on miss (Initialize-Config gates on that).
+function Resolve-OverridesFile {
+    if ($OverridesFile)             { return $OverridesFile }
+    if ($env:OTTO_OVERRIDES_FILE)   { return $env:OTTO_OVERRIDES_FILE }
+    foreach ($p in $DefaultOverridesPaths) {
+        if (Test-Path $p) { return $p }
+    }
+    return $null
+}
+
+# Resolve-TemplateFile returns the path of .env.otto-gw.example (single source
+# of truth for keys + defaults + docs). Precedence: -Template > $env:OTTO_TEMPLATE_FILE
+# > sibling to this script. Returns $null when the resolved path doesn't exist.
+function Resolve-TemplateFile {
+    $candidate = $null
+    if ($Template) {
+        $candidate = $Template
+    } elseif ($env:OTTO_TEMPLATE_FILE) {
+        $candidate = $env:OTTO_TEMPLATE_FILE
+    } else {
+        $candidate = Join-Path $PSScriptRoot '.env.otto-gw.example'
+    }
+    if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { return $null }
+    return $candidate
+}
+
+# Get-TemplateKeys emits the ordered list of KEY names found in $Path
+# (template OR any env file), one per line. Matches commented and
+# uncommented forms. Defensive: keys must be shell-identifier-shaped so
+# prose comments containing '=' don't get caught as fake keys.
+function Get-TemplateKeys {
+    param([Parameter(Mandatory)][string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) { return @() }
+    $out = New-Object System.Collections.Generic.List[string]
+    Get-Content -LiteralPath $Path | ForEach-Object {
+        $line = $_.TrimStart()
+        if (-not $line) { return }
+        if ($line.StartsWith('#')) {
+            $line = $line.Substring(1).TrimStart()
+            if (-not $line) { return }
+        }
+        if ($line -match '^\s*export\s+') { $line = $line -replace '^\s*export\s+', '' }
+        if ($line -notmatch '=') { return }
+        $key = ($line -split '=', 2)[0]
+        if (-not $key) { return }
+        # Identifier-shaped only (letters, underscore prefix).
+        if ($key -notmatch '^[A-Za-z_][A-Za-z0-9_]*$') { return }
+        [void]$out.Add($key)
+    }
+    return ,$out.ToArray()
+}
+
+# Get-EnvKeysPresent is a thin alias for Get-TemplateKeys — the name reads
+# more naturally at the upgrade-env diff calculation site.
+function Get-EnvKeysPresent {
+    param([Parameter(Mandatory)][string]$Path)
+    return Get-TemplateKeys -Path $Path
+}
+
+# Get-DefaultValue returns the literal default value the template declares
+# for KEY (commented or not). Strips ONE layer of surrounding quotes.
+# Returns $null on miss. Used by migrate-to-overrides to decide which
+# operator values differ from the template default.
+function Get-DefaultValue {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$Key
+    )
+    if (-not (Test-Path -LiteralPath $Path)) { return $null }
+    foreach ($raw in Get-Content -LiteralPath $Path) {
+        $line = $raw.TrimStart()
+        if (-not $line) { continue }
+        if ($line.StartsWith('#')) {
+            $line = $line.Substring(1).TrimStart()
+            if (-not $line) { continue }
+        }
+        if ($line -match '^\s*export\s+') { $line = $line -replace '^\s*export\s+', '' }
+        if ($line -notmatch '=') { continue }
+        $k, $v = $line -split '=', 2
+        if ($k.Trim() -ne $Key) { continue }
+        $val = $v.Trim()
+        if (($val.StartsWith('"') -and $val.EndsWith('"')) -or `
+            ($val.StartsWith("'") -and $val.EndsWith("'"))) {
+            $val = $val.Substring(1, $val.Length - 2)
+        }
+        return $val
     }
     return $null
 }
@@ -147,7 +253,57 @@ function Apply-CliFlags {
     if ($Trace) { $env:DEBUG = 'true'; $env:CHAT_TRACE = 'true' }
 }
 
+$script:DeprecationWarnEmitted = $false
+
+# Test-SingleFileModel — mirror of bash detect_single_file_model. Emits a
+# one-line deprecation WARN when the operator is running on the legacy
+# single-file install model (no .otto-gw.overrides.env, .otto-gw.env carries
+# uncommented operator values). The WARN is written via Write-Warning so it
+# goes to the warning stream (functionally stderr) and stays out of normal
+# stdout capture.
+#
+# Detection mirrors the bash heuristic:
+#   1. No overrides file resolved.
+#   2. .otto-gw.env (or resolved env file) exists.
+#   3. At least one of AUTH_TOKEN / PII_HASH_KEY / HTTP_ADDR is uncommented
+#      with a non-placeholder value, OR KIRO_CMD is uncommented and
+#      non-empty.
+function Test-SingleFileModel {
+    if ($script:DeprecationWarnEmitted) { return }
+    $envFile = Resolve-EnvFile
+    $overridesFile = Resolve-OverridesFile
+    if (-not $envFile -or -not (Test-Path -LiteralPath $envFile)) { return }
+    if ($overridesFile -and (Test-Path -LiteralPath $overridesFile)) { return }
+
+    $hasOperatorValue = $false
+    $placeholders = @('', 'replace-me', 'replace-with-32-byte-secret-key-here')
+    foreach ($k in @('AUTH_TOKEN', 'PII_HASH_KEY', 'HTTP_ADDR')) {
+        if (Test-EnvKeyUncommented -Path $envFile -Key $k) {
+            $v = Get-DefaultValue -Path $envFile -Key $k
+            if ($v -and ($placeholders -notcontains $v)) {
+                $hasOperatorValue = $true; break
+            }
+        }
+    }
+    if (-not $hasOperatorValue) {
+        if (Test-EnvKeyUncommented -Path $envFile -Key 'KIRO_CMD') {
+            $v = Get-DefaultValue -Path $envFile -Key 'KIRO_CMD'
+            if ($v) { $hasOperatorValue = $true }
+        }
+    }
+    if (-not $hasOperatorValue) { return }
+
+    $script:DeprecationWarnEmitted = $true
+    Write-Warning "otto-gw: legacy single-file .env model detected -- run ``otto-gw migrate-to-overrides`` to split secrets/overrides into .otto-gw.overrides.env. Single-file support will be removed in v1.7."
+}
+
 function Initialize-Config {
+    # Two-file model (locked in 260531-tl1 CONTEXT.md Decision 1):
+    #   1. .otto-gw.env (generated, byte-for-byte template copy, never edited).
+    #   2. .otto-gw.overrides.env (operator-owned, loaded SECOND).
+    # Set-Item env:KEY is last-write-wins for environment variables (same
+    # semantics as bash export), so loading overrides second is the override
+    # mechanism.
     $envFilePath = Resolve-EnvFile
     if ($envFilePath) {
         Import-DotEnv -Path $envFilePath
@@ -157,6 +313,14 @@ function Initialize-Config {
         # os.Getenv("OTTO_ENV_FILE_LOADED") at startup.
         $env:OTTO_ENV_FILE_LOADED = $envFilePath
     }
+    $overridesPath = Resolve-OverridesFile
+    if ($overridesPath -and (Test-Path $overridesPath)) {
+        Import-DotEnv -Path $overridesPath
+        Write-Host "loaded overrides:  $overridesPath" -ForegroundColor DarkGray
+        $env:OTTO_OVERRIDES_FILE_LOADED = $overridesPath
+    }
+    # One-shot legacy-model deprecation WARN.
+    Test-SingleFileModel
     Apply-CliFlags
 }
 
@@ -534,6 +698,54 @@ function Test-EnvKeyUncommented {
     return ((Select-String -Path $Path -Pattern $pattern -Quiet) -eq $true)
 }
 
+function Set-OverridesLine {
+    # Mirror of bash set_overrides_line. Writes or updates KEY=Value in the
+    # .otto-gw.overrides.env file. Contract:
+    #   - Always writes UNCOMMENTED (absence == "not customized").
+    #   - If FilePath does not exist, creates it with a header explaining
+    #     the load order and the never-overwritten contract.
+    #   - If KEY already exists (commented or not), rewrites the line in
+    #     place. Otherwise appends KEY=Value at end.
+    #   - Best-effort permission restriction (Windows doesn't have a 0600
+    #     equivalent; we use the same ACL trick Invoke-Init uses).
+    param(
+        [Parameter(Mandatory)][string]$FilePath,
+        [Parameter(Mandatory)][string]$Key,
+        [Parameter(Mandatory)][string]$Value
+    )
+    if (-not (Test-Path -LiteralPath $FilePath)) {
+        $ts = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+        $header = @(
+            "# Generated by 'otto-gw init' / 'otto-gw migrate-to-overrides' on $ts",
+            "# Operator customizations + secrets. Loaded AFTER .otto-gw.env, so values here WIN.",
+            "# Safe to hand-edit. Will NEVER be overwritten by 'otto-gw upgrade-env'.",
+            ""
+        )
+        Set-Content -LiteralPath $FilePath -Value $header -Encoding UTF8
+        # Best-effort ACL hardening; same pattern as Invoke-Init.
+        try {
+            $acl = Get-Acl $FilePath
+            $acl.SetAccessRuleProtection($true, $false)
+            $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+                [System.Security.Principal.WindowsIdentity]::GetCurrent().Name,
+                "FullControl", "Allow"
+            )
+            $acl.AddAccessRule($rule)
+            Set-Acl $FilePath $acl
+        } catch { }
+    }
+    $pattern = "^\s*#?\s*${Key}="
+    $content = Get-Content -LiteralPath $FilePath
+    if ($content | Where-Object { $_ -match $pattern }) {
+        $updated = $content | ForEach-Object {
+            if ($_ -match $pattern) { "${Key}=${Value}" } else { $_ }
+        }
+        Set-Content -LiteralPath $FilePath -Value $updated -Encoding UTF8
+    } else {
+        Add-Content -LiteralPath $FilePath -Value "${Key}=${Value}"
+    }
+}
+
 function Set-EnvLine {
     # Rewrites the KEY= line in FilePath (in-place). If Commented is $true,
     # writes:  # KEY=Value. If $false, writes: KEY=Value.
@@ -567,20 +779,30 @@ function Invoke-Init {
         exit 1
     }
 
-    # Resolve template — single source of truth for the key list.
-    $scriptDir    = $PSScriptRoot
-    $templateFile = Join-Path $scriptDir '.env.otto-gw.example'
-    if (-not (Test-Path $templateFile)) {
-        Write-Error "ERROR: init template not found: $templateFile"
+    # Resolve template — single source of truth for the key list. Honors
+    # -Template if the operator overrode it.
+    $templateFile = Resolve-TemplateFile
+    if (-not $templateFile) {
+        $sought = if ($Template) { $Template } `
+                  elseif ($env:OTTO_TEMPLATE_FILE) { $env:OTTO_TEMPLATE_FILE } `
+                  else { Join-Path $PSScriptRoot '.env.otto-gw.example' }
+        Write-Error "ERROR: init template not found: $sought"
         Write-Error "       The file scripts\.env.otto-gw.example must ship alongside otto-gw.ps1."
         exit 1
+    }
+
+    # Pre-resolve overrides path so existing-value lookup can read from BOTH
+    # dest AND overrides (overrides wins on conflict — matches runtime loader).
+    $overridesDestPath = $OverridesDest
+    if (-not $overridesDestPath) {
+        $destDir0 = Split-Path -Parent $destPath
+        $overridesDestPath = Join-Path $destDir0 '.otto-gw.overrides.env'
     }
 
     # Re-init detection: -Force on an existing dest. Parse existing values so
     # they can serve as prompt/non-interactive defaults (CLI flag wins;
     # existing-file value next; cold-start default last). Secrets reused
-    # unless -RegenerateSecrets (so a casual re-init doesn't invalidate
-    # client bearer tokens or break hash-mode log correlation).
+    # unless -RegenerateSecrets.
     $reinit = $false
     $existing = @{}
     $existingAuthOn = $null
@@ -593,17 +815,36 @@ function Invoke-Init {
             Write-Error "ERROR: $destPath exists but could not be parsed: $_"
             exit 1
         }
+        # Layer in overrides values: read overrides into a hashtable and
+        # let those keys override dest-derived ones (matches runtime loader).
+        if (Test-Path -LiteralPath $overridesDestPath) {
+            try {
+                $existingOverrides = Read-DotEnvAsHashtable -Path $overridesDestPath
+                foreach ($k in $existingOverrides.Keys) {
+                    if ($existingOverrides[$k]) { $existing[$k] = $existingOverrides[$k] }
+                }
+            } catch {
+                Write-Warning "could not parse $overridesDestPath ; proceeding with dest values only"
+            }
+        }
         $reinit = $true
-        $existingAuthOn = Test-EnvKeyUncommented -Path $destPath -Key 'AUTH_TOKEN'
-        if (Test-EnvKeyUncommented -Path $destPath -Key 'CHAT_TRACE') {
+        # "Uncommented in EITHER file" semantics for the state-derivation keys.
+        $existingAuthOn = (Test-EnvKeyUncommented -Path $destPath -Key 'AUTH_TOKEN') -or `
+            ((Test-Path -LiteralPath $overridesDestPath) -and (Test-EnvKeyUncommented -Path $overridesDestPath -Key 'AUTH_TOKEN'))
+        $chatUncommented = (Test-EnvKeyUncommented -Path $destPath -Key 'CHAT_TRACE') -or `
+            ((Test-Path -LiteralPath $overridesDestPath) -and (Test-EnvKeyUncommented -Path $overridesDestPath -Key 'CHAT_TRACE'))
+        if ($chatUncommented) {
             $existingChatTraceOn = ($existing['CHAT_TRACE'] -match '^(true|1|yes)$')
         } else {
             $existingChatTraceOn = $false
         }
-        # Quick 260531-t8a — extract existing STREAM_IDLE_TIMEOUT_SEC so
-        # re-init preserves the operator's prior tuning when no flag is
-        # passed. Empty string when the key is absent or commented out.
-        if (Test-EnvKeyUncommented -Path $destPath -Key 'STREAM_IDLE_TIMEOUT_SEC') {
+        # STREAM_IDLE_TIMEOUT_SEC only counts as "operator-set" when it's
+        # uncommented in EITHER file. Without this gate the commented "30"
+        # default in the template would be parsed and then written back as
+        # uncommented on re-init (Rule-1 bug fixed in Task 3 bash side).
+        $idleUncommented = (Test-EnvKeyUncommented -Path $destPath -Key 'STREAM_IDLE_TIMEOUT_SEC') -or `
+            ((Test-Path -LiteralPath $overridesDestPath) -and (Test-EnvKeyUncommented -Path $overridesDestPath -Key 'STREAM_IDLE_TIMEOUT_SEC'))
+        if ($idleUncommented) {
             $existingIdleTimeout = $existing['STREAM_IDLE_TIMEOUT_SEC']
         } else {
             $existingIdleTimeout = ''
@@ -767,61 +1008,89 @@ function Invoke-Init {
         New-Item -ItemType Directory -Force -Path $destDir | Out-Null
     }
 
-    # Copy template, strip instructional header, prepend generated header.
-    # The header is the leading comment-only block up to the first blank line.
-    $ts            = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
-    $templateLines = Get-Content $templateFile
-    $inHeader      = $templateLines.Count -gt 0 -and $templateLines[0] -match '^#'
-    $bodyLines     = @()
-    foreach ($ln in $templateLines) {
-        if ($inHeader) {
-            if ($ln -eq '') { $inHeader = $false }
-            continue
+    # Two-file model contract (260531-tl1 CONTEXT.md Decisions 1 + 5):
+    #   - .otto-gw.env is ALWAYS a byte-for-byte template copy. No
+    #     Set-EnvLine writes happen against it.
+    #   - .otto-gw.overrides.env carries every operator customization
+    #     (uncommented). Secrets always; other knobs only when set.
+
+    # Pre-flight migration: re-init on a legacy single-file install. If
+    # -Force AND dest exists AND overrides does NOT exist AND dest has
+    # uncommented operator values ⇒ run a silent migration BEFORE the
+    # normal init flow. Emits one INFO line so the auto-migrate is never
+    # invisible.
+    if ($reinit -and -not (Test-Path -LiteralPath $overridesDestPath)) {
+        $preMigrateNeeded = $false
+        foreach ($k in @('AUTH_TOKEN', 'KIRO_CMD', 'PII_HASH_KEY', 'HTTP_ADDR')) {
+            if (Test-EnvKeyUncommented -Path $destPath -Key $k) { $preMigrateNeeded = $true; break }
         }
-        $bodyLines += $ln
-    }
-    $generatedHeader = @(
-        "# Generated by 'otto-gw init' on $ts",
-        "# Edit any value; restart the gateway to apply.",
-        ""
-    )
-    Set-Content -Path $destPath -Value ($generatedHeader + $bodyLines) -Encoding UTF8
-
-    # Apply per-install resolved values to the template copy.
-    Set-EnvLine -FilePath $destPath -Key 'AUTH_TOKEN'            -Value $authTokenValue  -Commented (-not $authOn)
-    Set-EnvLine -FilePath $destPath -Key 'KIRO_CMD'              -Value $kiroValue       -Commented $false
-    Set-EnvLine -FilePath $destPath -Key 'HTTP_ADDR'             -Value $addrValue       -Commented $false
-    Set-EnvLine -FilePath $destPath -Key 'ENABLED_HOOKS'         -Value $enabledHooksValue -Commented $false
-    Set-EnvLine -FilePath $destPath -Key 'PII_REDACTION_ENABLED' -Value $piiEnabled      -Commented $false
-    Set-EnvLine -FilePath $destPath -Key 'PII_REDACTION_MODE'    -Value $piiModeValue    -Commented $false
-    Set-EnvLine -FilePath $destPath -Key 'PII_HASH_KEY'          -Value $hashKeyValue    -Commented $false
-    Set-EnvLine -FilePath $destPath -Key 'CHAT_TRACE'            -Value $chatValue       -Commented (-not $chatOn)
-    Set-EnvLine -FilePath $destPath -Key 'STREAM_IDLE_TIMEOUT_SEC' -Value $idleValue      -Commented $idleCommented
-
-    # Best-effort restrict permissions (Windows doesn't have a 0600 equivalent,
-    # but we can at least ACL the file to the current user only). Optional.
-    try {
-        $acl = Get-Acl $destPath
-        $acl.SetAccessRuleProtection($true, $false)
-        $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-            [System.Security.Principal.WindowsIdentity]::GetCurrent().Name,
-            "FullControl", "Allow"
-        )
-        $acl.AddAccessRule($rule)
-        Set-Acl $destPath $acl
-    } catch {
-        # ACL hardening best-effort only; fall back to default permissions.
+        if ($preMigrateNeeded) {
+            Write-Host "note: detected pre-overrides install -- migrating to overrides model"
+            $tsPre = (Get-Date).ToUniversalTime().ToString("yyyyMMddTHHmmssZ")
+            $preBackup = "${destPath}.pre-migrate.${tsPre}"
+            Copy-Item -LiteralPath $destPath -Destination $preBackup -Force
+            foreach ($pk in (Get-EnvKeysPresent -Path $destPath)) {
+                if (-not (Test-EnvKeyUncommented -Path $destPath -Key $pk)) { continue }
+                $pv = if ($existing.ContainsKey($pk)) { $existing[$pk] } else { '' }
+                $pd = Get-DefaultValue -Path $templateFile -Key $pk
+                if ($pd -eq $null) { $pd = '<MISSING>' }
+                if ($pv -ne $pd) {
+                    Set-OverridesLine -FilePath $overridesDestPath -Key $pk -Value $pv
+                }
+            }
+            # Always preserve the secrets across the auto-migration.
+            foreach ($sk in @('AUTH_TOKEN', 'PII_HASH_KEY')) {
+                if (Test-EnvKeyUncommented -Path $destPath -Key $sk) {
+                    $sv = if ($existing.ContainsKey($sk)) { $existing[$sk] } else { '' }
+                    if ($sv) { Set-OverridesLine -FilePath $overridesDestPath -Key $sk -Value $sv }
+                }
+            }
+            Write-Host "  pre-init backup: $preBackup"
+            Write-Host "  overrides:       $overridesDestPath"
+        }
     }
 
-    Write-Host "✓ wrote $destPath"
+    # Step 1: regenerate dest as a byte-for-byte template copy.
+    Copy-Item -LiteralPath $templateFile -Destination $destPath -Force
+
+    # Step 2: write each operator customization to the overrides file.
+    # Rules mirror the bash side (Q3 + Decision 5):
+    #   - PII_HASH_KEY ALWAYS lands in overrides.
+    #   - AUTH_TOKEN lands when auth is enabled.
+    #   - PII_REDACTION_ENABLED + PII_REDACTION_MODE always (operator decisions
+    #     even at defaults).
+    #   - Other knobs (HTTP_ADDR, KIRO_CMD, CHAT_TRACE, ENABLED_HOOKS,
+    #     STREAM_IDLE_TIMEOUT_SEC) only when set to non-default / non-empty.
+    if ($authOn) {
+        Set-OverridesLine -FilePath $overridesDestPath -Key 'AUTH_TOKEN' -Value $authTokenValue
+    }
+    Set-OverridesLine -FilePath $overridesDestPath -Key 'PII_HASH_KEY'          -Value $hashKeyValue
+    Set-OverridesLine -FilePath $overridesDestPath -Key 'PII_REDACTION_ENABLED' -Value $piiEnabled
+    Set-OverridesLine -FilePath $overridesDestPath -Key 'PII_REDACTION_MODE'    -Value $piiModeValue
+    if ($kiroValue) {
+        Set-OverridesLine -FilePath $overridesDestPath -Key 'KIRO_CMD' -Value $kiroValue
+    }
+    if ($addrValue) {
+        Set-OverridesLine -FilePath $overridesDestPath -Key 'HTTP_ADDR' -Value $addrValue
+    }
+    if ($chatOn) {
+        Set-OverridesLine -FilePath $overridesDestPath -Key 'CHAT_TRACE'    -Value $chatValue
+        Set-OverridesLine -FilePath $overridesDestPath -Key 'ENABLED_HOOKS' -Value $enabledHooksValue
+    }
+    if (-not $idleCommented) {
+        Set-OverridesLine -FilePath $overridesDestPath -Key 'STREAM_IDLE_TIMEOUT_SEC' -Value $idleValue
+    }
+
+    Write-Host "✓ wrote $destPath                  (template copy)"
+    Write-Host "✓ wrote $overridesDestPath  (operator config + secrets)"
     if ($authOn) {
         if ($authTokenPreserved) {
             Write-Host "  AUTH:          enabled (token preserved from prior install)"
         } else {
-            Write-Host "  AUTH:          enabled (AUTH_TOKEN=$($authTokenValue.Substring(0,8))…)"
+            Write-Host "  AUTH:          enabled (AUTH_TOKEN=$($authTokenValue.Substring(0,8))… in overrides)"
         }
     } else {
-        Write-Host "  AUTH:          disabled (AUTH_TOKEN line commented; pregenerated token in file)"
+        Write-Host "  AUTH:          disabled (no AUTH_TOKEN in overrides; commented placeholder in .otto-gw.env)"
     }
     if ($hashKeyPreserved) {
         Write-Host "  PII_HASH_KEY:  preserved (existing key reused)"
@@ -838,6 +1107,215 @@ function Invoke-Init {
     }
     Write-Host ""
     Write-Host "Next: .\scripts\otto-gw.ps1 start"
+}
+
+function Invoke-UpgradeEnv {
+    # Mirror of upgrade_env_cmd in scripts/otto-gw. Regenerates the
+    # generated .otto-gw.env from the latest .env.otto-gw.example template,
+    # reporting which keys would be added / orphaned / left unchanged.
+    # Operator customizations live in .otto-gw.overrides.env (loaded last by
+    # Initialize-Config) and are NEVER touched here.
+    $templatePath = Resolve-TemplateFile
+    if (-not $templatePath) {
+        $sought = if ($Template) { $Template } `
+                  elseif ($env:OTTO_TEMPLATE_FILE) { $env:OTTO_TEMPLATE_FILE } `
+                  else { Join-Path $PSScriptRoot '.env.otto-gw.example' }
+        Write-Error "upgrade-env template not found. Looked at: $sought"
+        exit 1
+    }
+    # -Dest overrides the resolved .otto-gw.env path; cold-init fallback
+    # is project-local (first entry in $DefaultEnvPaths).
+    $destPath = $Dest
+    if (-not $destPath) { $destPath = Resolve-EnvFile }
+    if (-not $destPath) { $destPath = $DefaultEnvPaths[0] }
+
+    # Build sorted unique key sets for the diff. Compare-Object is the
+    # PowerShell idiom for set ops; SideIndicator => is right-only,
+    # <= is left-only, == is both.
+    $tKeys = @(Get-TemplateKeys -Path $templatePath | Sort-Object -Unique)
+    $cKeys = if (Test-Path -LiteralPath $destPath) {
+        @(Get-EnvKeysPresent -Path $destPath | Sort-Object -Unique)
+    } else { @() }
+
+    $added = @()
+    $orphaned = @()
+    $unchanged = @()
+    if ($tKeys.Count -gt 0 -or $cKeys.Count -gt 0) {
+        $diff = Compare-Object -ReferenceObject $tKeys -DifferenceObject $cKeys -IncludeEqual
+        foreach ($d in $diff) {
+            switch ($d.SideIndicator) {
+                '<=' { $added += $d.InputObject }      # in template, not in dest
+                '=>' { $orphaned += $d.InputObject }   # in dest, not in template
+                '==' { $unchanged += $d.InputObject }
+            }
+        }
+    }
+
+    Write-Host "otto-gw upgrade-env:"
+    Write-Host "  template: $templatePath"
+    Write-Host "  dest:     $destPath"
+    if ($added.Count -gt 0) {
+        Write-Host ("  added:     {0} ({1})" -f $added.Count, ($added -join ' '))
+    } else { Write-Host "  added:     0" }
+    if ($orphaned.Count -gt 0) {
+        Write-Host ("  orphaned:  {0} ({1})" -f $orphaned.Count, ($orphaned -join ' '))
+    } else { Write-Host "  orphaned:  0" }
+    Write-Host ("  unchanged: {0}" -f $unchanged.Count)
+
+    if ($DryRun) {
+        Write-Host "(dry-run; nothing written)"
+        return
+    }
+
+    # Confirm overwrite (skip when -Yes). A non-existent dest is a cold
+    # init — nothing to destroy, no confirm needed.
+    if (-not $Yes -and (Test-Path -LiteralPath $destPath)) {
+        $reply = Read-Host "Overwrite $destPath with current template? [y/N]"
+        if ($reply -notmatch '^(y|yes)$') {
+            Write-Error "cancelled"
+            exit 1
+        }
+    }
+
+    # Orphan log default is per-user; $env:OTTO_UPGRADE_LOG overrides for
+    # CI installs without USERPROFILE. Never silently swallow the log —
+    # fall back to project-local on miss.
+    $upgradeLog = $null
+    if ($env:OTTO_UPGRADE_LOG) {
+        $upgradeLog = $env:OTTO_UPGRADE_LOG
+    } elseif ($env:USERPROFILE) {
+        $upgradeLog = Join-Path $env:USERPROFILE '.otto-gw.upgrade.log'
+    } else {
+        $upgradeLog = '.\.otto-gw.upgrade.log'
+    }
+    if ($orphaned.Count -gt 0) {
+        $ts = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+        $existingMap = Read-DotEnvAsHashtable -Path $destPath
+        $lines = New-Object System.Collections.Generic.List[string]
+        [void]$lines.Add("# $ts upgrade-env removed orphaned keys from $destPath")
+        foreach ($k in $orphaned) {
+            $v = if ($existingMap.ContainsKey($k)) { $existingMap[$k] } else { '<unset>' }
+            [void]$lines.Add("$k=$v")
+        }
+        [void]$lines.Add("# ---")
+        Add-Content -LiteralPath $upgradeLog -Value $lines
+        Write-Host "  orphan values logged to: $upgradeLog"
+    }
+
+    # Byte-for-byte template copy. Copy-Item is generally faithful on
+    # Windows; if line endings ever drift we can switch to
+    # Set-Content -Value (Get-Content $template -Raw) -NoNewline.
+    Copy-Item -LiteralPath $templatePath -Destination $destPath -Force
+    Write-Host "✓ wrote $destPath"
+}
+
+function Invoke-MigrateToOverrides {
+    # Mirror of bash migrate_to_overrides_cmd. One-time migration from the
+    # legacy single-file model: extract every uncommented key in .otto-gw.env
+    # whose value differs from the template default, write those keys to
+    # .otto-gw.overrides.env, back up the original dest, regenerate dest from
+    # the template (pure copy under the new contract).
+    #
+    # Idempotency (locked in 260531-tl1 CONTEXT.md Decision 4): re-running on
+    # an already-migrated install is a no-op (overrides exists AND dest is
+    # byte-identical to the template ⇒ nothing to do).
+    $templatePath = Resolve-TemplateFile
+    if (-not $templatePath) {
+        $sought = if ($Template) { $Template } `
+                  elseif ($env:OTTO_TEMPLATE_FILE) { $env:OTTO_TEMPLATE_FILE } `
+                  else { Join-Path $PSScriptRoot '.env.otto-gw.example' }
+        Write-Error "migrate-to-overrides template not found. Looked at: $sought"
+        exit 1
+    }
+    $destPath = $Dest
+    if (-not $destPath) { $destPath = Resolve-EnvFile }
+    if (-not $destPath -or -not (Test-Path -LiteralPath $destPath)) {
+        Write-Error "migrate-to-overrides: no .otto-gw.env found at '$destPath'. Run 'otto-gw.ps1 init' first, or pass -Dest PATH explicitly."
+        exit 1
+    }
+    $overridesDestPath = $OverridesDest
+    if (-not $overridesDestPath) {
+        $destDir = Split-Path -Parent $destPath
+        $overridesDestPath = Join-Path $destDir '.otto-gw.overrides.env'
+    }
+
+    # Idempotency: overrides exists AND dest matches template byte-for-byte.
+    if ((Test-Path -LiteralPath $overridesDestPath)) {
+        $destHash     = (Get-FileHash -LiteralPath $destPath -Algorithm SHA256).Hash
+        $templateHash = (Get-FileHash -LiteralPath $templatePath -Algorithm SHA256).Hash
+        if ($destHash -eq $templateHash) {
+            Write-Host "already migrated (no-op)"
+            Write-Host "  dest:      $destPath"
+            Write-Host "  overrides: $overridesDestPath"
+            return
+        }
+    }
+
+    # Build the migration list. Every uncommented key in dest whose value
+    # differs from the template default goes to overrides.
+    $migrations = New-Object System.Collections.Generic.List[string]
+    $destMap     = Read-DotEnvAsHashtable -Path $destPath
+    foreach ($k in (Get-EnvKeysPresent -Path $destPath)) {
+        if (-not (Test-EnvKeyUncommented -Path $destPath -Key $k)) { continue }
+        $cur = if ($destMap.ContainsKey($k)) { $destMap[$k] } else { '' }
+        $def = Get-DefaultValue -Path $templatePath -Key $k
+        if ($def -eq $null) { $def = '<MISSING>' }
+        if ($cur -ne $def) {
+            if (-not $migrations.Contains($k)) { [void]$migrations.Add($k) }
+        }
+    }
+    # Always carry secrets across when uncommented in source, regardless of
+    # whether the value coincidentally matches the template placeholder.
+    foreach ($k in @('AUTH_TOKEN', 'PII_HASH_KEY')) {
+        if (Test-EnvKeyUncommented -Path $destPath -Key $k) {
+            if (-not $migrations.Contains($k)) { [void]$migrations.Add($k) }
+        }
+    }
+
+    if ($migrations.Count -eq 0) {
+        Write-Host "migrate-to-overrides: nothing to migrate (no operator-set keys differ from template defaults)."
+        Write-Host "  dest:      $destPath"
+        Write-Host "  overrides: $overridesDestPath"
+        return
+    }
+
+    Write-Host "otto-gw migrate-to-overrides:"
+    Write-Host "  dest:      $destPath"
+    Write-Host "  overrides: $overridesDestPath"
+    Write-Host ("  would migrate: {0}" -f ($migrations -join ' '))
+
+    if ($DryRun) {
+        Write-Host "(dry-run; no changes written)"
+        return
+    }
+
+    if (-not $Yes) {
+        $reply = Read-Host "Backup $destPath and regenerate from template? [y/N]"
+        if ($reply -notmatch '^(y|yes)$') {
+            Write-Error "cancelled"
+            exit 1
+        }
+    }
+
+    # Backup BEFORE any disk mutation so a hard interrupt leaves the operator
+    # with both files intact + a clear recovery path.
+    $ts = (Get-Date).ToUniversalTime().ToString("yyyyMMddTHHmmssZ")
+    $backupPath = "${destPath}.pre-migrate.${ts}"
+    Copy-Item -LiteralPath $destPath -Destination $backupPath -Force
+    Write-Host "  backup: $backupPath"
+
+    # Write migrations to overrides.
+    foreach ($k in $migrations) {
+        $v = if ($destMap.ContainsKey($k)) { $destMap[$k] } else { '' }
+        Set-OverridesLine -FilePath $overridesDestPath -Key $k -Value $v
+    }
+
+    # Regenerate dest as a pure template copy.
+    Copy-Item -LiteralPath $templatePath -Destination $destPath -Force
+
+    Write-Host ("✓ migrated {0} key(s) to {1}" -f $migrations.Count, $overridesDestPath)
+    Write-Host "✓ regenerated $destPath from template"
+    Write-Host "✓ backup at  $backupPath"
 }
 
 function Show-Env {
@@ -865,6 +1343,8 @@ function Show-Usage {
 Usage: .\scripts\otto-gw.ps1 <command> [flags]
 
 Commands:
+  init [flags]        First-run setup -- generates AUTH_TOKEN + PII_HASH_KEY,
+                      prompts for KIRO_CMD + HTTP_ADDR, writes a .env file.
   start [flags]       Start gateway in background
   stop                Stop background gateway (also reaps any stray $env:KIRO_CMD subprocesses)
   status              Show gateway status and health
@@ -872,6 +1352,15 @@ Commands:
   logs                Tail both stdout and stderr log files
   run [flags]         Run gateway in foreground
   env [-ShowSecrets]  Print the resolved gateway env that would be passed
+  upgrade-env         Regenerate .otto-gw.env from the latest .env.otto-gw.example
+                      template. Operator customizations in .otto-gw.overrides.env
+                      are NEVER touched. -DryRun shows the added / orphaned /
+                      unchanged keys without writing.
+  migrate-to-overrides
+                      One-time migration from the legacy single-file model:
+                      extract non-default values from .otto-gw.env into
+                      .otto-gw.overrides.env, back up the original, then
+                      regenerate .otto-gw.env from the template. Idempotent.
   version             Print the gateway binary version (delegates to bin\otto-gateway --version)
 
 Gateway config flags (for start | restart | run | env):
@@ -880,9 +1369,19 @@ Gateway config flags (for start | restart | run | env):
   -Entities LIST      PII_ENABLED_ENTITIES (comma list)
   -Hooks LIST         ENABLED_HOOKS allowlist (comma list, empty = all)
   -Auth TOKEN         AUTH_TOKEN
+  -IdleTimeout INT    STREAM_IDLE_TIMEOUT_SEC (default 30; 0 disables idle watchdog)
   -Debug              DEBUG=true (debug-level logging) for start | restart | run
   -Trace              DEBUG=true + CHAT_TRACE=true (debug + chat-trace NDJSON) for start | restart | run
   -EnvFile PATH       Override the default .env search
+  -OverridesFile PATH Override the default .otto-gw.overrides.env search
+
+upgrade-env / migrate-to-overrides flags:
+  -Template PATH      Override the .env.otto-gw.example resolution
+  -Dest PATH          Override the resolved .otto-gw.env target
+  -OverridesDest PATH (migrate-to-overrides) override the resolved overrides
+                      target (default: sibling of -Dest)
+  -DryRun             Print added / orphaned / unchanged keys; write nothing
+  -Yes                Skip the overwrite confirmation prompt (CI-friendly)
 
 init flags (for the 'init' subcommand):
   -Dest PATH          where to write the .env (default `$env:USERPROFILE\.otto-gw.env)
@@ -904,13 +1403,20 @@ init flags (for the 'init' subcommand):
   -HashKey KEY        use KEY instead of generating
   -NonInteractive     don't prompt; use defaults for unspecified values
 
-.env auto-load search:
+.env auto-load search (loaded FIRST):
   1. -EnvFile PATH                    (CLI override)
   2. `$env:OTTO_ENV_FILE              (env override)
   3. .\.env.otto-gw                   (project-local)
   4. `$env:USERPROFILE\.otto-gw.env   (per-user)
 
-Precedence (highest first): CLI flag → .env file → inherited shell env.
+.otto-gw.overrides.env auto-load search (loaded SECOND; values win on conflict):
+  1. -OverridesFile PATH              (CLI override)
+  2. `$env:OTTO_OVERRIDES_FILE        (env override)
+  3. .\.otto-gw.overrides.env         (project-local)
+  4. `$env:USERPROFILE\.otto-gw.overrides.env (per-user)
+
+Precedence (highest first):
+  CLI flag → .otto-gw.overrides.env → .otto-gw.env → inherited shell env.
 
 See scripts\.env.otto-gw.example for a starter template.
 "@ | Write-Host
@@ -918,14 +1424,16 @@ See scripts\.env.otto-gw.example for a starter template.
 }
 
 switch ($Command) {
-    "init"    { Invoke-Init }
-    "start"   { Start-Gateway }
-    "stop"    { Stop-Gateway }
-    "status"  { Get-GatewayStatus }
-    "restart" { Restart-Gateway }
-    "logs"    { Get-Logs }
-    "run"     { Invoke-Run }
-    "env"     { Show-Env }
-    "version" { Show-Version }
-    default   { Show-Usage }
+    "init"             { Invoke-Init }
+    "start"            { Start-Gateway }
+    "stop"             { Stop-Gateway }
+    "status"           { Get-GatewayStatus }
+    "restart"          { Restart-Gateway }
+    "logs"             { Get-Logs }
+    "run"              { Invoke-Run }
+    "env"              { Show-Env }
+    "upgrade-env"      { Invoke-UpgradeEnv }
+    "migrate-to-overrides" { Invoke-MigrateToOverrides }
+    "version"          { Show-Version }
+    default            { Show-Usage }
 }
