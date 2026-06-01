@@ -630,3 +630,54 @@ func TestAfter_CompileTimePostHookSatisfied(t *testing.T) {
 		After(context.Context, *canonical.ChatRequest, *canonical.ChatResponse) error
 	} = (*PIIRedactionHook)(nil)
 }
+
+// PII-ENCRYPT-06b — defensive After tests + reason-category classification.
+
+func TestAfter_NilResp(t *testing.T) {
+	k, err := DeriveKey("test")
+	if err != nil {
+		t.Fatalf("DeriveKey: %v", err)
+	}
+	h := &PIIRedactionHook{Enabled: true, Mode: "encrypt", EncryptKey: k}
+	if err := h.After(context.Background(), &canonical.ChatRequest{}, nil); err != nil {
+		t.Errorf("After(nil resp): expected nil err, got %v", err)
+	}
+}
+
+func TestAfter_EmptyContent(t *testing.T) {
+	k, err := DeriveKey("test")
+	if err != nil {
+		t.Fatalf("DeriveKey: %v", err)
+	}
+	h := &PIIRedactionHook{Enabled: true, Mode: "encrypt", EncryptKey: k}
+	resp := &canonical.ChatResponse{Message: canonical.Message{Content: nil}}
+	if err := h.After(context.Background(), &canonical.ChatRequest{}, resp); err != nil {
+		t.Errorf("After(empty Content): expected nil err, got %v", err)
+	}
+}
+
+func TestClassifyDecryptErr_Categories(t *testing.T) {
+	// Driven by DecryptToken's documented wrapping prefixes from
+	// encrypt.go. If those prefixes change, classifyDecryptErr must
+	// change in lock-step — this test pins the contract.
+	k, err := DeriveKey("test")
+	if err != nil {
+		t.Fatalf("DeriveKey: %v", err)
+	}
+	// bad_base64
+	_, err = DecryptToken(k, "Email", "not-valid-base64!!!")
+	if err == nil || classifyDecryptErr(err) != "bad_base64" {
+		t.Errorf("bad_base64 path: err=%v reason=%q", err, classifyDecryptErr(err))
+	}
+	// gcm_open (16 base64url chars = 12 bytes = nonce-size, zero-length
+	// ct, GCM Open errors with "message authentication failed").
+	_, err = DecryptToken(k, "Email", "AAAAAAAAAAAAAAAA")
+	if err == nil || classifyDecryptErr(err) != "gcm_open" {
+		t.Errorf("gcm_open path: err=%v reason=%q", err, classifyDecryptErr(err))
+	}
+	// payload_too_short (8 base64url chars = 6 bytes, under 12-byte nonce).
+	_, err = DecryptToken(k, "Email", "AAAAAAAA")
+	if err == nil || classifyDecryptErr(err) != "payload_too_short" {
+		t.Errorf("payload_too_short path: err=%v reason=%q", err, classifyDecryptErr(err))
+	}
+}

@@ -55,6 +55,7 @@ import (
 	"context"
 	"log/slog"
 	"regexp"
+	"strings"
 
 	"otto-gateway/internal/canonical"
 	"otto-gateway/internal/engine"
@@ -364,9 +365,16 @@ func (h *PIIRedactionHook) Before(ctx context.Context, req *canonical.ChatReques
 //     tool_use/tool_result surfaces ARE encrypted on the Pre side (Before
 //     walks them via WalkStrings) but the kiro-cli response surface is
 //     text-only for the assistant turn, so decrypt only needs Text.
-//  4. Failure WARN log shape: pii.decrypt.failed with entity + err (for
-//     DecryptToken errors) or reason=bad_token_shape (malformed submatch).
-func (h *PIIRedactionHook) After(ctx context.Context, req *canonical.ChatRequest, resp *canonical.ChatResponse) error {
+//  4. Failure WARN log shape: pii.decrypt.failed with entity + reason +
+//     err. Reason categories: bad_token_shape (malformed submatch),
+//     bad_base64 (DecryptToken base64 decode error), gcm_open (GCM
+//     authentication failure — usually wrong key, AAD mismatch, or
+//     tag corruption), payload_too_short (blob shorter than the GCM
+//     nonce size), decrypt_other (any unclassified DecryptToken error).
+//
+// req is unused but required by the engine.PostHook interface; matches
+// the LoggingHook precedent.
+func (h *PIIRedactionHook) After(ctx context.Context, _ *canonical.ChatRequest, resp *canonical.ChatResponse) error {
 	if !h.Enabled || resp == nil || !h.encryptActive() {
 		return nil
 	}
@@ -385,13 +393,35 @@ func (h *PIIRedactionHook) After(ctx context.Context, req *canonical.ChatRequest
 			pt, err := DecryptToken(h.EncryptKey, entity, payload)
 			if err != nil {
 				h.logger().Warn("pii.decrypt.failed",
-					"entity", entity, "err", err)
+					"entity", entity,
+					"reason", classifyDecryptErr(err),
+					"err", err)
 				return match
 			}
 			return pt
 		})
 	}
 	return nil
+}
+
+// classifyDecryptErr maps a DecryptToken error into a stable reason
+// category for slog filtering. Prefix-matches the error string against
+// the wrapping prefixes emitted by DecryptToken (encrypt.go); falls
+// back to "decrypt_other" for anything unrecognized. Stringly-typed
+// rather than sentinel-typed to keep DecryptToken's API free of
+// exported error variables.
+func classifyDecryptErr(err error) string {
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "bad base64"):
+		return "bad_base64"
+	case strings.Contains(msg, "payload too short"):
+		return "payload_too_short"
+	case strings.Contains(msg, "gcm open"):
+		return "gcm_open"
+	default:
+		return "decrypt_other"
+	}
 }
 
 // Compile-time PreHook interface satisfaction. If a future engine
