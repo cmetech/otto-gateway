@@ -1,2 +1,112 @@
-{{define "content"}}<main class="otto-page"><section class="otto-card otto-coming-soon"><h2 class="otto-h2">{{.PageTitle}}</h2><p>Coming soon.</p></section></main>{{end}}
+{{define "content"}}<main class="otto-page">
+  <section class="otto-card otto-docs-intro">
+    <h1 class="otto-h2">Documentation</h1>
+    <p>Operator reference for the OTTO Gateway binary. For live status see <a href="/admin/">Dashboard</a>; for build metadata see <a href="/admin/about">About</a>. This page is a server-rendered snapshot of the running configuration — it does NOT auto-refresh.</p>
+  </section>
+
+  <section class="otto-card">
+    <h2 class="otto-h2">Environment variables</h2>
+    <p>Current values reflect the configuration in effect at server start. Sensitive values (bearer token, allowlist) are summarised as <code>(set)</code> / <code>(unset)</code>. Rows whose current value is <code>(see startup log)</code> are not yet surfaced in the admin runtime snapshot.</p>
+    <div class="otto-docs-table-scroll">
+      <table class="otto-table otto-docs-env-table">
+        <thead>
+          <tr><th scope="col">Variable</th><th scope="col">Default</th><th scope="col">Description</th><th scope="col">Current value</th></tr>
+        </thead>
+        <tbody>
+          {{range .EnvVars}}
+          <tr>
+            <td><code>{{.Name}}</code></td>
+            <td>{{.Default}}</td>
+            <td>{{.Description}}</td>
+            <td class="current"><code>{{.CurrentValue}}</code></td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="otto-card">
+    <h2 class="otto-h2">Files &amp; paths</h2>
+    <dl class="otto-about-dl">
+      <dt>Chat trace file</dt><dd><code>{{.ChatTraceFile}}</code>{{if not .ChatTraceEnabled}} <span class="otto-badge">disabled</span>{{end}}</dd>
+      <dt>Chat trace retention</dt><dd>{{.ChatTraceMaxAgeDays}} days (timberjack MaxAge)</dd>
+      <dt>Admin static assets</dt><dd>Embedded in the binary via <code>embed.FS</code> (no on-disk lookup at runtime).</dd>
+      <dt>Wrapper env files</dt><dd><code>.otto-gw.env</code> (generated template; load-first) then <code>.otto-gw.overrides.env</code> (operator-owned secrets/customisations; load-second wins). See <code>scripts/otto-gw upgrade-env</code>.</dd>
+      <dt>Log destination</dt><dd>Structured slog JSON to stdout/stderr by default. Set <code>LOG_FILE</code> to also write a rotated file.</dd>
+    </dl>
+  </section>
+
+  <section class="otto-card">
+    <h2 class="otto-h2">CLI flags &amp; startup</h2>
+    <p>Basic launch:</p>
+    <pre class="otto-code-block">otto-gateway --http-addr 127.0.0.1:18080 --pool-size 4 --kiro-cmd kiro-cli</pre>
+    <p>Wrapper (recommended — loads <code>.otto-gw.env</code> and applies <code>--trace</code> mode shortcuts):</p>
+    <pre class="otto-code-block">./scripts/otto-gw run
+./scripts/otto-gw run --trace   # DEBUG=true + CHAT_TRACE=true</pre>
+    <p>Flag &rarr; environment variable mapping (CLI flag wins over env when both are passed):</p>
+    <table class="otto-table otto-docs-flags-table">
+      <thead>
+        <tr><th scope="col">Flag</th><th scope="col">Env var</th><th scope="col">Notes</th></tr>
+      </thead>
+      <tbody>
+        {{range .CliFlags}}
+        <tr>
+          <td><code>{{.Flag}}</code></td>
+          <td><code>{{.EnvMapping}}</code></td>
+          <td>{{.Notes}}</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </section>
+
+  <section class="otto-card">
+    <h2 class="otto-h2">Endpoints reference</h2>
+    <h3 class="otto-h3">Admin (auth-exempt)</h3>
+    <ul class="otto-docs-endpoint-list">
+      <li><code>GET /admin/</code> — Dashboard HTML</li>
+      <li><code>GET /admin/about</code> — About page</li>
+      <li><code>GET /admin/docs</code> — This page</li>
+      <li><code>GET /admin/api/snapshot</code> — Unified pool + session JSON</li>
+      <li><code>GET /admin/logs/stream?source=&lt;name&gt;</code> — SSE log tail</li>
+      <li><code>GET /admin/static/*</code> — Embedded CSS / JS / icons</li>
+    </ul>
+    <h3 class="otto-h3">Public API surfaces</h3>
+    <ul class="otto-docs-endpoint-list">
+      <li>Ollama: prefix <code>{{.OllamaPathPrefix}}</code> &mdash; <code>/version</code>, <code>/tags</code>, <code>/chat</code>, <code>/generate</code></li>
+      <li>OpenAI: prefix <code>{{.OpenAIPathPrefix}}</code> &mdash; <code>/chat/completions</code></li>
+      <li>Anthropic: prefix <code>{{.AnthropicPathPrefix}}</code> &mdash; <code>/messages</code></li>
+    </ul>
+    <h3 class="otto-h3">Internal</h3>
+    <ul class="otto-docs-endpoint-list">
+      <li><code>GET /health</code> — D-12 locked health probe (do not consume from wrappers; use <code>/admin/api/snapshot</code> instead).</li>
+    </ul>
+  </section>
+
+  <section class="otto-card">
+    <h2 class="otto-h2">Basic admin usage</h2>
+    <ul class="otto-docs-bullets">
+      <li><strong>Status pill</strong> — green = healthy (pool ready + at least one slot idle), amber = degraded (KIRO_CMD missing or pool starving), red = down (no slots, no recovery in flight).</li>
+      <li><strong>Pool slots</strong> — one card per warm kiro-cli subprocess; idle (yellow), busy (purple), or terminated (red) with last-error context.</li>
+      <li><strong>Active sessions</strong> — stateful conversation sessions per the session registry; idle &gt; <code>SESSION_TTL_MS</code> are reaped on the next tick.</li>
+      <li><strong>Log tail</strong> — pick a source from the dropdown, stream SSE-delivered lines into the table. Use the search box for client-side <code>dataset.raw</code> grep.</li>
+    </ul>
+  </section>
+
+  <section class="otto-card">
+    <h2 class="otto-h2">Troubleshooting</h2>
+    <ul class="otto-docs-bullets">
+      <li><strong>Status shows degraded</strong> — usually <code>KIRO_CMD</code> is unset or not on <code>$PATH</code>. Check the Upstream Worker card on <a href="/admin/about">About</a>.</li>
+      <li><strong>Status shows down</strong> — all pool slots terminated. Inspect the Log tail filtered on <code>pool.acquire</code> / <code>pool.recover</code> for the underlying spawn or ACP error.</li>
+      <li><strong>Requests hang for ~120s then time out</strong> — server-side stream-idle watchdog is disabled (<code>STREAM_IDLE_TIMEOUT_SEC=0</code>) and the upstream stalled silently. Re-enable the watchdog (default 30s) and retry.</li>
+      <li><strong>"chat trace enabled" warning at startup</strong> — <code>CHAT_TRACE=true</code> writes raw prompts to disk at the path shown in <em>Files &amp; paths</em>. Turn off in production unless intentionally debugging.</li>
+      <li><strong>Where do logs go?</strong> — structured slog JSON to stdout / stderr by default; set <code>LOG_FILE</code> for a rotated on-disk copy.</li>
+    </ul>
+  </section>
+
+  <section class="otto-card otto-docs-footer">
+    <p>Repository: <a href="https://github.com/cmetech/otto_app">github.com/cmetech/otto_app</a></p>
+  </section>
+</main>{{end}}
 {{template "base" .}}
