@@ -14,8 +14,11 @@ package admin
 
 import (
 	"bytes"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"runtime"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -77,6 +80,25 @@ type Deps struct {
 	LogPathOrder []string
 	Debug        bool
 	ChatTrace    bool
+
+	// Runtime cfg surfacing (quick 260601-a3z, step 3 of admin UI redesign).
+	// These twelve fields mirror cfg.* values that the operator can otherwise
+	// only inspect by grepping environment variables. They are rendered on the
+	// /admin/about page (aboutHandler builds AboutData from these). All fields
+	// are read-only snapshots taken at admin.Handler wire-up time; the admin
+	// package never mutates them and never imports internal/config (TRST-04).
+	HTTPAddr             string
+	PoolSize             int
+	SessionTTL           time.Duration
+	StreamIdleTimeoutSec int
+	AuthEnabled          bool
+	IPAllowlistEnabled   bool
+	KiroCmd              string
+	KiroArgs             []string
+	KiroCwd              string
+	OllamaPathPrefix     string
+	OpenAIPathPrefix     string
+	AnthropicPathPrefix  string
 }
 
 // handler holds the runtime state for the admin sub-router.
@@ -191,17 +213,90 @@ func (h *handler) dashboardHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// aboutHandler serves GET /admin/about — a placeholder page during step 1
-// of the admin UI redesign. Real content lands in a later step. Uses the
-// same WR-05 buffer-then-write pattern as dashboardHandler so a template
-// render failure produces a clean 500 rather than a truncated 200.
+// aboutData is the render-time view-model for the /admin/about page
+// (quick 260601-a3z, step 3 of admin UI redesign). All empty-string
+// fallbacks (KiroCmd/KiroArgs/KiroCwd) and conditional display strings
+// (StreamIdleDisplay, SessionTTL stringification) are substituted in
+// aboutHandler so the template stays presentation-only.
+type aboutData struct {
+	TabActive            string
+	PageTitle            string
+	Version              string
+	Commit               string
+	GoVersion            string
+	GOOS                 string
+	GOARCH               string
+	StartedAt            string
+	HTTPAddr             string
+	PoolSize             int
+	SessionTTL           string
+	StreamIdleTimeoutSec int
+	StreamIdleDisplay    string
+	AuthEnabled          bool
+	IPAllowlistEnabled   bool
+	Debug                bool
+	ChatTrace            bool
+	KiroCmd              string
+	KiroArgs             string
+	KiroCwd              string
+	OllamaPathPrefix     string
+	OpenAIPathPrefix     string
+	AnthropicPathPrefix  string
+}
+
+// aboutHandler serves GET /admin/about — renders six populated cards
+// (Identity, Build, Runtime, Feature flags, Upstream worker, Endpoints,
+// Project links) from cfg + runtime values (quick 260601-a3z step 3).
+// Uses the same WR-05 buffer-then-write pattern as dashboardHandler so a
+// template render failure produces a clean 500 rather than a truncated 200.
 func (h *handler) aboutHandler(w http.ResponseWriter, r *http.Request) {
-	data := struct {
-		TabActive string
-		PageTitle string
-	}{
-		TabActive: "about",
-		PageTitle: "About",
+	// Empty-string fallbacks done in the handler (not the template) so the
+	// template stays presentation-only.
+	kiroCmd := h.deps.KiroCmd
+	if kiroCmd == "" {
+		kiroCmd = "(unset — degraded mode)"
+	}
+	kiroArgs := strings.Join(h.deps.KiroArgs, " ")
+	if kiroArgs == "" {
+		kiroArgs = "(none)"
+	}
+	kiroCwd := h.deps.KiroCwd
+	if kiroCwd == "" {
+		kiroCwd = "(empty)"
+	}
+	streamIdleDisplay := "disabled"
+	if h.deps.StreamIdleTimeoutSec != 0 {
+		streamIdleDisplay = fmt.Sprintf("%ds", h.deps.StreamIdleTimeoutSec)
+	}
+	startedAt := ""
+	if !h.deps.Start.IsZero() {
+		startedAt = h.deps.Start.Format(time.RFC3339)
+	}
+
+	data := aboutData{
+		TabActive:            "about",
+		PageTitle:            "About",
+		Version:              h.deps.Version,
+		Commit:               h.deps.Commit,
+		GoVersion:            runtime.Version(),
+		GOOS:                 runtime.GOOS,
+		GOARCH:               runtime.GOARCH,
+		StartedAt:            startedAt,
+		HTTPAddr:             h.deps.HTTPAddr,
+		PoolSize:             h.deps.PoolSize,
+		SessionTTL:           h.deps.SessionTTL.String(),
+		StreamIdleTimeoutSec: h.deps.StreamIdleTimeoutSec,
+		StreamIdleDisplay:    streamIdleDisplay,
+		AuthEnabled:          h.deps.AuthEnabled,
+		IPAllowlistEnabled:   h.deps.IPAllowlistEnabled,
+		Debug:                h.deps.Debug,
+		ChatTrace:            h.deps.ChatTrace,
+		KiroCmd:              kiroCmd,
+		KiroArgs:             kiroArgs,
+		KiroCwd:              kiroCwd,
+		OllamaPathPrefix:     h.deps.OllamaPathPrefix,
+		OpenAIPathPrefix:     h.deps.OpenAIPathPrefix,
+		AnthropicPathPrefix:  h.deps.AnthropicPathPrefix,
 	}
 	var buf bytes.Buffer
 	if err := aboutTemplate.ExecuteTemplate(&buf, "base", data); err != nil {
