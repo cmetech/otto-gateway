@@ -1343,6 +1343,8 @@ function Show-Usage {
 Usage: .\scripts\otto-gw.ps1 <command> [flags]
 
 Commands:
+  init [flags]        First-run setup -- generates AUTH_TOKEN + PII_HASH_KEY,
+                      prompts for KIRO_CMD + HTTP_ADDR, writes a .env file.
   start [flags]       Start gateway in background
   stop                Stop background gateway (also reaps any stray $env:KIRO_CMD subprocesses)
   status              Show gateway status and health
@@ -1367,6 +1369,7 @@ Gateway config flags (for start | restart | run | env):
   -Entities LIST      PII_ENABLED_ENTITIES (comma list)
   -Hooks LIST         ENABLED_HOOKS allowlist (comma list, empty = all)
   -Auth TOKEN         AUTH_TOKEN
+  -IdleTimeout INT    STREAM_IDLE_TIMEOUT_SEC (default 30; 0 disables idle watchdog)
   -Debug              DEBUG=true (debug-level logging) for start | restart | run
   -Trace              DEBUG=true + CHAT_TRACE=true (debug + chat-trace NDJSON) for start | restart | run
   -EnvFile PATH       Override the default .env search
