@@ -1003,6 +1003,23 @@ body {
   gap: var(--otto-space-base);
 }
 
+/* Quick 260601-cx3 — pin the trimmed About-page row to 4 columns at desktop
+ * width (Build info / Runtime status / Feature flags / Upstream worker).
+ * The about template carries BOTH .otto-about-grid and .otto-card-grid-4
+ * on the same wrapper; this rule wins at desktop because it ships later
+ * in the cascade. Below 1100px the grid falls back to auto-fit minmax so
+ * the cards reflow gracefully on tablet / mobile. */
+.otto-card-grid-4 {
+  display: grid;
+  gap: var(--otto-space-base);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+@media (max-width: 1100px) {
+  .otto-card-grid-4 {
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  }
+}
+
 /* Definition list inside each About card — two-column dt/dd layout,
  * label muted + right-aligned-feel via max-content, value full-width. */
 .otto-about-dl {
