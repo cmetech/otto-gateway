@@ -82,7 +82,7 @@
 .\scripts\otto-gw.ps1 version</pre>
     <p>Subcommand surface (identical on both wrappers): <code>init</code>, <code>start</code>, <code>stop</code>, <code>restart</code>, <code>status</code>, <code>logs</code>, <code>run</code>, <code>env</code>, <code>upgrade-env</code>, <code>migrate-to-overrides</code>, <code>version</code>.</p>
     <h3 class="otto-h3">Flag &harr; switch reference</h3>
-    <table class="otto-table otto-docs-flags-table">
+    <table class="otto-table otto-docs-flags-table otto-flag-table">
       <thead>
         <tr><th scope="col">POSIX flag</th><th scope="col">PowerShell switch</th><th scope="col">Description</th></tr>
       </thead>
@@ -138,6 +138,54 @@
     <ul class="otto-docs-endpoint-list">
       <li><code>GET /health</code> — D-12 locked health probe (do not consume from wrappers; use <code>/admin/api/snapshot</code> instead).</li>
     </ul>
+  </section>
+
+  <section class="otto-card">
+    <h2 class="otto-h2">Hooks</h2>
+    <p>OTTO Gateway processes every request through a configurable hook chain. The default chain is enabled out-of-the-box; narrow it via the <code>ENABLED_HOOKS</code> env var (comma-separated allowlist; empty value = all hooks active).</p>
+
+    <h3 class="otto-h3">Default hook chain</h3>
+    <div class="otto-docs-table-scroll">
+      <table class="otto-table otto-docs-flags-table">
+        <thead>
+          <tr><th scope="col">Hook</th><th scope="col">Kind</th><th scope="col">Default</th><th scope="col">Purpose</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>RequestIDHook</code></td><td>Pre</td><td>enabled</td><td>Assigns a unique request ID propagated through structured logs and downstream worker headers.</td></tr>
+          <tr><td><code>AuthHook</code></td><td>Pre</td><td>enabled</td><td>Enforces bearer-token (<code>AUTH_TOKEN</code>) + IP-allowlist (<code>ALLOWED_IPS</code>) when configured. No-op when both are empty (Node parity).</td></tr>
+          <tr><td><code>PIIRedactionHook</code></td><td>Pre</td><td>enabled</td><td>Detects and redacts PII in inbound prompts before they reach the upstream worker. No-op when <code>PII_REDACTION_ENABLED=false</code> (the default).</td></tr>
+          <tr><td><code>LoggingHook</code></td><td>Pre,Post</td><td>enabled</td><td>Emits structured request/response log entries (slog JSON). The same instance runs as the last Pre hook and the only Post hook, bridging timings via an internal request-ID map.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 class="otto-h3">PII redaction</h3>
+    <p>PIIRedactionHook sits third in the Pre chain (after RequestID and Auth) so redacted prompts never reach the upstream worker. It is a cheap pass-through unless <code>PII_REDACTION_ENABLED=true</code>. Six built-in recognizers detect <code>Email</code>, <code>IPv4</code>, <code>IPv6</code>, <code>SSN</code>, <code>CreditCard</code>, and <code>USPhone</code>. Detected matches are replaced with bracketed sentinels.</p>
+
+    <dl class="otto-about-dl">
+      <dt><code>PII_REDACTION_ENABLED</code></dt><dd>default <code>false</code> — master switch. When <code>false</code> the hook stays in the chain but does no work.</dd>
+      <dt><code>PII_REDACTION_MODE</code></dt><dd>default <code>replace</code> — one of <code>replace</code> (numbered sentinel per match), <code>mask</code> (unnumbered category sentinel), <code>hash</code> (HMAC-keyed correlation token), <code>drop</code> (matched substring removed entirely).</dd>
+      <dt><code>PII_ENABLED_ENTITIES</code></dt><dd>default empty (all six recognizers active) — comma-separated allowlist from <code>Email,IPv4,IPv6,SSN,CreditCard,USPhone</code>.</dd>
+      <dt><code>PII_HASH_KEY</code></dt><dd>no default — REQUIRED when <code>PII_REDACTION_MODE=hash</code> (boot error otherwise). HMAC-SHA256 key. Rotating it invalidates prior session correlation tokens.</dd>
+    </dl>
+
+    <p>Detected PII is replaced with bracketed sentinels like <code>[EMAIL_1]</code>, <code>[PHONE_2]</code>, or <code>[EMAIL:h-abc12345]</code> (hash mode). Square brackets are deliberate — angle-bracketed sentinels like <code>&lt;EMAIL_1&gt;</code> caused kiro-cli to treat them as opening XML tags (see fix 260531-pt8).</p>
+
+    <h3 class="otto-h3">Examples</h3>
+    <pre class="otto-code-block">PII_REDACTION_ENABLED=true
+PII_REDACTION_MODE=replace
+# Default — numbered sentinels per match per entity:
+#   "Email me at a@b.com or c@d.com"
+#   → "Email me at [EMAIL_1] or [EMAIL_2]"</pre>
+    <pre class="otto-code-block">PII_REDACTION_ENABLED=true
+PII_REDACTION_MODE=hash
+PII_HASH_KEY=&lt;32+ random bytes, hex or base64&gt;
+PII_ENABLED_ENTITIES=Email,SSN
+# Same value → same hash sentinel within a key lifetime (correlation
+# across requests without leaking the underlying PII):
+#   "a@b.com … a@b.com" → "[EMAIL:h-9f3a2c1d] … [EMAIL:h-9f3a2c1d]"</pre>
+
+    <p><strong>SENSITIVE:</strong> <code>CHAT_TRACE=true</code> writes raw prompts to <code>CHAT_TRACE_FILE</code> <em>before</em> PIIRedactionHook runs. When chat-trace is on, the on-disk file contains unredacted PII — this is why the About page surfaces a SENSITIVE badge whenever <code>CHAT_TRACE=true</code>. Turn off in production unless intentionally debugging a request shape.</p>
   </section>
 
   <section class="otto-card">

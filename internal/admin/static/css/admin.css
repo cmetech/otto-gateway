@@ -1158,3 +1158,20 @@ body {
 .otto-docs-footer a:hover {
   text-decoration: underline;
 }
+
+/* ====== Quick 260601-def — round-2 docs polish: flag-table column wrap fix ====== */
+
+.otto-flag-table { table-layout: fixed; width: 100%; }
+.otto-flag-table th:nth-child(1),
+.otto-flag-table td:nth-child(1),
+.otto-flag-table th:nth-child(2),
+.otto-flag-table td:nth-child(2) {
+  width: 25%;
+  white-space: nowrap;
+}
+.otto-flag-table th:nth-child(3),
+.otto-flag-table td:nth-child(3) {
+  width: 50%;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}

@@ -18,6 +18,7 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -439,6 +440,10 @@ func (h *handler) docsHandler(w http.ResponseWriter, r *http.Request) {
 		{Name: "PING_INTERVAL", Default: "60s", Description: "kiro-cli heartbeat interval. Accepts ms-integer or Go duration string.", CurrentValue: "(see startup log)"},
 		{Name: "LOG_FILE", Default: "(unset)", Description: "When set, slog JSON also writes to this rotated file. Empty = stdout/stderr only.", CurrentValue: "(see startup log)"},
 	}
+
+	sort.Slice(envVars, func(i, j int) bool {
+		return envVars[i].Name < envVars[j].Name
+	})
 
 	cliFlags := []cliFlagRow{
 		{Flag: "--http-addr", EnvMapping: "HTTP_ADDR", Notes: "HTTP listen address."},
