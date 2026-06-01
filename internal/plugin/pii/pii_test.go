@@ -34,6 +34,8 @@ package pii
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
@@ -374,6 +376,7 @@ func TestPIIRedactionHook_Describe_NoSecrets(t *testing.T) {
 	for k, v := range cfg {
 		lower := strings.ToLower(k)
 		if strings.Contains(lower, "hash_key") || strings.Contains(lower, "hashkey") ||
+			strings.Contains(lower, "encrypt_key") || strings.Contains(lower, "encryptkey") ||
 			lower == "key" || strings.Contains(lower, "patterns") {
 			t.Errorf("Describe config exposes suspicious key %q (T-8-LEAK)", k)
 		}
@@ -722,14 +725,23 @@ func TestDescribe_NeverPublishesEncryptKey(t *testing.T) {
 		EncryptKey:  []byte("SECRET-SHOULD-NOT-LEAK"),
 	}
 	_, cfg := h.Describe()
-	// Walk every published value as JSON; the key MUST NOT appear.
-	for k, v := range cfg {
-		s, ok := v.(string)
-		if !ok {
-			continue
-		}
-		if strings.Contains(s, "SECRET-SHOULD-NOT-LEAK") {
-			t.Errorf("Describe published EncryptKey via field %q: %q", k, s)
-		}
+	// Serialize to JSON (the on-wire shape used by /health/hooks) and
+	// scan the bytes for the sentinel. This catches not only string-typed
+	// fields but also []byte-typed fields, which json.Marshal encodes as
+	// base64 — a future drift that put h.EncryptKey directly in the map
+	// would leak it as base64 ciphertext, which the previous string-only
+	// type assertion missed entirely.
+	b, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("json.Marshal cfg: %v", err)
+	}
+	// Plain text leak: direct string value somewhere in the map.
+	if strings.Contains(string(b), "SECRET-SHOULD-NOT-LEAK") {
+		t.Errorf("Describe leaked EncryptKey plaintext via JSON: %s", string(b))
+	}
+	// Base64 leak: []byte encoded by json.Marshal.
+	encoded := base64.StdEncoding.EncodeToString([]byte("SECRET-SHOULD-NOT-LEAK"))
+	if strings.Contains(string(b), encoded) {
+		t.Errorf("Describe leaked EncryptKey base64 via JSON: %s", string(b))
 	}
 }
