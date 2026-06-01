@@ -29,7 +29,7 @@ Phase: 08.1 (close-gap-integ-01-streaming-mode-prehook-short-circuit-v1-5) — E
 Plan: 1 of 5
 Status: Executing Phase 08.1
 Next: `/gsd-discuss-phase 8.1` to gather context, then `/gsd-plan-phase 8.1`, then `/gsd-execute-phase 8.1`
-Last activity: 2026-05-31 - Completed quick task 260531-pt8: PII sentinel <…> → […] (fix kiro stream hang)
+Last activity: 2026-05-31 - Completed quick task 260531-ra6: kiro-lifecycle hygiene (slot-release regression test + pgid + wrapper reap)
 
 Progress: [░░░░░░░░░░] 0%
 
@@ -112,6 +112,7 @@ None yet.
 | 260531-oax | Add -Trace switch to scripts/otto-gw.ps1 (Windows parity with bash --trace): [switch]$Trace → $env:DEBUG=true + $env:CHAT_TRACE=true; .bat needs no change (pass-through %*); pwsh parse unverified (not installed on macOS) | 2026-05-31 | 1d68a7f | [260531-oax-add-trace-switch-to-otto-gw-ps1-mirrorin](./quick/260531-oax-add-trace-switch-to-otto-gw-ps1-mirrorin/) |
 | 260531-oox | Positive-signal DEBUG markers to localize PII-redaction request stalls: pii.redact.done (Logger field added to PIIRedactionHook), engine.new_session.ok, engine.prompt.sent, anthropic.sse.first_chunk (one-shot), pool.acquire/release (nil-safe debugLog helper); 3 atomic commits, go build + go vet clean (vet finds 11 pre-existing unrelated findings) | 2026-05-31 | 4269f9c | [260531-oox-add-positive-signal-debug-logs-to-locali](./quick/260531-oox-add-positive-signal-debug-logs-to-locali/) |
 | 260531-pt8 | Fix PII redaction sentinel hang: change <EMAIL_1>/<EMAIL>/<EMAIL:h-...> → [EMAIL_1]/[EMAIL]/[EMAIL:h-...] in internal/plugin/pii/modes.go so kiro-cli/Claude no longer treats the sentinel as an opening XML tag (was causing engine.ACP.Prompt to never return → 120s client timeout). Confirmed live: replace mode hung; mask mode (asterisks) returned correctly. Added TestApplyMode_NoAngleBrackets_RegressionForKiroHang. 3 atomic commits, go build ./... + go test ./internal/plugin/pii/... clean | 2026-05-31 | 0a65e28 | [260531-pt8-change-pii-redaction-sentinel-from-angle](./quick/260531-pt8-change-pii-redaction-sentinel-from-angle/) |
+| 260531-ra6 | Kiro-lifecycle hygiene: (1) regression test TestPool_Cancel_ReleasesSlot_WithoutResultDrain (Pool.Cancel already releases — defense-in-depth lock); (2) spawn kiro-cli in own pgrp on darwin/linux via build-tagged internal/acp/pool_pgid_{unix,windows}.go so SIGTERM cascades to children; (3) scripts/otto-gw + .ps1 stop-time reap of stray $KIRO_CMD orphans (EXACT path match, never by name). 3 atomic commits, go build ./... + GOOS=windows go build ./... + shellcheck + tests clean. Note: stuck-slot symptom seen in live testing has a different root cause (watchdog likely not firing on silent kiro) — follow-up investigation needed | 2026-05-31 | 0123225 | [260531-ra6-pool-slot-release-on-cancel-kiro-process](./quick/260531-ra6-pool-slot-release-on-cancel-kiro-process/) |
 
 ## Deferred Items
 
