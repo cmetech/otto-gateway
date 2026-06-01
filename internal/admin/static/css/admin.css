@@ -3,20 +3,30 @@
  * All tokens are declared in :root so JS can read them via
  * getComputedStyle if needed. Names are the audit contract —
  * `grep --otto-bg admin.css` must succeed.
+ *
+ * Quick 260601-9je — step 2 of admin UI redesign: dark palette
+ * rewritten to a Liberty-inspired near-black + elevated card
+ * surfaces; `--otto-muted` renamed to `--otto-fg-muted` (with
+ * companion `--otto-fg-dim`); `--otto-card-hover`, `--otto-header`,
+ * `--otto-accent-fg`, and typography size tokens added.
  */
 
 :root {
-  --otto-bg: #28243D;
-  --otto-card: #3A3A3A;
+  --otto-bg: #1A1D24;
+  --otto-card: #242832;
+  --otto-card-hover: #2C3140;
+  --otto-header: #1E2128;
+  --otto-border: #2D3340;
   --otto-fg: #FAFAFA;
-  --otto-muted: #A0A0A0;
-  --otto-border: #4A4A4A;
+  --otto-fg-muted: #9CA3AF;
+  --otto-fg-dim: #6B7280;
   --otto-accent: #FAD22D;
+  --otto-accent-fg: #1A1D24;
+  --otto-link: #FAD22D;
   --otto-healthy: #0FC373;
   --otto-warning: #FF8C0A;
   --otto-failed: #FF3232;
   --otto-activity: #AF78D2;
-  --otto-link: #1174E6;
   --otto-space-xs: 4px;
   --otto-space-sm: 8px;
   --otto-space-md: 12px;
@@ -26,6 +36,11 @@
   --otto-radius-card: 6px;
   --otto-radius-input: 4px;
   --otto-radius-pill: 9999px;
+  --otto-text-xs: 11px;
+  --otto-text-sm: 13px;
+  --otto-text-base: 14px;
+  --otto-text-lg: 16px;
+  --otto-text-xl: 20px;
   --otto-font-ui: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --otto-font-mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
 }
@@ -38,6 +53,9 @@
   box-sizing: border-box;
 }
 
+/* Native browser chrome (scrollbars, form input defaults) stays dark in
+ * BOTH themes for step 2. Light-mode opt-in is via the page toggle only;
+ * theme-aware color-scheme can be revisited if it becomes a complaint. */
 html {
   color-scheme: dark;
 }
@@ -47,8 +65,9 @@ body {
   background: var(--otto-bg);
   color: var(--otto-fg);
   font-family: var(--otto-font-ui);
-  font-size: 14px;
+  font-size: var(--otto-text-base);
   line-height: 1.5;
+  transition: background-color 150ms, color 150ms, border-color 150ms;
 }
 
 /* Screen-reader only (sr-only) utility for accessible headings */
@@ -78,15 +97,17 @@ body {
 }
 
 /* -----------------------------------------------------------------------
- * Section headings
+ * Section headings — Liberty-style uppercase tracked
  * ----------------------------------------------------------------------- */
 
 .otto-h2 {
-  font-size: 16px;
+  font-size: var(--otto-text-xl);
   font-weight: 600;
   line-height: 1.4;
   color: var(--otto-fg);
   margin: 0 0 var(--otto-space-base) 0;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
 }
 
 /* -----------------------------------------------------------------------
@@ -98,6 +119,7 @@ body {
   border: 1px solid var(--otto-border);
   border-radius: var(--otto-radius-card);
   padding: var(--otto-space-base);
+  transition: background-color 150ms, color 150ms, border-color 150ms;
 }
 
 /* -----------------------------------------------------------------------
@@ -123,16 +145,16 @@ body {
 }
 
 .otto-summary-label {
-  font-size: 12px;
+  font-size: var(--otto-text-xs);
   font-weight: 400;
-  color: var(--otto-muted);
+  color: var(--otto-fg-muted);
   text-transform: uppercase;
-  letter-spacing: 0.03em;
+  letter-spacing: 0.06em;
   line-height: 1.4;
 }
 
 .otto-summary-value {
-  font-size: 20px;
+  font-size: var(--otto-text-xl);
   font-weight: 600;
   color: var(--otto-fg);
   line-height: 1.3;
@@ -140,7 +162,7 @@ body {
 
 .otto-summary-value.text-mono {
   font-family: var(--otto-font-mono);
-  font-size: 14px;
+  font-size: var(--otto-text-base);
 }
 
 /* Live indicator zone — pushed to the right */
@@ -159,7 +181,7 @@ body {
 }
 
 /* -----------------------------------------------------------------------
- * Status pill (filled, semantic color at 100%, #28243D text)
+ * Status pill (filled, semantic color at 100%, accent-fg text)
  * ----------------------------------------------------------------------- */
 
 .otto-status-pill {
@@ -169,8 +191,8 @@ body {
   font-size: 14px;
   font-weight: 600;
   line-height: 1;
-  color: #28243D;
-  background: var(--otto-muted);
+  color: var(--otto-accent-fg);
+  background: var(--otto-fg-muted);
   white-space: nowrap;
 }
 
@@ -223,7 +245,7 @@ body {
 
 .otto-last-updated {
   font-size: 12px;
-  color: var(--otto-muted);
+  color: var(--otto-fg-muted);
   white-space: nowrap;
 }
 
@@ -275,7 +297,7 @@ body {
 .otto-slot-grid-empty {
   padding: var(--otto-space-xl) var(--otto-space-base);
   text-align: center;
-  color: var(--otto-muted);
+  color: var(--otto-fg-muted);
   font-size: 14px;
 }
 
@@ -302,7 +324,7 @@ body {
 
 .otto-slot-status {
   font-size: 14px;
-  color: var(--otto-muted);
+  color: var(--otto-fg-muted);
 }
 
 .otto-slot-status.is-dead {
@@ -312,7 +334,7 @@ body {
 /* Slot meta text (Plan 02) */
 .otto-slot-meta {
   font: 400 14px/1.5 var(--otto-font-ui);
-  color: var(--otto-muted);
+  color: var(--otto-fg-muted);
 }
 
 .otto-slot-meta.is-busy {
@@ -325,19 +347,19 @@ body {
 
 /* Badge variants for alive/dead (Plan 02 — aliases to semantic colors) */
 .otto-badge.is-alive {
-  background: #1B3B2E;
+  background: rgba(15, 195, 115, 0.12);
   color: var(--otto-healthy);
 }
 
 .otto-badge.is-dead {
-  background: #3D1E1E;
+  background: rgba(255, 50, 50, 0.12);
   color: var(--otto-failed);
 }
 
 /* Session ID short display */
 .otto-session-id-short {
   font: 400 12px/1.4 var(--otto-font-mono);
-  color: var(--otto-muted);
+  color: var(--otto-fg-muted);
 }
 
 /* -----------------------------------------------------------------------
@@ -363,7 +385,7 @@ body {
   padding: var(--otto-space-md);
   font-size: 12px;
   font-weight: 600;
-  color: var(--otto-muted);
+  color: var(--otto-fg-muted);
   text-transform: uppercase;
   letter-spacing: 0.03em;
   border-bottom: 1px solid var(--otto-border);
@@ -393,7 +415,7 @@ body {
 
 .otto-table-empty-body {
   font-size: 14px;
-  color: var(--otto-muted);
+  color: var(--otto-fg-muted);
   margin: 0;
 }
 
@@ -419,7 +441,7 @@ body {
   padding: var(--otto-space-md);
   border-bottom: 1px solid var(--otto-border);
   font: 400 12px/1.4 var(--otto-font-ui);
-  color: var(--otto-muted);
+  color: var(--otto-fg-muted);
   text-transform: uppercase;
 }
 
@@ -438,14 +460,14 @@ body {
 }
 
 .otto-sessions-table td.is-model-null {
-  color: var(--otto-muted);
+  color: var(--otto-fg-muted);
 }
 
 /* Empty state (Plan 02) */
 .otto-empty-state {
   text-align: center;
   padding: var(--otto-space-xl);
-  color: var(--otto-muted);
+  color: var(--otto-fg-muted);
 }
 
 .otto-empty-state strong {
@@ -489,7 +511,7 @@ body {
 
 /* Connection status text (Plan 03) */
 .otto-log-status {
-  color: var(--otto-muted);
+  color: var(--otto-fg-muted);
   font: 400 12px/1.4 var(--otto-font-ui);
 }
 
@@ -529,7 +551,7 @@ body {
   z-index: 1;
   padding: 4px var(--otto-space-sm);
   font: 600 11px/1.4 var(--otto-font-ui);
-  color: var(--otto-muted);
+  color: var(--otto-fg-muted);
   border-bottom: 1px solid var(--otto-border);
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -558,13 +580,13 @@ body {
   padding: 2px var(--otto-space-sm);
   white-space: pre-wrap;
   word-break: break-word;
-  color: var(--otto-muted);
+  color: var(--otto-fg-muted);
 }
 
 /* Empty state shown before any lines arrive — span all 4 grid columns. */
 .otto-log-empty {
   grid-column: 1 / -1;
-  color: var(--otto-muted);
+  color: var(--otto-fg-muted);
   text-align: center;
   padding: var(--otto-space-lg);
   font: 400 14px/1.5 var(--otto-font-ui);
@@ -584,7 +606,7 @@ body {
 /* Per-level chip palette — uses existing tokens for theme parity. */
 .otto-log-level-chip.is-debug {
   color: var(--otto-bg);
-  background: var(--otto-muted);
+  background: var(--otto-fg-muted);
 }
 .otto-log-level-chip.is-info {
   color: var(--otto-bg);
@@ -599,7 +621,7 @@ body {
   background: var(--otto-failed);
 }
 .otto-log-level-chip.is-unknown {
-  color: var(--otto-muted);
+  color: var(--otto-fg-muted);
   background: transparent;
   border: 1px solid var(--otto-border);
 }
@@ -660,7 +682,10 @@ body {
   opacity: 0.85;
 }
 
-/* Pause button variant — active (paused) state uses is-paused class */
+/* Pause button variant — active (paused) state uses is-paused class.
+ * NOTE: --otto-link is now the OTTO yellow accent (was blue in step 1);
+ * the paused button is intentionally yellow as part of step 2 visual
+ * identity. */
 .otto-btn.is-paused {
   background: var(--otto-link);
   border-color: var(--otto-link);
@@ -713,38 +738,50 @@ body {
 /* -----------------------------------------------------------------------
  * Quick 260601-98c — admin UI redesign step 1 (structural scaffolding)
  *
- * Step 1 is structure-only: header bar, tab nav, theme-toggle button,
- * and a no-op [data-theme="light"] override block that mirrors the
- * current dark palette token values. Step 2 will replace the no-op
- * overrides with a real light palette and a full component restyle.
+ * Header bar, tab nav, theme-toggle button, and [data-theme="light"]
+ * palette override block. Step 2 (260601-9je below) replaced the step-1
+ * no-op overrides with the real light palette and added the component
+ * restyle blocks at the end of this file.
  * ----------------------------------------------------------------------- */
 
-/* No-op light-theme override block. Mirrors the same token name/value
- * pairs as :root so light and dark render IDENTICALLY in step 1. This
- * exists to prove the [data-theme=...] selector plumbing is wired
- * end-to-end (pre-paint script → documentElement.dataset.theme → CSS).
- * Step 2 replaces these values with the real light palette. */
+/* Real light-theme palette (step 2). Mirrors :root token NAMES with
+ * theme-appropriate VALUES. --otto-header is intentionally identical
+ * to the dark-theme value (#1E2128) so the page header stays dark in
+ * BOTH themes (Liberty-style parity). --otto-link is darkened to
+ * #B8930A for AA contrast on light backgrounds; semantic colors are
+ * shifted to their darker variants for accessible contrast. */
 [data-theme="light"] {
-  --otto-bg: #28243D;
-  --otto-card: #3A3A3A;
-  --otto-fg: #FAFAFA;
-  --otto-muted: #A0A0A0;
-  --otto-border: #4A4A4A;
+  --otto-bg: #F7F8FA;
+  --otto-card: #FFFFFF;
+  --otto-card-hover: #F1F3F7;
+  --otto-header: #1E2128;
+  --otto-border: #E5E7EB;
+  --otto-fg: #1A1D24;
+  --otto-fg-muted: #4B5563;
+  --otto-fg-dim: #6B7280;
   --otto-accent: #FAD22D;
-  --otto-healthy: #0FC373;
-  --otto-warning: #FF8C0A;
-  --otto-failed: #FF3232;
-  --otto-activity: #AF78D2;
-  --otto-link: #1174E6;
+  --otto-accent-fg: #1A1D24;
+  --otto-link: #B8930A;
+  --otto-healthy: #059669;
+  --otto-warning: #D97706;
+  --otto-failed: #DC2626;
+  --otto-activity: #7C3AED;
 }
 
-/* Header bar (wordmark + theme toggle) */
+/* Header bar (wordmark + theme toggle). Always-dark surface in BOTH
+ * themes — text/icons use the hard-coded light fg so they stay readable
+ * on the dark header bar regardless of which theme the body uses. The
+ * border-bottom uses a translucent white hairline that works against
+ * the dark header in both themes. */
 .otto-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 0.75rem 1.25rem;
+  background: var(--otto-header);
+  color: #FAFAFA;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  transition: background-color 150ms, color 150ms, border-color 150ms;
 }
 
 .otto-header-brand {
@@ -765,14 +802,21 @@ body {
   border-radius: 4px;
   cursor: pointer;
   font: inherit;
+  transition: background 150ms;
 }
 
-/* Tab nav strip (Dashboard / About / Docs) */
+.otto-theme-toggle:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+/* Tab nav strip (Dashboard / About / Docs) — sits BELOW the dark header
+ * on the theme-able body background, so its border uses the theme-able
+ * --otto-border token (step 2). */
 .otto-tab-nav {
   display: flex;
   gap: 1.5rem;
   padding: 0 1.25rem;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid var(--otto-border);
 }
 
 .otto-tab {
@@ -781,14 +825,16 @@ body {
   color: inherit;
   text-decoration: none;
   border-bottom: 2px solid transparent;
+  transition: color 150ms, border-color 150ms;
 }
 
 .otto-tab:hover {
-  opacity: 0.85;
+  opacity: 1;
+  color: var(--otto-fg-muted);
 }
 
 .otto-tab.is-active {
-  border-bottom-color: #FAD22D;
+  border-bottom-color: var(--otto-accent);
   font-weight: 600;
 }
 
@@ -797,4 +843,84 @@ body {
   padding: 2rem;
   text-align: center;
   opacity: 0.75;
+}
+
+/* -----------------------------------------------------------------------
+ * Quick 260601-9je — admin UI redesign step 2 (palette + component restyle)
+ *
+ * New additive component variants for the Liberty-inspired refresh:
+ * accent-bordered card variants, pill-style badges, primary/secondary
+ * button variants, and a light-mode-only subtle card shadow. None of
+ * these REPLACE existing rules — they extend the system so existing
+ * admin.js classList writes continue to render unchanged.
+ * ----------------------------------------------------------------------- */
+
+/* Card accent-border variants: 4px left border keyed to semantic color. */
+.otto-card--accent-healthy {
+  border-left: 4px solid var(--otto-healthy);
+}
+
+.otto-card--accent-warning {
+  border-left: 4px solid var(--otto-warning);
+}
+
+.otto-card--accent-failed {
+  border-left: 4px solid var(--otto-failed);
+}
+
+.otto-card--accent-accent {
+  border-left: 4px solid var(--otto-accent);
+}
+
+/* Pill badge modifier (additive — does NOT replace the rectangular
+ * .otto-badge base rule used by existing admin.js classList writes).
+ * The ::before generates the leading status dot in the badge's text
+ * color via currentColor. */
+.otto-badge--pill {
+  border-radius: var(--otto-radius-pill);
+  padding: 4px 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--otto-text-xs);
+}
+
+.otto-badge--pill::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+/* Primary button variant: filled accent (OTTO yellow) for the primary
+ * action on a page. Hover dims slightly via opacity. */
+.otto-btn--primary {
+  background: var(--otto-accent);
+  border-color: var(--otto-accent);
+  color: var(--otto-accent-fg);
+  font-weight: 600;
+}
+
+.otto-btn--primary:hover {
+  opacity: 0.9;
+}
+
+/* Secondary button variant: transparent + theme-able border. */
+.otto-btn--secondary {
+  background: transparent;
+  border: 1px solid var(--otto-border);
+  color: var(--otto-fg);
+}
+
+.otto-btn--secondary:hover {
+  background: var(--otto-card-hover);
+}
+
+/* Light-mode-only card shadow: subtle 1px ambient drop for visual
+ * separation against the F7F8FA page bg. Dark mode has no shadow — it
+ * would be invisible against the dark surfaces and add noise. */
+[data-theme="light"] .otto-card {
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
 }
