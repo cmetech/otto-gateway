@@ -924,3 +924,108 @@ body {
 [data-theme="light"] .otto-card {
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
 }
+
+/* -----------------------------------------------------------------------
+ * Quick 260601-a3z — admin UI redesign step 3
+ *
+ * (a) Theme-toggle icon swap — replace the text-based "Theme" button
+ *     surface with a 32x32 icon-only button. Inline sun + moon SVGs in
+ *     base.html.tmpl are shown/hidden based on [data-theme] on <html>
+ *     so the CSS drives icon visibility without JS needing to know.
+ *     These rules WIN OVER the prior step-1 .otto-theme-toggle declaration
+ *     via cascade order (append-wins for same-specificity selectors).
+ *
+ * (b) About-page grid + typography — Identity wordmark banner +
+ *     responsive 6-card grid + tight definition-list rows.
+ * ----------------------------------------------------------------------- */
+
+.otto-theme-toggle {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: inherit;
+  transition: background 150ms, transform 100ms;
+}
+.otto-theme-toggle:hover {
+  background: var(--otto-card-hover);
+}
+.otto-theme-toggle:active {
+  transform: scale(0.95);
+}
+.otto-theme-toggle svg {
+  width: 20px;
+  height: 20px;
+}
+.otto-theme-toggle .icon-sun,
+.otto-theme-toggle .icon-moon {
+  display: none;
+}
+[data-theme="dark"] .otto-theme-toggle .icon-sun {
+  display: block;
+}
+[data-theme="light"] .otto-theme-toggle .icon-moon {
+  display: block;
+}
+
+/* About page Identity banner. The wordmark intentionally uses a larger
+ * font than --otto-text-xl since it's the page banner, not a section
+ * heading. */
+.otto-about-identity {
+  text-align: center;
+  padding: var(--otto-space-xl);
+}
+.otto-about-wordmark {
+  font-size: 32px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  margin: 0 0 var(--otto-space-sm) 0;
+  color: var(--otto-fg);
+}
+.otto-about-tagline {
+  margin: 0;
+  color: var(--otto-fg-muted);
+  font-size: var(--otto-text-base);
+}
+
+/* About page card grid — auto-fit so the layout collapses from 3 columns
+ * on wide screens to 2 columns on tablets and 1 on mobile without any
+ * media-query glue. minmax(280px, 1fr) is the breakpoint heuristic. */
+.otto-about-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: var(--otto-space-base);
+}
+
+/* Definition list inside each About card — two-column dt/dd layout,
+ * label muted + right-aligned-feel via max-content, value full-width. */
+.otto-about-dl {
+  margin: 0;
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--otto-space-xs) var(--otto-space-base);
+  font-size: var(--otto-text-sm);
+}
+.otto-about-dl dt {
+  color: var(--otto-fg-muted);
+  font-weight: 400;
+  white-space: nowrap;
+}
+.otto-about-dl dd {
+  margin: 0;
+  color: var(--otto-fg);
+  word-break: break-word;
+}
+.otto-about-dl dd a {
+  color: var(--otto-link);
+  text-decoration: none;
+}
+.otto-about-dl dd a:hover {
+  text-decoration: underline;
+}
