@@ -37,6 +37,7 @@ param(
     [string]$Hooks,
     [string]$Auth,
     [int]$IdleTimeout = -1,
+    [switch]$Help,
     [switch]$Trace,
     [string]$EnvFile,
     [string]$OverridesFile,
@@ -1339,6 +1340,7 @@ function Show-Env {
 }
 
 function Show-Usage {
+    param([int]$ExitCode = 1)
     @"
 Usage: .\scripts\otto-gw.ps1 <command> [flags]
 
@@ -1420,7 +1422,12 @@ Precedence (highest first):
 
 See scripts\.env.otto-gw.example for a starter template.
 "@ | Write-Host
-    exit 1
+    exit $ExitCode
+}
+
+if ($Help -or $Command -eq "help" -or $Command -eq "-h" -or $Command -eq "--help") {
+    Show-Usage -ExitCode 0
+    exit 0
 }
 
 switch ($Command) {
@@ -1435,5 +1442,6 @@ switch ($Command) {
     "upgrade-env"      { Invoke-UpgradeEnv }
     "migrate-to-overrides" { Invoke-MigrateToOverrides }
     "version"          { Show-Version }
+    "help"             { Show-Usage -ExitCode 0 }
     default            { Show-Usage }
 }

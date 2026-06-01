@@ -1644,7 +1644,9 @@ print_env() {
 }
 
 usage() {
-    cat >&2 <<'EOF'
+    local exit_code="${1:-1}"
+    if [[ "$exit_code" -eq 0 ]]; then
+        cat <<'EOF'
 Usage: otto-gw <command> [flags]
 
 Commands:
@@ -1733,7 +1735,98 @@ Precedence (highest first):
 
 See scripts/.env.otto-gw.example for a starter template.
 EOF
-    exit 1
+    else
+        cat >&2 <<'EOF'
+Usage: otto-gw <command> [flags]
+
+Commands:
+  init [flags]        First-run setup — generates AUTH_TOKEN + PII_HASH_KEY,
+                      prompts for KIRO_CMD + HTTP_ADDR, writes a .env file.
+  start [flags]       Start gateway in background (waits for /health)
+  stop                Stop background gateway (also reaps any stray $KIRO_CMD subprocesses)
+  status              Show gateway status and health
+  restart [flags]     Stop then start (re-applies flags / .env)
+  logs [-f]           Tail gateway log (optional -f to follow)
+  run [flags]         Run gateway in foreground
+  env [--show-secrets]
+                      Print the resolved gateway env that would be passed
+  upgrade-env [flags] Regenerate .otto-gw.env from the latest .env.otto-gw.example
+                      template. Operator customizations in .otto-gw.overrides.env
+                      are NEVER touched. --dry-run shows the added / orphaned /
+                      unchanged keys without writing.
+  migrate-to-overrides [flags]
+                      One-time migration from the legacy single-file model:
+                      extract non-default values from .otto-gw.env into
+                      .otto-gw.overrides.env, back up the original, then
+                      regenerate .otto-gw.env from the template. Idempotent.
+  version             Print the gateway binary version (delegates to bin/otto-gateway --version)
+
+Gateway config flags (for start | restart | run | env):
+  --pii MODE          off | replace | mask | hash | drop
+  --hash-key KEY      PII_HASH_KEY (required when --pii hash)
+  --entities LIST     PII_ENABLED_ENTITIES (comma list)
+  --hooks LIST        ENABLED_HOOKS allowlist (comma list, empty = all)
+  --auth TOKEN        AUTH_TOKEN
+  --idle-timeout SEC  STREAM_IDLE_TIMEOUT_SEC (default 30; 0 disables idle watchdog)
+  --debug             DEBUG=true (debug-level logging) for start | restart | run
+  --trace             DEBUG=true + CHAT_TRACE=true (debug + chat-trace NDJSON) for start | restart | run
+  --env-file PATH     Override the default .env search
+  --overrides-file PATH  Override the default .otto-gw.overrides.env search
+
+upgrade-env / migrate-to-overrides flags:
+  --template PATH     Override the .env.otto-gw.example resolution
+  --dest PATH         Override the resolved .otto-gw.env target (default: the
+                      same path resolve_env_file would pick)
+  --overrides-dest PATH (migrate-to-overrides) override the resolved overrides
+                      target (default: sibling of --dest)
+  --dry-run           Print added / orphaned / unchanged keys; write nothing
+  --yes               Skip the overwrite confirmation prompt (CI-friendly)
+
+init flags:
+  --dest PATH         where to write the .env (default $HOME/.otto-gw.env)
+  --here              shortcut for --dest ./.env.otto-gw
+  --force             overwrite if dest exists (on re-init: existing values
+                      are preserved as defaults; secrets reused unchanged
+                      unless --regenerate-secrets)
+  --kiro PATH         skip the KIRO_CMD prompt
+  --addr ADDR         skip the HTTP_ADDR prompt (default 127.0.0.1:18080)
+  --pii MODE          skip the PII prompt (default off)
+  --idle-timeout SEC  STREAM_IDLE_TIMEOUT_SEC override (default: write
+                      "# STREAM_IDLE_TIMEOUT_SEC=30" commented; the binary
+                      defaults to 30s anyway. Pass a value to write the
+                      line uncommented. 0 disables the watchdog.)
+  --auth-enabled      enable bearer-token auth (default off; AUTH_TOKEN line
+                      pregenerated but commented when disabled, so flipping
+                      the '#' enables it without re-running init)
+  --auth-token TOK    use TOK instead of generating (implies --auth-enabled)
+  --chat-trace        enable chat-trace NDJSON tracer (default off; records
+                      raw user content -- sensitive)
+  --regenerate-secrets  on re-init, mint fresh AUTH_TOKEN + PII_HASH_KEY.
+                      Default behavior on re-init preserves existing values
+                      to avoid invalidating clients / breaking hash-mode
+                      log correlation. Use after a key leak.
+  --hash-key KEY      use KEY instead of generating
+  --non-interactive   don't prompt; use defaults for unspecified values
+
+.env auto-load search (loaded FIRST):
+  1. --env-file PATH                  (CLI override)
+  2. $OTTO_ENV_FILE                   (env override)
+  3. ./.env.otto-gw                   (project-local)
+  4. $HOME/.otto-gw.env               (per-user)
+
+.otto-gw.overrides.env auto-load search (loaded SECOND; values win on conflict):
+  1. --overrides-file PATH            (CLI override)
+  2. $OTTO_OVERRIDES_FILE             (env override)
+  3. ./.otto-gw.overrides.env         (project-local)
+  4. $HOME/.otto-gw.overrides.env     (per-user)
+
+Precedence (highest first):
+  CLI flag → .otto-gw.overrides.env → .otto-gw.env → inherited shell env.
+
+See scripts/.env.otto-gw.example for a starter template.
+EOF
+    fi
+    exit "$exit_code"
 }
 
 CMD="${1:-}"
@@ -1755,5 +1848,6 @@ case "$CMD" in
     version) show_version ;;
     upgrade-env) upgrade_env_cmd "$@" ;;
     migrate-to-overrides) migrate_to_overrides_cmd "$@" ;;
+    help|-h|--help) usage 0 ;;
     *)       usage ;;
 esac
