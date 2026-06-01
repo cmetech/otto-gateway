@@ -110,6 +110,17 @@ rollout)? Use the per-OS checklists below.
      --pii hash
    ```
 
+   For transparent round-trip ciphertext (encrypt mode), supply the operator-owned key:
+
+   ```bash
+   ./scripts/otto-gw init \
+     --non-interactive \
+     --kiro /usr/local/bin/kiro \
+     --addr 127.0.0.1:11434 \
+     --pii encrypt \
+     --encrypt-key "$(openssl rand -hex 32)"
+   ```
+
    `--dest PATH` chooses the output file; `--here` writes `./.env.otto-gw` instead of the home directory; `--force` overwrites an existing file.
 
 6. **Start.** The wrapper waits for `/health` to come up before returning. On failure it tails the last 20 lines of the structured log inline so you see the actual error without grepping:
@@ -223,6 +234,18 @@ Windows install has two extra concerns the POSIX OSes do not: **Mark-of-the-Web 
      -Pii hash
    ```
 
+   For encrypt mode (transparent round-trip ciphertext):
+
+   ```powershell
+   $key = -join ((1..32) | ForEach-Object { '{0:x2}' -f (Get-Random -Maximum 256) })
+   .\scripts\otto-gw.ps1 init `
+     -NonInteractive `
+     -Kiro "C:\Tools\kiro.exe" `
+     -Addr "127.0.0.1:11434" `
+     -Pii encrypt `
+     -EncryptKey $key
+   ```
+
 6. **Start.** Three equivalent surfaces:
 
    ```powershell
@@ -292,7 +315,8 @@ The `init` subcommand generates an `.env` file with sensible defaults and pregen
 | `--non-interactive` / `-NonInteractive` | Suppress all prompts; use defaults or existing-file values for anything not supplied via flag. |
 | `--kiro PATH` / `-Kiro PATH` | Skip the `KIRO_CMD` prompt. |
 | `--addr ADDR` / `-Addr ADDR` | Skip the `HTTP_ADDR` prompt (default `127.0.0.1:18080`). |
-| `--pii MODE` / `-Pii MODE` | Skip the PII mode prompt. One of `off`, `replace`, `mask`, `hash`, `drop` (default `off`). |
+| `--pii MODE` / `-Pii MODE` | Skip the PII mode prompt. One of `off`, `replace`, `mask`, `hash`, `drop`, `encrypt` (default `off`). |
+| `--encrypt-key KEY` / `-EncryptKey KEY` | Operator-supplied `PII_ENCRYPT_KEY` for encrypt mode. Required when `--pii encrypt` (boot error otherwise). Any non-empty string — the gateway derives a 32-byte AES-256-GCM key via SHA-256 at boot. **Not minted by `--regenerate-secrets`** — encrypt keys are caller-owned so rotation is an explicit operator action. |
 | `--auth-enabled` / `-AuthEnabled` | Enable bearer-token auth. Default off — when disabled the `AUTH_TOKEN=` line is pregenerated but written commented out, so flipping the leading `#` enables it without re-running init. |
 | `--auth-token TOK` / `-AuthToken TOK` | Use TOK instead of generating a random token. Implies `--auth-enabled`. |
 | `--chat-trace` / `-ChatTrace` | Enable chat-trace NDJSON tracer. Default off — when enabled, every chat request writes two NDJSON records (pre-redaction request + post-chain response) to a separate `chat-trace.log` (mode `0600`, 3-day retention). Records contain **raw user content** — treat the file as sensitive. |
@@ -375,7 +399,7 @@ When you do re-run, `init --force` / `init -Force` now preserves your existing v
 ./scripts/otto-gw init --force --non-interactive
 ```
 
-- Existing `AUTH_TOKEN`, `PII_HASH_KEY`, `KIRO_CMD`, `HTTP_ADDR`, `PII_REDACTION_MODE`, `CHAT_TRACE` state — **preserved**.
+- Existing `AUTH_TOKEN`, `PII_HASH_KEY`, `PII_ENCRYPT_KEY`, `KIRO_CMD`, `HTTP_ADDR`, `PII_REDACTION_MODE`, `PII_ENTITY_ACTIONS`, `CHAT_TRACE` state — **preserved**.
 - New fields introduced by the upgraded wrapper — **added** with sensible defaults (commented if off).
 - Comment formatting / section dividers — **refreshed** from the new template.
 
@@ -509,7 +533,7 @@ OTTO Gateway ships with an optional `ChatTraceHook` (gated by `CHAT_TRACE=true` 
 
 The gateway mitigates this on the file system: `chat-trace.log` is opened with mode `0o600` (owner read/write only — never group or world) and the timberjack rotator prunes old archives at 3 days by default (`CHAT_TRACE_MAX_AGE_DAYS=3`), rotating daily at local midnight with gzip compression. Setting `CHAT_TRACE=false` (or simply leaving it unset, which is the default) keeps the file from being created on disk at all — no rotator is opened, no records are written.
 
-**Operators MUST NOT ship `chat-trace.log` to centralized log aggregators without a redaction sidecar.** The hash-mode PII redaction (`PII_REDACTION_MODE=hash` + `PII_HASH_KEY`) is the gateway's offered correlation primitive when aggregation is required; running a separate batch redactor on rotated `*.log.gz` archives before they leave the host is the alternative. See `scripts/.env.otto-gw.example` for the full set of `CHAT_TRACE_*` knobs and recommended defaults.
+**Operators MUST NOT ship `chat-trace.log` to centralized log aggregators without a redaction sidecar.** The hash-mode PII redaction (`PII_REDACTION_MODE=hash` + `PII_HASH_KEY`) is the gateway's offered correlation primitive when aggregation is required; running a separate batch redactor on rotated `*.log.gz` archives before they leave the host is the alternative. (Encrypt mode — `PII_REDACTION_MODE=encrypt` + `PII_ENCRYPT_KEY` — is a different use case: it round-trips ciphertext through the worker so the client receives plaintext, but logs still need a correlation primitive that does **not** round-trip, which is why hash mode remains the recommendation for log aggregation.) See `scripts/.env.otto-gw.example` for the full set of `CHAT_TRACE_*` knobs and recommended defaults.
 
 If you only want chat tracing for a short debugging window, the recommended pattern is: enable `CHAT_TRACE=true`, reproduce the issue, copy the relevant NDJSON line out, then flip it back to `CHAT_TRACE=false` and restart the gateway. The 3-day rotation window will prune the captured file on its own; no manual cleanup is required if you don't want it earlier than that.
 
@@ -595,6 +619,26 @@ PII_REDACTION_ENABLED=true
 PII_REDACTION_MODE=hash
 PII_HASH_KEY=<the same 32-byte hex string>
 ```
+
+### Encrypt-mode boot refusal (`PII_REDACTION_MODE=encrypt` without `PII_ENCRYPT_KEY`)
+
+**Cause.** Encrypt mode AES-256-GCM-encrypts detected PII on the request and decrypts it on the response so the client round-trips the original plaintext. Without `PII_ENCRYPT_KEY` there is no key to derive. The gateway refuses to start with encrypt active anywhere (the global `PII_REDACTION_MODE` OR any `PII_ENTITY_ACTIONS` entry of the form `Entity:encrypt`) and an empty `PII_ENCRYPT_KEY`. The fatal log names the env var explicitly.
+
+**Fix.** Supply the key (any non-empty string — the gateway SHA-256-derives a 32-byte AES key at boot):
+
+```bash
+./scripts/otto-gw restart --pii encrypt --encrypt-key "$(openssl rand -hex 32)"
+```
+
+Persist it in your `.env`:
+
+```
+PII_REDACTION_ENABLED=true
+PII_REDACTION_MODE=encrypt
+PII_ENCRYPT_KEY=<any non-empty string; high-entropy random is the operator-grade default>
+```
+
+Rotating `PII_ENCRYPT_KEY` invalidates every prior encrypted token — treat rotation as a breaking change for any in-flight conversation that round-trips. `--regenerate-secrets` does **not** rotate this key; rotation is an explicit operator action.
 
 ---
 

@@ -9,10 +9,13 @@
 #   $env:OTTO_BIN, $env:OTTO_PID, $env:OTTO_LOG, $env:OTTO_STATE_DIR, $env:OTTO_ADDR
 #
 # Gateway config flags (for start | restart | run | env):
-#   -Pii MODE          off | replace | mask | hash | drop
+#   -Pii MODE          off | replace | mask | hash | drop | encrypt
 #                        off → PII_REDACTION_ENABLED=false
 #                        others → PII_REDACTION_ENABLED=true PII_REDACTION_MODE=MODE
 #   -HashKey KEY       PII_HASH_KEY (required when -Pii hash)
+#   -EncryptKey KEY    PII_ENCRYPT_KEY (required when -Pii encrypt; any
+#                        non-empty string -- gateway derives a 32-byte
+#                        AES-256-GCM key via SHA-256 at boot)
 #   -Entities LIST     PII_ENABLED_ENTITIES (comma list)
 #   -Hooks LIST        ENABLED_HOOKS (comma list, empty = all)
 #   -Auth TOKEN        AUTH_TOKEN
@@ -33,6 +36,7 @@ param(
     [Parameter(Position=0)][string]$Command = "help",
     [string]$Pii,
     [string]$HashKey,
+    [string]$EncryptKey,
     [string]$Entities,
     [string]$Hooks,
     [string]$Auth,
@@ -240,7 +244,8 @@ function Apply-CliFlags {
             $env:PII_REDACTION_MODE    = $Pii
         }
     }
-    if ($HashKey)  { $env:PII_HASH_KEY         = $HashKey }
+    if ($HashKey)    { $env:PII_HASH_KEY    = $HashKey }
+    if ($EncryptKey) { $env:PII_ENCRYPT_KEY = $EncryptKey }
     if ($Entities) { $env:PII_ENABLED_ENTITIES = $Entities }
     if ($Hooks)    { $env:ENABLED_HOOKS        = $Hooks }
     if ($Auth)     { $env:AUTH_TOKEN           = $Auth }
@@ -878,6 +883,17 @@ function Invoke-Init {
     } else {
         $hashKeyValue = New-RandomHex 32
     }
+    # PII_ENCRYPT_KEY is operator-supplied (NOT auto-minted by -RegenerateSecrets).
+    # CLI flag wins; existing-file value is preserved on re-init; otherwise empty
+    # (which the gateway treats as fatal when encrypt mode is active).
+    $encryptKeyValue = ''
+    $encryptKeyPreserved = $false
+    if ($EncryptKey) {
+        $encryptKeyValue = $EncryptKey
+    } elseif ($reinit -and $existing.ContainsKey('PII_ENCRYPT_KEY') -and $existing['PII_ENCRYPT_KEY']) {
+        $encryptKeyValue     = $existing['PII_ENCRYPT_KEY']
+        $encryptKeyPreserved = $true
+    }
 
     # Resolve KIRO_CMD -- flag > existing > prompt with Get-Command suggestion.
     $kiroValue = $Kiro
@@ -938,8 +954,9 @@ function Invoke-Init {
                 $piiValue = if ($entered) { $entered } else { $existingPiiMode }
             }
         } elseif (-not $NonInteractive) {
-            Write-Host "  PII redaction -- off | replace | mask | hash | drop."
-            Write-Host "  'hash' (default) correlates values across logs; 'replace' is human-readable; 'off' disables."
+            Write-Host "  PII redaction -- off | replace | mask | hash | drop | encrypt."
+            Write-Host "  'hash' (default) correlates values across logs; 'replace' is human-readable;"
+            Write-Host "  'encrypt' round-trips ciphertext (requires -EncryptKey); 'off' disables."
             $entered = Read-Host "  PII mode [hash]"
             $piiValue = if ($entered) { $entered } else { "hash" }
         }
@@ -947,8 +964,15 @@ function Invoke-Init {
     # Default is hash: redaction ON with per-install HMAC tags so the same
     # value correlates across log lines (PII_HASH_KEY is auto-generated above).
     if (-not $piiValue) { $piiValue = "hash" }
+    # Validate mode early so a typo doesn't write garbage to overrides. The
+    # gateway also validates at boot, but catching it here keeps the error
+    # close to the operator's input.
+    if (@('off','replace','mask','hash','drop','encrypt') -notcontains $piiValue) {
+        Write-Error "ERROR: -Pii must be one of off|replace|mask|hash|drop|encrypt (got: $piiValue)"
+        exit 1
+    }
     $piiEnabled = if ($piiValue -eq "off") { "false" } else { "true" }
-    # PII_REDACTION_MODE must be a valid mode (replace|mask|hash|drop) even when
+    # PII_REDACTION_MODE must be a valid mode (replace|mask|hash|drop|encrypt) even when
     # redaction is disabled -- config.Load validates it unconditionally. "off"
     # is expressed via PII_REDACTION_ENABLED=false, so write a harmless valid
     # placeholder for the mode when off.
@@ -1066,6 +1090,13 @@ function Invoke-Init {
         Set-OverridesLine -FilePath $overridesDestPath -Key 'AUTH_TOKEN' -Value $authTokenValue
     }
     Set-OverridesLine -FilePath $overridesDestPath -Key 'PII_HASH_KEY'          -Value $hashKeyValue
+    # PII_ENCRYPT_KEY only lands in overrides when the operator actually
+    # supplied one (CLI flag, preserved across re-init, or required by
+    # -Pii encrypt). Absent encrypt mode + no operator value ⇒ leave the
+    # commented placeholder from the template in place.
+    if ($encryptKeyValue) {
+        Set-OverridesLine -FilePath $overridesDestPath -Key 'PII_ENCRYPT_KEY' -Value $encryptKeyValue
+    }
     Set-OverridesLine -FilePath $overridesDestPath -Key 'PII_REDACTION_ENABLED' -Value $piiEnabled
     Set-OverridesLine -FilePath $overridesDestPath -Key 'PII_REDACTION_MODE'    -Value $piiModeValue
     if ($kiroValue) {
@@ -1097,6 +1128,17 @@ function Invoke-Init {
         Write-Host "  PII_HASH_KEY:  preserved (existing key reused)"
     } else {
         Write-Host "  PII_HASH_KEY:  $($hashKeyValue.Substring(0,8))…(generated)"
+    }
+    if ($encryptKeyValue) {
+        if ($encryptKeyPreserved) {
+            Write-Host "  PII_ENCRYPT_KEY: preserved (existing key reused)"
+        } else {
+            $prefix = if ($encryptKeyValue.Length -ge 8) { $encryptKeyValue.Substring(0,8) } else { $encryptKeyValue }
+            Write-Host "  PII_ENCRYPT_KEY: $prefix…(operator-supplied)"
+        }
+    } elseif ($piiValue -eq 'encrypt') {
+        Write-Warning "PII_ENCRYPT_KEY is unset -- gateway will refuse to start in encrypt mode without one."
+        Write-Warning "Pass -EncryptKey KEY, or set PII_ENCRYPT_KEY in overrides."
     }
     if ($kiroValue) { Write-Host "  KIRO_CMD:      $kiroValue" } else { Write-Host "  KIRO_CMD:      (unset -- chat will 503 until you set it)" }
     Write-Host "  HTTP_ADDR:     $addrValue"
@@ -1323,14 +1365,15 @@ function Show-Env {
     Initialize-Config
     $keys = @(
         'ENABLED_HOOKS','PII_REDACTION_ENABLED','PII_REDACTION_MODE',
-        'PII_ENABLED_ENTITIES','PII_HASH_KEY','AUTH_TOKEN','ALLOWED_IPS',
+        'PII_ENABLED_ENTITIES','PII_ENTITY_ACTIONS','PII_HASH_KEY',
+        'PII_ENCRYPT_KEY','AUTH_TOKEN','ALLOWED_IPS',
         'AUTH_TRUST_XFF','HTTP_ADDR','KIRO_CMD','KIRO_ARGS','KIRO_CWD',
         'POOL_SIZE','DEBUG'
     )
     foreach ($k in $keys) {
         $v = [Environment]::GetEnvironmentVariable($k, 'Process')
         if (-not $v) { continue }
-        if (-not $ShowSecrets -and ($k -eq 'AUTH_TOKEN' -or $k -eq 'PII_HASH_KEY')) {
+        if (-not $ShowSecrets -and ($k -eq 'AUTH_TOKEN' -or $k -eq 'PII_HASH_KEY' -or $k -eq 'PII_ENCRYPT_KEY')) {
             $masked = "$($v.Substring(0, [Math]::Min(4, $v.Length)))…($($v.Length) chars)"
             Write-Output "$k=$masked"
         } else {
@@ -1366,8 +1409,11 @@ Commands:
   version             Print the gateway binary version (delegates to bin\otto-gateway --version)
 
 Gateway config flags (for start | restart | run | env):
-  -Pii MODE           off | replace | mask | hash | drop
+  -Pii MODE           off | replace | mask | hash | drop | encrypt
   -HashKey KEY        PII_HASH_KEY (required when -Pii hash)
+  -EncryptKey KEY     PII_ENCRYPT_KEY (required when -Pii encrypt; any
+                      non-empty string -- gateway derives a 32-byte
+                      AES-256-GCM key via SHA-256 at boot)
   -Entities LIST      PII_ENABLED_ENTITIES (comma list)
   -Hooks LIST         ENABLED_HOOKS allowlist (comma list, empty = all)
   -Auth TOKEN         AUTH_TOKEN
@@ -1393,7 +1439,7 @@ init flags (for the 'init' subcommand):
                       -RegenerateSecrets)
   -Kiro PATH          skip the KIRO_CMD prompt
   -Addr ADDR          skip the HTTP_ADDR prompt (default 127.0.0.1:18080)
-  -Pii MODE           skip the PII prompt (default off)
+  -Pii MODE           skip the PII prompt (off|replace|mask|hash|drop|encrypt; default off)
   -AuthEnabled        enable bearer-token auth (default off; AUTH_TOKEN line
                       pregenerated but commented when disabled)
   -AuthToken TOK      use TOK instead of generating (implies -AuthEnabled)
@@ -1403,6 +1449,9 @@ init flags (for the 'init' subcommand):
                       Default preserves existing values to avoid invalidating
                       clients / breaking hash-mode log correlation.
   -HashKey KEY        use KEY instead of generating
+  -EncryptKey KEY     operator-supplied PII_ENCRYPT_KEY for encrypt mode
+                      (not minted; pass when -Pii encrypt, or set
+                      PII_ENCRYPT_KEY in the overrides file directly)
   -NonInteractive     don't prompt; use defaults for unspecified values
 
 .env auto-load search (loaded FIRST):

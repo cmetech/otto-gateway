@@ -187,8 +187,9 @@ Three ways to set gateway config. Precedence (highest first):
 
 | Flag (bash) | Flag (PowerShell) | Sets |
 |-------------|-------------------|------|
-| `--pii MODE` | `-Pii MODE` | `PII_REDACTION_ENABLED` + `PII_REDACTION_MODE`. `MODE` ∈ `off,replace,mask,hash,drop`. `off` disables; any other mode enables the hook with that mode. |
+| `--pii MODE` | `-Pii MODE` | `PII_REDACTION_ENABLED` + `PII_REDACTION_MODE`. `MODE` ∈ `off,replace,mask,hash,drop,encrypt`. `off` disables; any other mode enables the hook with that mode. |
 | `--hash-key KEY` | `-HashKey KEY` | `PII_HASH_KEY`. Required when `--pii hash`. |
+| `--encrypt-key KEY` | `-EncryptKey KEY` | `PII_ENCRYPT_KEY`. Required when `--pii encrypt` (boot error otherwise). Any non-empty string — gateway derives a 32-byte AES-256-GCM key via SHA-256 at boot. |
 | `--entities LIST` | `-Entities LIST` | `PII_ENABLED_ENTITIES` (comma list). Empty = all six recognizers. |
 | `--hooks LIST` | `-Hooks LIST` | `ENABLED_HOOKS` allowlist (comma list). Empty = all hooks. |
 | `--auth TOKEN` | `-Auth TOKEN` | `AUTH_TOKEN` (bearer required from clients). |
@@ -232,6 +233,21 @@ KEY=$(openssl rand -hex 32)
 ```
 
 Persist by adding `PII_REDACTION_ENABLED=true`, `PII_REDACTION_MODE=hash`, and `PII_HASH_KEY=...` to your `.env` file instead.
+
+### Enable PII redaction (encrypt mode — for transparent round-trip)
+
+```bash
+KEY=$(openssl rand -hex 32)
+./scripts/otto-gw restart --pii encrypt --encrypt-key "$KEY"
+# Detected PII becomes [PII:Entity:base64url(...)] (AES-256-GCM with the
+# entity name bound as AAD) before the worker sees it, then the response
+# Post-hook decrypts those tokens back to plaintext before the client
+# sees them — the client round-trips the original values without the
+# worker ever observing them. Streaming is auto-disabled when encrypt is
+# active (the hook flips Stream=false; adapters re-route to aggregated).
+```
+
+Persist by adding `PII_REDACTION_ENABLED=true`, `PII_REDACTION_MODE=encrypt`, and `PII_ENCRYPT_KEY=...` to your `.env` file instead. Rotating the encrypt key invalidates every prior encrypted token; treat rotation as a breaking change for any in-flight conversation that round-trips.
 
 ### Rotate the hash key (breaks attacker correlation if a log leaks)
 
@@ -328,7 +344,7 @@ Check the boot sidecar — the gateway probably failed before its structured log
 cat ./logs/otto-gateway-boot.log
 ```
 
-Common causes: `KIRO_CMD` not set / wrong path, `PII_REDACTION_MODE=hash` without `PII_HASH_KEY`, `ENABLED_HOOKS` contains an unknown name, port already in use.
+Common causes: `KIRO_CMD` not set / wrong path, `PII_REDACTION_MODE=hash` without `PII_HASH_KEY`, `PII_REDACTION_MODE=encrypt` (or a `PII_ENTITY_ACTIONS` entry using `:encrypt`) without `PII_ENCRYPT_KEY`, `ENABLED_HOOKS` contains an unknown name, port already in use.
 
 ### "bind: address already in use"
 
@@ -356,6 +372,16 @@ export KIRO_CMD=/absolute/path/to/kiro
 ```bash
 ./scripts/otto-gw restart --pii hash --hash-key "$(openssl rand -hex 32)"
 ```
+
+### Encrypt-mode boot refusal
+
+`PII_REDACTION_MODE=encrypt` (or any `PII_ENTITY_ACTIONS` entry using `:encrypt`) requires `PII_ENCRYPT_KEY` — the gateway refuses to start in encrypt mode without one, naming the env var in the fatal log. Set the key:
+
+```bash
+./scripts/otto-gw restart --pii encrypt --encrypt-key "$(openssl rand -hex 32)"
+```
+
+Any non-empty string is accepted (the gateway derives a 32-byte AES-256-GCM key via SHA-256 at boot), but a high-entropy random string is the operator-grade default.
 
 ### Configuration not taking effect
 

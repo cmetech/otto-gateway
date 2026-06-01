@@ -9,10 +9,13 @@
 #   OTTO_BIN, OTTO_PID, OTTO_LOG, OTTO_LOG_BOOT, OTTO_STATE_DIR, OTTO_ADDR
 #
 # Gateway config flags (for start | restart | run):
-#   --pii MODE          off | replace | mask | hash | drop
+#   --pii MODE          off | replace | mask | hash | drop | encrypt
 #                         off → PII_REDACTION_ENABLED=false
 #                         others → PII_REDACTION_ENABLED=true PII_REDACTION_MODE=MODE
 #   --hash-key KEY      PII_HASH_KEY=KEY (required when --pii hash)
+#   --encrypt-key KEY   PII_ENCRYPT_KEY=KEY (required when --pii encrypt; any
+#                         non-empty string -- gateway derives a 32-byte
+#                         AES-256-GCM key via SHA-256 at boot)
 #   --entities LIST     PII_ENABLED_ENTITIES=LIST (e.g. Email,SSN)
 #   --hooks LIST        ENABLED_HOOKS=LIST (allowlist; empty = all)
 #   --auth TOKEN        AUTH_TOKEN=TOKEN
@@ -333,6 +336,7 @@ apply_cli_flags() {
         fi
     fi
     if [[ -n "${FLAG_HASH_KEY:-}" ]]; then export PII_HASH_KEY="$FLAG_HASH_KEY"; fi
+    if [[ -n "${FLAG_ENCRYPT_KEY:-}" ]]; then export PII_ENCRYPT_KEY="$FLAG_ENCRYPT_KEY"; fi
     if [[ -n "${FLAG_ENTITIES:-}" ]]; then export PII_ENABLED_ENTITIES="$FLAG_ENTITIES"; fi
     if [[ -n "${FLAG_HOOKS:-}" ]];    then export ENABLED_HOOKS="$FLAG_HOOKS"; fi
     if [[ -n "${FLAG_AUTH:-}" ]];     then export AUTH_TOKEN="$FLAG_AUTH"; fi
@@ -355,6 +359,8 @@ parse_flags() {
             --pii=*)         FLAG_PII_MODE="${1#*=}"; shift ;;
             --hash-key)      FLAG_HASH_KEY="$2"; shift 2 ;;
             --hash-key=*)    FLAG_HASH_KEY="${1#*=}"; shift ;;
+            --encrypt-key)   FLAG_ENCRYPT_KEY="$2"; shift 2 ;;
+            --encrypt-key=*) FLAG_ENCRYPT_KEY="${1#*=}"; shift ;;
             --idle-timeout)  FLAG_IDLE_TIMEOUT="$2"; shift 2 ;;
             --idle-timeout=*) FLAG_IDLE_TIMEOUT="${1#*=}"; shift ;;
             --entities)      FLAG_ENTITIES="$2"; shift 2 ;;
@@ -577,7 +583,7 @@ start() {
     #   OLLAMA_PATH_PREFIX, OPENAI_PATH_PREFIX  — route prefixes
     #   ENABLED_HOOKS, PII_REDACTION_ENABLED,   — Phase 8 hook chain knobs
     #   PII_ENABLED_ENTITIES, PII_REDACTION_MODE,
-    #   PII_HASH_KEY
+    #   PII_HASH_KEY, PII_ENCRYPT_KEY, PII_ENTITY_ACTIONS
     #   LOG_FILE                                — daily-rotated log path (timberjack)
     # LOG_FILE points the gateway's structured slog output at the rotated
     # log. nohup's redirect then captures only stderr / pre-logger output /
@@ -1173,9 +1179,11 @@ migrate_to_overrides_cmd() {
 #   --force             overwrite if dest exists
 #   --auth-token TOK    use TOK instead of generating
 #   --hash-key KEY      use KEY instead of generating
+#   --encrypt-key KEY   PII_ENCRYPT_KEY value (required when --pii encrypt;
+#                       operator-supplied -- NOT minted by --regenerate-secrets)
 #   --kiro PATH         KIRO_CMD value
 #   --addr ADDR         HTTP_ADDR value (default 127.0.0.1:18080)
-#   --pii MODE          off|replace|mask|hash|drop  (default off)
+#   --pii MODE          off|replace|mask|hash|drop|encrypt  (default off)
 #   --auth-enabled      enable bearer-token auth (default off; AUTH_TOKEN
 #                       line is pregenerated but written commented when
 #                       disabled so flipping a '#' enables it later)
@@ -1190,7 +1198,7 @@ init_cmd() {
     local dest="${HOME}/.otto-gw.env"
     local force=0
     local non_interactive=0
-    local arg_auth_token="" arg_hash_key="" arg_kiro="" arg_addr="" arg_pii=""
+    local arg_auth_token="" arg_hash_key="" arg_encrypt_key="" arg_kiro="" arg_addr="" arg_pii=""
     local arg_auth_enabled=0 arg_chat_trace=0 arg_regenerate_secrets=0
 
     while [[ $# -gt 0 ]]; do
@@ -1207,6 +1215,8 @@ init_cmd() {
             --regenerate-secrets) arg_regenerate_secrets=1; shift ;;
             --hash-key)          arg_hash_key="$2"; shift 2 ;;
             --hash-key=*)        arg_hash_key="${1#*=}"; shift ;;
+            --encrypt-key)       arg_encrypt_key="$2"; shift 2 ;;
+            --encrypt-key=*)     arg_encrypt_key="${1#*=}"; shift ;;
             --kiro)              arg_kiro="$2"; shift 2 ;;
             --kiro=*)            arg_kiro="${1#*=}"; shift ;;
             --addr)              arg_addr="$2"; shift 2 ;;
@@ -1233,7 +1243,7 @@ init_cmd() {
     # `init --force` to e.g. flip PII mode.
     local reinit=0
     local existing_kiro="" existing_addr="" existing_pii_mode=""
-    local existing_auth_token="" existing_hash_key="" existing_pii_enabled=""
+    local existing_auth_token="" existing_hash_key="" existing_encrypt_key="" existing_pii_enabled=""
     local existing_auth_enabled="" existing_chat_trace=""
     local existing_idle_timeout=""
 
@@ -1288,6 +1298,7 @@ init_cmd() {
         esac
         existing_auth_token="$(_extract_existing AUTH_TOKEN)"
         existing_hash_key="$(_extract_existing PII_HASH_KEY)"
+        existing_encrypt_key="$(_extract_existing PII_ENCRYPT_KEY)"
         # STREAM_IDLE_TIMEOUT_SEC is only "operator-set" when it's uncommented
         # in EITHER file. extract_env_any matches commented forms, so without
         # this gate a virgin install would read "30" out of the template's
@@ -1347,6 +1358,15 @@ init_cmd() {
             hash_key="$(gen_random_hex 32)"
         fi
     fi
+    # PII_ENCRYPT_KEY is operator-supplied (NOT auto-minted by --regenerate-secrets).
+    # CLI flag wins; existing-file value is preserved on re-init; otherwise empty
+    # (which the gateway treats as fatal when encrypt mode is active).
+    local encrypt_key="$arg_encrypt_key"
+    local encrypt_key_preserved=0
+    if [[ -z "$encrypt_key" && "$reinit" -eq 1 && -n "$existing_encrypt_key" ]]; then
+        encrypt_key="$existing_encrypt_key"
+        encrypt_key_preserved=1
+    fi
 
     # Resolve KIRO_CMD — precedence: CLI flag > existing-file value (re-init)
     # > interactive prompt with `command -v kiro-cli` suggestion > empty.
@@ -1397,19 +1417,28 @@ init_cmd() {
                 [[ -z "$pii_mode" ]] && pii_mode="$existing_pii_mode"
             fi
         elif [[ "$non_interactive" -ne 1 ]]; then
-            echo "  PII redaction -- off | replace | mask | hash | drop."
-            echo "  'hash' (default) correlates values across logs; 'replace' is human-readable; 'off' disables."
+            echo "  PII redaction -- off | replace | mask | hash | drop | encrypt."
+            echo "  'hash' (default) correlates values across logs; 'replace' is human-readable;"
+            echo "  'encrypt' round-trips ciphertext (requires --encrypt-key); 'off' disables."
             read -r -p "  PII mode [hash]: " pii_mode
         fi
     fi
     [[ -z "$pii_mode" ]] && pii_mode="hash"
 
+    # Validate mode early so a typo doesn't write garbage to overrides. The
+    # gateway also validates at boot, but catching it here keeps the error
+    # close to the operator's input.
+    case "$pii_mode" in
+        off|replace|mask|hash|drop|encrypt) ;;
+        *) echo "ERROR: --pii must be one of off|replace|mask|hash|drop|encrypt (got: $pii_mode)" >&2; exit 1 ;;
+    esac
+
     local pii_enabled="false"
     [[ "$pii_mode" != "off" ]] && pii_enabled="true"
-    # PII_REDACTION_MODE must be a valid mode (replace|mask|hash|drop) even when
-    # redaction is disabled — config.Load validates it unconditionally. "off"
-    # is expressed via PII_REDACTION_ENABLED=false, so write a harmless valid
-    # placeholder for the mode when off.
+    # PII_REDACTION_MODE must be a valid mode (replace|mask|hash|drop|encrypt)
+    # even when redaction is disabled — config.Load validates it unconditionally.
+    # "off" is expressed via PII_REDACTION_ENABLED=false, so write a harmless
+    # valid placeholder for the mode when off.
     local pii_mode_value="$pii_mode"
     [[ "$pii_mode" == "off" ]] && pii_mode_value="replace"
 
@@ -1565,6 +1594,13 @@ init_cmd() {
         set_overrides_line "$overrides_dest" AUTH_TOKEN "$auth_token"
     fi
     set_overrides_line "$overrides_dest" PII_HASH_KEY "$hash_key"
+    # PII_ENCRYPT_KEY only lands in overrides when the operator actually
+    # supplied one (CLI flag, preserved across re-init, or required by
+    # --pii encrypt). Absent encrypt mode + no operator value ⇒ leave the
+    # commented placeholder from the template in place.
+    if [[ -n "$encrypt_key" ]]; then
+        set_overrides_line "$overrides_dest" PII_ENCRYPT_KEY "$encrypt_key"
+    fi
     set_overrides_line "$overrides_dest" PII_REDACTION_ENABLED "$pii_enabled"
     set_overrides_line "$overrides_dest" PII_REDACTION_MODE "$pii_mode_value"
     if [[ -n "$kiro_cmd" ]]; then
@@ -1603,6 +1639,16 @@ init_cmd() {
     else
         echo "  PII_HASH_KEY:  $(echo "$hash_key" | head -c 8)…(generated)"
     fi
+    if [[ -n "$encrypt_key" ]]; then
+        if [[ "$encrypt_key_preserved" -eq 1 ]]; then
+            echo "  PII_ENCRYPT_KEY: preserved (existing key reused)"
+        else
+            echo "  PII_ENCRYPT_KEY: $(echo "$encrypt_key" | head -c 8)…(operator-supplied)"
+        fi
+    elif [[ "$pii_mode" == "encrypt" ]]; then
+        echo "  PII_ENCRYPT_KEY: (unset -- gateway will refuse to start in encrypt mode without one)" >&2
+        echo "                  Pass --encrypt-key KEY, or set PII_ENCRYPT_KEY in overrides." >&2
+    fi
     if [[ -n "$kiro_cmd" ]]; then
         echo "  KIRO_CMD:      $kiro_cmd"
     else
@@ -1626,14 +1672,15 @@ print_env() {
     local show_secrets="${FLAG_SHOW_SECRETS:-0}"
     local k v masked
     for k in ENABLED_HOOKS PII_REDACTION_ENABLED PII_REDACTION_MODE \
-             PII_ENABLED_ENTITIES PII_HASH_KEY AUTH_TOKEN ALLOWED_IPS \
+             PII_ENABLED_ENTITIES PII_ENTITY_ACTIONS PII_HASH_KEY \
+             PII_ENCRYPT_KEY AUTH_TOKEN ALLOWED_IPS \
              AUTH_TRUST_XFF HTTP_ADDR KIRO_CMD KIRO_ARGS KIRO_CWD \
              POOL_SIZE STREAM_IDLE_TIMEOUT_SEC DEBUG; do
         v="${!k:-}"
         if [[ -z "$v" ]]; then
             continue
         fi
-        if [[ "$show_secrets" != "1" ]] && [[ "$k" == "AUTH_TOKEN" || "$k" == "PII_HASH_KEY" ]]; then
+        if [[ "$show_secrets" != "1" ]] && [[ "$k" == "AUTH_TOKEN" || "$k" == "PII_HASH_KEY" || "$k" == "PII_ENCRYPT_KEY" ]]; then
             # Show only first 4 chars + char count, never the literal.
             masked="${v:0:4}…(${#v} chars)"
             echo "$k=$masked"
@@ -1672,8 +1719,11 @@ Commands:
   version             Print the gateway binary version (delegates to bin/otto-gateway --version)
 
 Gateway config flags (for start | restart | run | env):
-  --pii MODE          off | replace | mask | hash | drop
+  --pii MODE          off | replace | mask | hash | drop | encrypt
   --hash-key KEY      PII_HASH_KEY (required when --pii hash)
+  --encrypt-key KEY   PII_ENCRYPT_KEY (required when --pii encrypt; any
+                      non-empty string -- gateway derives a 32-byte
+                      AES-256-GCM key via SHA-256 at boot)
   --entities LIST     PII_ENABLED_ENTITIES (comma list)
   --hooks LIST        ENABLED_HOOKS allowlist (comma list, empty = all)
   --auth TOKEN        AUTH_TOKEN
@@ -1700,7 +1750,7 @@ init flags:
                       unless --regenerate-secrets)
   --kiro PATH         skip the KIRO_CMD prompt
   --addr ADDR         skip the HTTP_ADDR prompt (default 127.0.0.1:18080)
-  --pii MODE          skip the PII prompt (default off)
+  --pii MODE          skip the PII prompt (off|replace|mask|hash|drop|encrypt; default off)
   --idle-timeout SEC  STREAM_IDLE_TIMEOUT_SEC override (default: write
                       "# STREAM_IDLE_TIMEOUT_SEC=30" commented; the binary
                       defaults to 30s anyway. Pass a value to write the
@@ -1716,6 +1766,9 @@ init flags:
                       to avoid invalidating clients / breaking hash-mode
                       log correlation. Use after a key leak.
   --hash-key KEY      use KEY instead of generating
+  --encrypt-key KEY   operator-supplied PII_ENCRYPT_KEY for encrypt mode
+                      (not minted; pass when --pii encrypt, or set
+                      PII_ENCRYPT_KEY in the overrides file directly)
   --non-interactive   don't prompt; use defaults for unspecified values
 
 .env auto-load search (loaded FIRST):
@@ -1762,8 +1815,11 @@ Commands:
   version             Print the gateway binary version (delegates to bin/otto-gateway --version)
 
 Gateway config flags (for start | restart | run | env):
-  --pii MODE          off | replace | mask | hash | drop
+  --pii MODE          off | replace | mask | hash | drop | encrypt
   --hash-key KEY      PII_HASH_KEY (required when --pii hash)
+  --encrypt-key KEY   PII_ENCRYPT_KEY (required when --pii encrypt; any
+                      non-empty string -- gateway derives a 32-byte
+                      AES-256-GCM key via SHA-256 at boot)
   --entities LIST     PII_ENABLED_ENTITIES (comma list)
   --hooks LIST        ENABLED_HOOKS allowlist (comma list, empty = all)
   --auth TOKEN        AUTH_TOKEN
@@ -1790,7 +1846,7 @@ init flags:
                       unless --regenerate-secrets)
   --kiro PATH         skip the KIRO_CMD prompt
   --addr ADDR         skip the HTTP_ADDR prompt (default 127.0.0.1:18080)
-  --pii MODE          skip the PII prompt (default off)
+  --pii MODE          skip the PII prompt (off|replace|mask|hash|drop|encrypt; default off)
   --idle-timeout SEC  STREAM_IDLE_TIMEOUT_SEC override (default: write
                       "# STREAM_IDLE_TIMEOUT_SEC=30" commented; the binary
                       defaults to 30s anyway. Pass a value to write the
@@ -1806,6 +1862,9 @@ init flags:
                       to avoid invalidating clients / breaking hash-mode
                       log correlation. Use after a key leak.
   --hash-key KEY      use KEY instead of generating
+  --encrypt-key KEY   operator-supplied PII_ENCRYPT_KEY for encrypt mode
+                      (not minted; pass when --pii encrypt, or set
+                      PII_ENCRYPT_KEY in the overrides file directly)
   --non-interactive   don't prompt; use defaults for unspecified values
 
 .env auto-load search (loaded FIRST):

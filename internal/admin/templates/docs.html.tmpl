@@ -88,8 +88,9 @@
         <tr><th scope="col">POSIX flag</th><th scope="col">PowerShell switch</th><th scope="col">Description</th></tr>
       </thead>
       <tbody>
-        <tr><td><code>--pii MODE</code></td><td><code>-Pii MODE</code></td><td>PII redaction mode (<code>off</code>, <code>replace</code>, <code>mask</code>, <code>hash</code>, <code>drop</code>). <code>off</code> sets <code>PII_REDACTION_ENABLED=false</code>; any other value enables redaction with that mode.</td></tr>
+        <tr><td><code>--pii MODE</code></td><td><code>-Pii MODE</code></td><td>PII redaction mode (<code>off</code>, <code>replace</code>, <code>mask</code>, <code>hash</code>, <code>drop</code>, <code>encrypt</code>). <code>off</code> sets <code>PII_REDACTION_ENABLED=false</code>; any other value enables redaction with that mode.</td></tr>
         <tr><td><code>--hash-key KEY</code></td><td><code>-HashKey KEY</code></td><td>Sets <code>PII_HASH_KEY</code>. Required when <code>--pii hash</code> / <code>-Pii hash</code> is in effect.</td></tr>
+        <tr><td><code>--encrypt-key KEY</code></td><td><code>-EncryptKey KEY</code></td><td>Sets <code>PII_ENCRYPT_KEY</code>. Required when <code>--pii encrypt</code> / <code>-Pii encrypt</code> is in effect (or any <code>PII_ENTITY_ACTIONS</code> entry uses <code>:encrypt</code>). Any non-empty string — the gateway derives a 32-byte AES-256-GCM key via SHA-256 at boot. Operator-supplied (NOT minted by <code>--regenerate-secrets</code>).</td></tr>
         <tr><td><code>--entities LIST</code></td><td><code>-Entities LIST</code></td><td>Comma-split <code>PII_ENABLED_ENTITIES</code> allowlist (e.g. <code>Email,SSN</code>).</td></tr>
         <tr><td><code>--hooks LIST</code></td><td><code>-Hooks LIST</code></td><td>Comma-split <code>ENABLED_HOOKS</code> allowlist. Empty = all hooks in the chain enabled.</td></tr>
         <tr><td><code>--auth TOKEN</code></td><td><code>-Auth TOKEN</code></td><td>Sets <code>AUTH_TOKEN</code> for bearer-token auth.</td></tr>
@@ -110,7 +111,7 @@
         <tr><td><code>--non-interactive</code></td><td><code>-NonInteractive</code></td><td><code>init</code>: never prompt; use defaults for anything unset.</td></tr>
         <tr><td><code>--auth-enabled</code></td><td><code>-AuthEnabled</code></td><td><code>init</code>: enable bearer-token auth (default off; mints <code>AUTH_TOKEN</code> if no <code>--auth-token</code> supplied).</td></tr>
         <tr><td><code>--chat-trace</code></td><td><code>-ChatTrace</code></td><td><code>init</code>: enable chat-trace NDJSON tracer (default off; writes raw prompts to disk).</td></tr>
-        <tr><td><code>--regenerate-secrets</code></td><td><code>-RegenerateSecrets</code></td><td><code>init --force</code>: mint new secrets even when prior values exist.</td></tr>
+        <tr><td><code>--regenerate-secrets</code></td><td><code>-RegenerateSecrets</code></td><td><code>init --force</code>: mint new <code>AUTH_TOKEN</code> + <code>PII_HASH_KEY</code> even when prior values exist. <code>PII_ENCRYPT_KEY</code> is operator-supplied and NOT minted here — rotate it explicitly via <code>--encrypt-key</code> / <code>-EncryptKey</code>.</td></tr>
         <tr><td><code>--auth-token TOK</code></td><td><code>-AuthToken TOK</code></td><td><code>init</code>: use <code>TOK</code> instead of generating; implies <code>--auth-enabled</code>.</td></tr>
         <tr><td><code>--kiro PATH</code></td><td><code>-Kiro PATH</code></td><td><code>init</code>: <code>KIRO_CMD</code> value (otherwise auto-detected on PATH).</td></tr>
         <tr><td><code>--addr ADDR</code></td><td><code>-Addr ADDR</code></td><td><code>init</code>: <code>HTTP_ADDR</code> value (default <code>127.0.0.1:18080</code>).</td></tr>
@@ -154,20 +155,22 @@
         <tbody>
           <tr><td><code>RequestIDHook</code></td><td>Pre</td><td>enabled</td><td>Assigns a unique request ID propagated through structured logs and downstream worker headers.</td></tr>
           <tr><td><code>AuthHook</code></td><td>Pre</td><td>enabled</td><td>Enforces bearer-token (<code>AUTH_TOKEN</code>) + IP-allowlist (<code>ALLOWED_IPS</code>) when configured. No-op when both are empty (Node parity).</td></tr>
-          <tr><td><code>PIIRedactionHook</code></td><td>Pre</td><td>enabled</td><td>Detects and redacts PII in inbound prompts before they reach the upstream worker. No-op when <code>PII_REDACTION_ENABLED=false</code> (the default).</td></tr>
+          <tr><td><code>PIIRedactionHook</code></td><td>Pre,Post</td><td>enabled</td><td>Detects and redacts PII in inbound prompts before they reach the upstream worker (Pre). When encrypt mode is active, the Post hook decrypts <code>[PII:Entity:base64url(...)]</code> tokens in the worker's response so the client receives plaintext (transparent round-trip). No-op when <code>PII_REDACTION_ENABLED=false</code> (the default).</td></tr>
           <tr><td><code>LoggingHook</code></td><td>Pre,Post</td><td>enabled</td><td>Emits structured request/response log entries (slog JSON). The same instance runs as the last Pre hook and the only Post hook, bridging timings via an internal request-ID map.</td></tr>
         </tbody>
       </table>
     </div>
 
     <h3 class="otto-h3">PII redaction</h3>
-    <p>PIIRedactionHook sits third in the Pre chain (after RequestID and Auth) so redacted prompts never reach the upstream worker. It is a cheap pass-through unless <code>PII_REDACTION_ENABLED=true</code>. Six built-in recognizers detect <code>Email</code>, <code>IPv4</code>, <code>IPv6</code>, <code>SSN</code>, <code>CreditCard</code>, and <code>USPhone</code>. Detected matches are replaced with bracketed sentinels.</p>
+    <p>PIIRedactionHook is dual-natured: it runs Pre (third in the chain, after RequestID and Auth) so redacted prompts never reach the upstream worker, and Post (after the worker's response) so encrypt-mode tokens can be decrypted back to plaintext before the client sees the response. It is a cheap pass-through unless <code>PII_REDACTION_ENABLED=true</code>. Six built-in recognizers detect <code>Email</code>, <code>IPv4</code>, <code>IPv6</code>, <code>SSN</code>, <code>CreditCard</code>, and <code>USPhone</code>. Detected matches are replaced with bracketed sentinels.</p>
 
     <dl class="otto-about-dl">
       <dt><code>PII_REDACTION_ENABLED</code></dt><dd>default <code>false</code> — master switch. When <code>false</code> the hook stays in the chain but does no work.</dd>
-      <dt><code>PII_REDACTION_MODE</code></dt><dd>default <code>replace</code> — one of <code>replace</code> (numbered sentinel per match), <code>mask</code> (unnumbered category sentinel), <code>hash</code> (HMAC-keyed correlation token), <code>drop</code> (matched substring removed entirely).</dd>
+      <dt><code>PII_REDACTION_MODE</code></dt><dd>default <code>replace</code> — one of <code>replace</code> (numbered sentinel per match), <code>mask</code> (unnumbered category sentinel), <code>hash</code> (HMAC-keyed correlation token), <code>drop</code> (matched substring removed entirely), <code>encrypt</code> (AES-256-GCM round-trip — request encrypted, response decrypted by the Post hook before the client sees it).</dd>
       <dt><code>PII_ENABLED_ENTITIES</code></dt><dd>default empty (all six recognizers active) — comma-separated allowlist from <code>Email,IPv4,IPv6,SSN,CreditCard,USPhone</code>.</dd>
+      <dt><code>PII_ENTITY_ACTIONS</code></dt><dd>default empty — per-entity action override map. Shape: <code>Entity:action,Entity:action,…</code> (e.g. <code>Email:encrypt,SSN:drop</code>). Listed entities use the named action; unlisted entities fall back to <code>PII_REDACTION_MODE</code>. Allowed actions: <code>replace</code>, <code>mask</code>, <code>hash</code>, <code>drop</code>, <code>encrypt</code>. Unknown entity name or action ⇒ boot error.</dd>
       <dt><code>PII_HASH_KEY</code></dt><dd>no default — REQUIRED when <code>PII_REDACTION_MODE=hash</code> (boot error otherwise). HMAC-SHA256 key. Rotating it invalidates prior session correlation tokens.</dd>
+      <dt><code>PII_ENCRYPT_KEY</code></dt><dd>no default — REQUIRED when encrypt is active anywhere (global <code>PII_REDACTION_MODE=encrypt</code> OR any <code>PII_ENTITY_ACTIONS</code> entry of the form <code>Entity:encrypt</code>); boot error otherwise, naming the env var in the fatal log. Any non-empty string; the gateway derives a 32-byte AES-256-GCM key via SHA-256 at boot. Operator-supplied — NOT minted by <code>otto-gw init --regenerate-secrets</code>. Rotating it invalidates every prior encrypted token (decrypt-on-response will fail), so treat rotation as a breaking change for any in-flight round-tripping conversation. Streaming is auto-disabled when encrypt is active (the Pre hook flips <code>Stream=false</code> and adapters re-route to the aggregated path).</dd>
     </dl>
 
     <p>Detected PII is replaced with bracketed sentinels like <code>[EMAIL_1]</code>, <code>[PHONE_2]</code>, or <code>[EMAIL:h-abc12345]</code> (hash mode). Square brackets are deliberate — angle-bracketed sentinels like <code>&lt;EMAIL_1&gt;</code> caused kiro-cli to treat them as opening XML tags (see fix 260531-pt8).</p>
@@ -185,6 +188,17 @@ PII_ENABLED_ENTITIES=Email,SSN
 # Same value → same hash sentinel within a key lifetime (correlation
 # across requests without leaking the underlying PII):
 #   "a@b.com … a@b.com" → "[EMAIL:h-9f3a2c1d] … [EMAIL:h-9f3a2c1d]"</pre>
+    <pre class="otto-code-block">PII_REDACTION_ENABLED=true
+PII_REDACTION_MODE=encrypt
+PII_ENCRYPT_KEY=&lt;any non-empty string; high-entropy random is the default&gt;
+# AES-256-GCM with the entity name bound as AAD. Pre hook encrypts on
+# the request; Post hook decrypts on the response — the client receives
+# plaintext while the worker only ever saw ciphertext:
+#   request:  "Email a@b.com" → "Email [PII:EMAIL:base64url(nonce||ct||tag)]"
+#   response: "[PII:EMAIL:base64url(...)] is yours" → "a@b.com is yours"
+# Streaming is auto-disabled when encrypt is active (adapters re-route
+# to the aggregated path). Per-entity overrides via PII_ENTITY_ACTIONS:
+#   PII_ENTITY_ACTIONS=Email:encrypt,SSN:drop</pre>
 
     <p><strong>SENSITIVE:</strong> <code>CHAT_TRACE=true</code> writes raw prompts to <code>CHAT_TRACE_FILE</code> <em>before</em> PIIRedactionHook runs. When chat-trace is on, the on-disk file contains unredacted PII — this is why the About page surfaces a SENSITIVE badge whenever <code>CHAT_TRACE=true</code>. Turn off in production unless intentionally debugging a request shape.</p>
   </section>
