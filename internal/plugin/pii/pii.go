@@ -108,28 +108,19 @@ type PIIRedactionHook struct {
 func (h *PIIRedactionHook) Name() string { return "PIIRedactionHook" }
 
 // Describe publishes the hook's safe-to-publish config for /health/hooks
-// (OBSV-04). Kind is "Pre" — this hook is Pre-only by design (slice 5
-// places it FOURTH-from-last in Pre order: RequestID → Auth → PII →
-// Logging per D-04).
+// (OBSV-04). Kind is "Pre,Post" — this hook is dual-interface (matches
+// the LoggingHook precedent). The encrypt round-trip puts the same
+// instance in chain.Pre (encrypt) and chain.Post (decrypt).
 //
-// Config exposes only:
-//
-//	enabled  bool      — operator can confirm work-doing state without
-//	                     reading log records.
-//	mode     string    — one of the four documented modes.
-//	entities []string  — the recognizer Names actually active after
-//	                     EnabledEntities filtering (or all Recognizers
-//	                     when no filter applied).
-//
-// HashKey is NEVER published (T-8-LEAK). Regex patterns are NEVER
-// published (T-8-PII secondary — patterns themselves are not secret
-// but publishing them encourages clients to optimize around bypasses).
+// HashKey and EncryptKey are NEVER published (T-8-LEAK).
 func (h *PIIRedactionHook) Describe() (kind string, config map[string]any) {
 	entities := h.activeEntityNames()
-	return "Pre", map[string]any{
-		"enabled":  h.Enabled,
-		"mode":     h.Mode,
-		"entities": entities,
+	return "Pre,Post", map[string]any{
+		"enabled":        h.Enabled,
+		"mode":           h.Mode,
+		"entities":       entities,
+		"decrypt_active": h.encryptActive(),
+		"entity_actions": h.EntityActions, // safe: action names only
 	}
 }
 

@@ -353,8 +353,8 @@ func TestPIIRedactionHook_Describe_NoSecrets(t *testing.T) {
 		Recognizers: Recognizers,
 	}
 	kind, cfg := hook.Describe()
-	if kind != "Pre" {
-		t.Errorf("kind: got %q, want %q", kind, "Pre")
+	if kind != "Pre,Post" {
+		t.Errorf("kind: got %q, want %q", kind, "Pre,Post")
 	}
 	if cfg["enabled"] != true {
 		t.Errorf("config[enabled]: got %v, want true", cfg["enabled"])
@@ -679,5 +679,57 @@ func TestClassifyDecryptErr_Categories(t *testing.T) {
 	_, err = DecryptToken(k, "Email", "AAAAAAAA")
 	if err == nil || classifyDecryptErr(err) != "payload_too_short" {
 		t.Errorf("payload_too_short path: err=%v reason=%q", err, classifyDecryptErr(err))
+	}
+}
+
+// PII-ENCRYPT-07 — Describe surfaces both Pre and Post kinds, plus
+// decrypt_active and entity_actions for operator visibility on
+// /health/hooks. EncryptKey is NEVER published (T-8-LEAK extension).
+
+func TestDescribe_KindIncludesPost(t *testing.T) {
+	h := &PIIRedactionHook{Recognizers: Recognizers, Mode: "encrypt"}
+	kind, _ := h.Describe()
+	if kind != "Pre,Post" {
+		t.Errorf("Describe kind: got %q, want %q", kind, "Pre,Post")
+	}
+}
+
+func TestDescribe_DecryptActiveFlag(t *testing.T) {
+	tests := []struct {
+		name        string
+		hook        *PIIRedactionHook
+		wantDecrypt bool
+	}{
+		{"mode=encrypt", &PIIRedactionHook{Recognizers: Recognizers, Mode: "encrypt"}, true},
+		{"entity-override", &PIIRedactionHook{Recognizers: Recognizers, Mode: "replace", EntityActions: map[string]string{"Email": "encrypt"}}, true},
+		{"no encrypt", &PIIRedactionHook{Recognizers: Recognizers, Mode: "mask"}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, cfg := tc.hook.Describe()
+			got, _ := cfg["decrypt_active"].(bool)
+			if got != tc.wantDecrypt {
+				t.Errorf("decrypt_active: got %v, want %v", got, tc.wantDecrypt)
+			}
+		})
+	}
+}
+
+func TestDescribe_NeverPublishesEncryptKey(t *testing.T) {
+	h := &PIIRedactionHook{
+		Recognizers: Recognizers,
+		Mode:        "encrypt",
+		EncryptKey:  []byte("SECRET-SHOULD-NOT-LEAK"),
+	}
+	_, cfg := h.Describe()
+	// Walk every published value as JSON; the key MUST NOT appear.
+	for k, v := range cfg {
+		s, ok := v.(string)
+		if !ok {
+			continue
+		}
+		if strings.Contains(s, "SECRET-SHOULD-NOT-LEAK") {
+			t.Errorf("Describe published EncryptKey via field %q: %q", k, s)
+		}
 	}
 }
