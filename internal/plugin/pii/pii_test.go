@@ -500,3 +500,133 @@ func TestBefore_PerEntityActionResolution(t *testing.T) {
 		t.Errorf("SSN mask should contain '*': got System=%q", req.System)
 	}
 }
+
+// PII-ENCRYPT-06 — After (PostHook) decrypt sweep.
+
+func TestAfter_NoopWhenEncryptInactive(t *testing.T) {
+	h := &PIIRedactionHook{Enabled: true, Mode: "replace"}
+	resp := &canonical.ChatResponse{
+		Message: canonical.Message{
+			Content: []canonical.ContentPart{
+				{Kind: canonical.ContentKindText, Text: "hello [PII:Email:fakepayload]"},
+			},
+		},
+	}
+	if err := h.After(context.Background(), &canonical.ChatRequest{}, resp); err != nil {
+		t.Fatalf("After: %v", err)
+	}
+	// No-op: text is unchanged even though a token-shaped string is present.
+	if resp.Message.Content[0].Text != "hello [PII:Email:fakepayload]" {
+		t.Errorf("After should be no-op when encrypt inactive: got %q", resp.Message.Content[0].Text)
+	}
+}
+
+func TestAfter_RoundTripDecrypt(t *testing.T) {
+	k, err := DeriveKey("test")
+	if err != nil {
+		t.Fatalf("DeriveKey: %v", err)
+	}
+	h := &PIIRedactionHook{Enabled: true, Mode: "encrypt", EncryptKey: k}
+	tok, err := EncryptValue(k, "Email", "corey@cmetech.io")
+	if err != nil {
+		t.Fatalf("EncryptValue: %v", err)
+	}
+	resp := &canonical.ChatResponse{
+		Message: canonical.Message{
+			Content: []canonical.ContentPart{
+				{Kind: canonical.ContentKindText, Text: "Sure, I'll email " + tok + " for you."},
+			},
+		},
+	}
+	if err := h.After(context.Background(), &canonical.ChatRequest{}, resp); err != nil {
+		t.Fatalf("After: %v", err)
+	}
+	want := "Sure, I'll email corey@cmetech.io for you."
+	if resp.Message.Content[0].Text != want {
+		t.Errorf("After decrypt: got %q, want %q", resp.Message.Content[0].Text, want)
+	}
+}
+
+func TestAfter_MangledTokenLeftInPlace(t *testing.T) {
+	k, err := DeriveKey("test")
+	if err != nil {
+		t.Fatalf("DeriveKey: %v", err)
+	}
+	h := &PIIRedactionHook{Enabled: true, Mode: "encrypt", EncryptKey: k}
+	// Hand-crafted shape-valid but cryptographically-garbage token.
+	garbage := "[PII:Email:AAAAAAAAAAAAAAAA]"
+	resp := &canonical.ChatResponse{
+		Message: canonical.Message{
+			Content: []canonical.ContentPart{
+				{Kind: canonical.ContentKindText, Text: "see " + garbage + " for details"},
+			},
+		},
+	}
+	if err := h.After(context.Background(), &canonical.ChatRequest{}, resp); err != nil {
+		t.Fatalf("After: %v", err)
+	}
+	if !strings.Contains(resp.Message.Content[0].Text, garbage) {
+		t.Errorf("mangled token should be left verbatim: got %q", resp.Message.Content[0].Text)
+	}
+}
+
+func TestAfter_MultipleTokens(t *testing.T) {
+	k, err := DeriveKey("test")
+	if err != nil {
+		t.Fatalf("DeriveKey: %v", err)
+	}
+	h := &PIIRedactionHook{Enabled: true, Mode: "encrypt", EncryptKey: k}
+	t1, err := EncryptValue(k, "Email", "alice@example.com")
+	if err != nil {
+		t.Fatalf("EncryptValue t1: %v", err)
+	}
+	t2, err := EncryptValue(k, "Email", "bob@example.com")
+	if err != nil {
+		t.Fatalf("EncryptValue t2: %v", err)
+	}
+	resp := &canonical.ChatResponse{
+		Message: canonical.Message{
+			Content: []canonical.ContentPart{
+				{Kind: canonical.ContentKindText, Text: "From " + t1 + " to " + t2},
+			},
+		},
+	}
+	if err := h.After(context.Background(), &canonical.ChatRequest{}, resp); err != nil {
+		t.Fatalf("After: %v", err)
+	}
+	want := "From alice@example.com to bob@example.com"
+	if resp.Message.Content[0].Text != want {
+		t.Errorf("After multi-token: got %q, want %q", resp.Message.Content[0].Text, want)
+	}
+}
+
+func TestAfter_SkipsNonTextParts(t *testing.T) {
+	k, err := DeriveKey("test")
+	if err != nil {
+		t.Fatalf("DeriveKey: %v", err)
+	}
+	h := &PIIRedactionHook{Enabled: true, Mode: "encrypt", EncryptKey: k}
+	resp := &canonical.ChatResponse{
+		Message: canonical.Message{
+			Content: []canonical.ContentPart{
+				{Kind: canonical.ContentKindThinking, Text: "this should not be scanned [PII:Email:fake]"},
+			},
+		},
+	}
+	if err := h.After(context.Background(), &canonical.ChatRequest{}, resp); err != nil {
+		t.Fatalf("After: %v", err)
+	}
+	// Non-text parts are skipped — text field stays verbatim.
+	if !strings.Contains(resp.Message.Content[0].Text, "[PII:Email:fake]") {
+		t.Errorf("non-Text part should be skipped: got %q", resp.Message.Content[0].Text)
+	}
+}
+
+func TestAfter_CompileTimePostHookSatisfied(t *testing.T) {
+	// Compile-time guard: var _ engine.PostHook = (*PIIRedactionHook)(nil)
+	// will fail to BUILD if the After signature drifts. This test is a
+	// belt-and-suspenders marker that exercises the interface at runtime.
+	var _ interface {
+		After(context.Context, *canonical.ChatRequest, *canonical.ChatResponse) error
+	} = (*PIIRedactionHook)(nil)
+}

@@ -1,5 +1,7 @@
-// Phase 8 PLUG-06 — PIIRedactionHook (Pre). Walks canonical.ChatRequest
-// content per D-03 (ContentParts[].Text + ContentParts[].ToolUse.Input +
+// Phase 8 PLUG-06 — PIIRedactionHook (Pre + Post). Implements both
+// engine.PreHook (Before) and engine.PostHook (After) for the encrypt
+// round-trip. Walks canonical.ChatRequest content per D-03
+// (ContentParts[].Text + ContentParts[].ToolUse.Input +
 // ContentParts[].ToolResult.Content + ChatRequest.System per RESEARCH
 // OQ-5 disposition). Recognizes via the six-entry Recognizers registry
 // from recognizers.go. Applies modes.ApplyMode per match. Counter scope:
@@ -8,9 +10,11 @@
 // summary seam (slice 3's pii.WithSummary / SummaryFromContext) so
 // LoggingHook can emit redacted={Email:2, SSN:1}.
 //
-// Pre-only; no Post behavior. In-place mutation on req (Codex H-5
-// discipline mirrored — req is a pointer; ContentParts slice elements
-// mutated in place via index assignment).
+// In-place mutation discipline (Codex H-5): Before mutates req in place
+// (req is a pointer; ContentParts slice elements mutated via index
+// assignment). After mutates resp.Message.Content in place via the same
+// index-assignment discipline — no copies of resp are made, no fields
+// are stored in long-lived package-level values.
 //
 // Summary seam contract (LOCKED per 08-03-SUMMARY "Next Phase
 // Readiness" + this slice's orchestrator instruction):
@@ -50,6 +54,7 @@ package pii
 import (
 	"context"
 	"log/slog"
+	"regexp"
 
 	"otto-gateway/internal/canonical"
 	"otto-gateway/internal/engine"
@@ -207,6 +212,12 @@ func (h *PIIRedactionHook) logger() *slog.Logger {
 	return slog.Default()
 }
 
+// decryptTokenRe matches the encrypt-mode wire token shape
+// "[PII:<entity>:<base64url-payload>]". Group 1 = entity, Group 2 =
+// payload. base64url alphabet is [A-Za-z0-9_-], unpadded — see
+// EncryptValue (encrypt.go). Pre-compiled at package init.
+var decryptTokenRe = regexp.MustCompile(`\[PII:([A-Za-z]+):([A-Za-z0-9_-]+)\]`)
+
 // Before is the PreHook entry. Algorithm:
 //
 //  1. If !Enabled: return (nil, nil) — total no-op. Counter never
@@ -329,8 +340,67 @@ func (h *PIIRedactionHook) Before(ctx context.Context, req *canonical.ChatReques
 	return nil, nil
 }
 
+// After is the PostHook entry for the encrypt round-trip. It scans
+// every ContentKindText part in resp.Message.Content for
+// "[PII:<entity>:<base64url>]" tokens and decrypts each via
+// DecryptToken. Failures (mangled token shape, bad base64, GCM Open
+// error from wrong key / AAD mismatch / corruption) leave the token
+// verbatim and emit a WARN — the client sees a visible defect, not
+// a silent lie.
+//
+// After Algorithm:
+//
+//  1. Cheap fast-path no-op: if !h.Enabled || resp == nil ||
+//     !encryptActive(), return nil immediately. engine.Collect still
+//     ranges PostHooks even when encryptActive is false; this hook just
+//     exits early.
+//  2. For each ContentKindText part, run decryptTokenRe.ReplaceAllStringFunc.
+//     Per match: regex FindStringSubmatch extracts entity + payload;
+//     DecryptToken decrypts; on success the match is replaced with
+//     plaintext; on failure (bad shape, GCM error) the match is left
+//     verbatim and a WARN is emitted via pii.decrypt.failed.
+//  3. Non-Text content parts (image, thinking, tool_use, tool_result) are
+//     skipped — encrypt round-trip is scoped to Text only in v1. The
+//     tool_use/tool_result surfaces ARE encrypted on the Pre side (Before
+//     walks them via WalkStrings) but the kiro-cli response surface is
+//     text-only for the assistant turn, so decrypt only needs Text.
+//  4. Failure WARN log shape: pii.decrypt.failed with entity + err (for
+//     DecryptToken errors) or reason=bad_token_shape (malformed submatch).
+func (h *PIIRedactionHook) After(ctx context.Context, req *canonical.ChatRequest, resp *canonical.ChatResponse) error {
+	if !h.Enabled || resp == nil || !h.encryptActive() {
+		return nil
+	}
+	for i := range resp.Message.Content {
+		cp := &resp.Message.Content[i]
+		if cp.Kind != canonical.ContentKindText {
+			continue
+		}
+		cp.Text = decryptTokenRe.ReplaceAllStringFunc(cp.Text, func(match string) string {
+			sub := decryptTokenRe.FindStringSubmatch(match)
+			if len(sub) != 3 {
+				h.logger().Warn("pii.decrypt.failed", "reason", "bad_token_shape")
+				return match
+			}
+			entity, payload := sub[1], sub[2]
+			pt, err := DecryptToken(h.EncryptKey, entity, payload)
+			if err != nil {
+				h.logger().Warn("pii.decrypt.failed",
+					"entity", entity, "err", err)
+				return match
+			}
+			return pt
+		})
+	}
+	return nil
+}
+
 // Compile-time PreHook interface satisfaction. If a future engine
 // signature change drifts the PreHook contract, this line fails to
 // build at the hook's source — surfaces the regression at the right
 // blame target instead of at the slice-5 wiring site.
 var _ engine.PreHook = (*PIIRedactionHook)(nil)
+
+// Compile-time PostHook interface satisfaction (mirrors the existing
+// PreHook line above). Drift in engine.PostHook surfaces here at the
+// right blame target.
+var _ engine.PostHook = (*PIIRedactionHook)(nil)
