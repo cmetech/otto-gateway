@@ -209,3 +209,67 @@ func TestLoad_NonHashModeWithoutKey_NoError(t *testing.T) {
 		t.Errorf("PIIRedactionMode: got %q, want replace", cfg.PIIRedactionMode)
 	}
 }
+
+// PII-ENCRYPT-08 — PII_ENTITY_ACTIONS parser + validator.
+
+func TestLoad_PIIEntityActions_Empty(t *testing.T) {
+	t.Setenv("PII_ENTITY_ACTIONS", "")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.PIIEntityActions) != 0 {
+		t.Errorf("empty env: got %v, want empty map", cfg.PIIEntityActions)
+	}
+}
+
+func TestLoad_PIIEntityActions_Parses(t *testing.T) {
+	t.Setenv("PII_REDACTION_ENABLED", "true")
+	t.Setenv("PII_REDACTION_MODE", "mask")
+	t.Setenv("PII_ENTITY_ACTIONS", "Email:encrypt,SSN:drop")
+	t.Setenv("PII_ENCRYPT_KEY", "any-string") // required because encrypt is active
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.PIIEntityActions["Email"]; got != "encrypt" {
+		t.Errorf("Email action: got %q, want %q", got, "encrypt")
+	}
+	if got := cfg.PIIEntityActions["SSN"]; got != "drop" {
+		t.Errorf("SSN action: got %q, want %q", got, "drop")
+	}
+}
+
+func TestLoad_PIIEntityActions_UnknownEntity(t *testing.T) {
+	t.Setenv("PII_REDACTION_ENABLED", "true")
+	t.Setenv("PII_ENTITY_ACTIONS", "Emial:encrypt") // typo
+	t.Setenv("PII_ENCRYPT_KEY", "any-string")
+	_, err := config.Load()
+	if err == nil {
+		t.Fatal("expected boot error for unknown entity, got nil")
+	}
+	if !strings.Contains(err.Error(), "Emial") {
+		t.Errorf("error should name the offending entity: got %v", err)
+	}
+}
+
+func TestLoad_PIIEntityActions_UnknownAction(t *testing.T) {
+	t.Setenv("PII_REDACTION_ENABLED", "true")
+	t.Setenv("PII_ENTITY_ACTIONS", "Email:shred") // unknown action
+	_, err := config.Load()
+	if err == nil {
+		t.Fatal("expected boot error for unknown action, got nil")
+	}
+	if !strings.Contains(err.Error(), "shred") {
+		t.Errorf("error should name the offending action: got %v", err)
+	}
+}
+
+func TestLoad_PIIEntityActions_MalformedPair(t *testing.T) {
+	t.Setenv("PII_REDACTION_ENABLED", "true")
+	t.Setenv("PII_ENTITY_ACTIONS", "Email-encrypt") // missing colon
+	_, err := config.Load()
+	if err == nil {
+		t.Fatal("expected boot error for malformed pair, got nil")
+	}
+}

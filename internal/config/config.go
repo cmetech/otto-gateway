@@ -157,6 +157,23 @@ type Config struct {
 	// log leak; documented in docs/operating.md).
 	PIIHashKey string
 
+	// PIIEntityActions is the per-entity action override map parsed from
+	// PII_ENTITY_ACTIONS. Empty map reproduces today's behavior (global
+	// PIIRedactionMode applies to every recognizer). When non-empty,
+	// EntityActions[entity] wins over PIIRedactionMode for the named
+	// entities. Unknown entity names or unknown action values cause
+	// Load() to return an error. The five allowed action values are
+	// "replace" | "mask" | "hash" | "drop" | "encrypt".
+	PIIEntityActions map[string]string
+
+	// PIIEncryptKey is the raw PII_ENCRYPT_KEY env value (any non-empty
+	// string). It is passed through to the slice-5 wiring, which calls
+	// pii.DeriveKey to produce the 32-byte AES-256-GCM key. Required
+	// when encrypt is active (PII_REDACTION_MODE=encrypt OR any value
+	// in PII_ENTITY_ACTIONS is "encrypt"); empty otherwise. Boot error
+	// when encrypt is active and this is empty.
+	PIIEncryptKey string
+
 	// ChatTrace enables the ChatTraceHook NDJSON tracer (quick 260529-ll2).
 	// Default false. When true, main.go constructs a dedicated
 	// timberjack rotator at ChatTraceFile and prepends ChatTraceHook to
@@ -311,6 +328,45 @@ func Load() (Config, error) {
 		errs = append(errs, fmt.Errorf("PII_REDACTION_MODE=hash requires PII_HASH_KEY"))
 	}
 
+	// PII-ENCRYPT-08: per-entity action overrides + encrypt-active key check.
+	piiEntityActions, err := parsePIIEntityActions(getEnvStr("PII_ENTITY_ACTIONS", ""))
+	if err != nil {
+		errs = append(errs, fmt.Errorf("PII_ENTITY_ACTIONS: %w", err))
+	}
+
+	piiEncryptKey := getEnvStr("PII_ENCRYPT_KEY", "")
+	// Encrypt is "active" if the global mode is encrypt OR any override
+	// is encrypt. When active, the key MUST be non-empty — there is no
+	// silent fallback that would produce decryptable tokens.
+	encryptActive := piiMode == "encrypt"
+	for _, a := range piiEntityActions {
+		if a == "encrypt" {
+			encryptActive = true
+			break
+		}
+	}
+	if encryptActive && piiEncryptKey == "" {
+		errs = append(errs, fmt.Errorf("PII_ENCRYPT_KEY: required when encrypt is active (PII_REDACTION_MODE=encrypt or any PII_ENTITY_ACTIONS value is encrypt)"))
+	}
+
+	// PII-ENCRYPT-08 soft validation: warn when PII_ENTITY_ACTIONS names an
+	// entity that is absent from PII_ENABLED_ENTITIES (i.e., the override can
+	// never fire because the recognizer is filtered out). NOT a boot-blocking
+	// error — operator may have intentional partial overrides. The warning is
+	// surfaced at boot so operators see it in their logs.
+	if len(piiEntities) > 0 && len(piiEntityActions) > 0 {
+		enabledSet := make(map[string]struct{}, len(piiEntities))
+		for _, e := range piiEntities {
+			enabledSet[e] = struct{}{}
+		}
+		for entity := range piiEntityActions {
+			if _, ok := enabledSet[entity]; !ok {
+				slog.Default().Warn("config.pii: entity_actions includes entity NOT in enabled_entities",
+					"entity", entity)
+			}
+		}
+	}
+
 	// Quick 260529-ll2 — ChatTraceHook env knobs. Two-knob: CHAT_TRACE
 	// toggles work-doing; CHAT_TRACE_FILE / CHAT_TRACE_MAX_AGE_DAYS
 	// tune the rotator. The writable-parent check only runs when
@@ -394,6 +450,8 @@ func Load() (Config, error) {
 		PIIEnabledEntities:   piiEntities,
 		PIIRedactionMode:     piiMode,
 		PIIHashKey:           piiHashKey,
+		PIIEntityActions:     piiEntityActions,
+		PIIEncryptKey:        piiEncryptKey,
 		ChatTrace:            chatTrace,
 		ChatTraceFile:        chatTraceFile,
 		ChatTraceMaxAgeDays:  chatTraceMaxAgeDays,
@@ -564,21 +622,22 @@ func splitCommaTrim(v string) []string {
 }
 
 // validatePIIMode rejects unknown PII_REDACTION_MODE values fail-fast
-// with a clear error naming both the offending value and the four
-// accepted modes (Phase 8 D-05 typo-fail-fast).
+// with a clear error naming both the offending value and the five
+// accepted modes (Phase 8 D-05 typo-fail-fast; encrypt added in
+// PII-ENCRYPT-08).
 //
-// Allowed: "replace" | "mask" | "hash" | "drop". The four-mode set is
-// hand-coded here rather than imported from internal/plugin/pii because
-// (a) the set is part of the env-var contract operators see, so it is
-// owned by config; (b) doing so avoids a config→plugin_pii arch-lint
-// edge (TRST-04 boundary stays clean — config is upstream of the
-// plugin layer in the dep graph).
+// Allowed: "replace" | "mask" | "hash" | "drop" | "encrypt". The
+// five-mode set is hand-coded here rather than imported from
+// internal/plugin/pii because (a) the set is part of the env-var
+// contract operators see, so it is owned by config; (b) doing so
+// avoids a config→plugin_pii arch-lint edge (TRST-04 boundary stays
+// clean — config is upstream of the plugin layer in the dep graph).
 func validatePIIMode(m string) error {
 	switch m {
-	case "replace", "mask", "hash", "drop":
+	case "replace", "mask", "hash", "drop", "encrypt":
 		return nil
 	default:
-		return fmt.Errorf("unknown mode %q (allowed: replace, mask, hash, drop)", m)
+		return fmt.Errorf("unknown mode %q (allowed: replace, mask, hash, drop, encrypt)", m)
 	}
 }
 
@@ -616,6 +675,52 @@ func validatePIIEntities(names []string) error {
 		return errors.Join(errs...)
 	}
 	return nil
+}
+
+// parsePIIEntityActions parses the PII_ENTITY_ACTIONS env value.
+// Shape: "Entity:action,Entity:action,..." e.g. "Email:encrypt,SSN:drop".
+// Returns (nil, nil) for an empty input. Validates every entity name
+// against the canonical six-entity set and every action against the
+// five-action set.
+func parsePIIEntityActions(raw string) (map[string]string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	allowedEntities := map[string]struct{}{
+		"Email": {}, "IPv4": {}, "IPv6": {},
+		"SSN": {}, "CreditCard": {}, "USPhone": {},
+	}
+	allowedActions := map[string]struct{}{
+		"replace": {}, "mask": {}, "hash": {}, "drop": {}, "encrypt": {},
+	}
+	out := make(map[string]string)
+	var errs []error
+	for _, pair := range strings.Split(raw, ",") {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
+		}
+		kv := strings.SplitN(pair, ":", 2)
+		if len(kv) != 2 || kv[0] == "" || kv[1] == "" {
+			errs = append(errs, fmt.Errorf("malformed pair %q (expected Entity:action)", pair))
+			continue
+		}
+		entity, action := strings.TrimSpace(kv[0]), strings.TrimSpace(kv[1])
+		if _, ok := allowedEntities[entity]; !ok {
+			errs = append(errs, fmt.Errorf("unknown entity %q (allowed: Email, IPv4, IPv6, SSN, CreditCard, USPhone)", entity))
+			continue
+		}
+		if _, ok := allowedActions[action]; !ok {
+			errs = append(errs, fmt.Errorf("unknown action %q for entity %q (allowed: replace, mask, hash, drop, encrypt)", action, entity))
+			continue
+		}
+		out[entity] = action
+	}
+	if len(errs) > 0 {
+		return nil, errors.Join(errs...)
+	}
+	return out, nil
 }
 
 // validateEnabledSurfaces checks every entry in surfaces against the
