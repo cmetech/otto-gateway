@@ -38,6 +38,11 @@ func (p *posthookFakeEngine) Collect(_ context.Context, _ *canonical.ChatRequest
 	return nil, nil // unused — CollectAnthropicChat routes through Run.
 }
 
+// CollectFromRun is unused in collect-posthook tests; satisfy T-5b interface.
+func (p *posthookFakeEngine) CollectFromRun(_ context.Context, _ RunHandle, _ *canonical.ChatRequest) (*canonical.ChatResponse, error) {
+	return nil, nil
+}
+
 func (p *posthookFakeEngine) Run(_ context.Context, _ *canonical.ChatRequest) (RunHandle, error) {
 	if p.runErr != nil {
 		return nil, p.runErr

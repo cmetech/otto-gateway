@@ -98,6 +98,13 @@ func (f *shortCircuitFakeEngine) RunPostHooks(_ context.Context, _ *canonical.Ch
 	return nil
 }
 
+// CollectFromRun is a no-op for the short-circuit tests. The handler
+// short-circuit guard fires BEFORE the T-5b re-route check; if the test
+// ever reaches CollectFromRun the guard is broken.
+func (f *shortCircuitFakeEngine) CollectFromRun(_ context.Context, _ RunHandle, _ *canonical.ChatRequest) (*canonical.ChatResponse, error) {
+	return nil, nil
+}
+
 // newShortCircuitRunHandle constructs a fakeRunHandle whose
 // ShortCircuitResponse() yields newAuthErrorResp(). The stream channel is
 // closed (empty) — when the short-circuit guard fires, the emitter is never

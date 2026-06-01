@@ -48,6 +48,15 @@ type Engine interface {
 	// streaming requests. RunPostHooks closes the gap.
 	// *engine.Engine.RunPostHooks structurally satisfies this.
 	RunPostHooks(ctx context.Context, req *canonical.ChatRequest, resp *canonical.ChatResponse) error
+	// CollectFromRun performs the aggregation half of Collect against an
+	// existing RunHandle (without re-running). T-5b seam: when a Pre hook
+	// flipped req.Stream=false during eng.Run (e.g. PII encrypt mode),
+	// the streaming branches in handleChat / handleGenerate call this to
+	// drain the already-running ACP session through the aggregated path
+	// and render a non-streaming JSON response, instead of leaking
+	// ciphertext bytes through the NDJSON emitter ahead of the PII
+	// decrypt PostHook.
+	CollectFromRun(ctx context.Context, run RunHandle, req *canonical.ChatRequest) (*canonical.ChatResponse, error)
 }
 
 // RunHandle is the consumer-defined handle the adapter receives from

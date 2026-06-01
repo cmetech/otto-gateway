@@ -1001,6 +1001,26 @@ func (a anthropicEngineAdapter) RunPostHooks(ctx context.Context, req *canonical
 	return nil
 }
 
+// CollectFromRun satisfies anthropic.Engine.CollectFromRun (T-5b). The
+// adapter receives an anthropic.RunHandle which (in production) is the
+// anthropicRunHandleAdapter wrapping a concrete *engine.Run; type-assert
+// to recover the *engine.Run and delegate to *engine.Engine.CollectFromRun.
+// A non-matching concrete type indicates a wiring defect (production
+// always pairs this adapter's Run output with this adapter's
+// CollectFromRun input) — return a wrapped error instead of panicking so
+// the failure surfaces in adapter logs.
+func (a anthropicEngineAdapter) CollectFromRun(ctx context.Context, run anthropic.RunHandle, req *canonical.ChatRequest) (*canonical.ChatResponse, error) {
+	h, ok := run.(anthropicRunHandleAdapter)
+	if !ok {
+		return nil, fmt.Errorf("anthropic engine collect from run: unexpected RunHandle type %T", run)
+	}
+	resp, err := a.engine.CollectFromRun(ctx, h.run, req)
+	if err != nil {
+		return nil, fmt.Errorf("anthropic engine collect from run: %w", err)
+	}
+	return resp, nil
+}
+
 // anthropicRunHandleAdapter adapts *engine.Run to anthropic.RunHandle.
 // engine.Run.Stream() returns engine.Stream (interface); anthropic
 // declares its own Stream interface that is structurally compatible
@@ -1069,6 +1089,22 @@ func (a openaiEngineAdapter) RunPostHooks(ctx context.Context, req *canonical.Ch
 	return nil
 }
 
+// CollectFromRun satisfies openai.Engine.CollectFromRun (T-5b). Mirrors
+// anthropicEngineAdapter.CollectFromRun — type-asserts the
+// openai.RunHandle back to openaiRunHandleAdapter to recover the
+// concrete *engine.Run.
+func (a openaiEngineAdapter) CollectFromRun(ctx context.Context, run openai.RunHandle, req *canonical.ChatRequest) (*canonical.ChatResponse, error) {
+	h, ok := run.(openaiRunHandleAdapter)
+	if !ok {
+		return nil, fmt.Errorf("openai engine collect from run: unexpected RunHandle type %T", run)
+	}
+	resp, err := a.engine.CollectFromRun(ctx, h.run, req)
+	if err != nil {
+		return nil, fmt.Errorf("openai engine collect from run: %w", err)
+	}
+	return resp, nil
+}
+
 // ollamaEngineAdapter wraps a concrete *engine.Engine and adapts its Run
 // signature to ollama.Engine. Mirrors anthropicEngineAdapter exactly —
 // same Go return-type-invariance rationale: *engine.Engine.Run returns
@@ -1108,6 +1144,22 @@ func (a ollamaEngineAdapter) RunPostHooks(ctx context.Context, req *canonical.Ch
 		return fmt.Errorf("ollama engine post hooks: %w", err)
 	}
 	return nil
+}
+
+// CollectFromRun satisfies ollama.Engine.CollectFromRun (T-5b). Mirrors
+// anthropicEngineAdapter.CollectFromRun — type-asserts the
+// ollama.RunHandle back to ollamaRunHandleAdapter to recover the
+// concrete *engine.Run.
+func (a ollamaEngineAdapter) CollectFromRun(ctx context.Context, run ollama.RunHandle, req *canonical.ChatRequest) (*canonical.ChatResponse, error) {
+	h, ok := run.(ollamaRunHandleAdapter)
+	if !ok {
+		return nil, fmt.Errorf("ollama engine collect from run: unexpected RunHandle type %T", run)
+	}
+	resp, err := a.engine.CollectFromRun(ctx, h.run, req)
+	if err != nil {
+		return nil, fmt.Errorf("ollama engine collect from run: %w", err)
+	}
+	return resp, nil
 }
 
 // ollamaRunHandleAdapter adapts *engine.Run to ollama.RunHandle.

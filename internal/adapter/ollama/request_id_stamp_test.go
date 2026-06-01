@@ -50,6 +50,11 @@ func (c *captureEngine) RunPostHooks(_ context.Context, _ *canonical.ChatRequest
 	return nil
 }
 
+// CollectFromRun is unused in request-id stamp tests (T-5b interface).
+func (c *captureEngine) CollectFromRun(_ context.Context, _ RunHandle, _ *canonical.ChatRequest) (*canonical.ChatResponse, error) {
+	return c.resp, nil
+}
+
 func newCaptureAdapter(t *testing.T, eng *captureEngine) *Adapter {
 	t.Helper()
 	return New(Config{Engine: eng, Version: "0.0.0-test", Commit: "abc1234"})

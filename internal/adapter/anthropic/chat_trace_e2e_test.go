@@ -44,6 +44,12 @@ func (e *chatTraceFakeEngine) Collect(_ context.Context, _ *canonical.ChatReques
 	return nil, nil
 }
 
+// CollectFromRun is unused in chat-trace e2e tests (no PII encrypt Pre
+// hook flips Stream); satisfy the T-5b interface contract.
+func (e *chatTraceFakeEngine) CollectFromRun(_ context.Context, _ RunHandle, _ *canonical.ChatRequest) (*canonical.ChatResponse, error) {
+	return nil, nil
+}
+
 // Run mirrors the real engine's Run: iterate the PreHook chain first
 // (short-circuit if any returns non-nil response), then return a Run
 // handle whose stream replays the scripted chunks.

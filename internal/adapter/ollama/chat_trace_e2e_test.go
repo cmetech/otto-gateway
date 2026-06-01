@@ -90,6 +90,11 @@ func (e *chatTraceFakeEngine) RunPostHooks(ctx context.Context, req *canonical.C
 	return nil
 }
 
+// CollectFromRun is unused in chat-trace e2e tests; satisfy T-5b interface.
+func (e *chatTraceFakeEngine) CollectFromRun(_ context.Context, _ RunHandle, _ *canonical.ChatRequest) (*canonical.ChatResponse, error) {
+	return nil, nil
+}
+
 // TestChatTrace_E2E_OllamaStreaming drives a streaming /api/chat
 // request through runNDJSONEmitter + handler-shaped RunPostHooks call.
 // Asserts the pre_chain_in / post_chain_out pair appears in the

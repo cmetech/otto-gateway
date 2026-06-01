@@ -144,6 +144,22 @@ func (r realEngineAdapter) RunPostHooks(
 	return r.engine.RunPostHooks(ctx, req, resp)
 }
 
+// CollectFromRun delegates to *engine.Engine.CollectFromRun (T-5b). The
+// realRunHandle type-asserts back to recover the concrete *engine.Run.
+func (r realEngineAdapter) CollectFromRun(
+	ctx context.Context, run RunHandle, req *canonical.ChatRequest,
+) (*canonical.ChatResponse, error) {
+	h, ok := run.(realRunHandle)
+	if !ok {
+		return nil, fmt.Errorf("integration collect from run: unexpected RunHandle type %T", run)
+	}
+	resp, err := r.engine.CollectFromRun(ctx, h.run, req)
+	if err != nil {
+		return nil, fmt.Errorf("integration collect from run: %w", err)
+	}
+	return resp, nil
+}
+
 type realRunHandle struct{ run *engine.Run }
 
 func (h realRunHandle) Stream() Stream                                { return h.run.Stream() }

@@ -52,6 +52,11 @@ func (c *anthropicCaptureEngine) RunPostHooks(_ context.Context, _ *canonical.Ch
 	return nil
 }
 
+// CollectFromRun is unused in the request-id stamp tests (T-5b interface).
+func (c *anthropicCaptureEngine) CollectFromRun(_ context.Context, _ RunHandle, _ *canonical.ChatRequest) (*canonical.ChatResponse, error) {
+	return c.resp, nil
+}
+
 func newAnthropicCaptureAdapter(eng *anthropicCaptureEngine) *Adapter {
 	return New(Config{Engine: eng})
 }

@@ -199,6 +199,49 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusUnauthorized, errAuthentication, shortCircuitMessage(sc))
 			return
 		}
+		// T-5b: Pre hooks (notably the PII encrypt hook) may have flipped
+		// req.Stream=false during eng.Run. When that happens we abandon
+		// the SSE branch and drain the already-running ACP session through
+		// eng.CollectFromRun, then render via the surface's non-streaming
+		// response shape. This closes the PII encrypt round-trip for
+		// streaming Anthropic clients (loop24-client) — without this
+		// re-route the SSE emitter would flush ciphertext bytes ahead of
+		// the PII decrypt PostHook.
+		//
+		// v1 limitation: this path uses the generic engine aggregator
+		// (CollectFromRun), NOT the Anthropic-local CollectAnthropicChat.
+		// Kiro-native ChunkKindToolCall chunks render as `[tool: <name>]\n`
+		// narration text on this path rather than native tool_use content
+		// blocks. Plain-text responses round-trip correctly. Documented in
+		// docs/operating.md Known Limitations.
+		if !req.Stream {
+			a.cfg.Logger.Info("stream re-routed to aggregated path",
+				"surface", "anthropic",
+				"reason", "pre_hook_disabled_streaming",
+				"request_id", plugin.RequestIDFromContext(ctx),
+			)
+			resp, cErr := eng.CollectFromRun(streamCtx, runHandle, req)
+			if cErr != nil {
+				if errors.Is(cErr, canonical.ErrStreamIdleTimeout) {
+					a.cfg.Logger.Warn("stream.idle_timeout",
+						"surface", "anthropic",
+						"elapsed_ms", a.cfg.StreamIdleTimeout.Milliseconds(),
+						"request_id", plugin.RequestIDFromContext(ctx),
+					)
+					writeError(w, http.StatusGatewayTimeout, errAPI, "upstream stream idle timeout")
+					return
+				}
+				a.cfg.Logger.Error("anthropic: engine.CollectFromRun error", "err", cErr)
+				writeError(w, http.StatusInternalServerError, errAPI, "internal error")
+				return
+			}
+			if resp != nil && resp.StopReason == canonical.StopError {
+				writeError(w, http.StatusUnauthorized, errAuthentication, shortCircuitMessage(resp))
+				return
+			}
+			writeJSON(w, chatResponseToMessage(resp, wire.Model))
+			return
+		}
 		resp, err := runSSEEmitter(streamCtx, w, runHandle, wire.Model, a.cfg.StreamIdleTimeout, a.cfg.Logger)
 		if err != nil {
 			// runSSEEmitter has already written SSE headers + frames

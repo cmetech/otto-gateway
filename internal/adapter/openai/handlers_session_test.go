@@ -91,6 +91,11 @@ func (s *sessionEngine) RunPostHooks(ctx context.Context, req *canonical.ChatReq
 	return s.inner.RunPostHooks(ctx, req, resp)
 }
 
+// CollectFromRun delegates to the inner Engine (T-5b seam).
+func (s *sessionEngine) CollectFromRun(ctx context.Context, run RunHandle, req *canonical.ChatRequest) (*canonical.ChatResponse, error) {
+	return s.inner.CollectFromRun(ctx, run, req)
+}
+
 // newSessionTestAdapter wraps newFakeAdapter with the session wiring.
 func newSessionTestAdapter(poolEng *fakeEngine, reg SessionRegistry, sessionEng *sessionEngine) *Adapter {
 	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{}))

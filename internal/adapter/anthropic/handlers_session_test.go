@@ -85,6 +85,11 @@ func (s *sessionEngine) RunPostHooks(ctx context.Context, req *canonical.ChatReq
 	return s.inner.RunPostHooks(ctx, req, resp)
 }
 
+// CollectFromRun delegates to the inner Engine (T-5b seam).
+func (s *sessionEngine) CollectFromRun(ctx context.Context, run RunHandle, req *canonical.ChatRequest) (*canonical.ChatResponse, error) {
+	return s.inner.CollectFromRun(ctx, run, req)
+}
+
 func newSessionTestAdapter(poolEng *fakeEngine, reg SessionRegistry, sessionEng *sessionEngine) *Adapter {
 	return New(Config{
 		Engine:   poolEng,

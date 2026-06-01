@@ -69,6 +69,21 @@ func (f *fakeEngine) RunPostHooks(_ context.Context, _ *canonical.ChatRequest, r
 	return f.postErr
 }
 
+// CollectFromRun satisfies the T-5b seam on the Engine interface. The
+// fake aggregates by returning collectResp (the same response the
+// synthesized RunHandle's chunk stream would aggregate to via
+// CollectAnthropicChat / engine.CollectFromRun in production). Tests that
+// drive the T-5b re-route path (stream flipped to false by a Pre hook
+// post-Run) can set collectResp and assert the handler renders the
+// non-streaming JSON shape.
+func (f *fakeEngine) CollectFromRun(_ context.Context, _ RunHandle, req *canonical.ChatRequest) (*canonical.ChatResponse, error) {
+	f.lastReq = req
+	if f.collectErr != nil {
+		return nil, f.collectErr
+	}
+	return f.collectResp, nil
+}
+
 func (f *fakeEngine) Run(_ context.Context, req *canonical.ChatRequest) (RunHandle, error) {
 	f.runN++
 	f.lastReq = req

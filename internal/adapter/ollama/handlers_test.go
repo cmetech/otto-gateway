@@ -57,6 +57,19 @@ func (f *fakeEngine) Collect(_ context.Context, req *canonical.ChatRequest) (*ca
 	return f.resp, nil
 }
 
+// CollectFromRun satisfies the T-5b seam. Returns f.resp (the same
+// response the streaming aggregator would produce for the canned
+// runChunks). Tests exercising the T-5b re-route path (stream flipped to
+// false by a Pre hook post-Run) set f.resp and assert the handler
+// renders the non-streaming JSON shape.
+func (f *fakeEngine) CollectFromRun(_ context.Context, _ RunHandle, req *canonical.ChatRequest) (*canonical.ChatResponse, error) {
+	f.lastReq = req
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.resp, nil
+}
+
 // runChunks is the set of canonical.Chunk values fakeEngine.Run sends for
 // streaming tests. If nil, an empty channel is used (stream closes immediately).
 // runErr is returned by Engine.Run itself (before any streaming begins).

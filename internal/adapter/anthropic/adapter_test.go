@@ -32,6 +32,12 @@ func (notImplementedEngine) RunPostHooks(_ context.Context, _ *canonical.ChatReq
 	return nil
 }
 
+// CollectFromRun is a not-implemented stub (T-5b). The routes-only tests
+// in this file never exercise the streaming re-route path.
+func (notImplementedEngine) CollectFromRun(_ context.Context, _ RunHandle, _ *canonical.ChatRequest) (*canonical.ChatResponse, error) {
+	return nil, errors.New("not implemented")
+}
+
 // TestNew_DefaultsNilLogger asserts that constructing with a zero-valued
 // Config (no Logger) does not panic and the resulting Adapter has a
 // usable defensive logger. (Engine remains nil — that's intentional;

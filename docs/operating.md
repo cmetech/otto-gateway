@@ -466,20 +466,50 @@ Then visit `http://localhost:11434/admin` in your local browser.
 
 ## Known Limitations
 
-### encrypt + streaming clients (planned fix: T-5b)
+### encrypt + streaming clients (fixed in T-5b)
 
 When `PII_REDACTION_MODE=encrypt` (or any entity is configured for
-`encrypt` via `PII_ENTITY_ACTIONS`), streaming clients (the Pi-SDK
-chat CLI and loop24-client, both of which hard-code `stream: true`)
-currently receive ciphertext tokens in their stream chunks. The PII
-Post hook fires AFTER the stream completes (and decrypts the
-aggregated response), but the bytes are already on the wire by then.
+`encrypt` via `PII_ENTITY_ACTIONS`), the PII Pre hook flips
+`req.Stream = false` so the response Post hook can decrypt the
+aggregated response before any bytes hit the wire. The three adapter
+handlers (Anthropic, OpenAI, Ollama) detect the post-Run
+`req.Stream == false` state and re-route through the engine's
+`CollectFromRun` aggregated path, rendering via the surface's
+non-streaming JSON response shape:
 
-Adapter-layer re-routing (engine `Aggregated()` seam + adapter handler
-updates) is a planned follow-up that will route encrypt-active
-requests through the aggregated path before any bytes hit the wire.
-Until then, encrypt round-trip works correctly for non-streaming
-clients (LangFlow via `/api/chat` with `stream: false`).
+- Anthropic `/v1/messages`: renders via `chatResponseToMessage`
+  (single `message` envelope).
+- OpenAI `/v1/chat/completions`: renders via
+  `chatResponseToCompletion` (single `chat.completion` envelope).
+- OpenAI `/v1/completions`: always non-streaming on this surface
+  (`stream:true` is silently downgraded) — no T-5b re-route needed.
+- Ollama `/api/chat`: renders via `chatResponseToWire` (single
+  Ollama response object with `done:true`, not an NDJSON record
+  stream).
+- Ollama `/api/generate`: renders via `generateResponseToWire`
+  (single Ollama generate response object).
+
+Streaming clients (Pi-SDK chat CLI, loop24-client via
+`ANTHROPIC_BASE_URL`, LangFlow flows that set `stream: true`)
+receive a single complete decrypted JSON response when encrypt mode
+is active, instead of the streaming SSE/NDJSON they would normally
+get. Total wall-clock latency is unchanged (the ACP session runs the
+same way) but the response shape switches from streamed to buffered.
+
+**Known limitation: Anthropic `tool_use` rendering on the
+encrypt re-route path.** When encrypt mode is active and the
+Anthropic surface re-routes a streaming request through the
+aggregated path, the response is rendered via the generic engine
+aggregator (`CollectFromRun`), NOT via the Anthropic-local
+`CollectAnthropicChat` aggregator that handles native `tool_use`
+chunks. Plain-text assistant responses round-trip correctly. Native
+Anthropic `tool_use` content blocks are not aggregated on this path
+— kiro-native `ChunkKindToolCall` chunks render as `[tool: <name>]`
+narration text in the assistant message body instead of as discrete
+`tool_use` blocks. This is a v1 limitation; clients that require
+`tool_use` rendering on the encrypt path can disable encrypt for
+those workflows or rely on the non-streaming Anthropic path which
+uses `CollectAnthropicChat` natively.
 
 ### encrypt mode decrypt WARN volume
 

@@ -14,6 +14,14 @@
 // — the hook's payload is preserved verbatim. The prior design (zero
 // chunks + chunk-assembly from empty text) silently dropped the
 // hook's body; this is the fix.
+//
+// T-5b (PII encrypt streaming gap): the aggregation half of Collect is
+// extracted into Engine.CollectFromRun so adapter handlers can re-route
+// a streaming request through the aggregated path AFTER eng.Run has
+// already returned (e.g., when the PII encrypt Pre hook flipped
+// req.Stream=false in its Before method). Collect itself now calls
+// Run + CollectFromRun internally and is byte-identical for existing
+// consumers.
 package engine
 
 import (
@@ -30,12 +38,52 @@ import (
 // resulting stream into a canonical.ChatResponse. PostHooks run after
 // the response is assembled; the first non-nil PostHook error aborts
 // Collect with a wrapped error.
+//
+// Refactored under T-5b to delegate aggregation to CollectFromRun.
+// Behavior is byte-identical to the previous in-line implementation
+// for every existing caller.
 func (e *Engine) Collect(ctx context.Context, req *canonical.ChatRequest) (*canonical.ChatResponse, error) {
 	run, err := e.Run(ctx, req)
 	if err != nil {
 		// e.Run already wraps; re-wrap once more so callers can
 		// distinguish "collect path" from "run path" in upstream logs.
 		return nil, fmt.Errorf("engine: collect: %w", err)
+	}
+	return e.CollectFromRun(ctx, run, req)
+}
+
+// CollectFromRun performs the aggregation half of Collect against an
+// existing *Run handle (without re-running). T-5b seam: adapter
+// streaming handlers call this after eng.Run when a Pre hook
+// (typically PII encrypt) has flipped req.Stream=false post-Run, so
+// the same ACP session can be drained into a non-streaming JSON
+// response shape instead of leaking ciphertext bytes through the SSE
+// emitter ahead of the PII decrypt PostHook.
+//
+// Aggregation semantics match the pre-T-5b Collect body verbatim:
+//
+//   - PreHook short-circuit: run.response != nil → return that
+//     response directly (Codex H-4); PostHooks still run on it (H-5).
+//   - Normal path: range run.stream.Chunks() via
+//     RangeChunksWithIdleTimeout, accumulate ChunkKindText and
+//     ChunkKindThought into separate builders, render ChunkKindToolCall
+//     as `[tool: <name>]\n` narration text (D-03/D-05/D-07 contract —
+//     Message.ToolCalls remains untouched here; per-surface coerce is
+//     the adapter's concern), call run.stream.Result() for the
+//     FinalResult, stop the watchdog, assemble via assembleChatResponse,
+//     run PostHooks.
+//
+// Idle timeout: when e.cfg.StreamIdleTimeout > 0, the chunk loop
+// returns canonical.ErrStreamIdleTimeout (wrapped) on a stalled
+// stream. Adapter handlers errors.Is-check it and render a 504 on the
+// non-streaming JSON path that consumes this method.
+//
+// PostHook errors propagate as "engine: posthook: <inner>". Same wrap
+// shape used by Collect and RunPostHooks so log filters keyed on the
+// prefix continue to match.
+func (e *Engine) CollectFromRun(ctx context.Context, run *Run, req *canonical.ChatRequest) (*canonical.ChatResponse, error) {
+	if run == nil {
+		return nil, fmt.Errorf("engine: collect from run: run is nil")
 	}
 
 	var resp *canonical.ChatResponse

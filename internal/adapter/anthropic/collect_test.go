@@ -120,6 +120,11 @@ func (f *parityFakeEngine) RunPostHooks(_ context.Context, _ *canonical.ChatRequ
 	return nil
 }
 
+// CollectFromRun is a no-op for parity tests (T-5b interface compliance).
+func (f *parityFakeEngine) CollectFromRun(_ context.Context, _ RunHandle, _ *canonical.ChatRequest) (*canonical.ChatResponse, error) {
+	return nil, nil
+}
+
 // Run yields a single-shot scripted stream from the same chunk list.
 // CollectAnthropicChat consumes this path. WR-03: when errOnRun=true
 // and err is set, Run surfaces err directly so the Run-error wrap
@@ -450,6 +455,9 @@ func (f *idleFakeEngine) Run(_ context.Context, _ *canonical.ChatRequest) (RunHa
 }
 func (f *idleFakeEngine) RunPostHooks(_ context.Context, _ *canonical.ChatRequest, _ *canonical.ChatResponse) error {
 	return nil
+}
+func (f *idleFakeEngine) CollectFromRun(_ context.Context, _ RunHandle, _ *canonical.ChatRequest) (*canonical.ChatResponse, error) {
+	return nil, nil
 }
 
 // TestCollectAnthropicChat_IdleTimeout exercises the adapter-local idle

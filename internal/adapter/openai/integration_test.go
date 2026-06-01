@@ -124,6 +124,22 @@ func (r realEngineAdapter) RunPostHooks(
 	return r.engine.RunPostHooks(ctx, req, resp)
 }
 
+// CollectFromRun delegates to *engine.Engine.CollectFromRun (T-5b). The
+// realRunHandle type-asserts back to recover the concrete *engine.Run.
+func (r realEngineAdapter) CollectFromRun(
+	ctx context.Context, run RunHandle, req *canonical.ChatRequest,
+) (*canonical.ChatResponse, error) {
+	h, ok := run.(realRunHandle)
+	if !ok {
+		return nil, fmt.Errorf("integration collect from run: unexpected RunHandle type %T", run)
+	}
+	resp, err := r.engine.CollectFromRun(ctx, h.run, req)
+	if err != nil {
+		return nil, fmt.Errorf("integration collect from run: %w", err)
+	}
+	return resp, nil
+}
+
 type realRunHandle struct{ run *engine.Run }
 
 func (h realRunHandle) Stream() Stream         { return h.run.Stream() }
@@ -185,6 +201,13 @@ func (f *fakeEngine) RunPostHooks(_ context.Context, _ *canonical.ChatRequest, r
 	f.postN++
 	f.lastPostResp = resp
 	return f.postErr
+}
+
+// CollectFromRun satisfies the T-5b seam. Returns collectResp so tests
+// that drive the re-route path (Pre hook flips Stream post-Run) see the
+// scripted aggregated response.
+func (f *fakeEngine) CollectFromRun(_ context.Context, _ RunHandle, _ *canonical.ChatRequest) (*canonical.ChatResponse, error) {
+	return f.collectResp, f.collectErr
 }
 
 // newFakeAdapter constructs an *Adapter with a scripted fake engine.

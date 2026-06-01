@@ -219,6 +219,53 @@ func (a *Adapter) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	start := time.Now()
+	// T-5b: Pre hooks (notably the PII encrypt hook) may have flipped
+	// req.Stream=false during eng.Run. When that happens we abandon
+	// the NDJSON branch and drain the already-running ACP session
+	// through eng.CollectFromRun, then render via the surface's
+	// non-streaming response shape. This closes the PII encrypt
+	// round-trip for streaming Ollama clients (LangFlow / any
+	// stream:true /api/chat caller) — without this re-route the NDJSON
+	// emitter would flush ciphertext bytes ahead of the PII decrypt
+	// PostHook.
+	if !req.Stream {
+		a.cfg.Logger.Info("stream re-routed to aggregated path",
+			"surface", "ollama.chat",
+			"reason", "pre_hook_disabled_streaming",
+			"request_id", plugin.RequestIDFromContext(ctx),
+		)
+		resp, cErr := eng.CollectFromRun(streamCtx, run, req)
+		if cErr != nil {
+			if errors.Is(cErr, canonical.ErrStreamIdleTimeout) {
+				a.cfg.Logger.Warn("stream.idle_timeout",
+					"surface", "ollama",
+					"elapsed_ms", a.cfg.StreamIdleTimeout.Milliseconds(),
+					"request_id", plugin.RequestIDFromContext(ctx),
+				)
+				writeError(w, http.StatusGatewayTimeout, "upstream stream idle timeout")
+				return
+			}
+			a.cfg.Logger.Error("ollama: engine.CollectFromRun error", "err", cErr)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		if resp != nil && resp.StopReason == canonical.StopError {
+			writeError(w, http.StatusUnauthorized, shortCircuitMessage(resp))
+			return
+		}
+		// Phase 6 D-01: coerce-from-text on the aggregated path —
+		// same as the eng.Collect site above. Streaming-coerce buffering
+		// in ndjson.go is bypassed when we re-route.
+		if engine.CoerceToolCall(req, resp) {
+			var firstName string
+			if len(resp.Message.ToolCalls) > 0 {
+				firstName = resp.Message.ToolCalls[0].Name
+			}
+			a.cfg.Logger.Debug("ollama: coerce fired (re-route path)", "tool", firstName)
+		}
+		writeJSON(w, chatResponseToWire(resp, start, wire.Model))
+		return
+	}
 	resp, emitErr := runNDJSONEmitter(streamCtx, cancelFn, w, run, wire.Model, true, start, a.cfg.Logger, req, a.cfg.StreamIdleTimeout)
 	if emitErr != nil {
 		a.cfg.Logger.Debug("ollama: ndjson chat emitter error", "err", emitErr)
@@ -384,6 +431,38 @@ func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	start := time.Now()
+	// T-5b: Pre hooks (notably the PII encrypt hook) may have flipped
+	// req.Stream=false during eng.Run. Same re-route discipline as
+	// handleChat above — drain the already-running ACP session through
+	// the aggregated path and render via generateResponseToWire.
+	if !req.Stream {
+		a.cfg.Logger.Info("stream re-routed to aggregated path",
+			"surface", "ollama.generate",
+			"reason", "pre_hook_disabled_streaming",
+			"request_id", plugin.RequestIDFromContext(ctx),
+		)
+		resp, cErr := eng.CollectFromRun(streamCtx, run, req)
+		if cErr != nil {
+			if errors.Is(cErr, canonical.ErrStreamIdleTimeout) {
+				a.cfg.Logger.Warn("stream.idle_timeout",
+					"surface", "ollama",
+					"elapsed_ms", a.cfg.StreamIdleTimeout.Milliseconds(),
+					"request_id", plugin.RequestIDFromContext(ctx),
+				)
+				writeError(w, http.StatusGatewayTimeout, "upstream stream idle timeout")
+				return
+			}
+			a.cfg.Logger.Error("ollama: engine.CollectFromRun error", "err", cErr)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		if resp != nil && resp.StopReason == canonical.StopError {
+			writeError(w, http.StatusUnauthorized, shortCircuitMessage(resp))
+			return
+		}
+		writeJSON(w, generateResponseToWire(resp, start, wire.Model))
+		return
+	}
 	// Generate has no tools[] — pass req so the emitter signature stays
 	// uniform; the streaming-coerce buffering logic only activates when
 	// len(req.Tools) > 0 so this is a no-op for /api/generate in practice.

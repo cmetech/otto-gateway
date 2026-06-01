@@ -482,3 +482,8 @@ func (c *captureEngine) Run(_ context.Context, _ *canonical.ChatRequest) (RunHan
 func (c *captureEngine) RunPostHooks(_ context.Context, _ *canonical.ChatRequest, _ *canonical.ChatResponse) error {
 	return nil
 }
+
+// CollectFromRun is unused in completions tests (T-5b interface).
+func (c *captureEngine) CollectFromRun(_ context.Context, _ RunHandle, _ *canonical.ChatRequest) (*canonical.ChatResponse, error) {
+	return c.collectResp, c.collectErr
+}

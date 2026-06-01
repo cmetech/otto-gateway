@@ -52,6 +52,11 @@ func (c *openaiCaptureEngine) RunPostHooks(_ context.Context, _ *canonical.ChatR
 	return nil
 }
 
+// CollectFromRun is unused in request-id stamp tests (T-5b interface).
+func (c *openaiCaptureEngine) CollectFromRun(_ context.Context, _ RunHandle, _ *canonical.ChatRequest) (*canonical.ChatResponse, error) {
+	return c.resp, nil
+}
+
 func newOpenAICaptureAdapter(eng *openaiCaptureEngine) *Adapter {
 	// discardWriter is declared in adapter.go (production code).
 	return New(Config{

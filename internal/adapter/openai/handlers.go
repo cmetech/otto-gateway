@@ -156,6 +156,54 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 			writeError(w, http.StatusUnauthorized, errAuthentication, shortCircuitMessage(sc))
 			return
 		}
+		// T-5b: Pre hooks (notably the PII encrypt hook) may have flipped
+		// req.Stream=false during eng.Run. When that happens we abandon
+		// the SSE branch and drain the already-running ACP session through
+		// eng.CollectFromRun, then render via the surface's non-streaming
+		// response shape. This closes the PII encrypt round-trip for
+		// streaming OpenAI clients (Pi-SDK) — without this re-route the
+		// SSE emitter would flush ciphertext bytes ahead of the PII decrypt
+		// PostHook.
+		if !req.Stream {
+			a.cfg.Logger.Info("stream re-routed to aggregated path",
+				"surface", "openai.chat",
+				"reason", "pre_hook_disabled_streaming",
+				"request_id", plugin.RequestIDFromContext(ctx),
+			)
+			resp, cErr := eng.CollectFromRun(streamCtx, runHandle, req)
+			if cErr != nil {
+				if errors.Is(cErr, canonical.ErrStreamIdleTimeout) {
+					a.cfg.Logger.Warn("stream.idle_timeout",
+						"surface", "openai",
+						"elapsed_ms", a.cfg.StreamIdleTimeout.Milliseconds(),
+						"request_id", plugin.RequestIDFromContext(ctx),
+					)
+					writeError(w, http.StatusGatewayTimeout, errAPI, "upstream stream idle timeout")
+					return
+				}
+				a.cfg.Logger.Error("openai: engine.CollectFromRun error", "err", cErr)
+				writeError(w, http.StatusInternalServerError, errAPI, "internal error")
+				return
+			}
+			if resp != nil && resp.StopReason == canonical.StopError {
+				writeError(w, http.StatusUnauthorized, errAuthentication, shortCircuitMessage(resp))
+				return
+			}
+			// Phase 6 D-01: coerce-from-text fires on the non-streaming
+			// path between aggregation and render — same as the
+			// eng.Collect site below. The streaming-coerce buffering in
+			// sse.go is bypassed when we re-route, so apply the
+			// non-streaming coerce here for shape parity.
+			if engine.CoerceToolCall(req, resp) {
+				var firstName string
+				if len(resp.Message.ToolCalls) > 0 {
+					firstName = resp.Message.ToolCalls[0].Name
+				}
+				a.cfg.Logger.Debug("openai: coerce fired (re-route path)", "tool", firstName)
+			}
+			writeJSON(w, chatResponseToCompletion(resp, wire.Model))
+			return
+		}
 		resp, err := runSSEEmitter(streamCtx, w, runHandle, req, wire.Model, a.cfg.StreamIdleTimeout, a.cfg.Logger)
 		if err != nil {
 			// runSSEEmitter has already written SSE headers + at least some frames.

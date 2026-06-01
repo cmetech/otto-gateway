@@ -47,6 +47,21 @@ func (a testEngineAdapter) RunPostHooks(ctx context.Context, req *canonical.Chat
 	return a.eng.RunPostHooks(ctx, req, resp)
 }
 
+// CollectFromRun delegates to *engine.Engine.CollectFromRun (T-5b). The
+// testRunHandleAdapter type-asserts back to recover the concrete
+// *engine.Run.
+func (a testEngineAdapter) CollectFromRun(ctx context.Context, run RunHandle, req *canonical.ChatRequest) (*canonical.ChatResponse, error) {
+	h, ok := run.(testRunHandleAdapter)
+	if !ok {
+		return nil, fmt.Errorf("integration collect from run: unexpected RunHandle type %T", run)
+	}
+	resp, err := a.eng.CollectFromRun(ctx, h.run, req)
+	if err != nil {
+		return nil, fmt.Errorf("integration collect from run: %w", err)
+	}
+	return resp, nil
+}
+
 type testRunHandleAdapter struct{ run *engine.Run }
 
 func (h testRunHandleAdapter) Stream() Stream         { return h.run.Stream() }
