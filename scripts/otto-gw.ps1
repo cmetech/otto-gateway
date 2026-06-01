@@ -22,8 +22,12 @@
 #
 # .env loader (laptop-friendly persistence):
 #   Loads the first match of:  .\.env.otto-gw  →  $HOME\.otto-gw.env
-#   Override with -EnvFile PATH or $env:OTTO_ENV_FILE=PATH.
-#   CLI flags WIN over .env values.
+#   Then chains the first match of:
+#     .\.otto-gw.overrides.env  →  $HOME\.otto-gw.overrides.env
+#   Override either with -EnvFile PATH / -OverridesFile PATH, or with
+#   $env:OTTO_ENV_FILE / $env:OTTO_OVERRIDES_FILE.
+#   The overrides file is loaded SECOND; same-key values win (two-file model).
+#   CLI flags WIN over overrides; overrides WIN over .env.
 
 param(
     [Parameter(Position=0)][string]$Command = "help",
@@ -35,10 +39,15 @@ param(
     [int]$IdleTimeout = -1,
     [switch]$Trace,
     [string]$EnvFile,
+    [string]$OverridesFile,
+    [string]$Template,
     [switch]$ShowSecrets,
     [switch]$Follow,
+    [switch]$DryRun,
+    [switch]$Yes,
     # init subcommand flags:
     [string]$Dest,
+    [string]$OverridesDest,
     [switch]$Here,
     [switch]$Force,
     [switch]$NonInteractive,
@@ -92,12 +101,109 @@ $LogBootErr = if ($env:OTTO_LOGERR) { $env:OTTO_LOGERR } else { [System.IO.Path]
 $HealthUrl  = if ($env:OTTO_ADDR)   { $env:OTTO_ADDR }   else { "http://127.0.0.1:18080" }
 
 $DefaultEnvPaths = @(".\.env.otto-gw", "$env:USERPROFILE\.otto-gw.env")
+# Two-file model (locked in 260531-tl1 CONTEXT.md Decision 1): the overrides
+# file is loaded SECOND so its keys win for any shared key. The .env-file and
+# overrides-file flags are DECOUPLED — setting -EnvFile does NOT auto-resolve
+# a sibling overrides file. Resolution always walks the explicit chain.
+$DefaultOverridesPaths = @(".\.otto-gw.overrides.env", "$env:USERPROFILE\.otto-gw.overrides.env")
 
 function Resolve-EnvFile {
     if ($EnvFile)              { return $EnvFile }
     if ($env:OTTO_ENV_FILE)    { return $env:OTTO_ENV_FILE }
     foreach ($p in $DefaultEnvPaths) {
         if (Test-Path $p) { return $p }
+    }
+    return $null
+}
+
+# Resolve-OverridesFile mirrors Resolve-EnvFile's shape for the .otto-gw.overrides.env
+# layer. Precedence: -OverridesFile > $env:OTTO_OVERRIDES_FILE > project-local
+# > per-user. Returns $null on miss (Initialize-Config gates on that).
+function Resolve-OverridesFile {
+    if ($OverridesFile)             { return $OverridesFile }
+    if ($env:OTTO_OVERRIDES_FILE)   { return $env:OTTO_OVERRIDES_FILE }
+    foreach ($p in $DefaultOverridesPaths) {
+        if (Test-Path $p) { return $p }
+    }
+    return $null
+}
+
+# Resolve-TemplateFile returns the path of .env.otto-gw.example (single source
+# of truth for keys + defaults + docs). Precedence: -Template > $env:OTTO_TEMPLATE_FILE
+# > sibling to this script. Returns $null when the resolved path doesn't exist.
+function Resolve-TemplateFile {
+    $candidate = $null
+    if ($Template) {
+        $candidate = $Template
+    } elseif ($env:OTTO_TEMPLATE_FILE) {
+        $candidate = $env:OTTO_TEMPLATE_FILE
+    } else {
+        $candidate = Join-Path $PSScriptRoot '.env.otto-gw.example'
+    }
+    if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { return $null }
+    return $candidate
+}
+
+# Get-TemplateKeys emits the ordered list of KEY names found in $Path
+# (template OR any env file), one per line. Matches commented and
+# uncommented forms. Defensive: keys must be shell-identifier-shaped so
+# prose comments containing '=' don't get caught as fake keys.
+function Get-TemplateKeys {
+    param([Parameter(Mandatory)][string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) { return @() }
+    $out = New-Object System.Collections.Generic.List[string]
+    Get-Content -LiteralPath $Path | ForEach-Object {
+        $line = $_.TrimStart()
+        if (-not $line) { return }
+        if ($line.StartsWith('#')) {
+            $line = $line.Substring(1).TrimStart()
+            if (-not $line) { return }
+        }
+        if ($line -match '^\s*export\s+') { $line = $line -replace '^\s*export\s+', '' }
+        if ($line -notmatch '=') { return }
+        $key = ($line -split '=', 2)[0]
+        if (-not $key) { return }
+        # Identifier-shaped only (letters, underscore prefix).
+        if ($key -notmatch '^[A-Za-z_][A-Za-z0-9_]*$') { return }
+        [void]$out.Add($key)
+    }
+    return ,$out.ToArray()
+}
+
+# Get-EnvKeysPresent is a thin alias for Get-TemplateKeys — the name reads
+# more naturally at the upgrade-env diff calculation site.
+function Get-EnvKeysPresent {
+    param([Parameter(Mandatory)][string]$Path)
+    return Get-TemplateKeys -Path $Path
+}
+
+# Get-DefaultValue returns the literal default value the template declares
+# for KEY (commented or not). Strips ONE layer of surrounding quotes.
+# Returns $null on miss. Used by migrate-to-overrides to decide which
+# operator values differ from the template default.
+function Get-DefaultValue {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$Key
+    )
+    if (-not (Test-Path -LiteralPath $Path)) { return $null }
+    foreach ($raw in Get-Content -LiteralPath $Path) {
+        $line = $raw.TrimStart()
+        if (-not $line) { continue }
+        if ($line.StartsWith('#')) {
+            $line = $line.Substring(1).TrimStart()
+            if (-not $line) { continue }
+        }
+        if ($line -match '^\s*export\s+') { $line = $line -replace '^\s*export\s+', '' }
+        if ($line -notmatch '=') { continue }
+        $k, $v = $line -split '=', 2
+        if ($k.Trim() -ne $Key) { continue }
+        $val = $v.Trim()
+        if (($val.StartsWith('"') -and $val.EndsWith('"')) -or `
+            ($val.StartsWith("'") -and $val.EndsWith("'"))) {
+            $val = $val.Substring(1, $val.Length - 2)
+        }
+        return $val
     }
     return $null
 }
@@ -148,6 +254,12 @@ function Apply-CliFlags {
 }
 
 function Initialize-Config {
+    # Two-file model (locked in 260531-tl1 CONTEXT.md Decision 1):
+    #   1. .otto-gw.env (generated, byte-for-byte template copy, never edited).
+    #   2. .otto-gw.overrides.env (operator-owned, loaded SECOND).
+    # Set-Item env:KEY is last-write-wins for environment variables (same
+    # semantics as bash export), so loading overrides second is the override
+    # mechanism.
     $envFilePath = Resolve-EnvFile
     if ($envFilePath) {
         Import-DotEnv -Path $envFilePath
@@ -156,6 +268,12 @@ function Initialize-Config {
         # which file the wrapper actually used. The binary reads this from
         # os.Getenv("OTTO_ENV_FILE_LOADED") at startup.
         $env:OTTO_ENV_FILE_LOADED = $envFilePath
+    }
+    $overridesPath = Resolve-OverridesFile
+    if ($overridesPath -and (Test-Path $overridesPath)) {
+        Import-DotEnv -Path $overridesPath
+        Write-Host "loaded overrides:  $overridesPath" -ForegroundColor DarkGray
+        $env:OTTO_OVERRIDES_FILE_LOADED = $overridesPath
     }
     Apply-CliFlags
 }
@@ -840,6 +958,106 @@ function Invoke-Init {
     Write-Host "Next: .\scripts\otto-gw.ps1 start"
 }
 
+function Invoke-UpgradeEnv {
+    # Mirror of upgrade_env_cmd in scripts/otto-gw. Regenerates the
+    # generated .otto-gw.env from the latest .env.otto-gw.example template,
+    # reporting which keys would be added / orphaned / left unchanged.
+    # Operator customizations live in .otto-gw.overrides.env (loaded last by
+    # Initialize-Config) and are NEVER touched here.
+    $templatePath = Resolve-TemplateFile
+    if (-not $templatePath) {
+        $sought = if ($Template) { $Template } `
+                  elseif ($env:OTTO_TEMPLATE_FILE) { $env:OTTO_TEMPLATE_FILE } `
+                  else { Join-Path $PSScriptRoot '.env.otto-gw.example' }
+        Write-Error "upgrade-env template not found. Looked at: $sought"
+        exit 1
+    }
+    # -Dest overrides the resolved .otto-gw.env path; cold-init fallback
+    # is project-local (first entry in $DefaultEnvPaths).
+    $destPath = $Dest
+    if (-not $destPath) { $destPath = Resolve-EnvFile }
+    if (-not $destPath) { $destPath = $DefaultEnvPaths[0] }
+
+    # Build sorted unique key sets for the diff. Compare-Object is the
+    # PowerShell idiom for set ops; SideIndicator => is right-only,
+    # <= is left-only, == is both.
+    $tKeys = @(Get-TemplateKeys -Path $templatePath | Sort-Object -Unique)
+    $cKeys = if (Test-Path -LiteralPath $destPath) {
+        @(Get-EnvKeysPresent -Path $destPath | Sort-Object -Unique)
+    } else { @() }
+
+    $added = @()
+    $orphaned = @()
+    $unchanged = @()
+    if ($tKeys.Count -gt 0 -or $cKeys.Count -gt 0) {
+        $diff = Compare-Object -ReferenceObject $tKeys -DifferenceObject $cKeys -IncludeEqual
+        foreach ($d in $diff) {
+            switch ($d.SideIndicator) {
+                '<=' { $added += $d.InputObject }      # in template, not in dest
+                '=>' { $orphaned += $d.InputObject }   # in dest, not in template
+                '==' { $unchanged += $d.InputObject }
+            }
+        }
+    }
+
+    Write-Host "otto-gw upgrade-env:"
+    Write-Host "  template: $templatePath"
+    Write-Host "  dest:     $destPath"
+    if ($added.Count -gt 0) {
+        Write-Host ("  added:     {0} ({1})" -f $added.Count, ($added -join ' '))
+    } else { Write-Host "  added:     0" }
+    if ($orphaned.Count -gt 0) {
+        Write-Host ("  orphaned:  {0} ({1})" -f $orphaned.Count, ($orphaned -join ' '))
+    } else { Write-Host "  orphaned:  0" }
+    Write-Host ("  unchanged: {0}" -f $unchanged.Count)
+
+    if ($DryRun) {
+        Write-Host "(dry-run; nothing written)"
+        return
+    }
+
+    # Confirm overwrite (skip when -Yes). A non-existent dest is a cold
+    # init — nothing to destroy, no confirm needed.
+    if (-not $Yes -and (Test-Path -LiteralPath $destPath)) {
+        $reply = Read-Host "Overwrite $destPath with current template? [y/N]"
+        if ($reply -notmatch '^(y|yes)$') {
+            Write-Error "cancelled"
+            exit 1
+        }
+    }
+
+    # Orphan log default is per-user; $env:OTTO_UPGRADE_LOG overrides for
+    # CI installs without USERPROFILE. Never silently swallow the log —
+    # fall back to project-local on miss.
+    $upgradeLog = $null
+    if ($env:OTTO_UPGRADE_LOG) {
+        $upgradeLog = $env:OTTO_UPGRADE_LOG
+    } elseif ($env:USERPROFILE) {
+        $upgradeLog = Join-Path $env:USERPROFILE '.otto-gw.upgrade.log'
+    } else {
+        $upgradeLog = '.\.otto-gw.upgrade.log'
+    }
+    if ($orphaned.Count -gt 0) {
+        $ts = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+        $existingMap = Read-DotEnvAsHashtable -Path $destPath
+        $lines = New-Object System.Collections.Generic.List[string]
+        [void]$lines.Add("# $ts upgrade-env removed orphaned keys from $destPath")
+        foreach ($k in $orphaned) {
+            $v = if ($existingMap.ContainsKey($k)) { $existingMap[$k] } else { '<unset>' }
+            [void]$lines.Add("$k=$v")
+        }
+        [void]$lines.Add("# ---")
+        Add-Content -LiteralPath $upgradeLog -Value $lines
+        Write-Host "  orphan values logged to: $upgradeLog"
+    }
+
+    # Byte-for-byte template copy. Copy-Item is generally faithful on
+    # Windows; if line endings ever drift we can switch to
+    # Set-Content -Value (Get-Content $template -Raw) -NoNewline.
+    Copy-Item -LiteralPath $templatePath -Destination $destPath -Force
+    Write-Host "✓ wrote $destPath"
+}
+
 function Show-Env {
     Initialize-Config
     $keys = @(
@@ -872,6 +1090,10 @@ Commands:
   logs                Tail both stdout and stderr log files
   run [flags]         Run gateway in foreground
   env [-ShowSecrets]  Print the resolved gateway env that would be passed
+  upgrade-env         Regenerate .otto-gw.env from the latest .env.otto-gw.example
+                      template. Operator customizations in .otto-gw.overrides.env
+                      are NEVER touched. -DryRun shows the added / orphaned /
+                      unchanged keys without writing.
   version             Print the gateway binary version (delegates to bin\otto-gateway --version)
 
 Gateway config flags (for start | restart | run | env):
@@ -883,6 +1105,13 @@ Gateway config flags (for start | restart | run | env):
   -Debug              DEBUG=true (debug-level logging) for start | restart | run
   -Trace              DEBUG=true + CHAT_TRACE=true (debug + chat-trace NDJSON) for start | restart | run
   -EnvFile PATH       Override the default .env search
+  -OverridesFile PATH Override the default .otto-gw.overrides.env search
+
+upgrade-env flags:
+  -Template PATH      Override the .env.otto-gw.example resolution
+  -Dest PATH          Override the resolved .otto-gw.env target
+  -DryRun             Print added / orphaned / unchanged keys; write nothing
+  -Yes                Skip the overwrite confirmation prompt (CI-friendly)
 
 init flags (for the 'init' subcommand):
   -Dest PATH          where to write the .env (default `$env:USERPROFILE\.otto-gw.env)
@@ -904,13 +1133,20 @@ init flags (for the 'init' subcommand):
   -HashKey KEY        use KEY instead of generating
   -NonInteractive     don't prompt; use defaults for unspecified values
 
-.env auto-load search:
+.env auto-load search (loaded FIRST):
   1. -EnvFile PATH                    (CLI override)
   2. `$env:OTTO_ENV_FILE              (env override)
   3. .\.env.otto-gw                   (project-local)
   4. `$env:USERPROFILE\.otto-gw.env   (per-user)
 
-Precedence (highest first): CLI flag → .env file → inherited shell env.
+.otto-gw.overrides.env auto-load search (loaded SECOND; values win on conflict):
+  1. -OverridesFile PATH              (CLI override)
+  2. `$env:OTTO_OVERRIDES_FILE        (env override)
+  3. .\.otto-gw.overrides.env         (project-local)
+  4. `$env:USERPROFILE\.otto-gw.overrides.env (per-user)
+
+Precedence (highest first):
+  CLI flag → .otto-gw.overrides.env → .otto-gw.env → inherited shell env.
 
 See scripts\.env.otto-gw.example for a starter template.
 "@ | Write-Host
@@ -918,14 +1154,15 @@ See scripts\.env.otto-gw.example for a starter template.
 }
 
 switch ($Command) {
-    "init"    { Invoke-Init }
-    "start"   { Start-Gateway }
-    "stop"    { Stop-Gateway }
-    "status"  { Get-GatewayStatus }
-    "restart" { Restart-Gateway }
-    "logs"    { Get-Logs }
-    "run"     { Invoke-Run }
-    "env"     { Show-Env }
-    "version" { Show-Version }
-    default   { Show-Usage }
+    "init"             { Invoke-Init }
+    "start"            { Start-Gateway }
+    "stop"             { Stop-Gateway }
+    "status"           { Get-GatewayStatus }
+    "restart"          { Restart-Gateway }
+    "logs"             { Get-Logs }
+    "run"              { Invoke-Run }
+    "env"              { Show-Env }
+    "upgrade-env"      { Invoke-UpgradeEnv }
+    "version"          { Show-Version }
+    default            { Show-Usage }
 }
