@@ -246,16 +246,15 @@ type aboutData struct {
 	KiroCmd              string
 	KiroArgs             string
 	KiroCwd              string
-	OllamaPathPrefix     string
-	OpenAIPathPrefix     string
-	AnthropicPathPrefix  string
 }
 
-// aboutHandler serves GET /admin/about — renders six populated cards
-// (Identity, Build, Runtime, Feature flags, Upstream worker, Endpoints,
-// Project links) from cfg + runtime values (quick 260601-a3z step 3).
-// Uses the same WR-05 buffer-then-write pattern as dashboardHandler so a
-// template render failure produces a clean 500 rather than a truncated 200.
+// aboutHandler serves GET /admin/about — renders four populated cards
+// (Build info, Runtime status, Feature flags, Upstream worker) plus the
+// Identity banner from cfg + runtime values. Quick 260601-cx3 trimmed
+// the Endpoints card and project-links footer (moved Endpoints reference
+// to /admin/docs). Uses the same WR-05 buffer-then-write pattern as
+// dashboardHandler so a template render failure produces a clean 500
+// rather than a truncated 200.
 func (h *handler) aboutHandler(w http.ResponseWriter, r *http.Request) {
 	// Empty-string fallbacks done in the handler (not the template) so the
 	// template stays presentation-only.
@@ -301,9 +300,6 @@ func (h *handler) aboutHandler(w http.ResponseWriter, r *http.Request) {
 		KiroCmd:              kiroCmd,
 		KiroArgs:             kiroArgs,
 		KiroCwd:              kiroCwd,
-		OllamaPathPrefix:     h.deps.OllamaPathPrefix,
-		OpenAIPathPrefix:     h.deps.OpenAIPathPrefix,
-		AnthropicPathPrefix:  h.deps.AnthropicPathPrefix,
 	}
 	var buf bytes.Buffer
 	if err := aboutTemplate.ExecuteTemplate(&buf, "base", data); err != nil {
