@@ -185,24 +185,31 @@ func TestApplyMode_UnknownMode_FallsBackToReplace(t *testing.T) {
 // the 120s client timeout (diagnosed in quick 260531-oox via DEBUG
 // markers). The fix is the shape itself — square brackets — and this
 // test enforces it negatively:
-// ApplyMode output for both `replace` mode (with and without a counter
-// suffix) and `hash` mode MUST contain NEITHER '<' NOR '>'. Any future
-// change that reintroduces angle brackets to those modes trips here.
+// ApplyMode output for `replace` mode (with and without a counter
+// suffix), `hash` mode, AND `encrypt` mode MUST contain NEITHER '<'
+// NOR '>'. Any future change that reintroduces angle brackets to
+// those modes trips here.
 func TestApplyMode_NoAngleBrackets_RegressionForKiroHang(t *testing.T) {
 	value := "corey@cmetech.io"
+	encKey, err := DeriveKey("regression-test-key")
+	if err != nil {
+		t.Fatalf("DeriveKey: %v", err)
+	}
 	cases := []struct {
-		name    string
-		mode    string
-		counter int
-		hashKey []byte
+		name       string
+		mode       string
+		counter    int
+		hashKey    []byte
+		encryptKey []byte
 	}{
-		{"replace_counter0", "replace", 0, nil},
-		{"replace_counter2", "replace", 2, nil},
-		{"hash_counter0", "hash", 0, testHashKey},
+		{"replace_counter0", "replace", 0, nil, nil},
+		{"replace_counter2", "replace", 2, nil, nil},
+		{"hash_counter0", "hash", 0, testHashKey, nil},
+		{"encrypt_counter0", "encrypt", 0, nil, encKey},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := ApplyMode(tc.mode, "Email", value, tc.counter, tc.hashKey, nil)
+			got := ApplyMode(tc.mode, "Email", value, tc.counter, tc.hashKey, tc.encryptKey)
 			if strings.Contains(got, "<") {
 				t.Errorf("%s: output %q contains '<' — kiro-hang regression (use square brackets)", tc.name, got)
 			}

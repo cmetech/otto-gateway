@@ -158,7 +158,7 @@ func ApplyMode(mode, entity, value string, counter int, hashKey, encryptKey []by
 		if err != nil {
 			slog.Default().Warn(
 				"pii.ApplyMode: encrypt failed, leaving plaintext",
-				"entity", entity, "err", err,
+				"mode", mode, "entity", entity, "err", err,
 			)
 			return value
 		}
