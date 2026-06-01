@@ -1029,3 +1029,115 @@ body {
 .otto-about-dl dd a:hover {
   text-decoration: underline;
 }
+
+/* ====== Quick 260601-aix — admin UI redesign step 4 (Docs page) ====== */
+
+.otto-docs-intro h1 {
+  margin-top: 0;
+}
+
+.otto-docs-table-scroll {
+  max-height: 600px;
+  overflow: auto;
+  border: 1px solid var(--otto-border);
+  border-radius: 6px;
+}
+
+.otto-docs-env-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--otto-text-sm);
+}
+
+.otto-docs-env-table th,
+.otto-docs-env-table td {
+  padding: var(--otto-space-sm) var(--otto-space-md);
+  border-bottom: 1px solid var(--otto-border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.otto-docs-env-table thead th {
+  position: sticky;
+  top: 0;
+  background: var(--otto-card-hover);
+  z-index: 1;
+}
+
+.otto-docs-env-table td code {
+  font-size: var(--otto-text-sm);
+}
+
+.otto-docs-env-table td.current code {
+  color: var(--otto-fg);
+}
+
+.otto-docs-flags-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--otto-text-sm);
+  margin-top: var(--otto-space-base);
+}
+
+.otto-docs-flags-table th,
+.otto-docs-flags-table td {
+  padding: var(--otto-space-sm) var(--otto-space-md);
+  border-bottom: 1px solid var(--otto-border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.otto-docs-flags-table thead th {
+  background: var(--otto-card-hover);
+}
+
+.otto-code-block {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: var(--otto-card-hover);
+  color: var(--otto-fg);
+  padding: var(--otto-space-md);
+  border-radius: 6px;
+  font-size: var(--otto-text-sm);
+  overflow-x: auto;
+  white-space: pre;
+  margin: var(--otto-space-sm) 0 var(--otto-space-base) 0;
+}
+
+.otto-h3 {
+  font-size: var(--otto-text-base);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  margin: var(--otto-space-base) 0 var(--otto-space-sm) 0;
+  color: var(--otto-fg);
+}
+
+.otto-docs-endpoint-list,
+.otto-docs-bullets {
+  margin: 0 0 var(--otto-space-sm) 0;
+  padding-left: var(--otto-space-lg);
+  font-size: var(--otto-text-sm);
+}
+
+.otto-docs-endpoint-list li,
+.otto-docs-bullets li {
+  margin-bottom: var(--otto-space-xs);
+  color: var(--otto-fg);
+}
+
+.otto-docs-bullets li strong {
+  color: var(--otto-fg);
+}
+
+.otto-docs-footer {
+  text-align: center;
+  font-size: var(--otto-text-sm);
+}
+
+.otto-docs-footer a {
+  color: var(--otto-link);
+  text-decoration: none;
+}
+
+.otto-docs-footer a:hover {
+  text-decoration: underline;
+}
