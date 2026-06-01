@@ -274,3 +274,39 @@ func TestLoad_PIIEntityActions_MalformedPair(t *testing.T) {
 		t.Fatal("expected boot error for malformed pair, got nil")
 	}
 }
+
+// PII-ENCRYPT-09 — boot validation matrix per spec §3.5.
+
+func TestLoad_EncryptKeyBootValidation(t *testing.T) {
+	tests := []struct {
+		name      string
+		enabled   string
+		mode      string
+		actions   string
+		key       string
+		wantError bool
+	}{
+		{"pii off — key unset", "false", "replace", "", "", false},
+		{"pii on, mode=replace, no encrypt anywhere — key irrelevant", "true", "replace", "", "", false},
+		{"pii on, mode=encrypt, key missing", "true", "encrypt", "", "", true},
+		{"pii on, mode=encrypt, key present", "true", "encrypt", "", "any-string", false},
+		{"pii on, entity-action=encrypt, key missing", "true", "replace", "Email:encrypt", "", true},
+		{"pii on, entity-action=encrypt, key present", "true", "replace", "Email:encrypt", "any-string", false},
+		{"pii on, mode=mask, no encrypt — key irrelevant even if set", "true", "mask", "", "set-but-ignored", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("PII_REDACTION_ENABLED", tc.enabled)
+			t.Setenv("PII_REDACTION_MODE", tc.mode)
+			t.Setenv("PII_ENTITY_ACTIONS", tc.actions)
+			t.Setenv("PII_ENCRYPT_KEY", tc.key)
+			_, err := config.Load()
+			if tc.wantError && err == nil {
+				t.Error("expected boot error, got nil")
+			}
+			if !tc.wantError && err != nil {
+				t.Errorf("expected no error, got %v", err)
+			}
+		})
+	}
+}
