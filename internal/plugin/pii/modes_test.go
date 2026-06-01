@@ -23,19 +23,51 @@ import (
 	"testing"
 )
 
+// PII-ENCRYPT-03 — ApplyMode encrypt case. Round-trips through
+// EncryptValue / DecryptToken via the wire-token regex parsing.
+
+func TestApplyMode_Encrypt(t *testing.T) {
+	key, err := DeriveKey("test-key")
+	if err != nil {
+		t.Fatalf("DeriveKey: %v", err)
+	}
+	tok := ApplyMode("encrypt", "Email", "corey@cmetech.io", 0, nil, key)
+	if !strings.HasPrefix(tok, tokenPrefix+"Email:") {
+		t.Fatalf("encrypt token shape: got %q", tok)
+	}
+	// Round-trip: strip prefix/suffix, decrypt, expect plaintext.
+	payload := tok[len(tokenPrefix+"Email:") : len(tok)-len(tokenSuffix)]
+	got, err := DecryptToken(key, "Email", payload)
+	if err != nil {
+		t.Fatalf("decrypt: %v", err)
+	}
+	if got != "corey@cmetech.io" {
+		t.Errorf("decrypt: got %q, want %q", got, "corey@cmetech.io")
+	}
+}
+
+func TestApplyMode_Encrypt_EmptyKeyFailSafe(t *testing.T) {
+	// Empty key would make EncryptValue fail; ApplyMode logs warn and
+	// returns the plaintext (visible rather than silent broken token).
+	got := ApplyMode("encrypt", "Email", "corey@cmetech.io", 0, nil, nil)
+	if got != "corey@cmetech.io" {
+		t.Errorf("encrypt fail-safe: got %q, want plaintext fallback %q", got, "corey@cmetech.io")
+	}
+}
+
 var testHashKey = []byte("test-key-32-bytes-padding-here!!")
 
 // TestApplyMode_Replace asserts the replace mode shape. When counter
 // is 0, the token is "[ENTITY]"; when counter > 0, the token is
 // "[ENTITY_N]" (counter-suffix path).
 func TestApplyMode_Replace(t *testing.T) {
-	if got := ApplyMode("replace", "Email", "corey@cmetech.io", 0, nil); got != "[EMAIL]" {
+	if got := ApplyMode("replace", "Email", "corey@cmetech.io", 0, nil, nil); got != "[EMAIL]" {
 		t.Errorf("replace counter=0: got %q, want %q", got, "[EMAIL]")
 	}
-	if got := ApplyMode("replace", "Email", "corey@cmetech.io", 1, nil); got != "[EMAIL_1]" {
+	if got := ApplyMode("replace", "Email", "corey@cmetech.io", 1, nil, nil); got != "[EMAIL_1]" {
 		t.Errorf("replace counter=1: got %q, want %q", got, "[EMAIL_1]")
 	}
-	if got := ApplyMode("replace", "Email", "corey@cmetech.io", 7, nil); got != "[EMAIL_7]" {
+	if got := ApplyMode("replace", "Email", "corey@cmetech.io", 7, nil, nil); got != "[EMAIL_7]" {
 		t.Errorf("replace counter=7: got %q, want %q", got, "[EMAIL_7]")
 	}
 }
@@ -44,7 +76,7 @@ func TestApplyMode_Replace(t *testing.T) {
 // preserved; first ~2 chars revealed on local-part; domain partially
 // masked.
 func TestApplyMode_Mask(t *testing.T) {
-	got := ApplyMode("mask", "Email", "corey@cmetech.io", 0, nil)
+	got := ApplyMode("mask", "Email", "corey@cmetech.io", 0, nil, nil)
 	if !strings.Contains(got, "@") {
 		t.Errorf("mask: at-sign not preserved: got %q", got)
 	}
@@ -55,7 +87,7 @@ func TestApplyMode_Mask(t *testing.T) {
 		t.Errorf("mask: should contain masking chars: got %q", got)
 	}
 	// Non-email values: still produce some mask form.
-	got2 := ApplyMode("mask", "SSN", "123-45-6789", 0, nil)
+	got2 := ApplyMode("mask", "SSN", "123-45-6789", 0, nil, nil)
 	if !strings.Contains(got2, "*") {
 		t.Errorf("mask non-email: expected masking chars: got %q", got2)
 	}
@@ -65,7 +97,7 @@ func TestApplyMode_Mask(t *testing.T) {
 // T-8-HASH negative test: hash output must NOT match raw SHA256.
 func TestApplyMode_Hash_HMAC_SHA256_NotRawSHA256(t *testing.T) {
 	value := "corey@cmetech.io"
-	tag := ApplyMode("hash", "Email", value, 0, testHashKey)
+	tag := ApplyMode("hash", "Email", value, 0, testHashKey, nil)
 	wantTag := "[EMAIL:h-5e114e4d]"
 	if tag != wantTag {
 		t.Errorf("hash tag: got %q, want %q (HMAC-SHA256 oracle)", tag, wantTag)
@@ -83,9 +115,9 @@ func TestApplyMode_Hash_HMAC_SHA256_NotRawSHA256(t *testing.T) {
 // '  corey@cmetech.io  ', and 'corey@cmetech.io' all produce the same
 // hash tag (canonical = lowercase + trim per D-05).
 func TestApplyMode_Hash_CanonicalForm(t *testing.T) {
-	t1 := ApplyMode("hash", "Email", "Corey@CMETECH.io", 0, testHashKey)
-	t2 := ApplyMode("hash", "Email", "  corey@cmetech.io  ", 0, testHashKey)
-	t3 := ApplyMode("hash", "Email", "corey@cmetech.io", 0, testHashKey)
+	t1 := ApplyMode("hash", "Email", "Corey@CMETECH.io", 0, testHashKey, nil)
+	t2 := ApplyMode("hash", "Email", "  corey@cmetech.io  ", 0, testHashKey, nil)
+	t3 := ApplyMode("hash", "Email", "corey@cmetech.io", 0, testHashKey, nil)
 	if t1 != t2 || t2 != t3 {
 		t.Errorf("canonical form not applied:\n  Corey@CMETECH.io      → %q\n  '  corey@cmetech.io  ' → %q\n  corey@cmetech.io        → %q",
 			t1, t2, t3)
@@ -95,7 +127,7 @@ func TestApplyMode_Hash_CanonicalForm(t *testing.T) {
 // TestApplyMode_Hash_TagLength asserts the 8-hex-char default tag size
 // (D-05). The output shape is "[ENTITY:h-XXXXXXXX]".
 func TestApplyMode_Hash_TagLength(t *testing.T) {
-	tag := ApplyMode("hash", "Email", "corey@cmetech.io", 0, testHashKey)
+	tag := ApplyMode("hash", "Email", "corey@cmetech.io", 0, testHashKey, nil)
 	re := regexp.MustCompile(`^\[EMAIL:h-[0-9a-f]{8}\]$`)
 	if !re.MatchString(tag) {
 		t.Errorf("hash tag shape: got %q, want [EMAIL:h-XXXXXXXX] (8 hex)", tag)
@@ -113,11 +145,11 @@ func TestApplyMode_Hash_EmptyKey_ReturnsError_Or_SentinelToken(t *testing.T) {
 			return
 		}
 	}()
-	tag := ApplyMode("hash", "Email", "corey@cmetech.io", 0, nil)
+	tag := ApplyMode("hash", "Email", "corey@cmetech.io", 0, nil, nil)
 	if !strings.Contains(strings.ToUpper(tag), "UNKEYED") {
 		t.Errorf("empty-key hash: got %q, want token containing 'UNKEYED' (T-8-HASH defensive)", tag)
 	}
-	tag2 := ApplyMode("hash", "Email", "corey@cmetech.io", 0, []byte{})
+	tag2 := ApplyMode("hash", "Email", "corey@cmetech.io", 0, []byte{}, nil)
 	if !strings.Contains(strings.ToUpper(tag2), "UNKEYED") {
 		t.Errorf("empty-key hash (zero-len): got %q, want token containing 'UNKEYED'", tag2)
 	}
@@ -125,7 +157,7 @@ func TestApplyMode_Hash_EmptyKey_ReturnsError_Or_SentinelToken(t *testing.T) {
 
 // TestApplyMode_Drop asserts the drop mode returns the empty string.
 func TestApplyMode_Drop(t *testing.T) {
-	if got := ApplyMode("drop", "Email", "corey@cmetech.io", 0, nil); got != "" {
+	if got := ApplyMode("drop", "Email", "corey@cmetech.io", 0, nil, nil); got != "" {
 		t.Errorf("drop: got %q, want empty string", got)
 	}
 }
@@ -134,11 +166,11 @@ func TestApplyMode_Drop(t *testing.T) {
 // mode falls back to the replace shape (safe-default). The
 // implementation MUST NOT panic.
 func TestApplyMode_UnknownMode_FallsBackToReplace(t *testing.T) {
-	got := ApplyMode("bogus", "Email", "x@x.com", 0, nil)
+	got := ApplyMode("bogus", "Email", "x@x.com", 0, nil, nil)
 	if got != "[EMAIL]" {
 		t.Errorf("unknown mode: got %q, want %q (replace fallback)", got, "[EMAIL]")
 	}
-	gotCounter := ApplyMode("bogus", "Email", "x@x.com", 3, nil)
+	gotCounter := ApplyMode("bogus", "Email", "x@x.com", 3, nil, nil)
 	if gotCounter != "[EMAIL_3]" {
 		t.Errorf("unknown mode w/ counter: got %q, want %q", gotCounter, "[EMAIL_3]")
 	}
@@ -170,7 +202,7 @@ func TestApplyMode_NoAngleBrackets_RegressionForKiroHang(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := ApplyMode(tc.mode, "Email", value, tc.counter, tc.hashKey)
+			got := ApplyMode(tc.mode, "Email", value, tc.counter, tc.hashKey, nil)
 			if strings.Contains(got, "<") {
 				t.Errorf("%s: output %q contains '<' — kiro-hang regression (use square brackets)", tc.name, got)
 			}

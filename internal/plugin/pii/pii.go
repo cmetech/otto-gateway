@@ -74,6 +74,10 @@ type PIIRedactionHook struct {
 	Enabled         bool
 	Mode            string
 	HashKey         []byte
+	// EncryptKey is the 32-byte AES-256-GCM key for the "encrypt" action
+	// (Mode=="encrypt" or EntityActions[X]=="encrypt"). Nil when encrypt is
+	// not active. Boot validation guarantees non-nil when encrypt IS active.
+	EncryptKey      []byte
 	EnabledEntities []string
 	// Logger is the slog target for observability DEBUG lines (e.g.,
 	// pii.redact.done). nil-falls-back to slog.Default() at first use.
@@ -231,7 +235,7 @@ func (h *PIIRedactionHook) Before(ctx context.Context, req *canonical.ChatReques
 					counters[key] = n
 				}
 				summary.Add(r.Name)
-				return ApplyMode(h.Mode, r.Name, match, n, h.HashKey)
+				return ApplyMode(h.Mode, r.Name, match, n, h.HashKey, h.EncryptKey)
 			})
 		}
 		return out

@@ -130,10 +130,16 @@ func maskPrefix(s string, n int) string {
 // number for this entity (1, 2, 3, ...); a counter of 0 emits the
 // non-suffixed "[ENTITY]" form.
 //
-// Unknown modes log a warning and fall back to "replace" — defense in
-// depth against a slice-5 config validation regression that might let
-// a typo slip through. NEVER panics on an unknown mode.
-func ApplyMode(mode, entity, value string, counter int, hashKey []byte) string {
+// encryptKey is the 32-byte AES-256-GCM key used by the "encrypt"
+// mode (nil for all other modes). When mode=="encrypt" and the key
+// is unusable (nil or wrong length), the function logs a warning
+// and returns the PLAINTEXT — visible failure is preferable to
+// emitting a broken token that the Post hook cannot decrypt.
+//
+// Unknown modes log a warning and fall back to "replace" — defense
+// in depth against a slice-5 config validation regression that might
+// let a typo slip through. NEVER panics on an unknown mode.
+func ApplyMode(mode, entity, value string, counter int, hashKey, encryptKey []byte) string {
 	entUpper := strings.ToUpper(entity)
 	switch mode {
 	case "replace":
@@ -147,11 +153,21 @@ func ApplyMode(mode, entity, value string, counter int, hashKey []byte) string {
 		return fmt.Sprintf("[%s:h-%s]", entUpper, hashTag(hashKey, value))
 	case "drop":
 		return ""
+	case "encrypt":
+		tok, err := EncryptValue(encryptKey, entity, value)
+		if err != nil {
+			slog.Default().Warn(
+				"pii.ApplyMode: encrypt failed, leaving plaintext",
+				"entity", entity, "err", err,
+			)
+			return value
+		}
+		return tok
 	default:
 		slog.Default().Warn(
 			"pii.ApplyMode: unknown mode, falling back to replace",
 			"mode", mode,
 		)
-		return ApplyMode("replace", entity, value, counter, hashKey)
+		return ApplyMode("replace", entity, value, counter, hashKey, encryptKey)
 	}
 }
