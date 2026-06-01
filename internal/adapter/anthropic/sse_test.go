@@ -586,7 +586,7 @@ func TestRunSSEEmitterLoop_PingInterleave(t *testing.T) {
 	// Drive the loop in a goroutine so we can sequence the inputs.
 	done := make(chan error, 1)
 	go func() {
-		_, err := runSSEEmitterLoop(context.Background(), e, runHandle, tickerC)
+		_, err := runSSEEmitterLoop(context.Background(), e, runHandle, tickerC, 0)
 		done <- err
 	}()
 
@@ -656,7 +656,7 @@ func TestRunSSEEmitterLoop_CtxCancelTerminatesCleanly(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := runSSEEmitterLoop(ctx, e, runHandle, tickerC)
+		_, err := runSSEEmitterLoop(ctx, e, runHandle, tickerC, 0)
 		done <- err
 	}()
 
@@ -715,7 +715,7 @@ func TestRunSSEEmitterLoop_ResultError(t *testing.T) {
 	}
 	tickerC := make(chan time.Time)
 
-	_, err := runSSEEmitterLoop(context.Background(), e, runHandle, tickerC)
+	_, err := runSSEEmitterLoop(context.Background(), e, runHandle, tickerC, 0)
 	if err == nil || !strings.Contains(err.Error(), "upstream blew up") {
 		t.Errorf("error: got %v, want wraps 'upstream blew up'", err)
 	}
@@ -755,7 +755,7 @@ func TestRunSSEEmitterLoop_ResultError_BlockOpen_StopFirst(t *testing.T) {
 	}
 	tickerC := make(chan time.Time)
 
-	_, _ = runSSEEmitterLoop(context.Background(), e, runHandle, tickerC)
+	_, _ = runSSEEmitterLoop(context.Background(), e, runHandle, tickerC, 0)
 	events := sseEventLines(cf.Body())
 
 	// Expect: content_block_start, content_block_delta, content_block_stop, error.
@@ -777,7 +777,7 @@ func TestRunSSEEmitter_NoFlusherError(t *testing.T) {
 	nfw := &nonFlusherWriter{headerMap: http.Header{}}
 	runHandle := newRunHandle()
 
-	_, err := runSSEEmitter(context.Background(), nfw, runHandle, "auto", nullLogger())
+	_, err := runSSEEmitter(context.Background(), nfw, runHandle, "auto", 0, nullLogger())
 	if err == nil || !strings.Contains(err.Error(), "response writer is not flusher") {
 		t.Errorf("error: got %v, want 'response writer is not flusher'", err)
 	}
@@ -811,7 +811,7 @@ func TestRunSSEEmitter_EndToEnd_Headers(t *testing.T) {
 		canonical.Chunk{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "hi"}},
 	)
 
-	_, err := runSSEEmitter(context.Background(), rec, runHandle, "auto", nullLogger())
+	_, err := runSSEEmitter(context.Background(), rec, runHandle, "auto", 0, nullLogger())
 	if err != nil {
 		t.Fatalf("runSSEEmitter: %v", err)
 	}
@@ -863,7 +863,7 @@ func TestSSEEmitter_FlushCountEqualsWriteEvents(t *testing.T) {
 	}
 	tickerC := make(chan time.Time)
 
-	if _, err := runSSEEmitterLoop(context.Background(), e, runHandle, tickerC); err != nil {
+	if _, err := runSSEEmitterLoop(context.Background(), e, runHandle, tickerC, 0); err != nil {
 		t.Fatalf("loop: %v", err)
 	}
 
@@ -901,7 +901,7 @@ func TestFinalize_MessageDeltaPayload(t *testing.T) {
 	}
 	tickerC := make(chan time.Time)
 
-	if _, err := runSSEEmitterLoop(context.Background(), e, runHandle, tickerC); err != nil {
+	if _, err := runSSEEmitterLoop(context.Background(), e, runHandle, tickerC, 0); err != nil {
 		t.Fatalf("loop: %v", err)
 	}
 
@@ -953,7 +953,7 @@ func TestFinalize_NilFinalResult_FallsBackToStopUnknown(t *testing.T) {
 	}
 	tickerC := make(chan time.Time)
 
-	if _, err := runSSEEmitterLoop(context.Background(), e, runHandle, tickerC); err != nil {
+	if _, err := runSSEEmitterLoop(context.Background(), e, runHandle, tickerC, 0); err != nil {
 		t.Fatalf("loop: %v", err)
 	}
 	// Find the message_delta data frame.
@@ -993,4 +993,79 @@ func equalSlice(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// ----------------------------------------------------------------------------
+// Quick 260531-ruv — idle-timeout watchdog
+// ----------------------------------------------------------------------------
+
+// TestSSE_IdleTimeout_EmitsErrorFrame exercises the stream-idle watchdog
+// added in quick 260531-ruv. A fake Stream whose Chunks() channel never
+// produces is passed to runSSEEmitterLoop with streamIdle=100ms; the
+// loop must emit an `event: error` frame and return an error that
+// errors.Is(canonical.ErrStreamIdleTimeout).
+func TestSSE_IdleTimeout_EmitsErrorFrame(t *testing.T) {
+	cf := newCountingFlusher()
+	e := newEmitter(cf)
+
+	// fakeStream with a chunks channel that never emits.
+	chunks := make(chan canonical.Chunk)
+	t.Cleanup(func() {
+		defer func() { _ = recover() }()
+		close(chunks)
+	})
+	runHandle := &fakeRunHandle{
+		stream:    &fakeStream{chunks: chunks, final: &canonical.FinalResult{StopReason: canonical.StopUnknown}},
+		sessionID: "idle-test",
+	}
+	tickerC := make(chan time.Time) // never ticks
+
+	start := time.Now()
+	resp, err := runSSEEmitterLoop(context.Background(), e, runHandle, tickerC, 100*time.Millisecond)
+	elapsed := time.Since(start)
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("loop took too long to fire: %v", elapsed)
+	}
+	if !errors.Is(err, canonical.ErrStreamIdleTimeout) {
+		t.Fatalf("expected ErrStreamIdleTimeout, got %v", err)
+	}
+	if resp == nil {
+		t.Errorf("aggregated response should be non-nil so PostHooks observe forensics")
+	}
+	if !strings.Contains(cf.Body(), "event: error") {
+		t.Errorf("expected event: error frame, body=%q", cf.Body())
+	}
+	if !strings.Contains(cf.Body(), "upstream stream idle") {
+		t.Errorf("expected idle message in error frame, body=%q", cf.Body())
+	}
+}
+
+// TestSSE_IdleTimeout_Disabled verifies that streamIdle=0 disables the
+// watchdog. A never-producing stream with a 50ms ctx deadline returns a
+// ctx-error (not idle-timeout).
+func TestSSE_IdleTimeout_Disabled(t *testing.T) {
+	cf := newCountingFlusher()
+	e := newEmitter(cf)
+
+	chunks := make(chan canonical.Chunk)
+	t.Cleanup(func() {
+		defer func() { _ = recover() }()
+		close(chunks)
+	})
+	runHandle := &fakeRunHandle{
+		stream:    &fakeStream{chunks: chunks, final: &canonical.FinalResult{StopReason: canonical.StopUnknown}},
+		sessionID: "idle-disabled-test",
+	}
+	tickerC := make(chan time.Time)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	_, err := runSSEEmitterLoop(ctx, e, runHandle, tickerC, 0)
+	if errors.Is(err, canonical.ErrStreamIdleTimeout) {
+		t.Fatalf("idle=0 should disable watchdog; got idle-timeout: %v", err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected DeadlineExceeded wrap, got %v", err)
+	}
 }

@@ -33,8 +33,10 @@ package anthropic
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"otto-gateway/internal/canonical"
 )
@@ -51,7 +53,7 @@ import (
 // wrapped with the "anthropic: collect" prefix so callers can
 // distinguish the Anthropic-local aggregation path from the generic
 // engine.Collect path in upstream logs.
-func CollectAnthropicChat(ctx context.Context, eng Engine, req *canonical.ChatRequest) (*canonical.ChatResponse, error) {
+func CollectAnthropicChat(ctx context.Context, eng Engine, req *canonical.ChatRequest, streamIdle time.Duration) (*canonical.ChatResponse, error) {
 	run, err := eng.Run(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("anthropic: collect: %w", err)
@@ -88,43 +90,93 @@ func CollectAnthropicChat(ctx context.Context, eng Engine, req *canonical.ChatRe
 		toolCalls []canonical.ToolCall
 	)
 
-	for chunk := range run.Stream().Chunks() {
-		switch chunk.Kind {
-		case canonical.ChunkKindText:
-			if chunk.Text != nil {
-				sb.WriteString(chunk.Text.Content)
+	// Quick 260531-ruv — adapter-local idle watchdog. TRST-04 forbids
+	// importing internal/engine here, so the loop replicates the
+	// RangeChunksWithIdleTimeout semantics inline (drain-safe Stop/
+	// Reset on each chunk, nil idleC arm when disabled). The returned
+	// error wraps canonical.ErrStreamIdleTimeout so the handler can
+	// errors.Is-check the sentinel and render 504.
+	chunks := run.Stream().Chunks()
+	var idleTimer *time.Timer
+	var idleC <-chan time.Time
+	if streamIdle > 0 {
+		idleTimer = time.NewTimer(streamIdle)
+		defer func() {
+			if !idleTimer.Stop() {
+				select {
+				case <-idleTimer.C:
+				default:
+				}
 			}
-		case canonical.ChunkKindThought:
-			if chunk.Thought != nil {
-				thoughtSB.WriteString(chunk.Thought.Content)
+		}()
+		idleC = idleTimer.C
+	}
+	rangeLoop := func() error {
+		for {
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("anthropic: collect ctx: %w", ctx.Err())
+			case <-idleC:
+				return fmt.Errorf("anthropic: collect %w", canonical.ErrStreamIdleTimeout)
+			case chunk, ok := <-chunks:
+				if !ok {
+					return nil
+				}
+				switch chunk.Kind {
+				case canonical.ChunkKindText:
+					if chunk.Text != nil {
+						sb.WriteString(chunk.Text.Content)
+					}
+				case canonical.ChunkKindThought:
+					if chunk.Thought != nil {
+						thoughtSB.WriteString(chunk.Thought.Content)
+					}
+				case canonical.ChunkKindToolCall:
+					// D-07 Anthropic exception: kiro-native tool_call
+					// chunks produce ContentKindToolUse parts + populate
+					// Message.ToolCalls. The text/thinking builders are
+					// NOT touched — no `[tool: <name>]\n` narration.
+					if chunk.ToolCall != nil {
+						toolParts = append(toolParts, canonical.ContentPart{
+							Kind: canonical.ContentKindToolUse,
+							ToolUse: &canonical.ToolUsePart{
+								ID:    chunk.ToolCall.ID,
+								Name:  chunk.ToolCall.Name,
+								Input: chunk.ToolCall.Args,
+							},
+						})
+						toolCalls = append(toolCalls, canonical.ToolCall{
+							ID:        chunk.ToolCall.ID,
+							Name:      chunk.ToolCall.Name,
+							Arguments: chunk.ToolCall.Args,
+						})
+					}
+				}
+				// ChunkKindPlan still drops (no Phase 6 work; mirrors
+				// engine.Collect).
+				if idleTimer != nil {
+					if !idleTimer.Stop() {
+						select {
+						case <-idleTimer.C:
+						default:
+						}
+					}
+					idleTimer.Reset(streamIdle)
+				}
 			}
-		case canonical.ChunkKindToolCall:
-			// D-07 Anthropic exception: kiro-native tool_call chunks
-			// produce ContentKindToolUse parts + populate
-			// Message.ToolCalls. The text/thinking builders are NOT
-			// touched — no `[tool: <name>]\n` narration. This is the
-			// intentional divergence from engine.Collect (see
-			// internal/engine/collect.go's per-surface contract
-			// comment block for the full rationale).
-			if chunk.ToolCall == nil {
-				continue
-			}
-			toolParts = append(toolParts, canonical.ContentPart{
-				Kind: canonical.ContentKindToolUse,
-				ToolUse: &canonical.ToolUsePart{
-					ID:    chunk.ToolCall.ID,
-					Name:  chunk.ToolCall.Name,
-					Input: chunk.ToolCall.Args,
-				},
-			})
-			toolCalls = append(toolCalls, canonical.ToolCall{
-				ID:        chunk.ToolCall.ID,
-				Name:      chunk.ToolCall.Name,
-				Arguments: chunk.ToolCall.Args,
-			})
 		}
-		// ChunkKindPlan still drops (no Phase 6 work; mirrors
-		// engine.Collect).
+	}
+	if loopErr := rangeLoop(); loopErr != nil {
+		if errors.Is(loopErr, canonical.ErrStreamIdleTimeout) {
+			// WARN-log with the canonical attr set so operators can
+			// correlate the timeout against pool slot releases.
+			// Logger access lives on the handler; this adapter file
+			// stays log-free to preserve its lean test surface — the
+			// 504 path in handlers.go logs the marker before writing
+			// the wire response.
+			return nil, loopErr
+		}
+		return nil, loopErr
 	}
 
 	final, rerr := run.Stream().Result()

@@ -24,6 +24,7 @@ import (
 
 	"otto-gateway/internal/canonical"
 	"otto-gateway/internal/engine"
+	"otto-gateway/internal/plugin"
 )
 
 // ----------------------------------------------------------------------------
@@ -366,7 +367,7 @@ func marshalAndWrite(w http.ResponseWriter, flusher http.Flusher, payload any, c
 // completion (done:true emitted), ctx.Err() on client disconnect, or a
 // wrapped write/marshal error. The Flusher-assertion failure returns
 // (nil, err) BEFORE any aggregation.
-func runNDJSONEmitter(ctx context.Context, cancelFn context.CancelFunc, w http.ResponseWriter, run RunHandle, model string, isChat bool, start time.Time, logger *slog.Logger, req *canonical.ChatRequest) (*canonical.ChatResponse, error) {
+func runNDJSONEmitter(ctx context.Context, cancelFn context.CancelFunc, w http.ResponseWriter, run RunHandle, model string, isChat bool, start time.Time, logger *slog.Logger, req *canonical.ChatRequest, streamIdle time.Duration) (*canonical.ChatResponse, error) {
 	// Assert Flusher BEFORE any write so the caller can fall back to JSON 500
 	// when the ResponseWriter does not support streaming (Pitfall 2).
 	flusher, ok := w.(http.Flusher)
@@ -384,6 +385,25 @@ func runNDJSONEmitter(ctx context.Context, cancelFn context.CancelFunc, w http.R
 	state := &emitterState{}
 
 	chunks := run.Stream().Chunks()
+
+	// Quick 260531-ruv — idle watchdog arm. Nil idleC means "disabled"
+	// (never-ready channel idiom). Drain-safe Stop/Reset on each chunk
+	// matches engine.RangeChunksWithIdleTimeout exactly.
+	var idleTimer *time.Timer
+	var idleC <-chan time.Time
+	if streamIdle > 0 {
+		idleTimer = time.NewTimer(streamIdle)
+		defer func() {
+			if !idleTimer.Stop() {
+				select {
+				case <-idleTimer.C:
+				default:
+				}
+			}
+		}()
+		idleC = idleTimer.C
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -397,6 +417,25 @@ func runNDJSONEmitter(ctx context.Context, cancelFn context.CancelFunc, w http.R
 			logger.Debug("ollama: ndjson client disconnect", "session_id", run.SessionID())
 			return aggregateOllamaResponse(req, state, canonical.StopUnknown), fmt.Errorf("ollama: ndjson ctx: %w", ctx.Err())
 
+		case <-idleC:
+			// Quick 260531-ruv — stream-idle fire. Emit a terminal NDJSON
+			// error line (`{"error":...,"done":true}` shape matches the
+			// existing terminal pattern) + flush, then return a wrapped
+			// canonical.ErrStreamIdleTimeout so the handler errors.Is-
+			// checks it. The aggregated response is non-nil so PostHooks
+			// observe forensics.
+			logger.Warn("stream.idle_timeout",
+				"surface", "ollama",
+				"session_id", run.SessionID(),
+				"elapsed_ms", streamIdle.Milliseconds(),
+				"request_id", plugin.RequestIDFromContext(ctx),
+			)
+			errLine := fmt.Sprintf(`{"error":"stream idle timeout","done":true}` + "\n")
+			_, _ = w.Write([]byte(errLine))
+			flusher.Flush()
+			return aggregateOllamaResponse(req, state, canonical.StopUnknown),
+				fmt.Errorf("ollama: ndjson %w", canonical.ErrStreamIdleTimeout)
+
 		case c, ok := <-chunks:
 			if !ok {
 				// Channel closed — stream ended naturally; emit final done:true line.
@@ -407,6 +446,15 @@ func runNDJSONEmitter(ctx context.Context, cancelFn context.CancelFunc, w http.R
 				// Quick 260530-df2 — still return the partial aggregation
 				// so handlers can fire PostHooks for forensics.
 				return aggregateOllamaResponse(req, state, canonical.StopUnknown), err
+			}
+			if idleTimer != nil {
+				if !idleTimer.Stop() {
+					select {
+					case <-idleTimer.C:
+					default:
+					}
+				}
+				idleTimer.Reset(streamIdle)
 			}
 		}
 	}
@@ -461,16 +509,16 @@ func aggregateOllamaResponse(req *canonical.ChatRequest, state *emitterState, st
 //     stream completion (Pitfall 3 / RESEARCH.md Pattern 2 Option A).
 //  3. Phase 6 Slice 2 iteration-3 skip-or-coerce-or-flush logic on the
 //     emitter state:
-//       a. If state.sawKiroNativeToolCall == true: SKIP coerce. Release any
-//          buffered text as plain NDJSON lines. Done:true line carries NO
-//          tool_calls.
-//       b. Else if !state.buffering: emit done:true normally (Phase 4
-//          behavior, unchanged).
-//       c. Else: build synthetic resp from textBuffer + call
-//          engine.CoerceToolCall(req, syntheticResp). On hit: DISCARD
-//          deferredTextLines, compose done:true via chatResponseToWire which
-//          renders Message.ToolCalls. On miss: RELEASE deferredTextLines in
-//          order, emit done:true normally.
+//     a. If state.sawKiroNativeToolCall == true: SKIP coerce. Release any
+//     buffered text as plain NDJSON lines. Done:true line carries NO
+//     tool_calls.
+//     b. Else if !state.buffering: emit done:true normally (Phase 4
+//     behavior, unchanged).
+//     c. Else: build synthetic resp from textBuffer + call
+//     engine.CoerceToolCall(req, syntheticResp). On hit: DISCARD
+//     deferredTextLines, compose done:true via chatResponseToWire which
+//     renders Message.ToolCalls. On miss: RELEASE deferredTextLines in
+//     order, emit done:true normally.
 //  4. Calls chatResponseToWire or generateResponseToWire to build the final
 //     line, sets Done=true and DoneReason from final.StopReason, marshals
 //     and writes.
@@ -595,6 +643,7 @@ func finalizeNDJSON(w http.ResponseWriter, flusher http.Flusher, run RunHandle, 
 // Used by:
 //   - The iteration-3 sawKiroNativeToolCall branch (release without coerce).
 //   - The coerce-miss branch (release after coerce returned false).
+//
 // Never called on the coerce-hit branch (those lines are discarded because
 // they are superseded by the synthesized tool_calls on the done line).
 func releaseBufferedLines(w http.ResponseWriter, flusher http.Flusher, lines [][]byte) error {

@@ -46,7 +46,7 @@ func runSSEEmitterAndPostHooks(t *testing.T, ctx context.Context, eng Engine, re
 		sessionID: "session_posthook",
 	}
 	rec := httptest.NewRecorder()
-	resp, err := runSSEEmitter(ctx, rec, runHandle, "auto", logger)
+	resp, err := runSSEEmitter(ctx, rec, runHandle, "auto", 0, logger)
 	if resp != nil {
 		if pErr := eng.RunPostHooks(ctx, req, resp); pErr != nil {
 			// Streaming WARN-and-swallow contract — log via the test
@@ -244,7 +244,7 @@ func TestAnthropicSSE_PostHooksFireOnClientDisconnect(t *testing.T) {
 		cancel()
 	}()
 	rec := httptest.NewRecorder()
-	resp, err := runSSEEmitter(ctx, rec, runHandle, "auto", nullLogger())
+	resp, err := runSSEEmitter(ctx, rec, runHandle, "auto", 0, nullLogger())
 	if err == nil {
 		t.Fatalf("runSSEEmitter: got nil err, want ctx-cancel error")
 	}

@@ -3,9 +3,11 @@ package openai
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"go.uber.org/goleak"
 
@@ -40,7 +42,7 @@ func TestSSE_CtxCancel(t *testing.T) {
 	cancel() // cancel immediately — before the emitter even starts the select-loop
 
 	rec := httptest.NewRecorder()
-	_, err := runSSEEmitter(ctx, rec, runHandle, &canonical.ChatRequest{}, "auto", nullLogger())
+	_, err := runSSEEmitter(ctx, rec, runHandle, &canonical.ChatRequest{}, "auto", 0, nullLogger())
 	if err == nil {
 		t.Error("expected non-nil error on ctx cancel, got nil")
 	}
@@ -75,7 +77,7 @@ func TestSSE_HeadersSetBeforeBody(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	if _, err := runSSEEmitter(context.Background(), rec, runHandle, &canonical.ChatRequest{}, "auto", nullLogger()); err != nil {
+	if _, err := runSSEEmitter(context.Background(), rec, runHandle, &canonical.ChatRequest{}, "auto", 0, nullLogger()); err != nil {
 		t.Fatalf("runSSEEmitter: %v", err)
 	}
 
@@ -170,5 +172,48 @@ func TestSSE_FixedIDAndCreated(t *testing.T) {
 	count := bytes.Count(norm, []byte(`"id":"chatcmpl-<id>"`))
 	if count < 3 { // role frame + content frames + finish_reason frame
 		t.Errorf("expected at least 3 frames with same id; got %d id occurrences in:\n%s", count, norm)
+	}
+}
+
+// ----------------------------------------------------------------------------
+// Quick 260531-ruv — idle-timeout watchdog
+// ----------------------------------------------------------------------------
+
+// TestSSE_IdleTimeout_EmitsErrorFrame drives runSSEEmitter with a fake
+// Stream whose Chunks() channel never emits. With streamIdle=100ms the
+// emitter MUST write an SSE data-frame error envelope + [DONE] and
+// return an error errors.Is(canonical.ErrStreamIdleTimeout).
+func TestSSE_IdleTimeout_EmitsErrorFrame(t *testing.T) {
+	chunks := make(chan canonical.Chunk) // never produces
+	t.Cleanup(func() {
+		defer func() { _ = recover() }()
+		close(chunks)
+	})
+	runHandle := &fakeRunHandle{
+		stream:    &fakeStream{chunks: chunks, final: &canonical.FinalResult{StopReason: canonical.StopUnknown}},
+		sessionID: "idle-test",
+	}
+	rec := httptest.NewRecorder()
+	req := &canonical.ChatRequest{Model: "auto"}
+
+	start := time.Now()
+	resp, err := runSSEEmitter(context.Background(), rec, runHandle, req, "auto", 100*time.Millisecond, nullLogger())
+	elapsed := time.Since(start)
+
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("emitter took too long: %v", elapsed)
+	}
+	if !errors.Is(err, canonical.ErrStreamIdleTimeout) {
+		t.Fatalf("expected ErrStreamIdleTimeout, got %v", err)
+	}
+	if resp == nil {
+		t.Errorf("aggregated response should be non-nil for PostHook forensics")
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"error":{"message":"stream idle timeout"`) {
+		t.Errorf("expected idle-timeout error frame, body=%q", body)
+	}
+	if !strings.Contains(body, "data: [DONE]") {
+		t.Errorf("expected [DONE] terminator, body=%q", body)
 	}
 }

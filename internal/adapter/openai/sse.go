@@ -12,6 +12,7 @@ import (
 
 	"otto-gateway/internal/canonical"
 	"otto-gateway/internal/engine"
+	"otto-gateway/internal/plugin"
 )
 
 // ----------------------------------------------------------------------------
@@ -363,11 +364,11 @@ func (e *sseEmitter) applyToolCallChunk(c canonical.Chunk) error {
 //  3. Emits the flat OpenAI chunk sequence:
 //     a. First chunk: delta={"role":"assistant"}, finish_reason=null
 //     b. Per canonical.ChunkKindText: delta={"content":"…"}, finish_reason=null
-//        — OR — buffered for streaming-coerce when req.Tools non-empty AND
-//        text looks JSON-shaped.
+//     — OR — buffered for streaming-coerce when req.Tools non-empty AND
+//     text looks JSON-shaped.
 //     c. Per canonical.ChunkKindToolCall: text-delta "[tool: <name>]\n"
-//        narration AND sawKiroNativeToolCall = true (REVIEW HIGH #2 +
-//        iteration-3 HIGH #2 — skips end-of-stream coerce).
+//     narration AND sawKiroNativeToolCall = true (REVIEW HIGH #2 +
+//     iteration-3 HIGH #2 — skips end-of-stream coerce).
 //     d. Final chunk: see finalizeSSE — coerce/skip/flush triage.
 //  4. On ctx.Done: debug-logs the disconnect and returns ctx.Err() without [DONE].
 //  5. On Result() error after channel close: logs at debug + returns the error
@@ -388,7 +389,7 @@ func (e *sseEmitter) applyToolCallChunk(c canonical.Chunk) error {
 // is false at stream close — kiro-native ChunkKindToolCall renders as
 // text-delta narration (per HIGH #2 two-path rule) and trips the
 // sawKiroNativeToolCall flag so end-of-stream coerce is skipped.
-func runSSEEmitter(ctx context.Context, w http.ResponseWriter, run RunHandle, req *canonical.ChatRequest, model string, logger *slog.Logger) (*canonical.ChatResponse, error) {
+func runSSEEmitter(ctx context.Context, w http.ResponseWriter, run RunHandle, req *canonical.ChatRequest, model string, streamIdle time.Duration, logger *slog.Logger) (*canonical.ChatResponse, error) {
 	// Assert Flusher BEFORE any write so the caller can fall back to JSON 500
 	// if the ResponseWriter does not support streaming (Pitfall 2 + anthropic analog).
 	flusher, ok := w.(http.Flusher)
@@ -413,6 +414,25 @@ func runSSEEmitter(ctx context.Context, w http.ResponseWriter, run RunHandle, re
 	}
 
 	chunks := run.Stream().Chunks()
+
+	// Quick 260531-ruv — idle watchdog arm. Nil idleC is a never-ready
+	// channel (disabled). Drain-safe Stop/Reset mirrors
+	// engine.RangeChunksWithIdleTimeout.
+	var idleTimer *time.Timer
+	var idleC <-chan time.Time
+	if streamIdle > 0 {
+		idleTimer = time.NewTimer(streamIdle)
+		defer func() {
+			if !idleTimer.Stop() {
+				select {
+				case <-idleTimer.C:
+				default:
+				}
+			}
+		}()
+		idleC = idleTimer.C
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -423,6 +443,24 @@ func runSSEEmitter(ctx context.Context, w http.ResponseWriter, run RunHandle, re
 			e.logger.Debug("openai: sse client disconnect", "session_id", run.SessionID())
 			return e.aggregatedResponse(canonical.StopUnknown, nil), fmt.Errorf("openai: sse ctx: %w", ctx.Err())
 
+		case <-idleC:
+			// Quick 260531-ruv — stream-idle fire. Emit an OpenAI SSE
+			// data-frame error envelope followed by [DONE], WARN-log
+			// the canonical marker, and return wrapped
+			// canonical.ErrStreamIdleTimeout for handler errors.Is
+			// detection. Frame shape matches errorInner in errors.go.
+			e.logger.Warn("stream.idle_timeout",
+				"surface", "openai",
+				"session_id", run.SessionID(),
+				"elapsed_ms", streamIdle.Milliseconds(),
+				"request_id", plugin.RequestIDFromContext(ctx),
+			)
+			_, _ = fmt.Fprintf(w, "data: {\"error\":{\"message\":\"stream idle timeout\",\"type\":\"api_error\"}}\n\n")
+			_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
+			e.flusher.Flush()
+			return e.aggregatedResponse(canonical.StopUnknown, nil),
+				fmt.Errorf("openai: sse %w", canonical.ErrStreamIdleTimeout)
+
 		case c, ok := <-chunks:
 			if !ok {
 				// Channel closed — stream ended; emit final frames.
@@ -430,6 +468,15 @@ func runSSEEmitter(ctx context.Context, w http.ResponseWriter, run RunHandle, re
 			}
 			if err := e.applyChunk(c); err != nil {
 				return e.aggregatedResponse(canonical.StopUnknown, nil), err
+			}
+			if idleTimer != nil {
+				if !idleTimer.Stop() {
+					select {
+					case <-idleTimer.C:
+					default:
+					}
+				}
+				idleTimer.Reset(streamIdle)
 			}
 		}
 	}

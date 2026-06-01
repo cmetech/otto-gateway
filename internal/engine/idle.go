@@ -15,7 +15,6 @@ package engine
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -27,7 +26,13 @@ import (
 // chunk or stream close. Callers errors.Is-check this sentinel to map
 // the error to a per-surface terminal error frame (and to a 504 on the
 // non-streaming surfaces).
-var ErrStreamIdleTimeout = errors.New("stream idle timeout")
+//
+// The sentinel lives in canonical because adapter_* packages may not
+// import engine (TRST-04). Both engine and the adapter handlers need
+// to errors.Is-check it; canonical is the only common dependency.
+// This package-level alias preserves the engine.ErrStreamIdleTimeout
+// usage site for engine-internal callers (Collect).
+var ErrStreamIdleTimeout = canonical.ErrStreamIdleTimeout
 
 // RangeChunksWithIdleTimeout ranges stream.Chunks(), invoking onChunk
 // for each chunk delivered. Semantics:
