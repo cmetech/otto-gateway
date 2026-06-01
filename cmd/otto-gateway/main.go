@@ -586,6 +586,23 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 		LogPathOrder: logPathOrder,
 		Debug:        cfg.Debug,
 		ChatTrace:    cfg.ChatTrace,
+
+		// Quick 260601-a3z — runtime cfg surfacing on /admin/about.
+		// Booleans for Auth/IPAllowlist are derived from len() the same
+		// way the "auth mode" startup log line does it (single source of
+		// truth for "is this knob on?").
+		HTTPAddr:             cfg.HTTPAddr,
+		PoolSize:             cfg.PoolSize,
+		SessionTTL:           cfg.SessionTTL,
+		StreamIdleTimeoutSec: cfg.StreamIdleTimeoutSec,
+		AuthEnabled:          len(cfg.AuthToken) > 0,
+		IPAllowlistEnabled:   len(cfg.AllowedIPs) > 0,
+		KiroCmd:              cfg.KiroCmd,
+		KiroArgs:             cfg.KiroArgs,
+		KiroCwd:              cfg.KiroCWD,
+		OllamaPathPrefix:     cfg.OllamaPathPrefix,
+		OpenAIPathPrefix:     cfg.OpenAIPathPrefix,
+		AnthropicPathPrefix:  cfg.AnthropicPathPrefix,
 	})
 
 	// Boot log surfaces the resolved surface set so operators see
