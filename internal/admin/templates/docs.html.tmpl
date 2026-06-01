@@ -54,6 +54,7 @@
   <section class="otto-card">
     <h2 class="otto-h2">CLI &amp; startup (otto-gw wrapper)</h2>
     <p>Operators interact with the gateway through the <code>otto-gw</code> wrapper rather than the <code>otto-gateway</code> binary directly. PowerShell uses PascalCase switches (<code>-Trace</code>, <code>-Debug</code>); POSIX uses kebab-case (<code>--trace</code>, <code>--debug</code>). The <code>.bat</code> dispatcher just forwards args to PowerShell — same switch syntax.</p>
+    <p>Run <code>otto-gw -h</code> / <code>otto-gw --help</code> (POSIX) or <code>otto-gw.ps1 -Help</code> (PowerShell) at any time to print the full usage to your terminal.</p>
     <h3 class="otto-h3">macOS / Linux (POSIX)</h3>
     <pre class="otto-code-block">./scripts/otto-gw init --non-interactive       # write $HOME/.otto-gw.env from template
 ./scripts/otto-gw start                         # background daemon (writes PID file)
