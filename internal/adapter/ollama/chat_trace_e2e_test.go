@@ -212,7 +212,7 @@ func TestOllama_NoDoublePostHookFire(t *testing.T) {
 func runNDJSONEmitterDirect(t *testing.T, ctx context.Context, run RunHandle, isChat bool, req *canonical.ChatRequest) (*canonical.ChatResponse, []byte, error) {
 	t.Helper()
 	w := newDiscardFlusher()
-	resp, err := runNDJSONEmitter(ctx, noopCancelFn, w, run, "auto", isChat, time.Now(), nilLogger(), req)
+	resp, err := runNDJSONEmitter(ctx, noopCancelFn, w, run, "auto", isChat, time.Now(), nilLogger(), req, 0)
 	return resp, w.bytes(), err
 }
 

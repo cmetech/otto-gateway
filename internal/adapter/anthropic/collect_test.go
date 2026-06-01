@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"otto-gateway/internal/canonical"
 )
@@ -188,7 +189,7 @@ func TestCollectAnthropicChat_ParityWithEngine_TextOnly(t *testing.T) {
 		t.Fatalf("reference Collect: %v", refErr)
 	}
 
-	gotResp, gotErr := CollectAnthropicChat(context.Background(), eng, req)
+	gotResp, gotErr := CollectAnthropicChat(context.Background(), eng, req, 0)
 	if gotErr != nil {
 		t.Fatalf("CollectAnthropicChat: %v", gotErr)
 	}
@@ -219,7 +220,7 @@ func TestCollectAnthropicChat_ParityWithEngine_ThinkingOnly(t *testing.T) {
 	if refErr != nil {
 		t.Fatalf("reference Collect: %v", refErr)
 	}
-	gotResp, gotErr := CollectAnthropicChat(context.Background(), eng, req)
+	gotResp, gotErr := CollectAnthropicChat(context.Background(), eng, req, 0)
 	if gotErr != nil {
 		t.Fatalf("CollectAnthropicChat: %v", gotErr)
 	}
@@ -250,7 +251,7 @@ func TestCollectAnthropicChat_ParityWithEngine_MixedTextThinking(t *testing.T) {
 	if refErr != nil {
 		t.Fatalf("reference Collect: %v", refErr)
 	}
-	gotResp, gotErr := CollectAnthropicChat(context.Background(), eng, req)
+	gotResp, gotErr := CollectAnthropicChat(context.Background(), eng, req, 0)
 	if gotErr != nil {
 		t.Fatalf("CollectAnthropicChat: %v", gotErr)
 	}
@@ -282,7 +283,7 @@ func TestCollectAnthropicChat_ParityWithEngine_StopReasonPropagation(t *testing.
 			}
 			req := &canonical.ChatRequest{Model: "auto"}
 			refResp, _ := eng.Collect(context.Background(), req)
-			gotResp, err := CollectAnthropicChat(context.Background(), eng, req)
+			gotResp, err := CollectAnthropicChat(context.Background(), eng, req, 0)
 			if err != nil {
 				t.Fatalf("CollectAnthropicChat: %v", err)
 			}
@@ -320,7 +321,7 @@ func TestCollectAnthropicChat_ParityWithEngine_ErrorPropagation(t *testing.T) {
 	// CollectAnthropicChat must surface the same underlying error via
 	// errors.Is. The wrap layer may differ; what matters is that
 	// callers can distinguish via the sentinel.
-	_, gotErr := CollectAnthropicChat(context.Background(), eng, req)
+	_, gotErr := CollectAnthropicChat(context.Background(), eng, req, 0)
 	if gotErr == nil {
 		t.Fatal("CollectAnthropicChat: nil error; want non-nil")
 	}
@@ -356,7 +357,7 @@ func TestCollectAnthropicChat_ParityWithEngine_ErrorPropagation_RunPath(t *testi
 
 	// CollectAnthropicChat: exercises the Run-error wrap path. errors.Is
 	// must still reach the sentinel.
-	_, gotErr := CollectAnthropicChat(context.Background(), eng, req)
+	_, gotErr := CollectAnthropicChat(context.Background(), eng, req, 0)
 	if gotErr == nil {
 		t.Fatal("CollectAnthropicChat: nil error; want non-nil")
 	}
@@ -384,7 +385,7 @@ func TestCollectAnthropicChat_AnthropicException_ToolCallProducesToolUse(t *test
 	eng := &parityFakeEngine{chunks: chunks, final: final}
 	req := &canonical.ChatRequest{Model: "auto"}
 
-	resp, err := CollectAnthropicChat(context.Background(), eng, req)
+	resp, err := CollectAnthropicChat(context.Background(), eng, req, 0)
 	if err != nil {
 		t.Fatalf("CollectAnthropicChat: %v", err)
 	}
@@ -425,5 +426,53 @@ func TestCollectAnthropicChat_AnthropicException_ToolCallProducesToolUse(t *test
 			t.Errorf("D-07 violation: Anthropic adapter must NOT emit [tool: ...] narration text; got text=%q",
 				resp.Message.Content[0].Text)
 		}
+	}
+}
+
+// ----------------------------------------------------------------------------
+// Quick 260531-ruv — idle-timeout on the non-streaming Collect path
+// ----------------------------------------------------------------------------
+
+// idleFakeEngine returns a Run whose stream Chunks() channel never
+// emits — exercises the streamIdle watchdog inside CollectAnthropicChat.
+type idleFakeEngine struct {
+	chunks chan canonical.Chunk
+}
+
+func (f *idleFakeEngine) Collect(_ context.Context, _ *canonical.ChatRequest) (*canonical.ChatResponse, error) {
+	return nil, nil
+}
+func (f *idleFakeEngine) Run(_ context.Context, _ *canonical.ChatRequest) (RunHandle, error) {
+	return &fakeRunHandle{
+		stream:    &fakeStream{chunks: f.chunks, final: &canonical.FinalResult{StopReason: canonical.StopUnknown}},
+		sessionID: "idle-test",
+	}, nil
+}
+func (f *idleFakeEngine) RunPostHooks(_ context.Context, _ *canonical.ChatRequest, _ *canonical.ChatResponse) error {
+	return nil
+}
+
+// TestCollectAnthropicChat_IdleTimeout exercises the adapter-local idle
+// watchdog inline in CollectAnthropicChat. With streamIdle=100ms and a
+// never-producing stream, the function MUST return an error that
+// errors.Is(canonical.ErrStreamIdleTimeout).
+func TestCollectAnthropicChat_IdleTimeout(t *testing.T) {
+	ch := make(chan canonical.Chunk) // never emits
+	t.Cleanup(func() {
+		defer func() { _ = recover() }()
+		close(ch)
+	})
+	eng := &idleFakeEngine{chunks: ch}
+	req := &canonical.ChatRequest{Model: "auto"}
+
+	start := time.Now()
+	_, err := CollectAnthropicChat(context.Background(), eng, req, 100*time.Millisecond)
+	elapsed := time.Since(start)
+
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("collect took too long: %v", elapsed)
+	}
+	if !errors.Is(err, canonical.ErrStreamIdleTimeout) {
+		t.Fatalf("expected ErrStreamIdleTimeout, got %v", err)
 	}
 }

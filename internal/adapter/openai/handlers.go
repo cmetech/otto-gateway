@@ -156,7 +156,7 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 			writeError(w, http.StatusUnauthorized, errAuthentication, shortCircuitMessage(sc))
 			return
 		}
-		resp, err := runSSEEmitter(streamCtx, w, runHandle, req, wire.Model, a.cfg.Logger)
+		resp, err := runSSEEmitter(streamCtx, w, runHandle, req, wire.Model, a.cfg.StreamIdleTimeout, a.cfg.Logger)
 		if err != nil {
 			// runSSEEmitter has already written SSE headers + at least some frames.
 			// We cannot send a JSON 500 after WriteHeader; log at debug and let
@@ -183,6 +183,16 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 	// Non-streaming path (SC1 curl use case).
 	resp, err := eng.Collect(ctx, req)
 	if err != nil {
+		// Quick 260531-ruv — idle-timeout maps to 504.
+		if errors.Is(err, canonical.ErrStreamIdleTimeout) {
+			a.cfg.Logger.Warn("stream.idle_timeout",
+				"surface", "openai",
+				"elapsed_ms", a.cfg.StreamIdleTimeout.Milliseconds(),
+				"request_id", plugin.RequestIDFromContext(ctx),
+			)
+			writeError(w, http.StatusGatewayTimeout, errAPI, "upstream stream idle timeout")
+			return
+		}
 		// T-02-33: log raw error, respond with generic message.
 		a.cfg.Logger.Error("openai: engine.Collect error", "err", err)
 		writeError(w, http.StatusInternalServerError, errAPI, "internal error")
@@ -299,6 +309,16 @@ func (a *Adapter) handleCompletions(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := eng.Collect(ctx, req)
 	if err != nil {
+		// Quick 260531-ruv — idle-timeout maps to 504.
+		if errors.Is(err, canonical.ErrStreamIdleTimeout) {
+			a.cfg.Logger.Warn("stream.idle_timeout",
+				"surface", "openai",
+				"elapsed_ms", a.cfg.StreamIdleTimeout.Milliseconds(),
+				"request_id", plugin.RequestIDFromContext(ctx),
+			)
+			writeError(w, http.StatusGatewayTimeout, errAPI, "upstream stream idle timeout")
+			return
+		}
 		// T-02-33: log raw error, respond with generic message.
 		a.cfg.Logger.Error("openai: completions engine.Collect error", "err", err)
 		writeError(w, http.StatusInternalServerError, errAPI, "internal error")

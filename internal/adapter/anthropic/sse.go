@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"otto-gateway/internal/canonical"
+	"otto-gateway/internal/plugin"
 )
 
 // PingInterval is the cadence at which the SSE emitter writes
@@ -579,7 +580,7 @@ func (e *sseEmitter) flushPendingToolUseIfNeeded() error {
 // Result() failure, or any wrapped writeEvent error. The Flusher-
 // assertion failure short-circuits BEFORE any aggregation work, so
 // the response is nil in that single case.
-func runSSEEmitter(ctx context.Context, w http.ResponseWriter, run RunHandle, model string, logger *slog.Logger) (*canonical.ChatResponse, error) {
+func runSSEEmitter(ctx context.Context, w http.ResponseWriter, run RunHandle, model string, streamIdle time.Duration, logger *slog.Logger) (*canonical.ChatResponse, error) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		// Caller (handlers.go) is responsible for translating this into
@@ -627,7 +628,7 @@ func runSSEEmitter(ctx context.Context, w http.ResponseWriter, run RunHandle, mo
 	ticker := time.NewTicker(PingInterval)
 	defer ticker.Stop()
 
-	return runSSEEmitterLoop(ctx, e, run, ticker.C)
+	return runSSEEmitterLoop(ctx, e, run, ticker.C, streamIdle)
 }
 
 // runSSEEmitterLoop is the test-injectable inner loop. Production
@@ -653,12 +654,33 @@ func runSSEEmitter(ctx context.Context, w http.ResponseWriter, run RunHandle, mo
 // On ctx.Done: debug-log the disconnect and return ctx.Err(). No
 // message_delta/message_stop is emitted — the stream tore down
 // before the natural end.
-func runSSEEmitterLoop(ctx context.Context, e *sseEmitter, run RunHandle, tickerC <-chan time.Time) (*canonical.ChatResponse, error) {
+func runSSEEmitterLoop(ctx context.Context, e *sseEmitter, run RunHandle, tickerC <-chan time.Time, streamIdle time.Duration) (*canonical.ChatResponse, error) {
 	// firstChunkSeen is a one-shot guard so the anthropic.sse.first_chunk
 	// DEBUG marker fires exactly once per stream — a high-throughput
 	// response must not flood the log. Stack-local, no cross-stream state.
 	var firstChunkSeen bool
 	chunks := run.Stream().Chunks()
+
+	// Quick 260531-ruv — idle watchdog arm. A nil idleC is a never-ready
+	// channel (stdlib idiom); when streamIdle == 0 the case never fires
+	// and the loop matches the legacy 3-arm select exactly. Drain-safe
+	// Stop/Reset on chunk arrival; matches engine.RangeChunksWithIdleTimeout
+	// semantics verbatim so the per-surface behavior cannot drift.
+	var idleTimer *time.Timer
+	var idleC <-chan time.Time
+	if streamIdle > 0 {
+		idleTimer = time.NewTimer(streamIdle)
+		defer func() {
+			if !idleTimer.Stop() {
+				select {
+				case <-idleTimer.C:
+				default:
+				}
+			}
+		}()
+		idleC = idleTimer.C
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -669,6 +691,24 @@ func runSSEEmitterLoop(ctx context.Context, e *sseEmitter, run RunHandle, ticker
 			// mitigation requires the After call to LoadAndDelete).
 			e.logger.Debug("anthropic: sse client disconnect", "session_id", run.SessionID())
 			return e.aggregatedResponse(nil, canonical.StopUnknown), fmt.Errorf("anthropic: sse ctx: %w", ctx.Err())
+
+		case <-idleC:
+			// Quick 260531-ruv — stream-idle fire. Emit an Anthropic-
+			// shaped event:error frame, WARN-log with the canonical
+			// attr set, and return a wrapped ErrStreamIdleTimeout so
+			// errors.Is(err, engine.ErrStreamIdleTimeout) is true at
+			// the handler. The aggregated response is non-nil so
+			// PostHooks can still observe forensics.
+			e.logger.Warn("stream.idle_timeout",
+				"surface", "anthropic",
+				"session_id", run.SessionID(),
+				"elapsed_ms", streamIdle.Milliseconds(),
+				"request_id", plugin.RequestIDFromContext(ctx),
+			)
+			writeSSEError(e.w, e.flusher, errAPI,
+				fmt.Sprintf("upstream stream idle for %ds", int(streamIdle.Seconds())))
+			return e.aggregatedResponse(nil, canonical.StopUnknown),
+				fmt.Errorf("anthropic: sse %w", canonical.ErrStreamIdleTimeout)
 
 		case <-tickerC:
 			if err := e.writeEvent("ping", pingEvent{Type: "ping"}); err != nil {
@@ -685,6 +725,16 @@ func runSSEEmitterLoop(ctx context.Context, e *sseEmitter, run RunHandle, ticker
 			}
 			if err := e.applyChunk(c); err != nil {
 				return e.aggregatedResponse(nil, canonical.StopUnknown), err
+			}
+			// Quick 260531-ruv — drain-safe reset on chunk arrival.
+			if idleTimer != nil {
+				if !idleTimer.Stop() {
+					select {
+					case <-idleTimer.C:
+					default:
+					}
+				}
+				idleTimer.Reset(streamIdle)
 			}
 		}
 	}

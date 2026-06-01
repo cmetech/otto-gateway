@@ -614,3 +614,68 @@ func TestLoad_ChatTrace_AllowsChatTraceHookInAllowlist_WhenDisabled(t *testing.T
 		}
 	}
 }
+
+// --- STREAM_IDLE_TIMEOUT_SEC coverage (quick 260531-ruv) ---------------
+
+func TestLoad_StreamIdleTimeoutSec_Default(t *testing.T) {
+	// t.Setenv: cannot use t.Parallel().
+	t.Setenv("STREAM_IDLE_TIMEOUT_SEC", "")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+	if cfg.StreamIdleTimeoutSec != 30 {
+		t.Errorf("StreamIdleTimeoutSec: got %d, want 30 (default)", cfg.StreamIdleTimeoutSec)
+	}
+}
+
+func TestLoad_StreamIdleTimeoutSec_Explicit(t *testing.T) {
+	t.Setenv("STREAM_IDLE_TIMEOUT_SEC", "60")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+	if cfg.StreamIdleTimeoutSec != 60 {
+		t.Errorf("StreamIdleTimeoutSec: got %d, want 60", cfg.StreamIdleTimeoutSec)
+	}
+}
+
+func TestLoad_StreamIdleTimeoutSec_Zero(t *testing.T) {
+	// Zero is VALID (disables the idle watchdog).
+	t.Setenv("STREAM_IDLE_TIMEOUT_SEC", "0")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+	if cfg.StreamIdleTimeoutSec != 0 {
+		t.Errorf("StreamIdleTimeoutSec: got %d, want 0 (explicit disable)", cfg.StreamIdleTimeoutSec)
+	}
+}
+
+func TestLoad_StreamIdleTimeoutSec_Negative(t *testing.T) {
+	t.Setenv("STREAM_IDLE_TIMEOUT_SEC", "-5")
+	_, err := config.Load()
+	if err == nil {
+		t.Fatal("Load() should return an error for STREAM_IDLE_TIMEOUT_SEC=-5, got nil")
+	}
+	if !strings.Contains(err.Error(), "STREAM_IDLE_TIMEOUT_SEC") {
+		t.Errorf("error should mention STREAM_IDLE_TIMEOUT_SEC, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "must be >= 0") {
+		t.Errorf("error should explain the constraint, got: %v", err)
+	}
+}
+
+func TestLoad_StreamIdleTimeoutSec_NonInt(t *testing.T) {
+	t.Setenv("STREAM_IDLE_TIMEOUT_SEC", "abc")
+	_, err := config.Load()
+	if err == nil {
+		t.Fatal("Load() should return an error for STREAM_IDLE_TIMEOUT_SEC=abc, got nil")
+	}
+	if !strings.Contains(err.Error(), "STREAM_IDLE_TIMEOUT_SEC") {
+		t.Errorf("error should mention STREAM_IDLE_TIMEOUT_SEC, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "cannot parse") {
+		t.Errorf("error should explain the parse failure, got: %v", err)
+	}
+}

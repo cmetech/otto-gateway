@@ -75,7 +75,7 @@ func TestCollectAnthropicChat_PostHooksFire(t *testing.T) {
 	}
 	req := &canonical.ChatRequest{Model: "auto"}
 
-	resp, err := CollectAnthropicChat(context.Background(), eng, req)
+	resp, err := CollectAnthropicChat(context.Background(), eng, req, 0)
 	if err != nil {
 		t.Fatalf("CollectAnthropicChat: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestCollectAnthropicChat_PostHooksFireOnShortCircuit(t *testing.T) {
 	}
 	req := &canonical.ChatRequest{Model: "auto"}
 
-	resp, err := CollectAnthropicChat(context.Background(), eng, req)
+	resp, err := CollectAnthropicChat(context.Background(), eng, req, 0)
 	if err != nil {
 		t.Fatalf("CollectAnthropicChat: %v", err)
 	}

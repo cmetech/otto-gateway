@@ -18,6 +18,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -53,8 +54,29 @@ func (e *Engine) Collect(ctx context.Context, req *canonical.ChatRequest) (*cano
 		// `{type:"thinking",thinking:"..."}` blocks (ANTH-07
 		// foundation). Two builders, one switch — text and thoughts
 		// stay independent so order-of-arrival doesn't matter.
+		//
+		// Quick 260531-ruv: the chunk-range loop now routes through
+		// RangeChunksWithIdleTimeout. When e.cfg.StreamIdleTimeout > 0
+		// and no chunk arrives within that window, the helper returns
+		// ErrStreamIdleTimeout (wrapped) — adapter handlers errors.Is-
+		// check it and render a 504 on the non-streaming paths that
+		// consume this function (Ollama, OpenAI). When the timeout is 0,
+		// the helper degrades to a bare ctx-aware range with zero timer
+		// cost.
+		//
+		// Per-surface Message.ToolCalls contract (D-03/D-05/D-07):
+		//   - Generic engine.Collect (this function) does NOT populate
+		//     Message.ToolCalls from any chunk source.
+		//   - Ollama and OpenAI populate Message.ToolCalls ONLY via
+		//     engine.CoerceToolCall (the coerce-from-text path — D-05),
+		//     invoked by the adapter handlers AFTER this function
+		//     returns.
+		//   - Anthropic (D-07 exception) populates Message.ToolCalls via
+		//     its adapter-local CollectAnthropicChat from kiro-native
+		//     ChunkKindToolCall chunks. That adapter uses engine.Run +
+		//     its own aggregator and bypasses this function.
 		var sb, thoughtSB strings.Builder
-		for chunk := range run.stream.Chunks() {
+		onChunk := func(chunk canonical.Chunk) error {
 			switch chunk.Kind {
 			case canonical.ChunkKindText:
 				if chunk.Text != nil {
@@ -65,29 +87,8 @@ func (e *Engine) Collect(ctx context.Context, req *canonical.ChatRequest) (*cano
 					thoughtSB.WriteString(chunk.Thought.Content)
 				}
 			case canonical.ChunkKindToolCall:
-				// ChunkKindToolCall is aggregated into Message.Content as
-				// `[tool: <name>]\n` narration text per Phase 6 D-03. This
-				// is what non-streaming Ollama/OpenAI render — they receive
-				// only *canonical.ChatResponse from this function and need
-				// the kiro-native tool-call information to survive into the
-				// final body.
-				//
-				// Message.ToolCalls population contract (per Phase 6 D-03/
-				// D-05/D-07):
-				//   - Generic engine.Collect (this function) does NOT
-				//     populate Message.ToolCalls from any chunk source.
-				//   - Ollama and OpenAI surfaces populate Message.ToolCalls
-				//     ONLY via engine.CoerceToolCall (the coerce-from-text
-				//     path — D-05), invoked by the adapter handlers AFTER
-				//     this function returns.
-				//   - Anthropic surface (D-07 exception) populates
-				//     Message.ToolCalls via its adapter-local Collect
-				//     (internal/adapter/anthropic/collect.go, 06-04 Option
-				//     A1) from kiro-native ChunkKindToolCall chunks. That
-				//     adapter uses engine.Run + its own aggregator and
-				//     bypasses this function.
-				//
-				// ChunkKindPlan still drops (no Phase 6 work).
+				// ChunkKindToolCall renders as `[tool: <name>]\n`
+				// narration text. ChunkKindPlan still drops.
 				name := "unknown"
 				if chunk.ToolCall != nil && chunk.ToolCall.Name != "" {
 					name = chunk.ToolCall.Name
@@ -96,6 +97,17 @@ func (e *Engine) Collect(ctx context.Context, req *canonical.ChatRequest) (*cano
 				sb.WriteString(name)
 				sb.WriteString("]\n")
 			}
+			return nil
+		}
+		if rangeErr := RangeChunksWithIdleTimeout(ctx, run.stream, e.cfg.StreamIdleTimeout, onChunk); rangeErr != nil {
+			if errors.Is(rangeErr, ErrStreamIdleTimeout) {
+				e.cfg.Logger.Warn("stream.idle_timeout",
+					"surface", "engine.collect",
+					"session_id", run.sessionID,
+					"elapsed_ms", e.cfg.StreamIdleTimeout.Milliseconds(),
+				)
+			}
+			return nil, fmt.Errorf("engine: collect: %w", rangeErr)
 		}
 		final, rerr := run.stream.Result()
 		if rerr != nil {

@@ -197,7 +197,7 @@ func TestAnthropic_NoDoublePostHookFire(t *testing.T) {
 	req := &canonical.ChatRequest{Model: "auto"}
 
 	// Non-streaming: CollectAnthropicChat → eng.Run + RunPostHooks.
-	if _, err := CollectAnthropicChat(context.Background(), eng, req); err != nil {
+	if _, err := CollectAnthropicChat(context.Background(), eng, req, 0); err != nil {
 		t.Fatalf("CollectAnthropicChat: %v", err)
 	}
 	if got := counter.Load(); got != 1 {

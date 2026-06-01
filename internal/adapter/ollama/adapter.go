@@ -25,6 +25,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -161,6 +162,12 @@ type Config struct {
 	// KiroCWD is the default working directory passed to Registry.Get
 	// when the X-Session-Id branch creates a new session. May be empty.
 	KiroCWD string
+	// StreamIdleTimeout is the duration to wait for a chunk before
+	// tearing down the stream. Zero disables. Loaded from
+	// STREAM_IDLE_TIMEOUT_SEC and converted to Duration in main.go
+	// (quick 260531-ruv). Read by the NDJSON emitter to bound
+	// silent-kiro hangs.
+	StreamIdleTimeout time.Duration
 }
 
 // Adapter wires the Ollama HTTP surface. Construct via New.

@@ -199,7 +199,7 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusUnauthorized, errAuthentication, shortCircuitMessage(sc))
 			return
 		}
-		resp, err := runSSEEmitter(streamCtx, w, runHandle, wire.Model, a.cfg.Logger)
+		resp, err := runSSEEmitter(streamCtx, w, runHandle, wire.Model, a.cfg.StreamIdleTimeout, a.cfg.Logger)
 		if err != nil {
 			// runSSEEmitter has already written SSE headers + frames
 			// (the error path inside the emitter handles its own
@@ -236,8 +236,20 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// from kiro-native ChunkKindToolCall chunks on the non-streaming
 	// path — Anthropic's wire protocol has tool_use as a native
 	// first-class element and the SDK expects it that way.
-	resp, err := CollectAnthropicChat(ctx, eng, req)
+	resp, err := CollectAnthropicChat(ctx, eng, req, a.cfg.StreamIdleTimeout)
 	if err != nil {
+		// Quick 260531-ruv — idle-timeout maps to 504 Gateway Timeout
+		// on the non-streaming branch (no SSE headers written yet).
+		if errors.Is(err, canonical.ErrStreamIdleTimeout) {
+			a.cfg.Logger.Warn("stream.idle_timeout",
+				"surface", "anthropic",
+				"session_id", "", // non-streaming path: session id was bound inside CollectAnthropicChat scope
+				"elapsed_ms", a.cfg.StreamIdleTimeout.Milliseconds(),
+				"request_id", plugin.RequestIDFromContext(ctx),
+			)
+			writeError(w, http.StatusGatewayTimeout, errAPI, "upstream stream idle timeout")
+			return
+		}
 		// T-02-33: log the raw error structurally; respond with a
 		// neutral generic message that cannot echo request content.
 		a.cfg.Logger.Error("anthropic: CollectAnthropicChat error", "err", err)
