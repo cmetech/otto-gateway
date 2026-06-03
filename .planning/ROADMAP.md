@@ -34,6 +34,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 6: Tool-Call Path** - Canonical tool calls rendered per-surface, with `coerceToolCall` for plain-JSON-as-text (completed 2026-05-27)
 - [x] **Phase 6.1: Admin Observability UI** *(INSERTED)* - Dark-mode `/admin` page rendering `/health` + `/health/agents` with the OTTO brand palette; auto-refresh polling; nice-to-have live log tail (completed 2026-05-28)
 - [x] **Phase 8: Plugin Hook Chain** - `PreHook`/`PostHook` over canonical types, with RequestID, Auth, Logging registered (completed 2026-05-28)
+- [ ] **Phase 8.2: Ollama `format` Parity** *(INSERTED)* - LangFlow `format:"json"` / `format:<schema>` requests are steered via a canonical `PreHook` (GEN_RULES block) and the response is fence-stripped before render — Node-shim parity for the v1 replacement goal
 - [x] **Phase 9: Distribution** - Cross-compile Linux+Windows from macOS, full trust-gate CI matrix gating merges (completed 2026-05-28)
 
 ## Phase Details
@@ -396,6 +397,38 @@ Plans:
 
 - [x] 08.1-05-PLAN.md — Slice B WARNING-03 broad refresh: add PLUG-06 + OBSV-04 rows, correct coverage comment, flip ~50 checkboxes per audit Final Status, annotate AUTH-01/02 with carve-out language (D-15 + D-17)
 
+### Phase 8.2: Ollama `format` Parity (INSERTED)
+
+**Goal:** Close the Node-shim parity gap on Ollama's `format` field so LangFlow flows with `format:"json"` or `format:<JSON schema>` continue to work when pointed at otto-gateway. Three coordinated changes: (a) wire-decode `format` on `/api/chat` and `/api/generate` into the dormant `canonical.ChatRequest.Format` seam (`internal/canonical/chat.go:245`); (b) implement a surface-agnostic `JSONFormatSteeringHook` (`PreHook`) that appends the verbatim Node-shim GEN_RULES block to the canonical system prompt whenever `Format != nil`, plus a schema description when `Format.Type == "json_schema"`; (c) wire the existing conservative `stripFences` helper (`internal/engine/coerce.go:231`) into the Ollama non-streaming render path so a model response wrapped in ```` ```json … ``` ```` is unwrapped before client return. This is the "one place to enforce policy" thesis applied to JSON-format steering: the hook fires on the canonical request, so any future OpenAI/Anthropic adapter that populates `Format` inherits the steering for free.
+
+**Mode:** mvp
+**Depends on:** Phase 8 (PreHook chain), Phase 6 (`stripFences` helper landed during tool-call work)
+**Requirements:** REQ-OLLAMA-01 (parity closure), PLUG-01 (PreHook contract reuse) — no new requirement IDs introduced; this is a correctness/parity fix against the Node implementation that otto-gateway is replacing.
+**Success Criteria** (what must be TRUE):
+
+  1. `POST /api/chat` with `"format": "json"` populates `canonical.ChatRequest.Format = &canonical.Format{Type: "json"}`; with a JSON-object value populates `Format{Type: "json_schema", Schema: <decoded map>}`. `POST /api/generate` does the same. Wire-decode is null-safe: omitted `format` leaves `Format == nil`; empty string `""` is treated as omitted.
+  2. With `JSONFormatSteeringHook` registered, a canonical request with `Format != nil` returns from `Pre` with the verbatim GEN_RULES block (matching the Node shim's text exactly) appended to `System`. The block instructs: complete output for every item, no summarize/truncate/abbreviate, no prose/preamble/commentary/follow-up questions, no offers to save/export, no markdown fences.
+  3. When `Format.Type == "json_schema"` AND `Format.Schema != nil`, the appended block additionally includes a serialized "The output must match this JSON schema: <compact JSON>" line.
+  4. The hook is a no-op when `Format == nil` (request unmodified, byte-identical `System`).
+  5. The Ollama non-streaming response path applies `stripFences` to the assembled assistant text when `req.Format != nil`. A fake-engine returning ```` ```json\n{"a":1}\n``` ```` produces a `{"a":1}` payload at the wire. The fence-strip is conservative: it only fires when the **entire trimmed text** is one fenced block; inline fences in legitimate prose are preserved (Pitfall mirrors the Node fix's regression test).
+  6. `JSON_FORMAT_STEERING_ENABLED=false` (env, default `true`) keeps the hook registered but disabled — `Pre` becomes a pass-through. Mirrors the `PII_REDACTION_ENABLED` pattern from Phase 8.
+  7. Existing non-`format` requests are byte-identical at the canonical layer and the wire (no GEN_RULES, no fence-strip). Existing `format:"json"` tool-call coerce path (`engine.coerce.go`) is unchanged.
+  8. Integration test: LangFlow-shape `/api/chat` request with `format:"json"`, streaming disabled, against a fake engine that returns fenced text, asserts the client receives unfenced JSON. Plus a happy-path test where the model returns clean JSON (no fence) — confirms the strip is a no-op.
+
+**Plans:** 0/1 plans complete
+**Out of scope (locked):**
+
+- **Streaming + `format:"json"` fence-stripping.** The Node fix did not strip mid-stream either — fences only land mid-delta in rare cases and stripping them requires buffered re-emission that breaks the streaming contract for clients that don't care about JSON. Almost all LangFlow `format:"json"` flows are non-streaming. Tracked in Deferred Ideas; revisit if a streaming consumer reports the issue.
+- **OpenAI / Anthropic `response_format` wiring.** Both surfaces have native sampler-level JSON modes via Claude through kiro-cli, and the OpenAI/Anthropic adapters do not currently populate `canonical.Format`. The hook is built surface-agnostic so the day those adapters wire up `Format`, steering applies automatically — but the wiring itself is a separate phase.
+- **Sampler-level JSON constraint at the upstream.** kiro-cli (ACP) does not expose a `max_tokens` or JSON-mode sampler knob. Prompt-only steering is the v1 lever; this is the same constraint the Node shim operates under.
+- **Schema validation of model output.** The steering is best-effort; we do not introspect the returned text against `Format.Schema` and reject mismatches. Downstream consumers (LangFlow components, application code) own validation.
+- **New requirement IDs.** This is parity closure against the Node shim that otto-gateway is replacing — no new REQ-* IDs.
+
+Plans:
+**Wave 1**
+
+- [ ] 08.2-01-PLAN.md — Single atomic slice: Ollama `format` wire-decode (`/api/chat` + `/api/generate`) populates `canonical.ChatRequest.Format`, new `internal/plugin/jsonformat/` package with `JSONFormatSteeringHook` (Pre) registered in `main.go` behind `JSON_FORMAT_STEERING_ENABLED` (default true), Ollama non-streaming render applies `stripFences` when `Format != nil`, integration test against fake-engine with LangFlow-shape `format:"json"` request.
+
 ### Phase 9: Distribution
 
 **Goal:** A single static binary cross-compiles cleanly from macOS to `linux/amd64` and `windows/amd64`, with the full trust-gate suite running in CI on every PR + nightly on main. This is the headline value of the Go port — one binary, no cgo, no platform-specific build tooling.
@@ -428,4 +461,5 @@ Phases execute in numeric order: 1 → 1.1 → 2 → 3 → 3.1 → 4 → 5 → 6
 | 6. Tool-Call Path | 5/5 | Complete    | 2026-05-27 |
 | 6.1. Admin Observability UI (INSERTED) | 4/4 | Complete   | 2026-05-28 |
 | 8. Plugin Hook Chain | 5/5 | Complete   | 2026-05-28 |
+| 8.2. Ollama `format` Parity (INSERTED) | 0/1 | Pending | — |
 | 9. Distribution | n/a (via /gsd-quick 260528-d84) | Complete | 2026-05-28 |
