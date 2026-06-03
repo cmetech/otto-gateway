@@ -1047,6 +1047,80 @@ body {
   text-decoration: underline;
 }
 
+/* ====== PII status panel (v1.8.2 — full-width row on /admin/about) ======
+ * Renders below the 4-column Build/Runtime/Flags/Worker grid. The whole
+ * card spans the page width so the PII posture is readable at a glance.
+ * Inside the card, a 3-column grid (collapses to 1 column under 900px)
+ * holds: Posture badges, Active recognizers, Per-entity action table.
+ */
+.otto-about-pii-row {
+  margin-top: var(--otto-space-base);
+}
+.otto-about-pii-card h2 {
+  margin-top: 0;
+}
+.otto-about-pii-summary {
+  margin: 0 0 var(--otto-space-base) 0;
+  font-size: 14px;
+  line-height: 1.55;
+}
+.otto-about-pii-summary .otto-badge {
+  margin-right: 6px;
+  vertical-align: middle;
+}
+.otto-about-pii-grid {
+  display: grid;
+  gap: var(--otto-space-base);
+  grid-template-columns: minmax(260px, 1fr) minmax(260px, 2fr) minmax(260px, 1fr);
+}
+@media (max-width: 1100px) {
+  .otto-about-pii-grid {
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  }
+}
+.otto-about-pii-block h3 {
+  margin: 0 0 var(--otto-space-sm) 0;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--otto-muted);
+}
+.otto-about-pii-entities {
+  margin: 0 0 var(--otto-space-sm) 0;
+  font-family: var(--otto-font-mono);
+  font-size: 13px;
+  word-break: break-word;
+}
+.otto-about-pii-note {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--otto-muted);
+}
+.otto-about-pii-actions-table {
+  width: 100%;
+  margin: 0 0 var(--otto-space-sm) 0;
+  font-size: 13px;
+}
+.otto-about-pii-actions-table th,
+.otto-about-pii-actions-table td {
+  padding: 4px 8px;
+  text-align: left;
+}
+
+/* Status-badge variants used by the PII panel: is-ok (green = secure-by-
+ * default behavior active), is-muted (grey = feature available but not
+ * fired or value not set). is-warning is already defined above for the
+ * SENSITIVE / off-when-should-be-on case. */
+.otto-badge.is-ok {
+  background: rgba(15, 195, 115, 0.12);
+  color: var(--otto-healthy);
+}
+.otto-badge.is-muted {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--otto-muted);
+}
+
 /* ====== Quick 260601-aix — admin UI redesign step 4 (Docs page) ====== */
 
 .otto-docs-intro h1 {

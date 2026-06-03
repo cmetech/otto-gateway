@@ -41,5 +41,61 @@
       </dl>
     </article>
   </section>
+  <section class="otto-about-pii-row">
+    <article class="otto-card otto-about-pii-card">
+      <h2 class="otto-h2">PII Redaction</h2>
+      <p class="otto-about-pii-summary">
+        {{if .PIIRedactionEnabled}}
+          {{if eq .PIIRedactionMode "encrypt"}}
+            <span class="otto-badge is-ok">ENCRYPT</span> Round-trip: PII flows to the worker as AES-256-GCM ciphertext and is decrypted back to plaintext before the client sees the response.
+          {{else if eq .PIIRedactionMode "hash"}}
+            <span class="otto-badge is-ok">HASH</span> One-way HMAC-keyed correlation tokens. Client sees the same hash tag the worker saw.
+          {{else if eq .PIIRedactionMode "drop"}}
+            <span class="otto-badge is-ok">DROP</span> Matched PII is removed entirely. Client sees an empty substring where the value was.
+          {{else if eq .PIIRedactionMode "mask"}}
+            <span class="otto-badge is-ok">MASK</span> Matched PII is partially obfuscated (e.g., <code>co***@cm***.io</code>). Client sees the same mask the worker saw.
+          {{else}}
+            <span class="otto-badge is-ok">REPLACE</span> Matched PII is replaced with numbered sentinels (<code>[EMAIL_1]</code>). Client sees the same sentinels the worker saw.
+          {{end}}
+        {{else}}
+          <span class="otto-badge is-warning">OFF</span> PII redaction is disabled — raw user content reaches the upstream worker. Set <code>PII_REDACTION_ENABLED=true</code> to enable redaction.
+        {{end}}
+      </p>
+      <div class="otto-about-pii-grid">
+        <div class="otto-about-pii-block">
+          <h3 class="otto-h3">Posture</h3>
+          <dl class="otto-about-dl">
+            <dt>Hook</dt><dd>{{if .PIIRedactionEnabled}}<span class="otto-badge is-ok">on</span>{{else}}<span class="otto-badge is-warning">off</span>{{end}}</dd>
+            <dt>Mode</dt><dd><code>{{.PIIRedactionMode}}</code></dd>
+            <dt>NER (PERSON/LOCATION)</dt><dd>{{if .PIINEREnabled}}<span class="otto-badge is-ok">on</span>{{else}}<span class="otto-badge is-muted">off</span>{{end}}</dd>
+            <dt>Round-trip decrypt</dt><dd>{{if .PIIEncryptActive}}<span class="otto-badge is-ok">active</span>{{else}}<span class="otto-badge is-muted">inactive</span>{{end}}</dd>
+            <dt>Hash key</dt><dd>{{if .PIIHashKeySet}}<span class="otto-badge is-ok">set</span>{{else}}<span class="otto-badge is-muted">unset</span>{{end}}</dd>
+            <dt>Encrypt key</dt><dd>{{if .PIIEncryptKeySet}}<span class="otto-badge is-ok">set</span>{{else}}<span class="otto-badge is-muted">unset</span>{{end}}</dd>
+          </dl>
+        </div>
+        <div class="otto-about-pii-block">
+          <h3 class="otto-h3">Active recognizers</h3>
+          <p class="otto-about-pii-entities">{{.PIIEnabledEntitiesText}}</p>
+          <p class="otto-about-pii-note">The full registry is 13 regex recognizers (Email, IPv4, IPv6, SSN, CreditCard, USPhone, SIP_URI, IMEI, IMSI, MSISDN, MAC_ADDRESS, COORDINATES, SITE) plus 2 NER recognizers (PERSON, LOCATION) when <code>PII_NER_ENABLED=true</code>. Context-anchored recognizers (IMEI, IMSI, MSISDN, SITE) require a recognizer-specific keyword within ±50 bytes of the match.</p>
+        </div>
+        <div class="otto-about-pii-block">
+          <h3 class="otto-h3">Per-entity action overrides</h3>
+          {{if .PIIEntityActionRows}}
+            <table class="otto-table otto-about-pii-actions-table">
+              <thead><tr><th scope="col">Entity</th><th scope="col">Action</th></tr></thead>
+              <tbody>
+                {{range .PIIEntityActionRows}}
+                  <tr><td><code>{{.Entity}}</code></td><td><code>{{.Action}}</code></td></tr>
+                {{end}}
+              </tbody>
+            </table>
+            <p class="otto-about-pii-note">Listed entities use the named action; unlisted entities fall back to mode <code>{{.PIIRedactionMode}}</code>.</p>
+          {{else}}
+            <p class="otto-about-pii-note">No overrides — every recognizer uses the global mode <code>{{.PIIRedactionMode}}</code>. Set <code>PII_ENTITY_ACTIONS=Entity:action,...</code> to override per entity (e.g., <code>PERSON:mask,LOCATION:drop</code>).</p>
+          {{end}}
+        </div>
+      </div>
+    </article>
+  </section>
 </main>{{end}}
 {{template "base" .}}

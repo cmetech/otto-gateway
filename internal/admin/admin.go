@@ -107,6 +107,21 @@ type Deps struct {
 	// snapshots of cfg.ChatTraceFile / cfg.ChatTraceMaxAgeDays.
 	ChatTraceFile       string
 	ChatTraceMaxAgeDays int
+
+	// PII config surfaced on /admin/about so an operator can read the
+	// full PII posture without grepping env vars or /health/hooks.
+	// T-8-LEAK: HashKey and EncryptKey VALUES are NEVER surfaced; only
+	// booleans indicating whether the operator supplied a key. The
+	// fields below are read-only snapshots taken at admin.Handler
+	// wire-up time; the admin package never imports internal/config
+	// (TRST-04 / arch-lint boundary).
+	PIIRedactionEnabled bool
+	PIIRedactionMode    string
+	PIINEREnabled       bool
+	PIIEnabledEntities  []string          // empty = all registered recognizers
+	PIIEntityActions    map[string]string // empty = global Mode applies to all
+	PIIHashKeySet       bool              // T-8-LEAK: bool only, never the value
+	PIIEncryptKeySet    bool              // T-8-LEAK: bool only, never the value
 }
 
 // handler holds the runtime state for the admin sub-router.
@@ -247,6 +262,28 @@ type aboutData struct {
 	KiroCmd              string
 	KiroArgs             string
 	KiroCwd              string
+
+	// PII view-model fields. Populated by aboutHandler from the cfg
+	// snapshot in Deps. EntityActions is rendered as a sorted slice
+	// (templates can't iterate a Go map in a stable order) and
+	// EnabledEntitiesDisplay is "(all 15 active)" or the comma-joined
+	// allowlist.
+	PIIRedactionEnabled    bool
+	PIIRedactionMode       string
+	PIINEREnabled          bool
+	PIIEncryptActive       bool // mode==encrypt OR any entity action is encrypt
+	PIIEnabledEntitiesText string
+	PIIEntityActionRows    []piiEntityActionRow
+	PIIHashKeySet          bool
+	PIIEncryptKeySet       bool
+}
+
+// piiEntityActionRow is one row in the per-entity action override
+// table on /admin/about. Sorted by entity name in aboutHandler so the
+// template iterates a stable list.
+type piiEntityActionRow struct {
+	Entity string
+	Action string
 }
 
 // aboutHandler serves GET /admin/about — renders four populated cards
@@ -280,6 +317,39 @@ func (h *handler) aboutHandler(w http.ResponseWriter, r *http.Request) {
 		startedAt = h.deps.Start.Format(time.RFC3339)
 	}
 
+	// PII view-model assembly. EncryptActive mirrors the predicate from
+	// internal/plugin/pii (mode==encrypt OR any per-entity override is
+	// encrypt). EnabledEntitiesText collapses the empty-allowlist case
+	// to a human-readable "(all registered recognizers active)" so the
+	// template doesn't need conditional logic. EntityActions is sorted
+	// by entity for stable rendering.
+	piiEncryptActive := h.deps.PIIRedactionMode == "encrypt"
+	for _, a := range h.deps.PIIEntityActions {
+		if a == "encrypt" {
+			piiEncryptActive = true
+			break
+		}
+	}
+	piiEnabledEntitiesText := "(all registered recognizers active)"
+	if len(h.deps.PIIEnabledEntities) > 0 {
+		piiEnabledEntitiesText = strings.Join(h.deps.PIIEnabledEntities, ", ")
+	}
+	var piiEntityActionRows []piiEntityActionRow
+	if len(h.deps.PIIEntityActions) > 0 {
+		entities := make([]string, 0, len(h.deps.PIIEntityActions))
+		for e := range h.deps.PIIEntityActions {
+			entities = append(entities, e)
+		}
+		sort.Strings(entities)
+		piiEntityActionRows = make([]piiEntityActionRow, 0, len(entities))
+		for _, e := range entities {
+			piiEntityActionRows = append(piiEntityActionRows, piiEntityActionRow{
+				Entity: e,
+				Action: h.deps.PIIEntityActions[e],
+			})
+		}
+	}
+
 	data := aboutData{
 		TabActive:            "about",
 		PageTitle:            "About",
@@ -301,6 +371,15 @@ func (h *handler) aboutHandler(w http.ResponseWriter, r *http.Request) {
 		KiroCmd:              kiroCmd,
 		KiroArgs:             kiroArgs,
 		KiroCwd:              kiroCwd,
+
+		PIIRedactionEnabled:    h.deps.PIIRedactionEnabled,
+		PIIRedactionMode:       h.deps.PIIRedactionMode,
+		PIINEREnabled:          h.deps.PIINEREnabled,
+		PIIEncryptActive:       piiEncryptActive,
+		PIIEnabledEntitiesText: piiEnabledEntitiesText,
+		PIIEntityActionRows:    piiEntityActionRows,
+		PIIHashKeySet:          h.deps.PIIHashKeySet,
+		PIIEncryptKeySet:       h.deps.PIIEncryptKeySet,
 	}
 	var buf bytes.Buffer
 	if err := aboutTemplate.ExecuteTemplate(&buf, "base", data); err != nil {

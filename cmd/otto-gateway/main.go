@@ -648,6 +648,19 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 		OllamaPathPrefix:     cfg.OllamaPathPrefix,
 		OpenAIPathPrefix:     cfg.OpenAIPathPrefix,
 		AnthropicPathPrefix:  cfg.AnthropicPathPrefix,
+
+		// PII posture surfaced on /admin/about (read-only). Boot
+		// validation has already enforced the encrypt-active-requires-key
+		// invariant; the admin page renders the resolved values so an
+		// operator can confirm what is wired without grepping env.
+		// T-8-LEAK: only booleans for the key fields, never the values.
+		PIIRedactionEnabled: cfg.PIIRedactionEnabled,
+		PIIRedactionMode:    cfg.PIIRedactionMode,
+		PIINEREnabled:       cfg.PIINEREnabled,
+		PIIEnabledEntities:  cfg.PIIEnabledEntities,
+		PIIEntityActions:    cfg.PIIEntityActions,
+		PIIHashKeySet:       cfg.PIIHashKey != "",
+		PIIEncryptKeySet:    cfg.PIIEncryptKey != "",
 	})
 
 	// Boot log surfaces the resolved surface set so operators see
