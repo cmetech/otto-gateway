@@ -5,15 +5,16 @@
 // it covers scenarios 1, 2, 5, 9 (5 is the asymmetry verification).
 //
 // Subtests (per-subtest goleak gating; WARNING #5 + CONTEXT D-21):
-//   1. NativeToolCall_NonStreaming        — D-17 #1 + REVIEW MEDIUM #4 stop_reason
-//   2. NativeToolCall_Streaming           — D-17 #2 (SDK-expected event sequence)
-//   3. NoCoerce_BareJSON                  — D-17 #5 (D-01 asymmetry verification)
-//   4. ExistingToolCalls_NoSecondary      — D-17 #9 (kiro-native tool_use preserved
-//                                            alongside JSON-text content)
+//  1. NativeToolCall_NonStreaming        — D-17 #1 + REVIEW MEDIUM #4 stop_reason
+//  2. NativeToolCall_Streaming           — D-17 #2 (SDK-expected event sequence)
+//  3. NoCoerce_BareJSON                  — D-17 #5 (D-01 asymmetry verification)
+//  4. ExistingToolCalls_NoSecondary      — D-17 #9 (kiro-native tool_use preserved
+//     alongside JSON-text content)
 //
 // Plus the cross-surface canonical equivalence test:
-//   TestE2E_Tools_CrossSurface_CanonicalEquivalence — iteration-3 normalization
-//   (Ollama/OpenAI narration vs Anthropic native tool_use).
+//
+//	TestE2E_Tools_CrossSurface_CanonicalEquivalence — iteration-3 normalization
+//	(Ollama/OpenAI narration vs Anthropic native tool_use).
 package e2e_test
 
 import (

@@ -5,15 +5,15 @@
 // otto-gateway binary with a controllable fake-kiro-cli.
 //
 // Subtests:
-//   1. NativeToolCall_NonStreaming           — D-17 #1 + iteration-3 HIGH #1 narration
-//   2. NativeToolCall_Streaming              — D-17 #2 + REVIEW HIGH #2 two-path rule
-//   3. Coerce_BareJSON_NonStreaming          — D-17 #3
-//   4. Coerce_BareJSON_Streaming             — D-17 #3 + REVIEW HIGH #1 streaming-coerce
-//   5. Coerce_FencedJSON_NonStreaming        — D-17 #4
-//   6. EmptyTools_NoCoerce                   — D-17 #6
-//   7. NoMatch_NoCoerce                      — D-17 #7
-//   8. MalformedJSON_NoCoerce                — D-17 #8
-//   9. ExistingToolCalls_NoSecondaryCoerce   — D-17 #9
+//  1. NativeToolCall_NonStreaming           — D-17 #1 + iteration-3 HIGH #1 narration
+//  2. NativeToolCall_Streaming              — D-17 #2 + REVIEW HIGH #2 two-path rule
+//  3. Coerce_BareJSON_NonStreaming          — D-17 #3
+//  4. Coerce_BareJSON_Streaming             — D-17 #3 + REVIEW HIGH #1 streaming-coerce
+//  5. Coerce_FencedJSON_NonStreaming        — D-17 #4
+//  6. EmptyTools_NoCoerce                   — D-17 #6
+//  7. NoMatch_NoCoerce                      — D-17 #7
+//  8. MalformedJSON_NoCoerce                — D-17 #8
+//  9. ExistingToolCalls_NoSecondaryCoerce   — D-17 #9
 //  10. MultiTool_TieBreaker                  — D-17 #10
 //  11. EmptyParams_SkippedInScoring          — D-17 #11
 //  12. NativeToolCall_ThenJSONText_NoCoerce_Streaming — iteration-3 HIGH #2

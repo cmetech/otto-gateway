@@ -5,19 +5,19 @@
 // frame-log seam (REVIEW HIGH #5).
 //
 // Each subtest:
-//   1. defer GoleakVerifyAtEnd(t) as the first line inside t.Run
-//      (per CONTEXT D-21).
-//   2. Build notifications with a TRAILING NotifText so the stream has time
-//      to disconnect mid-flight.
-//   3. FakeKiro(t, Script{Notifications: notifs, LogFrames: true}) — the
-//      LogFrames=true sets OTTO_FAKE_KIRO_RECEIVED_FRAMES_FILE so the fake
-//      logs every received frame for assertion.
-//   4. POST streaming request with context.WithCancel.
-//   5. Read a few response lines, then cancel the context.
-//   6. Sleep to let the gateway propagate cancel.
-//   7. ReadFakeKiroFrames + assert a `session/cancel` frame was emitted.
-//   8. Make a fresh non-streaming request → asserts the pool slot survived
-//      (Phase 5 dead-slot discipline + Phase 4 D-06 watchdog).
+//  1. defer GoleakVerifyAtEnd(t) as the first line inside t.Run
+//     (per CONTEXT D-21).
+//  2. Build notifications with a TRAILING NotifText so the stream has time
+//     to disconnect mid-flight.
+//  3. FakeKiro(t, Script{Notifications: notifs, LogFrames: true}) — the
+//     LogFrames=true sets OTTO_FAKE_KIRO_RECEIVED_FRAMES_FILE so the fake
+//     logs every received frame for assertion.
+//  4. POST streaming request with context.WithCancel.
+//  5. Read a few response lines, then cancel the context.
+//  6. Sleep to let the gateway propagate cancel.
+//  7. ReadFakeKiroFrames + assert a `session/cancel` frame was emitted.
+//  8. Make a fresh non-streaming request → asserts the pool slot survived
+//     (Phase 5 dead-slot discipline + Phase 4 D-06 watchdog).
 package e2e_test
 
 import (

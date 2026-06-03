@@ -24,24 +24,24 @@
 //
 // REVIEW HIGH #5 (cmd, env) return shape — what changed and why:
 //
-//   FakeKiro used to be FakeKiroScript(t, []byte) string (returning just the
-//   command path) and tried to encode the notification file path via wrapper
-//   scripts. That was insufficient for the gateway's full ACP method set and
-//   leaked shell quoting concerns into tests. The new (cmd, env) shape moves
-//   all wiring into env vars the fake-kiro binary reads at startup —
-//   OTTO_FAKE_KIRO_NOTIFICATIONS_FILE / OTTO_FAKE_KIRO_RECEIVED_FRAMES_FILE /
-//   OTTO_FAKE_KIRO_STOP_REASON.
+//	FakeKiro used to be FakeKiroScript(t, []byte) string (returning just the
+//	command path) and tried to encode the notification file path via wrapper
+//	scripts. That was insufficient for the gateway's full ACP method set and
+//	leaked shell quoting concerns into tests. The new (cmd, env) shape moves
+//	all wiring into env vars the fake-kiro binary reads at startup —
+//	OTTO_FAKE_KIRO_NOTIFICATIONS_FILE / OTTO_FAKE_KIRO_RECEIVED_FRAMES_FILE /
+//	OTTO_FAKE_KIRO_STOP_REASON.
 //
 // Iteration-3 fix to MEDIUM #6 — binary lifetime contract:
 //
-//   The fake-kiro-cli binary is compiled at package init by the TestMain in
-//   e2e_test.go (which was extended to call out to a fixed os.TempDir() path
-//   with a per-pid suffix). The path is stored here in fakeKiroBinaryPath
-//   (package-level var) and survives all subtests. tools_testmain_test.go's
-//   TestFakeKiro_BinaryExistsAfterMultipleSubtests locks this contract.
+//	The fake-kiro-cli binary is compiled at package init by the TestMain in
+//	e2e_test.go (which was extended to call out to a fixed os.TempDir() path
+//	with a per-pid suffix). The path is stored here in fakeKiroBinaryPath
+//	(package-level var) and survives all subtests. tools_testmain_test.go's
+//	TestFakeKiro_BinaryExistsAfterMultipleSubtests locks this contract.
 //
-//   t.TempDir() is still used for the per-test notifications + frame-log
-//   files — those lifetimes are correctly tied to the calling test.
+//	t.TempDir() is still used for the per-test notifications + frame-log
+//	files — those lifetimes are correctly tied to the calling test.
 package e2e_test
 
 import (

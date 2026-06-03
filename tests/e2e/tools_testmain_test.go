@@ -17,11 +17,11 @@
 //
 // Why not sync.Once + t.TempDir() (iteration-2 MEDIUM #6 bug)?
 //
-//   sync.Once + t.TempDir() compiled the binary inside the first test's temp
-//   dir. That temp dir gets cleaned up when the first test completes. Every
-//   subsequent test that called FakeKiro then got a cached path to a binary
-//   that no longer existed on disk → exec.ErrNotFound on every subsequent
-//   subtest.
+//	sync.Once + t.TempDir() compiled the binary inside the first test's temp
+//	dir. That temp dir gets cleaned up when the first test completes. Every
+//	subsequent test that called FakeKiro then got a cached path to a binary
+//	that no longer existed on disk → exec.ErrNotFound on every subsequent
+//	subtest.
 //
 // Why os.TempDir() with a per-pid suffix?
 //
@@ -35,10 +35,10 @@
 //
 // Smoke test:
 //
-//   TestFakeKiro_BinaryExistsAfterMultipleSubtests (in tools_fixtures.go's
-//   companion test space, defined below) proves the binary path is valid
-//   across two sequential t.Run subtests. If the iteration-2 bug were to
-//   recur, the second subtest would fail with "binary not found".
+//	TestFakeKiro_BinaryExistsAfterMultipleSubtests (in tools_fixtures.go's
+//	companion test space, defined below) proves the binary path is valid
+//	across two sequential t.Run subtests. If the iteration-2 bug were to
+//	recur, the second subtest would fail with "binary not found".
 package e2e_test
 
 import (

@@ -10,13 +10,13 @@
 // init (iteration-3 fix to MEDIUM #6 — package-level lifetime, NOT per-test temp dir).
 //
 // ACP method coverage (REVIEW HIGH #5):
-//   1. initialize           → respond with kiro-cli 2.4.1-shaped capabilities
-//   2. session/new          → respond with sessionId + availableModels
-//   3. session/set_model    → respond {} (no-op success)
-//   4. session/prompt       → emit pre-supplied notifications, then respond with stopReason
-//   5. session/cancel       → respond {} (id-correlated when id present, else notification)
-//   6. ping                 → respond {} (Phase 1 D-05 heartbeat)
-//   7. EOF / stdin close    → exit 0 cleanly
+//  1. initialize           → respond with kiro-cli 2.4.1-shaped capabilities
+//  2. session/new          → respond with sessionId + availableModels
+//  3. session/set_model    → respond {} (no-op success)
+//  4. session/prompt       → emit pre-supplied notifications, then respond with stopReason
+//  5. session/cancel       → respond {} (id-correlated when id present, else notification)
+//  6. ping                 → respond {} (Phase 1 D-05 heartbeat)
+//  7. EOF / stdin close    → exit 0 cleanly
 //
 // Per session/request_permission REQUEST (kiro → gateway path): NOT auto-emitted.
 // The fake's notification stream skips it. (Phase 1 gateway-side auto-grant logic
@@ -32,7 +32,7 @@ import (
 )
 
 const (
-	envNotificationsFile = "OTTO_FAKE_KIRO_NOTIFICATIONS_FILE"
+	envNotificationsFile  = "OTTO_FAKE_KIRO_NOTIFICATIONS_FILE"
 	envReceivedFramesFile = "OTTO_FAKE_KIRO_RECEIVED_FRAMES_FILE"
 	envStopReason         = "OTTO_FAKE_KIRO_STOP_REASON"
 )

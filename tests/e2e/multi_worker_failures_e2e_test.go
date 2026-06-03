@@ -10,24 +10,24 @@
 //
 // Subtests under TestE2E_MultiWorker_FailureModes:
 //
-//   MultiSession_ConcurrentAffinity — N distinct sids fired concurrently;
-//     each request must return 200, and the registry must show exactly N
-//     entries (no state bleed, no session loss).
+//	MultiSession_ConcurrentAffinity — N distinct sids fired concurrently;
+//	  each request must return 200, and the registry must show exactly N
+//	  entries (no state bleed, no session loss).
 //
-//   Pool_Session_Coexistence_UnderLoad — concurrent stateless pool traffic
-//     and stateful session traffic; both must complete without one starving
-//     the other.
+//	Pool_Session_Coexistence_UnderLoad — concurrent stateless pool traffic
+//	  and stateful session traffic; both must complete without one starving
+//	  the other.
 //
-//   ConcurrentSameSid_OneSession — N concurrent requests for the same NEW
-//     sid; exactly ONE registry entry must result (Plan 05-02 Pitfall-4
-//     race resolution verified at e2e level).
+//	ConcurrentSameSid_OneSession — N concurrent requests for the same NEW
+//	  sid; exactly ONE registry entry must result (Plan 05-02 Pitfall-4
+//	  race resolution verified at e2e level).
 //
-//   MultipleDeadSlotsParallel — kill two kiro-cli children in parallel;
-//     subsequent requests must succeed via lazy respawn without cascade.
+//	MultipleDeadSlotsParallel — kill two kiro-cli children in parallel;
+//	  subsequent requests must succeed via lazy respawn without cascade.
 //
-//   Reaper_DoesNotReapActiveSession — hold a session active across a
-//     reaper tick; the session must NOT be reaped (per-entry TryLock
-//     skip-in-flight discipline verified live).
+//	Reaper_DoesNotReapActiveSession — hold a session active across a
+//	  reaper tick; the session must NOT be reaped (per-entry TryLock
+//	  skip-in-flight discipline verified live).
 //
 // Helpers (gateOrSkip, bootGateway, doJSON, getHealthAgents, chatBody)
 // are reused from e2e_test.go and pool_sessions_e2e_test.go.

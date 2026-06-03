@@ -4,11 +4,11 @@
 //
 // Automates SC1..SC5 of phase 05-pool-stateful-sessions:
 //
-//   SC1 — Warm pool ready before first chat (warmup-before-listen)
-//   SC2 — Saturation blocks beyond POOL_SIZE (concurrency cap)
-//   SC3 — X-Session-Id session affinity (registry vs pool routing)
-//   SC4 — Idle reap, DELETE, in-flight cancel (session lifecycle)
-//   SC5 — /health/agents wire shape + dead-slot lazy respawn
+//	SC1 — Warm pool ready before first chat (warmup-before-listen)
+//	SC2 — Saturation blocks beyond POOL_SIZE (concurrency cap)
+//	SC3 — X-Session-Id session affinity (registry vs pool routing)
+//	SC4 — Idle reap, DELETE, in-flight cancel (session lifecycle)
+//	SC5 — /health/agents wire shape + dead-slot lazy respawn
 //
 // The file ships ten subtests under TestE2E_PoolSessions, each booting a
 // fresh gateway via bootGateway for full isolation. Helpers from
