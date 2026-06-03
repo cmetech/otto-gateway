@@ -812,6 +812,14 @@ func (c *Client) awaitPromptResult(
 			Method:  "session/cancel",
 			Params:  cancelParams{SessionID: sessionID},
 		})
+		// WR-01: emit engine.prompt.completed on ctx-cancel arm so
+		// every prompt that fires engine.prompt.sent is paired with a
+		// terminal line (no silent gaps in ops dashboards).
+		c.cfg.Logger.Debug("engine.prompt.completed",
+			"session_id", sessionID,
+			"chunks", chunkCountUnderMu(stream),
+			"stop_reason", "ctx_canceled",
+		)
 		stream.close(nil, fmt.Errorf("acp: prompt: %w", ctx.Err()))
 		return
 
@@ -820,6 +828,20 @@ func (c *Client) awaitPromptResult(
 		c.activeStream = nil
 		c.streamMu.Unlock()
 		if frame.Error != nil {
+			// WR-01: emit engine.prompt.completed on the RPC-error /
+			// close-sentinel arm. stop_reason distinguishes the two:
+			// "client_closed" when the sentinel arrives via failPending
+			// (Close() in progress), "rpc_error" otherwise. Chunks may
+			// have landed before the error, so include the count.
+			stopReason := "rpc_error"
+			if frame.Error.Code == closeSentinelCode {
+				stopReason = "client_closed"
+			}
+			c.cfg.Logger.Debug("engine.prompt.completed",
+				"session_id", sessionID,
+				"chunks", chunkCountUnderMu(stream),
+				"stop_reason", stopReason,
+			)
 			if frame.Error.Code == closeSentinelCode {
 				stream.close(nil, ErrClientClosed)
 				return
@@ -837,27 +859,29 @@ func (c *Client) awaitPromptResult(
 			}
 		}
 		stop := parseStopReason(r.StopReason)
-		// Phase 8.3 Pitfall 6 defense-in-depth: read ChunkCount under
-		// stream.mu before close (the readLoop's sequential frame processing
-		// already guarantees all push() calls for this turn have completed
-		// before this response frame was dispatched, but take the mutex to
-		// match the existing pattern at stream.go:85-87).
-		stream.mu.Lock()
-		chunkCount := stream.result.ChunkCount
-		stream.mu.Unlock()
 		// Phase 8.3 D-02: new engine.prompt.completed line carries the
 		// response-landed signal that ops dashboards previously timed via
 		// engine.prompt.sent (whose semantics shifted to send-accepted in
 		// this phase). Emit RAW wire r.StopReason — canonical.StopReason
 		// has no String() method and CONTEXT.md forbids canonical-type
-		// changes in this phase.
+		// changes in this phase. chunkCountUnderMu reads stream.result
+		// .ChunkCount under stream.mu (matches stream.go:85-87 pattern).
 		c.cfg.Logger.Debug("engine.prompt.completed",
 			"session_id", sessionID,
-			"chunks", chunkCount,
+			"chunks", chunkCountUnderMu(stream),
 			"stop_reason", r.StopReason,
 		)
 		stream.close(&FinalResult{StopReason: stop}, nil)
 	}
+}
+
+// chunkCountUnderMu reads stream.result.ChunkCount while holding stream.mu.
+// Factored out so all three terminal arms of awaitPromptResult share the same
+// pattern (WR-01: emit engine.prompt.completed on every exit arm).
+func chunkCountUnderMu(s *Stream) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.result.ChunkCount
 }
 
 // Cancel sends a session/cancel notification (best-effort; no response expected).
