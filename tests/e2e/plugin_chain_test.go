@@ -34,9 +34,10 @@ import (
 
 // TestE2E_HealthHooks_DefaultChain — Scenario 1.
 //
-// Default config (no ENABLED_HOOKS override) → all four hooks present
-// in registration order: RequestIDHook, AuthHook, PIIRedactionHook,
-// LoggingHook. Each entry carries {name, kind, enabled, config}.
+// Default config (no ENABLED_HOOKS override) → all five hooks present
+// in registration order: RequestIDHook, AuthHook, JSONFormatSteeringHook,
+// PIIRedactionHook, LoggingHook. Each entry carries
+// {name, kind, enabled, config}.
 func TestE2E_HealthHooks_DefaultChain(t *testing.T) {
 	gateOrSkip(t)
 	baseURL, cleanup := bootGateway(t, nil)
@@ -68,11 +69,11 @@ func TestE2E_HealthHooks_DefaultChain(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if len(body.Hooks) < 4 {
-		t.Fatalf("hooks count: got %d, want >= 4 (RequestIDHook, AuthHook, PIIRedactionHook, LoggingHook); body=%+v", len(body.Hooks), body)
+	if len(body.Hooks) < 5 {
+		t.Fatalf("hooks count: got %d, want >= 5 (RequestIDHook, AuthHook, JSONFormatSteeringHook, PIIRedactionHook, LoggingHook); body=%+v", len(body.Hooks), body)
 	}
 
-	wantOrder := []string{"RequestIDHook", "AuthHook", "PIIRedactionHook", "LoggingHook"}
+	wantOrder := []string{"RequestIDHook", "AuthHook", "JSONFormatSteeringHook", "PIIRedactionHook", "LoggingHook"}
 	for i, name := range wantOrder {
 		got, _ := body.Hooks[i]["name"].(string)
 		if got != name {

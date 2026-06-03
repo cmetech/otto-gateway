@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -187,5 +188,80 @@ func TestApp_WarmupBeforeListen(t *testing.T) {
 	}
 	if a != nil {
 		t.Error("newApp returned non-nil app on Warmup failure; the server MUST NOT be constructed when warmup fails")
+	}
+}
+
+// TestApp_DefaultHookChain_AllFiveHooksPresent — regression guard for
+// the v1.8.2 install-template bug where ENABLED_HOOKS=RequestIDHook,
+// AuthHook,PIIRedactionHook,LoggingHook silently filtered
+// JSONFormatSteeringHook out of the chain, breaking LangFlow Ollama
+// JSON-format steering.
+//
+// Default cfg (no ENABLED_HOOKS override) MUST yield a chain with all
+// five registered hooks at /health/hooks, in registration order:
+//
+//	RequestIDHook, AuthHook, JSONFormatSteeringHook,
+//	PIIRedactionHook, LoggingHook.
+//
+// Runs under the degraded KIRO_CMD="" posture (no pool / no engine);
+// /health/hooks is wired off the chain directly so it serves the
+// full picture even without an upstream worker.
+func TestApp_DefaultHookChain_AllFiveHooksPresent(t *testing.T) {
+	cfg := config.Config{
+		HTTPAddr:                  ":0",
+		KiroCmd:                   "", // degraded mode — same posture as TestApp_NoKiroCmd_StartsHealthOnly
+		PoolSize:                  1,
+		PingInterval:              60 * time.Second,
+		OllamaPathPrefix:          "/api",
+		OpenAIPathPrefix:          "/v1",
+		AnthropicPathPrefix:       "/v1",
+		JSONFormatSteeringEnabled: true, // hook is in the chain regardless; enabled controls work-doing
+		// ENABLED_HOOKS intentionally empty — proves the empty-means-all
+		// semantics is the active default for fresh installs.
+	}
+	logger := testutil.Logger(t)
+
+	a, cleanup, err := newApp(context.Background(), cfg, logger)
+	if err != nil {
+		t.Fatalf("newApp: %v", err)
+	}
+	defer cleanup()
+	if a.srv == nil {
+		t.Fatal("a.srv: nil — server must be constructable in degraded mode")
+	}
+
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/health/hooks", nil)
+	w := httptest.NewRecorder()
+	a.srv.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("/health/hooks status: got %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+
+	var body struct {
+		Hooks []struct {
+			Name string `json:"name"`
+			Kind string `json:"kind"`
+		} `json:"hooks"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("decode /health/hooks: %v", err)
+	}
+
+	wantOrder := []string{
+		"RequestIDHook",
+		"AuthHook",
+		"JSONFormatSteeringHook",
+		"PIIRedactionHook",
+		"LoggingHook",
+	}
+	if len(body.Hooks) < len(wantOrder) {
+		t.Fatalf("hooks count: got %d, want >= %d (%v); body=%+v",
+			len(body.Hooks), len(wantOrder), wantOrder, body.Hooks)
+	}
+	for i, want := range wantOrder {
+		if body.Hooks[i].Name != want {
+			t.Errorf("hooks[%d].name: got %q, want %q (registration order)",
+				i, body.Hooks[i].Name, want)
+		}
 	}
 }

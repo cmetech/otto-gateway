@@ -1505,9 +1505,9 @@ init_cmd() {
     # "first in Pre" invariant is preserved. The config-level symmetric
     # rule (config.go) also handles this at runtime, but writing the
     # accurate list to the file keeps the operator-facing surface honest.
-    local enabled_hooks_value="RequestIDHook,AuthHook,PIIRedactionHook,LoggingHook"
+    local enabled_hooks_value="RequestIDHook,AuthHook,JSONFormatSteeringHook,PIIRedactionHook,LoggingHook"
     if [[ "$chat_trace" -eq 1 ]]; then
-        enabled_hooks_value="ChatTraceHook,RequestIDHook,AuthHook,PIIRedactionHook,LoggingHook"
+        enabled_hooks_value="ChatTraceHook,RequestIDHook,AuthHook,JSONFormatSteeringHook,PIIRedactionHook,LoggingHook"
     fi
 
     # Ensure template exists — it is the single source of truth for the key list.

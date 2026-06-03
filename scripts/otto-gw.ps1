@@ -1026,9 +1026,9 @@ function Invoke-Init {
     # "first in Pre" invariant. config.Load also enforces this at runtime,
     # but writing the accurate list to disk keeps the file honest.
     $enabledHooksValue = if ($chatOn) {
-        "ChatTraceHook,RequestIDHook,AuthHook,PIIRedactionHook,LoggingHook"
+        "ChatTraceHook,RequestIDHook,AuthHook,JSONFormatSteeringHook,PIIRedactionHook,LoggingHook"
     } else {
-        "RequestIDHook,AuthHook,PIIRedactionHook,LoggingHook"
+        "RequestIDHook,AuthHook,JSONFormatSteeringHook,PIIRedactionHook,LoggingHook"
     }
 
     # Ensure parent dir exists.

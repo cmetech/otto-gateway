@@ -24,6 +24,12 @@ go.work.sum
 .env.*
 !.env.example
 !.env.*.example
+# otto-gw generated env files (otto-gw init writes .otto-gw.overrides.env
+# with real secrets; .otto-gw.env / .env.otto-gw are template copies).
+# None of these should ever land in the repo.
+.otto-gw.env
+.otto-gw.overrides.env
+.env.otto-gw
 *_creds*
 private.*
 
