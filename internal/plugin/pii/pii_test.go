@@ -793,3 +793,27 @@ func TestIMEI_ContextAnchored_Integration(t *testing.T) {
 		t.Errorf("expected [IMEI token; got %q", anchored)
 	}
 }
+
+// TestIMSIvsIMEI_Disambiguation: shared regex shape, disambiguated by
+// context keyword. "IMSI: <digits>" must label as IMSI and NOT IMEI;
+// "IMEI: <digits>" must label as IMEI and NOT IMSI.
+func TestIMSIvsIMEI_Disambiguation(t *testing.T) {
+	hook := freshHook("replace")
+	hook.EnabledEntities = []string{"IMEI", "IMSI"}
+
+	imsiTxt := redactText(t, hook, "IMSI: 310150123456789")
+	if !strings.Contains(imsiTxt, "[IMSI") {
+		t.Errorf("expected [IMSI token, got %q", imsiTxt)
+	}
+	if strings.Contains(imsiTxt, "[IMEI") {
+		t.Errorf("IMSI context must not trigger IMEI label, got %q", imsiTxt)
+	}
+
+	imeiTxt := redactText(t, hook, "IMEI: 490154203237518")
+	if !strings.Contains(imeiTxt, "[IMEI") {
+		t.Errorf("expected [IMEI token, got %q", imeiTxt)
+	}
+	if strings.Contains(imeiTxt, "[IMSI") {
+		t.Errorf("IMEI context must not trigger IMSI label, got %q", imeiTxt)
+	}
+}

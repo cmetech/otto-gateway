@@ -165,6 +165,15 @@ var Recognizers = []Recognizer{
 		Validate:        nil,
 		ContextKeywords: []string{"imei", "international mobile equipment identity"},
 	},
+	// IMSI shares the IMEI regex shape; context-keyword filter at the
+	// redact pipeline decides which label applies. When both keywords
+	// appear near the same span, registration order (IMEI first) wins.
+	{
+		Name:            "IMSI",
+		Pattern:         imeiRe,
+		Validate:        nil,
+		ContextKeywords: []string{"imsi", "international mobile subscriber identity"},
+	},
 }
 
 // SourceAuditNames returns the Recognizers names in registration order.

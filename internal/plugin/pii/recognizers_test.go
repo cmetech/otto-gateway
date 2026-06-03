@@ -271,10 +271,28 @@ func TestIMEIRecognizer(t *testing.T) {
 	}
 }
 
+// TestIMSIRecognizer — same 15-digit shape as IMEI, disambiguated by
+// "imsi" / "international mobile subscriber identity" context keyword.
+func TestIMSIRecognizer(t *testing.T) {
+	r := findRecognizer(t, "IMSI")
+	if !r.Pattern.MatchString("310150123456789") {
+		t.Error("IMSI shape: 15-digit run must match")
+	}
+	wantKw := []string{"imsi", "international mobile subscriber identity"}
+	if len(r.ContextKeywords) != len(wantKw) {
+		t.Fatalf("IMSI ContextKeywords len: got %d, want %d", len(r.ContextKeywords), len(wantKw))
+	}
+	for i, kw := range wantKw {
+		if r.ContextKeywords[i] != kw {
+			t.Errorf("IMSI ContextKeywords[%d]: got %q, want %q", i, r.ContextKeywords[i], kw)
+		}
+	}
+}
+
 // TestRecognizers_RegistryShape asserts the registry has the expected
 // names in registration order, each with a non-nil Pattern.
 func TestRecognizers_RegistryShape(t *testing.T) {
-	wantNames := []string{"Email", "IPv4", "IPv6", "SSN", "CreditCard", "USPhone", "SIP_URI", "IMEI"}
+	wantNames := []string{"Email", "IPv4", "IPv6", "SSN", "CreditCard", "USPhone", "SIP_URI", "IMEI", "IMSI"}
 	if got := len(Recognizers); got != len(wantNames) {
 		t.Fatalf("len(Recognizers): got %d, want %d", got, len(wantNames))
 	}
@@ -312,10 +330,18 @@ func TestRecognizers_CompiledAtPackageInit_NoPerRequestCompile(t *testing.T) {
 	if regexp.MustCompile(`\bregexp\.Compile\(`).Match(src) {
 		t.Error("recognizers.go contains regexp.Compile( — must use MustCompile at init")
 	}
-	// Belt-and-suspenders: at least one MustCompile per recognizer.
+	// Belt-and-suspenders: at least one MustCompile per UNIQUE pattern.
+	// Recognizers may share a compiled regex (IMEI/IMSI both reference
+	// imeiRe and are disambiguated by ContextKeywords); count unique
+	// pattern pointers, not Recognizers.
+	uniquePatterns := make(map[*regexp.Regexp]struct{})
+	for _, r := range Recognizers {
+		uniquePatterns[r.Pattern] = struct{}{}
+	}
 	count := strings.Count(string(src), "regexp.MustCompile(")
-	if count < len(Recognizers) {
-		t.Errorf("regexp.MustCompile call count: got %d, want at least %d", count, len(Recognizers))
+	if count < len(uniquePatterns) {
+		t.Errorf("regexp.MustCompile call count: got %d, want at least %d (unique patterns)",
+			count, len(uniquePatterns))
 	}
 }
 
