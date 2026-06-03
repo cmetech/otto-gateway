@@ -1,15 +1,25 @@
-// Phase 8 PLUG-06 — six built-in PII recognizers (Email, IPv4, IPv6,
-// SSN, CreditCard, USPhone). Recognizer struct = regex + optional
-// post-validate filter. All regex compiled at package init via
+// Phase 8 PLUG-06 (expanded 2026-06-03) — 13 built-in regex PII
+// recognizers + 2 NER recognizers (PERSON, LOCATION) emitted by ner.go
+// when PII_NER_ENABLED is true.
+//
+// Original six (Phase 8): Email, IPv4, IPv6, SSN, CreditCard, USPhone.
+// Telecom expansion (2026-06-03 plan): SIP_URI, IMEI, IMSI, MSISDN,
+// MAC_ADDRESS, COORDINATES, SITE. Context-anchored recognizers (IMEI,
+// IMSI, MSISDN, SITE) use Recognizer.ContextKeywords + a ±50-byte
+// window check inside the redact pipeline so ambiguous patterns
+// (e.g., 15-digit IMEI vs IMSI) only fire when a recognizer-specific
+// keyword sits nearby.
+//
+// Recognizer struct = regex + optional post-validate filter +
+// optional context keywords. All regex compiled at package init via
 // regexp.MustCompile (zero per-request compile cost; init panic
 // surfaces a bad regex before the binary serves traffic). Pattern 4
 // from 08-RESEARCH; validators implement RESEARCH Pitfall 1 (SSN RE2
 // workaround) + Don't-Hand-Roll (IPv6 via net.ParseIP).
 //
-// v1 recall is regex + post-validator only (no NER); recall is < perfect
-// by design per CONTEXT.md (deferred-ideas: jdkato/prose/v2 is v2).
-// Fixed-table positive/negative cases capture documented common-case
-// coverage; misses are accepted v1 risk under T-8-PII-BYPASS.
+// Recall is < perfect by design per CONTEXT.md. T-8-PII-BYPASS accepts
+// the residual miss rate; the prose NER (ner.go) closes part of the
+// PERSON / LOCATION gap when enabled.
 //
 // Extension path (NOT shipped v1): Recognizer can grow MinConfidence and
 // Anonymize fields if a future hook needs per-recognizer per-match

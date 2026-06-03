@@ -139,9 +139,10 @@ type Config struct {
 	PIIRedactionEnabled bool
 
 	// PIIEnabledEntities is the comma-split list of recognizer Names that
-	// PIIRedactionHook applies. Empty = all six recognizers active. An
-	// unknown name causes Load() to return an error (typo-fail-fast).
-	// Loaded from PII_ENABLED_ENTITIES.
+	// PIIRedactionHook applies. Empty = all registered recognizers active
+	// (13 regex + 2 NER when PII_NER_ENABLED=true). An unknown name causes
+	// Load() to return an error (typo-fail-fast). Loaded from
+	// PII_ENABLED_ENTITIES.
 	PIIEnabledEntities []string
 
 	// PIIRedactionMode is "replace" | "mask" | "hash" | "drop" (Phase 8
@@ -690,12 +691,12 @@ func validatePIIMode(m string) error {
 	}
 }
 
-// validatePIIEntities rejects any name not in the canonical six-entity
-// recognizer set (Email, IPv4, IPv6, SSN, CreditCard, USPhone). Empty
-// input returns nil (default = all entities active per D-02).
+// validatePIIEntities rejects any name not in the canonical entity
+// set (see piiAllowedEntities below). Empty input returns nil
+// (default = all entities active per D-02).
 //
 // The allowlist is hand-coded here for the same TRST-04 / arch-lint
-// reason as validatePIIMode — the six entity names are part of the
+// reason as validatePIIMode — the entity names are part of the
 // env-var contract surfaced to operators in docs/operating.md. When
 // internal/plugin/pii/recognizers.go ships a new recognizer, the
 // docstring there + this validator + the operator docs all change
@@ -761,8 +762,8 @@ func validatePIIEntities(names []string) error {
 // parsePIIEntityActions parses the PII_ENTITY_ACTIONS env value.
 // Shape: "Entity:action,Entity:action,..." e.g. "Email:encrypt,SSN:drop".
 // Returns (nil, nil) for an empty input. Validates every entity name
-// against the canonical six-entity set and every action against the
-// five-action set.
+// against piiAllowedEntities and every action against the five-action
+// set.
 func parsePIIEntityActions(raw string) (map[string]string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
