@@ -398,6 +398,36 @@ JSON behavior — useful for `make run`, ad-hoc dev, and the e2e suite
 (which captures stdout). Set `LOG_FILE=./logs/otto-gateway.log` to
 enable rotation when invoking the binary directly.
 
+### Engine prompt log-line semantics (Phase 8.3)
+
+As of Phase 8.3 (ACP `Prompt()` non-blocking refactor),
+`engine.prompt.sent` and `engine.prompt.completed` mark the two ends
+of a kiro-cli prompt turn separately:
+
+| Line                       | Fires when                                                                                      |
+|----------------------------|-------------------------------------------------------------------------------------------------|
+| `engine.prompt.sent`       | The gateway writer goroutine accepts the `session/prompt` payload onto its channel (millisecond latency from `engine.new_session.ok`). |
+| `engine.prompt.completed`  | The per-prompt goroutine observes the `session/prompt` response, the close-sentinel, or `ctx.Done()`. Carries `session_id`, `chunks`, `stop_reason`. |
+
+**Operator-facing semantic shift.** Before Phase 8.3 `engine.prompt.sent`
+fired only after kiro-cli's full `session/prompt` response landed
+(gated on the agent's complete LLM turn — typically 5–30 seconds).
+Post-Phase-8.3 it fires within milliseconds of request acceptance.
+Dashboards that previously measured end-to-end prompt latency as the
+interval between `engine.new_session.ok` and `engine.prompt.sent`
+should switch to the interval between `engine.new_session.ok` and
+`engine.prompt.completed` to preserve the same measurement.
+
+`stop_reason` on `engine.prompt.completed` distinguishes the terminal
+arm so dashboards can attribute non-happy-path turns:
+
+| `stop_reason`     | Meaning                                                                       |
+|-------------------|-------------------------------------------------------------------------------|
+| (kiro-cli string) | Happy path — raw wire value from the `session/prompt` response (e.g. `end_turn`, `max_tokens`). |
+| `ctx_canceled`    | Caller cancelled the request context before kiro-cli responded.               |
+| `rpc_error`       | kiro-cli returned a JSON-RPC error.                                           |
+| `client_closed`   | The gateway closed the kiro-cli connection while the prompt was in flight.    |
+
 ## Admin Observability UI
 
 OTTO Gateway ships a dark-mode admin page at `GET /admin` that surfaces
