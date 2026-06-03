@@ -1,4 +1,5 @@
-// Package jsonformat implements JSONFormatSteeringHook, a canonical-layer
+// Package jsonformat implements jsonformat.SteeringHook (operator-facing
+// runtime name "JSONFormatSteeringHook"), a canonical-layer
 // PreHook that appends a hard-steering system-prompt block whenever
 // canonical.ChatRequest.Format is non-nil. This reproduces the Node Ollama
 // shim's GEN_RULES injection so LangFlow flows that set format:"json" or
@@ -31,31 +32,31 @@ import (
 const genRulesBlock = `Generate the COMPLETE result for EVERY item requested in this single response — do not summarize, truncate, abbreviate, or omit items.
 Do NOT add any prose, preamble, commentary, or follow-up questions, and do NOT offer to export, save, or write to a file. Output the data directly.`
 
-// JSONFormatSteeringHook appends the GEN_RULES steering block (and an
+// SteeringHook appends the GEN_RULES steering block (and an
 // optional JSON-schema description) to req.System whenever req.Format is
 // non-nil. It is a Pre-only hook — it mutates the request and returns
 // (nil, nil) to continue the chain.
 //
 // Safe for concurrent Before calls: no mutable state beyond Enabled, which
 // is set once at construction and never written after that.
-type JSONFormatSteeringHook struct {
+type SteeringHook struct {
 	Enabled bool
 }
 
-// New constructs a JSONFormatSteeringHook. enabled mirrors the
+// New constructs a SteeringHook. enabled mirrors the
 // JSON_FORMAT_STEERING_ENABLED env knob (default true per D-06).
-func New(enabled bool) *JSONFormatSteeringHook {
-	return &JSONFormatSteeringHook{Enabled: enabled}
+func New(enabled bool) *SteeringHook {
+	return &SteeringHook{Enabled: enabled}
 }
 
 // Name reports the filter-discovery name for chain.Filter (Pattern A —
 // explicit Name() over reflect for stable API). Matches the hook-chain
 // introspection key operators see via GET /health/hooks.
-func (h *JSONFormatSteeringHook) Name() string { return "JSONFormatSteeringHook" }
+func (h *SteeringHook) Name() string { return "JSONFormatSteeringHook" }
 
 // Describe publishes the hook's safe-to-publish config for /health/hooks
 // (OBSV-04). Kind is "Pre" — this hook is Pre-only.
-func (h *JSONFormatSteeringHook) Describe() (kind string, config map[string]any) {
+func (h *SteeringHook) Describe() (kind string, config map[string]any) {
 	return "Pre", map[string]any{
 		"enabled":    h.Enabled,
 		"default_on": true,
@@ -76,7 +77,7 @@ func (h *JSONFormatSteeringHook) Describe() (kind string, config map[string]any)
 //
 // The hook does NOT short-circuit. It mutates req.System in-place and
 // forwards.
-func (h *JSONFormatSteeringHook) Before(_ context.Context, req *canonical.ChatRequest) (*canonical.ChatResponse, error) {
+func (h *SteeringHook) Before(_ context.Context, req *canonical.ChatRequest) (*canonical.ChatResponse, error) {
 	if !h.Enabled {
 		return nil, nil
 	}
@@ -109,4 +110,4 @@ func (h *JSONFormatSteeringHook) Before(_ context.Context, req *canonical.ChatRe
 // Compile-time PreHook interface satisfaction. If a future engine signature
 // change drifts the PreHook contract, this line fails to build at the
 // hook's source — surfaces the regression at the right blame target.
-var _ engine.PreHook = (*JSONFormatSteeringHook)(nil)
+var _ engine.PreHook = (*SteeringHook)(nil)

@@ -11,7 +11,7 @@ import (
 )
 
 // Compile-time interface assertion mirroring the package-level var.
-var _ engine.PreHook = (*JSONFormatSteeringHook)(nil)
+var _ engine.PreHook = (*SteeringHook)(nil)
 
 // TestGenRulesBlock_VerbatimText pins the exact GEN_RULES text so that any
 // accidental mutation of the constant is caught by CI. The substrings match
