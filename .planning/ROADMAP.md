@@ -35,7 +35,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 6.1: Admin Observability UI** *(INSERTED)* - Dark-mode `/admin` page rendering `/health` + `/health/agents` with the OTTO brand palette; auto-refresh polling; nice-to-have live log tail (completed 2026-05-28)
 - [x] **Phase 8: Plugin Hook Chain** - `PreHook`/`PostHook` over canonical types, with RequestID, Auth, Logging registered (completed 2026-05-28)
 - [x] **Phase 8.2: Ollama `format` Parity** *(INSERTED)* - LangFlow `format:"json"` / `format:<schema>` requests are steered via a canonical `PreHook` (GEN_RULES block) and the response is fence-stripped before render — Node-shim parity for the v1 replacement goal (completed 2026-06-03)
-- [ ] **Phase 8.3: ACP Prompt() Non-Blocking Refactor** *(INSERTED)* - `acp.Client.Prompt()` blocks until the final `session/prompt` response arrives, but `engine.Run` calls it synchronously and the 64-slot chunk buffer overflows on any non-trivial response — gateway deadlocks with worker still streaming. Refactor `Prompt()` to return the `*Stream` as soon as the request is accepted; move final-response handling into a goroutine that finalizes via `stream.close()`. `Stream.Result()` becomes the new sync point.
+- [x] **Phase 8.3: ACP Prompt() Non-Blocking Refactor** *(INSERTED)* - `acp.Client.Prompt()` blocks until the final `session/prompt` response arrives, but `engine.Run` calls it synchronously and the 64-slot chunk buffer overflows on any non-trivial response — gateway deadlocks with worker still streaming. Refactor `Prompt()` to return the `*Stream` as soon as the request is accepted; move final-response handling into a goroutine that finalizes via `stream.close()`. `Stream.Result()` becomes the new sync point. (completed 2026-06-03)
 - [x] **Phase 9: Distribution** - Cross-compile Linux+Windows from macOS, full trust-gate CI matrix gating merges (completed 2026-05-28)
 
 ## Phase Details
@@ -456,12 +456,12 @@ Plans:
 - **A surface-level retry on `Prompt()` failure.** Existing engine.Run callers handle Prompt errors via the watchdog + pool slot release; this phase preserves that path but does not add new retry semantics.
 - **Buffering chunks into an unbounded queue to mask backpressure.** Backpressure on `Stream.Chunks` remains a correctness property (the readLoop is the producer, slow consumers correctly slow it down). What changes is that backpressure no longer cascades into the response-wait path.
 
-**Plans:** 1 plan
+**Plans:** 1/1 plans complete
 
 Plans:
 **Wave 1**
 
-- [ ] 08.3-01-PLAN.md — Single atomic vertical slice: refactor acp.Client.Prompt() to non-blocking + add awaitPromptResult goroutine (registered with c.wg) + engine.prompt.completed DEBUG emission + Stream docstring update (remove MUST-drain-concurrently footgun); add TestIntegration_Prompt_OverflowsBuffer_DoesNotDeadlock (≥128 chunks before response, 100ms return deadline) + four whitebox tests (dispatcher lifecycle, ctx-cancel during in-flight, Close during in-flight, engine.prompt.completed log emission); preserve TestIntegration_FakeACP_E2E_MixedVariants unchanged for backward-compat; goleak deliberate-leak verification; operator-Windows test-pii.ps1 sign-off (blocking human-verify).
+- [x] 08.3-01-PLAN.md — Single atomic vertical slice: refactor acp.Client.Prompt() to non-blocking + add awaitPromptResult goroutine (registered with c.wg) + engine.prompt.completed DEBUG emission + Stream docstring update (remove MUST-drain-concurrently footgun); add TestIntegration_Prompt_OverflowsBuffer_DoesNotDeadlock (≥128 chunks before response, 100ms return deadline) + four whitebox tests (dispatcher lifecycle, ctx-cancel during in-flight, Close during in-flight, engine.prompt.completed log emission); preserve TestIntegration_FakeACP_E2E_MixedVariants unchanged for backward-compat; goleak deliberate-leak verification; operator-Windows test-pii.ps1 sign-off (blocking human-verify).
 
 ### Phase 9: Distribution
 

@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v1.5
 milestone_name: audit WARNINGs
 status: executing
-last_updated: "2026-06-03T23:20:47.951Z"
-last_activity: 2026-06-03 -- Phase 08.3 planning complete
+last_updated: "2026-06-03T23:22:04.296Z"
+last_activity: 2026-06-03 -- Phase 08.3 execution started
 progress:
   total_phases: 4
   completed_phases: 2
@@ -20,15 +20,15 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-23)
 
 **Core value:** All three API surfaces (OpenAI for Pi SDK, Ollama for LangFlow, Anthropic for loop24-client/GSD Pi) serve their respective clients without those clients knowing kiro-cli exists, with one place to enforce policy.
-**Current focus:** Phase 8.3 — ACP Prompt() Non-Blocking Refactor
+**Current focus:** Phase 08.3 — acp-prompt-non-blocking-refactor
 
 ## Current Position
 
-Phase: 8.3 (acp-prompt-non-blocking-refactor) — READY TO PLAN
-Plan: 0 of TBD
-Status: Ready to execute
+Phase: 08.3 (acp-prompt-non-blocking-refactor) — EXECUTING
+Plan: 1 of 1
+Status: Executing Phase 08.3
 Next: /gsd-plan-phase 8.3
-Last activity: 2026-06-03 -- Phase 08.3 planning complete
+Last activity: 2026-06-03 -- Phase 08.3 execution started
 
 Progress: [██████████] 100%
 
