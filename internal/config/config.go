@@ -688,6 +688,7 @@ var piiAllowedEntities = map[string]struct{}{
 	"IMEI":        {},
 	"IMSI":        {},
 	"MSISDN":      {},
+	"MAC_ADDRESS": {},
 }
 
 // piiAllowedEntitiesList returns the allowlist as a sorted slice for use

@@ -90,6 +90,9 @@ var (
 	//	          subscriber-number keywords so naked +<country>... doesn't
 	//	          steal USPhone's territory.
 	msisdnRe = regexp.MustCompile(`\+[1-9]\d{7,14}`)
+
+	//	macAddrRe — six pairs of hex separated by ':' or '-'. Context-free.
+	macAddrRe = regexp.MustCompile(`\b(?:[0-9A-Fa-f]{2}[:\-]){5}[0-9A-Fa-f]{2}\b`)
 )
 
 // validateIPv4Octets splits the matched dotted-quad and confirms each of
@@ -188,6 +191,7 @@ var Recognizers = []Recognizer{
 			"msisdn", "subscriber number", "calling number", "called number",
 		},
 	},
+	{Name: "MAC_ADDRESS", Pattern: macAddrRe, Validate: nil},
 }
 
 // SourceAuditNames returns the Recognizers names in registration order.

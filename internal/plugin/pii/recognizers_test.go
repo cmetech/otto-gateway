@@ -318,10 +318,36 @@ func TestMSISDNRecognizer(t *testing.T) {
 	}
 }
 
+// TestMACAddressRecognizer — six pairs of hex with either ':' or '-'
+// separators. Context-free.
+func TestMACAddressRecognizer(t *testing.T) {
+	r := findRecognizer(t, "MAC_ADDRESS")
+	cases := []struct {
+		in          string
+		wantMatched bool
+	}{
+		{"00:1B:44:11:3A:B7", true},
+		{"00-1B-44-11-3A-B7", true},
+		{"aa:bb:cc:dd:ee:ff", true},
+		{"00:1B:44:11:3A", false},    // 5 pairs
+		{"GG:1B:44:11:3A:B7", false}, // invalid hex
+		{"mac=00:1B:44:11:3A:B7,then=more", true}, // embedded MAC ok
+		{"::::::::::::", false},                   // colons but no hex
+	}
+	for _, c := range cases {
+		t.Run(c.in, func(t *testing.T) {
+			got, _ := regexAndValidate(r, c.in)
+			if got != c.wantMatched {
+				t.Errorf("MAC %q: matched=%v want=%v", c.in, got, c.wantMatched)
+			}
+		})
+	}
+}
+
 // TestRecognizers_RegistryShape asserts the registry has the expected
 // names in registration order, each with a non-nil Pattern.
 func TestRecognizers_RegistryShape(t *testing.T) {
-	wantNames := []string{"Email", "IPv4", "IPv6", "SSN", "CreditCard", "USPhone", "SIP_URI", "IMEI", "IMSI", "MSISDN"}
+	wantNames := []string{"Email", "IPv4", "IPv6", "SSN", "CreditCard", "USPhone", "SIP_URI", "IMEI", "IMSI", "MSISDN", "MAC_ADDRESS"}
 	if got := len(Recognizers); got != len(wantNames) {
 		t.Fatalf("len(Recognizers): got %d, want %d", got, len(wantNames))
 	}
