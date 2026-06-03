@@ -854,3 +854,130 @@ func TestSITE_Integration(t *testing.T) {
 		t.Errorf("expected [SITE token for ENB-style; got %q", got)
 	}
 }
+
+// TestPIIRedactionHook_NEREncryptRoundTrip — end-to-end Before/After:
+//
+//  1. Before encrypts a PERSON span detected by prose alongside an
+//     Email detected by regex.
+//  2. The encrypted text simulates a kiro-cli echo by being copied into
+//     the response ChatResponse.
+//  3. After's decrypt sweep restores the plaintext PERSON name and
+//     Email so a client sees the original values.
+//
+// This is the regex+NER variant of the existing TestPIIRedactionHook
+// encrypt round-trip — it pins that the [PII:PERSON:base64url] token
+// shape decrypts identically to the [PII:Email:…] token, since
+// DecryptToken treats the entity label as opaque GCM AAD.
+func TestPIIRedactionHook_NEREncryptRoundTrip(t *testing.T) {
+	key, err := DeriveKey("e2e-ner-test-key")
+	if err != nil {
+		t.Fatalf("DeriveKey: %v", err)
+	}
+	hook := &PIIRedactionHook{
+		Recognizers:     Recognizers,
+		Enabled:         true,
+		Mode:            "encrypt",
+		EncryptKey:      key,
+		EnabledEntities: []string{"PERSON", "LOCATION", "Email"},
+		NER:             NewNEREngine(),
+	}
+
+	original := "John Smith emailed alice@example.com from Boston."
+	ctx, _ := withCtxSummary(t)
+	req := &canonical.ChatRequest{
+		Messages: []canonical.Message{userMessage(original)},
+	}
+	if _, err := hook.Before(ctx, req); err != nil {
+		t.Fatalf("Before: %v", err)
+	}
+	encrypted := req.Messages[0].Content[0].Text
+
+	// All three entities should be encrypted; none of the plaintext
+	// should remain in the request text.
+	for _, plain := range []string{"John Smith", "Boston", "alice@example.com"} {
+		if strings.Contains(encrypted, plain) {
+			t.Errorf("plaintext %q leaked through Before; got %q", plain, encrypted)
+		}
+	}
+	// Each entity must appear as a [PII:Entity:…] token.
+	for _, label := range []string{"[PII:PERSON:", "[PII:LOCATION:", "[PII:Email:"} {
+		if !strings.Contains(encrypted, label) {
+			t.Errorf("expected token prefix %q in encrypted text; got %q", label, encrypted)
+		}
+	}
+
+	// Simulate the upstream echo: response text == encrypted request text.
+	resp := &canonical.ChatResponse{
+		Message: canonical.Message{
+			Role: canonical.RoleAssistant,
+			Content: []canonical.ContentPart{
+				{Kind: canonical.ContentKindText, Text: encrypted},
+			},
+		},
+	}
+	if err := hook.After(ctx, req, resp); err != nil {
+		t.Fatalf("After: %v", err)
+	}
+	got := resp.Message.Content[0].Text
+	for _, plain := range []string{"John Smith", "Boston", "alice@example.com"} {
+		if !strings.Contains(got, plain) {
+			t.Errorf("decrypt did not restore plaintext %q; got %q", plain, got)
+		}
+	}
+}
+
+// TestPIIRedactionHook_NER_PerEntityActions: PII_ENTITY_ACTIONS-driven
+// mixed modes work across regex AND NER entities. PERSON masks,
+// LOCATION drops, IMEI encrypts, Email defaults to global replace.
+func TestPIIRedactionHook_NER_PerEntityActions(t *testing.T) {
+	key, err := DeriveKey("per-entity-actions-key")
+	if err != nil {
+		t.Fatalf("DeriveKey: %v", err)
+	}
+	hook := &PIIRedactionHook{
+		Recognizers: Recognizers,
+		Enabled:     true,
+		Mode:        "replace",
+		HashKey:     testHashKey,
+		EncryptKey:  key,
+		EntityActions: map[string]string{
+			"PERSON":   "mask",
+			"LOCATION": "drop",
+			"IMEI":     "encrypt",
+		},
+		EnabledEntities: []string{"PERSON", "LOCATION", "Email", "IMEI"},
+		NER:             NewNEREngine(),
+	}
+
+	original := "John Smith (IMEI: 490154203237518) emailed me from Boston about alice@example.com."
+	got := redactText(t, hook, original)
+
+	// PERSON → masked (not replaced, not [PERSON])
+	if strings.Contains(got, "John Smith") {
+		t.Errorf("PERSON should be masked away; got %q", got)
+	}
+	if strings.Contains(got, "[PERSON]") {
+		t.Errorf("PERSON in 'mask' mode must NOT emit [PERSON] (that is the replace shape); got %q", got)
+	}
+	// LOCATION → dropped to empty string
+	if strings.Contains(got, "Boston") {
+		t.Errorf("LOCATION should be dropped; got %q", got)
+	}
+	if strings.Contains(got, "[LOCATION]") {
+		t.Errorf("LOCATION in 'drop' mode must produce empty string, not a token; got %q", got)
+	}
+	// IMEI → encrypt token
+	if strings.Contains(got, "490154203237518") {
+		t.Errorf("IMEI should be encrypted; got %q", got)
+	}
+	if !strings.Contains(got, "[PII:IMEI:") {
+		t.Errorf("expected [PII:IMEI: encrypt token; got %q", got)
+	}
+	// Email → default mode (replace, since not in EntityActions)
+	if strings.Contains(got, "alice@example.com") {
+		t.Errorf("Email should be redacted; got %q", got)
+	}
+	if !strings.Contains(got, "[EMAIL") {
+		t.Errorf("expected [EMAIL replace-mode token; got %q", got)
+	}
+}
