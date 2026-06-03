@@ -103,6 +103,22 @@ var (
 	//	doesn't bleed into an adjacent number. The trailing E/W letter is
 	//	a word char so \b on the tail-end is implicit.
 	coordinatesRe = regexp.MustCompile(`\b\d{1,3}\.\d+\s*°?\s*[NS][,\s]+\d{1,3}\.\d+\s*°?\s*[EW]\b`)
+
+	//	siteRe — telecom site / network-element identifier. Two
+	//	          alternation arms:
+	//	            • site[-_ ]XX[-_]YYY style (literal "site" prefix +
+	//	              uppercase/digit code).
+	//	            • One of {ENB,BTS,NB,CELL,NODE,RAN,BSC,RNC,MSC,HLR,
+	//	              MME,SGW,PGW} + uppercase/digit code.
+	//	          The regex itself contains a context keyword so
+	//	          hasContextWithin succeeds for any actual match.
+	// First-arm trailing class allows '_' and '-' as interior separators
+	// so multi-segment site codes (e.g., "site-A12_NYC01") match in one
+	// span. Trailing class allows 1–12 chars; combined with the 1–2-char
+	// head this admits short codes like "site-A12" too.
+	siteRe = regexp.MustCompile(
+		`\bsite[-_\s]?[A-Z0-9]{1,2}[A-Z0-9_\-]{1,12}\b` +
+			`|\b(?:ENB|BTS|NB|CELL|NODE|RAN|BSC|RNC|MSC|HLR|MME|SGW|PGW)[-_]?[A-Z0-9]{2,12}\b`)
 )
 
 // validateIPv4Octets splits the matched dotted-quad and confirms each of
@@ -203,6 +219,15 @@ var Recognizers = []Recognizer{
 	},
 	{Name: "MAC_ADDRESS", Pattern: macAddrRe, Validate: nil},
 	{Name: "COORDINATES", Pattern: coordinatesRe, Validate: nil},
+	{
+		Name:     "SITE",
+		Pattern:  siteRe,
+		Validate: nil,
+		ContextKeywords: []string{
+			"site", "cell", "base station", "node", "tower",
+			"location code", "enb", "bts", "ran", "network element", "ne id",
+		},
+	},
 }
 
 // SourceAuditNames returns the Recognizers names in registration order.

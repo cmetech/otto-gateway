@@ -836,3 +836,21 @@ func TestMSISDN_ContextRequired_Integration(t *testing.T) {
 		t.Errorf("anchored MSISDN must be redacted; got %q", anchored)
 	}
 }
+
+// TestSITE_Integration: regex matches that themselves contain the
+// context keyword (e.g., "ENB-12345") satisfy hasContextWithin and
+// flow through the redact pipeline.
+func TestSITE_Integration(t *testing.T) {
+	hook := freshHook("replace")
+	hook.EnabledEntities = []string{"SITE"}
+
+	got := redactText(t, hook, "the system uses tag site-A12_NYC01 internally")
+	if !strings.Contains(got, "[SITE") {
+		t.Errorf("expected [SITE token; got %q", got)
+	}
+
+	got = redactText(t, hook, "ENB-12345 was provisioned")
+	if !strings.Contains(got, "[SITE") {
+		t.Errorf("expected [SITE token for ENB-style; got %q", got)
+	}
+}

@@ -368,10 +368,42 @@ func TestCoordinatesRecognizer(t *testing.T) {
 	}
 }
 
+// TestSITERecognizer — telecom site / network-element identifiers via
+// two alternation arms (site-XX_YYY-style + ENB/BTS/…-XXXX-style). The
+// regex itself contains the keyword strings ("site", "ENB", etc.), so
+// hasContextWithin succeeds for any actual regex match. The keyword
+// list still has value: it documents intent and provides a wider
+// context match if the pattern is later loosened.
+func TestSITERecognizer(t *testing.T) {
+	r := findRecognizer(t, "SITE")
+	cases := []struct {
+		in          string
+		wantMatched bool
+	}{
+		{"site-A12_NYC01", true},
+		{"site A12 NYC01", true},
+		{"ENB-12345", true},
+		{"BTS_AB12", true},
+		{"MSC-XYZ99", true},
+		{"random-id-not-a-site", false},
+	}
+	for _, c := range cases {
+		t.Run(c.in, func(t *testing.T) {
+			got, _ := regexAndValidate(r, c.in)
+			if got != c.wantMatched {
+				t.Errorf("SITE %q: matched=%v want=%v", c.in, got, c.wantMatched)
+			}
+		})
+	}
+	if len(r.ContextKeywords) == 0 {
+		t.Fatal("SITE must have ContextKeywords")
+	}
+}
+
 // TestRecognizers_RegistryShape asserts the registry has the expected
 // names in registration order, each with a non-nil Pattern.
 func TestRecognizers_RegistryShape(t *testing.T) {
-	wantNames := []string{"Email", "IPv4", "IPv6", "SSN", "CreditCard", "USPhone", "SIP_URI", "IMEI", "IMSI", "MSISDN", "MAC_ADDRESS", "COORDINATES"}
+	wantNames := []string{"Email", "IPv4", "IPv6", "SSN", "CreditCard", "USPhone", "SIP_URI", "IMEI", "IMSI", "MSISDN", "MAC_ADDRESS", "COORDINATES", "SITE"}
 	if got := len(Recognizers); got != len(wantNames) {
 		t.Fatalf("len(Recognizers): got %d, want %d", got, len(wantNames))
 	}
