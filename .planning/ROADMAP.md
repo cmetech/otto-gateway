@@ -456,7 +456,12 @@ Plans:
 - **A surface-level retry on `Prompt()` failure.** Existing engine.Run callers handle Prompt errors via the watchdog + pool slot release; this phase preserves that path but does not add new retry semantics.
 - **Buffering chunks into an unbounded queue to mask backpressure.** Backpressure on `Stream.Chunks` remains a correctness property (the readLoop is the producer, slow consumers correctly slow it down). What changes is that backpressure no longer cascades into the response-wait path.
 
-Plans: (none yet — pending /gsd-plan-phase 8.3)
+**Plans:** 1 plan
+
+Plans:
+**Wave 1**
+
+- [ ] 08.3-01-PLAN.md — Single atomic vertical slice: refactor acp.Client.Prompt() to non-blocking + add awaitPromptResult goroutine (registered with c.wg) + engine.prompt.completed DEBUG emission + Stream docstring update (remove MUST-drain-concurrently footgun); add TestIntegration_Prompt_OverflowsBuffer_DoesNotDeadlock (≥128 chunks before response, 100ms return deadline) + four whitebox tests (dispatcher lifecycle, ctx-cancel during in-flight, Close during in-flight, engine.prompt.completed log emission); preserve TestIntegration_FakeACP_E2E_MixedVariants unchanged for backward-compat; goleak deliberate-leak verification; operator-Windows test-pii.ps1 sign-off (blocking human-verify).
 
 ### Phase 9: Distribution
 
