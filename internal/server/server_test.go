@@ -578,11 +578,11 @@ func TestSurfaceMount(t *testing.T) {
 		cases := []struct {
 			method, path string
 		}{
-			{http.MethodPost, "/v1/messages"},             // Anthropic
-			{http.MethodPost, "/v1/chat/completions"},     // OpenAI
-			{http.MethodPost, "/v1/completions"},          // OpenAI legacy
-			{http.MethodGet, "/v1/models"},                // OpenAI models
-			{http.MethodPost, "/api/chat"},                // Ollama
+			{http.MethodPost, "/v1/messages"},         // Anthropic
+			{http.MethodPost, "/v1/chat/completions"}, // OpenAI
+			{http.MethodPost, "/v1/completions"},      // OpenAI legacy
+			{http.MethodGet, "/v1/models"},            // OpenAI models
+			{http.MethodPost, "/api/chat"},            // Ollama
 		}
 
 		for _, c := range cases {

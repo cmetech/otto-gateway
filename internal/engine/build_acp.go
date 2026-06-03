@@ -104,7 +104,8 @@ func buildBlocks(req *canonical.ChatRequest) []canonical.Block {
 			)
 			b.WriteString("[Available tools]\nEmit a tool_call ACP notification to invoke any of the registered tools.\n\n")
 		} else {
-			fmt.Fprintf(&b,
+			fmt.Fprintf(
+				&b,
 				"[Available tools]\nEmit a tool_call ACP notification to invoke any of the registered tools.\n\n```json\n%s\n```\n\n",
 				string(toolsJSON),
 			)

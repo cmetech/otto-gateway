@@ -202,10 +202,10 @@ type fakeRunHandle struct {
 	scResp    *canonical.ChatResponse
 }
 
-func (f *fakeRunHandle) Stream() Stream                                   { return f.stream }
-func (f *fakeRunHandle) SessionID() string                                { return f.sessionID }
-func (f *fakeRunHandle) StopWatchdog() func() bool                        { return nil }
-func (f *fakeRunHandle) ShortCircuitResponse() *canonical.ChatResponse    { return f.scResp }
+func (f *fakeRunHandle) Stream() Stream                                { return f.stream }
+func (f *fakeRunHandle) SessionID() string                             { return f.sessionID }
+func (f *fakeRunHandle) StopWatchdog() func() bool                     { return nil }
+func (f *fakeRunHandle) ShortCircuitResponse() *canonical.ChatResponse { return f.scResp }
 
 // ----------------------------------------------------------------------------
 // HTTP helpers

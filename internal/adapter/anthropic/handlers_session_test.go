@@ -75,6 +75,7 @@ type sessionEngine struct {
 func (s *sessionEngine) Collect(ctx context.Context, req *canonical.ChatRequest) (*canonical.ChatResponse, error) {
 	return s.inner.Collect(ctx, req)
 }
+
 func (s *sessionEngine) Run(ctx context.Context, req *canonical.ChatRequest) (RunHandle, error) {
 	return s.inner.Run(ctx, req)
 }

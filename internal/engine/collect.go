@@ -149,7 +149,8 @@ func (e *Engine) CollectFromRun(ctx context.Context, run *Run, req *canonical.Ch
 		}
 		if rangeErr := RangeChunksWithIdleTimeout(ctx, run.stream, e.cfg.StreamIdleTimeout, onChunk); rangeErr != nil {
 			if errors.Is(rangeErr, ErrStreamIdleTimeout) {
-				e.cfg.Logger.Warn("stream.idle_timeout",
+				e.cfg.Logger.Warn(
+					"stream.idle_timeout",
 					"surface", "engine.collect",
 					"session_id", run.sessionID,
 					"elapsed_ms", e.cfg.StreamIdleTimeout.Milliseconds(),

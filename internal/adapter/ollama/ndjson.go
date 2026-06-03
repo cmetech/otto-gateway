@@ -424,7 +424,8 @@ func runNDJSONEmitter(ctx context.Context, cancelFn context.CancelFunc, w http.R
 			// canonical.ErrStreamIdleTimeout so the handler errors.Is-
 			// checks it. The aggregated response is non-nil so PostHooks
 			// observe forensics.
-			logger.Warn("stream.idle_timeout",
+			logger.Warn(
+				"stream.idle_timeout",
 				"surface", "ollama",
 				"session_id", run.SessionID(),
 				"elapsed_ms", streamIdle.Milliseconds(),

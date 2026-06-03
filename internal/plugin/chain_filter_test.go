@@ -5,12 +5,12 @@
 // Tests:
 //   - 12: Empty allowlist passthrough (full four-hook chain).
 //   - 13: Known allowlist preserves REGISTRATION order (D-02 + SC5
-//          — allowlist order does NOT rewrite execution order).
+//     — allowlist order does NOT rewrite execution order).
 //   - 14: Unknown allowlist name returns error containing literal
-//          substring "unknown hook" AND the offending name.
+//     substring "unknown hook" AND the offending name.
 //   - 15: Single-hook allowlist filters out everything else.
 //   - 16: LoggingHook on both Pre and Post → one allowlist entry
-//          keeps both placements.
+//     keeps both placements.
 //
 // Uses external test package `plugin_test` so we depend on EXPORTED
 // hook constructors only (no unexported test-package internals).

@@ -55,7 +55,7 @@ func main() {
 	if path := os.Getenv(envReceivedFramesFile); path != "" {
 		// Best-effort open; if it fails, silently continue (don't crash the
 		// fake just because the test forgot to create a writable temp dir).
-		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644) //nolint:gosec
+		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644) //nolint:gosec
 		if err == nil {
 			framesLog = f
 			defer func() { _ = framesLog.Close() }()

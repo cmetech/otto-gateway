@@ -156,7 +156,8 @@ func (a *Adapter) handleChat(w http.ResponseWriter, r *http.Request) {
 			// Quick 260531-ruv — idle-timeout maps to 504 (engine.Collect
 			// wraps canonical.ErrStreamIdleTimeout via the engine helper).
 			if errors.Is(err, canonical.ErrStreamIdleTimeout) {
-				a.cfg.Logger.Warn("stream.idle_timeout",
+				a.cfg.Logger.Warn(
+					"stream.idle_timeout",
 					"surface", "ollama",
 					"elapsed_ms", a.cfg.StreamIdleTimeout.Milliseconds(),
 					"request_id", plugin.RequestIDFromContext(ctx),
@@ -260,7 +261,8 @@ func (a *Adapter) handleChat(w http.ResponseWriter, r *http.Request) {
 	// emitter would flush ciphertext bytes ahead of the PII decrypt
 	// PostHook.
 	if !req.Stream {
-		a.cfg.Logger.Info("stream re-routed to aggregated path",
+		a.cfg.Logger.Info(
+			"stream re-routed to aggregated path",
 			"surface", "ollama.chat",
 			"reason", "pre_hook_disabled_streaming",
 			"request_id", plugin.RequestIDFromContext(ctx),
@@ -268,7 +270,8 @@ func (a *Adapter) handleChat(w http.ResponseWriter, r *http.Request) {
 		resp, cErr := eng.CollectFromRun(streamCtx, run, req)
 		if cErr != nil {
 			if errors.Is(cErr, canonical.ErrStreamIdleTimeout) {
-				a.cfg.Logger.Warn("stream.idle_timeout",
+				a.cfg.Logger.Warn(
+					"stream.idle_timeout",
 					"surface", "ollama",
 					"elapsed_ms", a.cfg.StreamIdleTimeout.Milliseconds(),
 					"request_id", plugin.RequestIDFromContext(ctx),
@@ -418,7 +421,8 @@ func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 			// Quick 260531-ruv — idle-timeout maps to 504 (engine.Collect
 			// wraps canonical.ErrStreamIdleTimeout via the engine helper).
 			if errors.Is(err, canonical.ErrStreamIdleTimeout) {
-				a.cfg.Logger.Warn("stream.idle_timeout",
+				a.cfg.Logger.Warn(
+					"stream.idle_timeout",
 					"surface", "ollama",
 					"elapsed_ms", a.cfg.StreamIdleTimeout.Milliseconds(),
 					"request_id", plugin.RequestIDFromContext(ctx),
@@ -479,7 +483,8 @@ func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 	// handleChat above — drain the already-running ACP session through
 	// the aggregated path and render via generateResponseToWire.
 	if !req.Stream {
-		a.cfg.Logger.Info("stream re-routed to aggregated path",
+		a.cfg.Logger.Info(
+			"stream re-routed to aggregated path",
 			"surface", "ollama.generate",
 			"reason", "pre_hook_disabled_streaming",
 			"request_id", plugin.RequestIDFromContext(ctx),
@@ -487,7 +492,8 @@ func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 		resp, cErr := eng.CollectFromRun(streamCtx, run, req)
 		if cErr != nil {
 			if errors.Is(cErr, canonical.ErrStreamIdleTimeout) {
-				a.cfg.Logger.Warn("stream.idle_timeout",
+				a.cfg.Logger.Warn(
+					"stream.idle_timeout",
 					"surface", "ollama",
 					"elapsed_ms", a.cfg.StreamIdleTimeout.Milliseconds(),
 					"request_id", plugin.RequestIDFromContext(ctx),

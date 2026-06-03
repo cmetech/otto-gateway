@@ -28,7 +28,7 @@ func TestSSE_CtxCancel(t *testing.T) {
 	// Channel that never closes — the emitter will block on chunks.
 	// Cancel ctx before any chunk arrives so we exercise the ctx.Done path.
 	ch := make(chan canonical.Chunk) // unbuffered, never closed
-	defer close(ch)                 // cleanup to avoid goroutine leak in test teardown
+	defer close(ch)                  // cleanup to avoid goroutine leak in test teardown
 
 	runHandle := &fakeRunHandle{
 		stream: &fakeStream{
@@ -115,7 +115,8 @@ func TestSSE_NoEventLines(t *testing.T) {
 func TestSSE_DoneTerminator(t *testing.T) {
 	defer goleak.VerifyNone(t)
 
-	body := driveGolden(t,
+	body := driveGolden(
+		t,
 		[]canonical.Chunk{{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "x"}}},
 		&canonical.FinalResult{StopReason: canonical.StopEndTurn},
 	)
@@ -130,7 +131,8 @@ func TestSSE_DoneTerminator(t *testing.T) {
 func TestSSE_RoleFirstDelta(t *testing.T) {
 	defer goleak.VerifyNone(t)
 
-	body := driveGolden(t,
+	body := driveGolden(
+		t,
 		[]canonical.Chunk{{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "text"}}},
 		&canonical.FinalResult{StopReason: canonical.StopEndTurn},
 	)
@@ -157,7 +159,8 @@ func TestSSE_RoleFirstDelta(t *testing.T) {
 func TestSSE_FixedIDAndCreated(t *testing.T) {
 	defer goleak.VerifyNone(t)
 
-	body := driveGolden(t,
+	body := driveGolden(
+		t,
 		[]canonical.Chunk{
 			{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "a"}},
 			{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "b"}},

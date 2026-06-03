@@ -196,7 +196,8 @@ func bootGateway(t *testing.T, extraEnv map[string]string) (string, func()) {
 	addr := freePort(t)
 	baseURL := "http://" + addr
 
-	env := append(os.Environ(),
+	env := append(
+		os.Environ(),
 		"HTTP_ADDR="+addr,
 		"AUTH_TOKEN=e2e-token",
 		"KIRO_CMD="+kiro,
@@ -599,7 +600,8 @@ func TestE2E_SurfaceGating_TypoFailFast(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, builtBinary)
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(
+		os.Environ(),
 		"HTTP_ADDR="+addr,
 		"ENABLED_SURFACES=anthrpic", // deliberate typo
 	)
@@ -655,7 +657,8 @@ func TestE2E_SDK_RoundTrip(t *testing.T) {
 	// The .mjs is referenced from the module root, so run it from "../..".
 	cmd := exec.CommandContext(ctx, "node", "tests/e2e/sdk/sdk_roundtrip.mjs")
 	cmd.Dir = moduleRoot
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(
+		os.Environ(),
 		"ANTHROPIC_BASE_URL="+baseURL,
 		"ANTHROPIC_API_KEY=e2e-token",
 	)

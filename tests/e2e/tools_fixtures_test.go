@@ -166,7 +166,7 @@ func FakeKiro(t *testing.T, script Script) (cmd string, env map[string]string) {
 
 	if len(script.Notifications) > 0 {
 		notifPath := filepath.Join(dir, "notifications.ndjson")
-		if err := os.WriteFile(notifPath, script.Notifications, 0644); err != nil { //nolint:gosec
+		if err := os.WriteFile(notifPath, script.Notifications, 0o644); err != nil { //nolint:gosec
 			t.Fatalf("FakeKiro: write notifications: %v", err)
 		}
 		env["OTTO_FAKE_KIRO_NOTIFICATIONS_FILE"] = notifPath
@@ -179,7 +179,7 @@ func FakeKiro(t *testing.T, script Script) (cmd string, env map[string]string) {
 	if script.LogFrames {
 		framesPath := filepath.Join(dir, "received-frames.ndjson")
 		// Pre-create the file so the fake-kiro binary can open it for append.
-		if err := os.WriteFile(framesPath, nil, 0644); err != nil { //nolint:gosec
+		if err := os.WriteFile(framesPath, nil, 0o644); err != nil { //nolint:gosec
 			t.Fatalf("FakeKiro: create frames-log file: %v", err)
 		}
 		env["OTTO_FAKE_KIRO_RECEIVED_FRAMES_FILE"] = framesPath

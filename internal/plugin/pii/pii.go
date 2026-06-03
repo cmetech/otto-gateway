@@ -242,7 +242,8 @@ func (h *PIIRedactionHook) Before(ctx context.Context, req *canonical.ChatReques
 	// finishes. Spec §3.1.
 	if h.encryptActive() && req.Stream {
 		req.Stream = false
-		h.logger().Info("pii.encrypt.streaming_disabled",
+		h.logger().Info(
+			"pii.encrypt.streaming_disabled",
 			"reason", "decrypt requires aggregated response",
 		)
 	}
@@ -324,7 +325,8 @@ func (h *PIIRedactionHook) Before(ctx context.Context, req *canonical.ChatReques
 	}
 
 	// request_id intentionally omitted to avoid plugin→pii→plugin import cycle; correlate via timestamps + active_recognizers count.
-	h.logger().Debug("pii.redact.done",
+	h.logger().Debug(
+		"pii.redact.done",
 		"active_recognizers", len(recs),
 		"mode", h.Mode,
 	)

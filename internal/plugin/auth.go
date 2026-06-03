@@ -75,10 +75,10 @@ func (h *AuthHook) Describe() (kind string, config map[string]any) {
 //     bridge established by Task 1; Task 4 wires it from the wire
 //     request's Authorization / x-api-key header.
 //     - !ok (no stamp) → short-circuit (adapter forgot to stamp,
-//       defensive default-deny).
+//     defensive default-deny).
 //     - ok && provided == "" → short-circuit (header was missing in
-//       the wire request — the adapter stamped an empty string to
-//       signal "credential observed as absent").
+//     the wire request — the adapter stamped an empty string to
+//     signal "credential observed as absent").
 //  3. Loop the Tokens slice. Use subtle.ConstantTimeCompare against
 //     each entry. NEVER use `==` on token bytes (T-8-AUTH timing
 //     side-channel mitigation; bearer.go:51 precedent).

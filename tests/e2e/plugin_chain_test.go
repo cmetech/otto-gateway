@@ -553,7 +553,8 @@ func TestE2E_BootError_UnknownHook(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, builtBinary)
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(
+		os.Environ(),
 		"HTTP_ADDR="+addr,
 		"ENABLED_HOOKS=BogusHook",
 	)
@@ -599,7 +600,8 @@ func TestE2E_BootError_HashModeNoKey(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, builtBinary)
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(
+		os.Environ(),
 		"HTTP_ADDR="+addr,
 		"PII_REDACTION_MODE=hash",
 		// PII_HASH_KEY deliberately not set.

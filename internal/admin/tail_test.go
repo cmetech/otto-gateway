@@ -524,7 +524,7 @@ func TestAdmin_TailerSlowSubscriberDrops(t *testing.T) {
 
 	// Fast subscriber should have received at least some lines.
 	received := 0
-	drain:
+drain:
 	for {
 		select {
 		case _, ok := <-fastSub.C:

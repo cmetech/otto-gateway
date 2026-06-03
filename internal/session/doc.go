@@ -7,13 +7,13 @@
 //
 // Four terminal paths can race for the same *Entry:
 //
-//	     Reaper (ticker tick) ──┐
-//	                            │
-//	   DELETE /v1/sessions/:id ─┤
-//	                            ├──> *Entry (Cancel + Close)
-//	          stream.Result() ──┤
-//	                            │
-//	     disconnect-ctx watch ──┘
+//	  Reaper (ticker tick) ──┐
+//	                         │
+//	DELETE /v1/sessions/:id ─┤
+//	                         ├──> *Entry (Cancel + Close)
+//	       stream.Result() ──┤
+//	                         │
+//	  disconnect-ctx watch ──┘
 //
 // The Codex M-3 map-delete-first pattern (mirrored from internal/pool/pool.go)
 // makes this race deterministic: whichever path acquires r.mu first deletes

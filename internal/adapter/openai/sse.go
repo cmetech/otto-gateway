@@ -449,7 +449,8 @@ func runSSEEmitter(ctx context.Context, w http.ResponseWriter, run RunHandle, re
 			// the canonical marker, and return wrapped
 			// canonical.ErrStreamIdleTimeout for handler errors.Is
 			// detection. Frame shape matches errorInner in errors.go.
-			e.logger.Warn("stream.idle_timeout",
+			e.logger.Warn(
+				"stream.idle_timeout",
 				"surface", "openai",
 				"session_id", run.SessionID(),
 				"elapsed_ms", streamIdle.Milliseconds(),

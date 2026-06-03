@@ -315,7 +315,7 @@ func TestCoerceToolCall_AlgorithmCases(t *testing.T) {
 			text: `{"location":"Boston"}`,
 			tools: []canonical.ToolSpec{
 				{Name: "empty_spec_tool"}, // no Parameters at all
-				weatherTool(),              // this one matches
+				weatherTool(),             // this one matches
 			},
 			wantFired:    true,
 			wantToolName: "get_weather",

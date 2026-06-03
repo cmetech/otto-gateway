@@ -66,7 +66,7 @@ const (
 type RingBuffer struct {
 	mu   sync.Mutex
 	cap  int
-	head int    // index of the oldest entry when full
+	head int // index of the oldest entry when full
 	data []string
 	full bool
 }

@@ -215,7 +215,8 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 		// blocks. Plain-text responses round-trip correctly. Documented in
 		// docs/operating.md Known Limitations.
 		if !req.Stream {
-			a.cfg.Logger.Info("stream re-routed to aggregated path",
+			a.cfg.Logger.Info(
+				"stream re-routed to aggregated path",
 				"surface", "anthropic",
 				"reason", "pre_hook_disabled_streaming",
 				"request_id", plugin.RequestIDFromContext(ctx),
@@ -223,7 +224,8 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 			resp, cErr := eng.CollectFromRun(streamCtx, runHandle, req)
 			if cErr != nil {
 				if errors.Is(cErr, canonical.ErrStreamIdleTimeout) {
-					a.cfg.Logger.Warn("stream.idle_timeout",
+					a.cfg.Logger.Warn(
+						"stream.idle_timeout",
 						"surface", "anthropic",
 						"elapsed_ms", a.cfg.StreamIdleTimeout.Milliseconds(),
 						"request_id", plugin.RequestIDFromContext(ctx),
@@ -284,7 +286,8 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 		// Quick 260531-ruv — idle-timeout maps to 504 Gateway Timeout
 		// on the non-streaming branch (no SSE headers written yet).
 		if errors.Is(err, canonical.ErrStreamIdleTimeout) {
-			a.cfg.Logger.Warn("stream.idle_timeout",
+			a.cfg.Logger.Warn(
+				"stream.idle_timeout",
 				"surface", "anthropic",
 				"session_id", "", // non-streaming path: session id was bound inside CollectAnthropicChat scope
 				"elapsed_ms", a.cfg.StreamIdleTimeout.Milliseconds(),

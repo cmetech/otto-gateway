@@ -50,12 +50,12 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/goleak"
-	"net/http/httptest"
 
 	"otto-gateway/internal/canonical"
 )

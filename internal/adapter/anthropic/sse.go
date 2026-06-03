@@ -699,7 +699,8 @@ func runSSEEmitterLoop(ctx context.Context, e *sseEmitter, run RunHandle, ticker
 			// errors.Is(err, engine.ErrStreamIdleTimeout) is true at
 			// the handler. The aggregated response is non-nil so
 			// PostHooks can still observe forensics.
-			e.logger.Warn("stream.idle_timeout",
+			e.logger.Warn(
+				"stream.idle_timeout",
 				"surface", "anthropic",
 				"session_id", run.SessionID(),
 				"elapsed_ms", streamIdle.Milliseconds(),

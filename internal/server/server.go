@@ -96,7 +96,7 @@ type Config struct {
 	AuthTokens           []string
 	AllowedPrefixes      []netip.Prefix
 	AuthTrustXFF         bool
-	OllamaVersionPath    string       // outer exempt path, e.g. "/api/version"
+	OllamaVersionPath    string // outer exempt path, e.g. "/api/version"
 	OllamaVersionHandler http.HandlerFunc
 	Surfaces             []SurfaceMount
 	Pool                 PoolStatsSource

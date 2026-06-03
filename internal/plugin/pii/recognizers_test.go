@@ -78,7 +78,7 @@ func TestIPv4Recognizer_OctetValidator(t *testing.T) {
 	}{
 		{"192.168.1.1", true, true},
 		{"255.255.255.255", true, true},
-		{"256.1.1.1", true, false},     // regex matches but validator rejects (octet > 255)
+		{"256.1.1.1", true, false}, // regex matches but validator rejects (octet > 255)
 		{"999.999.999.999", true, false},
 	}
 	for _, c := range cases {

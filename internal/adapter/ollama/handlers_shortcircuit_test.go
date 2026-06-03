@@ -126,13 +126,13 @@ func newShortCircuitRunHandle() *fakeRunHandle {
 
 // assertOllamaShortCircuitInvariants asserts the five Plan 02 D-10 wire
 // invariants for an Ollama short-circuit response:
-//   1. status 401;
-//   2. Content-Type starts with "application/json" (NOT
-//      application/x-ndjson — the load-bearing header-leak canary);
-//   3. body decodes as Ollama-native flat envelope {"error":"<non-empty>"};
-//   4. body MUST NOT contain "data: " (SSE leak);
-//   5. body MUST NOT contain "event: " (SSE leak);
-//   6. body MUST NOT contain `"done":true` (NDJSON leak).
+//  1. status 401;
+//  2. Content-Type starts with "application/json" (NOT
+//     application/x-ndjson — the load-bearing header-leak canary);
+//  3. body decodes as Ollama-native flat envelope {"error":"<non-empty>"};
+//  4. body MUST NOT contain "data: " (SSE leak);
+//  5. body MUST NOT contain "event: " (SSE leak);
+//  6. body MUST NOT contain `"done":true` (NDJSON leak).
 func assertOllamaShortCircuitInvariants(t *testing.T, body []byte, status int, ct string) {
 	t.Helper()
 	if status != http.StatusUnauthorized {

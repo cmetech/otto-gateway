@@ -182,28 +182,28 @@ func TestAdmin_ComputeStatus(t *testing.T) {
 		expect string
 	}{
 		{
-			name: "all_alive_is_ok",
-			snap: AdminSnapshot{Pool: SnapshotPool{Size: 4, Alive: 4, Busy: 0}},
+			name:   "all_alive_is_ok",
+			snap:   AdminSnapshot{Pool: SnapshotPool{Size: 4, Alive: 4, Busy: 0}},
 			expect: "ok",
 		},
 		{
-			name: "some_alive_is_degraded",
-			snap: AdminSnapshot{Pool: SnapshotPool{Size: 4, Alive: 2, Busy: 0}},
+			name:   "some_alive_is_degraded",
+			snap:   AdminSnapshot{Pool: SnapshotPool{Size: 4, Alive: 2, Busy: 0}},
 			expect: "degraded",
 		},
 		{
-			name: "zero_alive_is_down",
-			snap: AdminSnapshot{Pool: SnapshotPool{Size: 4, Alive: 0, Busy: 0}},
+			name:   "zero_alive_is_down",
+			snap:   AdminSnapshot{Pool: SnapshotPool{Size: 4, Alive: 0, Busy: 0}},
 			expect: "down",
 		},
 		{
-			name: "zero_size_is_down",
-			snap: AdminSnapshot{Pool: SnapshotPool{Size: 0, Alive: 0, Busy: 0}},
+			name:   "zero_size_is_down",
+			snap:   AdminSnapshot{Pool: SnapshotPool{Size: 0, Alive: 0, Busy: 0}},
 			expect: "down",
 		},
 		{
-			name: "size_zero_even_if_alive_nonzero",
-			snap: AdminSnapshot{Pool: SnapshotPool{Size: 0, Alive: 1, Busy: 0}},
+			name:   "size_zero_even_if_alive_nonzero",
+			snap:   AdminSnapshot{Pool: SnapshotPool{Size: 0, Alive: 1, Busy: 0}},
 			expect: "down",
 		},
 	}

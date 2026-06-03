@@ -30,24 +30,24 @@ type chatCompletionRequest struct {
 	// Accepted-and-ignored extras (decoded so they don't cause 400 on
 	// unknown-field strict decoders — but we do NOT use DisallowUnknownFields
 	// so plain unknown fields are silently skipped too).
-	StreamOptions        json.RawMessage `json:"stream_options,omitempty"`
-	MaxTokens            int             `json:"max_tokens,omitempty"`
-	MaxCompletionTokens  int             `json:"max_completion_tokens,omitempty"`
-	Temperature          *float64        `json:"temperature,omitempty"`
-	TopP                 *float64        `json:"top_p,omitempty"`
-	Logprobs             json.RawMessage `json:"logprobs,omitempty"`
+	StreamOptions       json.RawMessage `json:"stream_options,omitempty"`
+	MaxTokens           int             `json:"max_tokens,omitempty"`
+	MaxCompletionTokens int             `json:"max_completion_tokens,omitempty"`
+	Temperature         *float64        `json:"temperature,omitempty"`
+	TopP                *float64        `json:"top_p,omitempty"`
+	Logprobs            json.RawMessage `json:"logprobs,omitempty"`
 	// Tools is the OpenAI tool catalog (Phase 6 D-13 + iteration-3 MEDIUM #4).
 	// Decoded as []json.RawMessage so type-invalid sibling entries can be
 	// skipped per-entry without failing the whole request decode. Each entry
 	// is unmarshaled into openAIToolSpec independently in wireToChatRequest.
-	Tools                []json.RawMessage `json:"tools,omitempty"`
+	Tools []json.RawMessage `json:"tools,omitempty"`
 	// ToolChoice is the polymorphic OpenAI tool_choice directive (Phase 6
 	// D-13). On the wire it can be a string ("auto" | "required" | "none")
 	// OR an object ({type:"function", function:{name:"..."}}). Decoded as
 	// json.RawMessage and split inside wireToChatRequest.
-	ToolChoice           json.RawMessage `json:"tool_choice,omitempty"`
-	FunctionCall         json.RawMessage `json:"function_call,omitempty"`
-	StopSequences        json.RawMessage `json:"stop,omitempty"`
+	ToolChoice    json.RawMessage `json:"tool_choice,omitempty"`
+	FunctionCall  json.RawMessage `json:"function_call,omitempty"`
+	StopSequences json.RawMessage `json:"stop,omitempty"`
 }
 
 // openAIToolSpec is one entry in the OpenAI tools[] field. Structurally

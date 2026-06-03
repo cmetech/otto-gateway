@@ -117,5 +117,7 @@ func (a *acpStreamShim) Result() (*canonical.FinalResult, error) {
 // drift) or acpStreamShim no longer matches engine.Stream — surface
 // the missing method to the executor. THIS IS THE LOAD-BEARING GATE
 // for plan 05-03's surface-handler wiring.
-var _ engine.ACPClient = (*Entry)(nil)
-var _ engine.Stream = (*acpStreamShim)(nil)
+var (
+	_ engine.ACPClient = (*Entry)(nil)
+	_ engine.Stream    = (*acpStreamShim)(nil)
+)

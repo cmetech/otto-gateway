@@ -143,14 +143,14 @@ func (h *ChatTraceHook) logger() *slog.Logger {
 // operator scans first; request_id is the correlation key; the
 // payload-heavy fields trail.
 type preRecord struct {
-	TS           string             `json:"ts"`
-	Stage        string             `json:"stage"`
-	RequestID    string             `json:"request_id"`
-	Surface      string             `json:"surface"`
-	Model        string             `json:"model"`
-	MessageCount int                `json:"message_count"`
-	Messages     []canonical.Message `json:"messages"`
-	System       string             `json:"system,omitempty"`
+	TS           string               `json:"ts"`
+	Stage        string               `json:"stage"`
+	RequestID    string               `json:"request_id"`
+	Surface      string               `json:"surface"`
+	Model        string               `json:"model"`
+	MessageCount int                  `json:"message_count"`
+	Messages     []canonical.Message  `json:"messages"`
+	System       string               `json:"system,omitempty"`
 	Tools        []canonical.ToolSpec `json:"tools,omitempty"`
 }
 

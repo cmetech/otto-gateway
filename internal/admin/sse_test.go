@@ -203,7 +203,7 @@ func TestAdmin_SSEHandler_FlusherCastFailure(t *testing.T) {
 
 	h := &handler{
 		deps: Deps{
-			Logger:  discardLogger(),
+			Logger:   discardLogger(),
 			LogPaths: map[string]string{"main": logPath}, LogPathOrder: []string{"main"},
 		},
 	}
@@ -249,7 +249,7 @@ func TestAdmin_SSEBackfillAndLive(t *testing.T) {
 
 	h := &handler{
 		deps: Deps{
-			Logger:  discardLogger(),
+			Logger:   discardLogger(),
 			LogPaths: map[string]string{"main": logPath}, LogPathOrder: []string{"main"},
 		},
 	}
@@ -316,7 +316,7 @@ func TestAdmin_SSEBackfillAndLive(t *testing.T) {
 	// Collect lines for 500ms to get backfill.
 	var bodyLines []string
 	deadline := time.After(500 * time.Millisecond)
-	collectLoop:
+collectLoop:
 	for {
 		select {
 		case line := <-linesCh:
@@ -343,7 +343,7 @@ func TestAdmin_SSEBackfillAndLive(t *testing.T) {
 	// Collect more lines to check live delivery.
 	var liveLines []string
 	liveDeadline := time.After(1500 * time.Millisecond)
-	liveLoop:
+liveLoop:
 	for {
 		select {
 		case line := <-linesCh:
@@ -383,7 +383,7 @@ func TestAdmin_SSECtxCancelTeardown(t *testing.T) {
 	tailer := NewTailer(logPath, discardLogger())
 	h := &handler{
 		deps: Deps{
-			Logger:  discardLogger(),
+			Logger:   discardLogger(),
 			LogPaths: map[string]string{"main": logPath}, LogPathOrder: []string{"main"},
 		},
 	}
@@ -434,7 +434,7 @@ func TestAdmin_SSESlowSubscriberDrops(t *testing.T) {
 	tailer := NewTailer(logPath, discardLogger())
 	h := &handler{
 		deps: Deps{
-			Logger:  discardLogger(),
+			Logger:   discardLogger(),
 			LogPaths: map[string]string{"main": logPath}, LogPathOrder: []string{"main"},
 		},
 	}
@@ -495,8 +495,8 @@ func TestAdmin_AdminGo_TailerWired(t *testing.T) {
 	f.Close()
 
 	handler := Handler(Deps{
-		Logger:  discardLogger(),
-		Version: "test",
+		Logger:   discardLogger(),
+		Version:  "test",
 		LogPaths: map[string]string{"main": logPath}, LogPathOrder: []string{"main"},
 	})
 

@@ -49,9 +49,9 @@ type fakeRunHandle struct {
 	scResp    *canonical.ChatResponse
 }
 
-func (h *fakeRunHandle) Stream() Stream       { return h.stream }
-func (h *fakeRunHandle) SessionID() string    { return h.sessionID }
-func (h *fakeRunHandle) StopWatchdog() func() bool { return func() bool { return true } }
+func (h *fakeRunHandle) Stream() Stream                                { return h.stream }
+func (h *fakeRunHandle) SessionID() string                             { return h.sessionID }
+func (h *fakeRunHandle) StopWatchdog() func() bool                     { return func() bool { return true } }
 func (h *fakeRunHandle) ShortCircuitResponse() *canonical.ChatResponse { return h.scResp }
 
 // newFakeRunHandle builds a fakeRunHandle whose stream channel is pre-populated

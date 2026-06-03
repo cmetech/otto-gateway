@@ -119,9 +119,9 @@ type fakeRunHandle struct {
 	scResp    *canonical.ChatResponse
 }
 
-func (h *fakeRunHandle) Stream() Stream         { return h.stream }
-func (h *fakeRunHandle) SessionID() string      { return h.sessionID }
-func (h *fakeRunHandle) StopWatchdog() func() bool { return nil }
+func (h *fakeRunHandle) Stream() Stream                                { return h.stream }
+func (h *fakeRunHandle) SessionID() string                             { return h.sessionID }
+func (h *fakeRunHandle) StopWatchdog() func() bool                     { return nil }
 func (h *fakeRunHandle) ShortCircuitResponse() *canonical.ChatResponse { return h.scResp }
 
 // nullLogger returns a discard *slog.Logger for tests that don't need log output.

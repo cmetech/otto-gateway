@@ -24,7 +24,8 @@ import (
 )
 
 func TestAdmin_TailerSurvivesTimberjackRotate(t *testing.T) {
-	defer goleak.VerifyNone(t,
+	defer goleak.VerifyNone(
+		t,
 		// timberjack starts a background "mill" goroutine for backup
 		// pruning; it exits cleanly on Logger.Close() but the goleak
 		// snapshot is taken before Close() runs through our defer
@@ -36,10 +37,10 @@ func TestAdmin_TailerSurvivesTimberjackRotate(t *testing.T) {
 	logPath := filepath.Join(dir, "gateway.log")
 
 	rotator := &timberjack.Logger{
-		Filename:   logPath,
-		MaxAge:     7,
-		LocalTime:  true,
-		FileMode:   0o644,
+		Filename:  logPath,
+		MaxAge:    7,
+		LocalTime: true,
+		FileMode:  0o644,
 		// No RotateAt — we drive rotation manually via Rotate() so
 		// the test is deterministic and fast.
 	}

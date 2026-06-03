@@ -98,8 +98,8 @@ type completionChoice struct {
 // below — kiro-native ChunkKindToolCall renders as `[tool: <name>]\n`
 // narration text in Content, NOT here.
 type responseMessage struct {
-	Role      string           `json:"role"`              // "assistant"
-	Content   string           `json:"content"`           // joined text parts
+	Role      string           `json:"role"`    // "assistant"
+	Content   string           `json:"content"` // joined text parts
 	ToolCalls []openAIToolCall `json:"tool_calls,omitempty"`
 }
 
@@ -273,11 +273,11 @@ func genMessageID(prefix string) string {
 // object is always "text_completion"; logprobs in the choices is always null
 // (D-03 accept-and-ignore — kiro-cli backend cannot honor logprobs).
 type textCompletion struct {
-	ID      string       `json:"id"`      // "cmpl-…"
-	Object  string       `json:"object"`  // "text_completion"
-	Created int64        `json:"created"` // unix seconds
-	Model   string       `json:"model"`
-	Choices []textChoice `json:"choices"`
+	ID      string          `json:"id"`      // "cmpl-…"
+	Object  string          `json:"object"`  // "text_completion"
+	Created int64           `json:"created"` // unix seconds
+	Model   string          `json:"model"`
+	Choices []textChoice    `json:"choices"`
 	Usage   completionUsage `json:"usage"` // honest zeros (D-12)
 }
 
@@ -289,7 +289,7 @@ type textChoice struct {
 	Index        int       `json:"index"`
 	Text         string    `json:"text"`
 	FinishReason string    `json:"finish_reason"` // non-null mapped string
-	Logprobs     *struct{} `json:"logprobs"`       // always null
+	Logprobs     *struct{} `json:"logprobs"`      // always null
 }
 
 // chatResponseToTextCompletion renders a canonical.ChatResponse into the

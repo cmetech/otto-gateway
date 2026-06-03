@@ -447,15 +447,18 @@ type idleFakeEngine struct {
 func (f *idleFakeEngine) Collect(_ context.Context, _ *canonical.ChatRequest) (*canonical.ChatResponse, error) {
 	return nil, nil
 }
+
 func (f *idleFakeEngine) Run(_ context.Context, _ *canonical.ChatRequest) (RunHandle, error) {
 	return &fakeRunHandle{
 		stream:    &fakeStream{chunks: f.chunks, final: &canonical.FinalResult{StopReason: canonical.StopUnknown}},
 		sessionID: "idle-test",
 	}, nil
 }
+
 func (f *idleFakeEngine) RunPostHooks(_ context.Context, _ *canonical.ChatRequest, _ *canonical.ChatResponse) error {
 	return nil
 }
+
 func (f *idleFakeEngine) CollectFromRun(_ context.Context, _ RunHandle, _ *canonical.ChatRequest) (*canonical.ChatResponse, error) {
 	return nil, nil
 }

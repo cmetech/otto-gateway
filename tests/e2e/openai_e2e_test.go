@@ -324,7 +324,8 @@ func TestE2E_OpenAI_SDK_RoundTrip(t *testing.T) {
 	// The .mjs is referenced from the module root, so run it from "../..".
 	cmd := exec.CommandContext(ctx, "node", "tests/e2e/sdk/openai_roundtrip.mjs")
 	cmd.Dir = moduleRoot
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(
+		os.Environ(),
 		// The official openai SDK appends /chat/completions etc. to baseURL, so
 		// it must include the /v1 prefix (mirrors Pi's baseUrl=…/v1).
 		"OPENAI_BASE_URL="+baseURL+"/v1",

@@ -64,8 +64,8 @@ func (a testEngineAdapter) CollectFromRun(ctx context.Context, run RunHandle, re
 
 type testRunHandleAdapter struct{ run *engine.Run }
 
-func (h testRunHandleAdapter) Stream() Stream         { return h.run.Stream() }
-func (h testRunHandleAdapter) SessionID() string      { return h.run.SessionID() }
+func (h testRunHandleAdapter) Stream() Stream            { return h.run.Stream() }
+func (h testRunHandleAdapter) SessionID() string         { return h.run.SessionID() }
 func (h testRunHandleAdapter) StopWatchdog() func() bool { return h.run.StopWatchdog() }
 func (h testRunHandleAdapter) ShortCircuitResponse() *canonical.ChatResponse {
 	return h.run.ShortCircuitResponse()

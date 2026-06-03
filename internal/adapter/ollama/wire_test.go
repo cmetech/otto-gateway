@@ -266,13 +266,13 @@ func TestEstimateTokens(t *testing.T) {
 // Ollama `format` field.
 func TestDecodeFormat(t *testing.T) {
 	tests := []struct {
-		name      string
-		raw       string // JSON literal; empty string → nil RawMessage
-		wantNil   bool
-		wantType  string
+		name          string
+		raw           string // JSON literal; empty string → nil RawMessage
+		wantNil       bool
+		wantType      string
 		wantHasSchema bool
-		wantErr   bool
-		errSubstr string
+		wantErr       bool
+		errSubstr     string
 	}{
 		{
 			name:    "omitted (nil raw)",

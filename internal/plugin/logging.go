@@ -154,7 +154,8 @@ func (h *LoggingHook) Before(ctx context.Context, req *canonical.ChatRequest) (*
 		mcount = len(req.Messages)
 	}
 
-	h.logger().LogAttrs(ctx, slog.LevelInfo, "plugin.before",
+	h.logger().LogAttrs(
+		ctx, slog.LevelInfo, "plugin.before",
 		slog.String("request_id", rid),
 		slog.String("model", model),
 		slog.Int("message_count", mcount),
@@ -202,7 +203,8 @@ func (h *LoggingHook) After(ctx context.Context, _ *canonical.ChatRequest, resp 
 	}
 
 	attrs := make([]slog.Attr, 0, 4)
-	attrs = append(attrs,
+	attrs = append(
+		attrs,
 		slog.String("request_id", rid),
 		slog.Int64("duration_ms", durationMS),
 	)

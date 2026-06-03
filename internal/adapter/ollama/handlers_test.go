@@ -876,9 +876,9 @@ func buildFormatIntegAdapter(t *testing.T, acp *formatIntegrationACP) (*Adapter,
 
 // TestIntegration_OllamaChat_FormatJSON_NodeShimParity exercises the three
 // coordinated Phase 08.2 changes end-to-end on /api/chat:
-//   1. wire-decode: Format field is populated from format:"json" in the request
-//   2. steering hook: GEN_RULES text is injected into the system prompt
-//   3. fence-strip: the response body is unwrapped from the markdown fence
+//  1. wire-decode: Format field is populated from format:"json" in the request
+//  2. steering hook: GEN_RULES text is injected into the system prompt
+//  3. fence-strip: the response body is unwrapped from the markdown fence
 func TestIntegration_OllamaChat_FormatJSON_NodeShimParity(t *testing.T) {
 	acp := &formatIntegrationACP{}
 	adapter, _ := buildFormatIntegAdapter(t, acp)

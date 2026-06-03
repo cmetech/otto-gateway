@@ -4,7 +4,7 @@
 //   - replace → "[ENTITY]" or counter-suffixed "[ENTITY_N]"
 //   - mask    → partial obfuscation (docs/algorithm in modes.go)
 //   - hash    → HMAC-SHA256 of canonical(value) keyed by PII_HASH_KEY,
-//               truncated to 8 hex chars (D-05 + T-8-HASH mitigation)
+//     truncated to 8 hex chars (D-05 + T-8-HASH mitigation)
 //   - drop    → "" (empty string)
 //
 // CRITICAL negative assertion: hash mode MUST NOT be raw SHA256
