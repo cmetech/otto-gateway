@@ -175,6 +175,14 @@ type Config struct {
 	// when encrypt is active and this is empty.
 	PIIEncryptKey string
 
+	// PIINEREnabled gates the prose-based NER engine that emits PERSON
+	// and LOCATION spans alongside the regex recognizers. Default false:
+	// the prose tokenizer/tagger state is not allocated unless the
+	// operator explicitly opts in. Loaded from PII_NER_ENABLED. English-
+	// only; see internal/plugin/pii/ner.go for the documented accuracy
+	// ceiling.
+	PIINEREnabled bool
+
 	// JSONFormatSteeringEnabled controls whether JSONFormatSteeringHook does
 	// WORK when invoked (Phase 08.2 D-06 two-knob model). Composes with
 	// EnabledHooks: ENABLED_HOOKS controls whether the hook IS in the chain
@@ -316,6 +324,11 @@ func Load() (Config, error) {
 	enabledHooks := getEnvStrSliceComma("ENABLED_HOOKS", nil)
 
 	piiEnabled, err := getEnvBool("PII_REDACTION_ENABLED", false)
+	if err != nil {
+		errs = append(errs, err)
+	}
+
+	piiNEREnabled, err := getEnvBool("PII_NER_ENABLED", false)
 	if err != nil {
 		errs = append(errs, err)
 	}
@@ -470,6 +483,7 @@ func Load() (Config, error) {
 		PIIHashKey:                piiHashKey,
 		PIIEntityActions:          piiEntityActions,
 		PIIEncryptKey:             piiEncryptKey,
+		PIINEREnabled:             piiNEREnabled,
 		JSONFormatSteeringEnabled: jsonFormatSteeringEnabled,
 		ChatTrace:                 chatTrace,
 		ChatTraceFile:             chatTraceFile,
@@ -691,6 +705,13 @@ var piiAllowedEntities = map[string]struct{}{
 	"MAC_ADDRESS": {},
 	"COORDINATES": {},
 	"SITE":        {},
+	// NER-emitted entity names (Task 11). Allowed in PII_ENABLED_ENTITIES
+	// and PII_ENTITY_ACTIONS regardless of PII_NER_ENABLED; when NER is
+	// disabled these names are dormant (no recognizer wired). When NER
+	// is enabled, prose's PERSON / GPE-as-LOCATION outputs flow through
+	// the same redact pipeline as regex recognizers.
+	"PERSON":   {},
+	"LOCATION": {},
 }
 
 // piiAllowedEntitiesList returns the allowlist as a sorted slice for use
