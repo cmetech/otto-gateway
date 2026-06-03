@@ -125,7 +125,7 @@ func CoerceToolCall(req *canonical.ChatRequest, resp *canonical.ChatResponse) bo
 	if err := json.Unmarshal([]byte(rawText), &parsed); err != nil {
 		// Step 4: retry after fence-strip. If no fence is present
 		// (HasPrefix/HasSuffix chains both fail), bail per Step 5.
-		stripped, ok := stripFences(rawText)
+		stripped, ok := StripFences(rawText)
 		if !ok {
 			return false
 		}
@@ -228,10 +228,12 @@ func extractProperties(spec *canonical.ToolSpec) map[string]any {
 	return props
 }
 
-// stripFences detects and strips an outer ```json … ``` OR bare
-// ``` … ``` fence wrapping the ENTIRE trimmed text. Returns
-// (inner-content, true) if a fence wraps the whole text; (text-trim, false)
-// otherwise.
+// StripFences removes a single ```json ... ``` (or bare ``` ... ```) wrap
+// when it brackets the ENTIRE trimmed input. Returns (stripped, true) on
+// strip, (input, false) otherwise. Conservative: inline fences inside
+// prose are preserved. Shared with the Ollama JSON-format render path
+// (Phase 08.2) — do not loosen the whole-body match without auditing
+// both callers.
 //
 // Locked rules (D-10):
 //   - After strings.TrimSpace, check HasPrefix("```json\n") + HasSuffix("\n```")
@@ -248,7 +250,7 @@ func extractProperties(spec *canonical.ToolSpec) map[string]any {
 // Returns (text-trimmed, false) when no fence is detected so the
 // caller can short-circuit; the trimmed text is informational only on
 // a `false` return (caller should NOT retry parse with it).
-func stripFences(text string) (string, bool) {
+func StripFences(text string) (string, bool) {
 	t := strings.ReplaceAll(text, "\r\n", "\n")
 	t = strings.TrimSpace(t)
 	const suffix = "\n```"
