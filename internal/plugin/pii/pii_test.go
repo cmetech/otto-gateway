@@ -757,3 +757,39 @@ func TestDescribe_NeverPublishesEncryptKey(t *testing.T) {
 		t.Errorf("Describe leaked EncryptKey base64 via JSON: %s", string(b))
 	}
 }
+
+// redactText drives Before against text wrapped in a single-message
+// ChatRequest and returns the mutated text. Companion to freshHook for
+// e2e recognizer integration tests.
+func redactText(t *testing.T, hook *PIIRedactionHook, text string) string {
+	t.Helper()
+	ctx, _ := withCtxSummary(t)
+	req := &canonical.ChatRequest{
+		Messages: []canonical.Message{userMessage(text)},
+	}
+	if _, err := hook.Before(ctx, req); err != nil {
+		t.Fatalf("Before: %v", err)
+	}
+	return req.Messages[0].Content[0].Text
+}
+
+// TestIMEI_ContextAnchored_Integration: a 15-digit number with NO context
+// keyword must be left alone by the redact pipeline. With "IMEI:" prefix
+// it must be redacted.
+func TestIMEI_ContextAnchored_Integration(t *testing.T) {
+	hook := freshHook("replace")
+	hook.EnabledEntities = []string{"IMEI"}
+
+	bare := redactText(t, hook, "bare run 490154203237518 here")
+	if !strings.Contains(bare, "490154203237518") {
+		t.Errorf("expected bare 15-digit run NOT to be redacted without imei context; got %q", bare)
+	}
+
+	anchored := redactText(t, hook, "IMEI: 490154203237518")
+	if strings.Contains(anchored, "490154203237518") {
+		t.Errorf("expected redaction with 'IMEI:' prefix; got %q", anchored)
+	}
+	if !strings.Contains(anchored, "[IMEI") {
+		t.Errorf("expected [IMEI token; got %q", anchored)
+	}
+}

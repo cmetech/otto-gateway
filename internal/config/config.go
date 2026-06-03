@@ -685,6 +685,7 @@ var piiAllowedEntities = map[string]struct{}{
 	"CreditCard":  {},
 	"USPhone":     {},
 	"SIP_URI":     {},
+	"IMEI":        {},
 }
 
 // piiAllowedEntitiesList returns the allowlist as a sorted slice for use

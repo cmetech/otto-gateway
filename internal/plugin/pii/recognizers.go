@@ -80,6 +80,10 @@ var (
 	//	sipURIRe — RFC 3261 SIP/SIPS URI shape (sip:user@host[:port]).
 	//	           Context-free: distinctive enough on its own.
 	sipURIRe = regexp.MustCompile(`sips?:[a-zA-Z0-9_.+\-]+@[a-zA-Z0-9.\-]+(?::\d+)?`)
+
+	//	imeiRe — 15-digit run. Shared shape with IMSI; context keywords
+	//	          ("imei" / "imsi") distinguish at the redact pipeline.
+	imeiRe = regexp.MustCompile(`\b\d{15}\b`)
 )
 
 // validateIPv4Octets splits the matched dotted-quad and confirms each of
@@ -155,6 +159,12 @@ var Recognizers = []Recognizer{
 	{Name: "CreditCard", Pattern: creditCardRe, Validate: validateLuhn},
 	{Name: "USPhone", Pattern: usPhoneRe, Validate: nil},
 	{Name: "SIP_URI", Pattern: sipURIRe, Validate: nil},
+	{
+		Name:            "IMEI",
+		Pattern:         imeiRe,
+		Validate:        nil,
+		ContextKeywords: []string{"imei", "international mobile equipment identity"},
+	},
 }
 
 // SourceAuditNames returns the Recognizers names in registration order.

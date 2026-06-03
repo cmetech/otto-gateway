@@ -235,10 +235,46 @@ func TestSIPURIRecognizer(t *testing.T) {
 	}
 }
 
+// TestIMEIRecognizer — 15-digit subscriber-equipment identifier. Shares
+// its raw regex shape with IMSI; context keywords disambiguate. Without
+// an "imei" keyword nearby, the regex matches but the redact pipeline
+// (TestIMEI_ContextAnchored_Integration) rejects via ContextKeywords +
+// hasContextWithin.
+func TestIMEIRecognizer(t *testing.T) {
+	r := findRecognizer(t, "IMEI")
+	cases := []struct {
+		in          string
+		wantMatched bool
+	}{
+		{"490154203237518", true},
+		{"49015420323751", false},   // 14 digits
+		{"4901542032375180", false}, // 16 digits — \b boundary prevents partial match
+		{"id 490154203237518 stop", true},
+		{"abc490154203237518xyz", false}, // letters abut digits → no \b
+	}
+	for _, c := range cases {
+		t.Run(c.in, func(t *testing.T) {
+			got, _ := regexAndValidate(r, c.in)
+			if got != c.wantMatched {
+				t.Errorf("IMEI shape %q: regex matched=%v, want %v", c.in, got, c.wantMatched)
+			}
+		})
+	}
+	wantKw := []string{"imei", "international mobile equipment identity"}
+	if len(r.ContextKeywords) != len(wantKw) {
+		t.Fatalf("IMEI ContextKeywords len: got %d, want %d", len(r.ContextKeywords), len(wantKw))
+	}
+	for i, kw := range wantKw {
+		if r.ContextKeywords[i] != kw {
+			t.Errorf("IMEI ContextKeywords[%d]: got %q, want %q", i, r.ContextKeywords[i], kw)
+		}
+	}
+}
+
 // TestRecognizers_RegistryShape asserts the registry has the expected
 // names in registration order, each with a non-nil Pattern.
 func TestRecognizers_RegistryShape(t *testing.T) {
-	wantNames := []string{"Email", "IPv4", "IPv6", "SSN", "CreditCard", "USPhone", "SIP_URI"}
+	wantNames := []string{"Email", "IPv4", "IPv6", "SSN", "CreditCard", "USPhone", "SIP_URI", "IMEI"}
 	if got := len(Recognizers); got != len(wantNames) {
 		t.Fatalf("len(Recognizers): got %d, want %d", got, len(wantNames))
 	}
