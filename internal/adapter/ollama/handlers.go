@@ -82,7 +82,11 @@ func (a *Adapter) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	req := wireToChatRequest(&wire, r)
+	req, err := wireToChatRequest(&wire, r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	// Phase 8 PLUG-03 — stamp the bearer credential onto ctx so AuthHook
 	// (canonical-layer Pre hook) can validate. The auth.Bearer chi
@@ -343,7 +347,11 @@ func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	req := wireGenerateToChatRequest(&wire, r)
+	req, err := wireGenerateToChatRequest(&wire, r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	// Phase 8 PLUG-03 — stamp bearer credential onto ctx for AuthHook.
 	// See handleChat for the migration-boundary rationale (08-PATTERNS

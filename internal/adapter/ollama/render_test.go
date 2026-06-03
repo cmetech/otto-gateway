@@ -215,7 +215,10 @@ func TestWireToChatRequest_Tools_Phase2Regression(t *testing.T) {
 		},
 	}
 	r := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/chat", nil)
-	got := wireToChatRequest(&body, r)
+	got, err := wireToChatRequest(&body, r)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	if len(got.Tools) != 1 {
 		t.Fatalf("Tools len: got %d, want 1", len(got.Tools))
@@ -242,7 +245,10 @@ func TestWireToChatRequest_Tools_Phase2Regression(t *testing.T) {
 
 	// Defensive: Function == nil entries must be silently skipped.
 	body.Tools = append(body.Tools, ollamaToolSpec{Type: "function", Function: nil})
-	got2 := wireToChatRequest(&body, r)
+	got2, err2 := wireToChatRequest(&body, r)
+	if err2 != nil {
+		t.Fatalf("unexpected error on nil-Function test: %v", err2)
+	}
 	if len(got2.Tools) != 1 {
 		t.Errorf("Tools len after appending nil-Function entry: got %d, want 1 (nil-Function must be dropped)", len(got2.Tools))
 	}

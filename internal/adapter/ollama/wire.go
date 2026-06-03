@@ -3,10 +3,47 @@ package ollama
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 
 	"otto-gateway/internal/canonical"
 )
+
+// decodeFormat decodes the Ollama wire `format` field (json.RawMessage) into
+// a *canonical.Format per D-02's accepted/rejected shape matrix:
+//
+//   - nil / empty / "null" → (nil, nil)
+//   - string "json"        → (&Format{Type:"json"}, nil)
+//   - string ""            → (nil, nil)   treat empty string as omitted
+//   - any other string     → (nil, error) only "json" is a valid bare string
+//   - JSON object          → (&Format{Type:"json_schema", Schema:…}, nil)
+//   - number / array / etc → (nil, error)
+func decodeFormat(raw json.RawMessage) (*canonical.Format, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, nil
+	}
+
+	// Try to decode as string first.
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		switch s {
+		case "":
+			return nil, nil
+		case "json":
+			return &canonical.Format{Type: "json"}, nil
+		default:
+			return nil, fmt.Errorf("ollama: unsupported format string %q (only \"json\" or a schema object is accepted)", s)
+		}
+	}
+
+	// Try to decode as object (JSON schema).
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err == nil {
+		return &canonical.Format{Type: "json_schema", Schema: m}, nil
+	}
+
+	return nil, fmt.Errorf("ollama: format must be the string \"json\" or a JSON-schema object; got %s", string(raw))
+}
 
 // ----------------------------------------------------------------------------
 // Chat wire shape (POST /api/chat)
@@ -265,16 +302,23 @@ func streamEnabled(s *bool) bool { return s == nil || *s }
 //     corrupt image must not abort wireToChatRequest).
 //   - WorkingDirOverride sourced from the X-Working-Dir header.
 //   - Stream / Think copied through.
+//   - Format decoded via decodeFormat; caller must propagate the error as HTTP 400.
 //
-// Returns only *canonical.ChatRequest; this function cannot fail at the
-// translation layer (validation lives in the caller — handleChat —
-// which checks len(Messages) == 0 before calling).
-func wireToChatRequest(w *ollamaChatRequest, r *http.Request) *canonical.ChatRequest {
+// Returns (*canonical.ChatRequest, error); error is non-nil only when the
+// format field has an invalid shape (D-02 rejected shapes). Callers map
+// the error to a 400 response.
+func wireToChatRequest(w *ollamaChatRequest, r *http.Request) (*canonical.ChatRequest, error) {
+	format, err := decodeFormat(w.Format)
+	if err != nil {
+		return nil, err
+	}
+
 	req := &canonical.ChatRequest{
 		Model:              w.Model,
 		Stream:             streamEnabled(w.Stream),
 		Think:              w.Think,
 		WorkingDirOverride: r.Header.Get("X-Working-Dir"),
+		Format:             format,
 	}
 
 	// Extract the FIRST system message — the engine's buildBlocks
@@ -344,7 +388,7 @@ func wireToChatRequest(w *ollamaChatRequest, r *http.Request) *canonical.ChatReq
 		})
 	}
 
-	return req
+	return req, nil
 }
 
 // wireGenerateToChatRequest converts an Ollama /api/generate body into a
@@ -352,15 +396,22 @@ func wireToChatRequest(w *ollamaChatRequest, r *http.Request) *canonical.ChatReq
 // system field maps to req.System; prompt becomes a single RoleUser
 // message; images attach to that message.
 //
-// Returns only *canonical.ChatRequest (cannot fail at this layer;
-// caller validates prompt non-empty before invoking).
-func wireGenerateToChatRequest(w *ollamaGenerateRequest, r *http.Request) *canonical.ChatRequest {
+// Returns (*canonical.ChatRequest, error); error is non-nil only when the
+// format field has an invalid shape (D-02 rejected shapes). Callers map
+// the error to a 400 response.
+func wireGenerateToChatRequest(w *ollamaGenerateRequest, r *http.Request) (*canonical.ChatRequest, error) {
+	format, err := decodeFormat(w.Format)
+	if err != nil {
+		return nil, err
+	}
+
 	req := &canonical.ChatRequest{
 		Model:              w.Model,
 		System:             w.System,
 		Stream:             streamEnabled(w.Stream),
 		Think:              w.Think,
 		WorkingDirOverride: r.Header.Get("X-Working-Dir"),
+		Format:             format,
 	}
 
 	var parts []canonical.ContentPart
@@ -390,7 +441,7 @@ func wireGenerateToChatRequest(w *ollamaGenerateRequest, r *http.Request) *canon
 		})
 	}
 
-	return req
+	return req, nil
 }
 
 // mapRole translates the Ollama wire role string into the canonical

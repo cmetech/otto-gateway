@@ -3,6 +3,7 @@ package ollama
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -95,7 +96,10 @@ func TestWireToChatRequest(t *testing.T) {
 			if tc.wdHeader != "" {
 				r.Header.Set("X-Working-Dir", tc.wdHeader)
 			}
-			got := wireToChatRequest(&tc.body, r)
+			got, err := wireToChatRequest(&tc.body, r)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
 			tc.assert(t, got)
 		})
 	}
@@ -116,7 +120,10 @@ func TestWireToChatRequest_Images(t *testing.T) {
 		},
 	}
 	r := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/chat", nil)
-	got := wireToChatRequest(&body, r)
+	got, err := wireToChatRequest(&body, r)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if len(got.Messages) != 1 {
 		t.Fatalf("Messages len: got %d, want 1", len(got.Messages))
 	}
@@ -160,7 +167,10 @@ func TestWireToChatRequest_Images_MalformedBase64(t *testing.T) {
 		},
 	}
 	r := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/chat", nil)
-	got := wireToChatRequest(&body, r)
+	got, err := wireToChatRequest(&body, r)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if len(got.Messages) != 1 {
 		t.Fatalf("Messages len: got %d, want 1", len(got.Messages))
 	}
@@ -249,6 +259,106 @@ func TestEstimateTokens(t *testing.T) {
 		if got := estimateTokens(c.s); got != c.want {
 			t.Errorf("estimateTokens(%q): got %d, want %d", c.s, got, c.want)
 		}
+	}
+}
+
+// TestDecodeFormat covers the D-02 accepted/rejected shape matrix for the
+// Ollama `format` field.
+func TestDecodeFormat(t *testing.T) {
+	tests := []struct {
+		name      string
+		raw       string // JSON literal; empty string → nil RawMessage
+		wantNil   bool
+		wantType  string
+		wantHasSchema bool
+		wantErr   bool
+		errSubstr string
+	}{
+		{
+			name:    "omitted (nil raw)",
+			raw:     "",
+			wantNil: true,
+		},
+		{
+			name:    "null",
+			raw:     "null",
+			wantNil: true,
+		},
+		{
+			name:    "empty string",
+			raw:     `""`,
+			wantNil: true,
+		},
+		{
+			name:     "json string",
+			raw:      `"json"`,
+			wantType: "json",
+			wantNil:  false,
+		},
+		{
+			name:          "object schema",
+			raw:           `{"type":"object"}`,
+			wantType:      "json_schema",
+			wantHasSchema: true,
+			wantNil:       false,
+		},
+		{
+			name:      "unsupported string yaml",
+			raw:       `"yaml"`,
+			wantErr:   true,
+			errSubstr: "format",
+		},
+		{
+			name:      "number 42",
+			raw:       `42`,
+			wantErr:   true,
+			errSubstr: "format",
+		},
+		{
+			name:      "array",
+			raw:       `["a","b"]`,
+			wantErr:   true,
+			errSubstr: "format",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var raw json.RawMessage
+			if tc.raw != "" {
+				raw = json.RawMessage(tc.raw)
+			}
+			got, err := decodeFormat(raw)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got nil")
+				}
+				if tc.errSubstr != "" && !strings.Contains(err.Error(), tc.errSubstr) {
+					t.Errorf("error %q does not contain %q", err.Error(), tc.errSubstr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tc.wantNil {
+				if got != nil {
+					t.Errorf("expected nil, got %+v", got)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatal("expected non-nil Format")
+			}
+			if got.Type != tc.wantType {
+				t.Errorf("Type: got %q, want %q", got.Type, tc.wantType)
+			}
+			if tc.wantHasSchema && got.Schema == nil {
+				t.Errorf("Schema: expected non-nil")
+			}
+			if !tc.wantHasSchema && got.Type == "json" && got.Schema != nil {
+				t.Errorf("Schema: expected nil for json type, got %v", got.Schema)
+			}
+		})
 	}
 }
 
