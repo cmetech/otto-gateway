@@ -694,39 +694,35 @@ func (c *Client) SetModel(ctx context.Context, sessionID, modelID string) error 
 }
 
 // Prompt sends session/prompt and returns a Stream for receiving chunks.
-// The stream receives session/update chunks via handleNotification until the session
-// signals it is done (prompt response closes the stream).
+// The stream receives session/update chunks via handleNotification until the
+// session signals it is done (prompt response closes the stream).
 // D-03: streaming from day 1.
 //
-// Concurrency contract (Phase 1.1 WR-01): Prompt blocks until the
-// session/prompt response arrives, which kiro-cli does not emit until AFTER
-// every session/update chunk for that turn. The chunks land on the returned
-// Stream.Chunks channel — which has a 64-slot buffer (stream.go:newStream).
-// While that buffer is filling, the readLoop is the sole producer; once it
-// fills, push() blocks on the channel send, which in turn blocks the
-// readLoop, which prevents the session/prompt response from being read.
+// Concurrency contract (Phase 8.3): Prompt returns (*Stream, nil) as soon as
+// c.send accepts the session/prompt request payload — it does NOT wait for the
+// session/prompt response. A per-prompt goroutine, awaitPromptResult, owns the
+// response wait and finalizes the Stream via stream.close(...) when one of:
+// (a) ctx is cancelled (defensive session/cancel notification sent, terminal
+// error wraps ctx.Err); (b) an RPC error arrives (or the close-sentinel from
+// failPending); (c) the happy-path session/prompt response is parsed and
+// FinalResult{StopReason} is recorded.
 //
-// Callers MUST therefore drain Stream.Chunks concurrently with whatever
-// goroutine is waiting on Prompt to return. The recommended pattern:
+// Callers obtain the terminal StopReason / error via Stream.Result(), which
+// blocks on <-s.done as the single sync point. Drainage of Stream.Chunks
+// MAY happen on whichever goroutine called Prompt for throughput, but is no
+// longer REQUIRED for correctness — push() backpressure on a slow consumer
+// cannot cascade into the response-wait path because the response-wait runs
+// on its own goroutine independent of the chunk drainage rate. This removes
+// the Phase 1.1 chunk-buffer-overflow deadlock that wedged any response with
+// more than 64 session/update chunks before its session/prompt response.
 //
-//	chunksDone := make(chan struct{})
-//	go func() {
-//	    defer close(chunksDone)
-//	    for chunk := range stream.Chunks { handle(chunk) }
-//	}()
-//	stream, err := client.Prompt(ctx, sid, blocks)
-//	// ... handle err, then ...
-//	<-chunksDone
-//	result, _ := stream.Result()
-//
-// Calling Prompt synchronously and draining Chunks afterward only works when
-// the total chunk count fits in the 64-slot buffer. Any kiro-cli regression
-// that emits more chunks than that will deadlock such a caller until the
-// client context is cancelled. See Stream's godoc for the full rationale.
+// See Stream's godoc (internal/acp/stream.go) for the full lifecycle.
 func (c *Client) Prompt(ctx context.Context, sessionID string, blocks []canonical.Block) (*Stream, error) {
 	id := c.nextID.Add(1)
 	respCh := c.disp.register(id)
-	defer c.disp.cancel(id)
+	// Phase 8.3: defer c.disp.cancel(id) moves INTO awaitPromptResult so the
+	// dispatcher entry outlives Prompt's return. On the send-failure path
+	// below (no goroutine spawned), we cancel explicitly.
 
 	stream := newStream(ctx, sessionID)
 
@@ -747,46 +743,93 @@ func (c *Client) Prompt(ctx context.Context, sessionID string, blocks []canonica
 		// discriminated-struct encoding.
 		Params: promptParams{SessionID: sessionID, Prompt: wire, Content: wire},
 	}); err != nil {
+		// Phase 8.3 Pitfall 4: explicit cancel REQUIRED here — no goroutine
+		// will be spawned to defer it.
+		c.disp.cancel(id)
 		c.streamMu.Lock()
 		c.activeStream = nil
 		c.streamMu.Unlock()
 		return nil, err
 	}
 
+	// Phase 8.3 D-04 / Pattern P2: register the per-prompt goroutine with c.wg
+	// BEFORE the `go` statement (Go memory model — Add must happen-before the
+	// goroutine starts so Client.Close()'s c.wg.Wait observes the registration).
+	c.wg.Add(1)
+	go c.awaitPromptResult(ctx, id, sessionID, stream, respCh)
+
+	return stream, nil
+}
+
+// awaitPromptResult waits for the session/prompt response (or ctx cancel /
+// client close) and finalizes the Stream via stream.close(...). Lifetime is
+// registered with c.wg so Client.Close() observes its completion before
+// returning. Lifted-and-shifted from the synchronous Prompt body in Phase 8.3
+// per RESEARCH.md Pattern 1.
+//
+// Defer order (LIFO; last-registered runs first):
+//  1. c.disp.cancel(id) (registered last → runs first on return)
+//  2. c.wg.Done() (registered first → runs last so Close()'s wg.Wait observes
+//     the dispatcher cleanup before unblocking)
+//
+// Three exit arms:
+//
+//   - ctx.Done() — caller cancelled. Clear c.activeStream, send a best-effort
+//     session/cancel notification (matches the historical synchronous path;
+//     duplicates engine.Run's context.AfterFunc watchdog harmlessly because
+//     ACPClient.Cancel is idempotent per CONTEXT.md D-01), finalize the stream
+//     with wrapped ctx.Err().
+//   - frame := <-respCh with frame.Error != nil — RPC error (or close-sentinel
+//     from failPending). Clear c.activeStream, finalize the stream with
+//     ErrClientClosed (on close-sentinel) or a wrapped RPC error.
+//   - frame := <-respCh with frame.Error == nil — happy path. Parse stopReason
+//     (D-07 forward-compat via parseStopReason), read ChunkCount under
+//     stream.mu, emit engine.prompt.completed Debug log line (Phase 8.3 D-02 —
+//     load-bearing diagnostic for the previously-invisible response latency),
+//     finalize the stream with FinalResult{StopReason: stop}.
+func (c *Client) awaitPromptResult(
+	ctx context.Context,
+	id uint64,
+	sessionID string,
+	stream *Stream,
+	respCh <-chan rpcFrame,
+) {
+	defer c.wg.Done()
+	defer c.disp.cancel(id)
+
 	select {
 	case <-ctx.Done():
-		c.disp.cancel(id)
 		c.streamMu.Lock()
 		c.activeStream = nil
 		c.streamMu.Unlock()
 		// Best-effort cancel notification (no id = notification).
+		// Two-owner pattern per CONTEXT.md D-01: engine.Run's
+		// context.AfterFunc watchdog is also firing in parallel; both are
+		// safe because ACPClient.Cancel is idempotent (engine.go:152-158)
+		// and the ACP spec treats duplicate session/cancel as no-ops.
 		c.sendNotification(rpcNotification{
 			JSONRPC: "2.0",
 			Method:  "session/cancel",
 			Params:  cancelParams{SessionID: sessionID},
 		})
-		return nil, fmt.Errorf("acp: prompt: %w", ctx.Err())
+		stream.close(nil, fmt.Errorf("acp: prompt: %w", ctx.Err()))
+		return
+
 	case frame := <-respCh:
+		c.streamMu.Lock()
+		c.activeStream = nil
+		c.streamMu.Unlock()
 		if frame.Error != nil {
-			c.streamMu.Lock()
-			c.activeStream = nil
-			c.streamMu.Unlock()
 			if frame.Error.Code == closeSentinelCode {
-				return nil, ErrClientClosed
+				stream.close(nil, ErrClientClosed)
+				return
 			}
-			return nil, fmt.Errorf("acp: prompt: rpc error %d: %s", frame.Error.Code, frame.Error.Message)
+			stream.close(nil, fmt.Errorf("acp: prompt: rpc error %d: %s", frame.Error.Code, frame.Error.Message))
+			return
 		}
-		// CR-02 fix: close the stream when the prompt response arrives (not only on
-		// readLoop EOF). This ensures stream.Result() returns without waiting for
-		// subprocess exit. Clear activeStream BEFORE closing so any late
-		// session/update notification falls through to the "unknown session" Warn
-		// log rather than racing with a closed channel.
-		//
-		// Phase 1.1 D-07: parse result.stopReason (forward-compat: unknown wire
-		// values map to StopUnknown via parseStopReason — do NOT fail the prompt
-		// over an unrecognised stop reason). Pass the parsed value into close()
-		// where stream.go merges it onto the FinalResult that push() has been
-		// updating with ChunkCount.
+		// Phase 1.1 D-07: parse result.stopReason (forward-compat: unknown
+		// wire values map to StopUnknown via parseStopReason — do NOT fail
+		// the prompt over an unrecognised stop reason).
 		var r promptResult
 		if len(frame.Result) > 0 {
 			if err := json.Unmarshal(frame.Result, &r); err != nil {
@@ -794,12 +837,26 @@ func (c *Client) Prompt(ctx context.Context, sessionID string, blocks []canonica
 			}
 		}
 		stop := parseStopReason(r.StopReason)
-		s := stream
-		c.streamMu.Lock()
-		c.activeStream = nil
-		c.streamMu.Unlock()
-		s.close(&FinalResult{StopReason: stop}, nil)
-		return s, nil
+		// Phase 8.3 Pitfall 6 defense-in-depth: read ChunkCount under
+		// stream.mu before close (the readLoop's sequential frame processing
+		// already guarantees all push() calls for this turn have completed
+		// before this response frame was dispatched, but take the mutex to
+		// match the existing pattern at stream.go:85-87).
+		stream.mu.Lock()
+		chunkCount := stream.result.ChunkCount
+		stream.mu.Unlock()
+		// Phase 8.3 D-02: new engine.prompt.completed line carries the
+		// response-landed signal that ops dashboards previously timed via
+		// engine.prompt.sent (whose semantics shifted to send-accepted in
+		// this phase). Emit RAW wire r.StopReason — canonical.StopReason
+		// has no String() method and CONTEXT.md forbids canonical-type
+		// changes in this phase.
+		c.cfg.Logger.Debug("engine.prompt.completed",
+			"session_id", sessionID,
+			"chunks", chunkCount,
+			"stop_reason", r.StopReason,
+		)
+		stream.close(&FinalResult{StopReason: stop}, nil)
 	}
 }
 
