@@ -679,3 +679,48 @@ func TestLoad_StreamIdleTimeoutSec_NonInt(t *testing.T) {
 		t.Errorf("error should explain the parse failure, got: %v", err)
 	}
 }
+
+// TestLoad_JSONFormatSteeringEnabled covers the three canonical env-bool
+// states that match the PII_REDACTION_ENABLED test conventions.
+func TestLoad_JSONFormatSteeringEnabled(t *testing.T) {
+	t.Run("unset defaults to true", func(t *testing.T) {
+		t.Setenv("JSON_FORMAT_STEERING_ENABLED", "")
+		cfg, err := config.Load()
+		if err != nil {
+			t.Fatalf("Load() error: %v", err)
+		}
+		if !cfg.JSONFormatSteeringEnabled {
+			t.Error("JSONFormatSteeringEnabled: want true (default), got false")
+		}
+	})
+	t.Run("explicit true", func(t *testing.T) {
+		t.Setenv("JSON_FORMAT_STEERING_ENABLED", "true")
+		cfg, err := config.Load()
+		if err != nil {
+			t.Fatalf("Load() error: %v", err)
+		}
+		if !cfg.JSONFormatSteeringEnabled {
+			t.Error("JSONFormatSteeringEnabled: want true, got false")
+		}
+	})
+	t.Run("explicit false", func(t *testing.T) {
+		t.Setenv("JSON_FORMAT_STEERING_ENABLED", "false")
+		cfg, err := config.Load()
+		if err != nil {
+			t.Fatalf("Load() error: %v", err)
+		}
+		if cfg.JSONFormatSteeringEnabled {
+			t.Error("JSONFormatSteeringEnabled: want false, got true")
+		}
+	})
+	t.Run("invalid value error", func(t *testing.T) {
+		t.Setenv("JSON_FORMAT_STEERING_ENABLED", "maybe")
+		_, err := config.Load()
+		if err == nil {
+			t.Fatal("Load() should error on invalid bool, got nil")
+		}
+		if !strings.Contains(err.Error(), "JSON_FORMAT_STEERING_ENABLED") {
+			t.Errorf("error should mention JSON_FORMAT_STEERING_ENABLED, got: %v", err)
+		}
+	})
+}

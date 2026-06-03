@@ -174,6 +174,15 @@ type Config struct {
 	// when encrypt is active and this is empty.
 	PIIEncryptKey string
 
+	// JSONFormatSteeringEnabled controls whether JSONFormatSteeringHook does
+	// WORK when invoked (Phase 08.2 D-06 two-knob model). Composes with
+	// EnabledHooks: ENABLED_HOOKS controls whether the hook IS in the chain
+	// at all; JSON_FORMAT_STEERING_ENABLED controls whether it does work
+	// when invoked. Default true (parity with the Node Ollama shim, which
+	// applies GEN_RULES unconditionally when format is set). Loaded from
+	// JSON_FORMAT_STEERING_ENABLED.
+	JSONFormatSteeringEnabled bool
+
 	// ChatTrace enables the ChatTraceHook NDJSON tracer (quick 260529-ll2).
 	// Default false. When true, main.go constructs a dedicated
 	// timberjack rotator at ChatTraceFile and prepends ChatTraceHook to
@@ -367,6 +376,14 @@ func Load() (Config, error) {
 		}
 	}
 
+	// Phase 08.2 D-06: JSON_FORMAT_STEERING_ENABLED. Default true (parity
+	// with Node shim which applies GEN_RULES unconditionally). Mirrors the
+	// PII_REDACTION_ENABLED load pattern (getEnvBool + error accumulation).
+	jsonFormatSteeringEnabled, err := getEnvBool("JSON_FORMAT_STEERING_ENABLED", true)
+	if err != nil {
+		errs = append(errs, err)
+	}
+
 	// Quick 260529-ll2 — ChatTraceHook env knobs. Two-knob: CHAT_TRACE
 	// toggles work-doing; CHAT_TRACE_FILE / CHAT_TRACE_MAX_AGE_DAYS
 	// tune the rotator. The writable-parent check only runs when
@@ -451,8 +468,9 @@ func Load() (Config, error) {
 		PIIRedactionMode:     piiMode,
 		PIIHashKey:           piiHashKey,
 		PIIEntityActions:     piiEntityActions,
-		PIIEncryptKey:        piiEncryptKey,
-		ChatTrace:            chatTrace,
+		PIIEncryptKey:              piiEncryptKey,
+		JSONFormatSteeringEnabled:  jsonFormatSteeringEnabled,
+		ChatTrace:                  chatTrace,
 		ChatTraceFile:        chatTraceFile,
 		ChatTraceMaxAgeDays:  chatTraceMaxAgeDays,
 	}, nil
