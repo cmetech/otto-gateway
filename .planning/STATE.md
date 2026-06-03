@@ -3,7 +3,7 @@ gsd_state_version: 1.0
 milestone: v1.5
 milestone_name: audit WARNINGs
 status: Discuss / plan pending
-last_updated: "2026-06-03T22:30:07.456Z"
+last_updated: "2026-06-03T22:39:12.702Z"
 last_activity: 2026-06-03
 progress:
   total_phases: 4
@@ -136,6 +136,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-06-03T12:22:30.435Z
-Stopped at: context exhaustion at 82% (2026-05-31)
-Resume file: None
+Last session: 2026-06-03T22:39:12.696Z
+Stopped at: Phase 8.3 context gathered
+Resume file: .planning/phases/08.3-acp-prompt-non-blocking-refactor/08.3-CONTEXT.md
