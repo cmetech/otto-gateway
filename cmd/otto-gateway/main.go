@@ -46,6 +46,7 @@ import (
 	"otto-gateway/internal/config"
 	"otto-gateway/internal/engine"
 	"otto-gateway/internal/plugin"
+	"otto-gateway/internal/plugin/jsonformat"
 	"otto-gateway/internal/plugin/pii"
 	"otto-gateway/internal/pool"
 	"otto-gateway/internal/server"
@@ -222,11 +223,22 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 		piiHook.EncryptKey = key
 	}
 
+	// Phase 08.2 D-07: JSON-format steering hook construction. Enabled is
+	// derived from JSON_FORMAT_STEERING_ENABLED (default true). The hook is
+	// inserted AFTER AuthHook and BEFORE PIIRedactionHook — auth short-circuit
+	// wins first; steering text runs before PII redaction so the GEN_RULES
+	// block (which contains no PII shapes) is never accidentally redacted.
+	jsonFormatHook := jsonformat.New(cfg.JSONFormatSteeringEnabled)
+
 	loggingHook := &plugin.LoggingHook{Logger: logger}
 	chain := plugin.Chain{
 		Pre: []engine.PreHook{
 			&plugin.RequestIDHook{Logger: logger},
 			&plugin.AuthHook{Tokens: cfg.AuthToken},
+			// JSON-format steering must run after Auth (so auth short-circuit
+			// wins) and before PII redaction (so steering text isn't redacted).
+			// Phase 08.2 D-07.
+			jsonFormatHook,
 			piiHook,
 			loggingHook,
 		},
