@@ -205,16 +205,17 @@ this table is the underlying contract every knob maps to.
 
 ### Phase 8 — Plugin chain (hooks)
 
-Phase 8 ships four canonical-layer hooks (RequestIDHook, AuthHook,
-LoggingHook, PIIRedactionHook) wired into a hardcoded chain in
-`cmd/otto-gateway/main.go`. The chain runs on every request that
-reaches the engine, in registration order:
-`RequestID → Auth → PII → Logging` (Pre), with LoggingHook also on
-Post for timing + structured exit records.
+Phase 8 ships five canonical-layer hooks (RequestIDHook, AuthHook,
+JSONFormatSteeringHook, PIIRedactionHook, LoggingHook) wired into a
+hardcoded chain in `cmd/otto-gateway/main.go`. The chain runs on
+every request that reaches the engine, in registration order:
+`RequestID → Auth → JSONFormatSteering → PII → Logging` (Pre), with
+LoggingHook also on Post for timing + structured exit records.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ENABLED_HOOKS` | _(empty = all enabled)_ | Comma-split allowlist of hook type names enabled at boot. Default empty means every hook in `main.go`'s slice runs (default-permissive, matches `AUTH_TOKEN` semantics). A name that does not match any registered hook causes the gateway to **refuse to start** with stderr/stdout containing `unknown hook: "<name>"`. Typo-fail-fast — `ENABLED_HOOKS=PIIRedaction` (missing the `Hook` suffix) would silently disable PII redaction; the boot error prevents this. **Registration order is preserved**: `ENABLED_HOOKS=LoggingHook,RequestIDHook` runs as `[RequestIDHook, LoggingHook]`, not the allowlist order. |
+| `JSON_FORMAT_STEERING_ENABLED` | `true` | Master switch for `JSONFormatSteeringHook`. When `true` (default), the hook appends verbatim GEN_RULES text to `req.System` on any Ollama request carrying `format:"json"` or a JSON-schema object — steering the model to emit raw JSON without markdown fences. Node-shim parity: the original Node proxy applied this unconditionally; the gateway default mirrors that behaviour. Set `false` to disable globally. The hook is still visible via `GET /health/hooks` when disabled. |
 | `PII_REDACTION_ENABLED` | `false` | Master switch for `PIIRedactionHook`. When `false` (default), the hook is present in the chain (visible via `GET /health/hooks`) but is inert — operator must explicitly opt in. Two-knob composition with `ENABLED_HOOKS`: `ENABLED_HOOKS` controls whether the hook is in the chain at all; `PII_REDACTION_ENABLED` controls whether it does work when invoked. |
 | `PII_ENABLED_ENTITIES` | _(empty = all six)_ | Comma-split list of recognizer names. Default empty = all six recognizers active (`Email`, `IPv4`, `IPv6`, `SSN`, `CreditCard`, `USPhone`). Unknown names → boot error. |
 | `PII_REDACTION_MODE` | `replace` | One of `replace`, `mask`, `hash`, `drop`, `encrypt`. `replace` substitutes `[EMAIL_N]` tokens with a per-canonical-value counter; `mask` substitutes a partial obfuscation (e.g., `co***@cm***.io`); `hash` substitutes `[EMAIL:h-XXXXXXXX]` with the first 8 hex chars of `HMAC-SHA256(PII_HASH_KEY, canonical(value))`; `drop` substitutes an empty string; `encrypt` substitutes `[PII:EMAIL:base64url]` with an AES-256-GCM ciphertext that the response Post-hook decrypts back to plaintext before the client sees the response (round-trip). Unknown values → boot error. |
@@ -243,6 +244,7 @@ convention):
   "hooks": [
     {"name": "RequestIDHook", "kind": "Pre", "enabled": true, "config": {...}},
     {"name": "AuthHook", "kind": "Pre", "enabled": true, "config": {"token_count": 1}},
+    {"name": "JSONFormatSteeringHook", "kind": "Pre", "enabled": true, "config": {"enabled": true, "default_on": true}},
     {"name": "PIIRedactionHook", "kind": "Pre", "enabled": true, "config": {"enabled": false, "mode": "replace", "entities": [...]}},
     {"name": "LoggingHook", "kind": "Pre,Post", "enabled": true, "config": {"level": "INFO"}}
   ]
