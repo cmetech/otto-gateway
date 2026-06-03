@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Quick PII / streaming smoke test for OTTO Gateway (Windows).
 
@@ -136,7 +136,7 @@ function Write-Verb($Text) {
 }
 
 # ---------------------------------------------------------------------------
-# HTTP helpers — PowerShell 5.1 compatible (no -ResponseHeadersVariable).
+# HTTP helpers -- PowerShell 5.1 compatible (no -ResponseHeadersVariable).
 # ---------------------------------------------------------------------------
 function Invoke-Gateway {
     <#
@@ -196,7 +196,7 @@ try {
 # Scenario: diag.
 # ---------------------------------------------------------------------------
 function Invoke-Scenario-Diag {
-    Write-Section "Diagnostic — PII posture at $Base"
+    Write-Section "Diagnostic -- PII posture at $Base"
     $resp = Invoke-Gateway -Method GET -Url "$Base/health/hooks"
     if ($resp.StatusCode -ne 200) {
         Write-Fail "/health/hooks did not return 200 (got $($resp.StatusCode))"
@@ -218,7 +218,7 @@ function Invoke-Scenario-Diag {
     if ($names -eq $expected) {
         Write-Pass "hook chain matches expected default (5 hooks, registration order)"
     } else {
-        Write-WarnLine "hook chain differs from default — expected: $expected"
+        Write-WarnLine "hook chain differs from default -- expected: $expected"
     }
 
     $pii = $data.hooks | Where-Object { $_.name -eq 'PIIRedactionHook' } | Select-Object -First 1
@@ -271,22 +271,22 @@ function Test-WireShape {
     $streamPayload = Set-StreamFlag -Payload $Payload -Stream $true
     $r = Invoke-Gateway -Method POST -Url "$Base$Path" -Body $streamPayload -Headers $ExtraHeaders
     if ($r.ContentType -and $r.ContentType.StartsWith($WantStreamCT)) {
-        Write-Pass "stream=true → Content-Type: $($r.ContentType)"
+        Write-Pass "stream=true -> Content-Type: $($r.ContentType)"
     } else {
-        Write-Fail "stream=true → Content-Type: $($r.ContentType) (want prefix $WantStreamCT)"
+        Write-Fail "stream=true -> Content-Type: $($r.ContentType) (want prefix $WantStreamCT)"
     }
 
     $nonPayload = Set-StreamFlag -Payload $Payload -Stream $false
     $r2 = Invoke-Gateway -Method POST -Url "$Base$Path" -Body $nonPayload -Headers $ExtraHeaders
     if ($r2.ContentType -and $r2.ContentType.StartsWith($WantNonStreamCT)) {
-        Write-Pass "stream=false → Content-Type: $($r2.ContentType)"
+        Write-Pass "stream=false -> Content-Type: $($r2.ContentType)"
     } else {
-        Write-Fail "stream=false → Content-Type: $($r2.ContentType) (want prefix $WantNonStreamCT)"
+        Write-Fail "stream=false -> Content-Type: $($r2.ContentType) (want prefix $WantNonStreamCT)"
     }
 }
 
 function Invoke-Scenario-Wire {
-    Write-Section "Wire shape — Content-Type per surface, stream toggle"
+    Write-Section "Wire shape -- Content-Type per surface, stream toggle"
     $msg = '{"model":"auto","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}'
 
     if ($Surface -in @('all', 'anthropic')) {
@@ -407,7 +407,7 @@ function Invoke-PIIProbe {
 }
 
 function Invoke-Scenario-Pii {
-    Write-Section "PII round-trip — encrypt → worker → decrypt → client"
+    Write-Section "PII round-trip -- encrypt -> worker -> decrypt -> client"
     $payloadObj = @{
         model      = 'auto'
         max_tokens = 512
