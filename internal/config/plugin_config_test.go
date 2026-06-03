@@ -43,14 +43,15 @@ func TestLoad_EnabledHooks_Parsing(t *testing.T) {
 }
 
 // TestLoad_PIIRedactionEnabled_Default — unset PII_REDACTION_ENABLED
-// → false (operator must opt in per D-02 composition rule).
+// → true (secure-by-default: PII redaction is on out of the box).
+// Operators explicitly setting PII_REDACTION_ENABLED=false opt out.
 func TestLoad_PIIRedactionEnabled_Default(t *testing.T) {
 	cfg, err := config.Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.PIIRedactionEnabled {
-		t.Errorf("PIIRedactionEnabled default: got true, want false (operator opt-in only)")
+	if !cfg.PIIRedactionEnabled {
+		t.Errorf("PIIRedactionEnabled default: got false, want true (secure-by-default)")
 	}
 }
 
@@ -116,14 +117,16 @@ func TestLoad_PIIEnabledEntities_UnknownNameError(t *testing.T) {
 }
 
 // TestLoad_PIIRedactionMode_Default — unset PII_REDACTION_MODE →
-// "replace" (D-05 default).
+// "encrypt" (secure-by-default: round-trip is the out-of-box behavior).
+// The encrypt-active boot validation requires PII_ENCRYPT_KEY to be
+// set; testmain stamps a key so the validation passes here.
 func TestLoad_PIIRedactionMode_Default(t *testing.T) {
 	cfg, err := config.Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.PIIRedactionMode != "replace" {
-		t.Errorf("PIIRedactionMode default: got %q, want %q", cfg.PIIRedactionMode, "replace")
+	if cfg.PIIRedactionMode != "encrypt" {
+		t.Errorf("PIIRedactionMode default: got %q, want %q", cfg.PIIRedactionMode, "encrypt")
 	}
 }
 
@@ -311,15 +314,17 @@ func TestLoad_EncryptKeyBootValidation(t *testing.T) {
 	}
 }
 
-// TestLoad_PIINEREnabled_Default — unset PII_NER_ENABLED → false.
-// Same shape as TestLoad_PIIRedactionEnabled_Default.
+// TestLoad_PIINEREnabled_Default — unset PII_NER_ENABLED → true
+// (secure-by-default: prose-based PERSON/LOCATION detection is on out
+// of the box; operators who want to skip the bundled NER model load
+// must explicitly set PII_NER_ENABLED=false).
 func TestLoad_PIINEREnabled_Default(t *testing.T) {
 	cfg, err := config.Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.PIINEREnabled {
-		t.Errorf("PIINEREnabled default: got true, want false")
+	if !cfg.PIINEREnabled {
+		t.Errorf("PIINEREnabled default: got false, want true (secure-by-default)")
 	}
 }
 

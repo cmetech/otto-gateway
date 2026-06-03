@@ -323,12 +323,22 @@ func Load() (Config, error) {
 	// mode-hash-requires-key invariant.
 	enabledHooks := getEnvStrSliceComma("ENABLED_HOOKS", nil)
 
-	piiEnabled, err := getEnvBool("PII_REDACTION_ENABLED", false)
+	// Default true: PII redaction is on out of the box. Operators who
+	// explicitly want plaintext through the gateway must set
+	// PII_REDACTION_ENABLED=false. Combined with PII_REDACTION_MODE=encrypt
+	// (also default), the round-trip property is on by default — the
+	// LLM never sees plaintext PII unless the operator opts out.
+	piiEnabled, err := getEnvBool("PII_REDACTION_ENABLED", true)
 	if err != nil {
 		errs = append(errs, err)
 	}
 
-	piiNEREnabled, err := getEnvBool("PII_NER_ENABLED", false)
+	// Default true: prose-based NER (PERSON / LOCATION) is on out of
+	// the box. Operators who do not want the prose model loaded must
+	// set PII_NER_ENABLED=false. The first Detect call lazy-loads the
+	// bundled averaged-perceptron weights — no network, no model
+	// download.
+	piiNEREnabled, err := getEnvBool("PII_NER_ENABLED", true)
 	if err != nil {
 		errs = append(errs, err)
 	}
@@ -338,7 +348,13 @@ func Load() (Config, error) {
 		errs = append(errs, fmt.Errorf("PII_ENABLED_ENTITIES: %w", err))
 	}
 
-	piiMode := getEnvStr("PII_REDACTION_MODE", "replace")
+	// Default "encrypt": PII flows to the LLM as AES-256-GCM ciphertext
+	// and is decrypted back to plaintext before the client sees the
+	// response (round-trip). Requires PII_ENCRYPT_KEY to be set — the
+	// install scripts (scripts/install.{sh,ps1}) generate one and write
+	// it into the env file. A fresh checkout without the install will
+	// fail boot with a clear error naming PII_ENCRYPT_KEY.
+	piiMode := getEnvStr("PII_REDACTION_MODE", "encrypt")
 	if err := validatePIIMode(piiMode); err != nil {
 		errs = append(errs, fmt.Errorf("PII_REDACTION_MODE: %w", err))
 	}

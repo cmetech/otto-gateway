@@ -132,7 +132,7 @@ main() {
     if [ -f "$HOME/.otto-gw.env" ] || [ -f "$OTTO_HOME/.env.otto-gw" ]; then
         info "Existing config found — preserving it (skipping init)."
     else
-        info "Writing default config (no auth, 127.0.0.1:18080, all hooks, PII redaction=hash, chat-trace off) ..."
+        info "Writing default config (no auth, 127.0.0.1:18080, all hooks, PII redaction=encrypt, NER=on, chat-trace off) ..."
         "$OTTO_HOME/scripts/otto-gw" init --non-interactive
     fi
 

@@ -1183,7 +1183,7 @@ migrate_to_overrides_cmd() {
 #                       operator-supplied -- NOT minted by --regenerate-secrets)
 #   --kiro PATH         KIRO_CMD value
 #   --addr ADDR         HTTP_ADDR value (default 127.0.0.1:18080)
-#   --pii MODE          off|replace|mask|hash|drop|encrypt  (default off)
+#   --pii MODE          off|replace|mask|hash|drop|encrypt  (default encrypt)
 #   --auth-enabled      enable bearer-token auth (default off; AUTH_TOKEN
 #                       line is pregenerated but written commented when
 #                       disabled so flipping a '#' enables it later)
@@ -1330,9 +1330,9 @@ init_cmd() {
         fi
         echo "re-init detected: preserving existing values where unchanged"
         if [[ "$arg_regenerate_secrets" -eq 1 ]]; then
-            echo "regenerating AUTH_TOKEN and PII_HASH_KEY (existing values discarded)"
+            echo "regenerating AUTH_TOKEN, PII_HASH_KEY, and PII_ENCRYPT_KEY (existing values discarded)"
         else
-            echo "(use --regenerate-secrets to mint new AUTH_TOKEN / PII_HASH_KEY)"
+            echo "(use --regenerate-secrets to mint new AUTH_TOKEN / PII_HASH_KEY / PII_ENCRYPT_KEY)"
         fi
     fi
 
@@ -1358,14 +1358,20 @@ init_cmd() {
             hash_key="$(gen_random_hex 32)"
         fi
     fi
-    # PII_ENCRYPT_KEY is operator-supplied (NOT auto-minted by --regenerate-secrets).
-    # CLI flag wins; existing-file value is preserved on re-init; otherwise empty
-    # (which the gateway treats as fatal when encrypt mode is active).
+    # PII_ENCRYPT_KEY is auto-generated when missing — same precedence as
+    # AUTH_TOKEN and PII_HASH_KEY. Generated even when the current mode
+    # isn't encrypt, so a later 'otto-gw start --pii encrypt' (or a
+    # PII_ENTITY_ACTIONS entry adding :encrypt) works without re-init.
+    # --regenerate-secrets discards the existing value.
     local encrypt_key="$arg_encrypt_key"
     local encrypt_key_preserved=0
-    if [[ -z "$encrypt_key" && "$reinit" -eq 1 && -n "$existing_encrypt_key" ]]; then
-        encrypt_key="$existing_encrypt_key"
-        encrypt_key_preserved=1
+    if [[ -z "$encrypt_key" ]]; then
+        if [[ "$reinit" -eq 1 && "$arg_regenerate_secrets" -ne 1 && -n "$existing_encrypt_key" ]]; then
+            encrypt_key="$existing_encrypt_key"
+            encrypt_key_preserved=1
+        else
+            encrypt_key="$(gen_random_hex 32)"
+        fi
     fi
 
     # Resolve KIRO_CMD — precedence: CLI flag > existing-file value (re-init)
@@ -1404,9 +1410,10 @@ init_cmd() {
     fi
     [[ -z "$http_addr" ]] && http_addr="127.0.0.1:18080"
 
-    # Resolve PII mode — precedence: CLI flag > existing > prompt > "hash".
-    # Default is hash: redaction ON with per-install HMAC tags so the same
-    # value correlates across log lines (PII_HASH_KEY is auto-generated below).
+    # Resolve PII mode — precedence: CLI flag > existing > prompt > "encrypt".
+    # Default is encrypt: PII flows to the LLM as AES-256-GCM ciphertext and is
+    # decrypted back to plaintext before the client sees the response (round-
+    # trip). PII_ENCRYPT_KEY is auto-generated below if missing.
     local pii_mode="$arg_pii"
     if [[ -z "$pii_mode" ]]; then
         if [[ -n "$existing_pii_mode" ]]; then
@@ -1418,12 +1425,12 @@ init_cmd() {
             fi
         elif [[ "$non_interactive" -ne 1 ]]; then
             echo "  PII redaction -- off | replace | mask | hash | drop | encrypt."
-            echo "  'hash' (default) correlates values across logs; 'replace' is human-readable;"
-            echo "  'encrypt' round-trips ciphertext (requires --encrypt-key); 'off' disables."
-            read -r -p "  PII mode [hash]: " pii_mode
+            echo "  'encrypt' (default) hides PII from the LLM and decrypts the response back to plaintext;"
+            echo "  'hash' correlates values across logs; 'replace' is human-readable; 'off' disables."
+            read -r -p "  PII mode [encrypt]: " pii_mode
         fi
     fi
-    [[ -z "$pii_mode" ]] && pii_mode="hash"
+    [[ -z "$pii_mode" ]] && pii_mode="encrypt"
 
     # Validate mode early so a typo doesn't write garbage to overrides. The
     # gateway also validates at boot, but catching it here keeps the error
@@ -1594,13 +1601,11 @@ init_cmd() {
         set_overrides_line "$overrides_dest" AUTH_TOKEN "$auth_token"
     fi
     set_overrides_line "$overrides_dest" PII_HASH_KEY "$hash_key"
-    # PII_ENCRYPT_KEY only lands in overrides when the operator actually
-    # supplied one (CLI flag, preserved across re-init, or required by
-    # --pii encrypt). Absent encrypt mode + no operator value ⇒ leave the
-    # commented placeholder from the template in place.
-    if [[ -n "$encrypt_key" ]]; then
-        set_overrides_line "$overrides_dest" PII_ENCRYPT_KEY "$encrypt_key"
-    fi
+    # PII_ENCRYPT_KEY is now always seeded (encrypt is the default mode)
+    # so the gateway boots without operator intervention. The key is
+    # auto-generated above on cold init; preserved on re-init; rotated
+    # by --regenerate-secrets.
+    set_overrides_line "$overrides_dest" PII_ENCRYPT_KEY "$encrypt_key"
     set_overrides_line "$overrides_dest" PII_REDACTION_ENABLED "$pii_enabled"
     set_overrides_line "$overrides_dest" PII_REDACTION_MODE "$pii_mode_value"
     if [[ -n "$kiro_cmd" ]]; then
@@ -1750,7 +1755,7 @@ init flags:
                       unless --regenerate-secrets)
   --kiro PATH         skip the KIRO_CMD prompt
   --addr ADDR         skip the HTTP_ADDR prompt (default 127.0.0.1:18080)
-  --pii MODE          skip the PII prompt (off|replace|mask|hash|drop|encrypt; default off)
+  --pii MODE          skip the PII prompt (off|replace|mask|hash|drop|encrypt; default encrypt)
   --idle-timeout SEC  STREAM_IDLE_TIMEOUT_SEC override (default: write
                       "# STREAM_IDLE_TIMEOUT_SEC=30" commented; the binary
                       defaults to 30s anyway. Pass a value to write the
@@ -1846,7 +1851,7 @@ init flags:
                       unless --regenerate-secrets)
   --kiro PATH         skip the KIRO_CMD prompt
   --addr ADDR         skip the HTTP_ADDR prompt (default 127.0.0.1:18080)
-  --pii MODE          skip the PII prompt (off|replace|mask|hash|drop|encrypt; default off)
+  --pii MODE          skip the PII prompt (off|replace|mask|hash|drop|encrypt; default encrypt)
   --idle-timeout SEC  STREAM_IDLE_TIMEOUT_SEC override (default: write
                       "# STREAM_IDLE_TIMEOUT_SEC=30" commented; the binary
                       defaults to 30s anyway. Pass a value to write the

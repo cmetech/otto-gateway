@@ -16,12 +16,21 @@
 package main
 
 import (
+	"os"
 	"testing"
 
 	"go.uber.org/goleak"
 )
 
 func TestMain(m *testing.M) {
+	// Stamp PII_ENCRYPT_KEY so the secure-by-default encrypt mode
+	// (PII_REDACTION_MODE=encrypt, PII_REDACTION_ENABLED=true) doesn't
+	// boot-fail in cmd tests that call config.Load() without setting
+	// it explicitly. The production install path generates a random
+	// key; this is the test stand-in.
+	if os.Getenv("PII_ENCRYPT_KEY") == "" {
+		_ = os.Setenv("PII_ENCRYPT_KEY", "test-suite-default-encrypt-key")
+	}
 	goleak.VerifyTestMain(
 		m,
 		goleak.IgnoreTopFunction("github.com/DeRuina/timberjack.(*Logger).millRun"),

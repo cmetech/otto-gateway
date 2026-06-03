@@ -11,11 +11,24 @@
 package config_test
 
 import (
+	"os"
 	"testing"
 
 	"go.uber.org/goleak"
 )
 
+// TestMain sets package-wide env so the secure-by-default boot
+// validation (PII_REDACTION_ENABLED=true + PII_REDACTION_MODE=encrypt)
+// doesn't fail every test that calls config.Load() without explicitly
+// setting these vars. Tests that exercise the boot-error path can
+// still t.Setenv("PII_ENCRYPT_KEY", "") to restore the empty value
+// for their own scope.
 func TestMain(m *testing.M) {
+	// Stamp a deterministic encrypt key so the default-encrypt-mode
+	// boot validation passes for every Load() call in this package.
+	// t.Setenv inside individual tests can still override.
+	if os.Getenv("PII_ENCRYPT_KEY") == "" {
+		_ = os.Setenv("PII_ENCRYPT_KEY", "test-suite-default-encrypt-key")
+	}
 	goleak.VerifyTestMain(m)
 }

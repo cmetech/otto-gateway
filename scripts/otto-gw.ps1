@@ -857,9 +857,9 @@ function Invoke-Init {
         }
         Write-Host "re-init detected: preserving existing values where unchanged"
         if ($RegenerateSecrets) {
-            Write-Host "regenerating AUTH_TOKEN and PII_HASH_KEY (existing values discarded)"
+            Write-Host "regenerating AUTH_TOKEN, PII_HASH_KEY, and PII_ENCRYPT_KEY (existing values discarded)"
         } else {
-            Write-Host "(use -RegenerateSecrets to mint new AUTH_TOKEN / PII_HASH_KEY)"
+            Write-Host "(use -RegenerateSecrets to mint new AUTH_TOKEN / PII_HASH_KEY / PII_ENCRYPT_KEY)"
         }
     }
 
@@ -883,16 +883,19 @@ function Invoke-Init {
     } else {
         $hashKeyValue = New-RandomHex 32
     }
-    # PII_ENCRYPT_KEY is operator-supplied (NOT auto-minted by -RegenerateSecrets).
-    # CLI flag wins; existing-file value is preserved on re-init; otherwise empty
-    # (which the gateway treats as fatal when encrypt mode is active).
+    # PII_ENCRYPT_KEY is now auto-generated when missing — same precedence as
+    # AUTH_TOKEN and PII_HASH_KEY. encrypt is the default PII mode, so a
+    # cold install needs a key to boot. -RegenerateSecrets discards the
+    # existing value.
     $encryptKeyValue = ''
     $encryptKeyPreserved = $false
     if ($EncryptKey) {
         $encryptKeyValue = $EncryptKey
-    } elseif ($reinit -and $existing.ContainsKey('PII_ENCRYPT_KEY') -and $existing['PII_ENCRYPT_KEY']) {
+    } elseif ($reinit -and -not $RegenerateSecrets -and $existing.ContainsKey('PII_ENCRYPT_KEY') -and $existing['PII_ENCRYPT_KEY']) {
         $encryptKeyValue     = $existing['PII_ENCRYPT_KEY']
         $encryptKeyPreserved = $true
+    } else {
+        $encryptKeyValue = New-RandomHex 32
     }
 
     # Resolve KIRO_CMD -- flag > existing > prompt with Get-Command suggestion.
@@ -955,15 +958,16 @@ function Invoke-Init {
             }
         } elseif (-not $NonInteractive) {
             Write-Host "  PII redaction -- off | replace | mask | hash | drop | encrypt."
-            Write-Host "  'hash' (default) correlates values across logs; 'replace' is human-readable;"
-            Write-Host "  'encrypt' round-trips ciphertext (requires -EncryptKey); 'off' disables."
-            $entered = Read-Host "  PII mode [hash]"
-            $piiValue = if ($entered) { $entered } else { "hash" }
+            Write-Host "  'encrypt' (default) hides PII from the LLM and decrypts the response back to plaintext;"
+            Write-Host "  'hash' correlates values across logs; 'replace' is human-readable; 'off' disables."
+            $entered = Read-Host "  PII mode [encrypt]"
+            $piiValue = if ($entered) { $entered } else { "encrypt" }
         }
     }
-    # Default is hash: redaction ON with per-install HMAC tags so the same
-    # value correlates across log lines (PII_HASH_KEY is auto-generated above).
-    if (-not $piiValue) { $piiValue = "hash" }
+    # Default is encrypt: PII flows to the LLM as AES-256-GCM ciphertext and is
+    # decrypted back to plaintext before the client sees the response (round-
+    # trip). PII_ENCRYPT_KEY is auto-generated above.
+    if (-not $piiValue) { $piiValue = "encrypt" }
     # Validate mode early so a typo doesn't write garbage to overrides. The
     # gateway also validates at boot, but catching it here keeps the error
     # close to the operator's input.
@@ -1090,13 +1094,11 @@ function Invoke-Init {
         Set-OverridesLine -FilePath $overridesDestPath -Key 'AUTH_TOKEN' -Value $authTokenValue
     }
     Set-OverridesLine -FilePath $overridesDestPath -Key 'PII_HASH_KEY'          -Value $hashKeyValue
-    # PII_ENCRYPT_KEY only lands in overrides when the operator actually
-    # supplied one (CLI flag, preserved across re-init, or required by
-    # -Pii encrypt). Absent encrypt mode + no operator value ⇒ leave the
-    # commented placeholder from the template in place.
-    if ($encryptKeyValue) {
-        Set-OverridesLine -FilePath $overridesDestPath -Key 'PII_ENCRYPT_KEY' -Value $encryptKeyValue
-    }
+    # PII_ENCRYPT_KEY is now always seeded (encrypt is the default mode)
+    # so the gateway boots without operator intervention. The key is
+    # auto-generated above on cold init; preserved on re-init;
+    # rotated by -RegenerateSecrets.
+    Set-OverridesLine -FilePath $overridesDestPath -Key 'PII_ENCRYPT_KEY' -Value $encryptKeyValue
     Set-OverridesLine -FilePath $overridesDestPath -Key 'PII_REDACTION_ENABLED' -Value $piiEnabled
     Set-OverridesLine -FilePath $overridesDestPath -Key 'PII_REDACTION_MODE'    -Value $piiModeValue
     if ($kiroValue) {
@@ -1439,7 +1441,7 @@ init flags (for the 'init' subcommand):
                       -RegenerateSecrets)
   -Kiro PATH          skip the KIRO_CMD prompt
   -Addr ADDR          skip the HTTP_ADDR prompt (default 127.0.0.1:18080)
-  -Pii MODE           skip the PII prompt (off|replace|mask|hash|drop|encrypt; default off)
+  -Pii MODE           skip the PII prompt (off|replace|mask|hash|drop|encrypt; default encrypt)
   -AuthEnabled        enable bearer-token auth (default off; AUTH_TOKEN line
                       pregenerated but commented when disabled)
   -AuthToken TOK      use TOK instead of generating (implies -AuthEnabled)
