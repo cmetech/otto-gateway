@@ -36,7 +36,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"reflect"
 	"strings"
 	"testing"
 
@@ -368,9 +367,22 @@ func TestPIIRedactionHook_Describe_NoSecrets(t *testing.T) {
 	if !ok {
 		t.Fatalf("config[entities]: got %T, want []string", cfg["entities"])
 	}
-	want := []string{"Email", "IPv4", "IPv6", "SSN", "CreditCard", "USPhone"}
-	if !reflect.DeepEqual(entities, want) {
-		t.Errorf("config[entities]: got %v, want %v", entities, want)
+	// Active entity list must include the original six plus any
+	// newly-registered recognizers; assert by name-set inclusion rather
+	// than exact equality so adding a recognizer doesn't break this
+	// invariant.
+	wantSet := map[string]bool{
+		"Email": true, "IPv4": true, "IPv6": true,
+		"SSN": true, "CreditCard": true, "USPhone": true,
+	}
+	gotSet := make(map[string]bool, len(entities))
+	for _, e := range entities {
+		gotSet[e] = true
+	}
+	for name := range wantSet {
+		if !gotSet[name] {
+			t.Errorf("config[entities] missing required recognizer %q (got %v)", name, entities)
+		}
 	}
 	// Forbid any key resembling a secret or revealing patterns.
 	for k, v := range cfg {

@@ -74,6 +74,12 @@ var (
 	ssnRe        = regexp.MustCompile(`\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b`)
 	creditCardRe = regexp.MustCompile(`\b(?:[0-9][ \-]?){12,18}[0-9]\b`)
 	usPhoneRe    = regexp.MustCompile(`\b(?:\+?1[ .\-]?)?\(?[2-9][0-9]{2}\)?[ .\-]?[0-9]{3}[ .\-]?[0-9]{4}\b`)
+
+	// Telecom-domain recognizers ported from loop_24 Privacy Vault.
+	//
+	//	sipURIRe — RFC 3261 SIP/SIPS URI shape (sip:user@host[:port]).
+	//	           Context-free: distinctive enough on its own.
+	sipURIRe = regexp.MustCompile(`sips?:[a-zA-Z0-9_.+\-]+@[a-zA-Z0-9.\-]+(?::\d+)?`)
 )
 
 // validateIPv4Octets splits the matched dotted-quad and confirms each of
@@ -148,6 +154,7 @@ var Recognizers = []Recognizer{
 	{Name: "SSN", Pattern: ssnRe, Validate: validateSSNRange},
 	{Name: "CreditCard", Pattern: creditCardRe, Validate: validateLuhn},
 	{Name: "USPhone", Pattern: usPhoneRe, Validate: nil},
+	{Name: "SIP_URI", Pattern: sipURIRe, Validate: nil},
 }
 
 // SourceAuditNames returns the Recognizers names in registration order.

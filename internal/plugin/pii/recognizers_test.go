@@ -211,13 +211,37 @@ func TestUSPhoneRecognizer(t *testing.T) {
 	}
 }
 
-// TestRecognizers_RegistryShape asserts the registry has exactly the six
-// expected names in registration order, each with a non-nil Pattern.
-func TestRecognizers_RegistryShape(t *testing.T) {
-	if got := len(Recognizers); got != 6 {
-		t.Fatalf("len(Recognizers): got %d, want 6", got)
+// TestSIPURIRecognizer — RFC 3261 SIP/SIPS URI shape (sip:user@host[:port]).
+// Context-free: pattern is distinctive enough on its own.
+func TestSIPURIRecognizer(t *testing.T) {
+	r := findRecognizer(t, "SIP_URI")
+	cases := []struct {
+		in          string
+		wantMatched bool
+	}{
+		{"sip:alice@atlanta.example.com", true},
+		{"sips:bob@biloxi.example.com:5061", true},
+		{"contact me at sip:carol@chicago.example.com please", true},
+		{"sip:", false},
+		{"plain email user@host.com", false},
 	}
-	wantNames := []string{"Email", "IPv4", "IPv6", "SSN", "CreditCard", "USPhone"}
+	for _, c := range cases {
+		t.Run(c.in, func(t *testing.T) {
+			got, _ := regexAndValidate(r, c.in)
+			if got != c.wantMatched {
+				t.Errorf("SIP_URI %q: regex matched=%v, want %v", c.in, got, c.wantMatched)
+			}
+		})
+	}
+}
+
+// TestRecognizers_RegistryShape asserts the registry has the expected
+// names in registration order, each with a non-nil Pattern.
+func TestRecognizers_RegistryShape(t *testing.T) {
+	wantNames := []string{"Email", "IPv4", "IPv6", "SSN", "CreditCard", "USPhone", "SIP_URI"}
+	if got := len(Recognizers); got != len(wantNames) {
+		t.Fatalf("len(Recognizers): got %d, want %d", got, len(wantNames))
+	}
 	gotNames := SourceAuditNames()
 	if len(gotNames) != len(wantNames) {
 		t.Fatalf("SourceAuditNames len: got %d, want %d", len(gotNames), len(wantNames))
@@ -252,10 +276,10 @@ func TestRecognizers_CompiledAtPackageInit_NoPerRequestCompile(t *testing.T) {
 	if regexp.MustCompile(`\bregexp\.Compile\(`).Match(src) {
 		t.Error("recognizers.go contains regexp.Compile( — must use MustCompile at init")
 	}
-	// Belt-and-suspenders: at least 6 MustCompile calls (one per recognizer).
+	// Belt-and-suspenders: at least one MustCompile per recognizer.
 	count := strings.Count(string(src), "regexp.MustCompile(")
-	if count < 6 {
-		t.Errorf("regexp.MustCompile call count: got %d, want at least 6", count)
+	if count < len(Recognizers) {
+		t.Errorf("regexp.MustCompile call count: got %d, want at least %d", count, len(Recognizers))
 	}
 }
 

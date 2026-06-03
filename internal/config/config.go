@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -671,22 +672,41 @@ func validatePIIMode(m string) error {
 // together (intentional triple-check). Drift would surface as
 // TestLoad_PIIEnabledEntities_Parsing failing if a new entity is
 // shipped without updating this list.
+// piiAllowedEntities is the hand-coded entity-name allowlist shared by
+// validatePIIEntities and parsePIIEntityActions. Single source of truth
+// per TRST-04 arch-lint boundary (config does not import internal/plugin/pii).
+// When internal/plugin/pii/recognizers.go ships a new recognizer, this
+// list + the operator docs change together (intentional triple-check).
+var piiAllowedEntities = map[string]struct{}{
+	"Email":       {},
+	"IPv4":        {},
+	"IPv6":        {},
+	"SSN":         {},
+	"CreditCard":  {},
+	"USPhone":     {},
+	"SIP_URI":     {},
+}
+
+// piiAllowedEntitiesList returns the allowlist as a sorted slice for use
+// in human-readable error messages. Sorted so the order is stable across
+// runs and Go's map iteration randomness doesn't leak into error text.
+func piiAllowedEntitiesList() string {
+	names := make([]string, 0, len(piiAllowedEntities))
+	for n := range piiAllowedEntities {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
+}
+
 func validatePIIEntities(names []string) error {
 	if len(names) == 0 {
 		return nil
 	}
-	allowed := map[string]struct{}{
-		"Email":      {},
-		"IPv4":       {},
-		"IPv6":       {},
-		"SSN":        {},
-		"CreditCard": {},
-		"USPhone":    {},
-	}
 	var errs []error
 	for _, n := range names {
-		if _, ok := allowed[n]; !ok {
-			errs = append(errs, fmt.Errorf("unknown entity %q (allowed: Email, IPv4, IPv6, SSN, CreditCard, USPhone)", n))
+		if _, ok := piiAllowedEntities[n]; !ok {
+			errs = append(errs, fmt.Errorf("unknown entity %q (allowed: %s)", n, piiAllowedEntitiesList()))
 		}
 	}
 	if len(errs) > 0 {
@@ -705,10 +725,6 @@ func parsePIIEntityActions(raw string) (map[string]string, error) {
 	if raw == "" {
 		return nil, nil
 	}
-	allowedEntities := map[string]struct{}{
-		"Email": {}, "IPv4": {}, "IPv6": {},
-		"SSN": {}, "CreditCard": {}, "USPhone": {},
-	}
 	allowedActions := map[string]struct{}{
 		"replace": {}, "mask": {}, "hash": {}, "drop": {}, "encrypt": {},
 	}
@@ -725,8 +741,8 @@ func parsePIIEntityActions(raw string) (map[string]string, error) {
 			continue
 		}
 		entity, action := strings.TrimSpace(kv[0]), strings.TrimSpace(kv[1])
-		if _, ok := allowedEntities[entity]; !ok {
-			errs = append(errs, fmt.Errorf("unknown entity %q (allowed: Email, IPv4, IPv6, SSN, CreditCard, USPhone)", entity))
+		if _, ok := piiAllowedEntities[entity]; !ok {
+			errs = append(errs, fmt.Errorf("unknown entity %q (allowed: %s)", entity, piiAllowedEntitiesList()))
 			continue
 		}
 		if _, ok := allowedActions[action]; !ok {
