@@ -936,6 +936,29 @@ func TestClient_Done_IdempotentMultipleReaders(t *testing.T) {
 	goleak.VerifyNone(t)
 }
 
+// waitForPendingRegistered polls the dispatcher's pending map until at least
+// `min` entries are present or the deadline elapses. WR-03: replaces the
+// previous time.Sleep(50ms) blind wait with a deterministic synchronization
+// on the in-flight predicate the tests actually depended on. The whitebox
+// package gives legitimate access to c.disp.mu / c.disp.pending.
+func waitForPendingRegistered(t *testing.T, c *Client, min int, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		c.disp.mu.Lock()
+		n := len(c.disp.pending)
+		c.disp.mu.Unlock()
+		if n >= min {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	c.disp.mu.Lock()
+	n := len(c.disp.pending)
+	c.disp.mu.Unlock()
+	t.Fatalf("dispatcher pending map: got %d entries within %s, want >= %d", n, timeout, min)
+}
+
 // TestClient_CloseDuringInFlightPrompt_FinalizesStreamCleanly covers Phase 8.3
 // Pitfall 1 (close-race between awaitPromptResult and readLoop EOF defer).
 // Starts a Prompt against a mockRWC that never responds, then calls Close()
@@ -976,9 +999,10 @@ func TestClient_CloseDuringInFlightPrompt_FinalizesStreamCleanly(t *testing.T) {
 		t.Fatal("Prompt returned nil Stream — Phase 8.3 non-blocking contract violated")
 	}
 
-	// Give awaitPromptResult time to register in the dispatcher's pending map
-	// (matches TestPendingRequestsFailedOnClose at client_test.go:202).
-	time.Sleep(50 * time.Millisecond)
+	// WR-03: deterministic wait for awaitPromptResult to register in the
+	// dispatcher's pending map. Replaces a 50ms blind sleep that was flake-
+	// prone under -race on slow CI runners.
+	waitForPendingRegistered(t, c, 1, 5*time.Second)
 
 	// Close — failPending delivers the close-sentinel via respCh; the
 	// goroutine's frame arm handles closeSentinelCode → stream.close(nil,
@@ -1059,9 +1083,10 @@ func TestClient_PromptCtxCancel_FinalizesStreamWithCtxErr(t *testing.T) {
 		t.Fatal("Prompt returned nil Stream — Phase 8.3 non-blocking contract violated")
 	}
 
-	// Give awaitPromptResult time to register in the dispatcher and the
-	// select to settle on the two arms.
-	time.Sleep(50 * time.Millisecond)
+	// WR-03: deterministic wait for awaitPromptResult to register in the
+	// dispatcher's pending map. Replaces a 50ms blind sleep that was flake-
+	// prone under -race on slow CI runners.
+	waitForPendingRegistered(t, c, 1, 5*time.Second)
 
 	// Cancel — fires ctx.Done arm inside awaitPromptResult.
 	cancel()
