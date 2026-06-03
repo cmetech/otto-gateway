@@ -344,10 +344,34 @@ func TestMACAddressRecognizer(t *testing.T) {
 	}
 }
 
+// TestCoordinatesRecognizer — decimal-degrees lat/long with N/S and
+// E/W hemisphere markers. Context-free; the hemisphere letters anchor.
+func TestCoordinatesRecognizer(t *testing.T) {
+	r := findRecognizer(t, "COORDINATES")
+	cases := []struct {
+		in          string
+		wantMatched bool
+	}{
+		{"37.7749 N, 122.4194 W", true},
+		{"37.7749°N, 122.4194°W", true},
+		{"37.7749 S 122.4194 E", true},
+		{"37 N 122 W", false},          // no decimal portion
+		{"37.7749, -122.4194", false}, // no hemisphere markers
+	}
+	for _, c := range cases {
+		t.Run(c.in, func(t *testing.T) {
+			got, _ := regexAndValidate(r, c.in)
+			if got != c.wantMatched {
+				t.Errorf("COORDINATES %q: matched=%v want=%v", c.in, got, c.wantMatched)
+			}
+		})
+	}
+}
+
 // TestRecognizers_RegistryShape asserts the registry has the expected
 // names in registration order, each with a non-nil Pattern.
 func TestRecognizers_RegistryShape(t *testing.T) {
-	wantNames := []string{"Email", "IPv4", "IPv6", "SSN", "CreditCard", "USPhone", "SIP_URI", "IMEI", "IMSI", "MSISDN", "MAC_ADDRESS"}
+	wantNames := []string{"Email", "IPv4", "IPv6", "SSN", "CreditCard", "USPhone", "SIP_URI", "IMEI", "IMSI", "MSISDN", "MAC_ADDRESS", "COORDINATES"}
 	if got := len(Recognizers); got != len(wantNames) {
 		t.Fatalf("len(Recognizers): got %d, want %d", got, len(wantNames))
 	}

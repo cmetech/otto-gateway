@@ -93,6 +93,16 @@ var (
 
 	//	macAddrRe — six pairs of hex separated by ':' or '-'. Context-free.
 	macAddrRe = regexp.MustCompile(`\b(?:[0-9A-Fa-f]{2}[:\-]){5}[0-9A-Fa-f]{2}\b`)
+
+	//	coordinatesRe — decimal-degrees lat/long with N/S and E/W
+	//	          hemisphere markers (e.g., "37.7749 N, 122.4194 W"). The
+	//	          optional °-sign and whitespace are tolerated. Context-
+	//	          free; the hemisphere letters are distinctive.
+	//
+	//	Word-boundary at start (\b) ensures the integer-degree portion
+	//	doesn't bleed into an adjacent number. The trailing E/W letter is
+	//	a word char so \b on the tail-end is implicit.
+	coordinatesRe = regexp.MustCompile(`\b\d{1,3}\.\d+\s*°?\s*[NS][,\s]+\d{1,3}\.\d+\s*°?\s*[EW]\b`)
 )
 
 // validateIPv4Octets splits the matched dotted-quad and confirms each of
@@ -192,6 +202,7 @@ var Recognizers = []Recognizer{
 		},
 	},
 	{Name: "MAC_ADDRESS", Pattern: macAddrRe, Validate: nil},
+	{Name: "COORDINATES", Pattern: coordinatesRe, Validate: nil},
 }
 
 // SourceAuditNames returns the Recognizers names in registration order.
