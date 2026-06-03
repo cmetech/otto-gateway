@@ -170,4 +170,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-05-24 — Phase 2 complete (Ollama end-to-end vertical slice: canonical → engine → pool → Ollama adapter; 6 plans across 4 waves; LangFlow smoke test pending in 02-HUMAN-UAT.md)*
+*Last updated: 2026-06-03 — Phase 8.3 complete (ACP Prompt() non-blocking refactor: chunk-buffer-overflow deadlock removed via per-prompt `awaitPromptResult` goroutine; RED/GREEN/REFACTOR commits + 4 new tests; Windows v1.9.2 PII smoke-test sign-off pending in 08.3-HUMAN-UAT.md; ACP-02 + ACP-03 re-validated)*
