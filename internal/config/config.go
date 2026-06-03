@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -174,6 +175,14 @@ type Config struct {
 	// when encrypt is active and this is empty.
 	PIIEncryptKey string
 
+	// PIINEREnabled gates the prose-based NER engine that emits PERSON
+	// and LOCATION spans alongside the regex recognizers. Default false:
+	// the prose tokenizer/tagger state is not allocated unless the
+	// operator explicitly opts in. Loaded from PII_NER_ENABLED. English-
+	// only; see internal/plugin/pii/ner.go for the documented accuracy
+	// ceiling.
+	PIINEREnabled bool
+
 	// JSONFormatSteeringEnabled controls whether JSONFormatSteeringHook does
 	// WORK when invoked (Phase 08.2 D-06 two-knob model). Composes with
 	// EnabledHooks: ENABLED_HOOKS controls whether the hook IS in the chain
@@ -315,6 +324,11 @@ func Load() (Config, error) {
 	enabledHooks := getEnvStrSliceComma("ENABLED_HOOKS", nil)
 
 	piiEnabled, err := getEnvBool("PII_REDACTION_ENABLED", false)
+	if err != nil {
+		errs = append(errs, err)
+	}
+
+	piiNEREnabled, err := getEnvBool("PII_NER_ENABLED", false)
 	if err != nil {
 		errs = append(errs, err)
 	}
@@ -469,6 +483,7 @@ func Load() (Config, error) {
 		PIIHashKey:                piiHashKey,
 		PIIEntityActions:          piiEntityActions,
 		PIIEncryptKey:             piiEncryptKey,
+		PIINEREnabled:             piiNEREnabled,
 		JSONFormatSteeringEnabled: jsonFormatSteeringEnabled,
 		ChatTrace:                 chatTrace,
 		ChatTraceFile:             chatTraceFile,
@@ -671,22 +686,54 @@ func validatePIIMode(m string) error {
 // together (intentional triple-check). Drift would surface as
 // TestLoad_PIIEnabledEntities_Parsing failing if a new entity is
 // shipped without updating this list.
+// piiAllowedEntities is the hand-coded entity-name allowlist shared by
+// validatePIIEntities and parsePIIEntityActions. Single source of truth
+// per TRST-04 arch-lint boundary (config does not import internal/plugin/pii).
+// When internal/plugin/pii/recognizers.go ships a new recognizer, this
+// list + the operator docs change together (intentional triple-check).
+var piiAllowedEntities = map[string]struct{}{
+	"Email":       {},
+	"IPv4":        {},
+	"IPv6":        {},
+	"SSN":         {},
+	"CreditCard":  {},
+	"USPhone":     {},
+	"SIP_URI":     {},
+	"IMEI":        {},
+	"IMSI":        {},
+	"MSISDN":      {},
+	"MAC_ADDRESS": {},
+	"COORDINATES": {},
+	"SITE":        {},
+	// NER-emitted entity names (Task 11). Allowed in PII_ENABLED_ENTITIES
+	// and PII_ENTITY_ACTIONS regardless of PII_NER_ENABLED; when NER is
+	// disabled these names are dormant (no recognizer wired). When NER
+	// is enabled, prose's PERSON / GPE-as-LOCATION outputs flow through
+	// the same redact pipeline as regex recognizers.
+	"PERSON":   {},
+	"LOCATION": {},
+}
+
+// piiAllowedEntitiesList returns the allowlist as a sorted slice for use
+// in human-readable error messages. Sorted so the order is stable across
+// runs and Go's map iteration randomness doesn't leak into error text.
+func piiAllowedEntitiesList() string {
+	names := make([]string, 0, len(piiAllowedEntities))
+	for n := range piiAllowedEntities {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
+}
+
 func validatePIIEntities(names []string) error {
 	if len(names) == 0 {
 		return nil
 	}
-	allowed := map[string]struct{}{
-		"Email":      {},
-		"IPv4":       {},
-		"IPv6":       {},
-		"SSN":        {},
-		"CreditCard": {},
-		"USPhone":    {},
-	}
 	var errs []error
 	for _, n := range names {
-		if _, ok := allowed[n]; !ok {
-			errs = append(errs, fmt.Errorf("unknown entity %q (allowed: Email, IPv4, IPv6, SSN, CreditCard, USPhone)", n))
+		if _, ok := piiAllowedEntities[n]; !ok {
+			errs = append(errs, fmt.Errorf("unknown entity %q (allowed: %s)", n, piiAllowedEntitiesList()))
 		}
 	}
 	if len(errs) > 0 {
@@ -705,10 +752,6 @@ func parsePIIEntityActions(raw string) (map[string]string, error) {
 	if raw == "" {
 		return nil, nil
 	}
-	allowedEntities := map[string]struct{}{
-		"Email": {}, "IPv4": {}, "IPv6": {},
-		"SSN": {}, "CreditCard": {}, "USPhone": {},
-	}
 	allowedActions := map[string]struct{}{
 		"replace": {}, "mask": {}, "hash": {}, "drop": {}, "encrypt": {},
 	}
@@ -725,8 +768,8 @@ func parsePIIEntityActions(raw string) (map[string]string, error) {
 			continue
 		}
 		entity, action := strings.TrimSpace(kv[0]), strings.TrimSpace(kv[1])
-		if _, ok := allowedEntities[entity]; !ok {
-			errs = append(errs, fmt.Errorf("unknown entity %q (allowed: Email, IPv4, IPv6, SSN, CreditCard, USPhone)", entity))
+		if _, ok := piiAllowedEntities[entity]; !ok {
+			errs = append(errs, fmt.Errorf("unknown entity %q (allowed: %s)", entity, piiAllowedEntitiesList()))
 			continue
 		}
 		if _, ok := allowedActions[action]; !ok {

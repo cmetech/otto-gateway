@@ -310,3 +310,76 @@ func TestLoad_EncryptKeyBootValidation(t *testing.T) {
 		})
 	}
 }
+
+// TestLoad_PIINEREnabled_Default — unset PII_NER_ENABLED → false.
+// Same shape as TestLoad_PIIRedactionEnabled_Default.
+func TestLoad_PIINEREnabled_Default(t *testing.T) {
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.PIINEREnabled {
+		t.Errorf("PIINEREnabled default: got true, want false")
+	}
+}
+
+// TestLoad_PIINEREnabled_TrueValue — every accepted bool true literal
+// flips PIINEREnabled to true.
+func TestLoad_PIINEREnabled_TrueValue(t *testing.T) {
+	cases := []struct {
+		val  string
+		want bool
+	}{
+		{"true", true},
+		{"1", true},
+		{"TRUE", true},
+		{"false", false},
+		{"0", false},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.val, func(t *testing.T) {
+			t.Setenv("PII_NER_ENABLED", tc.val)
+			cfg, err := config.Load()
+			if err != nil {
+				t.Fatalf("Load PII_NER_ENABLED=%q: %v", tc.val, err)
+			}
+			if cfg.PIINEREnabled != tc.want {
+				t.Errorf("PIINEREnabled: got %v, want %v", cfg.PIINEREnabled, tc.want)
+			}
+		})
+	}
+}
+
+// TestLoad_PIIEnabledEntities_TelecomAndNERNames — the expanded
+// allowlist accepts PERSON, LOCATION, and the seven telecom recognizer
+// names (SIP_URI, IMEI, IMSI, MSISDN, MAC_ADDRESS, COORDINATES, SITE)
+// in addition to the original six.
+func TestLoad_PIIEnabledEntities_TelecomAndNERNames(t *testing.T) {
+	t.Setenv("PII_REDACTION_ENABLED", "true")
+	t.Setenv("PII_ENABLED_ENTITIES",
+		"Email,IPv4,IPv6,SSN,CreditCard,USPhone,SIP_URI,IMEI,IMSI,MSISDN,MAC_ADDRESS,COORDINATES,SITE,PERSON,LOCATION")
+	if _, err := config.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+}
+
+// TestLoad_PIIEntityActions_TelecomAndNEREntities — the expanded
+// allowlist also gates PII_ENTITY_ACTIONS map keys.
+func TestLoad_PIIEntityActions_TelecomAndNEREntities(t *testing.T) {
+	t.Setenv("PII_REDACTION_ENABLED", "true")
+	t.Setenv("PII_REDACTION_MODE", "mask")
+	t.Setenv("PII_ENCRYPT_KEY", "k")
+	t.Setenv("PII_ENTITY_ACTIONS", "PERSON:mask,LOCATION:drop,IMEI:encrypt,SIP_URI:hash")
+	t.Setenv("PII_HASH_KEY", "h")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.PIIEntityActions["PERSON"] != "mask" ||
+		cfg.PIIEntityActions["LOCATION"] != "drop" ||
+		cfg.PIIEntityActions["IMEI"] != "encrypt" ||
+		cfg.PIIEntityActions["SIP_URI"] != "hash" {
+		t.Errorf("PIIEntityActions parse mismatch: %+v", cfg.PIIEntityActions)
+	}
+}

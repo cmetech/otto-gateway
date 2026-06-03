@@ -211,13 +211,202 @@ func TestUSPhoneRecognizer(t *testing.T) {
 	}
 }
 
-// TestRecognizers_RegistryShape asserts the registry has exactly the six
-// expected names in registration order, each with a non-nil Pattern.
-func TestRecognizers_RegistryShape(t *testing.T) {
-	if got := len(Recognizers); got != 6 {
-		t.Fatalf("len(Recognizers): got %d, want 6", got)
+// TestSIPURIRecognizer — RFC 3261 SIP/SIPS URI shape (sip:user@host[:port]).
+// Context-free: pattern is distinctive enough on its own.
+func TestSIPURIRecognizer(t *testing.T) {
+	r := findRecognizer(t, "SIP_URI")
+	cases := []struct {
+		in          string
+		wantMatched bool
+	}{
+		{"sip:alice@atlanta.example.com", true},
+		{"sips:bob@biloxi.example.com:5061", true},
+		{"contact me at sip:carol@chicago.example.com please", true},
+		{"sip:", false},
+		{"plain email user@host.com", false},
 	}
-	wantNames := []string{"Email", "IPv4", "IPv6", "SSN", "CreditCard", "USPhone"}
+	for _, c := range cases {
+		t.Run(c.in, func(t *testing.T) {
+			got, _ := regexAndValidate(r, c.in)
+			if got != c.wantMatched {
+				t.Errorf("SIP_URI %q: regex matched=%v, want %v", c.in, got, c.wantMatched)
+			}
+		})
+	}
+}
+
+// TestIMEIRecognizer — 15-digit subscriber-equipment identifier. Shares
+// its raw regex shape with IMSI; context keywords disambiguate. Without
+// an "imei" keyword nearby, the regex matches but the redact pipeline
+// (TestIMEI_ContextAnchored_Integration) rejects via ContextKeywords +
+// hasContextWithin.
+func TestIMEIRecognizer(t *testing.T) {
+	r := findRecognizer(t, "IMEI")
+	cases := []struct {
+		in          string
+		wantMatched bool
+	}{
+		{"490154203237518", true},
+		{"49015420323751", false},   // 14 digits
+		{"4901542032375180", false}, // 16 digits — \b boundary prevents partial match
+		{"id 490154203237518 stop", true},
+		{"abc490154203237518xyz", false}, // letters abut digits → no \b
+	}
+	for _, c := range cases {
+		t.Run(c.in, func(t *testing.T) {
+			got, _ := regexAndValidate(r, c.in)
+			if got != c.wantMatched {
+				t.Errorf("IMEI shape %q: regex matched=%v, want %v", c.in, got, c.wantMatched)
+			}
+		})
+	}
+	wantKw := []string{"imei", "international mobile equipment identity"}
+	if len(r.ContextKeywords) != len(wantKw) {
+		t.Fatalf("IMEI ContextKeywords len: got %d, want %d", len(r.ContextKeywords), len(wantKw))
+	}
+	for i, kw := range wantKw {
+		if r.ContextKeywords[i] != kw {
+			t.Errorf("IMEI ContextKeywords[%d]: got %q, want %q", i, r.ContextKeywords[i], kw)
+		}
+	}
+}
+
+// TestIMSIRecognizer — same 15-digit shape as IMEI, disambiguated by
+// "imsi" / "international mobile subscriber identity" context keyword.
+func TestIMSIRecognizer(t *testing.T) {
+	r := findRecognizer(t, "IMSI")
+	if !r.Pattern.MatchString("310150123456789") {
+		t.Error("IMSI shape: 15-digit run must match")
+	}
+	wantKw := []string{"imsi", "international mobile subscriber identity"}
+	if len(r.ContextKeywords) != len(wantKw) {
+		t.Fatalf("IMSI ContextKeywords len: got %d, want %d", len(r.ContextKeywords), len(wantKw))
+	}
+	for i, kw := range wantKw {
+		if r.ContextKeywords[i] != kw {
+			t.Errorf("IMSI ContextKeywords[%d]: got %q, want %q", i, r.ContextKeywords[i], kw)
+		}
+	}
+}
+
+// TestMSISDNRecognizer — E.164 international phone number, context-
+// anchored. Naked E.164 numbers without context fall through (avoids
+// competing with USPhone in informal contexts).
+func TestMSISDNRecognizer(t *testing.T) {
+	r := findRecognizer(t, "MSISDN")
+	cases := []struct {
+		in          string
+		wantMatched bool
+	}{
+		{"+14155552671", true},
+		{"+442071838750", true},
+		{"+1", false},          // too short (regex requires 8-15 digits after +)
+		{"+0123456789", false}, // leading 0 after + disallowed
+		{"14155552671", false}, // missing '+'
+	}
+	for _, c := range cases {
+		t.Run(c.in, func(t *testing.T) {
+			got, _ := regexAndValidate(r, c.in)
+			if got != c.wantMatched {
+				t.Errorf("MSISDN %q: regex matched=%v, want %v", c.in, got, c.wantMatched)
+			}
+		})
+	}
+	wantKw := []string{"msisdn", "subscriber number", "calling number", "called number"}
+	if len(r.ContextKeywords) != len(wantKw) {
+		t.Fatalf("MSISDN ContextKeywords len: got %d, want %d", len(r.ContextKeywords), len(wantKw))
+	}
+}
+
+// TestMACAddressRecognizer — six pairs of hex with either ':' or '-'
+// separators. Context-free.
+func TestMACAddressRecognizer(t *testing.T) {
+	r := findRecognizer(t, "MAC_ADDRESS")
+	cases := []struct {
+		in          string
+		wantMatched bool
+	}{
+		{"00:1B:44:11:3A:B7", true},
+		{"00-1B-44-11-3A-B7", true},
+		{"aa:bb:cc:dd:ee:ff", true},
+		{"00:1B:44:11:3A", false},    // 5 pairs
+		{"GG:1B:44:11:3A:B7", false}, // invalid hex
+		{"mac=00:1B:44:11:3A:B7,then=more", true}, // embedded MAC ok
+		{"::::::::::::", false},                   // colons but no hex
+	}
+	for _, c := range cases {
+		t.Run(c.in, func(t *testing.T) {
+			got, _ := regexAndValidate(r, c.in)
+			if got != c.wantMatched {
+				t.Errorf("MAC %q: matched=%v want=%v", c.in, got, c.wantMatched)
+			}
+		})
+	}
+}
+
+// TestCoordinatesRecognizer — decimal-degrees lat/long with N/S and
+// E/W hemisphere markers. Context-free; the hemisphere letters anchor.
+func TestCoordinatesRecognizer(t *testing.T) {
+	r := findRecognizer(t, "COORDINATES")
+	cases := []struct {
+		in          string
+		wantMatched bool
+	}{
+		{"37.7749 N, 122.4194 W", true},
+		{"37.7749°N, 122.4194°W", true},
+		{"37.7749 S 122.4194 E", true},
+		{"37 N 122 W", false},          // no decimal portion
+		{"37.7749, -122.4194", false}, // no hemisphere markers
+	}
+	for _, c := range cases {
+		t.Run(c.in, func(t *testing.T) {
+			got, _ := regexAndValidate(r, c.in)
+			if got != c.wantMatched {
+				t.Errorf("COORDINATES %q: matched=%v want=%v", c.in, got, c.wantMatched)
+			}
+		})
+	}
+}
+
+// TestSITERecognizer — telecom site / network-element identifiers via
+// two alternation arms (site-XX_YYY-style + ENB/BTS/…-XXXX-style). The
+// regex itself contains the keyword strings ("site", "ENB", etc.), so
+// hasContextWithin succeeds for any actual regex match. The keyword
+// list still has value: it documents intent and provides a wider
+// context match if the pattern is later loosened.
+func TestSITERecognizer(t *testing.T) {
+	r := findRecognizer(t, "SITE")
+	cases := []struct {
+		in          string
+		wantMatched bool
+	}{
+		{"site-A12_NYC01", true},
+		{"site A12 NYC01", true},
+		{"ENB-12345", true},
+		{"BTS_AB12", true},
+		{"MSC-XYZ99", true},
+		{"random-id-not-a-site", false},
+	}
+	for _, c := range cases {
+		t.Run(c.in, func(t *testing.T) {
+			got, _ := regexAndValidate(r, c.in)
+			if got != c.wantMatched {
+				t.Errorf("SITE %q: matched=%v want=%v", c.in, got, c.wantMatched)
+			}
+		})
+	}
+	if len(r.ContextKeywords) == 0 {
+		t.Fatal("SITE must have ContextKeywords")
+	}
+}
+
+// TestRecognizers_RegistryShape asserts the registry has the expected
+// names in registration order, each with a non-nil Pattern.
+func TestRecognizers_RegistryShape(t *testing.T) {
+	wantNames := []string{"Email", "IPv4", "IPv6", "SSN", "CreditCard", "USPhone", "SIP_URI", "IMEI", "IMSI", "MSISDN", "MAC_ADDRESS", "COORDINATES", "SITE"}
+	if got := len(Recognizers); got != len(wantNames) {
+		t.Fatalf("len(Recognizers): got %d, want %d", got, len(wantNames))
+	}
 	gotNames := SourceAuditNames()
 	if len(gotNames) != len(wantNames) {
 		t.Fatalf("SourceAuditNames len: got %d, want %d", len(gotNames), len(wantNames))
@@ -252,10 +441,18 @@ func TestRecognizers_CompiledAtPackageInit_NoPerRequestCompile(t *testing.T) {
 	if regexp.MustCompile(`\bregexp\.Compile\(`).Match(src) {
 		t.Error("recognizers.go contains regexp.Compile( — must use MustCompile at init")
 	}
-	// Belt-and-suspenders: at least 6 MustCompile calls (one per recognizer).
+	// Belt-and-suspenders: at least one MustCompile per UNIQUE pattern.
+	// Recognizers may share a compiled regex (IMEI/IMSI both reference
+	// imeiRe and are disambiguated by ContextKeywords); count unique
+	// pattern pointers, not Recognizers.
+	uniquePatterns := make(map[*regexp.Regexp]struct{})
+	for _, r := range Recognizers {
+		uniquePatterns[r.Pattern] = struct{}{}
+	}
 	count := strings.Count(string(src), "regexp.MustCompile(")
-	if count < 6 {
-		t.Errorf("regexp.MustCompile call count: got %d, want at least 6", count)
+	if count < len(uniquePatterns) {
+		t.Errorf("regexp.MustCompile call count: got %d, want at least %d (unique patterns)",
+			count, len(uniquePatterns))
 	}
 }
 

@@ -490,3 +490,123 @@ decrypt failure mode) are resolved above.
 The next step is `writing-plans` — turning this spec into an
 executable implementation plan with task breakdown, dependency
 analysis, and verification gates.
+
+## 11. Recognizer Expansion (2026-06-03)
+
+The encrypt round-trip described in §1–§10 is recognizer-agnostic: any
+entity name parsed by `redact()` flows through `ApplyMode("encrypt", …)`
+into a `[PII:Entity:base64url]` token and is decrypted by the `After`
+sweep. This section records the recognizer set that ships in the
+2026-06-03 expansion plan (`docs/superpowers/specs/2026-06-03-pii-ner-and-telecom-recognizers-plan.md`).
+
+### 11.1 Telecom Regex Recognizers
+
+Seven additional regex recognizers ported from the loop_24 Privacy
+Vault project:
+
+| Entity | Pattern (shape) | Context anchor |
+|---|---|---|
+| `SIP_URI` | `sips?:user@host[:port]` | None — pattern is distinctive |
+| `IMEI` | 15-digit run | Required: `imei`, `international mobile equipment identity` |
+| `IMSI` | 15-digit run (shares IMEI regex) | Required: `imsi`, `international mobile subscriber identity` |
+| `MSISDN` | `+E.164` | Required: `msisdn`, `subscriber number`, `calling number`, `called number` |
+| `MAC_ADDRESS` | Six hex pairs with `:` or `-` | None |
+| `COORDINATES` | Decimal-degrees lat/long with N/S/E/W | None |
+| `SITE` | `site-XX_YYY` or `ENB/BTS/…-XXXX` | Required: site/cell/base station/network element terms |
+
+Context-anchored recognizers run against a ±50 byte window
+(`defaultContextWindow`) around each regex match. The `Recognizer`
+struct gains `ContextKeywords []string`; nil means "no context
+required" (preserves the existing six recognizers unchanged).
+
+**Why position-based `redact()` refactor:** Go regex has no
+variable-width lookbehind, so context anchoring cannot be expressed in
+the regex itself. The `redact()` function in `pii.go` was refactored
+from sequential `ReplaceAllStringFunc` calls to two-phase span-collect
++ rewrite, which also enables NER overlap arbitration (§11.3).
+
+**IMSI vs IMEI disambiguation:** both share the 15-digit shape; the
+context-keyword filter at the redact pipeline decides which label
+applies. When both keywords appear near the same span, registration
+order (IMEI first) wins.
+
+### 11.2 prose NER (PERSON + LOCATION)
+
+`jdkato/prose/v2` is added as a pure-Go NER engine emitting `PERSON`
+and `LOCATION` spans. Opt-in via `PII_NER_ENABLED=true`; default off so
+the prose model is not allocated on installs that do not need it.
+
+**Why prose (not spaCy / BERT / transformers):**
+- Pure Go: no CGo. Single-static-binary distribution preserved.
+- Bundled model: averaged-perceptron NER weights ship inside the Go
+  module. No model download, no first-run bootstrap, no network at
+  install time. `curl|sh` install remains one command.
+- Binary size delta: 10MB → 17MB (+7MB), well under the 30MB threshold
+  flagged in the implementation plan.
+
+**Accuracy ceiling (known v1 limitation):**
+- English-only.
+- Decent on common Western names ("John Smith", "Jane Doe", "Barack
+  Obama") and major place names ("Boston", "Paris", "New York").
+- Weaker on Asian / multilingual names and unusual locations.
+- Sentence-initial capitalized words are sometimes mislabeled as GPE.
+- prose's `GPE` (geo-political entity) is normalized to the canonical
+  `LOCATION` name internally so the redact pipeline sees a uniform
+  vocabulary.
+- Roughly: spaCy small ≤ prose < spaCy large < BERT.
+
+A future v2 may add an opt-in transformer-backed engine (first-run ONNX
+model download), which is explicitly out of scope here.
+
+**Byte-offset reconstruction:** prose emits `Entity.Text` but not byte
+offsets. `nerEngine.Detect` reconstructs offsets by sequentially
+scanning the original text with a moving cursor; duplicates resolve to
+distinct matches. Pathological cases (substring overlap with another
+entity, tokenizer normalization that changes the printed form) fall
+back to skipping the entity rather than emitting wrong offsets.
+
+### 11.3 Regex + NER Merge
+
+Regex spans are collected first against the original input; NER spans
+are collected second and merged greedily via `mergeSpansGreedy`. NER
+candidates that overlap any accepted regex span are dropped. Within
+NER, intra-source overlaps are resolved by the same greedy step.
+Mirrors loop_24's `_merge_results` non-overlap policy.
+
+NER spans bump the same per-canonical-value counter / Summary
+bookkeeping that regex spans do, so `[PERSON_1] / [PERSON_2]` (replace
+mode) and Summary counts behave identically across both recognizer
+sources.
+
+### 11.4 Configuration Surface
+
+New env var:
+
+```bash
+# Default false. When true, main.go constructs a *nerEngine and
+# attaches it to PIIRedactionHook.NER. When false, no prose state is
+# allocated.
+PII_NER_ENABLED=true
+```
+
+Extended allowlists:
+- `PII_ENABLED_ENTITIES` accepts: `Email`, `IPv4`, `IPv6`, `SSN`,
+  `CreditCard`, `USPhone`, `SIP_URI`, `IMEI`, `IMSI`, `MSISDN`,
+  `MAC_ADDRESS`, `COORDINATES`, `SITE`, `PERSON`, `LOCATION`.
+- `PII_ENTITY_ACTIONS` accepts the same expanded entity set.
+
+Backward compatibility is preserved: when `PII_NER_ENABLED` is unset
+and `PII_ENABLED_ENTITIES` does not include any new name, behavior is
+bit-identical to the pre-expansion build.
+
+### 11.5 Threat-Model Notes
+
+- **PERSON / LOCATION redaction is best-effort.** Unlike SSN/CreditCard
+  where a regex captures all canonical forms, prose's NER will miss
+  names. T-8-PII-BYPASS already documents that v1 has accepted
+  recall < 100%; NER does not change this property, only marginally
+  improves it for English text.
+- **No leakage through the encrypt key.** EncryptKey continues to be
+  redacted from `Describe()` output regardless of recognizer source.
+- **No new dependencies at runtime beyond prose.** No network call,
+  no model download, no file-system writes by prose at runtime.

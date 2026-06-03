@@ -101,6 +101,11 @@ type PIIRedactionHook struct {
 	// Wired by main.go for the production-path adapter; tests may leave
 	// nil — defensive fallback keeps the hook side-effect-free.
 	Logger *slog.Logger
+	// NER, when non-nil, augments regex recognizers with prose-based
+	// PERSON/LOCATION detection. Constructed by main.go when
+	// PII_NER_ENABLED=true. nil = NER disabled (no prose model load).
+	// See ner.go (Task 9).
+	NER *nerEngine
 }
 
 // Name reports the filter-discovery name for chain.Filter (08-PATTERNS
@@ -193,6 +198,124 @@ func (h *PIIRedactionHook) encryptActive() bool {
 	return false
 }
 
+// collectRegexSpans iterates recs over s and returns the accepted
+// (Validate-pass, context-pass, non-overlapping) spans against the
+// ORIGINAL string s. counters / nextN / summary are mutated as
+// matches are accepted, preserving the per-canonical-value referential
+// identity invariant from the prior implementation.
+func (h *PIIRedactionHook) collectRegexSpans(
+	s string,
+	recs []Recognizer,
+	counters map[string]int,
+	nextN map[string]int,
+	summary *Summary,
+) []span {
+	out := make([]span, 0, 4)
+	for _, r := range recs {
+		idxs := r.Pattern.FindAllStringIndex(s, -1)
+		for _, idx := range idxs {
+			start, end := idx[0], idx[1]
+			match := s[start:end]
+			if r.Validate != nil && !r.Validate(match) {
+				continue
+			}
+			if len(r.ContextKeywords) > 0 &&
+				!hasContextWithin(s, start, end, r.ContextKeywords, defaultContextWindow) {
+				continue
+			}
+			cand := span{Name: r.Name, Value: match, Start: start, End: end}
+			conflict := false
+			for _, a := range out {
+				if cand.overlaps(a) {
+					conflict = true
+					break
+				}
+			}
+			if conflict {
+				continue
+			}
+			key := r.Name + "|" + canonicalForm(match)
+			if _, seen := counters[key]; !seen {
+				nextN[r.Name]++
+				counters[key] = nextN[r.Name]
+			}
+			summary.Add(r.Name)
+			out = append(out, cand)
+		}
+	}
+	return out
+}
+
+// acceptNERSpans is the NER-side of the regex+NER merge pipeline. It
+// applies the EnabledEntities filter to NER outputs and bumps the same
+// counter/summary bookkeeping that collectRegexSpans does so the rewrite
+// pass sees consistent per-entity referential identity across both
+// recognizer sources.
+//
+// Overlap arbitration (regex wins, intra-NER dedup) is handled by
+// mergeSpansGreedy in redact(), so this function only needs to filter
+// and book-keep; the merge step drops anything that conflicts.
+func (h *PIIRedactionHook) acceptNERSpans(
+	s string,
+	candidates []span,
+	regexSpans []span,
+	counters map[string]int,
+	nextN map[string]int,
+	summary *Summary,
+) []span {
+	if len(candidates) == 0 {
+		return nil
+	}
+	allowSet := h.enabledEntitiesSet()
+	out := make([]span, 0, len(candidates))
+	for _, cand := range candidates {
+		if len(allowSet) > 0 {
+			if _, ok := allowSet[cand.Name]; !ok {
+				continue
+			}
+		}
+		// Skip NER candidates that overlap any regex span — saves work
+		// for mergeSpansGreedy and (more importantly) keeps the counter
+		// from being bumped for a span that won't survive the merge.
+		conflict := false
+		for _, r := range regexSpans {
+			if cand.overlaps(r) {
+				conflict = true
+				break
+			}
+		}
+		if conflict {
+			continue
+		}
+		// Bump counter / summary on the EXISTING canonical-value slot
+		// so [PERSON_1] / [PERSON_2] (replace mode) and Summary counts
+		// behave identically to regex-detected entities.
+		key := cand.Name + "|" + canonicalForm(cand.Value)
+		if _, seen := counters[key]; !seen {
+			nextN[cand.Name]++
+			counters[key] = nextN[cand.Name]
+		}
+		summary.Add(cand.Name)
+		out = append(out, cand)
+	}
+	return out
+}
+
+// enabledEntitiesSet returns h.EnabledEntities as a set, or nil if the
+// allowlist is empty (caller treats nil as "allow all"). Used by both
+// the regex collector (indirectly via activeRecognizers) and by
+// acceptNERSpans (Task 10).
+func (h *PIIRedactionHook) enabledEntitiesSet() map[string]struct{} {
+	if len(h.EnabledEntities) == 0 {
+		return nil
+	}
+	out := make(map[string]struct{}, len(h.EnabledEntities))
+	for _, e := range h.EnabledEntities {
+		out[e] = struct{}{}
+	}
+	return out
+}
+
 // logger returns h.Logger if set, otherwise slog.Default(). Per-call
 // fallback (never cached) so changes to slog.Default at boot are seen.
 // Mirrors LoggingHook.logger() (internal/plugin/logging.go) — the canonical
@@ -268,30 +391,51 @@ func (h *PIIRedactionHook) Before(ctx context.Context, req *canonical.ChatReques
 	// previously-unseen canonical value is encountered.
 	nextN := make(map[string]int)
 
+	// Per-recognizer span collection against the ORIGINAL string.
+	// Phase 1: gather. Phase 2: rebuild. Sequence:
+	//   1. For each active Recognizer, FindAllStringIndex on input.
+	//   2. Apply Validate (if set) — drops false-positive shapes.
+	//   3. Apply ContextKeywords window check — drops uncontextualized
+	//      ambiguous matches (IMEI without "imei" nearby).
+	//   4. Drop a candidate if it overlaps any already-accepted span
+	//      (preserves "first recognizer wins" semantics).
+	//   5. Accept candidate → record span + bump counter + Summary.Add.
+	// NER spans (when enabled) are merged after regex via
+	// mergeSpansGreedy so regex always wins overlap arbitration.
+	//
+	// Replacement happens in a single pass after collection so that
+	// recognizers downstream of a match still see ORIGINAL bytes,
+	// not the redacted token (fixes: IMEI substring shows up inside
+	// a coordinate match, etc.).
 	redact := func(s string) string {
-		out := s
-		for _, r := range recs {
-			out = r.Pattern.ReplaceAllStringFunc(out, func(match string) string {
-				if r.Validate != nil && !r.Validate(match) {
-					return match
-				}
-				// Canonicalize for counter-key dedup so 'Corey@CMETECH.io'
-				// and 'corey@cmetech.io' share a counter slot (matches the
-				// hash-mode canonical form for consistency across modes).
-				key := r.Name + "|" + canonicalForm(match)
-				n, seen := counters[key]
-				if !seen {
-					nextN[r.Name]++
-					n = nextN[r.Name]
-					counters[key] = n
-				}
-				summary.Add(r.Name)
-				// Per-entity action resolution: EntityActions[r.Name]
-				// wins, else h.Mode (Task 4 helper).
-				return ApplyMode(h.actionFor(r.Name), r.Name, match, n, h.HashKey, h.EncryptKey)
-			})
+		if s == "" {
+			return s
 		}
-		return out
+		regexSpans := h.collectRegexSpans(s, recs, counters, nextN, summary)
+		var nerSpans []span
+		if h.NER != nil {
+			candidates := h.NER.Detect(s)
+			nerSpans = h.acceptNERSpans(s, candidates, regexSpans, counters, nextN, summary)
+		}
+		all := mergeSpansGreedy(regexSpans, nerSpans)
+		if len(all) == 0 {
+			return s
+		}
+		var b strings.Builder
+		b.Grow(len(s))
+		cursor := 0
+		for _, sp := range all {
+			if sp.Start < cursor {
+				continue // defensive: should be impossible after merge
+			}
+			b.WriteString(s[cursor:sp.Start])
+			key := sp.Name + "|" + canonicalForm(sp.Value)
+			n := counters[key]
+			b.WriteString(ApplyMode(h.actionFor(sp.Name), sp.Name, sp.Value, n, h.HashKey, h.EncryptKey))
+			cursor = sp.End
+		}
+		b.WriteString(s[cursor:])
+		return b.String()
 	}
 
 	// ChatRequest.System (operator-side PII per RESEARCH OQ-5).

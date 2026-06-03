@@ -42,6 +42,12 @@ type Recognizer struct {
 	Name     string
 	Pattern  *regexp.Regexp
 	Validate func(string) bool
+	// ContextKeywords, when non-empty, gates a match: the redact pipeline
+	// only accepts a regex hit if at least one keyword (case-insensitive)
+	// appears within ±defaultContextWindow bytes of the match. Used to
+	// disambiguate ambiguous patterns like IMEI vs IMSI (both 15-digit).
+	// nil/empty = no context required (existing recognizers stay nil).
+	ContextKeywords []string
 }
 
 // Init-time compiled regex literals. regexp.MustCompile panics at
@@ -68,6 +74,51 @@ var (
 	ssnRe        = regexp.MustCompile(`\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b`)
 	creditCardRe = regexp.MustCompile(`\b(?:[0-9][ \-]?){12,18}[0-9]\b`)
 	usPhoneRe    = regexp.MustCompile(`\b(?:\+?1[ .\-]?)?\(?[2-9][0-9]{2}\)?[ .\-]?[0-9]{3}[ .\-]?[0-9]{4}\b`)
+
+	// Telecom-domain recognizers ported from loop_24 Privacy Vault.
+	//
+	//	sipURIRe — RFC 3261 SIP/SIPS URI shape (sip:user@host[:port]).
+	//	           Context-free: distinctive enough on its own.
+	sipURIRe = regexp.MustCompile(`sips?:[a-zA-Z0-9_.+\-]+@[a-zA-Z0-9.\-]+(?::\d+)?`)
+
+	//	imeiRe — 15-digit run. Shared shape with IMSI; context keywords
+	//	          ("imei" / "imsi") distinguish at the redact pipeline.
+	imeiRe = regexp.MustCompile(`\b\d{15}\b`)
+
+	//	msisdnRe — E.164 international phone number (+ followed by 8–15
+	//	          digits, leading digit 1–9). Context-anchored to MSISDN/
+	//	          subscriber-number keywords so naked +<country>... doesn't
+	//	          steal USPhone's territory.
+	msisdnRe = regexp.MustCompile(`\+[1-9]\d{7,14}`)
+
+	//	macAddrRe — six pairs of hex separated by ':' or '-'. Context-free.
+	macAddrRe = regexp.MustCompile(`\b(?:[0-9A-Fa-f]{2}[:\-]){5}[0-9A-Fa-f]{2}\b`)
+
+	//	coordinatesRe — decimal-degrees lat/long with N/S and E/W
+	//	          hemisphere markers (e.g., "37.7749 N, 122.4194 W"). The
+	//	          optional °-sign and whitespace are tolerated. Context-
+	//	          free; the hemisphere letters are distinctive.
+	//
+	//	Word-boundary at start (\b) ensures the integer-degree portion
+	//	doesn't bleed into an adjacent number. The trailing E/W letter is
+	//	a word char so \b on the tail-end is implicit.
+	coordinatesRe = regexp.MustCompile(`\b\d{1,3}\.\d+\s*°?\s*[NS][,\s]+\d{1,3}\.\d+\s*°?\s*[EW]\b`)
+
+	//	siteRe — telecom site / network-element identifier. Two
+	//	          alternation arms:
+	//	            • site[-_ ]XX[-_]YYY style (literal "site" prefix +
+	//	              uppercase/digit code).
+	//	            • One of {ENB,BTS,NB,CELL,NODE,RAN,BSC,RNC,MSC,HLR,
+	//	              MME,SGW,PGW} + uppercase/digit code.
+	//	          The regex itself contains a context keyword so
+	//	          hasContextWithin succeeds for any actual match.
+	// First-arm trailing class allows '_' and '-' as interior separators
+	// so multi-segment site codes (e.g., "site-A12_NYC01") match in one
+	// span. Trailing class allows 1–12 chars; combined with the 1–2-char
+	// head this admits short codes like "site-A12" too.
+	siteRe = regexp.MustCompile(
+		`\bsite[-_\s]?[A-Z0-9]{1,2}[A-Z0-9_\-]{1,12}\b` +
+			`|\b(?:ENB|BTS|NB|CELL|NODE|RAN|BSC|RNC|MSC|HLR|MME|SGW|PGW)[-_]?[A-Z0-9]{2,12}\b`)
 )
 
 // validateIPv4Octets splits the matched dotted-quad and confirms each of
@@ -142,6 +193,41 @@ var Recognizers = []Recognizer{
 	{Name: "SSN", Pattern: ssnRe, Validate: validateSSNRange},
 	{Name: "CreditCard", Pattern: creditCardRe, Validate: validateLuhn},
 	{Name: "USPhone", Pattern: usPhoneRe, Validate: nil},
+	{Name: "SIP_URI", Pattern: sipURIRe, Validate: nil},
+	{
+		Name:            "IMEI",
+		Pattern:         imeiRe,
+		Validate:        nil,
+		ContextKeywords: []string{"imei", "international mobile equipment identity"},
+	},
+	// IMSI shares the IMEI regex shape; context-keyword filter at the
+	// redact pipeline decides which label applies. When both keywords
+	// appear near the same span, registration order (IMEI first) wins.
+	{
+		Name:            "IMSI",
+		Pattern:         imeiRe,
+		Validate:        nil,
+		ContextKeywords: []string{"imsi", "international mobile subscriber identity"},
+	},
+	{
+		Name:    "MSISDN",
+		Pattern: msisdnRe,
+		Validate: nil,
+		ContextKeywords: []string{
+			"msisdn", "subscriber number", "calling number", "called number",
+		},
+	},
+	{Name: "MAC_ADDRESS", Pattern: macAddrRe, Validate: nil},
+	{Name: "COORDINATES", Pattern: coordinatesRe, Validate: nil},
+	{
+		Name:     "SITE",
+		Pattern:  siteRe,
+		Validate: nil,
+		ContextKeywords: []string{
+			"site", "cell", "base station", "node", "tower",
+			"location code", "enb", "bts", "ran", "network element", "ne id",
+		},
+	},
 }
 
 // SourceAuditNames returns the Recognizers names in registration order.

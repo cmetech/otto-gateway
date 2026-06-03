@@ -223,6 +223,14 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 		piiHook.EncryptKey = key
 	}
 
+	// PII_NER_ENABLED gates the prose-based NER engine. Default off: no
+	// prose state is allocated unless an operator explicitly opts in.
+	// When enabled, prose emits PERSON / LOCATION spans that flow through
+	// the same Pre/Post hooks as regex recognizers.
+	if cfg.PIINEREnabled {
+		piiHook.NER = pii.NewNEREngine()
+	}
+
 	// Phase 08.2 D-07: JSON-format steering hook construction. Enabled is
 	// derived from JSON_FORMAT_STEERING_ENABLED (default true). The hook is
 	// inserted AFTER AuthHook and BEFORE PIIRedactionHook — auth short-circuit

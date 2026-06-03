@@ -36,7 +36,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"reflect"
 	"strings"
 	"testing"
 
@@ -368,9 +367,22 @@ func TestPIIRedactionHook_Describe_NoSecrets(t *testing.T) {
 	if !ok {
 		t.Fatalf("config[entities]: got %T, want []string", cfg["entities"])
 	}
-	want := []string{"Email", "IPv4", "IPv6", "SSN", "CreditCard", "USPhone"}
-	if !reflect.DeepEqual(entities, want) {
-		t.Errorf("config[entities]: got %v, want %v", entities, want)
+	// Active entity list must include the original six plus any
+	// newly-registered recognizers; assert by name-set inclusion rather
+	// than exact equality so adding a recognizer doesn't break this
+	// invariant.
+	wantSet := map[string]bool{
+		"Email": true, "IPv4": true, "IPv6": true,
+		"SSN": true, "CreditCard": true, "USPhone": true,
+	}
+	gotSet := make(map[string]bool, len(entities))
+	for _, e := range entities {
+		gotSet[e] = true
+	}
+	for name := range wantSet {
+		if !gotSet[name] {
+			t.Errorf("config[entities] missing required recognizer %q (got %v)", name, entities)
+		}
 	}
 	// Forbid any key resembling a secret or revealing patterns.
 	for k, v := range cfg {
@@ -743,5 +755,229 @@ func TestDescribe_NeverPublishesEncryptKey(t *testing.T) {
 	encoded := base64.StdEncoding.EncodeToString([]byte("SECRET-SHOULD-NOT-LEAK"))
 	if strings.Contains(string(b), encoded) {
 		t.Errorf("Describe leaked EncryptKey base64 via JSON: %s", string(b))
+	}
+}
+
+// redactText drives Before against text wrapped in a single-message
+// ChatRequest and returns the mutated text. Companion to freshHook for
+// e2e recognizer integration tests.
+func redactText(t *testing.T, hook *PIIRedactionHook, text string) string {
+	t.Helper()
+	ctx, _ := withCtxSummary(t)
+	req := &canonical.ChatRequest{
+		Messages: []canonical.Message{userMessage(text)},
+	}
+	if _, err := hook.Before(ctx, req); err != nil {
+		t.Fatalf("Before: %v", err)
+	}
+	return req.Messages[0].Content[0].Text
+}
+
+// TestIMEI_ContextAnchored_Integration: a 15-digit number with NO context
+// keyword must be left alone by the redact pipeline. With "IMEI:" prefix
+// it must be redacted.
+func TestIMEI_ContextAnchored_Integration(t *testing.T) {
+	hook := freshHook("replace")
+	hook.EnabledEntities = []string{"IMEI"}
+
+	bare := redactText(t, hook, "bare run 490154203237518 here")
+	if !strings.Contains(bare, "490154203237518") {
+		t.Errorf("expected bare 15-digit run NOT to be redacted without imei context; got %q", bare)
+	}
+
+	anchored := redactText(t, hook, "IMEI: 490154203237518")
+	if strings.Contains(anchored, "490154203237518") {
+		t.Errorf("expected redaction with 'IMEI:' prefix; got %q", anchored)
+	}
+	if !strings.Contains(anchored, "[IMEI") {
+		t.Errorf("expected [IMEI token; got %q", anchored)
+	}
+}
+
+// TestIMSIvsIMEI_Disambiguation: shared regex shape, disambiguated by
+// context keyword. "IMSI: <digits>" must label as IMSI and NOT IMEI;
+// "IMEI: <digits>" must label as IMEI and NOT IMSI.
+func TestIMSIvsIMEI_Disambiguation(t *testing.T) {
+	hook := freshHook("replace")
+	hook.EnabledEntities = []string{"IMEI", "IMSI"}
+
+	imsiTxt := redactText(t, hook, "IMSI: 310150123456789")
+	if !strings.Contains(imsiTxt, "[IMSI") {
+		t.Errorf("expected [IMSI token, got %q", imsiTxt)
+	}
+	if strings.Contains(imsiTxt, "[IMEI") {
+		t.Errorf("IMSI context must not trigger IMEI label, got %q", imsiTxt)
+	}
+
+	imeiTxt := redactText(t, hook, "IMEI: 490154203237518")
+	if !strings.Contains(imeiTxt, "[IMEI") {
+		t.Errorf("expected [IMEI token, got %q", imeiTxt)
+	}
+	if strings.Contains(imeiTxt, "[IMSI") {
+		t.Errorf("IMEI context must not trigger IMSI label, got %q", imeiTxt)
+	}
+}
+
+// TestMSISDN_ContextRequired_Integration: plain E.164 number without an
+// MSISDN-class keyword nearby must NOT be redacted (avoids stealing
+// USPhone's territory in informal contexts). With 'MSISDN:' prefix
+// the redact pipeline labels it MSISDN.
+func TestMSISDN_ContextRequired_Integration(t *testing.T) {
+	hook := freshHook("replace")
+	hook.EnabledEntities = []string{"MSISDN"}
+
+	plain := redactText(t, hook, "called +14155552671 just now")
+	if !strings.Contains(plain, "+14155552671") {
+		t.Errorf("plain E.164 without msisdn context must NOT be redacted; got %q", plain)
+	}
+
+	anchored := redactText(t, hook, "MSISDN: +14155552671")
+	if strings.Contains(anchored, "+14155552671") {
+		t.Errorf("anchored MSISDN must be redacted; got %q", anchored)
+	}
+}
+
+// TestSITE_Integration: regex matches that themselves contain the
+// context keyword (e.g., "ENB-12345") satisfy hasContextWithin and
+// flow through the redact pipeline.
+func TestSITE_Integration(t *testing.T) {
+	hook := freshHook("replace")
+	hook.EnabledEntities = []string{"SITE"}
+
+	got := redactText(t, hook, "the system uses tag site-A12_NYC01 internally")
+	if !strings.Contains(got, "[SITE") {
+		t.Errorf("expected [SITE token; got %q", got)
+	}
+
+	got = redactText(t, hook, "ENB-12345 was provisioned")
+	if !strings.Contains(got, "[SITE") {
+		t.Errorf("expected [SITE token for ENB-style; got %q", got)
+	}
+}
+
+// TestPIIRedactionHook_NEREncryptRoundTrip — end-to-end Before/After:
+//
+//  1. Before encrypts a PERSON span detected by prose alongside an
+//     Email detected by regex.
+//  2. The encrypted text simulates a kiro-cli echo by being copied into
+//     the response ChatResponse.
+//  3. After's decrypt sweep restores the plaintext PERSON name and
+//     Email so a client sees the original values.
+//
+// This is the regex+NER variant of the existing TestPIIRedactionHook
+// encrypt round-trip — it pins that the [PII:PERSON:base64url] token
+// shape decrypts identically to the [PII:Email:…] token, since
+// DecryptToken treats the entity label as opaque GCM AAD.
+func TestPIIRedactionHook_NEREncryptRoundTrip(t *testing.T) {
+	key, err := DeriveKey("e2e-ner-test-key")
+	if err != nil {
+		t.Fatalf("DeriveKey: %v", err)
+	}
+	hook := &PIIRedactionHook{
+		Recognizers:     Recognizers,
+		Enabled:         true,
+		Mode:            "encrypt",
+		EncryptKey:      key,
+		EnabledEntities: []string{"PERSON", "LOCATION", "Email"},
+		NER:             NewNEREngine(),
+	}
+
+	original := "John Smith emailed alice@example.com from Boston."
+	ctx, _ := withCtxSummary(t)
+	req := &canonical.ChatRequest{
+		Messages: []canonical.Message{userMessage(original)},
+	}
+	if _, err := hook.Before(ctx, req); err != nil {
+		t.Fatalf("Before: %v", err)
+	}
+	encrypted := req.Messages[0].Content[0].Text
+
+	// All three entities should be encrypted; none of the plaintext
+	// should remain in the request text.
+	for _, plain := range []string{"John Smith", "Boston", "alice@example.com"} {
+		if strings.Contains(encrypted, plain) {
+			t.Errorf("plaintext %q leaked through Before; got %q", plain, encrypted)
+		}
+	}
+	// Each entity must appear as a [PII:Entity:…] token.
+	for _, label := range []string{"[PII:PERSON:", "[PII:LOCATION:", "[PII:Email:"} {
+		if !strings.Contains(encrypted, label) {
+			t.Errorf("expected token prefix %q in encrypted text; got %q", label, encrypted)
+		}
+	}
+
+	// Simulate the upstream echo: response text == encrypted request text.
+	resp := &canonical.ChatResponse{
+		Message: canonical.Message{
+			Role: canonical.RoleAssistant,
+			Content: []canonical.ContentPart{
+				{Kind: canonical.ContentKindText, Text: encrypted},
+			},
+		},
+	}
+	if err := hook.After(ctx, req, resp); err != nil {
+		t.Fatalf("After: %v", err)
+	}
+	got := resp.Message.Content[0].Text
+	for _, plain := range []string{"John Smith", "Boston", "alice@example.com"} {
+		if !strings.Contains(got, plain) {
+			t.Errorf("decrypt did not restore plaintext %q; got %q", plain, got)
+		}
+	}
+}
+
+// TestPIIRedactionHook_NER_PerEntityActions: PII_ENTITY_ACTIONS-driven
+// mixed modes work across regex AND NER entities. PERSON masks,
+// LOCATION drops, IMEI encrypts, Email defaults to global replace.
+func TestPIIRedactionHook_NER_PerEntityActions(t *testing.T) {
+	key, err := DeriveKey("per-entity-actions-key")
+	if err != nil {
+		t.Fatalf("DeriveKey: %v", err)
+	}
+	hook := &PIIRedactionHook{
+		Recognizers: Recognizers,
+		Enabled:     true,
+		Mode:        "replace",
+		HashKey:     testHashKey,
+		EncryptKey:  key,
+		EntityActions: map[string]string{
+			"PERSON":   "mask",
+			"LOCATION": "drop",
+			"IMEI":     "encrypt",
+		},
+		EnabledEntities: []string{"PERSON", "LOCATION", "Email", "IMEI"},
+		NER:             NewNEREngine(),
+	}
+
+	original := "John Smith (IMEI: 490154203237518) emailed me from Boston about alice@example.com."
+	got := redactText(t, hook, original)
+
+	// PERSON → masked (not replaced, not [PERSON])
+	if strings.Contains(got, "John Smith") {
+		t.Errorf("PERSON should be masked away; got %q", got)
+	}
+	if strings.Contains(got, "[PERSON]") {
+		t.Errorf("PERSON in 'mask' mode must NOT emit [PERSON] (that is the replace shape); got %q", got)
+	}
+	// LOCATION → dropped to empty string
+	if strings.Contains(got, "Boston") {
+		t.Errorf("LOCATION should be dropped; got %q", got)
+	}
+	if strings.Contains(got, "[LOCATION]") {
+		t.Errorf("LOCATION in 'drop' mode must produce empty string, not a token; got %q", got)
+	}
+	// IMEI → encrypt token
+	if strings.Contains(got, "490154203237518") {
+		t.Errorf("IMEI should be encrypted; got %q", got)
+	}
+	if !strings.Contains(got, "[PII:IMEI:") {
+		t.Errorf("expected [PII:IMEI: encrypt token; got %q", got)
+	}
+	// Email → default mode (replace, since not in EntityActions)
+	if strings.Contains(got, "alice@example.com") {
+		t.Errorf("Email should be redacted; got %q", got)
+	}
+	if !strings.Contains(got, "[EMAIL") {
+		t.Errorf("expected [EMAIL replace-mode token; got %q", got)
 	}
 }
