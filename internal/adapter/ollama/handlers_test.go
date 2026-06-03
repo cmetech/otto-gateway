@@ -626,3 +626,190 @@ func TestHandleChat_NonStreaming_KiroNativeNarration_NoCoerce(t *testing.T) {
 		t.Errorf("narration text missing from response; body=%s", bodyStr)
 	}
 }
+
+// fencedJSONFixture is the fake-engine response text used in Phase 08.2
+// fence-strip tests. Matches the integration test fixture from CONTEXT.md.
+const fencedJSONFixture = "```json\n[\n  {\"name\": \"Item 1\", \"id\": 1},\n  {\"name\": \"Item 2\", \"id\": 2}\n]\n```"
+
+// fencedJSONStripped is the expected content after StripFences removes the fence.
+const fencedJSONStripped = "[\n  {\"name\": \"Item 1\", \"id\": 1},\n  {\"name\": \"Item 2\", \"id\": 2}\n]"
+
+// Test_handleChat_NonStreaming_FormatJSON_StripsFences: fake engine returns
+// fenced JSON, request has format:"json", assert message.content is stripped.
+func Test_handleChat_NonStreaming_FormatJSON_StripsFences(t *testing.T) {
+	eng := &fakeEngine{
+		resp: &canonical.ChatResponse{
+			Model: "auto",
+			Message: canonical.Message{
+				Role: canonical.RoleAssistant,
+				Content: []canonical.ContentPart{
+					{Kind: canonical.ContentKindText, Text: fencedJSONFixture},
+				},
+			},
+			StopReason: canonical.StopEndTurn,
+		},
+	}
+	a := newTestAdapter(eng, nil)
+	body := `{"model":"auto","messages":[{"role":"user","content":"list items"}],"format":"json","stream":false}`
+	w := doPost(t, a, "/chat", body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	var resp ollamaChatResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Message.Content != fencedJSONStripped {
+		t.Errorf("message.content: fences not stripped\ngot:  %q\nwant: %q", resp.Message.Content, fencedJSONStripped)
+	}
+}
+
+// Test_handleChat_NonStreaming_FormatJSON_NoFencesNoStripNoOp: engine returns
+// clean JSON, no double-strip artifacts.
+func Test_handleChat_NonStreaming_FormatJSON_NoFencesNoStripNoOp(t *testing.T) {
+	clean := `{"a":1}`
+	eng := &fakeEngine{
+		resp: &canonical.ChatResponse{
+			Model: "auto",
+			Message: canonical.Message{
+				Role: canonical.RoleAssistant,
+				Content: []canonical.ContentPart{
+					{Kind: canonical.ContentKindText, Text: clean},
+				},
+			},
+			StopReason: canonical.StopEndTurn,
+		},
+	}
+	a := newTestAdapter(eng, nil)
+	body := `{"model":"auto","messages":[{"role":"user","content":"hi"}],"format":"json","stream":false}`
+	w := doPost(t, a, "/chat", body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	var resp ollamaChatResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Message.Content != clean {
+		t.Errorf("message.content: unexpected mutation\ngot:  %q\nwant: %q", resp.Message.Content, clean)
+	}
+}
+
+// Test_handleChat_NonStreaming_NoFormat_PreservesFences: no format field,
+// fences must be preserved verbatim.
+func Test_handleChat_NonStreaming_NoFormat_PreservesFences(t *testing.T) {
+	eng := &fakeEngine{
+		resp: &canonical.ChatResponse{
+			Model: "auto",
+			Message: canonical.Message{
+				Role: canonical.RoleAssistant,
+				Content: []canonical.ContentPart{
+					{Kind: canonical.ContentKindText, Text: fencedJSONFixture},
+				},
+			},
+			StopReason: canonical.StopEndTurn,
+		},
+	}
+	a := newTestAdapter(eng, nil)
+	body := `{"model":"auto","messages":[{"role":"user","content":"hi"}],"stream":false}`
+	w := doPost(t, a, "/chat", body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	var resp ollamaChatResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Message.Content != fencedJSONFixture {
+		t.Errorf("message.content: fences stripped without format field\ngot:  %q\nwant: %q", resp.Message.Content, fencedJSONFixture)
+	}
+}
+
+// Test_handleGenerate_NonStreaming_FormatJSON_StripsFences mirrors the chat
+// test but for /api/generate, where the text lives in `response` not `message.content`.
+func Test_handleGenerate_NonStreaming_FormatJSON_StripsFences(t *testing.T) {
+	eng := &fakeEngine{
+		resp: &canonical.ChatResponse{
+			Model: "auto",
+			Message: canonical.Message{
+				Role: canonical.RoleAssistant,
+				Content: []canonical.ContentPart{
+					{Kind: canonical.ContentKindText, Text: fencedJSONFixture},
+				},
+			},
+			StopReason: canonical.StopEndTurn,
+		},
+	}
+	a := newTestAdapter(eng, nil)
+	body := `{"model":"auto","prompt":"list items","format":"json","stream":false}`
+	w := doPost(t, a, "/generate", body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	var resp ollamaGenerateResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Response != fencedJSONStripped {
+		t.Errorf("response: fences not stripped\ngot:  %q\nwant: %q", resp.Response, fencedJSONStripped)
+	}
+}
+
+// Test_handleGenerate_NonStreaming_FormatJSON_NoFencesNoStripNoOp: no double-strip.
+func Test_handleGenerate_NonStreaming_FormatJSON_NoFencesNoStripNoOp(t *testing.T) {
+	clean := `{"a":1}`
+	eng := &fakeEngine{
+		resp: &canonical.ChatResponse{
+			Model: "auto",
+			Message: canonical.Message{
+				Role: canonical.RoleAssistant,
+				Content: []canonical.ContentPart{
+					{Kind: canonical.ContentKindText, Text: clean},
+				},
+			},
+			StopReason: canonical.StopEndTurn,
+		},
+	}
+	a := newTestAdapter(eng, nil)
+	body := `{"model":"auto","prompt":"hi","format":"json","stream":false}`
+	w := doPost(t, a, "/generate", body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	var resp ollamaGenerateResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Response != clean {
+		t.Errorf("response: unexpected mutation\ngot:  %q\nwant: %q", resp.Response, clean)
+	}
+}
+
+// Test_handleGenerate_NonStreaming_NoFormat_PreservesFences: no format, fences preserved.
+func Test_handleGenerate_NonStreaming_NoFormat_PreservesFences(t *testing.T) {
+	eng := &fakeEngine{
+		resp: &canonical.ChatResponse{
+			Model: "auto",
+			Message: canonical.Message{
+				Role: canonical.RoleAssistant,
+				Content: []canonical.ContentPart{
+					{Kind: canonical.ContentKindText, Text: fencedJSONFixture},
+				},
+			},
+			StopReason: canonical.StopEndTurn,
+		},
+	}
+	a := newTestAdapter(eng, nil)
+	body := `{"model":"auto","prompt":"hi","stream":false}`
+	w := doPost(t, a, "/generate", body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	var resp ollamaGenerateResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Response != fencedJSONFixture {
+		t.Errorf("response: fences stripped without format field\ngot:  %q\nwant: %q", resp.Response, fencedJSONFixture)
+	}
+}

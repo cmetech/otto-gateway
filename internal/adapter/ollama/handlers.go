@@ -49,6 +49,25 @@ func stampPluginCtx(ctx context.Context, r *http.Request) context.Context {
 	return ctx
 }
 
+// stripFencesFromResponse applies engine.StripFences to the first
+// ContentKindText part in resp.Message.Content. No-op when resp is nil or
+// the message carries no text part. Phase 08.2 D-08 apply site — callers
+// gate this with `if req.Format != nil` so it only fires on JSON-mode
+// requests.
+func stripFencesFromResponse(resp *canonical.ChatResponse) {
+	if resp == nil {
+		return
+	}
+	for i := range resp.Message.Content {
+		if resp.Message.Content[i].Kind == canonical.ContentKindText {
+			if stripped, ok := engine.StripFences(resp.Message.Content[i].Text); ok {
+				resp.Message.Content[i].Text = stripped
+			}
+			return // only the first text part
+		}
+	}
+}
+
 // Body-cap sizes per endpoint (Codex M-5 / threat T-02-29). Chat and
 // generate accept large LangFlow transcripts; show is small; stubs are
 // envelope-only.
@@ -180,6 +199,14 @@ func (a *Adapter) handleChat(w http.ResponseWriter, r *http.Request) {
 			}
 			a.cfg.Logger.Debug("ollama: coerce fired", "tool", firstName)
 		}
+		// Phase 08.2 D-08: strip a wrapping ```json … ``` fence from the
+		// assistant text when req.Format != nil (JSON-mode request). The
+		// conservative StripFences helper only strips when the fence wraps
+		// the ENTIRE trimmed body — inline fences in prose are preserved.
+		// Gated on Format != nil so no-format requests are byte-identical.
+		if req.Format != nil {
+			stripFencesFromResponse(resp)
+		}
 		writeJSON(w, chatResponseToWire(resp, start, wire.Model))
 		return
 	}
@@ -266,6 +293,10 @@ func (a *Adapter) handleChat(w http.ResponseWriter, r *http.Request) {
 				firstName = resp.Message.ToolCalls[0].Name
 			}
 			a.cfg.Logger.Debug("ollama: coerce fired (re-route path)", "tool", firstName)
+		}
+		// Phase 08.2 D-08: same fence-strip logic as the direct Collect site.
+		if req.Format != nil {
+			stripFencesFromResponse(resp)
 		}
 		writeJSON(w, chatResponseToWire(resp, start, wire.Model))
 		return
@@ -409,6 +440,10 @@ func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusUnauthorized, shortCircuitMessage(resp))
 			return
 		}
+		// Phase 08.2 D-08: strip wrapping JSON fence when format is set.
+		if req.Format != nil {
+			stripFencesFromResponse(resp)
+		}
 		writeJSON(w, generateResponseToWire(resp, start, wire.Model))
 		return
 	}
@@ -467,6 +502,10 @@ func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 		if resp != nil && resp.StopReason == canonical.StopError {
 			writeError(w, http.StatusUnauthorized, shortCircuitMessage(resp))
 			return
+		}
+		// Phase 08.2 D-08: same fence-strip logic as the direct Collect site.
+		if req.Format != nil {
+			stripFencesFromResponse(resp)
 		}
 		writeJSON(w, generateResponseToWire(resp, start, wire.Model))
 		return
