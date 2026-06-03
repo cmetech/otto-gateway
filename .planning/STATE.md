@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.5
 milestone_name: audit WARNINGs
-status: executing
-last_updated: "2026-06-03T12:22:30.440Z"
+status: Discuss / plan pending
+last_updated: "2026-06-03T22:30:07.456Z"
 last_activity: 2026-06-03
 progress:
-  total_phases: 3
+  total_phases: 4
   completed_phases: 2
   total_plans: 6
   completed_plans: 6
-  percent: 67
+  percent: 50
 ---
 
 # Project State
@@ -20,14 +20,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-23)
 
 **Core value:** All three API surfaces (OpenAI for Pi SDK, Ollama for LangFlow, Anthropic for loop24-client/GSD Pi) serve their respective clients without those clients knowing kiro-cli exists, with one place to enforce policy.
-**Current focus:** Phase 08.1 — close-gap-integ-01-streaming-mode-prehook-short-circuit-v1-5
+**Current focus:** Phase 8.3 — ACP Prompt() Non-Blocking Refactor
 
 ## Current Position
 
-Phase: 08.1 (close-gap-integ-01-streaming-mode-prehook-short-circuit-v1-5) — EXECUTING
-Plan: 2 of 5
-Status: Ready to execute
-Next: `/gsd-discuss-phase 8.1` to gather context, then `/gsd-plan-phase 8.1`, then `/gsd-execute-phase 8.1`
+Phase: 8.3 (acp-prompt-non-blocking-refactor) — READY TO PLAN
+Plan: 0 of TBD
+Status: Discuss / plan pending
+Next: /gsd-plan-phase 8.3
 Last activity: 2026-06-03
 
 Progress: [██████████] 100%
@@ -69,6 +69,7 @@ Progress: [██████████] 100%
 - Phase 8 edited: edited fields: requirements (+OBSV-04), success_criteria (+SC7 GET /health/hooks view-only)
 - Phase 6.1 inserted after Phase 6: Admin Observability UI — dark-mode /admin page rendering /health + /health/agents with brand palette; auto-refresh polling; live log tail nice-to-have (URGENT)
 - Phase 8.1 inserted after Phase 8: Close gap: INTEG-01 streaming-mode PreHook short-circuit + v1.5 audit WARNINGs (URGENT)
+- Phase 8.3 inserted after Phase 8.2: ACP Prompt() Non-Blocking Refactor — fix chunk-buffer-overflow deadlock in synchronous Prompt() (Windows v1.9.2 PII smoke-test regression) (URGENT)
 
 ### Decisions
 

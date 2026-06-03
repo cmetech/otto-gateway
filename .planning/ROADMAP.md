@@ -35,6 +35,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 6.1: Admin Observability UI** *(INSERTED)* - Dark-mode `/admin` page rendering `/health` + `/health/agents` with the OTTO brand palette; auto-refresh polling; nice-to-have live log tail (completed 2026-05-28)
 - [x] **Phase 8: Plugin Hook Chain** - `PreHook`/`PostHook` over canonical types, with RequestID, Auth, Logging registered (completed 2026-05-28)
 - [x] **Phase 8.2: Ollama `format` Parity** *(INSERTED)* - LangFlow `format:"json"` / `format:<schema>` requests are steered via a canonical `PreHook` (GEN_RULES block) and the response is fence-stripped before render — Node-shim parity for the v1 replacement goal (completed 2026-06-03)
+- [ ] **Phase 8.3: ACP Prompt() Non-Blocking Refactor** *(INSERTED)* - `acp.Client.Prompt()` blocks until the final `session/prompt` response arrives, but `engine.Run` calls it synchronously and the 64-slot chunk buffer overflows on any non-trivial response — gateway deadlocks with worker still streaming. Refactor `Prompt()` to return the `*Stream` as soon as the request is accepted; move final-response handling into a goroutine that finalizes via `stream.close()`. `Stream.Result()` becomes the new sync point.
 - [x] **Phase 9: Distribution** - Cross-compile Linux+Windows from macOS, full trust-gate CI matrix gating merges (completed 2026-05-28)
 
 ## Phase Details
@@ -428,6 +429,34 @@ Plans:
 **Wave 1**
 
 - [x] 08.2-01-PLAN.md — Single atomic slice: Ollama `format` wire-decode (`/api/chat` + `/api/generate`) populates `canonical.ChatRequest.Format`, new `internal/plugin/jsonformat/` package with `JSONFormatSteeringHook` (Pre) registered in `main.go` behind `JSON_FORMAT_STEERING_ENABLED` (default true), Ollama non-streaming render applies `stripFences` when `Format != nil`, integration test against fake-engine with LangFlow-shape `format:"json"` request.
+
+### Phase 8.3: ACP Prompt() Non-Blocking Refactor (INSERTED)
+
+**Goal:** Eliminate the chunk-buffer-overflow deadlock in `internal/acp/client.go:Prompt()` that wedges the gateway when kiro-cli emits more than 64 `session/update` chunks before its `session/prompt` response. Today `Prompt()` blocks until the final response, but its caller (`engine.Run`) cannot drain `Stream.Chunks` until `Prompt()` returns — so any response that overflows the 64-slot channel deadlocks the readLoop, the ping reply, and the final response in one shot. Symptom on Windows (v1.9.2): a PII-encrypt round-trip against Anthropic `/v1/messages` produces `engine.new_session.ok` then 100 seconds of silence then `request POST /v1/messages 500 100000ms`, while kiro-cli the worker burns CPU + grows ~22 MB of memory streaming into a wedged pipe. The fix: `Prompt()` returns the `*Stream` as soon as the send is accepted; a per-prompt goroutine waits on the dispatcher response channel and finalizes the stream via `s.close(...)`. `Stream.Result()` becomes the single sync point for the final `StopReason` / error. The synchronous-Prompt deadlock is documented verbatim in the existing `client.go:701-725` docstring as a known footgun ("Calling Prompt synchronously and draining Chunks afterward only works when the total chunk count fits in the 64-slot buffer") — this phase removes the footgun.
+
+**Mode:** mvp
+**Depends on:** Phase 1.1 (ACP wire alignment — establishes `Stream.Result()` + `parseStopReason` + dispatcher lifecycle), Phase 8.1 (current streaming short-circuit semantics that the new flow must preserve)
+**Requirements:** ACP-02, ACP-03 (re-validation — no NEW requirement IDs; this is a concurrency-contract correctness fix against the live ACP spec). No canonical-type changes.
+**Success Criteria** (what must be TRUE):
+
+  1. `acp.Client.Prompt(ctx, sid, blocks)` returns `(*Stream, error)` as soon as the `session/prompt` request has been accepted by `c.send(...)` — it no longer blocks waiting for the corresponding response frame. The `engine.prompt.sent` debug line in `internal/engine/engine.go:208` fires within milliseconds of the send completing, regardless of how many chunks kiro-cli will subsequently stream back.
+  2. A per-prompt goroutine owns the response wait: it selects on `respCh`, `ctx.Done()`, and the client lifetime context, parses `result.stopReason` via `parseStopReason`, clears `c.activeStream` under `c.streamMu`, and finalizes via `stream.close(&FinalResult{StopReason: stop}, nil)`. RPC errors propagate via `stream.close(nil, err)`; the `closeSentinelCode` path surfaces `ErrClientClosed`. Context cancellation sends the same best-effort `session/cancel` notification as the current synchronous path.
+  3. The dispatcher entry for the prompt id is owned by the goroutine (registered before `c.send`, cancelled exactly once on goroutine exit). No `disp.cancel(id)` race when Close() runs concurrently with a still-in-flight prompt; `failPending` continues to unblock the goroutine via `respCh` carrying the close-sentinel error.
+  4. Engine and adapter call sites are minimally updated: `engine.Run` (engine.go:203) returns the `*Run` handle as soon as `Prompt()` returns (no longer waiting for the full response); existing callers continue to consume `Stream.Chunks` then `Stream.Result()` and observe identical semantics on the happy path. The Anthropic streaming-disabled re-route (`internal/adapter/anthropic/handlers.go:217-264`) still drains chunks via `CollectFromRun` and synthesizes SSE from the aggregated response.
+  5. The chunk-buffer-overflow deadlock is gone: a test that drives kiro-cli (or a fake-acp emitting >64 chunks before the prompt response) completes successfully without ever hitting `STREAM_IDLE_TIMEOUT_SEC`. The `TestIntegration_FakeACP_E2E_MixedVariants` family is updated as needed but its "Prompt-on-one-goroutine, drain-on-another" pattern remains valid.
+  6. Stream godoc + Prompt godoc are updated to remove the "callers MUST drain concurrently with Prompt-waiting goroutine" warning (it is no longer required for correctness, only for throughput). The new concurrency contract is documented: `Prompt()` returns immediately, callers drive the stream however they like, `Stream.Result()` is the sync point.
+  7. `make ci` is green: `gofumpt -d` → `go vet` → `go build` → `golangci-lint run` → `govulncheck` → `go test -race ./...` all pass. `goleak.VerifyNone` continues to pass in the ACP package (the new per-prompt goroutine exits on every termination path).
+  8. The Windows v1.9.2 PII smoke-test regression is fixed: `.\scripts\test-pii.ps1 pii` against a `PII_REDACTION_MODE=encrypt` gateway round-trips correctly through `/v1/messages` and `/v1/chat/completions` and `/api/chat`, with all three "expected plaintext present + no [PII:Entity:...] ciphertext leaked" assertions passing.
+
+**Out of scope (locked):**
+
+- **Changing the 64-slot buffer size.** Buffer-resize would mask the deadlock but not fix it; this phase removes the deadlock at the API level so the buffer can stay at 64 (or be tuned for throughput, separately).
+- **Other ACP RPCs (`Initialize`, `NewSession`, `SetModel`, `Ping`).** Those remain synchronous — they're small-response request/reply pairs where the synchronous wait is appropriate. Only `Prompt()` participates in the chunk-stream contract and only `Prompt()` has the deadlock.
+- **The "OpenAI stream=false hangs at session/new" symptom from the v1.9.2 wire-test run.** That request never reaches `Prompt()` — it hangs before `engine.new_session.ok` is logged. Tracked as a separate worker-state defect; this phase does not investigate or fix it.
+- **A surface-level retry on `Prompt()` failure.** Existing engine.Run callers handle Prompt errors via the watchdog + pool slot release; this phase preserves that path but does not add new retry semantics.
+- **Buffering chunks into an unbounded queue to mask backpressure.** Backpressure on `Stream.Chunks` remains a correctness property (the readLoop is the producer, slow consumers correctly slow it down). What changes is that backpressure no longer cascades into the response-wait path.
+
+Plans: (none yet — pending /gsd-plan-phase 8.3)
 
 ### Phase 9: Distribution
 
