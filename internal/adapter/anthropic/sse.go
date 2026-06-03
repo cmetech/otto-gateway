@@ -831,3 +831,204 @@ func finalizeStream(e *sseEmitter, run RunHandle) (*canonical.ChatResponse, erro
 	// observes nothing and chat-trace.log's post_chain_out is missing.
 	return e.aggregatedResponse(nil, stopReason), nil
 }
+
+// runSyntheticSSEFromResponse writes the aggregated *canonical.ChatResponse
+// as a one-shot synthetic SSE stream. Used by the encrypt-mode re-route
+// branch in handlers.go: when a Pre hook flipped req.Stream=false during
+// eng.Run but the original wire request had stream=true, the client is
+// still expecting text/event-stream. Writing application/json here would
+// trip the SDK with "request ended without sending any chunks".
+//
+// Sequence emitted:
+//
+//   - message_start (envelope with empty content, null stop_reason, zero
+//     usage — same shape as the real streaming emitter)
+//   - For each ContentPart in resp.Message.Content:
+//   - text: content_block_start(text "") + content_block_delta(text_delta
+//     carrying the full text) + content_block_stop
+//   - thinking: same shape with thinking blocks
+//   - tool_use: content_block_start(tool_use placeholder) + content_block_delta
+//     (input_json_delta carrying the full marshaled input) + content_block_stop
+//   - message_delta with mapped stop_reason (tool_use override applied
+//     when any tool_use block was emitted, matching the streaming emitter)
+//   - message_stop
+//
+// The block index walks 0..N-1 in registration order. Empty content
+// degrades to a single empty text block so SDK consumers always see at
+// least one content_block_* pair (matches chatResponseToMessage).
+//
+// PostHooks are NOT fired here — handlers.go (Quick 260530-df2 pattern)
+// calls eng.RunPostHooks separately after this returns, so LoggingHook
+// and ChatTraceHook still observe every request.
+func runSyntheticSSEFromResponse(_ context.Context, w http.ResponseWriter, resp *canonical.ChatResponse, requestedModel string, logger *slog.Logger) error {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		return errors.New("anthropic: response writer is not flusher")
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+
+	model := requestedModel
+	if model == "" && resp != nil {
+		model = resp.Model
+	}
+
+	e := &sseEmitter{
+		w:         w,
+		flusher:   flusher,
+		logger:    logger,
+		messageID: genMessageID(),
+		model:     model,
+	}
+
+	if err := e.writeEvent("message_start", messageStart{
+		Type: "message_start",
+		Message: anthropicMessage{
+			ID:           e.messageID,
+			Type:         "message",
+			Role:         "assistant",
+			Model:        e.model,
+			Content:      []contentBlock{},
+			StopReason:   nil,
+			StopSequence: nil,
+			Usage:        usage{InputTokens: 0, OutputTokens: 0},
+		},
+	}); err != nil {
+		return err
+	}
+
+	stopReason := canonical.StopUnknown
+	hasToolUse := false
+
+	if resp != nil {
+		stopReason = resp.StopReason
+		index := 0
+		for _, part := range resp.Message.Content {
+			switch part.Kind {
+			case canonical.ContentKindText:
+				if err := e.writeEvent("content_block_start", contentBlockStart{
+					Type:         "content_block_start",
+					Index:        index,
+					ContentBlock: textBlockHeader{Type: "text", Text: ""},
+				}); err != nil {
+					return err
+				}
+				if err := e.writeEvent("content_block_delta", contentBlockDelta{
+					Type:  "content_block_delta",
+					Index: index,
+					Delta: textDelta{Type: "text_delta", Text: part.Text},
+				}); err != nil {
+					return err
+				}
+				if err := e.writeEvent("content_block_stop", contentBlockStop{
+					Type: "content_block_stop", Index: index,
+				}); err != nil {
+					return err
+				}
+				index++
+			case canonical.ContentKindThinking:
+				if err := e.writeEvent("content_block_start", contentBlockStart{
+					Type:         "content_block_start",
+					Index:        index,
+					ContentBlock: thinkingBlockHeader{Type: "thinking", Thinking: ""},
+				}); err != nil {
+					return err
+				}
+				if err := e.writeEvent("content_block_delta", contentBlockDelta{
+					Type:  "content_block_delta",
+					Index: index,
+					Delta: thinkingDelta{Type: "thinking_delta", Thinking: part.Text},
+				}); err != nil {
+					return err
+				}
+				if err := e.writeEvent("content_block_stop", contentBlockStop{
+					Type: "content_block_stop", Index: index,
+				}); err != nil {
+					return err
+				}
+				index++
+			case canonical.ContentKindToolUse:
+				if part.ToolUse == nil {
+					continue
+				}
+				hasToolUse = true
+				emptyInput := map[string]any{}
+				if err := e.writeEvent("content_block_start", contentBlockStart{
+					Type:  "content_block_start",
+					Index: index,
+					ContentBlock: toolUseBlockHeader{
+						Type:  "tool_use",
+						ID:    part.ToolUse.ID,
+						Name:  part.ToolUse.Name,
+						Input: &emptyInput,
+					},
+				}); err != nil {
+					return err
+				}
+				inputBytes, mErr := json.Marshal(part.ToolUse.Input)
+				if mErr != nil {
+					inputBytes = []byte("{}")
+				}
+				if err := e.writeEvent("content_block_delta", contentBlockDelta{
+					Type:  "content_block_delta",
+					Index: index,
+					Delta: inputJSONDelta{Type: "input_json_delta", PartialJSON: string(inputBytes)},
+				}); err != nil {
+					return err
+				}
+				if err := e.writeEvent("content_block_stop", contentBlockStop{
+					Type: "content_block_stop", Index: index,
+				}); err != nil {
+					return err
+				}
+				index++
+			default:
+				// Image / ToolResult are inbound-only; defensive skip.
+			}
+		}
+		// chatResponseToMessage degrades empty content to a single empty
+		// text block so SDKs always see content_block_start/stop. Match.
+		if index == 0 {
+			if err := e.writeEvent("content_block_start", contentBlockStart{
+				Type:         "content_block_start",
+				Index:        0,
+				ContentBlock: textBlockHeader{Type: "text", Text: ""},
+			}); err != nil {
+				return err
+			}
+			if err := e.writeEvent("content_block_stop", contentBlockStop{
+				Type: "content_block_stop", Index: 0,
+			}); err != nil {
+				return err
+			}
+		}
+	}
+
+	var mappedStop *string
+	if hasToolUse {
+		// Streaming emitter override: tool_use blocks force stop_reason
+		// "tool_use" regardless of the engine's mapped value. Mirror that
+		// here so synthetic SSE matches real SSE on this load-bearing
+		// field (Anthropic SDK keys on it for tool-use detection).
+		s := "tool_use"
+		mappedStop = &s
+	} else {
+		mappedStop = mapStopReason(stopReason)
+	}
+
+	if err := e.writeEvent("message_delta", messageDelta{
+		Type: "message_delta",
+		Delta: messageDeltaInner{
+			StopReason:   mappedStop,
+			StopSequence: nil,
+		},
+		Usage: messageDeltaUsage{OutputTokens: 0},
+	}); err != nil {
+		return err
+	}
+
+	return e.writeEvent("message_stop", messageStop{Type: "message_stop"})
+}

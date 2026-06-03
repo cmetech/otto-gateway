@@ -301,7 +301,23 @@ func (a *Adapter) handleChat(w http.ResponseWriter, r *http.Request) {
 		if req.Format != nil {
 			stripFencesFromResponse(resp)
 		}
-		writeJSON(w, chatResponseToWire(resp, start, wire.Model))
+		// The CLIENT asked for stream=true. Emit a synthetic NDJSON
+		// stream from the aggregated response so the client (LangFlow
+		// and other stream-only callers) sees application/x-ndjson with
+		// the expected done:false ... done:true frame sequence. Writing
+		// application/json here would break stream parsers.
+		if err := runSyntheticNDJSONFromResponse(streamCtx, w, resp, wire.Model, true, start, a.cfg.Logger); err != nil {
+			a.cfg.Logger.Debug("ollama: synthetic chat NDJSON terminated", "err", err)
+		}
+		if resp != nil {
+			if pErr := eng.RunPostHooks(streamCtx, req, resp); pErr != nil {
+				a.cfg.Logger.Warn(
+					"ollama: PostHook error (synthetic NDJSON — swallowed; client already received stream)",
+					"err", pErr,
+					"request_id", plugin.RequestIDFromContext(ctx),
+				)
+			}
+		}
 		return
 	}
 	resp, emitErr := runNDJSONEmitter(streamCtx, cancelFn, w, run, wire.Model, true, start, a.cfg.Logger, req, a.cfg.StreamIdleTimeout)
@@ -513,7 +529,20 @@ func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 		if req.Format != nil {
 			stripFencesFromResponse(resp)
 		}
-		writeJSON(w, generateResponseToWire(resp, start, wire.Model))
+		// Same synthetic-NDJSON re-route as /api/chat above. See that
+		// site for rationale.
+		if err := runSyntheticNDJSONFromResponse(streamCtx, w, resp, wire.Model, false, start, a.cfg.Logger); err != nil {
+			a.cfg.Logger.Debug("ollama: synthetic generate NDJSON terminated", "err", err)
+		}
+		if resp != nil {
+			if pErr := eng.RunPostHooks(streamCtx, req, resp); pErr != nil {
+				a.cfg.Logger.Warn(
+					"ollama: PostHook error (synthetic NDJSON — swallowed; client already received stream)",
+					"err", pErr,
+					"request_id", plugin.RequestIDFromContext(ctx),
+				)
+			}
+		}
 		return
 	}
 	// Generate has no tools[] — pass req so the emitter signature stays

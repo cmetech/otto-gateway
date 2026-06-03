@@ -656,3 +656,110 @@ func releaseBufferedLines(w http.ResponseWriter, flusher http.Flusher, lines [][
 	}
 	return nil
 }
+
+// runSyntheticNDJSONFromResponse writes the aggregated *canonical.ChatResponse
+// as a synthetic NDJSON stream. Used by the encrypt-mode re-route branch
+// in handlers.go when the CLIENT wire had stream=true but a Pre hook
+// flipped req.Stream=false during eng.Run. Without this, the adapter
+// would write application/json and trip LangFlow Ollama clients (and any
+// other stream-only NDJSON consumer) — the v1.8.3 regression that
+// motivated this path.
+//
+// Sequence emitted:
+//   - One done:false line carrying the full text in message.content
+//     (chat) or response (generate). Empty content degrades to "" so
+//     consumers always see at least one frame before done:true.
+//   - One done:true terminal frame built via chatResponseToWire /
+//     generateResponseToWire — same shape the non-streaming JSON
+//     response would have used, so stats and stop_reason mapping match.
+//
+// isChat=true selects the /api/chat NDJSON shape; false selects /api/generate.
+func runSyntheticNDJSONFromResponse(_ context.Context, w http.ResponseWriter, resp *canonical.ChatResponse, requestedModel string, isChat bool, start time.Time, _ *slog.Logger) error {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		return errors.New("ollama: response writer is not flusher")
+	}
+
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.WriteHeader(http.StatusOK)
+
+	model := requestedModel
+	if model == "" && resp != nil {
+		model = resp.Model
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+
+	// Concatenate text ContentParts so the synthetic frame carries the
+	// full decrypted text in one line. tool_use / thinking parts are
+	// dropped on this path (v1 limitation).
+	var fullText string
+	if resp != nil {
+		var sb strings.Builder
+		for _, part := range resp.Message.Content {
+			if part.Kind == canonical.ContentKindText {
+				sb.WriteString(part.Text)
+			}
+		}
+		fullText = sb.String()
+	}
+
+	if isChat {
+		chunk := ndjsonChatLine{
+			Model:     model,
+			CreatedAt: now,
+			Message: ollamaChatResponseMessage{
+				Role:    "assistant",
+				Content: fullText,
+			},
+			Done: false,
+		}
+		body, err := json.Marshal(chunk)
+		if err != nil {
+			return fmt.Errorf("ollama: marshal synthetic chat chunk: %w", err)
+		}
+		if _, err := w.Write(append(body, '\n')); err != nil {
+			return fmt.Errorf("ollama: write synthetic chat chunk: %w", err)
+		}
+		flusher.Flush()
+
+		// Terminal done:true via chatResponseToWire so stats + done_reason match.
+		terminal := chatResponseToWire(resp, start, requestedModel)
+		body, err = json.Marshal(terminal)
+		if err != nil {
+			return fmt.Errorf("ollama: marshal synthetic chat terminal: %w", err)
+		}
+		if _, err := w.Write(append(body, '\n')); err != nil {
+			return fmt.Errorf("ollama: write synthetic chat terminal: %w", err)
+		}
+		flusher.Flush()
+		return nil
+	}
+
+	// /api/generate variant.
+	chunk := ndjsonGenerateLine{
+		Model:     model,
+		CreatedAt: now,
+		Response:  fullText,
+		Done:      false,
+	}
+	body, err := json.Marshal(chunk)
+	if err != nil {
+		return fmt.Errorf("ollama: marshal synthetic generate chunk: %w", err)
+	}
+	if _, err := w.Write(append(body, '\n')); err != nil {
+		return fmt.Errorf("ollama: write synthetic generate chunk: %w", err)
+	}
+	flusher.Flush()
+
+	terminal := generateResponseToWire(resp, start, requestedModel)
+	body, err = json.Marshal(terminal)
+	if err != nil {
+		return fmt.Errorf("ollama: marshal synthetic generate terminal: %w", err)
+	}
+	if _, err := w.Write(append(body, '\n')); err != nil {
+		return fmt.Errorf("ollama: write synthetic generate terminal: %w", err)
+	}
+	flusher.Flush()
+	return nil
+}

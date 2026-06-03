@@ -719,3 +719,86 @@ func (e *sseEmitter) tryStreamingCoerce(stopReason canonical.StopReason) ([]cano
 	}
 	return syntheticResp.Message.ToolCalls, nil
 }
+
+// runSyntheticSSEFromResponse writes the aggregated *canonical.ChatResponse
+// as a one-shot synthetic SSE stream of chat.completion.chunk frames.
+// Used by the encrypt-mode re-route branch in handlers.go when the CLIENT
+// wire had stream=true but a Pre hook flipped req.Stream=false during
+// eng.Run. Without this, the adapter would write application/json and trip
+// SDK clients with "request ended without sending any chunks".
+//
+// Sequence emitted (matches the real per-chunk emitter's frame shape):
+//
+//   - One frame with delta.role="assistant" (the first-frame role marker
+//     OpenAI clients key on).
+//   - One frame per ContentPart carrying delta.content with the full text
+//     in a single delta. tool_use parts are dropped on this path (the
+//     v1 limitation already documented in handlers.go applies — synthetic
+//     SSE cannot emit native delta.tool_calls without a coerce pass).
+//   - One terminal frame with empty delta and finish_reason set.
+//   - "data: [DONE]\n\n" terminator.
+func runSyntheticSSEFromResponse(_ context.Context, w http.ResponseWriter, resp *canonical.ChatResponse, requestedModel string, logger *slog.Logger) error {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		return errors.New("openai: response writer is not flusher")
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+
+	model := requestedModel
+	if model == "" && resp != nil {
+		model = resp.Model
+	}
+
+	e := &sseEmitter{
+		w:       w,
+		flusher: flusher,
+		logger:  logger,
+		id:      genMessageID("chatcmpl-"),
+		created: time.Now().Unix(),
+		model:   model,
+	}
+
+	// Role marker frame.
+	if err := e.writeData(e.buildChunk(chunkChoice{
+		Index: 0,
+		Delta: chunkDelta{Role: "assistant"},
+	})); err != nil {
+		return err
+	}
+
+	stopReason := canonical.StopUnknown
+	if resp != nil {
+		stopReason = resp.StopReason
+		for _, part := range resp.Message.Content {
+			if part.Kind != canonical.ContentKindText || part.Text == "" {
+				continue
+			}
+			if err := e.writeData(e.buildChunk(chunkChoice{
+				Index: 0,
+				Delta: chunkDelta{Content: part.Text},
+			})); err != nil {
+				return err
+			}
+		}
+	}
+
+	// Final frame with finish_reason set + empty delta.
+	finish := mapFinishReason(stopReason)
+	if err := e.writeData(e.buildChunk(chunkChoice{
+		Index:        0,
+		Delta:        chunkDelta{},
+		FinishReason: &finish,
+	})); err != nil {
+		return err
+	}
+
+	if _, err := fmt.Fprintf(e.w, "data: [DONE]\n\n"); err != nil {
+		return fmt.Errorf("openai: write [DONE]: %w", err)
+	}
+	e.flusher.Flush()
+	return nil
+}

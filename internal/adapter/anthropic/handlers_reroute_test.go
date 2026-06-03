@@ -1,15 +1,21 @@
 // Package anthropic — T-5b adapter handler re-route test.
 //
 // When a Pre hook (e.g., the PII encrypt Pre hook) flips req.Stream=false
-// during eng.Run, handleMessages must abandon the SSE branch and route
-// the already-running ACP session through eng.CollectFromRun, rendering
-// via the surface's non-streaming JSON response shape
-// (chatResponseToMessage). This test pins that contract.
+// during eng.Run, handleMessages must abandon the real SSE branch and
+// route the already-running ACP session through eng.CollectFromRun.
+// Because the CLIENT wire originally had stream=true, the response must
+// still be a text/event-stream — emitted synthetically from the
+// aggregated CollectFromRun result via runSyntheticSSEFromResponse.
+// This test pins that contract.
+//
+// v1.8.3 regression fixed: prior to runSyntheticSSEFromResponse this
+// branch wrote application/json, which tripped Anthropic SDK clients
+// (Claude Code, loop24-client) with "request ended without sending any
+// chunks".
 package anthropic
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
@@ -95,45 +101,50 @@ func TestHandleMessages_StreamReroute_OnPreHookStreamDisable(t *testing.T) {
 	body := `{"model":"auto","max_tokens":256,"messages":[{"role":"user","content":"hi"}],"stream":true}`
 	w := doPost(t, a, "/messages", body)
 
-	// (1) Wire-shape assertion: status 200 + Content-Type: application/json
-	// (NOT text/event-stream — the regression detector for the SSE
-	// header leak on the re-route path).
+	// (1) Wire-shape assertion: status 200 + Content-Type: text/event-stream.
+	// Prior to v1.9 this path wrote application/json, breaking SDK
+	// clients that asked for stream=true. The synthetic SSE emitter
+	// preserves the wire shape the client expects.
 	if w.Code != http.StatusOK {
 		t.Fatalf("status: got %d, want 200; body=%s", w.Code, w.Body.String())
 	}
 	ct := w.Header().Get("Content-Type")
-	if !strings.HasPrefix(ct, "application/json") {
-		t.Errorf("Content-Type: got %q, want prefix application/json (no SSE leak on re-route)", ct)
+	if !strings.HasPrefix(ct, "text/event-stream") {
+		t.Errorf("Content-Type: got %q, want prefix text/event-stream (synthetic SSE)", ct)
 	}
 
-	// (2) Body decodes as the Anthropic non-streaming response shape.
-	var resp anthropicMessage
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode anthropicMessage: %v; body=%s", err, w.Body.String())
+	// (2) Body carries the full SSE event sequence and contains the
+	// decrypted text inside a content_block_delta payload.
+	bodyStr := w.Body.String()
+	wantEvents := []string{
+		"event: message_start",
+		"event: content_block_start",
+		"event: content_block_delta",
+		"event: content_block_stop",
+		"event: message_delta",
+		"event: message_stop",
 	}
-	if resp.Type != "message" || resp.Role != "assistant" {
-		t.Errorf("type/role: got %q/%q, want message/assistant", resp.Type, resp.Role)
+	for _, ev := range wantEvents {
+		if !strings.Contains(bodyStr, ev) {
+			t.Errorf("body missing SSE event %q; body=%q", ev, bodyStr)
+		}
 	}
-	if len(resp.Content) != 1 || resp.Content[0].Type != "text" || resp.Content[0].Text != "decrypted-response" {
-		t.Errorf("content: got %+v, want one text block 'decrypted-response'", resp.Content)
+	if !strings.Contains(bodyStr, `"text":"decrypted-response"`) {
+		t.Errorf("body missing decrypted text in text_delta payload; body=%q", bodyStr)
+	}
+	if !strings.Contains(bodyStr, `"stop_reason":"end_turn"`) {
+		t.Errorf("body missing mapped stop_reason end_turn; body=%q", bodyStr)
 	}
 
-	// (3) Handler invoked CollectFromRun (NOT the SSE emitter).
+	// (3) Handler invoked CollectFromRun (NOT the real per-chunk SSE
+	// emitter) — proves the re-route branch fired.
 	if !eng.collectFromRunCalled {
-		t.Error("CollectFromRun was not called — handler took the SSE branch (regression: T-5b re-route guard missing)")
+		t.Error("CollectFromRun was not called — handler took the real-SSE branch (regression: T-5b re-route guard missing)")
 	}
 
 	// (4) Run observed Stream=true on the inbound wire request — proves
 	// the re-route branch fired AFTER Run, not before.
 	if !eng.sawStreamTrueAtRun {
 		t.Error("rerouteFakeEngine.Run did not observe Stream=true on inbound req — wire-decode broken")
-	}
-
-	// (5) No SSE markers in the body — the SSE emitter MUST NOT have run.
-	bodyStr := w.Body.String()
-	for _, marker := range []string{"event: ", "event: message_start", "data: "} {
-		if strings.Contains(bodyStr, marker) {
-			t.Errorf("body contains SSE marker %q — T-5b re-route did not bypass runSSEEmitter; body=%q", marker, bodyStr)
-		}
 	}
 }

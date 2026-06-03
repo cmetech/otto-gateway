@@ -86,43 +86,46 @@ func TestHandleChat_StreamReroute_OnPreHookStreamDisable(t *testing.T) {
 		t.Fatalf("status: got %d, want 200; body=%s", w.Code, w.Body.String())
 	}
 	ct := w.Header().Get("Content-Type")
-	if !strings.HasPrefix(ct, "application/json") {
-		t.Errorf("Content-Type: got %q, want prefix application/json (no NDJSON leak on re-route)", ct)
+	if !strings.HasPrefix(ct, "application/x-ndjson") {
+		t.Errorf("Content-Type: got %q, want prefix application/x-ndjson (synthetic NDJSON)", ct)
 	}
 
-	// Single-object non-streaming Ollama shape. The streaming path
-	// would emit MULTIPLE NDJSON records — assert that decoding yields
-	// ONE complete object with done:true.
-	var resp ollamaChatResponse
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode ollamaChatResponse: %v; body=%s", err, w.Body.String())
+	// Synthetic NDJSON: one done:false line carrying the decrypted text,
+	// followed by one done:true terminal line. Both must decode as
+	// independent JSON objects on separate lines.
+	bodyStr := w.Body.String()
+	lines := strings.Split(strings.TrimRight(bodyStr, "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 NDJSON lines (done:false chunk + done:true terminal); got %d; body=%q",
+			len(lines), bodyStr)
 	}
-	if resp.Message.Role != "assistant" {
-		t.Errorf("message.role: got %q, want assistant", resp.Message.Role)
+
+	var chunk ndjsonChatLine
+	if err := json.Unmarshal([]byte(lines[0]), &chunk); err != nil {
+		t.Fatalf("decode ndjsonChatLine[0]: %v; line=%q", err, lines[0])
 	}
-	if resp.Message.Content != "decrypted-response" {
-		t.Errorf("message.content: got %q, want 'decrypted-response'", resp.Message.Content)
+	if chunk.Done {
+		t.Errorf("lines[0].done: got true, want false (intermediate chunk)")
 	}
-	if !resp.Done {
-		t.Error("done: got false, want true (non-streaming terminal record)")
+	if chunk.Message.Content != "decrypted-response" {
+		t.Errorf("lines[0].message.content: got %q, want 'decrypted-response'", chunk.Message.Content)
+	}
+	if chunk.Message.Role != "assistant" {
+		t.Errorf("lines[0].message.role: got %q, want assistant", chunk.Message.Role)
+	}
+
+	var terminal ollamaChatResponse
+	if err := json.Unmarshal([]byte(lines[1]), &terminal); err != nil {
+		t.Fatalf("decode ollamaChatResponse[1]: %v; line=%q", err, lines[1])
+	}
+	if !terminal.Done {
+		t.Error("lines[1].done: got false, want true (terminal record)")
 	}
 
 	if !eng.collectFromRunCalled {
-		t.Error("CollectFromRun was not called — handler took the NDJSON streaming branch (regression: T-5b re-route guard missing)")
+		t.Error("CollectFromRun was not called — handler took the real NDJSON branch (regression: T-5b re-route guard missing)")
 	}
 	if !eng.sawStreamTrueAtRun {
 		t.Error("rerouteFakeEngine.Run did not observe Stream=true on inbound req — wire-decode broken")
-	}
-
-	// A streaming response would contain MULTIPLE JSON objects separated
-	// by newlines (NDJSON). Re-route MUST produce exactly one decodable
-	// object — assert the body has at most one newline-trailing terminator.
-	bodyStr := w.Body.String()
-	// Count NDJSON record terminators (newlines between objects). A
-	// well-formed single JSON response will have at most ONE trailing
-	// newline (from json.Encoder.Encode); the streaming path emits N+1.
-	nlCount := strings.Count(bodyStr, "\n")
-	if nlCount > 1 {
-		t.Errorf("body contains %d newlines — suggests NDJSON record stream leak on re-route; body=%q", nlCount, bodyStr)
 	}
 }

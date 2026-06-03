@@ -203,7 +203,25 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 				}
 				a.cfg.Logger.Debug("openai: coerce fired (re-route path)", "tool", firstName)
 			}
-			writeJSON(w, chatResponseToCompletion(resp, wire.Model))
+			// The CLIENT asked for stream=true (wire.Stream was true at
+			// request entry). Emit a synthetic SSE stream from the
+			// aggregated response so the SDK sees text/event-stream and
+			// the expected chat.completion.chunk frames. Writing
+			// application/json here would trip OpenAI SDK clients with
+			// "request ended without sending any chunks" — the v1.8.3
+			// regression that motivated this path.
+			if err := runSyntheticSSEFromResponse(streamCtx, w, resp, wire.Model, a.cfg.Logger); err != nil {
+				a.cfg.Logger.Debug("openai: synthetic SSE terminated", "err", err)
+			}
+			if resp != nil {
+				if pErr := eng.RunPostHooks(streamCtx, req, resp); pErr != nil {
+					a.cfg.Logger.Warn(
+						"openai: PostHook error (synthetic SSE — swallowed; client already received stream)",
+						"err", pErr,
+						"request_id", plugin.RequestIDFromContext(ctx),
+					)
+				}
+			}
 			return
 		}
 		resp, err := runSSEEmitter(streamCtx, w, runHandle, req, wire.Model, a.cfg.StreamIdleTimeout, a.cfg.Logger)

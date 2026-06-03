@@ -10,7 +10,6 @@ package openai
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -108,35 +107,33 @@ func TestHandleChatCompletions_StreamReroute_OnPreHookStreamDisable(t *testing.T
 		t.Fatalf("status: got %d, want 200; body=%s", w.Code, w.Body.String())
 	}
 	ct := w.Header().Get("Content-Type")
-	if !strings.HasPrefix(ct, "application/json") {
-		t.Errorf("Content-Type: got %q, want prefix application/json (no SSE leak on re-route)", ct)
-	}
-
-	var resp chatCompletion
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode chatCompletion: %v; body=%s", err, w.Body.String())
-	}
-	if len(resp.Choices) != 1 {
-		t.Fatalf("choices: got %d, want 1", len(resp.Choices))
-	}
-	if got := resp.Choices[0].Message.Content; got != "decrypted-response" {
-		t.Errorf("choices[0].message.content: got %q, want 'decrypted-response'", got)
-	}
-	if resp.Object != "chat.completion" {
-		t.Errorf("object: got %q, want chat.completion (non-streaming shape)", resp.Object)
-	}
-
-	if !eng.collectFromRunCalled {
-		t.Error("CollectFromRun was not called — handler took the SSE branch (regression: T-5b re-route guard missing)")
-	}
-	if !eng.sawStreamTrueAtRun {
-		t.Error("rerouteFakeEngine.Run did not observe Stream=true on inbound req — wire-decode broken")
+	if !strings.HasPrefix(ct, "text/event-stream") {
+		t.Errorf("Content-Type: got %q, want prefix text/event-stream (synthetic SSE)", ct)
 	}
 
 	bodyStr := w.Body.String()
-	for _, marker := range []string{"event: ", "data: "} {
-		if strings.Contains(bodyStr, marker) {
-			t.Errorf("body contains SSE marker %q — T-5b re-route did not bypass runSSEEmitter; body=%q", marker, bodyStr)
+	// Synthetic SSE must emit role-marker frame, content frame with the
+	// decrypted text, final finish_reason frame, and [DONE] terminator.
+	wantSubstrings := []string{
+		`"role":"assistant"`,
+		`"content":"decrypted-response"`,
+		`"finish_reason":"stop"`,
+		"data: [DONE]",
+	}
+	for _, s := range wantSubstrings {
+		if !strings.Contains(bodyStr, s) {
+			t.Errorf("body missing expected substring %q; body=%q", s, bodyStr)
 		}
+	}
+	// Every data line must carry a chat.completion.chunk object.
+	if !strings.Contains(bodyStr, `"object":"chat.completion.chunk"`) {
+		t.Errorf("body missing chat.completion.chunk object marker; body=%q", bodyStr)
+	}
+
+	if !eng.collectFromRunCalled {
+		t.Error("CollectFromRun was not called — handler took the real-SSE branch (regression: T-5b re-route guard missing)")
+	}
+	if !eng.sawStreamTrueAtRun {
+		t.Error("rerouteFakeEngine.Run did not observe Stream=true on inbound req — wire-decode broken")
 	}
 }
