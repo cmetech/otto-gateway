@@ -84,6 +84,12 @@ var (
 	//	imeiRe — 15-digit run. Shared shape with IMSI; context keywords
 	//	          ("imei" / "imsi") distinguish at the redact pipeline.
 	imeiRe = regexp.MustCompile(`\b\d{15}\b`)
+
+	//	msisdnRe — E.164 international phone number (+ followed by 8–15
+	//	          digits, leading digit 1–9). Context-anchored to MSISDN/
+	//	          subscriber-number keywords so naked +<country>... doesn't
+	//	          steal USPhone's territory.
+	msisdnRe = regexp.MustCompile(`\+[1-9]\d{7,14}`)
 )
 
 // validateIPv4Octets splits the matched dotted-quad and confirms each of
@@ -173,6 +179,14 @@ var Recognizers = []Recognizer{
 		Pattern:         imeiRe,
 		Validate:        nil,
 		ContextKeywords: []string{"imsi", "international mobile subscriber identity"},
+	},
+	{
+		Name:    "MSISDN",
+		Pattern: msisdnRe,
+		Validate: nil,
+		ContextKeywords: []string{
+			"msisdn", "subscriber number", "calling number", "called number",
+		},
 	},
 }
 

@@ -817,3 +817,22 @@ func TestIMSIvsIMEI_Disambiguation(t *testing.T) {
 		t.Errorf("IMEI context must not trigger IMSI label, got %q", imeiTxt)
 	}
 }
+
+// TestMSISDN_ContextRequired_Integration: plain E.164 number without an
+// MSISDN-class keyword nearby must NOT be redacted (avoids stealing
+// USPhone's territory in informal contexts). With 'MSISDN:' prefix
+// the redact pipeline labels it MSISDN.
+func TestMSISDN_ContextRequired_Integration(t *testing.T) {
+	hook := freshHook("replace")
+	hook.EnabledEntities = []string{"MSISDN"}
+
+	plain := redactText(t, hook, "called +14155552671 just now")
+	if !strings.Contains(plain, "+14155552671") {
+		t.Errorf("plain E.164 without msisdn context must NOT be redacted; got %q", plain)
+	}
+
+	anchored := redactText(t, hook, "MSISDN: +14155552671")
+	if strings.Contains(anchored, "+14155552671") {
+		t.Errorf("anchored MSISDN must be redacted; got %q", anchored)
+	}
+}

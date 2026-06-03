@@ -289,10 +289,39 @@ func TestIMSIRecognizer(t *testing.T) {
 	}
 }
 
+// TestMSISDNRecognizer — E.164 international phone number, context-
+// anchored. Naked E.164 numbers without context fall through (avoids
+// competing with USPhone in informal contexts).
+func TestMSISDNRecognizer(t *testing.T) {
+	r := findRecognizer(t, "MSISDN")
+	cases := []struct {
+		in          string
+		wantMatched bool
+	}{
+		{"+14155552671", true},
+		{"+442071838750", true},
+		{"+1", false},          // too short (regex requires 8-15 digits after +)
+		{"+0123456789", false}, // leading 0 after + disallowed
+		{"14155552671", false}, // missing '+'
+	}
+	for _, c := range cases {
+		t.Run(c.in, func(t *testing.T) {
+			got, _ := regexAndValidate(r, c.in)
+			if got != c.wantMatched {
+				t.Errorf("MSISDN %q: regex matched=%v, want %v", c.in, got, c.wantMatched)
+			}
+		})
+	}
+	wantKw := []string{"msisdn", "subscriber number", "calling number", "called number"}
+	if len(r.ContextKeywords) != len(wantKw) {
+		t.Fatalf("MSISDN ContextKeywords len: got %d, want %d", len(r.ContextKeywords), len(wantKw))
+	}
+}
+
 // TestRecognizers_RegistryShape asserts the registry has the expected
 // names in registration order, each with a non-nil Pattern.
 func TestRecognizers_RegistryShape(t *testing.T) {
-	wantNames := []string{"Email", "IPv4", "IPv6", "SSN", "CreditCard", "USPhone", "SIP_URI", "IMEI", "IMSI"}
+	wantNames := []string{"Email", "IPv4", "IPv6", "SSN", "CreditCard", "USPhone", "SIP_URI", "IMEI", "IMSI", "MSISDN"}
 	if got := len(Recognizers); got != len(wantNames) {
 		t.Fatalf("len(Recognizers): got %d, want %d", got, len(wantNames))
 	}
