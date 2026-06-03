@@ -42,6 +42,12 @@ type Recognizer struct {
 	Name     string
 	Pattern  *regexp.Regexp
 	Validate func(string) bool
+	// ContextKeywords, when non-empty, gates a match: the redact pipeline
+	// only accepts a regex hit if at least one keyword (case-insensitive)
+	// appears within ±defaultContextWindow bytes of the match. Used to
+	// disambiguate ambiguous patterns like IMEI vs IMSI (both 15-digit).
+	// nil/empty = no context required (existing recognizers stay nil).
+	ContextKeywords []string
 }
 
 // Init-time compiled regex literals. regexp.MustCompile panics at
