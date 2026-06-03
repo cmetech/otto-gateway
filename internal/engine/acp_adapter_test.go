@@ -225,14 +225,21 @@ func drivePromptStream(t *testing.T) (*acp.Stream, *acp.Client, *mockPipeRWC) {
 		}
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	// Phase 8.3: Prompt is now non-blocking. The ctx passed to Prompt is
+	// captured by the per-prompt awaitPromptResult goroutine; if we used
+	// `context.WithTimeout(...); defer cancel()` here the cancel would fire
+	// as drivePromptStream returns and the goroutine would race the
+	// session/prompt response into the ctx-cancel arm. Initialize and
+	// NewSession ARE still synchronous, so they get a bounded ctx; Prompt
+	// gets a long-lived ctx that the test's overall lifetime owns.
+	initCtx, initCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer initCancel()
 
-	if err := client.Initialize(ctx); err != nil {
+	if err := client.Initialize(initCtx); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 
-	sid, err := client.NewSession(ctx, "/tmp")
+	sid, err := client.NewSession(initCtx, "/tmp")
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -240,7 +247,13 @@ func drivePromptStream(t *testing.T) (*acp.Stream, *acp.Client, *mockPipeRWC) {
 		t.Fatal("NewSession returned empty session id")
 	}
 
-	stream, err := client.Prompt(ctx, sid, []canonical.Block{
+	// Phase 8.3: pass context.Background() so the prompt ctx outlives this
+	// helper's stack frame. The mock peer has already written the
+	// session/prompt response by the time <-serverDone unblocks below;
+	// awaitPromptResult will consume it via respCh on the test's goroutine
+	// schedule, finalize the stream, and the caller's shim.Result() will
+	// observe the populated FinalResult.
+	stream, err := client.Prompt(context.Background(), sid, []canonical.Block{
 		{Kind: canonical.BlockKindText, Text: &canonical.TextBlock{Content: "hi"}},
 	})
 	if err != nil {

@@ -3,12 +3,16 @@
 package acp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"reflect"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -930,6 +934,312 @@ func TestClient_Done_IdempotentMultipleReaders(t *testing.T) {
 		}
 	}
 	goleak.VerifyNone(t)
+}
+
+// TestClient_CloseDuringInFlightPrompt_FinalizesStreamCleanly covers Phase 8.3
+// Pitfall 1 (close-race between awaitPromptResult and readLoop EOF defer).
+// Starts a Prompt against a mockRWC that never responds, then calls Close()
+// before any session/prompt response can arrive. Asserts that stream.Result()
+// returns ErrClientClosed (delivered via failPending's close-sentinel through
+// respCh) and that goleak.VerifyNone passes — proving the awaitPromptResult
+// goroutine exits via its close-sentinel arm and the s.closeOnce guard
+// collapses the readLoop-defer + goroutine close paths to a single state.
+func TestClient_CloseDuringInFlightPrompt_FinalizesStreamCleanly(t *testing.T) {
+	mock := newMockRWC()
+	cfg := newTestConfig(t)
+
+	c := NewWithConn(mock, cfg)
+	defer goleak.VerifyNone(t)
+
+	// Drain the mock's server-side writes so the writer goroutine never
+	// blocks on a full pipe. We discard the bytes — this test isn't about
+	// the wire shape.
+	serverDrained := make(chan struct{})
+	go func() {
+		defer close(serverDrained)
+		buf := make([]byte, 4096)
+		for {
+			if _, err := mock.serverRead.Read(buf); err != nil {
+				return
+			}
+		}
+	}()
+
+	ctx := context.Background()
+	stream, err := c.Prompt(ctx, "test-sid", []canonical.Block{
+		{Kind: canonical.BlockKindText, Text: &canonical.TextBlock{Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	if stream == nil {
+		t.Fatal("Prompt returned nil Stream — Phase 8.3 non-blocking contract violated")
+	}
+
+	// Give awaitPromptResult time to register in the dispatcher's pending map
+	// (matches TestPendingRequestsFailedOnClose at client_test.go:202).
+	time.Sleep(50 * time.Millisecond)
+
+	// Close — failPending delivers the close-sentinel via respCh; the
+	// goroutine's frame arm handles closeSentinelCode → stream.close(nil,
+	// ErrClientClosed).
+	_ = c.Close()
+
+	// Drain Chunks (none expected) so the range loop below terminates.
+	for range stream.Chunks {
+		// no chunks expected
+	}
+
+	final, err := stream.Result()
+	if !errors.Is(err, ErrClientClosed) {
+		t.Errorf("stream.Result err: got %v, want ErrClientClosed", err)
+	}
+	if final != nil && final.StopReason != canonical.StopUnknown {
+		t.Errorf("FinalResult.StopReason: got %v, want StopUnknown (no response landed)", final.StopReason)
+	}
+	mock.serverClose()
+	<-serverDrained
+}
+
+// TestClient_PromptCtxCancel_FinalizesStreamWithCtxErr covers the ctx-cancel
+// arm of awaitPromptResult: when the caller cancels its context mid-flight,
+// the goroutine clears c.activeStream, sends a defensive session/cancel
+// notification (CONTEXT.md D-01 two-owner pattern), and finalizes the stream
+// with a wrapped ctx.Err(). Verifies (a) stream.Result errs with the wrapped
+// cancellation, (b) the session/cancel notification reaches the wire (read
+// off mockRWC's server-side reader), (c) goleak clean.
+func TestClient_PromptCtxCancel_FinalizesStreamWithCtxErr(t *testing.T) {
+	mock := newMockRWC()
+	cfg := newTestConfig(t)
+
+	c := NewWithConn(mock, cfg)
+	defer goleak.VerifyNone(t)
+
+	// Collect every line the client writes to the wire so we can later assert
+	// that a session/cancel notification was emitted. We deliberately read
+	// line-by-line in a single goroutine so the bytes are ordered and the
+	// test can race-free inspect them post-cancel.
+	type wireLines struct {
+		mu    sync.Mutex
+		lines [][]byte
+	}
+	collected := &wireLines{}
+	collectedDone := make(chan struct{})
+	go func() {
+		defer close(collectedDone)
+		var buf []byte
+		tmp := make([]byte, 1)
+		for {
+			n, err := mock.serverRead.Read(tmp)
+			if n > 0 {
+				buf = append(buf, tmp[0])
+				if tmp[0] == '\n' {
+					line := make([]byte, len(buf))
+					copy(line, buf)
+					collected.mu.Lock()
+					collected.lines = append(collected.lines, line)
+					collected.mu.Unlock()
+					buf = buf[:0]
+				}
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	stream, err := c.Prompt(ctx, "ctx-cancel-sid", []canonical.Block{
+		{Kind: canonical.BlockKindText, Text: &canonical.TextBlock{Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	if stream == nil {
+		t.Fatal("Prompt returned nil Stream — Phase 8.3 non-blocking contract violated")
+	}
+
+	// Give awaitPromptResult time to register in the dispatcher and the
+	// select to settle on the two arms.
+	time.Sleep(50 * time.Millisecond)
+
+	// Cancel — fires ctx.Done arm inside awaitPromptResult.
+	cancel()
+
+	// Drain Chunks (none expected).
+	for range stream.Chunks {
+		// no chunks expected
+	}
+
+	_, err = stream.Result()
+	if err == nil {
+		t.Fatal("stream.Result: got nil err, want wrapped context.Canceled")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("stream.Result err: got %v, want errors.Is(context.Canceled)", err)
+	}
+
+	// Poll for the session/cancel notification to reach the wire before we
+	// tear down the mock. The notification is queued via sendNotification's
+	// non-blocking select; the writerLoop drains writeCh on its own goroutine,
+	// so the bytes land on serverRead asynchronously. 500ms is generous.
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		collected.mu.Lock()
+		n := len(collected.lines)
+		collected.mu.Unlock()
+		// Two writes expected: the session/prompt request + the
+		// session/cancel notification. Bail out the moment the second lands.
+		if n >= 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Tear down the client cleanly before asserting wire content so the
+	// reader goroutine exits and we observe all writes.
+	mock.serverClose()
+	_ = c.Close()
+	<-collectedDone
+
+	// Assert that the wire contained a session/cancel notification with our
+	// sessionId. This validates CONTEXT.md D-01 "defensive layer" — the
+	// goroutine emits the cancel even though engine.Run's watchdog would
+	// duplicate it in production.
+	var sawCancel bool
+	collected.mu.Lock()
+	for _, line := range collected.lines {
+		var frame map[string]any
+		if err := json.Unmarshal(line, &frame); err != nil {
+			continue
+		}
+		method, _ := frame["method"].(string)
+		if method != "session/cancel" {
+			continue
+		}
+		params, _ := frame["params"].(map[string]any)
+		if params == nil {
+			continue
+		}
+		if params["sessionId"] == "ctx-cancel-sid" {
+			sawCancel = true
+			break
+		}
+	}
+	collected.mu.Unlock()
+	if !sawCancel {
+		t.Errorf("expected session/cancel notification for sessionId=ctx-cancel-sid on the wire; none found in %d lines",
+			len(collected.lines))
+	}
+}
+
+// TestClient_PromptCompletedLog_FieldShape covers the Phase 8.3 D-02
+// engine.prompt.completed log line field shape. Drives a full prompt
+// round-trip against a mockRWC, captures slog output into a bytes.Buffer,
+// and asserts the line contains all three required fields (session_id,
+// chunks, stop_reason) plus the raw wire stop_reason value (end_turn).
+func TestClient_PromptCompletedLog_FieldShape(t *testing.T) {
+	mock := newMockRWC()
+
+	// Wire a Logger that writes structured records into a buffer so we can
+	// grep its output post-hoc. slog.NewTextHandler produces key=value pairs
+	// which are easy to assert on.
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	cfg := Config{
+		Logger:       logger,
+		Command:      "kiro-cli",
+		Args:         []string{"acp"},
+		PingInterval: 10 * time.Minute,
+	}
+
+	c := NewWithConn(mock, cfg)
+	defer func() {
+		mock.serverClose()
+		_ = c.Close()
+		goleak.VerifyNone(t)
+	}()
+
+	// Scripted responder: initialize → session/new → session/prompt.
+	serveErr := make(chan error, 1)
+	go func() {
+		for _, step := range []string{"initialize", "session/new", "session/prompt"} {
+			line, err := readLineFromPipe(mock.serverRead)
+			if err != nil {
+				serveErr <- fmt.Errorf("read %s: %w", step, err)
+				return
+			}
+			var req map[string]any
+			if err := json.Unmarshal(line, &req); err != nil {
+				serveErr <- fmt.Errorf("unmarshal %s: %w", step, err)
+				return
+			}
+			var result map[string]any
+			switch step {
+			case "initialize":
+				result = map[string]any{}
+			case "session/new":
+				result = map[string]any{"sessionId": "log-shape-sid"}
+			case "session/prompt":
+				result = map[string]any{"stopReason": "end_turn"}
+			}
+			if err := mock.serverWriteJSON(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      req["id"],
+				"result":  result,
+			}); err != nil {
+				serveErr <- fmt.Errorf("write %s response: %w", step, err)
+				return
+			}
+		}
+		serveErr <- nil
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := c.Initialize(ctx); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	sid, err := c.NewSession(ctx, "/tmp")
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	stream, err := c.Prompt(ctx, sid, []canonical.Block{
+		{Kind: canonical.BlockKindText, Text: &canonical.TextBlock{Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+
+	// Drain Chunks (none from the mock).
+	for range stream.Chunks {
+	}
+	final, err := stream.Result()
+	if err != nil {
+		t.Fatalf("stream.Result: %v", err)
+	}
+	if final.StopReason != canonical.StopEndTurn {
+		t.Errorf("StopReason: got %v, want StopEndTurn", final.StopReason)
+	}
+	if err := <-serveErr; err != nil {
+		t.Fatalf("responder: %v", err)
+	}
+
+	got := buf.String()
+	// Three field-shape assertions (slog text format key=value).
+	if !strings.Contains(got, "engine.prompt.completed") {
+		t.Errorf("captured log missing engine.prompt.completed line; got:\n%s", got)
+	}
+	if !strings.Contains(got, "session_id=log-shape-sid") {
+		t.Errorf("captured log missing session_id=log-shape-sid; got:\n%s", got)
+	}
+	if !strings.Contains(got, "chunks=0") {
+		t.Errorf("captured log missing chunks=0 (mock sent no session/update); got:\n%s", got)
+	}
+	if !strings.Contains(got, "stop_reason=end_turn") {
+		t.Errorf("captured log missing stop_reason=end_turn (raw wire string per Phase 8.3 D-02); got:\n%s", got)
+	}
 }
 
 // readLineFromPipe reads one newline-terminated line from r.

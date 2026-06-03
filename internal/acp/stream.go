@@ -29,27 +29,26 @@ type FinalResult struct {
 //
 // D-03: streaming channel from day 1 — no buffer-and-return.
 //
-// Concurrency contract (Phase 1.1 WR-01): the readLoop goroutine is the sole
-// producer on Chunks. push() is a BLOCKING send guarded only by the client
-// lifetime context, so a slow consumer of Chunks back-pressures the readLoop
-// — and while the readLoop is blocked, no further frames are read from the
-// subprocess pipe, including the session/prompt response that would close the
-// stream. The internal channel is buffered (64 slots) to absorb short bursts,
-// but if kiro-cli emits more than 64 chunks before the prompt response a
-// non-draining consumer will deadlock until the client context is cancelled.
+// Concurrency contract (Phase 8.3): the readLoop goroutine is the sole
+// producer on Chunks. Prompt() returns (*Stream, error) as soon as the
+// session/prompt request is accepted by the writer; the per-prompt
+// awaitPromptResult goroutine in acp.Client owns the response wait and
+// finalizes the stream via close(...) when the session/prompt response arrives
+// (or on ctx cancel / client close). Stream.Result() blocks on <-s.done and
+// is the single sync point for the terminal StopReason / error.
 //
-// Required usage: callers MUST drain Chunks concurrently with whatever
-// goroutine is waiting on Prompt() to return. The fakeacp integration test
-// (TestIntegration_FakeACP_E2E_MixedVariants) and the real-kiro round-trip
-// test both run Prompt on one goroutine and the Chunks drain on another.
-// Phase 2's HTTP adapters MUST follow the same pattern.
+// Drainage of Chunks MAY be concurrent with whatever goroutine called Prompt
+// for throughput on long responses, but is no longer required for correctness
+// — push() backpressure on a slow consumer no longer cascades into the
+// response-wait path because that path runs on its own goroutine independent
+// of the chunk drainage rate. The internal channel is buffered (64 slots) to
+// absorb short bursts; if a consumer is slower than the producer the readLoop
+// blocks on push() until the consumer catches up, but the session/prompt
+// response continues to flow through awaitPromptResult and Stream.Result()
+// will still return cleanly once the buffer drains.
 type Stream struct {
 	// Chunks is the receive-only channel of translated canonical chunks.
 	// The channel is closed when the stream ends (session/update done or error).
-	//
-	// IMPORTANT: callers must drain Chunks concurrently with the goroutine
-	// that called Prompt — see the Stream-type godoc for the deadlock
-	// rationale.
 	Chunks <-chan canonical.Chunk
 
 	chunks chan canonical.Chunk // send side (internal)
