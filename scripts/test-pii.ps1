@@ -67,8 +67,20 @@ param(
 
     [string]$Auth = '',
 
-    [switch]$NoColor
+    [switch]$NoColor,
+
+    # POSIX-style help aliases so operators coming from test-pii.sh on
+    # Mac/Linux don't have to learn Get-Help. Either -h or -Help dumps
+    # the same comment-based help block PowerShell would show via
+    # `Get-Help .\test-pii.ps1`.
+    [Alias('h')]
+    [switch]$Help
 )
+
+if ($Help.IsPresent) {
+    Get-Help -Full $PSCommandPath
+    exit 0
+}
 
 # ---------------------------------------------------------------------------
 # Color + IO helpers.

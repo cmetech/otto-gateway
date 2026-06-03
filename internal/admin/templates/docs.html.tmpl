@@ -307,6 +307,81 @@ PII_ENTITY_ACTIONS=PERSON:mask,LOCATION:drop</pre>
   </section>
 
   <section class="otto-card">
+    <h2 class="otto-h2">Troubleshooting — kiro-cli inside WSL on Windows</h2>
+    <p><strong>Symptom:</strong> a native Windows gateway works fine when paired with a native Windows kiro-cli, but loses the ACP connection when kiro-cli is run from inside WSL (with <code>KIRO_CMD=wsl.exe</code> or a path under <code>\\wsl$\</code>). The Node-JS gateway didn't have this problem.</p>
+
+    <h3 class="otto-h3">Why the Go gateway exposes it (and Node didn't)</h3>
+    <p>The data path is multi-layered when kiro-cli runs inside WSL2:</p>
+    <pre class="otto-code-block">Go gateway (Windows process)
+   ↓ CreateProcess anonymous pipe (Windows kernel)
+wsl.exe (Windows binary — thin bridge to LXSS)
+   ↓ vsock stdio translation (Windows ↔ Linux pipe FDs)
+kiro-cli (Linux process inside the WSL2 lightweight VM)</pre>
+    <p>Three things go wrong, any of which can drop the long-running ACP session:</p>
+    <ol class="otto-docs-bullets">
+      <li><strong>Linux stdio block buffering</strong> — when kiro-cli's stdout is a pipe (not a terminal), glibc defaults to <em>block buffered</em> writes. ACP responses sit inside kiro-cli's buffer until it fills or kiro-cli explicitly flushes. The gateway's blocking read on the other side of the bridge waits forever, the heartbeat times out, the pool reaps the slot.</li>
+      <li><strong>Split-brain process tree</strong> — <code>wsl.exe</code> is the only PID Go can see, signal, or kill. The actual kiro-cli is a Linux process the Windows side cannot directly address. <code>Cmd.Process.Kill()</code> kills <code>wsl.exe</code> but may leave kiro-cli as a WSL orphan; conversely, when kiro-cli exits on the Linux side, <code>wsl.exe</code> may not propagate the exit cleanly back to Go's <code>Wait()</code>.</li>
+      <li><strong>WSL2 vsock latency</strong> — stdio goes through Hyper-V vsock with internal batching. Cumulative latency under load can exceed the default <code>STREAM_IDLE_TIMEOUT_SEC=30</code> watchdog and trip the idle-timeout.</li>
+    </ol>
+    <p>The Node gateway sidestepped all three: libuv pipes are non-blocking by default (so Linux block-buffering still hurt but Node's event loop kept the connection alive between bursts), and Node had no idle-timeout watchdog at all. Go's <code>os/exec</code> reads are synchronous blocking syscalls on Windows — strict where Node was lenient. WSL2's stdio is lenient-tolerant; the Go strictness exposes the bridge's quirks.</p>
+
+    <h3 class="otto-h3">Things to try, in priority order</h3>
+    <ol class="otto-docs-bullets">
+      <li>
+        <strong>Disable Linux stdio buffering with <code>stdbuf</code>.</strong> Most likely #1 culprit — fixes the block-buffering case. Add to <code>.otto-gw.overrides.env</code>:
+        <pre class="otto-code-block">KIRO_CMD=wsl.exe
+KIRO_ARGS=--exec /usr/bin/stdbuf -i0 -o0 -e0 /full/path/to/kiro-cli acp</pre>
+        <code>stdbuf -i0 -o0 -e0</code> tells glibc to use unbuffered stdin/stdout/stderr for the child. Responses flush the moment they're written. If <code>stdbuf</code> is missing from your distro, install <code>coreutils</code> inside WSL.
+      </li>
+      <li>
+        <strong>Use <code>--exec</code>, not the default wsl invocation.</strong> Without <code>--exec</code>, wsl.exe starts a login shell that then runs kiro-cli. The shell adds its own buffering and complicates signal propagation. <code>--exec</code> replaces the wsl.exe process with kiro-cli directly via execve — one fewer layer, cleaner signal handling.
+        <pre class="otto-code-block">KIRO_ARGS=--exec /full/path/to/kiro-cli acp</pre>
+      </li>
+      <li>
+        <strong>Raise the idle timeout as a band-aid for vsock latency.</strong> Default is 30s — generous on native, marginal across WSL2. If the drop happens reproducibly near the 30s mark, this is your problem:
+        <pre class="otto-code-block">STREAM_IDLE_TIMEOUT_SEC=120</pre>
+      </li>
+      <li>
+        <strong>Switch to TCP if kiro-cli supports it.</strong> If kiro-cli has a socket-listening mode, running it as a TCP server inside WSL and pointing the gateway at <code>127.0.0.1:PORT</code> sidesteps the entire stdio bridge. WSL2 forwards localhost ports, so a Linux-side listener is reachable from the Windows gateway. Cleanest fix but requires kiro-cli support.
+      </li>
+    </ol>
+
+    <h3 class="otto-h3">Diagnostic data — collect this if the steps above don't fix it</h3>
+    <pre class="otto-code-block"># 1. Confirm current KIRO_* values
+otto-gw.ps1 env | Select-String "KIRO"
+
+# 2. Reproduce with DEBUG=true and capture the log around the drop
+Add-Content $env:USERPROFILE\.otto-gw.overrides.env "DEBUG=true"
+otto-gw.ps1 restart
+# (reproduce — send a request)
+otto-gw.ps1 logs | Select-Object -Last 50
+
+# 3. Immediately after the connection drop, check WSL — is kiro-cli
+#    still alive (bridge break) or did it exit (real kiro death)?
+wsl.exe ps aux | findstr kiro
+
+# 4. Capture kiro-cli stderr to a Linux-side file so you can see
+#    complaints that never made it across the bridge:
+#    KIRO_ARGS=--exec sh -c 'exec /path/to/kiro-cli acp 2&gt;&gt;/tmp/kiro.err'
+wsl.exe cat /tmp/kiro.err</pre>
+
+    <h3 class="otto-h3">What the log lines mean</h3>
+    <dl class="otto-about-dl">
+      <dt><code>pii.redact.done</code> then silence</dt><dd>Gateway sent the redacted request, kiro never replied. <strong>Likely stdio buffering</strong> — try step 1.</dd>
+      <dt><code>pool: slot died</code> with no obvious cause</dt><dd>Either kiro-cli exited inside WSL or wsl.exe exited mid-session. <strong>Likely process-tree split-brain</strong> — try step 2; cross-reference with <code>wsl ps</code>.</dd>
+      <dt><code>stream.idle_timeout</code></dt><dd>vsock latency exceeded the watchdog threshold. <strong>Likely step 3</strong> — bump the timeout.</dd>
+      <dt><code>acp: dispatcher: read EOF</code></dt><dd>The pipe closed unexpectedly. Combine with <code>wsl ps</code> output to figure out which side died first (Linux kiro exited / Windows wsl.exe exited / bridge dropped).</dd>
+    </dl>
+
+    <h3 class="otto-h3">Recommended starting config</h3>
+    <pre class="otto-code-block">KIRO_CMD=wsl.exe
+KIRO_ARGS=--exec /usr/bin/stdbuf -i0 -o0 -e0 /home/&lt;you&gt;/path/to/kiro-cli acp
+STREAM_IDLE_TIMEOUT_SEC=120
+DEBUG=true</pre>
+    <p>If this combination still drops the connection, paste the log lines around the drop + <code>wsl ps</code> output for the diagnostic team. If the root cause turns out to be #2 (split-brain process tree), there's a real gateway-side fix involving Windows job objects + WSL-aware kill semantics that would land in a future release.</p>
+  </section>
+
+  <section class="otto-card">
     <h2 class="otto-h2">Basic admin usage</h2>
     <ul class="otto-docs-bullets">
       <li><strong>Status pill</strong> — green = healthy (pool ready + at least one slot idle), amber = degraded (KIRO_CMD missing or pool starving), red = down (no slots, no recovery in flight).</li>
