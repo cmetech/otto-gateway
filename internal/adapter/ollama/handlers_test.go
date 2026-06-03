@@ -1,6 +1,7 @@
 package ollama
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,9 @@ import (
 	"testing"
 
 	"otto-gateway/internal/canonical"
+	"otto-gateway/internal/engine"
+	"otto-gateway/internal/plugin/jsonformat"
+	"otto-gateway/internal/testutil"
 )
 
 // fakeEngine is the whitebox test double for the consumer-defined
@@ -811,5 +815,165 @@ func Test_handleGenerate_NonStreaming_NoFormat_PreservesFences(t *testing.T) {
 	}
 	if resp.Response != fencedJSONFixture {
 		t.Errorf("response: fences stripped without format field\ngot:  %q\nwant: %q", resp.Response, fencedJSONFixture)
+	}
+}
+
+// ----------------------------------------------------------------------------
+// Integration tests — Phase 08.2: full chain (JSONFormatSteering hooked in
+// engine.Engine) + fake ACP returning fenced JSON. These tests exercise the
+// three coordinated changes end-to-end: wire-decode → steering hook → fence-strip.
+// ----------------------------------------------------------------------------
+
+// formatIntegrationACP is a fake engine.ACPClient that returns a single
+// text chunk containing fencedJSONFixture followed by a closed channel.
+// It is intentionally local to the integration tests so it does not pollute
+// the broader fakeEngine harness.
+type formatIntegrationACP struct {
+	// lastPromptBlocks captures the blocks passed to Prompt so tests can
+	// inspect the system-prompt segment the steering hook injected.
+	lastPromptBlocks []canonical.Block
+}
+
+func (f *formatIntegrationACP) NewSession(_ context.Context, _ string) (string, error) {
+	return "format-integ-sid", nil
+}
+func (f *formatIntegrationACP) SetModel(_ context.Context, _, _ string) error { return nil }
+func (f *formatIntegrationACP) Prompt(_ context.Context, _ string, blocks []canonical.Block) (engine.Stream, error) {
+	f.lastPromptBlocks = blocks
+	ch := make(chan canonical.Chunk, 1)
+	ch <- canonical.Chunk{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: fencedJSONFixture}}
+	close(ch)
+	return &formatIntegStream{ch: ch}, nil
+}
+func (f *formatIntegrationACP) Cancel(_ string) {}
+
+type formatIntegStream struct{ ch chan canonical.Chunk }
+
+func (s *formatIntegStream) Chunks() <-chan canonical.Chunk { return s.ch }
+func (s *formatIntegStream) Result() (*canonical.FinalResult, error) {
+	return &canonical.FinalResult{StopReason: canonical.StopEndTurn}, nil
+}
+
+// buildFormatIntegAdapter constructs the full chain engine + adapter for
+// the format-parity integration tests. The jsonformat hook is wired with
+// enabled=true, matching the production default.
+func buildFormatIntegAdapter(t *testing.T, acp *formatIntegrationACP) (*Adapter, *formatIntegrationACP) {
+	t.Helper()
+	logger := testutil.Logger(t)
+	eng := engine.New(engine.Config{
+		Logger:   logger,
+		ACP:      acp,
+		PreHooks: []engine.PreHook{jsonformat.New(true)},
+	})
+	adapter := New(Config{
+		Logger:  logger,
+		Engine:  testEngineAdapter{eng: eng},
+		Version: "test",
+		Commit:  "integ",
+	})
+	return adapter, acp
+}
+
+// TestIntegration_OllamaChat_FormatJSON_NodeShimParity exercises the three
+// coordinated Phase 08.2 changes end-to-end on /api/chat:
+//   1. wire-decode: Format field is populated from format:"json" in the request
+//   2. steering hook: GEN_RULES text is injected into the system prompt
+//   3. fence-strip: the response body is unwrapped from the markdown fence
+func TestIntegration_OllamaChat_FormatJSON_NodeShimParity(t *testing.T) {
+	acp := &formatIntegrationACP{}
+	adapter, _ := buildFormatIntegAdapter(t, acp)
+
+	srv := httptest.NewServer(adapter.ProtectedRouter())
+	defer srv.Close()
+
+	body := []byte(`{"model":"claude-sonnet-4-7","messages":[{"role":"user","content":"list items"}],"format":"json","stream":false}`)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, srv.URL+"/chat", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	// Assertion 1: HTTP 200
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: got %d, want 200", resp.StatusCode)
+	}
+
+	var out ollamaChatResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	// Assertion 2: fences stripped — content is the raw JSON array, no ```json wrapper.
+	if out.Message.Content != fencedJSONStripped {
+		t.Errorf("message.content: fences not stripped\ngot:  %q\nwant: %q", out.Message.Content, fencedJSONStripped)
+	}
+
+	// Assertion 3: steering hook fired — GEN_RULES marker present in the
+	// ACP prompt text. The engine encodes req.System as [System]\n<text>\n\n
+	// in the first text block; the marker must appear in that text.
+	const genRulesMarker = "Generate the COMPLETE result"
+	promptText := ""
+	for _, b := range acp.lastPromptBlocks {
+		if b.Kind == canonical.BlockKindText && b.Text != nil {
+			promptText += b.Text.Content
+		}
+	}
+	if !strings.Contains(promptText, genRulesMarker) {
+		t.Errorf("GEN_RULES not injected; prompt text=%q", promptText)
+	}
+}
+
+// TestIntegration_OllamaChat_NoFormat_NoSteeringNoStrip is the sibling
+// negative test: without format, neither steering nor fence-strip should
+// fire. The fenced fixture must reach the client unchanged.
+func TestIntegration_OllamaChat_NoFormat_NoSteeringNoStrip(t *testing.T) {
+	acp := &formatIntegrationACP{}
+	adapter, _ := buildFormatIntegAdapter(t, acp)
+
+	srv := httptest.NewServer(adapter.ProtectedRouter())
+	defer srv.Close()
+
+	// No "format" field in the request body.
+	body := []byte(`{"model":"claude-sonnet-4-7","messages":[{"role":"user","content":"list items"}],"stream":false}`)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, srv.URL+"/chat", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	// Assertion 1: HTTP 200
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: got %d, want 200", resp.StatusCode)
+	}
+
+	var out ollamaChatResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	// Assertion 2: fences preserved — no format means no strip.
+	if out.Message.Content != fencedJSONFixture {
+		t.Errorf("message.content: fences stripped without format\ngot:  %q\nwant: %q", out.Message.Content, fencedJSONFixture)
+	}
+
+	// Assertion 3: no steering — prompt text must NOT contain GEN_RULES.
+	const genRulesMarker = "Generate the COMPLETE result"
+	for _, b := range acp.lastPromptBlocks {
+		if b.Kind == canonical.BlockKindText && b.Text != nil && strings.Contains(b.Text.Content, genRulesMarker) {
+			t.Errorf("GEN_RULES injected without format field; prompt text=%q", b.Text.Content)
+			break
+		}
 	}
 }
