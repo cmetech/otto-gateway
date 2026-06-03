@@ -7,6 +7,9 @@ type: chore
 commits:
   - "8299705 chore(tests): gofmt -w tests/e2e/ to clear comment-alignment drift"
   - "945a9b2 chore(go): bump go.mod to go 1.24 for t.Context() in admin tests"
+  - "3277c9f docs(quick-260603-bxf): close out tech-debt cleanup task"
+  - "d8bac14 chore(repo): gofumpt -w . to standardize formatting"
+  - "89ff011 fix(jsonformat): rename type to SteeringHook to satisfy revive (no stutter)"
 ---
 
 # Quick Task Summary — Pre-Existing Tech-Debt Cleanup
@@ -38,7 +41,66 @@ NOT run `gofmt -w` repo-wide.
 | `internal/admin/` tests | ✅ (compile-only on go1.23 — vet caught it) | ✅ 16.8s race-test passes |
 | `internal/plugin/jsonformat` tests | ✅ | ✅ |
 
+## Extension — Repo-Wide gofumpt Standardization (after initial close-out)
+
+Operator decision: standardize on gofumpt across the entire repo rather
+than preserve the column-alignment convention. Two follow-on commits:
+
+### `d8bac14` — `gofumpt -w .` repo-wide
+
+47 files reformatted. +217 / -175. Three normalization categories
+applied:
+
+1. **Struct field column alignment collapse** (~30 files) — the
+   intentional column alignment is gone; future contributors don't
+   fight the formatter.
+2. **Octal literal modernization** (5 sites in `tests/e2e/`) — `0644`
+   rewritten as `0o644` (Go 1.13+ syntax; same numeric value).
+3. **Multi-line `append()` wrapping** (3 sites) — when a call spans
+   multiple lines, every argument including the first sits on its own
+   line.
+
+Semantics-preserving verified: `go test -race ./...` passes all 16
+packages post-reformat (cmd/otto-gateway, acp, adapter/{anthropic,
+ollama, openai}, admin, auth, canonical, config, engine, plugin,
+plugin/jsonformat, plugin/pii, pool, server, session).
+
+### `89ff011` — `jsonformat.JSONFormatSteeringHook` → `SteeringHook`
+
+`golangci-lint`'s `revive` linter flagged the Phase 8.2 type as
+stuttering (`jsonformat.JSONFormatSteeringHook` — package qualifier +
+type prefix both say "JSONFormat"). Renamed the Go type per canonical
+style. Preserved the runtime identifier (the string `"JSONFormatSteeringHook"`
+returned by `Name()`) since operators recognize that name via
+`/health/hooks`. Net lint impact: the one issue Phase 8.2 introduced is
+now cleared.
+
+## Final `make ci` State
+
+After this extension, individual gates:
+
+| Gate | Status | Notes |
+|------|--------|-------|
+| `fmt-check` (gofumpt) | ✅ green | Was blocking pre-extension |
+| `vet` | ✅ green | Was blocking pre-extension (`testing.Context`) |
+| `build` | ✅ green | — |
+| `lint` (golangci-lint) | ❌ 86 issues | Pre-existing tech debt; unrelated to Phase 8.2 or this task |
+| `test-race` | ✅ green | All 16 packages |
+
+The 86 remaining lint issues span 10 different linter rules (`gosec` 12,
+`wrapcheck` 30, `errcheck` 7, `revive` 16, `unparam` 7, `unused` 5,
+`noctx` 4, `bodyclose` 1, `nilerr` 1, `staticcheck` 3) — all in files
+this task did not modify. Punting to a follow-on chore or accepting as
+documented tech debt is the team's call.
+
 ## Out of Scope — Surfaced for Future Decision
+
+**UPDATE 2026-06-03 (post-initial-close):** The operator chose option 1
+(bulldoze) — see "Extension" section above for the `gofumpt -w .` follow-up.
+This section is preserved as historical record of the three options that
+were considered.
+
+---
 
 `gofmt -l .` (whole-repo) reports **18 additional files** outside `tests/e2e/`
 with formatting that gofmt would change. Unlike the `tests/e2e/` case
