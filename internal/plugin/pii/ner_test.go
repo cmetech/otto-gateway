@@ -147,3 +147,85 @@ func TestNEREngine_DuplicateName(t *testing.T) {
 		// without forcing a specific count.
 	}
 }
+
+// Integration: when NER is wired AND PERSON/LOCATION are in
+// EnabledEntities, names and places in user text get redacted alongside
+// regex-detected entities.
+func TestNER_Integration_PersonReplace(t *testing.T) {
+	hook := freshHook("replace")
+	hook.EnabledEntities = []string{"PERSON", "LOCATION", "Email"}
+	hook.NER = NewNEREngine()
+
+	got := redactText(t, hook, "John Smith works in Boston.")
+	if strings.Contains(got, "John Smith") {
+		t.Errorf("expected PERSON redaction; got %q", got)
+	}
+	if strings.Contains(got, "Boston") {
+		t.Errorf("expected LOCATION redaction; got %q", got)
+	}
+	if !strings.Contains(got, "[PERSON") {
+		t.Errorf("expected [PERSON token; got %q", got)
+	}
+	if !strings.Contains(got, "[LOCATION") {
+		t.Errorf("expected [LOCATION token; got %q", got)
+	}
+}
+
+// Off-by-default: NER is nil on the hook → names pass through even
+// when PERSON is in EnabledEntities (the allowlist is shape-only;
+// behavior depends on NER being wired).
+func TestNER_OffByDefault(t *testing.T) {
+	hook := freshHook("replace")
+	hook.EnabledEntities = []string{"PERSON", "Email"}
+	// hook.NER intentionally nil — represents PII_NER_ENABLED=false
+
+	got := redactText(t, hook, "John Smith emailed me.")
+	if !strings.Contains(got, "John Smith") {
+		t.Errorf("NER off → name must pass through; got %q", got)
+	}
+}
+
+// Overlap arbitration: regex Email wins over NER PERSON at the same
+// span. Prose can sometimes label name-shaped email local-parts as
+// PERSON; verify regex takes priority.
+func TestNER_RegexWinsOverlap(t *testing.T) {
+	hook := freshHook("replace")
+	hook.EnabledEntities = []string{"Email", "PERSON"}
+	hook.NER = NewNEREngine()
+
+	got := redactText(t, hook, "contact jane.doe@example.com please")
+	if !strings.Contains(got, "[EMAIL") {
+		t.Errorf("expected EMAIL redaction (regex must win); got %q", got)
+	}
+}
+
+// EnabledEntities allowlist must filter NER outputs even when NER is
+// wired. PERSON enabled, LOCATION not → only person redacts.
+func TestNER_EnabledEntitiesFilter(t *testing.T) {
+	hook := freshHook("replace")
+	hook.EnabledEntities = []string{"PERSON"}
+	hook.NER = NewNEREngine()
+
+	got := redactText(t, hook, "John Smith visited Boston.")
+	if strings.Contains(got, "John Smith") {
+		t.Errorf("PERSON enabled → name must be redacted; got %q", got)
+	}
+	if !strings.Contains(got, "Boston") {
+		t.Errorf("LOCATION NOT enabled → must pass through; got %q", got)
+	}
+}
+
+// Empty EnabledEntities = allow all → both PERSON and LOCATION redact.
+func TestNER_EnabledEntitiesEmpty_AllowsAll(t *testing.T) {
+	hook := freshHook("replace")
+	hook.EnabledEntities = nil
+	hook.NER = NewNEREngine()
+
+	got := redactText(t, hook, "John Smith visited Boston.")
+	if strings.Contains(got, "John Smith") {
+		t.Errorf("empty allowlist → PERSON must be redacted; got %q", got)
+	}
+	if strings.Contains(got, "Boston") {
+		t.Errorf("empty allowlist → LOCATION must be redacted; got %q", got)
+	}
+}

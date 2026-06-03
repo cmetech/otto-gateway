@@ -248,8 +248,13 @@ func (h *PIIRedactionHook) collectRegexSpans(
 
 // acceptNERSpans is the NER-side of the regex+NER merge pipeline. It
 // applies the EnabledEntities filter to NER outputs and bumps the same
-// counter/summary bookkeeping that collectRegexSpans does. Task 1 ships
-// the stub; Task 10 fills in the body once NER is wired.
+// counter/summary bookkeeping that collectRegexSpans does so the rewrite
+// pass sees consistent per-entity referential identity across both
+// recognizer sources.
+//
+// Overlap arbitration (regex wins, intra-NER dedup) is handled by
+// mergeSpansGreedy in redact(), so this function only needs to filter
+// and book-keep; the merge step drops anything that conflicts.
 func (h *PIIRedactionHook) acceptNERSpans(
 	s string,
 	candidates []span,
@@ -258,9 +263,42 @@ func (h *PIIRedactionHook) acceptNERSpans(
 	nextN map[string]int,
 	summary *Summary,
 ) []span {
-	// Task 10 will populate. For now (NER==nil precondition) callers
-	// never reach this path.
-	return candidates
+	if len(candidates) == 0 {
+		return nil
+	}
+	allowSet := h.enabledEntitiesSet()
+	out := make([]span, 0, len(candidates))
+	for _, cand := range candidates {
+		if len(allowSet) > 0 {
+			if _, ok := allowSet[cand.Name]; !ok {
+				continue
+			}
+		}
+		// Skip NER candidates that overlap any regex span — saves work
+		// for mergeSpansGreedy and (more importantly) keeps the counter
+		// from being bumped for a span that won't survive the merge.
+		conflict := false
+		for _, r := range regexSpans {
+			if cand.overlaps(r) {
+				conflict = true
+				break
+			}
+		}
+		if conflict {
+			continue
+		}
+		// Bump counter / summary on the EXISTING canonical-value slot
+		// so [PERSON_1] / [PERSON_2] (replace mode) and Summary counts
+		// behave identically to regex-detected entities.
+		key := cand.Name + "|" + canonicalForm(cand.Value)
+		if _, seen := counters[key]; !seen {
+			nextN[cand.Name]++
+			counters[key] = nextN[cand.Name]
+		}
+		summary.Add(cand.Name)
+		out = append(out, cand)
+	}
+	return out
 }
 
 // enabledEntitiesSet returns h.EnabledEntities as a set, or nil if the
