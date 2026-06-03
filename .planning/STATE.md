@@ -3,15 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.5
 milestone_name: audit WARNINGs
 status: executing
-stopped_at: context exhaustion at 82% (2026-05-31)
-last_updated: "2026-05-31T15:20:00.000Z"
-last_activity: 2026-05-31 -- quick-260531-oax completed: add -Trace switch to otto-gw.ps1 (Windows parity)
+last_updated: "2026-06-03T12:22:30.440Z"
+last_activity: 2026-06-03
 progress:
-  total_phases: 12
-  completed_phases: 11
-  total_plans: 54
-  completed_plans: 54
-  percent: 92
+  total_phases: 3
+  completed_phases: 2
+  total_plans: 6
+  completed_plans: 6
+  percent: 67
 ---
 
 # Project State
@@ -26,12 +25,12 @@ See: .planning/PROJECT.md (updated 2026-05-23)
 ## Current Position
 
 Phase: 08.1 (close-gap-integ-01-streaming-mode-prehook-short-circuit-v1-5) — EXECUTING
-Plan: 1 of 5
-Status: Executing Phase 08.1
+Plan: 2 of 5
+Status: Ready to execute
 Next: `/gsd-discuss-phase 8.1` to gather context, then `/gsd-plan-phase 8.1`, then `/gsd-execute-phase 8.1`
-Last activity: 2026-06-01 - Completed quick task 260601-dzc: otto-gw wrappers -h/--help/-Help support (stdout + exit 0)
+Last activity: 2026-06-03
 
-Progress: [░░░░░░░░░░] 0%
+Progress: [██████████] 100%
 
 ## Performance Metrics
 
@@ -58,6 +57,7 @@ Progress: [░░░░░░░░░░] 0%
 - Trend: n/a
 
 *Updated after each plan completion*
+| Phase 08.2 P01 | 45m | 8 tasks | 10 files |
 
 ## Accumulated Context
 
@@ -134,6 +134,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-05-31T12:40:59.803Z
+Last session: 2026-06-03T12:22:30.435Z
 Stopped at: context exhaustion at 82% (2026-05-31)
 Resume file: None

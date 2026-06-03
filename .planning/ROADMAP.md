@@ -34,7 +34,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 6: Tool-Call Path** - Canonical tool calls rendered per-surface, with `coerceToolCall` for plain-JSON-as-text (completed 2026-05-27)
 - [x] **Phase 6.1: Admin Observability UI** *(INSERTED)* - Dark-mode `/admin` page rendering `/health` + `/health/agents` with the OTTO brand palette; auto-refresh polling; nice-to-have live log tail (completed 2026-05-28)
 - [x] **Phase 8: Plugin Hook Chain** - `PreHook`/`PostHook` over canonical types, with RequestID, Auth, Logging registered (completed 2026-05-28)
-- [ ] **Phase 8.2: Ollama `format` Parity** *(INSERTED)* - LangFlow `format:"json"` / `format:<schema>` requests are steered via a canonical `PreHook` (GEN_RULES block) and the response is fence-stripped before render — Node-shim parity for the v1 replacement goal
+- [x] **Phase 8.2: Ollama `format` Parity** *(INSERTED)* - LangFlow `format:"json"` / `format:<schema>` requests are steered via a canonical `PreHook` (GEN_RULES block) and the response is fence-stripped before render — Node-shim parity for the v1 replacement goal (completed 2026-06-03)
 - [x] **Phase 9: Distribution** - Cross-compile Linux+Windows from macOS, full trust-gate CI matrix gating merges (completed 2026-05-28)
 
 ## Phase Details
@@ -415,7 +415,7 @@ Plans:
   7. Existing non-`format` requests are byte-identical at the canonical layer and the wire (no GEN_RULES, no fence-strip). Existing `format:"json"` tool-call coerce path (`engine.coerce.go`) is unchanged.
   8. Integration test: LangFlow-shape `/api/chat` request with `format:"json"`, streaming disabled, against a fake engine that returns fenced text, asserts the client receives unfenced JSON. Plus a happy-path test where the model returns clean JSON (no fence) — confirms the strip is a no-op.
 
-**Plans:** 0/1 plans complete
+**Plans:** 1/1 plans complete
 **Out of scope (locked):**
 
 - **Streaming + `format:"json"` fence-stripping.** The Node fix did not strip mid-stream either — fences only land mid-delta in rare cases and stripping them requires buffered re-emission that breaks the streaming contract for clients that don't care about JSON. Almost all LangFlow `format:"json"` flows are non-streaming. Tracked in Deferred Ideas; revisit if a streaming consumer reports the issue.
@@ -427,7 +427,7 @@ Plans:
 Plans:
 **Wave 1**
 
-- [ ] 08.2-01-PLAN.md — Single atomic slice: Ollama `format` wire-decode (`/api/chat` + `/api/generate`) populates `canonical.ChatRequest.Format`, new `internal/plugin/jsonformat/` package with `JSONFormatSteeringHook` (Pre) registered in `main.go` behind `JSON_FORMAT_STEERING_ENABLED` (default true), Ollama non-streaming render applies `stripFences` when `Format != nil`, integration test against fake-engine with LangFlow-shape `format:"json"` request.
+- [x] 08.2-01-PLAN.md — Single atomic slice: Ollama `format` wire-decode (`/api/chat` + `/api/generate`) populates `canonical.ChatRequest.Format`, new `internal/plugin/jsonformat/` package with `JSONFormatSteeringHook` (Pre) registered in `main.go` behind `JSON_FORMAT_STEERING_ENABLED` (default true), Ollama non-streaming render applies `stripFences` when `Format != nil`, integration test against fake-engine with LangFlow-shape `format:"json"` request.
 
 ### Phase 9: Distribution
 
@@ -461,5 +461,5 @@ Phases execute in numeric order: 1 → 1.1 → 2 → 3 → 3.1 → 4 → 5 → 6
 | 6. Tool-Call Path | 5/5 | Complete    | 2026-05-27 |
 | 6.1. Admin Observability UI (INSERTED) | 4/4 | Complete   | 2026-05-28 |
 | 8. Plugin Hook Chain | 5/5 | Complete   | 2026-05-28 |
-| 8.2. Ollama `format` Parity (INSERTED) | 0/1 | Pending | — |
+| 8.2. Ollama `format` Parity (INSERTED) | 1/1 | Complete   | 2026-06-03 |
 | 9. Distribution | n/a (via /gsd-quick 260528-d84) | Complete | 2026-05-28 |
