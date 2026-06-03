@@ -514,3 +514,153 @@ func TestIntegration_RealKiroCLI_SmokeTest(t *testing.T) {
 
 // Compile-time check: ensure we use the canonical package to keep the import honest.
 var _ = canonical.ChunkKindText
+
+// TestIntegration_Prompt_OverflowsBuffer_DoesNotDeadlock is the Phase 8.3 RED
+// gate: the load-bearing falsification surface that proves the chunk-buffer-
+// overflow deadlock in synchronous Prompt() is reproducible in CI.
+//
+// Setup: drive the fakeACPServer through Initialize → NewSession → start
+// Prompt on its own goroutine. Wait on fake.promptSeen so the client has
+// registered the active stream BEFORE we start emitting updates.
+//
+// LOAD-BEARING assertion (Phase 8.3 SC1 — non-blocking contract):
+// Once fake.promptSeen has fired, the client has accepted the JSON-RPC send.
+// Under the Phase 8.3 contract, Prompt() MUST return (*Stream, nil) within
+// 100ms of that send-accept moment. Under the CURRENT synchronous body
+// (internal/acp/client.go:726-803 as of this commit), Prompt() blocks on
+// `<-respCh` and never returns until fake.emitPromptResult arrives — so
+// the 100ms select arm MUST fire t.Fatal here.
+//
+// After the 100ms gate (post-GREEN), the test additionally proves the
+// overflow deadlock is removed:
+//   - Emit 128 session/update chunks BEFORE the prompt response.
+//   - Concurrently drain stream.Chunks on a sibling goroutine.
+//   - Emit the session/prompt response with stopReason="end_turn".
+//   - Assert: drained == 128, stream.Result() returns nil error,
+//     FinalResult.StopReason == StopEndTurn, FinalResult.ChunkCount == 128.
+//
+// goleak.VerifyNone(t) is asserted per-test (second-line defense alongside
+// the package-wide goleak.VerifyTestMain at internal/acp/testmain_test.go:18)
+// to catch any leak in the new awaitPromptResult goroutine.
+func TestIntegration_Prompt_OverflowsBuffer_DoesNotDeadlock(t *testing.T) {
+	fake := newFakeACPServer(t)
+	defer fake.close()
+
+	cfg := acp.Config{
+		Logger:       testutil.Logger(t),
+		Command:      "kiro-cli",
+		Args:         []string{"acp"},
+		PingInterval: 10 * time.Minute, // disable periodic ping noise
+	}
+
+	client := acp.NewWithConn(fake.clientRWC, cfg)
+	defer func() {
+		if err := client.Close(); err != nil {
+			t.Logf("client.Close (minor pipe-close error expected): %v", err)
+		}
+		goleak.VerifyNone(t)
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Initialize.
+	if err := client.Initialize(ctx); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	// NewSession.
+	sid, err := client.NewSession(ctx, "/tmp")
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	// Run Prompt on its own goroutine so the test goroutine can synchronously
+	// observe its return timing via promptCh.
+	blocks := []canonical.Block{
+		{Kind: canonical.BlockKindText, Text: &canonical.TextBlock{Content: "hi"}},
+	}
+	type promptOutcome struct {
+		stream *acp.Stream
+		err    error
+	}
+	promptCh := make(chan promptOutcome, 1)
+	go func() {
+		s, perr := client.Prompt(ctx, sid, blocks)
+		promptCh <- promptOutcome{stream: s, err: perr}
+	}()
+
+	// Wait for the fake to observe the prompt request — that's the moment
+	// c.send has accepted the payload and the Phase 8.3 contract's 100ms
+	// clock starts ticking.
+	select {
+	case <-fake.promptSeen:
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for fake.promptSeen")
+	}
+
+	// LOAD-BEARING assertion: against the current synchronous Prompt body,
+	// this t.Fatal MUST fire. Against the Phase 8.3 refactored body, the
+	// promptCh arm MUST fire within ~milliseconds.
+	var stream *acp.Stream
+	select {
+	case res := <-promptCh:
+		if res.err != nil {
+			t.Fatalf("Prompt: %v", res.err)
+		}
+		stream = res.stream
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("Prompt did not return within 100ms — non-blocking contract violated (Phase 8.3 deadlock-removal SC1)")
+	}
+
+	// Spawn a chunk drainer concurrent with the emission loop. Under the
+	// refactored code, all 128 chunks must land here without loss.
+	chunksDone := make(chan struct{})
+	var drained int
+	go func() {
+		defer close(chunksDone)
+		for range stream.Chunks {
+			drained++
+		}
+	}()
+
+	// Emit 128 cheap chunks BEFORE the response — comfortably above the
+	// 64-slot buffer in internal/acp/stream.go:newStream. Under the old
+	// synchronous Prompt, push() would block at slot 65 and cascade into
+	// the readLoop deadlock; under the new contract this drains continuously.
+	for i := 0; i < 128; i++ {
+		if err := fake.emitUpdate(sid, variantAgentMessageFlat); err != nil {
+			t.Fatalf("emitUpdate(%d): %v", i, err)
+		}
+	}
+
+	// Emit the session/prompt response (Phase 1.1 D-07: stopReason maps to
+	// canonical.StopEndTurn via parseStopReason).
+	if err := fake.emitPromptResult("end_turn"); err != nil {
+		t.Fatalf("emitPromptResult: %v", err)
+	}
+
+	// Wait for the drainer to exit (stream.close → chunks channel closed).
+	select {
+	case <-chunksDone:
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for chunks drainer to exit")
+	}
+
+	if drained != 128 {
+		t.Errorf("drained = %d, want 128", drained)
+	}
+	final, err := stream.Result()
+	if err != nil {
+		t.Fatalf("stream.Result: %v", err)
+	}
+	if final == nil {
+		t.Fatal("stream.Result returned nil FinalResult")
+	}
+	if final.StopReason != canonical.StopEndTurn {
+		t.Errorf("StopReason: got %v, want %v", final.StopReason, canonical.StopEndTurn)
+	}
+	if final.ChunkCount != 128 {
+		t.Errorf("FinalResult.ChunkCount: got %d, want 128", final.ChunkCount)
+	}
+}
