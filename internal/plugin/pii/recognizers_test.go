@@ -565,6 +565,19 @@ func TestUSAddressRecognizer_CapturedSpan(t *testing.T) {
 		{"apple-park-way", "Visit 1 Apple Park Way today.", "1 Apple Park Way"},
 		{"st-trailing-period", "Mail to 42 Elm St.", "42 Elm St."},
 		{"parkway-multi-word", "Office at 100 Beacon Hill Pkwy.", "100 Beacon Hill Pkwy."},
+
+		// 08.4-REVIEW WR-01: expand suffix vocabulary to include common
+		// USPS Publication 28 forms that the original 16-form list missed.
+		// Each fixture pins a real-world address shape that previously
+		// fell through the recognizer entirely.
+		{"trail-suffix", "Hike to 100 Forest Trail today.", "100 Forest Trail"},
+		{"loop-suffix", "Visit 200 Mountain Loop today.", "200 Mountain Loop"},
+		{"walk-suffix", "Visit 300 Riverside Walk today.", "300 Riverside Walk"},
+		{"run-suffix", "Visit 400 Deer Run today.", "400 Deer Run"},
+		{"crossing-suffix", "Visit 500 Oak Crossing today.", "500 Oak Crossing"},
+		{"plaza-suffix", "Visit 600 Civic Plaza today.", "600 Civic Plaza"},
+		{"alley-suffix", "Visit 700 Back Alley today.", "700 Back Alley"},
+		{"trail-abbrev", "Visit 100 Forest Trl today.", "100 Forest Trl"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

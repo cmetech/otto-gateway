@@ -205,8 +205,8 @@ var (
 
 	// usAddressRe — US street address: 1-6 digit house number + one or
 	// more TitleCase street-name words + street suffix from a controlled
-	// vocabulary (16 forms: full + USPS-standard abbreviation). Trailing
-	// `\.?` accepts the period after abbreviated forms ("Ave.").
+	// vocabulary drawn from USPS Publication 28. Trailing `\.?` accepts
+	// the period after abbreviated forms ("Ave.").
 	//
 	// AP-1 mitigation: a bare "<digits> <words>" without the suffix
 	// vocabulary would match phone-number-shaped strings, room numbers,
@@ -216,11 +216,23 @@ var (
 	// includes newlines, which would let multi-line text smuggle into a
 	// single address span (Pitfall 3). The Title-Case word class
 	// `[A-Z][A-Za-z]*` is letters-only, no digits / underscores.
+	//
+	// Suffix vocabulary (08.4-REVIEW WR-01 expansion from 16 -> 26
+	// forms): full + USPS-standard abbreviation pairs for the most
+	// common Pub-28 suffix types. Added in WR-01: Trail/Trl, Loop,
+	// Walk, Run, Crossing/Xing, Plaza/Plz, Alley/Aly. Not yet covered
+	// (warning, not blocker): numbered/ordinal street names ("42nd
+	// Street"), apostrophes / hyphens in street names ("St John's
+	// Way", "O'Hara Drive"). Documented limitation -- NER LOCATION is
+	// the intended catch-all for prose addresses; when NER is
+	// disabled, recall on these shapes is best-effort. See 08.4-REVIEW
+	// WR-01 for the full backlog.
 	usAddressRe = regexp.MustCompile(
 		`\b\d{1,6}[ \t]+[A-Z][A-Za-z]*(?:[ \t]+[A-Z][A-Za-z]*)*[ \t]+` +
 			`(?:St|Street|Ave|Avenue|Blvd|Boulevard|Rd|Road|Dr|Drive|Ln|Lane|` +
 			`Way|Pl|Place|Ct|Court|Pkwy|Parkway|Cir|Circle|Ter|Terrace|Sq|` +
-			`Square|Hwy|Highway)\b\.?`,
+			`Square|Hwy|Highway|Trail|Trl|Loop|Walk|Run|Crossing|Xing|` +
+			`Plaza|Plz|Alley|Aly)\b\.?`,
 	)
 )
 
