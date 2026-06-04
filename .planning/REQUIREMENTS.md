@@ -102,6 +102,10 @@ Requirements for initial release. Each maps to roadmap phases (see Traceability)
 - [x] **TRST-07**: `Example_` functions in `_test.go` document non-obvious functions (`coerceToolCall`, `pickCwd`, `buildAcpBlocks`); validated via `go test -run Example`. _(`Example_buildBlocks` reflects the post-rename function name.)_
 - [x] **TRST-08**: Pre-commit hooks installed (`gitleaks`, `golangci-lint`, `go mod tidy`, trailing-whitespace, etc.).
 
+### Test methodology — Smoke tests + operator verification
+
+- [ ] **TEST-01**: Operator smoke tests under `scripts/test-pii.*` MUST NOT depend on the LLM's willingness to echo / repeat / verbatim-reproduce test fixture data. The encrypt -> decrypt round-trip assertion uses a deterministic worker (default: `tests/e2e/cmd/fake-kiro-cli` swapped in via `KIRO_CMD`) so that future model-policy changes at `kiro-cli`'s upstream do not cause the smoke test to bitrot.
+
 ## v2 Requirements
 
 Deferred to future release. Tracked but not in current roadmap.
@@ -213,14 +217,15 @@ Populated by the roadmapper from `.planning/ROADMAP.md`. Updated as phases compl
 | TRST-06 | Phase 9 | Complete |
 | TRST-07 | Phase 9 | Complete |
 | TRST-08 | Phase 1 | Complete |
+| TEST-01 | Phase 08.3.2 | Pending |
 
 **Coverage:**
-- v1 requirements: 62 total
-- Mapped to phases: 62 ✓
+- v1 requirements: 63 total
+- Mapped to phases: 63 ✓
 - Unmapped: 0 ✓
 
-> Note: an earlier draft of this file listed "53 total" requirements; the actual count of REQ-IDs above is 62 (after the v1.5 close-out added PLUG-06 + OBSV-04 to the traceability table). Corrected in Phase 08.1 D-14.
+> Note: an earlier draft of this file listed "53 total" requirements; the actual count of REQ-IDs above is 62 (after the v1.5 close-out added PLUG-06 + OBSV-04 to the traceability table). Corrected in Phase 08.1 D-14. Bumped to 63 in Phase 08.3.2 with the addition of TEST-01.
 
 ---
 *Requirements defined: 2026-05-23*
-*Last updated: 2026-05-28 — Traceability refreshed in Phase 08.1 D-14; PLUG-06 + OBSV-04 added; all 62 v1 REQ-IDs mapped to phases 1–9.*
+*Last updated: 2026-06-03 — TEST-01 added in Phase 08.3.2 — smoke-test methodology requirement.*

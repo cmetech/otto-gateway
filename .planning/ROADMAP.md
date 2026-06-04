@@ -469,7 +469,7 @@ Plans:
 
 **Mode:** mvp
 **Depends on:** Phase 8.3 (deadlock-removal must be in place so the round-trip can complete at all)
-**Requirements:** TRST-01, TRST-02 (smoke-test reliability — verify against existing IDs during planning)
+**Requirements:** TEST-01 (introduced in this phase — smoke tests must not depend on LLM cooperation; see REQUIREMENTS.md ### Test methodology)
 **Success Criteria** (what must be TRUE):
 
   1. `scripts/test-pii.ps1 pii` returns exit code 0 against a `PII_REDACTION_MODE=encrypt` gateway with the round-trip decrypt assertions verified end-to-end across `/v1/messages`, `/v1/chat/completions`, `/api/chat`. The "no ciphertext tokens leaked" assertions (already passing in v1.9.3) continue to pass.
