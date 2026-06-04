@@ -540,6 +540,165 @@ func TestRecognizers_CompiledAtPackageInit_NoPerRequestCompile(t *testing.T) {
 	}
 }
 
+// TestUSAddressRecognizer_CapturedSpan — Phase 08.4 PII-01 (AP-5 mitigation).
+// Exact-string equality on FindString, mirroring TestUSPhoneRecognizer_CapturedSpan
+// at recognizers_test.go:233-271. The captured span MUST round-trip byte-for-byte
+// through encrypt -> decrypt; any drift (missing leading digit, wrong suffix
+// cut) is a fidelity bug, not cosmetic.
+func TestUSAddressRecognizer_CapturedSpan(t *testing.T) {
+	r := findRecognizer(t, "USAddress")
+	cases := []struct {
+		name        string
+		input       string
+		wantCapture string
+	}{
+		{"basic-street", "Visit 1111 Main Street today.", "1111 Main Street"},
+		{"avenue-abbrev", "Visit 1600 Pennsylvania Ave today.", "1600 Pennsylvania Ave"},
+		{"avenue-full", "Visit 1600 Pennsylvania Avenue today.", "1600 Pennsylvania Avenue"},
+		{"multi-word-name", "Visit 350 Fifth Avenue today.", "350 Fifth Avenue"},
+		{"apple-park-way", "Visit 1 Apple Park Way today.", "1 Apple Park Way"},
+		{"st-trailing-period", "Mail to 42 Elm St.", "42 Elm St."},
+		{"parkway-multi-word", "Office at 100 Beacon Hill Pkwy.", "100 Beacon Hill Pkwy."},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := r.Pattern.FindString(c.input)
+			if got != c.wantCapture {
+				t.Errorf("USAddress capture for input %q:\n  got:  %q\n  want: %q", c.input, got, c.wantCapture)
+			}
+		})
+	}
+}
+
+// TestUSAddressRecognizer_RejectsNonAddressShapes — AP-1 mitigation. Bare
+// `<digits> <words>` without a known street suffix must NOT match.
+func TestUSAddressRecognizer_RejectsNonAddressShapes(t *testing.T) {
+	r := findRecognizer(t, "USAddress")
+	cases := []struct {
+		name  string
+		input string
+	}{
+		{"no-street-suffix", "Visit 1111 Main today."},
+		{"no-house-number", "Visit Main Street today."},
+		{"unknown-suffix", "Visit 1111 Main Mall today."},
+		{"lowercase-name", "Visit 1111 main street today."},
+		{"multiline-name", "Visit 1111 Main\nStreet today."},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := r.Pattern.FindString(c.input)
+			if got != "" {
+				t.Errorf("USAddress should NOT have matched %q but captured %q", c.input, got)
+			}
+		})
+	}
+}
+
+// TestUSStateRecognizer_CapturedSpan — exact-span fixture. Per Pitfall 7,
+// the lead anchor (", " or "\n") is consumed by the match span — the resulting
+// `, [USState_1]` token preserves the comma boilerplate.
+func TestUSStateRecognizer_CapturedSpan(t *testing.T) {
+	r := findRecognizer(t, "USState")
+	cases := []struct {
+		name        string
+		input       string
+		wantCapture string
+	}{
+		{"tx-with-zip", "He lives at 100 Oak Ave, Austin, TX 27584.", ", TX "},
+		{"ma-with-zip", "He lives at 100 Oak Ave, Boston, MA 02101.", ", MA "},
+		{"hi-with-zip", "He lives at 100 Oak Ave, Honolulu, HI 96701.", ", HI "},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := r.Pattern.FindString(c.input)
+			if got != c.wantCapture {
+				t.Errorf("USState capture for input %q:\n  got:  %q\n  want: %q", c.input, got, c.wantCapture)
+			}
+		})
+	}
+}
+
+// TestUSStateRecognizer_RejectsEnglishWords — AP-2 mitigation. Two-letter
+// state codes that ARE English words (OR, IN, OK, HI, ME, ID) must NOT match
+// without preceding-comma / line-start context.
+func TestUSStateRecognizer_RejectsEnglishWords(t *testing.T) {
+	r := findRecognizer(t, "USState")
+	cases := []struct {
+		name  string
+		input string
+	}{
+		{"or-as-conjunction", "Should we use Plan A OR Plan B?"},
+		{"in-as-preposition", "She lives IN that house."},
+		{"hi-as-greeting", "Hi there, how are you?"},
+		{"ok-as-acknowledgment", "OK, that works for me."},
+		{"me-as-pronoun", "Send ME the report."},
+		{"id-as-shortened-word", "Can you ID this issue?"},
+		{"bare-tx-no-context", "TX is a state code but lacks context here."},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := r.Pattern.FindString(c.input)
+			if got != "" {
+				t.Errorf("USState should NOT have matched %q but captured %q", c.input, got)
+			}
+		})
+	}
+}
+
+// TestUSZIPRecognizer_CapturedSpan — exact-span fixture for the 5-digit base
+// and the ZIP+4 extension.
+func TestUSZIPRecognizer_CapturedSpan(t *testing.T) {
+	r := findRecognizer(t, "USZIP")
+	cases := []struct {
+		name        string
+		input       string
+		wantCapture string
+	}{
+		{"basic-5digit", "ZIP 27584", "27584"},
+		{"zip4-extension", "ZIP 20500-1234", "20500-1234"},
+		{"leading-zero", "ZIP 02101", "02101"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := r.Pattern.FindString(c.input)
+			if got != c.wantCapture {
+				t.Errorf("USZIP capture for input %q:\n  got:  %q\n  want: %q", c.input, got, c.wantCapture)
+			}
+		})
+	}
+}
+
+// TestUSZIPRecognizer_ValidatorRejectsAllSameDigit — AP-3 mitigation.
+// validateUSZIPRange rejects all-same-digit codes; only inspects the 5-digit
+// base when ZIP+4 is present.
+func TestUSZIPRecognizer_ValidatorRejectsAllSameDigit(t *testing.T) {
+	r := findRecognizer(t, "USZIP")
+	cases := []struct {
+		in           string
+		wantRegex    bool
+		wantValidate bool
+	}{
+		{"27584", true, true},
+		{"20500-1234", true, true},
+		{"00000", true, false},
+		{"11111", true, false},
+		{"99999", true, false},
+		{"55555", true, false},
+		{"1234", false, false}, // 4 digits — regex shape rejects
+	}
+	for _, c := range cases {
+		t.Run(c.in, func(t *testing.T) {
+			gotR, gotV := regexAndValidate(r, c.in)
+			if gotR != c.wantRegex {
+				t.Errorf("USZIP %q: regex matched=%v, want %v", c.in, gotR, c.wantRegex)
+			}
+			if gotR && gotV != c.wantValidate {
+				t.Errorf("USZIP %q: validator=%v, want %v", c.in, gotV, c.wantValidate)
+			}
+		})
+	}
+}
+
 // stripGoCommentsLocal is a local copy of the helper from the plugin
 // package's logging_test.go — keeping pii whitebox-tests self-contained
 // (whitebox package can't import the parent plugin package's test

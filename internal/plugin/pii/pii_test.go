@@ -1027,3 +1027,52 @@ func TestPIIRedactionHook_NER_PerEntityActions(t *testing.T) {
 		t.Errorf("expected [EMAIL replace-mode token; got %q", got)
 	}
 }
+
+// TestPIIRedactionHook_USAddressFullCoverage — Phase 08.4 PII-01 load-bearing
+// integration test. Drives the full hook with NER enabled against the canonical
+// address fixture and asserts:
+//   - USAddress fires on "1111 Main Street" (largest atomic span)
+//   - USState fires on ", TX" (lead-anchor consumes comma+space per Pitfall 7)
+//   - USZIP fires on "27584" (validator accepts; not all-same-digit)
+//   - LOCATION fires on "Austin" (NER, does not overlap any regex span)
+//   - PERSON is 0 — "Main Street" suppressed by USAddress regex span overlap
+//     at acceptNERSpans (pii.go:258-277). This is the 2026-06-04 splunk-box
+//     probe regression that Phase 08.4 closes.
+func TestPIIRedactionHook_USAddressFullCoverage(t *testing.T) {
+	hook := &PIIRedactionHook{
+		Recognizers: Recognizers,
+		Enabled:     true,
+		Mode:        "replace",
+		NER:         NewNEREngine(),
+	}
+	original := "Send a tech to 1111 Main Street, Austin, TX 27584 ASAP."
+	ctx, summary := withCtxSummary(t)
+	req := &canonical.ChatRequest{
+		Messages: []canonical.Message{userMessage(original)},
+	}
+	if _, err := hook.Before(ctx, req); err != nil {
+		t.Fatalf("Before: %v", err)
+	}
+	counts := summary.Counts()
+	if got := counts["USAddress"]; got != 1 {
+		t.Errorf("USAddress: got %d, want 1", got)
+	}
+	if got := counts["USState"]; got != 1 {
+		t.Errorf("USState: got %d, want 1", got)
+	}
+	if got := counts["USZIP"]; got != 1 {
+		t.Errorf("USZIP: got %d, want 1", got)
+	}
+	if got := counts["LOCATION"]; got != 1 {
+		t.Errorf("LOCATION (Austin): got %d, want 1", got)
+	}
+	// Critical: PERSON must be 0 — Main Street suppressed by USAddress
+	// overlap at acceptNERSpans (pii.go:258-277).
+	if got := counts["PERSON"]; got != 0 {
+		t.Errorf("PERSON should be 0 (Main Street suppressed by USAddress regex span); got %d", got)
+	}
+	got := req.Messages[0].Content[0].Text
+	if strings.Contains(got, "1111 Main Street") {
+		t.Errorf("plaintext street leaked through redact; got %q", got)
+	}
+}
