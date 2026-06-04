@@ -604,9 +604,14 @@ func TestUSStateRecognizer_CapturedSpan(t *testing.T) {
 		input       string
 		wantCapture string
 	}{
-		{"tx-with-zip", "He lives at 100 Oak Ave, Austin, TX 27584.", ", TX "},
-		{"ma-with-zip", "He lives at 100 Oak Ave, Boston, MA 02101.", ", MA "},
-		{"hi-with-zip", "He lives at 100 Oak Ave, Honolulu, HI 96701.", ", HI "},
+		// Trail anchor `\b` is zero-width and wins over the longer
+		// `\s+\d{5}` arm via RE2 leftmost-first alternation — the
+		// captured span ends at `\b`, NOT at the trailing space.
+		// Acceptable per Pitfall 7: the lead `, ` is consumed; ZIP
+		// is captured by USZIP separately on the next regex pass.
+		{"tx-with-zip", "He lives at 100 Oak Ave, Austin, TX 27584.", ", TX"},
+		{"ma-with-zip", "He lives at 100 Oak Ave, Boston, MA 02101.", ", MA"},
+		{"hi-with-zip", "He lives at 100 Oak Ave, Honolulu, HI 96701.", ", HI"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

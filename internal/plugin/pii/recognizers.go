@@ -143,6 +143,68 @@ var (
 	siteRe = regexp.MustCompile(
 		`\bsite[-_\s]?[A-Z0-9]{1,2}[A-Z0-9_\-]{1,12}\b` +
 			`|\b(?:ENB|BTS|NB|CELL|NODE|RAN|BSC|RNC|MSC|HLR|MME|SGW|PGW)[-_]?[A-Z0-9]{2,12}\b`)
+
+	// Phase 08.4 PII-01 — US-address coverage.
+	//
+	// usZIPRe — US ZIP code: 5-digit base, optional ZIP+4 extension.
+	// validateUSZIPRange rejects all-same-digit shapes (00000, 11111, …,
+	// 99999) which the permissive regex would otherwise accept. False-
+	// positive trade-off documented in 08.4-RESEARCH §Pitfall 2: a 5-digit
+	// order number gets encrypted on the way to kiro-cli and decrypted
+	// back unchanged on return; same trade-off IPv4 already accepts.
+	usZIPRe = regexp.MustCompile(`\b\d{5}(?:-\d{4})?\b`)
+
+	// usStateRe — US state / DC / territory two-letter code (50 + DC + 5
+	// = 56 codes). Context-anchored INSIDE the regex (no ContextKeywords —
+	// same idiom as coordinatesRe's [NS]/[EW] hemisphere anchor).
+	//
+	// Two alternation arms (AP-2 mitigation):
+	//   1. ", <STATE>" — comma-prefixed (after a city). Trail is `\b` /
+	//      `\s+\d{5}` / `.` / `,`. The leading ", " is consumed by the
+	//      match span — acceptable per Pitfall 7; comma is outside the
+	//      encrypted blob and round-trips byte-for-byte.
+	//   2. line-start `<STATE>\s+\d{5}` — at start-of-input or after a
+	//      newline, the state code MUST be followed by a ZIP. This
+	//      prevents English-word collisions ("OK, that works", "TX is
+	//      a state") from matching at line start.
+	//
+	// Without arm-2's strict ZIP requirement, every line-start "OK,"
+	// would tokenize as a USState (Pitfall 1).
+	//
+	// Alternation list MUST be kept in sync with USPS state-code
+	// assignments. As of 2026: 50 states + DC + AS + GU + MP + PR + VI.
+	usStateRe = regexp.MustCompile(
+		// Arm 1: comma-prefixed — captures ", <STATE>" + trail anchor.
+		`(?:,\s+` +
+			`(?:AL|AK|AZ|AR|CA|CO|CT|DE|DC|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|` +
+			`MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|` +
+			`SD|TN|TX|UT|VT|VA|WA|WV|WI|WY|AS|GU|MP|PR|VI)` +
+			`(?:\b|\s+\d{5}|\.|,))` +
+			// Arm 2: line-start — REQUIRES ZIP trail to mitigate AP-2.
+			`|(?:(?:^|\n)` +
+			`(?:AL|AK|AZ|AR|CA|CO|CT|DE|DC|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|` +
+			`MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|` +
+			`SD|TN|TX|UT|VT|VA|WA|WV|WI|WY|AS|GU|MP|PR|VI)` +
+			`\s+\d{5})`)
+
+	// usAddressRe — US street address: 1-6 digit house number + one or
+	// more TitleCase street-name words + street suffix from a controlled
+	// vocabulary (16 forms: full + USPS-standard abbreviation). Trailing
+	// `\.?` accepts the period after abbreviated forms ("Ave.").
+	//
+	// AP-1 mitigation: a bare "<digits> <words>" without the suffix
+	// vocabulary would match phone-number-shaped strings, room numbers,
+	// table cells. The suffix list is load-bearing.
+	//
+	// Whitespace between tokens is `[ \t]+` (NOT `\s+`) — RE2's `\s`
+	// includes newlines, which would let multi-line text smuggle into a
+	// single address span (Pitfall 3). The Title-Case word class
+	// `[A-Z][A-Za-z]*` is letters-only, no digits / underscores.
+	usAddressRe = regexp.MustCompile(
+		`\b\d{1,6}[ \t]+[A-Z][A-Za-z]*(?:[ \t]+[A-Z][A-Za-z]*)*[ \t]+` +
+			`(?:St|Street|Ave|Avenue|Blvd|Boulevard|Rd|Road|Dr|Drive|Ln|Lane|` +
+			`Way|Pl|Place|Ct|Court|Pkwy|Parkway|Cir|Circle|Ter|Terrace|Sq|` +
+			`Square|Hwy|Highway)\b\.?`)
 )
 
 // validateIPv4Octets splits the matched dotted-quad and confirms each of
@@ -204,6 +266,36 @@ func validateSSNRange(s string) bool {
 	return true
 }
 
+// validateUSZIPRange rejects obvious non-ZIP shapes the permissive
+// \b\d{5}(?:-\d{4})?\b regex accepts. Rules:
+//   - All-same-digit codes are rejected (00000, 11111, ..., 99999).
+//     These are not valid USPS ZIP assignments.
+//   - The validator inspects only the 5-digit base; the optional ZIP+4
+//     extension is stripped before checking.
+//   - We do NOT validate against the USPS first-digit region table
+//     (0 = Northeast, ..., 9 = West Coast / HI / AK) because new ZIPs
+//     are assigned occasionally and the table drifts. The regex is
+//     conservative enough at the shape level.
+//
+// Phase 08.4 PII-01.
+func validateUSZIPRange(s string) bool {
+	base := s
+	if dash := strings.IndexByte(s, '-'); dash > 0 {
+		base = s[:dash]
+	}
+	if len(base) != 5 {
+		return false
+	}
+	allSame := true
+	for i := 1; i < len(base); i++ {
+		if base[i] != base[0] {
+			allSame = false
+			break
+		}
+	}
+	return !allSame
+}
+
 // Recognizers is the canonical, registration-ordered registry of v1 PII
 // recognizers. Order matters: redact tokens appear with stable per-entity
 // counter suffixes, and operator-side filtering via EnabledEntities
@@ -252,6 +344,14 @@ var Recognizers = []Recognizer{
 			"location code", "enb", "bts", "ran", "network element", "ne id",
 		},
 	},
+	// Phase 08.4: US address coverage (USAddress, USState, USZIP).
+	// Order: largest span first (USAddress) → context-anchored alphabet
+	// alternation (USState) → 5-digit numeric (USZIP). First-recognizer-
+	// wins overlap arbitration (pii.go:227-233) gives the largest match
+	// priority on the rare overlap case. Closes PII-01.
+	{Name: "USAddress", Pattern: usAddressRe, Validate: nil},
+	{Name: "USState", Pattern: usStateRe, Validate: nil},
+	{Name: "USZIP", Pattern: usZIPRe, Validate: validateUSZIPRange},
 }
 
 // SourceAuditNames returns the Recognizers names in registration order.
