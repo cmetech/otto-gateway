@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Quick PII / streaming smoke test for OTTO Gateway (Windows).
 
@@ -308,24 +308,52 @@ function Invoke-Scenario-Wire {
 # Scenario: pii.
 # ---------------------------------------------------------------------------
 $script:PIIPrompt = @'
-Help me draft a short, polite reply email to a customer who wrote in
-about a connectivity problem.
+Please help me draft a brief on-call handover note.
 
-Customer details:
-- Email: corey@cmetech.io
-- Source IP they were connecting from: 192.168.1.42
+Customer profile:
+- Customer name: John Smith
+- City: Boston, Massachusetts
+- Email on file: corey@cmetech.io
 - Phone on file: (415) 555-2671
-- Card on file ending: 4111-1111-1111-1111
+- Office GPS: 42.3601 N, 71.0589 W
+- Affected source IPv4: 192.168.1.42
+- Affected source IPv6: 2001:db8::1
 
-Please address the email to the customer by their email address in the
-greeting, mention the source IP 192.168.1.42 in the body so they know
-we have the right ticket, confirm we are investigating, and keep it
-under five sentences. No need to reference the phone or the card on
-file.
+For account verification only (do not reference these in the handover):
+- SSN: 123-45-6789
+- Card on file: 4111-1111-1111-1111
+
+Write a short handover note for the on-call engineer that:
+1. Greets the on-call engineer.
+2. States the customer name (John Smith) and city (Boston, Massachusetts) so they know who is affected.
+3. Lists both the IPv4 (192.168.1.42) and IPv6 (2001:db8::1) source addresses so the on-call engineer can grep logs on either stack.
+4. Includes the office GPS 42.3601 N, 71.0589 W so the field team can route to the right office if a site visit is needed.
+5. Provides the email (corey@cmetech.io) and phone ((415) 555-2671) for direct callback.
+6. Ends with: "Customer is awaiting an update; please reach out directly."
+
+Keep the handover under 150 words. Do not reference the SSN or the
+card on file in your reply.
 '@
 
 # Items the response MUST contain for round-trip success.
-$script:PIIExpected = @('corey@cmetech.io', '192.168.1.42')
+# Mix of regex recognizers (Email, USPhone, COORDINATES, IPv4, IPv6) and
+# NER recognizers (PERSON via 'John Smith', LOCATION via 'Boston').
+# SSN + CreditCard are present in the prompt to exercise the redactor on
+# the encrypt side but are NOT asserted on the response side -- the prompt
+# explicitly tells the LLM not to repeat them, so the response should not
+# include them (verified instead by the "no ciphertext leak" assertion
+# below: if redaction missed them, the raw plaintext would appear and
+# the ciphertext-leak check would not fire, but the cipher-side test
+# already proves redaction works via TestPIIRedactionHook_NEREncryptRoundTrip).
+$script:PIIExpected = @(
+    'John Smith',          # NER PERSON
+    'Boston',              # NER LOCATION (substring of 'Boston, Massachusetts' -- robust)
+    'corey@cmetech.io',    # Email
+    '(415) 555-2671',      # USPhone (prompt asks for this exact format)
+    '42.3601',             # COORDINATES (substring of '42.3601 N, 71.0589 W' -- robust to formatting drift)
+    '192.168.1.42',        # IPv4
+    '2001:db8::1'          # IPv6
+)
 
 function Get-ResponseText {
     param([string]$SurfaceName, [string]$Body)
@@ -396,7 +424,12 @@ function Invoke-PIIProbe {
     $text = Get-ResponseText -SurfaceName $SurfaceName -Body $r.Content
     Write-Verb "extracted client-visible text: $text"
 
-    if ($text -match '\[PII:[A-Za-z]+:[A-Za-z0-9_-]+\]') {
+    # Entity group is [A-Za-z0-9]+ (NOT just letters) so this catches
+    # IPv4 / IPv6 / IMEI / IMSI / MSISDN tokens -- entity names that
+    # contain digits. Matches the gateway-side decryptTokenRe at
+    # internal/plugin/pii/pii.go which had the same letters-only bug
+    # silently dropping these tokens; both fixed in v1.9.5.
+    if ($text -match '\[PII:[A-Za-z0-9]+:[A-Za-z0-9_-]+\]') {
         Write-Fail "ciphertext leak: response contains a [PII:Entity:base64url] token (decrypt failed)"
         Write-Info "  leaking text: $($text.Substring(0, [math]::Min(120, $text.Length)))"
         return
