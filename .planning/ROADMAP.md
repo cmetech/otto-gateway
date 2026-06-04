@@ -489,11 +489,13 @@ Plans:
 - **City-name disambiguation.** The existing LOCATION NER will still catch most cities. This phase does NOT add a city-name regex recognizer (false-positive risk too high — `Boston` as a surname, etc.).
 - **PERSON recognizer tuning.** The PERSON false positives on street names are silenced by overlap arbitration, not by changing the prose model. Tuning the model itself is a separate concern.
 
-**Plans:** 0 plans
+**Plans:** 1 plan
 **Source:** Discovered during 2026-06-04 v1.9.7 splunk-box probe of the prose-v2 NER's full-address coverage. Probe documented in conversation; key findings: prose catches city names only, misses street + state abbreviations + ZIP, emits PERSON false positives on street names. Cross-reference: the probe was performed via an ad-hoc `TestProbe_LOCATION_AddressCoverage` test against `internal/plugin/pii.NewNEREngine().Detect(...)` and discarded after observation.
 
 Plans:
-- [ ] TBD (run /gsd-plan-phase 8.4 to break down)
+**Wave 1**
+
+- [ ] 08.4-01-PLAN.md — Single atomic vertical slice (RED → GREEN → REFACTOR + Task H HUMAN-UAT): introduce PII-01 in REQUIREMENTS.md (new ### PII — Recognizer coverage section), add usAddressRe/usStateRe/usZIPRe regex literals + validateUSZIPRange validator + three Recognizer entries in registration order USAddress → USState → USZIP, three TestU*Recognizer_CapturedSpan tests using exact-string equality (AP-5), reject-invalid tests for AP-1/AP-2/AP-3, integration test TestPIIRedactionHook_USAddressFullCoverage asserting summary.Counts[PERSON]==0 on the canonical address fixture (NER overlap arbitration claim), TestRecognizers_RegistryShape wantNames 13 → 16, piiAllowedEntities map keys for USAddress/USState/USZIP, smoke fixture extension in scripts/test-pii.ps1 + scripts/test-pii.sh (PS1/SH parity in one commit), operator HUMAN-UAT on Windows + POSIX.
 
 ### Phase 08.3.2: PII Smoke Test Methodology Fix (INSERTED, REVERTED 2026-06-04)
 
