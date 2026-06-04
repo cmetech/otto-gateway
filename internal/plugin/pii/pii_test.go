@@ -1032,14 +1032,20 @@ func TestPIIRedactionHook_NER_PerEntityActions(t *testing.T) {
 // integration test. Drives the full hook with NER enabled against the canonical
 // address fixture and asserts:
 //   - USAddress fires on "1111 Main Street" (largest atomic span)
-//   - USState fires on ", TX 27584" — post 08.4-REVIEW CR-01 fix, arm 1's
-//     trail no longer accepts bare \b; the longest-arm `[ \t]+\d{5}` wins
-//     leftmost-first alternation, so the USState span now extends through
-//     the trailing ZIP run.
-//   - USZIP is 0 — the ZIP is now subsumed by USState's span; the overlap
+//   - USState fires on ", TX 27584" — post 08.4-REVIEW iter-2 CR-NEW-01,
+//     usStateRe arm 1 REQUIRES the structural ZIP trail `[ \t]+\d{5}`
+//     (the prior `\.|,` punctuation alternates were dropped because they
+//     collided with English-word prose). The captured span includes the
+//     trailing ZIP run.
+//   - USZIP is 0 — the ZIP is subsumed by USState's span; the overlap
 //     arbiter at pii.go:227-233 (first-recognizer-wins, USState is registered
 //     before USZIP) drops the USZIP candidate. The ZIP is still redacted
-//     (it lives inside the USState replace-token).
+//     (it lives inside the USState replace-token). This is the deliberate
+//     intent now that arm 1 requires ZIP -- see 08.4-REVIEW iter-2
+//     WR-NEW-03 accepted-deviation note. Operators auditing gross ZIP
+//     volume must sum USAddress + USState + USZIP counts; per-entity
+//     ZIP routing (PII_ENTITY_ACTIONS=USZIP:encrypt) applies only to
+//     standalone ZIPs.
 //   - LOCATION fires on "Austin" (NER, does not overlap any regex span)
 //   - PERSON is 0 — "Main Street" suppressed by USAddress regex span overlap
 //     at acceptNERSpans (pii.go:258-277). This is the 2026-06-04 splunk-box
@@ -1066,11 +1072,13 @@ func TestPIIRedactionHook_USAddressFullCoverage(t *testing.T) {
 	if got := counts["USState"]; got != 1 {
 		t.Errorf("USState: got %d, want 1", got)
 	}
-	// 08.4-REVIEW CR-01: USState span now subsumes the ZIP, so USZIP is
-	// expected to be 0 on this canonical fixture. The ZIP is still removed
-	// from plaintext via USState's replace token.
+	// 08.4-REVIEW iter-2 WR-NEW-03 (accepted deviation): USState arm 1
+	// REQUIRES the ZIP trail post CR-NEW-01, so the ZIP is always
+	// inside the USState span on the canonical "City, ST ZIP" shape.
+	// USZIP=0 on this fixture is the deliberate intent. The ZIP is
+	// still removed from plaintext via USState's replace token.
 	if got := counts["USZIP"]; got != 0 {
-		t.Errorf("USZIP: got %d, want 0 (subsumed by USState span after CR-01 fix)", got)
+		t.Errorf("USZIP: got %d, want 0 (subsumed by USState span -- WR-NEW-03 accepted deviation)", got)
 	}
 	if got := counts["LOCATION"]; got != 1 {
 		t.Errorf("LOCATION (Austin): got %d, want 1", got)
