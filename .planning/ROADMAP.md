@@ -488,21 +488,21 @@ Plans:
 - **Building a generic LLM-cooperation-free test framework.** This phase fixes the PII smoke test specifically. A broader test-framework change is a milestone-level decision.
 - **Investigating other scenarios in `test-pii.ps1`** (modes other than `pii`, e.g., `wire-shape`, `health`). Only the `pii` round-trip scenario is in scope.
 
-**Plans:** 3 plans
+**Plans:** 3/3 plans complete
 **Source:** Discovered during v1.9.3 Phase 8.3 HUMAN-UAT operator verification on 2026-06-03 (Windows splunk box). Confirmed all Phase 8.3 success criteria pass; only the LLM-cooperation-dependent script assertions fail. Cross-reference: `08.3-HUMAN-UAT.md` `## Gaps` section.
 
 Plans:
 **Wave 1**
 
-- [ ] 08.3.2-01-PLAN.md — Foundation: introduce TEST-01 in REQUIREMENTS.md (smoke tests must not depend on LLM cooperation), correct ROADMAP Requirements typo (TRST-01/02 → TEST-01), add Makefile build-fake-kiro target producing bin/fake-kiro-cli[.exe]
+- [x] 08.3.2-01-PLAN.md — Foundation: introduce TEST-01 in REQUIREMENTS.md (smoke tests must not depend on LLM cooperation), correct ROADMAP Requirements typo (TRST-01/02 → TEST-01), add Makefile build-fake-kiro target producing bin/fake-kiro-cli[.exe]
 
 **Wave 2** *(blocked on Wave 1 — depends on TEST-01 existing + fake binary buildable)*
 
-- [ ] 08.3.2-02-PLAN.md — PowerShell vertical slice: add -Mode {live,fake} parameter (default fake) to scripts/test-pii.ps1, build no-BOM UTF-8 notifications NDJSON, precondition-check gateway KiroCmd points at fake, deprecation banner on -Mode live; Windows operator HUMAN-UAT proves 0 check(s) failed
+- [x] 08.3.2-02-PLAN.md — PowerShell vertical slice: add -Mode {live,fake} parameter (default fake) to scripts/test-pii.ps1, build no-BOM UTF-8 notifications NDJSON, precondition-check gateway KiroCmd points at fake, deprecation banner on -Mode live; Windows operator HUMAN-UAT proves 0 check(s) failed
 
 **Wave 3** *(blocked on Wave 2 — POSIX sibling must mirror PS surface to prevent f7ccd40-style drift)*
 
-- [ ] 08.3.2-03-PLAN.md — POSIX sibling: mirror --mode flag in scripts/test-pii.sh, append Phase 08.3.2 follow-up to 08.3-HUMAN-UAT.md, flip TEST-01 to Complete in REQUIREMENTS.md after Windows + POSIX HUMAN-UAT sign-off
+- [x] 08.3.2-03-PLAN.md — POSIX sibling: mirror --mode flag in scripts/test-pii.sh, append Phase 08.3.2 follow-up to 08.3-HUMAN-UAT.md, flip TEST-01 to Complete in REQUIREMENTS.md after Windows + POSIX HUMAN-UAT sign-off (completed 2026-06-04)
 
 ### Phase 08.3.1: ACP Per-Session Stream Demux (INSERTED)
 
