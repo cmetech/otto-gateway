@@ -2,16 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.5
 milestone_name: audit WARNINGs
-status: ready_to_plan
-last_updated: 2026-06-04T12:37:57.755Z
-last_activity: 2026-06-04 -- Phase 08.4-01 source delivery complete; awaiting Task H operator HUMAN-UAT
+status: Awaiting next milestone
+last_updated: "2026-06-04T14:14:21.169Z"
+last_activity: 2026-06-04 — Milestone v1.5 completed and archived
 progress:
   total_phases: 7
-  completed_phases: 4
+  completed_phases: 5
   total_plans: 11
-  completed_plans: 60
-  percent: 57
-stopped_at: Phase 08.4 complete (1/1) — ready to discuss Phase 9
+  completed_plans: 11
+  percent: 71
 ---
 
 # Project State
@@ -25,13 +24,10 @@ See: .planning/PROJECT.md (updated 2026-05-23)
 
 ## Current Position
 
-Phase: 9
-Plan: Not started
-Status: Ready to plan
-Next: Operator runs scripts/test-pii.ps1 pii on Windows splunk box + scripts/test-pii.sh pii on POSIX box against v1.10.0 binary; on dual-PASS, mark PII-01 Complete in REQUIREMENTS Traceability.
-Last activity: 2026-06-04
-
-Progress: [██████████] 100%
+Phase: Milestone v1.5 complete
+Plan: —
+Status: Awaiting next milestone
+Last activity: 2026-06-04 — Milestone v1.5 completed and archived
 
 ## Performance Metrics
 
@@ -150,3 +146,7 @@ Items acknowledged and carried forward from previous milestone close:
 Last session: 2026-06-04T12:00:00.000Z
 Stopped at: Phase 08.4-01 source delivery complete (RED/GREEN/REFACTOR + gofumpt chore); awaiting Task H operator HUMAN-UAT on Windows splunk box + POSIX dev box
 Resume file: .planning/phases/08.4-us-address-pii-coverage/08.4-01-SUMMARY.md
+
+## Operator Next Steps
+
+- Start the next milestone with /gsd-new-milestone
