@@ -562,6 +562,52 @@ func TestAfter_RoundTripDecrypt(t *testing.T) {
 	}
 }
 
+// TestAfter_RoundTripDecrypt_EntityNamesWithDigits is the RED test for the
+// bug surfaced on a v1.9.4 Windows operator run on 2026-06-03: IPv4 / IPv6
+// cipher tokens passed through the After-hook decrypt step UNCHANGED because
+// decryptTokenRe's entity capture group was `[A-Za-z]+` (letters only),
+// while IPv4 / IPv6 contain digits. Email round-trip kept working — masking
+// the bug from TestAfter_RoundTripDecrypt above.
+//
+// Reproduces the live failure: the encrypt-then-After cycle on an IPv4 token
+// returns the raw cipher (`[PII:IPv4:...]`) instead of the plaintext IP.
+func TestAfter_RoundTripDecrypt_EntityNamesWithDigits(t *testing.T) {
+	k, err := DeriveKey("test")
+	if err != nil {
+		t.Fatalf("DeriveKey: %v", err)
+	}
+	h := &PIIRedactionHook{Enabled: true, Mode: "encrypt", EncryptKey: k}
+	cases := []struct {
+		entity    string
+		plaintext string
+	}{
+		{"IPv4", "192.168.1.42"},
+		{"IPv6", "2001:db8::1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.entity, func(t *testing.T) {
+			tok, err := EncryptValue(k, tc.entity, tc.plaintext)
+			if err != nil {
+				t.Fatalf("EncryptValue(%s): %v", tc.entity, err)
+			}
+			resp := &canonical.ChatResponse{
+				Message: canonical.Message{
+					Content: []canonical.ContentPart{
+						{Kind: canonical.ContentKindText, Text: "source " + tok + " is investigating."},
+					},
+				},
+			}
+			if err := h.After(context.Background(), &canonical.ChatRequest{}, resp); err != nil {
+				t.Fatalf("After(%s): %v", tc.entity, err)
+			}
+			want := "source " + tc.plaintext + " is investigating."
+			if got := resp.Message.Content[0].Text; got != want {
+				t.Errorf("After decrypt %s: got %q, want %q (cipher token left in place — decryptTokenRe entity group does not match %s)", tc.entity, got, want, tc.entity)
+			}
+		})
+	}
+}
+
 func TestAfter_MangledTokenLeftInPlace(t *testing.T) {
 	k, err := DeriveKey("test")
 	if err != nil {
