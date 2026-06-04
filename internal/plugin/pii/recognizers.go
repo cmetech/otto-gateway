@@ -142,7 +142,8 @@ var (
 	// head this admits short codes like "site-A12" too.
 	siteRe = regexp.MustCompile(
 		`\bsite[-_\s]?[A-Z0-9]{1,2}[A-Z0-9_\-]{1,12}\b` +
-			`|\b(?:ENB|BTS|NB|CELL|NODE|RAN|BSC|RNC|MSC|HLR|MME|SGW|PGW)[-_]?[A-Z0-9]{2,12}\b`)
+			`|\b(?:ENB|BTS|NB|CELL|NODE|RAN|BSC|RNC|MSC|HLR|MME|SGW|PGW)[-_]?[A-Z0-9]{2,12}\b`,
+	)
 
 	// Phase 08.4 PII-01 — US-address coverage.
 	//
@@ -185,7 +186,8 @@ var (
 			`(?:AL|AK|AZ|AR|CA|CO|CT|DE|DC|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|` +
 			`MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|` +
 			`SD|TN|TX|UT|VT|VA|WA|WV|WI|WY|AS|GU|MP|PR|VI)` +
-			`\s+\d{5})`)
+			`\s+\d{5})`,
+	)
 
 	// usAddressRe — US street address: 1-6 digit house number + one or
 	// more TitleCase street-name words + street suffix from a controlled
@@ -204,7 +206,8 @@ var (
 		`\b\d{1,6}[ \t]+[A-Z][A-Za-z]*(?:[ \t]+[A-Z][A-Za-z]*)*[ \t]+` +
 			`(?:St|Street|Ave|Avenue|Blvd|Boulevard|Rd|Road|Dr|Drive|Ln|Lane|` +
 			`Way|Pl|Place|Ct|Court|Pkwy|Parkway|Cir|Circle|Ter|Terrace|Sq|` +
-			`Square|Hwy|Highway)\b\.?`)
+			`Square|Hwy|Highway)\b\.?`,
+	)
 )
 
 // validateIPv4Octets splits the matched dotted-quad and confirms each of
@@ -326,8 +329,8 @@ var Recognizers = []Recognizer{
 		ContextKeywords: []string{"imsi", "international mobile subscriber identity"},
 	},
 	{
-		Name:    "MSISDN",
-		Pattern: msisdnRe,
+		Name:     "MSISDN",
+		Pattern:  msisdnRe,
 		Validate: nil,
 		ContextKeywords: []string{
 			"msisdn", "subscriber number", "calling number", "called number",

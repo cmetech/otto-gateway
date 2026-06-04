@@ -731,6 +731,11 @@ var piiAllowedEntities = map[string]struct{}{
 	"MAC_ADDRESS": {},
 	"COORDINATES": {},
 	"SITE":        {},
+	// Phase 08.4: US address coverage (PII-01). Order matches Recognizers
+	// slice in internal/plugin/pii/recognizers.go (USAddress -> USState -> USZIP).
+	"USAddress": {},
+	"USState":   {},
+	"USZIP":     {},
 	// NER-emitted entity names (Task 11). Allowed in PII_ENABLED_ENTITIES
 	// and PII_ENTITY_ACTIONS regardless of PII_NER_ENABLED; when NER is
 	// disabled these names are dormant (no recognizer wired). When NER

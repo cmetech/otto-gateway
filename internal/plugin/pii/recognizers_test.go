@@ -413,8 +413,8 @@ func TestMACAddressRecognizer(t *testing.T) {
 		{"00:1B:44:11:3A:B7", true},
 		{"00-1B-44-11-3A-B7", true},
 		{"aa:bb:cc:dd:ee:ff", true},
-		{"00:1B:44:11:3A", false},    // 5 pairs
-		{"GG:1B:44:11:3A:B7", false}, // invalid hex
+		{"00:1B:44:11:3A", false},                 // 5 pairs
+		{"GG:1B:44:11:3A:B7", false},              // invalid hex
 		{"mac=00:1B:44:11:3A:B7,then=more", true}, // embedded MAC ok
 		{"::::::::::::", false},                   // colons but no hex
 	}
@@ -439,7 +439,7 @@ func TestCoordinatesRecognizer(t *testing.T) {
 		{"37.7749 N, 122.4194 W", true},
 		{"37.7749°N, 122.4194°W", true},
 		{"37.7749 S 122.4194 E", true},
-		{"37 N 122 W", false},          // no decimal portion
+		{"37 N 122 W", false},         // no decimal portion
 		{"37.7749, -122.4194", false}, // no hemisphere markers
 	}
 	for _, c := range cases {
@@ -487,7 +487,13 @@ func TestSITERecognizer(t *testing.T) {
 // TestRecognizers_RegistryShape asserts the registry has the expected
 // names in registration order, each with a non-nil Pattern.
 func TestRecognizers_RegistryShape(t *testing.T) {
-	wantNames := []string{"Email", "IPv4", "IPv6", "SSN", "CreditCard", "USPhone", "SIP_URI", "IMEI", "IMSI", "MSISDN", "MAC_ADDRESS", "COORDINATES", "SITE"}
+	wantNames := []string{
+		"Email", "IPv4", "IPv6", "SSN", "CreditCard", "USPhone",
+		"SIP_URI", "IMEI", "IMSI", "MSISDN", "MAC_ADDRESS",
+		"COORDINATES", "SITE",
+		// Phase 08.4: US address coverage (PII-01).
+		"USAddress", "USState", "USZIP",
+	}
 	if got := len(Recognizers); got != len(wantNames) {
 		t.Fatalf("len(Recognizers): got %d, want %d", got, len(wantNames))
 	}

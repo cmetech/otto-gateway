@@ -102,6 +102,10 @@ Requirements for initial release. Each maps to roadmap phases (see Traceability)
 - [x] **TRST-07**: `Example_` functions in `_test.go` document non-obvious functions (`coerceToolCall`, `pickCwd`, `buildAcpBlocks`); validated via `go test -run Example`. _(`Example_buildBlocks` reflects the post-rename function name.)_
 - [x] **TRST-08**: Pre-commit hooks installed (`gitleaks`, `golangci-lint`, `go mod tidy`, trailing-whitespace, etc.).
 
+### PII — Recognizer coverage
+
+- [ ] **PII-01**: `PIIRedactionHook` ships US-address coverage as three additional recognizers in the canonical registry: `USAddress` (house number + TitleCase street-name words + 16-form USPS-suffix vocabulary), `USState` (context-anchored two-letter state/DC/territory code — 56 codes total), `USZIP` (5-digit base + optional ZIP+4 extension, all-same-digit codes rejected by `validateUSZIPRange`). Registration order is `USAddress → USState → USZIP` so the first-recognizer-wins overlap arbitration at `internal/plugin/pii/pii.go:227-233` favors the largest atomic span. All three recognizers participate in encrypt-mode round-trip via the existing `[PII:<Entity>:base64url]` token (entity-name group `[A-Za-z0-9]+` already alphanumeric-tolerant — Pitfall 6). With `PII_NER_ENABLED=true`, NER PERSON candidates that overlap a `USAddress` span are dropped at `internal/plugin/pii/pii.go:258-277` — closes the 2026-06-04 splunk-box probe false positives on "Main Street" / "Pennsylvania Avenue" / "Apple Park".
+
 ## v2 Requirements
 
 Deferred to future release. Tracked but not in current roadmap.
@@ -194,6 +198,7 @@ Populated by the roadmapper from `.planning/ROADMAP.md`. Updated as phases compl
 | PLUG-04 | Phase 8 | Complete |
 | PLUG-05 | Phase 8 | Complete |
 | PLUG-06 | Phase 8 | Complete |
+| PII-01 | Phase 08.4 | Complete |
 | AUTH-01 | Phase 2 | Complete |
 | AUTH-02 | Phase 2 | Complete |
 | AUTH-03 | Phase 2 | Complete |
@@ -215,11 +220,11 @@ Populated by the roadmapper from `.planning/ROADMAP.md`. Updated as phases compl
 | TRST-08 | Phase 1 | Complete |
 
 **Coverage:**
-- v1 requirements: 62 total
-- Mapped to phases: 63 ✓
+- v1 requirements: 63 total
+- Mapped to phases: 64 ✓
 - Unmapped: 0 ✓
 
-> Note: an earlier draft of this file listed "53 total" requirements; the actual count of REQ-IDs above is 62 (after the v1.5 close-out added PLUG-06 + OBSV-04 to the traceability table). Corrected in Phase 08.1 D-14. (TEST-01 was briefly added in Phase 08.3.2 and reverted on 2026-06-04 when that phase was reverted in favor of a prompt-only fix; count returned to 62.)
+> Note: an earlier draft of this file listed "53 total" requirements; the actual count of REQ-IDs above is 62 (after the v1.5 close-out added PLUG-06 + OBSV-04 to the traceability table). Corrected in Phase 08.1 D-14. (TEST-01 was briefly added in Phase 08.3.2 and reverted on 2026-06-04 when that phase was reverted in favor of a prompt-only fix; count returned to 62.) Phase 08.4 adds PII-01 (US address coverage), count now 63.
 
 ---
 *Requirements defined: 2026-05-23*

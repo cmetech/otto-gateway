@@ -313,6 +313,7 @@ Please help me draft a brief on-call handover note.
 Customer profile:
 - Customer name: John Smith
 - City: Boston, Massachusetts
+- Site address: 1111 Main Street, Austin, TX 27584
 - Email on file: corey@cmetech.io
 - Phone on file: (415) 555-2671
 - Office GPS: 42.3601 N, 71.0589 W
@@ -325,7 +326,7 @@ For account verification only (do not reference these in the handover):
 
 Write a short handover note for the on-call engineer that:
 1. Greets the on-call engineer.
-2. States the customer name (John Smith) and city (Boston, Massachusetts) so they know who is affected.
+2. States the customer name (John Smith), city (Boston, Massachusetts), AND on-site address (1111 Main Street, Austin, TX 27584) so the on-call engineer knows who is affected AND where to dispatch a tech.
 3. Lists both the IPv4 (192.168.1.42) and IPv6 (2001:db8::1) source addresses so the on-call engineer can grep logs on either stack.
 4. Includes the office GPS 42.3601 N, 71.0589 W so the field team can route to the right office if a site visit is needed.
 5. Provides the email (corey@cmetech.io) and phone ((415) 555-2671) for direct callback.
@@ -352,7 +353,11 @@ $script:PIIExpected = @(
     '(415) 555-2671',      # USPhone (prompt asks for this exact format)
     '42.3601',             # COORDINATES (substring of '42.3601 N, 71.0589 W' -- robust to formatting drift)
     '192.168.1.42',        # IPv4
-    '2001:db8::1'          # IPv6
+    '2001:db8::1',         # IPv6
+    # Phase 08.4 PII-01: US address coverage.
+    '1111 Main Street',    # USAddress -- exact captured span
+    'TX',                  # USState -- needle on raw code (recognizer match span includes leading ", ")
+    '27584'                # USZIP -- validator accepts non-all-same-digit
 )
 
 function Get-ResponseText {
