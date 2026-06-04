@@ -36,6 +36,8 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 8: Plugin Hook Chain** - `PreHook`/`PostHook` over canonical types, with RequestID, Auth, Logging registered (completed 2026-05-28)
 - [x] **Phase 8.2: Ollama `format` Parity** *(INSERTED)* - LangFlow `format:"json"` / `format:<schema>` requests are steered via a canonical `PreHook` (GEN_RULES block) and the response is fence-stripped before render — Node-shim parity for the v1 replacement goal (completed 2026-06-03)
 - [x] **Phase 8.3: ACP Prompt() Non-Blocking Refactor** *(INSERTED)* - `acp.Client.Prompt()` blocks until the final `session/prompt` response arrives, but `engine.Run` calls it synchronously and the 64-slot chunk buffer overflows on any non-trivial response — gateway deadlocks with worker still streaming. Refactor `Prompt()` to return the `*Stream` as soon as the request is accepted; move final-response handling into a goroutine that finalizes via `stream.close()`. `Stream.Result()` becomes the new sync point. (completed 2026-06-03)
+- [~] **Phase 08.3.1: ACP Per-Session Stream Demux** *(INSERTED, DEFERRED TO v1.6)* — Replace single-slot `c.activeStream` with per-sessionID map (closes WR-04 cross-session leak race). Not exploitable under v1's POOL_SIZE=4 model (each `acp.Client` bound to one worker slot; concurrent prompts cannot share a Client). Deferred to v1.6 multi-tenant concurrency hardening per `v1.5-MILESTONE-AUDIT.md` open decision (deferred 2026-06-04).
+- [x] **Phase 8.4: US Address PII Coverage** *(INSERTED)* - Three regex recognizers (USAddress, USState, USZIP) plus validateUSZIPRange registered ahead of NER so the overlap arbiter at `internal/plugin/pii/pii.go:258-277` silences PERSON false positives on street names. Closes the 2026-06-04 splunk-box probe regression. New requirement PII-01 (REQUIREMENTS.md v1 count 62 → 63). Two documented accepted_deviations (USState-subsumes-USZIP; AP-2 English+5-digit ambiguity). v1.10.0 released; HUMAN-UAT item 1 PASS on splunk box (33/33 across 3 surfaces). (completed 2026-06-04)
 - [x] **Phase 9: Distribution** - Cross-compile Linux+Windows from macOS, full trust-gate CI matrix gating merges (completed 2026-05-28)
 
 ## Phase Details
@@ -546,7 +548,9 @@ Plans:
 
 - [x] 08.3.2-03-PLAN.md — POSIX sibling: mirror --mode flag in scripts/test-pii.sh, append Phase 08.3.2 follow-up to 08.3-HUMAN-UAT.md, flip TEST-01 to Complete in REQUIREMENTS.md after Windows + POSIX HUMAN-UAT sign-off (completed 2026-06-04)
 
-### Phase 08.3.1: ACP Per-Session Stream Demux (INSERTED)
+### Phase 08.3.1: ACP Per-Session Stream Demux (INSERTED, DEFERRED TO v1.6)
+
+**Disposition:** Deferred to v1.6 on 2026-06-04 per `v1.5-MILESTONE-AUDIT.md` open decision. Not exploitable under v1's POOL_SIZE=4 architecture (each `acp.Client` bound to one worker slot; `Prompt(sessionID, …)` is serialized per slot; the WR-04 race requires one Client serving two concurrent prompts with different sessionIDs, which the pool model prevents). v1's CLAUDE.md scope is single-tenant per Client instance; multi-tenant gateway is out of v1 scope. Re-evaluate in v1.6 as part of multi-tenant concurrency hardening (recommended to bundle with go.mod 1.24 bump + tree-wide gofumpt cleanup as the v1.6 first phase).
 
 **Goal:** Replace the single-slot `c.activeStream *Stream` in `internal/acp/client.go:262` with a per-session map keyed by `sessionID`, and route every `session/update` notification by inspecting the wire frame's `params.sessionId` field in `handleNotification` (`client.go:909`) instead of pushing to whichever stream is currently in the slot. Closes the WR-04 race surfaced by the Phase 8.3 code review (`08.3-REVIEW.md`): a late `session/update` for a cancelled session can land on the *next* prompt's stream when the same `Client` is reused across prompts, causing silent cross-session content leakage in a multi-tenant LLM gateway. The misroute is silent (no log line fires because `activeStream` is non-nil at handler time) and can also re-open a narrower version of the Phase 8.3 deadlock if the stale chunk fills the new stream's 64-slot buffer before its consumer attaches, blocking `readLoop` from parsing the new prompt's response frame.
 
@@ -569,11 +573,11 @@ Plans:
 - **A wire-level `session_id` sanity check on the response frame itself.** The dispatcher routes responses by JSON-RPC `id`, which is independent of `sessionID`; correlating the two is a defense-in-depth layer that doesn't belong in this phase.
 - **The `_ = ctx` dead-weight at `client.go:407`** (`IN-02` from Phase 8.3 review) — a one-line cleanup unrelated to the demux refactor; track separately or fold into the same commit if trivial.
 
-**Plans:** 0 plans
-**Source:** WR-04 from `08.3-REVIEW.md` (commit `0af613e`), deferred by Phase 8.3 code-review-fix as out-of-scope (`08.3-REVIEW-FIX.md`, commit `1e65e56`).
+**Plans:** 0 plans (deferred to v1.6)
+**Source:** WR-04 from `08.3-REVIEW.md` (commit `0af613e`), deferred by Phase 8.3 code-review-fix as out-of-scope (`08.3-REVIEW-FIX.md`, commit `1e65e56`). Carried forward into v1.6 backlog 2026-06-04.
 
 Plans:
-- [ ] TBD (run /gsd-plan-phase 08.3.1 to break down)
+- [~] Deferred to v1.6 — multi-tenant concurrency hardening (see Disposition above)
 
 ### Phase 9: Distribution
 
