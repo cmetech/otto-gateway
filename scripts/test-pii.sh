@@ -1,17 +1,17 @@
 #!/bin/sh
-# scripts/test-pii.sh — quick PII / streaming smoke test for OTTO Gateway.
+# scripts/test-pii.sh -- quick PII / streaming smoke test for OTTO Gateway.
 #
 # Three scenarios. Default runs all three.
 #
-#   diag  — print the gateway's PII posture from /health/hooks + /admin/about.
+#   diag  -- print the gateway's PII posture from /health/hooks + /admin/about.
 #           No round-trip; useful for "what mode is this install in?"
-#   wire  — for each enabled surface, send a 'say hi' request with
+#   wire  -- for each enabled surface, send a 'say hi' request with
 #           stream=true AND stream=false and assert the right Content-Type
 #           comes back. The v1.9.0 regression check lives here: streaming
 #           requests under PII_REDACTION_MODE=encrypt must yield
 #           text/event-stream (Anthropic/OpenAI) or application/x-ndjson
 #           (Ollama), NOT application/json.
-#   pii   — send a PII-rich request to a single surface, capture the
+#   pii   -- send a PII-rich request to a single surface, capture the
 #           response, and verify each PII value round-tripped back to
 #           plaintext. Proves the encrypt Pre-hook + decrypt Post-hook
 #           pair is working end-to-end.
@@ -122,10 +122,10 @@ if ! curl -fsS "$BASE/health" >/dev/null 2>&1; then
 fi
 
 # ---------------------------------------------------------------------------
-# Scenario: diag — print PII posture from /health/hooks (no round-trip).
+# Scenario: diag -- print PII posture from /health/hooks (no round-trip).
 # ---------------------------------------------------------------------------
 scenario_diag() {
-    section "Diagnostic — PII posture at $BASE"
+    section "Diagnostic -- PII posture at $BASE"
     body="$TMPDIR_/hooks.json"
     if ! curl_auth GET "$BASE/health/hooks" -o "$body"; then
         fail "/health/hooks did not return 200"
@@ -145,7 +145,7 @@ scenario_diag() {
     if [ "$names" = "$expected" ]; then
         ok "hook chain matches expected default (5 hooks, registration order)"
     else
-        warn "hook chain differs from default — expected: $expected"
+        warn "hook chain differs from default -- expected: $expected"
     fi
 
     if [ "$HAS_JQ" -eq 1 ]; then
@@ -158,7 +158,7 @@ scenario_diag() {
         info "PIIRedactionHook.decrypt_active = $decrypt"
         info "PIIRedactionHook.entities       = ${entities:-(all)}"
     else
-        warn "jq not installed — skipping per-field diagnostics"
+        warn "jq not installed -- skipping per-field diagnostics"
         info "install jq for richer diag output, or:"
         info "  curl -sf $BASE/health/hooks"
     fi
@@ -196,8 +196,8 @@ probe_wire() {
         return
     fi
     case "$ct" in
-        ${want_stream_ct}*) ok "stream=true → Content-Type: $ct" ;;
-        *) fail "stream=true → Content-Type: $ct (want prefix $want_stream_ct)" ;;
+        ${want_stream_ct}*) ok "stream=true -> Content-Type: $ct" ;;
+        *) fail "stream=true -> Content-Type: $ct (want prefix $want_stream_ct)" ;;
     esac
 
     # stream=false variant.
@@ -220,13 +220,13 @@ probe_wire() {
         return
     fi
     case "$ct2" in
-        ${want_nonstream_ct}*) ok "stream=false → Content-Type: $ct2" ;;
-        *) fail "stream=false → Content-Type: $ct2 (want prefix $want_nonstream_ct)" ;;
+        ${want_nonstream_ct}*) ok "stream=false -> Content-Type: $ct2" ;;
+        *) fail "stream=false -> Content-Type: $ct2 (want prefix $want_nonstream_ct)" ;;
     esac
 }
 
 scenario_wire() {
-    section "Wire shape — Content-Type per surface, stream toggle"
+    section "Wire shape -- Content-Type per surface, stream toggle"
     msg='{"model":"auto","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}'
 
     if [ "$SURFACE" = "all" ] || [ "$SURFACE" = "anthropic" ]; then
@@ -245,7 +245,7 @@ scenario_wire() {
 }
 
 # ---------------------------------------------------------------------------
-# Scenario: pii — send the PII-record prompt, verify decrypt round-trip.
+# Scenario: pii -- send the PII-record prompt, verify decrypt round-trip.
 # ---------------------------------------------------------------------------
 PII_PROMPT='Please help me draft a brief on-call handover note.\n\nCustomer profile:\n- Customer name: John Smith\n- City: Boston, Massachusetts\n- Site address: 1111 Main Street, Austin, TX 27584\n- Email on file: corey@cmetech.io\n- Phone on file: (415) 555-2671\n- Office GPS: 42.3601 N, 71.0589 W\n- Affected source IPv4: 192.168.1.42\n- Affected source IPv6: 2001:db8::1\n\nFor account verification only (do not reference these in the handover):\n- SSN: 123-45-6789\n- Card on file: 4111-1111-1111-1111\n\nWrite a short handover note for the on-call engineer that:\n1. Greets the on-call engineer.\n2. States the customer name (John Smith), city (Boston, Massachusetts), AND on-site address (1111 Main Street, Austin, TX 27584) so the on-call engineer knows who is affected AND where to dispatch a tech.\n3. Lists both the IPv4 (192.168.1.42) and IPv6 (2001:db8::1) source addresses so the on-call engineer can grep logs on either stack.\n4. Includes the office GPS 42.3601 N, 71.0589 W so the field team can route to the right office if a site visit is needed.\n5. Provides the email (corey@cmetech.io) and phone ((415) 555-2671) for direct callback.\n6. Ends with: \"Customer is awaiting an update; please reach out directly.\"\n\nKeep the handover under 150 words. Do not reference the SSN or the card on file in your reply.'
 
@@ -255,7 +255,7 @@ PII_EXPECT_NAME="John Smith"           # NER PERSON
 PII_EXPECT_CITY="Boston"               # NER LOCATION (substring of 'Boston, Massachusetts')
 PII_EXPECT_EMAIL="corey@cmetech.io"    # Email recognizer
 PII_EXPECT_PHONE="(415) 555-2671"      # USPhone recognizer
-PII_EXPECT_COORDS="42.3601"            # COORDINATES recognizer (substring — robust to formatting drift)
+PII_EXPECT_COORDS="42.3601"            # COORDINATES recognizer (substring -- robust to formatting drift)
 PII_EXPECT_IPV4="192.168.1.42"         # IPv4 recognizer
 PII_EXPECT_IPV6="2001:db8::1"          # IPv6 recognizer
 # Phase 08.4 PII-01: US address coverage.
@@ -264,7 +264,7 @@ PII_EXPECT_STATE="TX"                  # USState
 PII_EXPECT_ZIP="27584"                 # USZIP
 
 extract_response_text() {
-    # extract_response_text SURFACE BODY_FILE → stdout: plain text the client sees
+    # extract_response_text SURFACE BODY_FILE -> stdout: plain text the client sees
     s="$1"; f="$2"
     case "$s" in
         anthropic)
@@ -318,10 +318,10 @@ pii_probe() {
     text=$(extract_response_text "$s" "$body")
     verbose "extracted client-visible text: $text"
 
-    # Check that ciphertext tokens are NOT in the response — if they are,
+    # Check that ciphertext tokens are NOT in the response -- if they are,
     # decrypt failed and we have a real bug.
     # Entity group [A-Za-z0-9]+ (NOT just letters) catches IPv4 / IPv6 /
-    # IMEI / IMSI / MSISDN tokens — entity names that contain digits.
+    # IMEI / IMSI / MSISDN tokens -- entity names that contain digits.
     # Matches the gateway-side decryptTokenRe at internal/plugin/pii/pii.go
     # which had the same letters-only bug silently dropping these tokens;
     # both fixed in v1.9.5.
@@ -333,7 +333,7 @@ pii_probe() {
     ok "no ciphertext tokens in response (decrypt did not leak)"
 
     # Check each expected plaintext PII value appears in the response.
-    # 7 entity types — NER PERSON + NER LOCATION + 5 regex recognizers.
+    # 7 entity types -- NER PERSON + NER LOCATION + 5 regex recognizers.
     # SSN + CreditCard are NOT asserted (prompt instructs LLM not to echo
     # them; redactor coverage is verified via the cipher-leak check above
     # and via Go-side TestPIIRedactionHook_NEREncryptRoundTrip).
@@ -351,12 +351,12 @@ pii_probe() {
     done
 
     if [ -n "$missing" ]; then
-        warn "missing values may indicate the LLM did not echo them — try -v"
+        warn "missing values may indicate the LLM did not echo them -- try -v"
     fi
 }
 
 scenario_pii() {
-    section "PII round-trip — encrypt → worker → decrypt → client"
+    section "PII round-trip -- encrypt -> worker -> decrypt -> client"
     payload=$(printf '{"model":"auto","max_tokens":512,"messages":[{"role":"user","content":"%s"}],"stream":true}' "$PII_PROMPT")
 
     if [ "$SURFACE" = "all" ] || [ "$SURFACE" = "anthropic" ]; then
