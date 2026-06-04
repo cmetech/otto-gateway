@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.5
 milestone_name: audit WARNINGs
 status: planning
-last_updated: "2026-06-04T00:00:52.433Z"
+last_updated: "2026-06-04T00:15:35.303Z"
 last_activity: 2026-06-03
 progress:
-  total_phases: 5
+  total_phases: 6
   completed_phases: 3
   total_plans: 7
   completed_plans: 7
-  percent: 60
+  percent: 50
 ---
 
 # Project State
@@ -72,6 +72,7 @@ Progress: [██████████] 100%
 - Phase 8.1 inserted after Phase 8: Close gap: INTEG-01 streaming-mode PreHook short-circuit + v1.5 audit WARNINGs (URGENT)
 - Phase 8.3 inserted after Phase 8.2: ACP Prompt() Non-Blocking Refactor — fix chunk-buffer-overflow deadlock in synchronous Prompt() (Windows v1.9.2 PII smoke-test regression) (URGENT)
 - Phase 08.3.1 inserted after Phase 8.3: ACP Per-Session Stream Demux — close WR-04 cross-session chunk-leak race from Phase 8.3 code review (URGENT)
+- Phase 08.3.2 inserted after Phase 8.3: PII Smoke Test Methodology Fix — decouple round-trip verification from LLM cooperation (Claude refuses PII echo in v1.9.3 live test) (URGENT)
 
 ### Decisions
 

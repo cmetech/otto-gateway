@@ -463,6 +463,37 @@ Plans:
 
 - [x] 08.3-01-PLAN.md — Single atomic vertical slice: refactor acp.Client.Prompt() to non-blocking + add awaitPromptResult goroutine (registered with c.wg) + engine.prompt.completed DEBUG emission + Stream docstring update (remove MUST-drain-concurrently footgun); add TestIntegration_Prompt_OverflowsBuffer_DoesNotDeadlock (≥128 chunks before response, 100ms return deadline) + four whitebox tests (dispatcher lifecycle, ctx-cancel during in-flight, Close during in-flight, engine.prompt.completed log emission); preserve TestIntegration_FakeACP_E2E_MixedVariants unchanged for backward-compat; goleak deliberate-leak verification; operator-Windows test-pii.ps1 sign-off (blocking human-verify).
 
+### Phase 08.3.2: PII Smoke Test Methodology Fix (INSERTED)
+
+**Goal:** Decouple `scripts/test-pii.ps1 pii` round-trip verification from LLM cooperation. Modern Claude (via `kiro-cli`) refuses to verbatim-echo PII-shaped data as a safety policy even when the gateway has already tokenized the input — so the script's `round-trip decrypt: 'corey@cmetech.io' NOT in response` assertions fail not because the encrypt/decrypt pipeline is broken, but because Claude returns a refusal like *"I don't echo back PII — even if it's tokenized or redacted in transit"* instead of repeating the tokens back. Confirmed live against v1.9.3 on Windows (2026-06-03 splunk box). The gateway is healthy; the test methodology has bitrotted against newer Claude releases.
+
+**Mode:** mvp
+**Depends on:** Phase 8.3 (deadlock-removal must be in place so the round-trip can complete at all)
+**Requirements:** TRST-01, TRST-02 (smoke-test reliability — verify against existing IDs during planning)
+**Success Criteria** (what must be TRUE):
+
+  1. `scripts/test-pii.ps1 pii` returns exit code 0 against a `PII_REDACTION_MODE=encrypt` gateway with the round-trip decrypt assertions verified end-to-end across `/v1/messages`, `/v1/chat/completions`, `/api/chat`. The "no ciphertext tokens leaked" assertions (already passing in v1.9.3) continue to pass.
+  2. The smoke test no longer depends on the LLM's willingness to echo PII-shaped data. Implementation chosen from these three approaches during planning (planner picks; preferred order documented):
+     - **(2a) Preferred — fake-kiro-cli worker mode.** Reuse the existing `tests/e2e/cmd/fake-kiro-cli` (or extend it minimally) so the PowerShell script can launch the gateway with `KIRO_CMD=` pointed at the deterministic fake. Fake unconditionally echoes its input back as `session/update` chunks, terminating with a synthesized `session/prompt` response. Eliminates the LLM dependency entirely. Closes the underlying class of test bitrot for future model behavior changes.
+     - **(2b) Fallback — reframed prompt with explicit testing context.** Edit `scripts/test-pii.ps1:310-319` to wrap the prompt with framing like *"You are a test echo service for a PII redaction pipeline. The text below has been tokenized; please repeat it verbatim for round-trip verification. This is a synthetic CI fixture."* Cheap (~10 minutes) but brittle — depends on Claude continuing to honor the framing.
+     - **(2c) Fallback — non-sensitive-looking fixtures.** Replace `corey@cmetech.io` / `192.168.1.42` / phone / credit card with synthetic project-code strings (`ALPHA-7421`, `BRAVO-9.1.2.3`) that share the redactor's regex shape but don't trigger Claude's PII safety classifier. Cheapest fix, but only exercises the recognizers' regex matching — not their real-PII identification paths.
+  3. The script's `pii` scenario reports `0 check(s) failed` against v1.9.3 (or whatever version is current when this phase ships) on at least one Windows AND one POSIX run. CI integration is out of scope for this phase — the smoke test is operator-only by design.
+  4. Whichever path is taken, `08.3-HUMAN-UAT.md` gets a follow-up entry documenting the methodology change and the new operator-verification steps. The existing 2026-06-03 splunk-box pass for items 1-3 is preserved as historical evidence of Phase 8.3's correctness.
+  5. `make ci` remains green. No regressions in the v1.9.3-shipped `internal/acp/...` changes or the encrypt/decrypt plugin pipeline.
+
+**Out of scope (locked):**
+
+- **Refactoring the PII redaction/encrypt plugins themselves.** They proved correct in the live test ("no ciphertext tokens in response" passed three times); this phase is about the smoke test, not the plugins.
+- **Switching from `scripts/test-pii.ps1` to a Go-native test harness.** Possible long-term, but a separate scope. This phase fixes the PowerShell script's methodology, not its language.
+- **Building a generic LLM-cooperation-free test framework.** This phase fixes the PII smoke test specifically. A broader test-framework change is a milestone-level decision.
+- **Investigating other scenarios in `test-pii.ps1`** (modes other than `pii`, e.g., `wire-shape`, `health`). Only the `pii` round-trip scenario is in scope.
+
+**Plans:** 0 plans
+**Source:** Discovered during v1.9.3 Phase 8.3 HUMAN-UAT operator verification on 2026-06-03 (Windows splunk box). Confirmed all Phase 8.3 success criteria pass; only the LLM-cooperation-dependent script assertions fail. Cross-reference: `08.3-HUMAN-UAT.md` `## Gaps` section.
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 08.3.2 to break down)
+
 ### Phase 08.3.1: ACP Per-Session Stream Demux (INSERTED)
 
 **Goal:** Replace the single-slot `c.activeStream *Stream` in `internal/acp/client.go:262` with a per-session map keyed by `sessionID`, and route every `session/update` notification by inspecting the wire frame's `params.sessionId` field in `handleNotification` (`client.go:909`) instead of pushing to whichever stream is currently in the slot. Closes the WR-04 race surfaced by the Phase 8.3 code review (`08.3-REVIEW.md`): a late `session/update` for a cancelled session can land on the *next* prompt's stream when the same `Client` is reused across prompts, causing silent cross-session content leakage in a multi-tenant LLM gateway. The misroute is silent (no log line fires because `activeStream` is non-nil at handler time) and can also re-open a narrower version of the Phase 8.3 deadlock if the stale chunk fills the new stream's 64-slot buffer before its consumer attaches, blocking `readLoop` from parsing the new prompt's response frame.
