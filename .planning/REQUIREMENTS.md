@@ -217,7 +217,7 @@ Populated by the roadmapper from `.planning/ROADMAP.md`. Updated as phases compl
 | TRST-06 | Phase 9 | Complete |
 | TRST-07 | Phase 9 | Complete |
 | TRST-08 | Phase 1 | Complete |
-| TEST-01 | Phase 08.3.2 | Pending |
+| TEST-01 | Phase 08.3.2 | Pending (operator UAT — Windows + POSIX) |
 
 **Coverage:**
 - v1 requirements: 63 total
