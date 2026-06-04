@@ -314,17 +314,23 @@ func TestLoad_EncryptKeyBootValidation(t *testing.T) {
 	}
 }
 
-// TestLoad_PIINEREnabled_Default — unset PII_NER_ENABLED → true
-// (secure-by-default: prose-based PERSON/LOCATION detection is on out
-// of the box; operators who want to skip the bundled NER model load
-// must explicitly set PII_NER_ENABLED=false).
+// TestLoad_PIINEREnabled_Default — unset PII_NER_ENABLED → false
+// (changed 2026-06-04 — v1.9.8). The prose-v2 small NER model proved
+// too weak for production address coverage: per the 2026-06-04 splunk-box
+// probe it catches popular city names but emits PERSON false positives
+// on street names ("Main Street" → PERSON, "Pennsylvania Avenue" →
+// PERSON, "Apple Park" → PERSON). Default flipped to off; operators
+// can opt in via PII_NER_ENABLED=true. The bundled prose weights still
+// ship in the binary; only the boot-time enable-by-default changed.
+// Phase 8.4 adds proper USAddress + USZIP + USState regex recognizers
+// that supersede NER for address text.
 func TestLoad_PIINEREnabled_Default(t *testing.T) {
 	cfg, err := config.Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if !cfg.PIINEREnabled {
-		t.Errorf("PIINEREnabled default: got false, want true (secure-by-default)")
+	if cfg.PIINEREnabled {
+		t.Errorf("PIINEREnabled default: got true, want false (NER opt-in; prose-v2 too weak — see Phase 8.4 in ROADMAP)")
 	}
 }
 

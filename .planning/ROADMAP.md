@@ -463,6 +463,38 @@ Plans:
 
 - [x] 08.3-01-PLAN.md — Single atomic vertical slice: refactor acp.Client.Prompt() to non-blocking + add awaitPromptResult goroutine (registered with c.wg) + engine.prompt.completed DEBUG emission + Stream docstring update (remove MUST-drain-concurrently footgun); add TestIntegration_Prompt_OverflowsBuffer_DoesNotDeadlock (≥128 chunks before response, 100ms return deadline) + four whitebox tests (dispatcher lifecycle, ctx-cancel during in-flight, Close during in-flight, engine.prompt.completed log emission); preserve TestIntegration_FakeACP_E2E_MixedVariants unchanged for backward-compat; goleak deliberate-leak verification; operator-Windows test-pii.ps1 sign-off (blocking human-verify).
 
+### Phase 8.4: US Address PII Coverage (INSERTED)
+
+**Goal:** Add regex-based US-address coverage to the PII redactor so encrypt-mode tokenizes street addresses, state codes, and ZIP codes end-to-end. Surfaced by the 2026-06-04 splunk-box probe against v1.9.7 of the prose-v2 NER: the current LOCATION recognizer catches popular city names (Austin, Boston, Cupertino, Washington) but misses state abbreviations (TX, CA, DC), ZIP codes (27584, 20500), street numbers (1111, 1600), and street names entirely — AND emits harmful false positives where street names get tagged as PERSON ("Main Street" → PERSON, "Pennsylvania Avenue" → PERSON, "Apple Park" → PERSON) which would be encrypted as someone's name on round-trip. For a PHI/PII gateway, partial-address coverage with PERSON false positives is worse than no coverage at all. This phase adds dedicated regex recognizers that take precedence over NER per the existing overlap arbitration at `pii.go:277` ("Skip NER candidates that overlap any regex span"), eliminating both the gap and the false-positive class in one stroke.
+
+**Mode:** mvp
+**Depends on:** Phase 8 (PII redactor architecture + ApplyMode pipeline), Phase 8.3 (concurrency-correctness baseline)
+**Requirements:** New requirement to be introduced — provisional ID `PII-08` or similar (planner picks during planning; the existing TRST-* and TEST-* neighborhoods don't fit). The new requirement is "US address PII (street, state, ZIP) is captured and tokenized in encrypt mode with byte-for-byte round-trip fidelity."
+**Success Criteria** (what must be TRUE):
+
+  1. New `USZIP` recognizer regex `\b\d{5}(?:-\d{4})?\b` plus a context guard (e.g., preceded by `, ` after a known state code or city, OR validator that rejects obvious non-ZIPs like 00000, 99999) tokenizes both 5-digit and ZIP+4 forms. Round-trip byte-for-byte across all formats (`27584`, `20500-1234`).
+  2. New `USState` recognizer regex with alternation of all 50 USPS two-letter codes + DC + territories (`AL|AK|AZ|...|WY|DC|AS|GU|MP|PR|VI`), anchored to the `, ST` context after a city or after a comma+space to prevent mid-sentence matches against common abbreviations (`OR`, `IN`, `OK`, `HI`). Round-trip byte-for-byte.
+  3. New `USAddress` recognizer regex of shape `\d+\s+[A-Z][\w\s]+?\s+(?:St|Street|Ave|Avenue|Blvd|Boulevard|Rd|Road|Dr|Drive|Ln|Lane|Way|Pl|Place|Ct|Court|Pkwy|Parkway|Cir|Circle|Ter|Terrace)\b` with a street-suffix vocabulary. Catches the common `<number> <name> <suffix>` pattern. Round-trip byte-for-byte.
+  4. The three new regex recognizers run **before** the NER stage so they win the overlap arbitration at `pii.go:277` — the previously-observed false positives `Main Street → PERSON`, `Pennsylvania Avenue → PERSON`, `Apple Park → PERSON` are silenced (the address regex's span covers those tokens, so the NER candidates are dropped).
+  5. New `TestUSZIPRecognizer_CapturedSpan`, `TestUSStateRecognizer_CapturedSpan`, `TestUSAddressRecognizer_CapturedSpan` follow the FindString-based span-assertion pattern established by v1.9.7's `TestUSPhoneRecognizer_CapturedSpan` (assert exact captured spans, NOT just match-yes/no). Plus an integration test against a realistic address fixture like `1111 Main Street, Austin, TX 27584` that verifies all four recognizers fire and no PERSON false positive survives.
+  6. `scripts/test-pii.ps1` and `scripts/test-pii.sh` are updated with an address-bearing fixture and assertions for the captured spans. The operator HUMAN-UAT proves on a Windows box that `1111 Main Street, Austin, TX 27584` round-trips byte-for-byte through encrypt mode.
+  7. `make ci` is green (gofumpt → vet → build → golangci-lint → govulncheck → `go test -race ./...`). `goleak.VerifyTestMain` continues clean.
+  8. The v1.5 milestone REQUIREMENTS.md gains the new requirement under a clear category; coverage count is updated; Traceability table includes the new entry.
+
+**Out of scope (locked):**
+
+- **Replacing prose v2 with a larger / cgo-bound NER model.** Phase 9 (Distribution) locks in the no-cgo, single-binary constraint. A transformer-based NER would in principle do all this in one pass but break that property. Not worth it.
+- **International addresses.** US/NANP only this phase. International (UK postcodes, Canadian postal codes, EU street formats) is a separate scope.
+- **Apartment / suite / PO Box parsing.** Common shapes (`Apt 5`, `Suite 200`, `PO Box 1234`) often appear adjacent to addresses but have their own recognizer requirements. Defer to a follow-up phase if needed.
+- **City-name disambiguation.** The existing LOCATION NER will still catch most cities. This phase does NOT add a city-name regex recognizer (false-positive risk too high — `Boston` as a surname, etc.).
+- **PERSON recognizer tuning.** The PERSON false positives on street names are silenced by overlap arbitration, not by changing the prose model. Tuning the model itself is a separate concern.
+
+**Plans:** 0 plans
+**Source:** Discovered during 2026-06-04 v1.9.7 splunk-box probe of the prose-v2 NER's full-address coverage. Probe documented in conversation; key findings: prose catches city names only, misses street + state abbreviations + ZIP, emits PERSON false positives on street names. Cross-reference: the probe was performed via an ad-hoc `TestProbe_LOCATION_AddressCoverage` test against `internal/plugin/pii.NewNEREngine().Detect(...)` and discarded after observation.
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 8.4 to break down)
+
 ### Phase 08.3.2: PII Smoke Test Methodology Fix (INSERTED, REVERTED 2026-06-04)
 
 > **STATUS: REVERTED.** All source changes from this phase (the `-Mode {live,fake}` switch on `test-pii.ps1` / `test-pii.sh`, the `make build-fake-kiro` Makefile target, the `TEST-01` requirement, the `08.3-HUMAN-UAT.md` follow-up section, and the BLOCKED-gate machinery) were reverted on 2026-06-04 in favor of a simpler prompt-only fix. Operator pushback: the fake-kiro-cli approach over-engineered the problem and reduced test fidelity by replacing the production path (gateway + kiro-cli + Claude) with a deterministic stub. The actual production-path test value comes from exercising Claude itself.

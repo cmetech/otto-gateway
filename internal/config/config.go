@@ -334,12 +334,21 @@ func Load() (Config, error) {
 		errs = append(errs, err)
 	}
 
-	// Default true: prose-based NER (PERSON / LOCATION) is on out of
-	// the box. Operators who do not want the prose model loaded must
-	// set PII_NER_ENABLED=false. The first Detect call lazy-loads the
-	// bundled averaged-perceptron weights — no network, no model
-	// download.
-	piiNEREnabled, err := getEnvBool("PII_NER_ENABLED", true)
+	// Default FALSE (changed 2026-06-04 — v1.9.8). The prose-v2 small NER
+	// model proved too weak for production address coverage: per the
+	// 2026-06-04 splunk-box probe it catches popular city names but
+	// emits PERSON false positives on street names ("Main Street",
+	// "Pennsylvania Avenue", "Apple Park" all tagged PERSON) which
+	// would be tokenized as someone's name on round-trip. Operators
+	// who explicitly want PERSON / LOCATION NER for non-address text
+	// must opt in via PII_NER_ENABLED=true. The bundled prose weights
+	// still ship in the binary; no network, no model download — only
+	// the boot-time enable-by-default is flipped. Phase 8.4 adds proper
+	// USAddress + USZIP + USState regex recognizers that supersede the
+	// NER for address text; LOCATION via NER may be re-enabled on a
+	// per-deployment basis after that lands. See Phase 8.4 entry in
+	// ROADMAP for the followup rationale.
+	piiNEREnabled, err := getEnvBool("PII_NER_ENABLED", false)
 	if err != nil {
 		errs = append(errs, err)
 	}
