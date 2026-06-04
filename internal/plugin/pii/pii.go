@@ -331,7 +331,12 @@ func (h *PIIRedactionHook) logger() *slog.Logger {
 // "[PII:<entity>:<base64url-payload>]". Group 1 = entity, Group 2 =
 // payload. base64url alphabet is [A-Za-z0-9_-], unpadded — see
 // EncryptValue (encrypt.go). Pre-compiled at package init.
-var decryptTokenRe = regexp.MustCompile(`\[PII:([A-Za-z]+):([A-Za-z0-9_-]+)\]`)
+//
+// The entity group accepts [A-Za-z0-9]+ because recognizer names include
+// digit-bearing forms (IPv4, IPv6 — see recognizers.go:201,202). A prior
+// letters-only group silently left those cipher tokens in the response
+// (regression surfaced by a 2026-06-03 Windows operator run on v1.9.4).
+var decryptTokenRe = regexp.MustCompile(`\[PII:([A-Za-z0-9]+):([A-Za-z0-9_-]+)\]`)
 
 // Before is the PreHook entry. Algorithm:
 //
