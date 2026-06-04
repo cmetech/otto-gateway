@@ -211,6 +211,90 @@ func TestUSPhoneRecognizer(t *testing.T) {
 	}
 }
 
+// TestUSPhoneRecognizer_CapturedSpan is the RED test for the lossy-formatting
+// bug surfaced on a 2026-06-03 Windows operator run on v1.9.6: the smoke
+// script's $script:PIIExpected needle "(415) 555-2671" failed because the
+// USPhone regex captured "415) 555-2671" (without the leading paren), so the
+// decrypted token came back missing the opening "(". The pre-existing
+// TestUSPhoneRecognizer above only checks "did the regex match anywhere"
+// via FindString != "", which hid the truncation — the regex matched the
+// digit portion just fine, but the captured span did not include the leading
+// paren the operator typed.
+//
+// This test asserts the EXACT captured span across the formats real operators
+// type — paren area codes, dash/dot/space separators, no-separator runs, and
+// international NANP forms with or without a leading "+".
+//
+// Round-trip fidelity rule: whatever the operator typed for the phone, the
+// decrypted token must reproduce byte-for-byte. The encrypt path tokenizes
+// the captured span; if the regex drops a character, that character is lost
+// to the decrypt path forever (it lives in the surrounding text but the LLM
+// may strip or reformat the surrounding text in its response).
+func TestUSPhoneRecognizer_CapturedSpan(t *testing.T) {
+	r := findRecognizer(t, "USPhone")
+	cases := []struct {
+		name        string
+		input       string
+		wantCapture string // exact span the regex SHOULD capture
+	}{
+		// Paren area code (the v1.9.6 failure case)
+		{"paren-area-dash-line", "Call (415) 555-2671 today.", "(415) 555-2671"},
+		{"paren-area-space-line", "Call (415) 555 2671 today.", "(415) 555 2671"},
+
+		// Plain dash separators
+		{"dash-separators", "Call 415-555-2671 today.", "415-555-2671"},
+
+		// Dot separators
+		{"dot-separators", "Call 415.555.2671 today.", "415.555.2671"},
+
+		// Space separators
+		{"space-separators", "Call 415 555 2671 today.", "415 555 2671"},
+
+		// No separators at all
+		{"no-separators", "Call 4155552671 today.", "4155552671"},
+
+		// International / NANP country code variants
+		{"intl-plus-paren", "Call +1 (415) 555-2671 today.", "+1 (415) 555-2671"},
+		{"intl-plus-dash", "Call +1-415-555-2671 today.", "+1-415-555-2671"},
+		{"intl-plus-dot", "Call +1.415.555.2671 today.", "+1.415.555.2671"},
+		{"intl-bare-1-dash", "Call 1-242-442-2424 today.", "1-242-442-2424"},
+		{"intl-bare-1-paren", "Call 1 (242) 442-2424 today.", "1 (242) 442-2424"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := r.Pattern.FindString(c.input)
+			if got != c.wantCapture {
+				t.Errorf("USPhone capture for input %q:\n  got:  %q\n  want: %q\n  (the captured span MUST round-trip byte-for-byte through encrypt -> decrypt; a missing leading '(' or '+' is a fidelity bug, not a cosmetic one)", c.input, got, c.wantCapture)
+			}
+		})
+	}
+}
+
+// TestUSPhoneRecognizer_RejectsInvalidShapes makes sure the captured-span fix
+// did not loosen the regex into matching things it should never have matched.
+// Mid-word digit runs, area codes starting with 1, missing area codes — all
+// must still be rejected.
+func TestUSPhoneRecognizer_RejectsInvalidShapes(t *testing.T) {
+	r := findRecognizer(t, "USPhone")
+	cases := []struct {
+		name  string
+		input string
+	}{
+		{"area-starts-with-1", "155-555-5555"},
+		{"missing-area-code", "Phone 123-4567 only."},
+		{"mid-word-digits", "id12345550005551234abc"},
+		{"too-few-line-digits", "Phone 415-555-267 only."},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := r.Pattern.FindString(c.input)
+			if got != "" {
+				t.Errorf("USPhone should NOT have matched %q but captured %q", c.input, got)
+			}
+		})
+	}
+}
+
 // TestSIPURIRecognizer — RFC 3261 SIP/SIPS URI shape (sip:user@host[:port]).
 // Context-free: pattern is distinctive enough on its own.
 func TestSIPURIRecognizer(t *testing.T) {
