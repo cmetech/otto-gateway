@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v1.5
 milestone_name: audit WARNINGs
 status: executing
-last_updated: "2026-06-04T00:48:21.675Z"
-last_activity: 2026-06-04 -- Phase 08.3.2 planning complete
+last_updated: "2026-06-04T00:50:25.181Z"
+last_activity: 2026-06-04 -- Phase 08.3.2 execution started
 progress:
   total_phases: 6
   completed_phases: 3
@@ -20,15 +20,15 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-23)
 
 **Core value:** All three API surfaces (OpenAI for Pi SDK, Ollama for LangFlow, Anthropic for loop24-client/GSD Pi) serve their respective clients without those clients knowing kiro-cli exists, with one place to enforce policy.
-**Current focus:** Phase 9 — distribution
+**Current focus:** Phase 08.3.2 — pii-smoke-test-methodology-fix
 
 ## Current Position
 
-Phase: 9
-Plan: Not started
-Status: Ready to execute
+Phase: 08.3.2 (pii-smoke-test-methodology-fix) — EXECUTING
+Plan: 1 of 3
+Status: Executing Phase 08.3.2
 Next: /gsd-plan-phase 8.3
-Last activity: 2026-06-04 -- Phase 08.3.2 planning complete
+Last activity: 2026-06-04 -- Phase 08.3.2 execution started
 
 Progress: [██████████] 100%
 
