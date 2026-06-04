@@ -790,16 +790,16 @@ func TestUSZIPRecognizer_ValidatorRejectsOffShape(t *testing.T) {
 		in           string
 		wantValidate bool
 	}{
-		{"27584", true},             // bare 5-digit -- valid
-		{"20500-1234", true},        // canonical ZIP+4 -- valid
-		{"12345-1234-1234", false},  // multi-dash -- pre-fix bug accepted
-		{"-12345", false},           // leading dash -- no base digits
-		{"123-45", false},           // dash at wrong offset
-		{"123456", false},           // 6 digits no dash
-		{"12345-", false},           // trailing dash, no +4
-		{"12345-123", false},        // +3 instead of +4
-		{"12345-12345", false},      // +5 instead of +4
-		{"1234-12345", false},       // 4-digit base with dash
+		{"27584", true},            // bare 5-digit -- valid
+		{"20500-1234", true},       // canonical ZIP+4 -- valid
+		{"12345-1234-1234", false}, // multi-dash -- pre-fix bug accepted
+		{"-12345", false},          // leading dash -- no base digits
+		{"123-45", false},          // dash at wrong offset
+		{"123456", false},          // 6 digits no dash
+		{"12345-", false},          // trailing dash, no +4
+		{"12345-123", false},       // +3 instead of +4
+		{"12345-12345", false},     // +5 instead of +4
+		{"1234-12345", false},      // 4-digit base with dash
 	}
 	for _, c := range cases {
 		t.Run(c.in, func(t *testing.T) {
