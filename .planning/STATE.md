@@ -2,16 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.5
 milestone_name: audit WARNINGs
-status: ready_to_plan
-last_updated: 2026-06-03T23:40:53.583Z
-last_activity: 2026-06-03 -- Phase 08.3 execution started
+status: planning
+last_updated: "2026-06-04T00:00:52.433Z"
+last_activity: 2026-06-03
 progress:
-  total_phases: 4
-  completed_phases: 2
+  total_phases: 5
+  completed_phases: 3
   total_plans: 7
-  completed_plans: 56
-  percent: 50
-stopped_at: Phase 08.3 complete (1/1) — ready to discuss Phase 9
+  completed_plans: 7
+  percent: 60
 ---
 
 # Project State
@@ -72,6 +71,7 @@ Progress: [██████████] 100%
 - Phase 6.1 inserted after Phase 6: Admin Observability UI — dark-mode /admin page rendering /health + /health/agents with brand palette; auto-refresh polling; live log tail nice-to-have (URGENT)
 - Phase 8.1 inserted after Phase 8: Close gap: INTEG-01 streaming-mode PreHook short-circuit + v1.5 audit WARNINGs (URGENT)
 - Phase 8.3 inserted after Phase 8.2: ACP Prompt() Non-Blocking Refactor — fix chunk-buffer-overflow deadlock in synchronous Prompt() (Windows v1.9.2 PII smoke-test regression) (URGENT)
+- Phase 08.3.1 inserted after Phase 8.3: ACP Per-Session Stream Demux — close WR-04 cross-session chunk-leak race from Phase 8.3 code review (URGENT)
 
 ### Decisions
 

@@ -463,6 +463,35 @@ Plans:
 
 - [x] 08.3-01-PLAN.md — Single atomic vertical slice: refactor acp.Client.Prompt() to non-blocking + add awaitPromptResult goroutine (registered with c.wg) + engine.prompt.completed DEBUG emission + Stream docstring update (remove MUST-drain-concurrently footgun); add TestIntegration_Prompt_OverflowsBuffer_DoesNotDeadlock (≥128 chunks before response, 100ms return deadline) + four whitebox tests (dispatcher lifecycle, ctx-cancel during in-flight, Close during in-flight, engine.prompt.completed log emission); preserve TestIntegration_FakeACP_E2E_MixedVariants unchanged for backward-compat; goleak deliberate-leak verification; operator-Windows test-pii.ps1 sign-off (blocking human-verify).
 
+### Phase 08.3.1: ACP Per-Session Stream Demux (INSERTED)
+
+**Goal:** Replace the single-slot `c.activeStream *Stream` in `internal/acp/client.go:262` with a per-session map keyed by `sessionID`, and route every `session/update` notification by inspecting the wire frame's `params.sessionId` field in `handleNotification` (`client.go:909`) instead of pushing to whichever stream is currently in the slot. Closes the WR-04 race surfaced by the Phase 8.3 code review (`08.3-REVIEW.md`): a late `session/update` for a cancelled session can land on the *next* prompt's stream when the same `Client` is reused across prompts, causing silent cross-session content leakage in a multi-tenant LLM gateway. The misroute is silent (no log line fires because `activeStream` is non-nil at handler time) and can also re-open a narrower version of the Phase 8.3 deadlock if the stale chunk fills the new stream's 64-slot buffer before its consumer attaches, blocking `readLoop` from parsing the new prompt's response frame.
+
+**Mode:** mvp
+**Depends on:** Phase 8.3 (`awaitPromptResult` goroutine + `c.streamMu` discipline must be in place before the demux refactor)
+**Requirements:** ACP-02, ACP-03 (re-validation — same correctness fix surface as Phase 8.3, no new requirement IDs)
+**Success Criteria** (what must be TRUE):
+
+  1. `c.activeStream *Stream` is replaced by a per-session structure (`sync.Map` OR `map[string]*Stream` guarded by `c.streamMu` — planner's call). `Prompt()` registers the new stream under its `sessionID` key before `c.send`; `awaitPromptResult` clears the same key on every termination arm (ctx-cancel, RPC error, close-sentinel, happy path).
+  2. `handleNotification` at `internal/acp/client.go:909` extracts `sessionID` from the incoming `session/update` frame's `params.sessionId` field and looks up the matching stream. Updates for an unknown `sessionID` log `acp: session/update for unknown session — dropped` (the existing warning string at line 989, now firing on actual unknown-session — not "activeStream is nil") and return without pushing.
+  3. A new integration test `TestIntegration_LateUpdateFromCancelledSession_DoesNotLeakToNewPrompt` drives: (a) start Prompt A on session S1 → cancel ctx → `awaitPromptResult` sends `session/cancel` and finalizes; (b) fakeacp emits one final delayed `session/update` for S1 after the cancel; (c) start Prompt B on the same `Client` for session S2; (d) drain Prompt B's `Stream.Chunks` and assert NO chunk carrying S1's payload appears. The test FAILS against the current single-slot `activeStream` and PASSES after the refactor.
+  4. The existing Phase 8.3 tests (`TestIntegration_Prompt_OverflowsBuffer_DoesNotDeadlock`, the three whitebox tests for close-race / ctx-cancel / `engine.prompt.completed` field shape) continue to pass unchanged — the demux is additive at the routing layer, not a public-API change.
+  5. `make ci` is green (gofumpt → vet → build → golangci-lint → govulncheck → `go test -race ./...`). `goleak.VerifyTestMain` continues to report zero leaks (the per-session map cleanup runs on every `awaitPromptResult` termination path so no goroutine or map entry outlives its prompt).
+  6. The Stream godoc (`internal/acp/stream.go:32-45`, refreshed in Phase 8.3) is updated to note that `Client` now supports multiple in-flight prompts demuxed by `sessionID` — and the "one at a time in Phase 1" comment at `client.go:260` is updated.
+
+**Out of scope (locked):**
+
+- **Pipelining multiple concurrent prompts from `engine.Run` on the same `Client`.** The demux unlocks this architecturally, but the engine and pool still serialize one prompt per worker — exercising pipelined prompts is a separate observability + flow-control question for a later phase.
+- **Changing the `Stream.Chunks` buffer size or backpressure semantics.** Phase 8.3 settled this; not revisited here.
+- **A wire-level `session_id` sanity check on the response frame itself.** The dispatcher routes responses by JSON-RPC `id`, which is independent of `sessionID`; correlating the two is a defense-in-depth layer that doesn't belong in this phase.
+- **The `_ = ctx` dead-weight at `client.go:407`** (`IN-02` from Phase 8.3 review) — a one-line cleanup unrelated to the demux refactor; track separately or fold into the same commit if trivial.
+
+**Plans:** 0 plans
+**Source:** WR-04 from `08.3-REVIEW.md` (commit `0af613e`), deferred by Phase 8.3 code-review-fix as out-of-scope (`08.3-REVIEW-FIX.md`, commit `1e65e56`).
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 08.3.1 to break down)
+
 ### Phase 9: Distribution
 
 **Goal:** A single static binary cross-compiles cleanly from macOS to `linux/amd64` and `windows/amd64`, with the full trust-gate suite running in CI on every PR + nightly on main. This is the headline value of the Go port — one binary, no cgo, no platform-specific build tooling.
