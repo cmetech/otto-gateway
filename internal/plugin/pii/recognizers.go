@@ -83,7 +83,21 @@ var (
 	ipv6Re       = regexp.MustCompile(`\b(?:[0-9A-Fa-f]{1,4}:){2,7}[0-9A-Fa-f:]{1,4}\b`)
 	ssnRe        = regexp.MustCompile(`\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b`)
 	creditCardRe = regexp.MustCompile(`\b(?:[0-9][ \-]?){12,18}[0-9]\b`)
-	usPhoneRe    = regexp.MustCompile(`\b(?:\+?1[ .\-]?)?\(?[2-9][0-9]{2}\)?[ .\-]?[0-9]{3}[ .\-]?[0-9]{4}\b`)
+	// usPhoneRe — NANP shape with capture-fidelity boundary placement.
+	// The \b boundary check is positioned AFTER the optional country-code
+	// group and AFTER the optional opening "(" so that those characters can
+	// be captured into the matched span when the operator types them. Prior
+	// shape placed \b at the very start, which caused the regex to start
+	// matching at the first digit and silently drop any leading "+" or "("
+	// from the captured span — a fidelity bug surfaced by a 2026-06-03
+	// Windows operator run on v1.9.6 (smoke test asserted "(415) 555-2671"
+	// but decrypt returned "415) 555-2671"). Round-trip fidelity rule:
+	// whatever the operator typed for the phone, the encrypt -> decrypt
+	// pipeline reproduces byte-for-byte. Mid-word false-positive guard is
+	// still provided by \b between the optional prefix chars and [2-9],
+	// plus the trailing \b after [0-9]{4}. See
+	// TestUSPhoneRecognizer_CapturedSpan + RejectsInvalidShapes.
+	usPhoneRe = regexp.MustCompile(`(?:\+?1[ .\-]?)?\(?\b[2-9][0-9]{2}\)?[ .\-]?[0-9]{3}[ .\-]?[0-9]{4}\b`)
 
 	// Telecom-domain recognizers ported from loop_24 Privacy Vault.
 	//
