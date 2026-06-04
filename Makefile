@@ -16,7 +16,7 @@ PKG_SCRIPTS := scripts/otto-gw scripts/otto-gw.ps1 scripts/.env.otto-gw.example
 PKG_README  := docs/operator-quickstart.md
 PKG_INSTALL := docs/INSTALL.md
 
-.PHONY: all build build-fake-kiro run test test-race lint fmt fmt-check vet examples tidy clean cross ci arch-lint start stop status e2e e2e-list e2e-sdk-setup help \
+.PHONY: all build run test test-race lint fmt fmt-check vet examples tidy clean cross ci arch-lint start stop status e2e e2e-list e2e-sdk-setup help \
         cross-darwin-arm64 cross-darwin-amd64 cross-linux-amd64 cross-windows-amd64 \
         package package-all package-checksums package-darwin-arm64 package-darwin-amd64 package-linux-amd64 package-windows-amd64
 
@@ -100,18 +100,6 @@ cross-windows-amd64:
 	@mkdir -p $(BUILD_DIR)
 	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 \
 		go build -ldflags="$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY)-windows-amd64.exe $(PKG)
-
-# Host-platform build of the deterministic fake kiro-cli worker used by the
-# PII smoke-test scripts (Phase 08.3.2, TEST-01). NOT a dependency of `ci`,
-# `all`, `build`, `package`, or any release-bundling target — per the phase's
-# T4 mitigation the fake binary must never be auto-included in release
-# artifacts. Operators run this explicitly when they want to point KIRO_CMD
-# at a deterministic worker for `scripts/test-pii.*` round-trip verification.
-# The $$(go env GOEXE) expansion yields ".exe" on Windows hosts and empty
-# string on POSIX hosts, so one recipe works everywhere.
-build-fake-kiro: ## Build deterministic fake-kiro-cli into bin/ for scripts/test-pii.* fake mode
-	@mkdir -p $(BUILD_DIR)
-	CGO_ENABLED=0 go build -o $(BUILD_DIR)/fake-kiro-cli$$(go env GOEXE) ./tests/e2e/cmd/fake-kiro-cli
 
 # Distribution packaging — produces a self-contained otto_gateway/ folder
 # the user extracts on their laptop:

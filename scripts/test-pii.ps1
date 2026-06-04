@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Quick PII / streaming smoke test for OTTO Gateway (Windows).
 
@@ -24,27 +24,6 @@
 .PARAMETER Surface
     anthropic | openai | ollama | all (default: all)
 
-.PARAMETER Mode
-    live | fake (default: fake)
-
-    Controls how the 'pii' scenario gets responses from the gateway:
-
-      fake  (DEFAULT, Phase 08.3.2): the gateway's KIRO_CMD points at
-            bin/fake-kiro-cli.exe (built via `make build-fake-kiro`), and
-            the script writes a JSON-RPC notifications NDJSON file the
-            fake replays as agent_message_chunk frames. The PII probe
-            then sees the expected plaintext deterministically without
-            depending on the live LLM. Requires the operator to have
-            set KIRO_CMD=<absolute path to bin\fake-kiro-cli.exe> AND
-            OTTO_FAKE_KIRO_NOTIFICATIONS_FILE=<temp path printed below>
-            in .otto-gw.overrides.env BEFORE starting the gateway.
-
-      live  (LEGACY, deprecated): hits a real kiro-cli worker and
-            depends on the LLM verbatim-echoing PII-shaped data.
-            Modern Claude releases refuse this on safety grounds, so
-            this path is known-failing as of 2026-06-03. Kept for
-            operators verifying real-LLM end-to-end behavior.
-
 .PARAMETER Base
     Gateway base URL. Default: http://127.0.0.1:18080
     Also reads $env:OTTO_BASE_URL when present.
@@ -67,20 +46,6 @@
 .EXAMPLE
     .\test-pii.ps1 pii -Surface ollama -Verbose
 
-.EXAMPLE
-    .\test-pii.ps1 pii -Mode fake
-
-    Default-mode invocation written explicitly. Runs the deterministic
-    fake-worker path (Phase 08.3.2). Requires bin/fake-kiro-cli.exe to
-    be built and the gateway to have been started with KIRO_CMD and
-    OTTO_FAKE_KIRO_NOTIFICATIONS_FILE pointing at it.
-
-.EXAMPLE
-    .\test-pii.ps1 pii -Mode live
-
-    Legacy live-LLM path. Prints a deprecation banner and runs the
-    pre-Phase-08.3.2 behavior. Expect failures on modern Claude.
-
 .NOTES
     Exit codes:
       0  all scenarios passed
@@ -88,11 +53,6 @@
       2  usage error or precondition not met (gateway unreachable, etc.)
 
     Requires PowerShell 5.1 or later (ships with Windows 10+).
-
-    Phase 08.3.2 -- see
-    .planning/phases/08.3.2-pii-smoke-test-methodology-fix/ for the
-    methodology rationale (live-LLM cooperation broke v1.9.3; fake
-    worker is now the load-bearing default).
 #>
 [CmdletBinding()]
 param(
@@ -102,12 +62,6 @@ param(
 
     [ValidateSet('anthropic', 'openai', 'ollama', 'all')]
     [string]$Surface = 'all',
-
-    # Phase 08.3.2: default to 'fake' (deterministic) because the
-    # 'live' path depends on the LLM verbatim-echoing PII-shaped data,
-    # which current Claude releases refuse on safety grounds.
-    [ValidateSet('live', 'fake')]
-    [string]$Mode = 'fake',
 
     [string]$Base = $(if ($env:OTTO_BASE_URL) { $env:OTTO_BASE_URL } else { 'http://127.0.0.1:18080' }),
 
@@ -353,42 +307,21 @@ function Invoke-Scenario-Wire {
 # ---------------------------------------------------------------------------
 # Scenario: pii.
 # ---------------------------------------------------------------------------
-
-# New-NotifFrame builds a single compact-JSON JSON-RPC notification frame
-# matching the shape produced by tests/e2e/tools_fixtures_test.go NotifText.
-# One frame per line in the NDJSON file the fake reads via
-# OTTO_FAKE_KIRO_NOTIFICATIONS_FILE. SessionId MUST be 'e2e-session-1'
-# literally -- the fake hard-codes that value at
-# tests/e2e/cmd/fake-kiro-cli/main.go:114 in its session/new response,
-# and any other value gets demux-dropped by the gateway router.
-function New-NotifFrame {
-    param(
-        [Parameter(Mandatory)] [string]$SessionId,
-        [Parameter(Mandatory)] [string]$Text
-    )
-    $frame = [ordered]@{
-        jsonrpc = '2.0'
-        method  = 'session/update'
-        params  = [ordered]@{
-            sessionId = $SessionId
-            update    = [ordered]@{
-                sessionUpdate = 'agent_message_chunk'
-                content       = [ordered]@{ text = $Text }
-            }
-        }
-    }
-    return ($frame | ConvertTo-Json -Compress -Depth 10)
-}
-
 $script:PIIPrompt = @'
-Echo each line back to me VERBATIM, no edits, no summaries:
+Help me draft a short, polite reply email to a customer who wrote in
+about a connectivity problem.
 
+Customer details:
 - Email: corey@cmetech.io
-- IPv4: 192.168.1.42
-- US phone: (415) 555-2671
-- Credit card: 4111-1111-1111-1111
+- Source IP they were connecting from: 192.168.1.42
+- Phone on file: (415) 555-2671
+- Card on file ending: 4111-1111-1111-1111
 
-John Smith from Boston signing off.
+Please address the email to the customer by their email address in the
+greeting, mention the source IP 192.168.1.42 in the body so they know
+we have the right ticket, confirm we are investigating, and keep it
+under five sentences. No need to reference the phone or the card on
+file.
 '@
 
 # Items the response MUST contain for round-trip success.
@@ -479,13 +412,7 @@ function Invoke-PIIProbe {
     }
 }
 
-function Invoke-Scenario-Pii-Live {
-    Write-Section "DEPRECATED: -Mode live"
-    Write-Info "The live path depends on the LLM (Claude via kiro-cli) verbatim-echoing PII-shaped"
-    Write-Info "data, which current model releases refuse on safety grounds. Expect 'round-trip"
-    Write-Info "decrypt: NOT in response' failures. See Phase 08.3.2 for the deterministic-worker"
-    Write-Info "alternative (-Mode fake, the default)."
-
+function Invoke-Scenario-Pii {
     Write-Section "PII round-trip -- encrypt -> worker -> decrypt -> client"
     $payloadObj = @{
         model      = 'auto'
@@ -507,112 +434,6 @@ function Invoke-Scenario-Pii-Live {
         Invoke-PIIProbe -SurfaceName ollama -Label 'Ollama /api/chat' -Path '/api/chat' `
             -Payload $payload
     }
-}
-
-function Invoke-Scenario-Pii-Fake {
-    Write-Section "PII round-trip -- -Mode fake (deterministic, Phase 08.3.2)"
-
-    # (i) Notifications file path under $env:TEMP.
-    $notifsPath = Join-Path $env:TEMP 'otto-pii-notifs.ndjson'
-
-    # (ii) Build NDJSON content from $script:PIIExpected (one frame per
-    # expected plaintext). SessionId hard-coded to 'e2e-session-1' to
-    # match tests/e2e/cmd/fake-kiro-cli/main.go:114.
-    $lines = @()
-    foreach ($value in $script:PIIExpected) {
-        $lines += (New-NotifFrame -SessionId 'e2e-session-1' -Text $value)
-    }
-    $body = ($lines -join "`n") + "`n"
-
-    # (iii) Write file as UTF-8 NO BOM. AP-1 mandate -- the default
-    # PowerShell 5.1 write primitives emit a BOM that breaks the fake's
-    # first-line JSON parse (prior incident: commit f7ccd40). Use the
-    # .NET WriteAllText API with the explicit no-BOM UTF8 ctor below.
-    try {
-        [System.IO.File]::WriteAllText(
-            $notifsPath,
-            $body,
-            [System.Text.UTF8Encoding]::new($false))
-    } catch {
-        Write-Fail "could not write notifications file ${notifsPath}: $($_.Exception.Message)"
-        return
-    }
-    Write-Pass "wrote $($lines.Count) notification frame(s) to $notifsPath (UTF-8 no BOM)"
-
-    # (iv) Pre-flight validation -- each line must parse as JSON. The
-    # fake silently skips malformed lines (main.go:202), so an operator
-    # would otherwise see "round-trip decrypt: 'X' NOT in response"
-    # with no clue why. Catch it here.
-    $lineNum = 0
-    foreach ($line in $lines) {
-        $lineNum++
-        try {
-            $null = $line | ConvertFrom-Json
-        } catch {
-            Write-Fail "notifications file frame $lineNum is invalid JSON: $($_.Exception.Message)"
-            return
-        }
-    }
-    Write-Pass "all $($lines.Count) frame(s) are valid JSON"
-
-    # (v) T2 mitigation -- gateway must be pointed at a fake worker. We
-    # read /admin/about (HTML page that exposes the KIRO_CMD row) and
-    # require the configured binary path to contain 'fake'
-    # (case-insensitive). If not, the operator forgot to swap KIRO_CMD;
-    # refuse to proceed rather than contaminate live traffic.
-    try {
-        $about = Invoke-Gateway -Method GET -Url "$Base/admin/about"
-    } catch {
-        Write-Fail "could not read $Base/admin/about: $($_.Exception.Message)"
-        return
-    }
-    if ($about.StatusCode -ne 200) {
-        Write-Fail "$Base/admin/about returned $($about.StatusCode); cannot verify KIRO_CMD points at fake"
-        return
-    }
-    # The about template renders: <dt>KIRO_CMD</dt><dd>VALUE</dd>
-    if ($about.Content -notmatch '<dt>\s*KIRO_CMD\s*</dt>\s*<dd>([^<]+)</dd>') {
-        Write-Fail "could not parse KIRO_CMD value from /admin/about HTML"
-        return
-    }
-    $kiroCmd = $matches[1].Trim()
-    if ($kiroCmd -notmatch '(?i)fake') {
-        Write-Fail "T2 GUARD: gateway is not pointed at a fake worker (KIRO_CMD='$kiroCmd') -- refusing to run -Mode fake to avoid contaminating live traffic"
-        Write-Info "operator action: set KIRO_CMD=<absolute path to bin\fake-kiro-cli.exe> in .otto-gw.overrides.env and restart the gateway"
-        $script:Failed = [Math]::Max($script:Failed, 1)
-        return
-    }
-    Write-Pass "gateway KIRO_CMD='$kiroCmd' resolves to a fake worker"
-
-    # (vi) Operator informational -- script does NOT manipulate the
-    # gateway process env. Operator owns lifecycle.
-    Write-Info "NOTE: the gateway process must have OTTO_FAKE_KIRO_NOTIFICATIONS_FILE=$notifsPath set in its environment. If it doesn't, restart the gateway with that env var set."
-
-    # (vii) Run the existing probes -- identical surface dispatch to live.
-    $payloadObj = @{
-        model      = 'auto'
-        max_tokens = 512
-        stream     = $true
-        messages   = @(@{ role = 'user'; content = $script:PIIPrompt })
-    }
-    $payload = $payloadObj | ConvertTo-Json -Compress -Depth 5
-
-    if ($Surface -in @('all', 'anthropic')) {
-        Invoke-PIIProbe -SurfaceName anthropic -Label 'Anthropic /v1/messages' -Path '/v1/messages' `
-            -Payload $payload -ExtraHeaders @{ 'anthropic-version' = '2023-06-01' }
-    }
-    if ($Surface -in @('all', 'openai')) {
-        Invoke-PIIProbe -SurfaceName openai -Label 'OpenAI /v1/chat/completions' -Path '/v1/chat/completions' `
-            -Payload $payload
-    }
-    if ($Surface -in @('all', 'ollama')) {
-        Invoke-PIIProbe -SurfaceName ollama -Label 'Ollama /api/chat' -Path '/api/chat' `
-            -Payload $payload
-    }
-}
-
-function Invoke-Scenario-Pii {
-    if ($Mode -eq 'fake') { Invoke-Scenario-Pii-Fake } else { Invoke-Scenario-Pii-Live }
 }
 
 # ---------------------------------------------------------------------------
