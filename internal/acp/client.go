@@ -815,7 +815,8 @@ func (c *Client) awaitPromptResult(
 		// WR-01: emit engine.prompt.completed on ctx-cancel arm so
 		// every prompt that fires engine.prompt.sent is paired with a
 		// terminal line (no silent gaps in ops dashboards).
-		c.cfg.Logger.Debug("engine.prompt.completed",
+		c.cfg.Logger.Debug(
+			"engine.prompt.completed",
 			"session_id", sessionID,
 			"chunks", chunkCountUnderMu(stream),
 			"stop_reason", "ctx_canceled",
@@ -837,7 +838,8 @@ func (c *Client) awaitPromptResult(
 			if frame.Error.Code == closeSentinelCode {
 				stopReason = "client_closed"
 			}
-			c.cfg.Logger.Debug("engine.prompt.completed",
+			c.cfg.Logger.Debug(
+				"engine.prompt.completed",
 				"session_id", sessionID,
 				"chunks", chunkCountUnderMu(stream),
 				"stop_reason", stopReason,
@@ -866,7 +868,8 @@ func (c *Client) awaitPromptResult(
 		// has no String() method and CONTEXT.md forbids canonical-type
 		// changes in this phase. chunkCountUnderMu reads stream.result
 		// .ChunkCount under stream.mu (matches stream.go:85-87 pattern).
-		c.cfg.Logger.Debug("engine.prompt.completed",
+		c.cfg.Logger.Debug(
+			"engine.prompt.completed",
 			"session_id", sessionID,
 			"chunks", chunkCountUnderMu(stream),
 			"stop_reason", r.StopReason,
