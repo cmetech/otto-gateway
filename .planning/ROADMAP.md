@@ -489,7 +489,7 @@ Plans:
 - **City-name disambiguation.** The existing LOCATION NER will still catch most cities. This phase does NOT add a city-name regex recognizer (false-positive risk too high — `Boston` as a surname, etc.).
 - **PERSON recognizer tuning.** The PERSON false positives on street names are silenced by overlap arbitration, not by changing the prose model. Tuning the model itself is a separate concern.
 
-**Plans:** 1 plan
+**Plans:** 1/1 plans complete
 **Source:** Discovered during 2026-06-04 v1.9.7 splunk-box probe of the prose-v2 NER's full-address coverage. Probe documented in conversation; key findings: prose catches city names only, misses street + state abbreviations + ZIP, emits PERSON false positives on street names. Cross-reference: the probe was performed via an ad-hoc `TestProbe_LOCATION_AddressCoverage` test against `internal/plugin/pii.NewNEREngine().Detect(...)` and discarded after observation.
 
 Plans:

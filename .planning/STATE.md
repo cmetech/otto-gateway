@@ -2,15 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.5
 milestone_name: audit WARNINGs
-status: executing
-last_updated: "2026-06-04T12:00:00.000Z"
+status: ready_to_plan
+last_updated: 2026-06-04T12:37:57.755Z
 last_activity: 2026-06-04 -- Phase 08.4-01 source delivery complete; awaiting Task H operator HUMAN-UAT
 progress:
   total_phases: 7
   completed_phases: 4
   total_plans: 11
-  completed_plans: 11
-  percent: 100
+  completed_plans: 60
+  percent: 57
+stopped_at: Phase 08.4 complete (1/1) — ready to discuss Phase 9
 ---
 
 # Project State
@@ -20,15 +21,15 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-23)
 
 **Core value:** All three API surfaces (OpenAI for Pi SDK, Ollama for LangFlow, Anthropic for loop24-client/GSD Pi) serve their respective clients without those clients knowing kiro-cli exists, with one place to enforce policy.
-**Current focus:** Phase 08.4 — us-address-pii-coverage
+**Current focus:** Phase 9 — distribution
 
 ## Current Position
 
-Phase: 08.4 (us-address-pii-coverage) — SOURCE COMPLETE, AWAITING HUMAN-UAT
-Plan: 1 of 1 (delivered)
-Status: Source delivery complete; Task H operator HUMAN-UAT pending (Windows + POSIX)
+Phase: 9
+Plan: Not started
+Status: Ready to plan
 Next: Operator runs scripts/test-pii.ps1 pii on Windows splunk box + scripts/test-pii.sh pii on POSIX box against v1.10.0 binary; on dual-PASS, mark PII-01 Complete in REQUIREMENTS Traceability.
-Last activity: 2026-06-04 -- Phase 08.4-01 source delivery complete; awaiting Task H operator HUMAN-UAT
+Last activity: 2026-06-04
 
 Progress: [██████████] 100%
 
@@ -36,7 +37,7 @@ Progress: [██████████] 100%
 
 **Velocity:**
 
-- Total plans completed: 41
+- Total plans completed: 42
 - Average duration: n/a
 - Total execution time: 0 hours
 
@@ -52,6 +53,7 @@ Progress: [██████████] 100%
 | 6 | 5 | - | - |
 | 08.3 | 1 | - | - |
 | 08.3.2 | 3 | - | - |
+| 08.4 | 1 | - | - |
 
 **Recent Trend:**
 
