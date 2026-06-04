@@ -170,4 +170,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-06-03 — Phase 8.3 complete (ACP Prompt() non-blocking refactor: chunk-buffer-overflow deadlock removed via per-prompt `awaitPromptResult` goroutine; RED/GREEN/REFACTOR commits + 4 new tests; Windows v1.9.2 PII smoke-test sign-off pending in 08.3-HUMAN-UAT.md; ACP-02 + ACP-03 re-validated)*
+*Last updated: 2026-06-04 — Phase 08.3.2 complete (PII smoke-test methodology fix: deterministic fake-kiro-cli + `-Mode {live,fake}` switch on both `test-pii.ps1` and `test-pii.sh`; `make build-fake-kiro` target; new TEST-01 requirement; Phase 8.3 follow-up section appended to 08.3-HUMAN-UAT.md; operator HUMAN-UAT pending on Windows splunk box + POSIX dev box before TEST-01 flips to Complete). Phase 8.3 complete 2026-06-03 (ACP Prompt() non-blocking refactor: chunk-buffer-overflow deadlock removed via per-prompt `awaitPromptResult` goroutine; v1.9.3 shipped + Windows operator regression closed).*
