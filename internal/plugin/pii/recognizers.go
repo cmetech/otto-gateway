@@ -287,30 +287,42 @@ func validateSSNRange(s string) bool {
 // \b\d{5}(?:-\d{4})?\b regex accepts. Rules:
 //   - All-same-digit codes are rejected (00000, 11111, ..., 99999).
 //     These are not valid USPS ZIP assignments.
-//   - The validator inspects only the 5-digit base; the optional ZIP+4
-//     extension is stripped before checking.
+//   - Shape MUST be exactly len 5 (bare ZIP) OR exactly len 10 with a
+//     dash at offset 5 (canonical ZIP+4). Anything else is rejected.
+//     This follows validateSSNRange's "defensive segment-shape check"
+//     convention -- validators do not trust the regex because the
+//     regex could be overridden externally.
 //   - We do NOT validate against the USPS first-digit region table
 //     (0 = Northeast, ..., 9 = West Coast / HI / AK) because new ZIPs
 //     are assigned occasionally and the table drifts. The regex is
 //     conservative enough at the shape level.
 //
-// Phase 08.4 PII-01.
+// Phase 08.4 PII-01. 08.4-REVIEW BL-04: tightened dash handling from
+// `IndexByte > 0` (which masked multi-dash and trailing-dash inputs) to
+// strict positional check `len == 10 && s[5] == '-'`.
 func validateUSZIPRange(s string) bool {
-	base := s
-	if dash := strings.IndexByte(s, '-'); dash > 0 {
-		base = s[:dash]
-	}
-	if len(base) != 5 {
+	var base string
+	switch {
+	case len(s) == 5:
+		// Bare 5-digit, no dash.
+		base = s
+	case len(s) == 10 && s[5] == '-':
+		// Canonical ZIP+4 -- strip the +4 extension.
+		base = s[:5]
+	default:
+		// Off-shape: multi-dash ("12345-1234-1234"), leading dash
+		// ("-12345"), wrong dash offset ("123-45"), short / long
+		// runs ("123456", "12345-123", "12345-12345"), bare trailing
+		// dash ("12345-"). All rejected.
 		return false
 	}
-	allSame := true
 	for i := 1; i < len(base); i++ {
 		if base[i] != base[0] {
-			allSame = false
-			break
+			return true
 		}
 	}
-	return !allSame
+	// All-same-digit base -- reject (00000 / 11111 / ... / 99999).
+	return false
 }
 
 // Recognizers is the canonical, registration-ordered registry of v1 PII

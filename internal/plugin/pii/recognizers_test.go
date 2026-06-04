@@ -739,7 +739,7 @@ func TestUSZIPRecognizer_ValidatorRejectsAllSameDigit(t *testing.T) {
 		{"11111", true, false},
 		{"99999", true, false},
 		{"55555", true, false},
-		{"1234", false, false}, // 4 digits — regex shape rejects
+		{"1234", false, false}, // 4 digits -- regex shape rejects
 	}
 	for _, c := range cases {
 		t.Run(c.in, func(t *testing.T) {
@@ -749,6 +749,50 @@ func TestUSZIPRecognizer_ValidatorRejectsAllSameDigit(t *testing.T) {
 			}
 			if gotR && gotV != c.wantValidate {
 				t.Errorf("USZIP %q: validator=%v, want %v", c.in, gotV, c.wantValidate)
+			}
+		})
+	}
+}
+
+// TestUSZIPRecognizer_ValidatorRejectsOffShape -- 08.4-REVIEW BL-04.
+//
+// The validator must defend against off-shape inputs even though the regex
+// is currently tight (\b\d{5}(?:-\d{4})?\b). This follows the SSN
+// validator's "defensive segment-shape check" convention at
+// recognizers.go validateSSNRange -- validators should not trust the regex
+// because the regex could be overridden externally (or future-regressed).
+//
+// Pre-fix `if dash := strings.IndexByte(s, '-'); dash > 0 { base = s[:dash] }`
+// accepts:
+//   - "12345-1234-1234" (multi-dash) -- IndexByte returns first dash at 5,
+//     base becomes "12345", validator accepts. Should reject.
+//   - "123-45" -- dash at offset 3, base becomes "123" (len != 5), then
+//     rejected by len(base) != 5 check. This case happens to fall through
+//     correctly today, but for the wrong reason.
+//
+// Post-fix: only accept exactly `len == 5` (no dash) OR `len == 10 &&
+// s[5] == '-'`. Anything else returns false.
+func TestUSZIPRecognizer_ValidatorRejectsOffShape(t *testing.T) {
+	cases := []struct {
+		in           string
+		wantValidate bool
+	}{
+		{"27584", true},             // bare 5-digit -- valid
+		{"20500-1234", true},        // canonical ZIP+4 -- valid
+		{"12345-1234-1234", false},  // multi-dash -- pre-fix bug accepted
+		{"-12345", false},           // leading dash -- no base digits
+		{"123-45", false},           // dash at wrong offset
+		{"123456", false},           // 6 digits no dash
+		{"12345-", false},           // trailing dash, no +4
+		{"12345-123", false},        // +3 instead of +4
+		{"12345-12345", false},      // +5 instead of +4
+		{"1234-12345", false},       // 4-digit base with dash
+	}
+	for _, c := range cases {
+		t.Run(c.in, func(t *testing.T) {
+			got := validateUSZIPRange(c.in)
+			if got != c.wantValidate {
+				t.Errorf("validateUSZIPRange(%q) = %v, want %v", c.in, got, c.wantValidate)
 			}
 		})
 	}
