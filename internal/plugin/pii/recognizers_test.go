@@ -566,18 +566,16 @@ func TestUSAddressRecognizer_CapturedSpan(t *testing.T) {
 		{"st-trailing-period", "Mail to 42 Elm St.", "42 Elm St."},
 		{"parkway-multi-word", "Office at 100 Beacon Hill Pkwy.", "100 Beacon Hill Pkwy."},
 
-		// 08.4-REVIEW WR-01: expand suffix vocabulary to include common
-		// USPS Publication 28 forms that the original 16-form list missed.
-		// Each fixture pins a real-world address shape that previously
-		// fell through the recognizer entirely.
-		{"trail-suffix", "Hike to 100 Forest Trail today.", "100 Forest Trail"},
-		{"loop-suffix", "Visit 200 Mountain Loop today.", "200 Mountain Loop"},
-		{"walk-suffix", "Visit 300 Riverside Walk today.", "300 Riverside Walk"},
-		{"run-suffix", "Visit 400 Deer Run today.", "400 Deer Run"},
-		{"crossing-suffix", "Visit 500 Oak Crossing today.", "500 Oak Crossing"},
+		// 08.4-REVIEW WR-01 / iter-2 BL-NEW-01: suffix vocabulary
+		// expansion landed Plaza/Plz, Alley/Aly as new positives.
+		// Trail/Trl, Loop, Walk, Run, Crossing/Xing were ALSO added in
+		// WR-01 but reverted in BL-NEW-01 because they false-positive
+		// on "30 Minute Walk" / "5 Hour Run" / etc. Real-world
+		// addresses ending in those suffixes now miss the regex and
+		// fall to LOCATION NER -- documented PRECISION-OVER-RECALL
+		// trade-off; see usAddressRe docstring.
 		{"plaza-suffix", "Visit 600 Civic Plaza today.", "600 Civic Plaza"},
 		{"alley-suffix", "Visit 700 Back Alley today.", "700 Back Alley"},
-		{"trail-abbrev", "Visit 100 Forest Trl today.", "100 Forest Trl"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -602,6 +600,22 @@ func TestUSAddressRecognizer_RejectsNonAddressShapes(t *testing.T) {
 		{"unknown-suffix", "Visit 1111 Main Mall today."},
 		{"lowercase-name", "Visit 1111 main street today."},
 		{"multiline-name", "Visit 1111 Main\nStreet today."},
+
+		// 08.4-REVIEW iter-2 BL-NEW-01: the WR-01 suffix vocab
+		// expansion added Run, Walk, Loop, Crossing, Trail/Trl which
+		// false-positive on quantity-prose ("30 Minute Walk",
+		// "5 Hour Run"). These suffixes have been removed from the
+		// recognizer (PRECISION-OVER-RECALL); pin the false-positive
+		// shapes here so a future re-expansion regression is caught.
+		{"hour-run", "I did a 5 Hour Run yesterday."},
+		{"minute-walk", "30 Minute Walk every morning."},
+		{"mile-walk", "3 Mile Walk today."},
+		{"yard-run", "100 Yard Run final."},
+		{"lane-crossing", "4 Lane Crossing ahead."},
+		{"block-loop", "10 Block Loop nightly."},
+		{"day-trail", "2 Day Trail done."},
+		{"forest-trail-no-match", "Hike to 100 Forest Trail today."},
+		{"deer-run-no-match", "Visit 400 Deer Run today."},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

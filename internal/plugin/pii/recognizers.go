@@ -229,22 +229,39 @@ var (
 	// single address span (Pitfall 3). The Title-Case word class
 	// `[A-Z][A-Za-z]*` is letters-only, no digits / underscores.
 	//
-	// Suffix vocabulary (08.4-REVIEW WR-01 expansion from 16 -> 26
-	// forms): full + USPS-standard abbreviation pairs for the most
-	// common Pub-28 suffix types. Added in WR-01: Trail/Trl, Loop,
-	// Walk, Run, Crossing/Xing, Plaza/Plz, Alley/Aly. Not yet covered
-	// (warning, not blocker): numbered/ordinal street names ("42nd
-	// Street"), apostrophes / hyphens in street names ("St John's
-	// Way", "O'Hara Drive"). Documented limitation -- NER LOCATION is
-	// the intended catch-all for prose addresses; when NER is
-	// disabled, recall on these shapes is best-effort. See 08.4-REVIEW
-	// WR-01 for the full backlog.
+	// Suffix vocabulary (08.4-REVIEW iter-2 BL-NEW-01 final shape):
+	// full + USPS-standard abbreviation pairs for the most common
+	// Pub-28 suffix types that are STRUCTURALLY UNAMBIGUOUS in numeric
+	// prose. Originally 16; iter-1 WR-01 expanded to 26 by adding
+	// Trail/Trl, Loop, Walk, Run, Crossing/Xing, Plaza/Plz, Alley/Aly.
+	// iter-2 BL-NEW-01 reverted Trail/Trl, Loop, Walk, Run,
+	// Crossing/Xing -- these are too common as English nouns after a
+	// numeric quantity ("30 Minute Walk", "5 Hour Run", "100 Yard Run",
+	// "4 Lane Crossing", "10 Block Loop", "2 Day Trail") which the
+	// regex cannot structurally distinguish from "100 Forest Trail" /
+	// "200 Mountain Loop" / "400 Deer Run".
+	//
+	// Kept additions from WR-01: Plaza/Plz (multi-syllable, not used as
+	// a quantity-prose suffix), Alley/Aly (uncommon non-address).
+	//
+	// PRECISION-OVER-RECALL trade-off: real-world addresses ending in
+	// Trail, Loop, Walk, Run, Crossing now miss the regex. They fall to
+	// LOCATION NER when enabled (default in production); when NER is
+	// disabled (config.go:351 default), recall on these shapes is
+	// best-effort. The alternative -- accept false positives on every
+	// "30 Minute Walk" / "5 Hour Run" -- silently corrupts
+	// non-address prose, which is unacceptable for the encrypt-mode
+	// round-trip contract.
+	//
+	// Not covered (warning, not blocker): numbered/ordinal street names
+	// ("42nd Street"), apostrophes / hyphens in street names ("St
+	// John's Way", "O'Hara Drive"). Documented limitation -- NER
+	// LOCATION is the intended catch-all for prose addresses.
 	usAddressRe = regexp.MustCompile(
 		`\b\d{1,6}[ \t]+[A-Z][A-Za-z]*(?:[ \t]+[A-Z][A-Za-z]*)*[ \t]+` +
 			`(?:St|Street|Ave|Avenue|Blvd|Boulevard|Rd|Road|Dr|Drive|Ln|Lane|` +
 			`Way|Pl|Place|Ct|Court|Pkwy|Parkway|Cir|Circle|Ter|Terrace|Sq|` +
-			`Square|Hwy|Highway|Trail|Trl|Loop|Walk|Run|Crossing|Xing|` +
-			`Plaza|Plz|Alley|Aly)\b\.?`,
+			`Square|Hwy|Highway|Plaza|Plz|Alley|Aly)\b\.?`,
 	)
 )
 
