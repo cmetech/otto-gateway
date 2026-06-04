@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.5
 milestone_name: audit WARNINGs
 status: executing
-last_updated: "2026-06-04T10:59:14.765Z"
-last_activity: 2026-06-04 -- Phase 08.4 planning complete
+last_updated: "2026-06-04T12:00:00.000Z"
+last_activity: 2026-06-04 -- Phase 08.4-01 source delivery complete; awaiting Task H operator HUMAN-UAT
 progress:
   total_phases: 7
   completed_phases: 4
   total_plans: 11
-  completed_plans: 10
-  percent: 57
+  completed_plans: 11
+  percent: 100
 ---
 
 # Project State
@@ -20,15 +20,15 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-23)
 
 **Core value:** All three API surfaces (OpenAI for Pi SDK, Ollama for LangFlow, Anthropic for loop24-client/GSD Pi) serve their respective clients without those clients knowing kiro-cli exists, with one place to enforce policy.
-**Current focus:** Phase 9 — distribution
+**Current focus:** Phase 08.4 — us-address-pii-coverage
 
 ## Current Position
 
-Phase: 9
-Plan: Not started
-Status: Ready to execute
-Next: /gsd-plan-phase 8.3
-Last activity: 2026-06-04 -- Phase 08.4 planning complete
+Phase: 08.4 (us-address-pii-coverage) — SOURCE COMPLETE, AWAITING HUMAN-UAT
+Plan: 1 of 1 (delivered)
+Status: Source delivery complete; Task H operator HUMAN-UAT pending (Windows + POSIX)
+Next: Operator runs scripts/test-pii.ps1 pii on Windows splunk box + scripts/test-pii.sh pii on POSIX box against v1.10.0 binary; on dual-PASS, mark PII-01 Complete in REQUIREMENTS Traceability.
+Last activity: 2026-06-04 -- Phase 08.4-01 source delivery complete; awaiting Task H operator HUMAN-UAT
 
 Progress: [██████████] 100%
 
@@ -60,6 +60,7 @@ Progress: [██████████] 100%
 
 *Updated after each plan completion*
 | Phase 08.2 P01 | 45m | 8 tasks | 10 files |
+| Phase 08.4 P01 | 35m | 3 tasks (R/G/F) + Task H pending | 7 files |
 
 ## Accumulated Context
 
@@ -87,6 +88,9 @@ Recent decisions affecting current work:
 - Pre-Phase 1: stdlib `net/http` + `chi` (reject `fasthttp`)
 - Pre-Phase 1: Trust-gate suite required from day one (Phase 1 establishes lint/test/security baseline)
 - 2026-05-27: Embeddings (Phase 7) cut from milestone — `/api/embed`, `/api/embeddings`, `/v1/embeddings` will not be implemented in v1. Provisional sidecar decision now moot.
+- 2026-06-04: Phase 08.4 USState regex restructured to two alternation arms (comma-prefixed permissive trail OR line-start ZIP-required trail) to honor AP-2 in production. Diverges from literal RESEARCH.md regex. See 08.4-01-SUMMARY.md.
+- 2026-06-04: Phase 08.4 USAddress whitespace tightened from `\s+` to `[ \t]+` so RE2's `\s` does not let `\n` smuggle multi-line text into a single span (Pitfall 3).
+- 2026-06-04: `make ci` lint step has 93 pre-existing project tech-debt issues (verified pre-existing on base 315f1cc); PII-01 introduced none. Deferred to a future lint-debt-closeout phase. All other trust gates (gofumpt, vet, build, test-race, arch-lint, examples) green.
 
 ### Pending Todos
 
@@ -141,6 +145,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-06-03T22:39:12.696Z
-Stopped at: Phase 8.3 context gathered
-Resume file: .planning/phases/08.3-acp-prompt-non-blocking-refactor/08.3-CONTEXT.md
+Last session: 2026-06-04T12:00:00.000Z
+Stopped at: Phase 08.4-01 source delivery complete (RED/GREEN/REFACTOR + gofumpt chore); awaiting Task H operator HUMAN-UAT on Windows splunk box + POSIX dev box
+Resume file: .planning/phases/08.4-us-address-pii-coverage/08.4-01-SUMMARY.md
