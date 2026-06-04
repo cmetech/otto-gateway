@@ -24,6 +24,7 @@
 #
 # Flags:
 #   --surface NAME  anthropic | openai | ollama | all   (default: all)
+#   --mode NAME     live | fake   (default: fake -- Phase 08.3.2 methodology fix; live is the legacy LLM-cooperation path with known failures)
 #   --base URL      Gateway base URL (default: http://127.0.0.1:18080)
 #   --auth TOKEN    Bearer token (sets Authorization header on every call)
 #   --no-color      Disable ANSI color output
@@ -64,6 +65,11 @@ usage() { sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 # ---------------------------------------------------------------------------
 SCENARIO=""
 SURFACE="all"
+# Phase 08.3.2: default to 'fake' (deterministic) because the 'live' path
+# depends on the LLM verbatim-echoing PII-shaped data, which current Claude
+# releases refuse on safety grounds. See Phase 08.3.2 RESEARCH.md for the
+# methodology rationale and PowerShell sibling test-pii.ps1 for parity.
+MODE="fake"
 BASE="${OTTO_BASE_URL:-http://127.0.0.1:18080}"
 AUTH=""
 VERBOSE=0
@@ -76,6 +82,8 @@ while [ $# -gt 0 ]; do
         diag|wire|pii|all) SCENARIO="$1"; shift ;;
         --surface) SURFACE="$2"; shift 2 ;;
         --surface=*) SURFACE="${1#*=}"; shift ;;
+        --mode) MODE="$2"; shift 2 ;;
+        --mode=*) MODE="${1#*=}"; shift ;;
         --base) BASE="$2"; shift 2 ;;
         --base=*) BASE="${1#*=}"; shift ;;
         --auth) AUTH="$2"; shift 2 ;;
@@ -91,6 +99,11 @@ done
 case "$SURFACE" in
     anthropic|openai|ollama|all) ;;
     *) printf '--surface must be one of: anthropic, openai, ollama, all\n' >&2; exit 2 ;;
+esac
+
+case "$MODE" in
+    live|fake) ;;
+    *) printf '--mode must be one of: live, fake\n' >&2; exit 2 ;;
 esac
 
 # ---------------------------------------------------------------------------
@@ -247,6 +260,23 @@ scenario_wire() {
 # ---------------------------------------------------------------------------
 # Scenario: pii — send the PII-record prompt, verify decrypt round-trip.
 # ---------------------------------------------------------------------------
+
+# write_notifs_file PATH VAL1 [VAL2 ...]
+# Emits one JSON-RPC session/update notification per value to PATH.
+# sessionId is the literal 'e2e-session-1' to match
+# tests/e2e/cmd/fake-kiro-cli/main.go:114 (and avoid the Phase 08.3.1
+# demux-drop). Caller is responsible for ensuring each value contains no
+# double-quote or backslash characters; the current fixtures
+# (corey@cmetech.io, 192.168.1.42) satisfy that. Heredoc-free printf is
+# used so we do not introduce any BOM (POSIX equivalent of AP-1).
+write_notifs_file() {
+    notifs_path="$1"; shift
+    : > "$notifs_path"
+    for v in "$@"; do
+        printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"e2e-session-1","update":{"sessionUpdate":"agent_message_chunk","content":{"text":"%s"}}}}\n' "$v" >> "$notifs_path"
+    done
+}
+
 PII_PROMPT='Echo each line back to me VERBATIM, no edits, no summaries:\n\n- Email: corey@cmetech.io\n- IPv4: 192.168.1.42\n- US phone: (415) 555-2671\n- Credit card: 4111-1111-1111-1111\n\nJohn Smith from Boston signing off.'
 
 # Items the response MUST contain for round-trip to be considered successful.
@@ -334,7 +364,13 @@ pii_probe() {
     fi
 }
 
-scenario_pii() {
+scenario_pii_live() {
+    section "DEPRECATED: --mode live"
+    info "The live path depends on the LLM (Claude via kiro-cli) verbatim-echoing PII-shaped"
+    info "data, which current model releases refuse on safety grounds. Expect 'round-trip"
+    info "decrypt: NOT in response' failures. See Phase 08.3.2 for the deterministic-worker"
+    info "alternative (--mode fake, the default)."
+
     section "PII round-trip — encrypt → worker → decrypt → client"
     payload=$(printf '{"model":"auto","max_tokens":512,"messages":[{"role":"user","content":"%s"}],"stream":true}' "$PII_PROMPT")
 
@@ -348,6 +384,90 @@ scenario_pii() {
     if [ "$SURFACE" = "all" ] || [ "$SURFACE" = "ollama" ]; then
         pii_probe ollama "Ollama /api/chat" "/api/chat" "$payload"
     fi
+}
+
+scenario_pii_fake() {
+    section "PII round-trip — --mode fake (deterministic, Phase 08.3.2)"
+
+    # (i) Notifications file path under $TMPDIR_ (auto-cleaned by trap at line 73).
+    notifs_path="$TMPDIR_/notifications.ndjson"
+
+    # (ii) Build NDJSON content with one frame per expected plaintext.
+    # SessionId hard-coded to 'e2e-session-1' (matches
+    # tests/e2e/cmd/fake-kiro-cli/main.go:114).
+    write_notifs_file "$notifs_path" "$PII_EXPECT_EMAIL" "$PII_EXPECT_IPV4"
+    n_frames=$(wc -l < "$notifs_path" | tr -d ' ')
+    ok "wrote $n_frames notification frame(s) to $notifs_path (no BOM)"
+
+    # (iii) Pre-flight validation — each line must parse as JSON. The fake
+    # silently skips malformed lines (main.go:202), so an operator would
+    # otherwise see "round-trip decrypt: 'X' NOT in response" with no clue.
+    # Catch it here. AP-2 mitigation (POSIX side).
+    if command -v jq >/dev/null 2>&1; then
+        line_num=0
+        while IFS= read -r line; do
+            line_num=$((line_num + 1))
+            if ! printf '%s' "$line" | jq . >/dev/null 2>&1; then
+                fail "notifications file frame $line_num is invalid JSON"
+                return
+            fi
+        done < "$notifs_path"
+        ok "all $n_frames frame(s) are valid JSON (jq pre-flight)"
+    elif command -v python3 >/dev/null 2>&1; then
+        if ! python3 -c 'import json,sys
+for i, line in enumerate(open(sys.argv[1]), 1):
+    json.loads(line)' "$notifs_path" 2>/dev/null; then
+            fail "notifications file contains invalid JSON (python3 pre-flight)"
+            return
+        fi
+        ok "all $n_frames frame(s) are valid JSON (python3 pre-flight)"
+    else
+        warn "skipping notifications NDJSON validation; jq or python3 recommended"
+    fi
+
+    # (iv) T2 mitigation: gateway must be pointed at a fake worker. Read
+    # /admin/about (HTML page that exposes the KIRO_CMD row) and require
+    # the configured binary path to contain 'fake' (case-insensitive). If
+    # not, the operator forgot to swap KIRO_CMD; refuse to proceed rather
+    # than contaminate live traffic. Mirrors Plan 02's PowerShell guard.
+    about_body="$TMPDIR_/about.html"
+    if ! curl_auth GET "$BASE/admin/about" -o "$about_body" 2>/dev/null; then
+        fail "could not read $BASE/admin/about (HTTP error)"
+        return
+    fi
+    kiro_cmd=$(sed -n 's:.*<dt>[[:space:]]*KIRO_CMD[[:space:]]*</dt>[[:space:]]*<dd>\([^<]*\)</dd>.*:\1:p' "$about_body" | head -1)
+    if [ -z "$kiro_cmd" ]; then
+        fail "could not parse KIRO_CMD value from /admin/about HTML"
+        return
+    fi
+    if ! printf '%s' "$kiro_cmd" | grep -qi 'fake'; then
+        fail "T2 GUARD: gateway is not pointed at a fake worker (KIRO_CMD='$kiro_cmd') — refusing to run --mode fake to avoid contaminating live traffic"
+        info "operator action: set KIRO_CMD=\$(pwd)/bin/fake-kiro-cli in .otto-gw.overrides.env and restart the gateway"
+        return
+    fi
+    ok "gateway KIRO_CMD='$kiro_cmd' resolves to a fake worker"
+
+    # (v) Operator informational — script does NOT manipulate the gateway
+    # process env. Operator owns lifecycle.
+    info "NOTE: the gateway process must have OTTO_FAKE_KIRO_NOTIFICATIONS_FILE=$notifs_path set in its environment. If it doesn't, restart the gateway with that env var set."
+
+    # (vi) Run the existing probes — identical surface dispatch to live.
+    payload=$(printf '{"model":"auto","max_tokens":512,"messages":[{"role":"user","content":"%s"}],"stream":true}' "$PII_PROMPT")
+
+    if [ "$SURFACE" = "all" ] || [ "$SURFACE" = "anthropic" ]; then
+        pii_probe anthropic "Anthropic /v1/messages" "/v1/messages" "$payload" \
+            -H "anthropic-version: 2023-06-01"
+    fi
+    if [ "$SURFACE" = "all" ] || [ "$SURFACE" = "openai" ]; then
+        pii_probe openai "OpenAI /v1/chat/completions" "/v1/chat/completions" "$payload"
+    fi
+    if [ "$SURFACE" = "all" ] || [ "$SURFACE" = "ollama" ]; then
+        pii_probe ollama "Ollama /api/chat" "/api/chat" "$payload"
+    fi
+}
+
+scenario_pii() {
+    if [ "$MODE" = "fake" ]; then scenario_pii_fake; else scenario_pii_live; fi
 }
 
 # ---------------------------------------------------------------------------
