@@ -159,23 +159,34 @@ var (
 	// = 56 codes). Context-anchored INSIDE the regex (no ContextKeywords —
 	// same idiom as coordinatesRe's [NS]/[EW] hemisphere anchor).
 	//
-	// Two alternation arms (AP-2 mitigation):
-	//   1. ", <STATE>" — comma-prefixed (after a city). Trail is
-	//      `[ \t]+\d{5}` / `.` / `,`. The leading ", " is consumed by the
-	//      match span — acceptable per Pitfall 7; comma is outside the
-	//      encrypted blob and round-trips byte-for-byte.
+	// Two alternation arms (AP-2 mitigation), BOTH require a trailing
+	// ZIP (`[ \t]+\d{5}`):
+	//   1. ", <STATE> <ZIP>" — comma-prefixed (after a city). The
+	//      leading ", " is consumed by the match span — acceptable per
+	//      Pitfall 7; comma is outside the encrypted blob and
+	//      round-trips byte-for-byte.
 	//   2. line-start `<STATE>[ \t]+\d{5}` — at start-of-input or after a
 	//      newline, the state code MUST be followed by a ZIP. This
 	//      prevents English-word collisions ("OK, that works", "TX is
 	//      a state") from matching at line start.
 	//
-	// Both arms now REQUIRE a structural trail anchor (ZIP / period /
-	// trailing comma). Earlier shape allowed a bare `\b` trail on arm 1
-	// (08.4-REVIEW CR-01) which let comma-prefixed English words like
-	// ", OR" / ", IN" / ", OK" / ", ME" / ", ID" / ", HI" all match as
-	// USState spans, silently breaking ordinary prose in encrypt mode.
-	// Without arm-2's strict ZIP requirement, every line-start "OK,"
-	// would tokenize as a USState (Pitfall 1).
+	// 08.4-REVIEW iter-2 CR-NEW-01: arm 1 previously also accepted `.`
+	// and `,` as trail alternates (`[ \t]+\d{5}|\.|,`) to catch the
+	// shapes ", ST." and ", ST, USA". Those alternates collided with
+	// ordinary English-word prose ending in punctuation: "Yes, OK.",
+	// "Pick A, OR.", "Look, OK, here.", "Pick A, OR 27584 stuff" all
+	// matched as USState spans. AP-2 invariant: English words must not
+	// match. We drop the punctuation alternates and require the
+	// structural ZIP trail. The trade-off: sentence-terminating state
+	// codes WITHOUT a ZIP ("He moved to TX.") no longer match -- but
+	// such standalone state codes are inherently ambiguous with English
+	// words ("TX" vs "TX is a state") and are intentional misses;
+	// LOCATION NER is the catch-all when enabled.
+	//
+	// Earlier shape (pre 08.4-REVIEW CR-01) allowed a bare `\b` trail on
+	// arm 1 which let comma-prefixed English words like ", OR" / ", IN"
+	// / ", OK" / ", ME" / ", ID" / ", HI" all match as USState spans,
+	// silently breaking ordinary prose in encrypt mode.
 	//
 	// Pitfall 3 (newline smuggling): inter-token whitespace uses
 	// `[ \t]+` not `\s+`. RE2's `\s` includes newlines; using `\s+`
@@ -187,14 +198,15 @@ var (
 	// Alternation list MUST be kept in sync with USPS state-code
 	// assignments. As of 2026: 50 states + DC + AS + GU + MP + PR + VI.
 	usStateRe = regexp.MustCompile(
-		// Arm 1: comma-prefixed — captures ", <STATE>" + trail anchor.
-		// Trail REQUIRES one of: ZIP run, period, trailing comma. No
-		// bare \b — that was the CR-01 hole.
+		// Arm 1: comma-prefixed — captures ", <STATE> <ZIP>". REQUIRES
+		// the structural ZIP trail (08.4-REVIEW iter-2 CR-NEW-01); no
+		// bare-period / bare-comma alternates because those collide with
+		// English-word prose ending in punctuation.
 		`(?:,[ \t]+` +
 			`(?:AL|AK|AZ|AR|CA|CO|CT|DE|DC|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|` +
 			`MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|` +
 			`SD|TN|TX|UT|VT|VA|WA|WV|WI|WY|AS|GU|MP|PR|VI)` +
-			`(?:[ \t]+\d{5}|\.|,))` +
+			`[ \t]+\d{5})` +
 			// Arm 2: line-start — REQUIRES ZIP trail to mitigate AP-2.
 			`|(?:(?:^|\n)` +
 			`(?:AL|AK|AZ|AR|CA|CO|CT|DE|DC|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|` +

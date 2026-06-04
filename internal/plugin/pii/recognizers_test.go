@@ -702,6 +702,28 @@ func TestUSStateRecognizer_RejectsEnglishWords(t *testing.T) {
 		// straddle a newline (e.g., ",\n  OR"). Post-fix `[ \t]+` rejects.
 		{"newline-or", "Please pick:\n- Option A,\n  OR Option B,\n  IN that case"},
 		{"newline-in", "Items:\n- foo,\n  IN summary"},
+
+		// 08.4-REVIEW iter-2 CR-NEW-01: arm 1's prior `[ \t]+\d{5}|\.|,`
+		// trail let comma-prefixed English-word two-letter codes followed
+		// by terminal punctuation match as USState spans
+		// ("Yes, OK." → ", OK."). The fix drops the `\.|,` alternates so
+		// arm 1 REQUIRES the structural ZIP trail. These fixtures pin
+		// the punctuation-trail shapes the prior alternates admitted.
+		//
+		// NOTE: the shape ", OR 27584 stuff" (English-word two-letter
+		// code + 5-digit quantity) is INHERENTLY ambiguous with a real
+		// address (", TX 27584 ASAP") under RE2 -- there is no
+		// structural signal that distinguishes them without a city-name
+		// prefix lookbehind, which RE2 lacks. We accept this as a known
+		// AP-2 residual and lean on LOCATION NER (when enabled) plus
+		// downstream review of suspect spans. See 08.4-REVIEW iter-2
+		// CR-NEW-01 discussion of the trade-off.
+		{"comma-ok-period", "Yes, OK."},
+		{"comma-or-period", "Pick A, OR."},
+		{"comma-in-period", "Step one, IN."},
+		{"comma-id-period", "Read this, ID."},
+		{"comma-ok-comma", "Look, OK, here."},
+		{"comma-or-comma", "Maybe try A, OR, B?"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
