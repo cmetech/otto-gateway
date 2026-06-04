@@ -603,6 +603,17 @@ func TestUSAddressRecognizer_RejectsNonAddressShapes(t *testing.T) {
 // TestUSStateRecognizer_CapturedSpan — exact-span fixture. Per Pitfall 7,
 // the lead anchor (", " or "\n") is consumed by the match span — the resulting
 // `, [USState_1]` token preserves the comma boilerplate.
+//
+// 08.4-REVIEW CR-01: arm 1's trail no longer accepts a bare `\b` (which was
+// zero-width and made every comma-prefixed two-letter English word match).
+// Trail now REQUIRES one of `[ \t]+\d{5}|\.|,`. As a side effect, the
+// captured span now includes the trailing ZIP run when present (previously
+// the zero-width `\b` arm won and the ZIP was captured separately by USZIP
+// on the next pass). The USZIP recognizer still matches the same ZIP on
+// its own pass, and the overlap arbiter at pii.go:227-233 (first-recognizer-
+// wins) keeps USAddress / USState's longer span ahead of USZIP — so the
+// canonical address fixture in TestPIIRedactionHook_USAddressFullCoverage
+// still round-trips byte-for-byte.
 func TestUSStateRecognizer_CapturedSpan(t *testing.T) {
 	r := findRecognizer(t, "USState")
 	cases := []struct {
@@ -610,14 +621,13 @@ func TestUSStateRecognizer_CapturedSpan(t *testing.T) {
 		input       string
 		wantCapture string
 	}{
-		// Trail anchor `\b` is zero-width and wins over the longer
-		// `\s+\d{5}` arm via RE2 leftmost-first alternation — the
-		// captured span ends at `\b`, NOT at the trailing space.
-		// Acceptable per Pitfall 7: the lead `, ` is consumed; ZIP
-		// is captured by USZIP separately on the next regex pass.
-		{"tx-with-zip", "He lives at 100 Oak Ave, Austin, TX 27584.", ", TX"},
-		{"ma-with-zip", "He lives at 100 Oak Ave, Boston, MA 02101.", ", MA"},
-		{"hi-with-zip", "He lives at 100 Oak Ave, Honolulu, HI 96701.", ", HI"},
+		// Post CR-01: arm 1 trail is `[ \t]+\d{5}|\.|,` (no bare \b);
+		// the longest-arm `[ \t]+\d{5}` wins via RE2 leftmost-first
+		// alternation, so the captured span now extends through the
+		// ZIP run.
+		{"tx-with-zip", "He lives at 100 Oak Ave, Austin, TX 27584.", ", TX 27584"},
+		{"ma-with-zip", "He lives at 100 Oak Ave, Boston, MA 02101.", ", MA 02101"},
+		{"hi-with-zip", "He lives at 100 Oak Ave, Honolulu, HI 96701.", ", HI 96701"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -632,6 +642,19 @@ func TestUSStateRecognizer_CapturedSpan(t *testing.T) {
 // TestUSStateRecognizer_RejectsEnglishWords — AP-2 mitigation. Two-letter
 // state codes that ARE English words (OR, IN, OK, HI, ME, ID) must NOT match
 // without preceding-comma / line-start context.
+//
+// 08.4-REVIEW CR-01 + WR-02: arm 1 (comma-prefixed) previously accepted a
+// bare `\b` zero-width trail anchor with NO ZIP requirement, so ordinary
+// English prose with a leading comma matched as a USState span. The fix
+// tightens arm 1's trail to require `[ \t]+\d{5}|\.|,` (no bare \b) so the
+// AP-2 mitigation actually holds on the comma-prefixed arm too. These
+// fixtures pin both pre-fix (no comma) and post-fix (with comma) cases.
+//
+// 08.4-REVIEW CR-02: arm 1 previously used `\s+` between the comma and the
+// state code. RE2's `\s` includes newlines, so multi-line lists with
+// comma-terminated items followed by a two-letter English word continuation
+// (e.g., ",\n  OR") would match. The fix replaces `\s+` -> `[ \t]+` (same
+// idiom as Pitfall 3 already applied to usAddressRe).
 func TestUSStateRecognizer_RejectsEnglishWords(t *testing.T) {
 	r := findRecognizer(t, "USState")
 	cases := []struct {
@@ -645,6 +668,27 @@ func TestUSStateRecognizer_RejectsEnglishWords(t *testing.T) {
 		{"me-as-pronoun", "Send ME the report."},
 		{"id-as-shortened-word", "Can you ID this issue?"},
 		{"bare-tx-no-context", "TX is a state code but lacks context here."},
+
+		// 08.4-REVIEW CR-01: comma-prefixed English-word fixtures. Pre-fix,
+		// arm 1's bare `\b` made these match as ", OR" / ", IN" / etc.
+		{"comma-or", "Should we ship today, OR wait until next week?"},
+		{"comma-in", "I keep my keys, IN my pocket."},
+		// Note: "Send to me, ME tomorrow" — no trailing comma after ME.
+		// A trailing comma `, ME,` IS accepted by arm 1's trail alternation
+		// (`,` is a valid trail anchor for the realistic `City, ST, USA`
+		// shape), so the comma-trail variant is deliberately not asserted
+		// here. The reviewer's CR-01 fix suggestion explicitly accepts the
+		// `,` trail anchor as the design intent.
+		{"comma-me", "Send to me, ME tomorrow."},
+		{"comma-ok", "Yes that works, OK go ahead."},
+		{"comma-id", "Look here, ID is not enabled."},
+		{"comma-hi", "Say hello, HI there friend."},
+
+		// 08.4-REVIEW CR-02: newline-smuggling fixtures. Pre-fix, `\s+`
+		// between the comma and the state code allowed the match span to
+		// straddle a newline (e.g., ",\n  OR"). Post-fix `[ \t]+` rejects.
+		{"newline-or", "Please pick:\n- Option A,\n  OR Option B,\n  IN that case"},
+		{"newline-in", "Items:\n- foo,\n  IN summary"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

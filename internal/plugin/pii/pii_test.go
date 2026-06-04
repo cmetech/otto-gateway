@@ -1032,8 +1032,14 @@ func TestPIIRedactionHook_NER_PerEntityActions(t *testing.T) {
 // integration test. Drives the full hook with NER enabled against the canonical
 // address fixture and asserts:
 //   - USAddress fires on "1111 Main Street" (largest atomic span)
-//   - USState fires on ", TX" (lead-anchor consumes comma+space per Pitfall 7)
-//   - USZIP fires on "27584" (validator accepts; not all-same-digit)
+//   - USState fires on ", TX 27584" — post 08.4-REVIEW CR-01 fix, arm 1's
+//     trail no longer accepts bare \b; the longest-arm `[ \t]+\d{5}` wins
+//     leftmost-first alternation, so the USState span now extends through
+//     the trailing ZIP run.
+//   - USZIP is 0 — the ZIP is now subsumed by USState's span; the overlap
+//     arbiter at pii.go:227-233 (first-recognizer-wins, USState is registered
+//     before USZIP) drops the USZIP candidate. The ZIP is still redacted
+//     (it lives inside the USState replace-token).
 //   - LOCATION fires on "Austin" (NER, does not overlap any regex span)
 //   - PERSON is 0 — "Main Street" suppressed by USAddress regex span overlap
 //     at acceptNERSpans (pii.go:258-277). This is the 2026-06-04 splunk-box
@@ -1060,8 +1066,11 @@ func TestPIIRedactionHook_USAddressFullCoverage(t *testing.T) {
 	if got := counts["USState"]; got != 1 {
 		t.Errorf("USState: got %d, want 1", got)
 	}
-	if got := counts["USZIP"]; got != 1 {
-		t.Errorf("USZIP: got %d, want 1", got)
+	// 08.4-REVIEW CR-01: USState span now subsumes the ZIP, so USZIP is
+	// expected to be 0 on this canonical fixture. The ZIP is still removed
+	// from plaintext via USState's replace token.
+	if got := counts["USZIP"]; got != 0 {
+		t.Errorf("USZIP: got %d, want 0 (subsumed by USState span after CR-01 fix)", got)
 	}
 	if got := counts["LOCATION"]; got != 1 {
 		t.Errorf("LOCATION (Austin): got %d, want 1", got)
@@ -1074,5 +1083,9 @@ func TestPIIRedactionHook_USAddressFullCoverage(t *testing.T) {
 	got := req.Messages[0].Content[0].Text
 	if strings.Contains(got, "1111 Main Street") {
 		t.Errorf("plaintext street leaked through redact; got %q", got)
+	}
+	// The ZIP plaintext must also be gone (it's inside the USState span).
+	if strings.Contains(got, "27584") {
+		t.Errorf("plaintext ZIP leaked through redact; got %q", got)
 	}
 }

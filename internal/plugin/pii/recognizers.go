@@ -160,33 +160,47 @@ var (
 	// same idiom as coordinatesRe's [NS]/[EW] hemisphere anchor).
 	//
 	// Two alternation arms (AP-2 mitigation):
-	//   1. ", <STATE>" — comma-prefixed (after a city). Trail is `\b` /
-	//      `\s+\d{5}` / `.` / `,`. The leading ", " is consumed by the
+	//   1. ", <STATE>" — comma-prefixed (after a city). Trail is
+	//      `[ \t]+\d{5}` / `.` / `,`. The leading ", " is consumed by the
 	//      match span — acceptable per Pitfall 7; comma is outside the
 	//      encrypted blob and round-trips byte-for-byte.
-	//   2. line-start `<STATE>\s+\d{5}` — at start-of-input or after a
+	//   2. line-start `<STATE>[ \t]+\d{5}` — at start-of-input or after a
 	//      newline, the state code MUST be followed by a ZIP. This
 	//      prevents English-word collisions ("OK, that works", "TX is
 	//      a state") from matching at line start.
 	//
+	// Both arms now REQUIRE a structural trail anchor (ZIP / period /
+	// trailing comma). Earlier shape allowed a bare `\b` trail on arm 1
+	// (08.4-REVIEW CR-01) which let comma-prefixed English words like
+	// ", OR" / ", IN" / ", OK" / ", ME" / ", ID" / ", HI" all match as
+	// USState spans, silently breaking ordinary prose in encrypt mode.
 	// Without arm-2's strict ZIP requirement, every line-start "OK,"
 	// would tokenize as a USState (Pitfall 1).
+	//
+	// Pitfall 3 (newline smuggling): inter-token whitespace uses
+	// `[ \t]+` not `\s+`. RE2's `\s` includes newlines; using `\s+`
+	// between the comma and the state code (or between the state code
+	// and the ZIP) would let multi-line lists smuggle into a single
+	// USState span — e.g. ",\n  OR" matching as ", OR". Same idiom as
+	// usAddressRe (08.4-REVIEW CR-02).
 	//
 	// Alternation list MUST be kept in sync with USPS state-code
 	// assignments. As of 2026: 50 states + DC + AS + GU + MP + PR + VI.
 	usStateRe = regexp.MustCompile(
 		// Arm 1: comma-prefixed — captures ", <STATE>" + trail anchor.
-		`(?:,\s+` +
+		// Trail REQUIRES one of: ZIP run, period, trailing comma. No
+		// bare \b — that was the CR-01 hole.
+		`(?:,[ \t]+` +
 			`(?:AL|AK|AZ|AR|CA|CO|CT|DE|DC|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|` +
 			`MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|` +
 			`SD|TN|TX|UT|VT|VA|WA|WV|WI|WY|AS|GU|MP|PR|VI)` +
-			`(?:\b|\s+\d{5}|\.|,))` +
+			`(?:[ \t]+\d{5}|\.|,))` +
 			// Arm 2: line-start — REQUIRES ZIP trail to mitigate AP-2.
 			`|(?:(?:^|\n)` +
 			`(?:AL|AK|AZ|AR|CA|CO|CT|DE|DC|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|` +
 			`MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|` +
 			`SD|TN|TX|UT|VT|VA|WA|WV|WI|WY|AS|GU|MP|PR|VI)` +
-			`\s+\d{5})`,
+			`[ \t]+\d{5})`,
 	)
 
 	// usAddressRe — US street address: 1-6 digit house number + one or
