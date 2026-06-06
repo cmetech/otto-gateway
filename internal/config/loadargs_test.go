@@ -242,6 +242,36 @@ func TestLoadArgs_Version(t *testing.T) {
 	}
 }
 
+// Regression: --version must short-circuit BEFORE env validation so that
+// `otto-gw version` works on installs where env is misconfigured (e.g.
+// PII_ENCRYPT_KEY required because encrypt mode is on, but unset). Before
+// the meta-flag pre-scan, Load() would fail with the missing-key error and
+// the user would never see the version string.
+func TestLoadArgs_VersionShortCircuitsEnvValidation(t *testing.T) {
+	t.Setenv("PII_REDACTION_ENABLED", "true")
+	t.Setenv("PII_REDACTION_MODE", "encrypt")
+	t.Setenv("PII_ENCRYPT_KEY", "") // would normally fail Load()
+	_, err := config.LoadArgs([]string{"--version"})
+	if !errors.Is(err, config.ErrVersionRequested) {
+		t.Fatalf("LoadArgs([--version]) with broken PII env: got err %v, want errors.Is(err, ErrVersionRequested)", err)
+	}
+}
+
+// Same regression for --help.
+func TestLoadArgs_HelpShortCircuitsEnvValidation(t *testing.T) {
+	t.Setenv("PII_REDACTION_ENABLED", "true")
+	t.Setenv("PII_REDACTION_MODE", "encrypt")
+	t.Setenv("PII_ENCRYPT_KEY", "")
+	_, err := config.LoadArgs([]string{"--help"})
+	var hr *config.HelpRequested
+	if !errors.As(err, &hr) {
+		t.Fatalf("LoadArgs([--help]) with broken PII env: got err %v, want HelpRequested", err)
+	}
+	if hr.Usage == "" {
+		t.Fatalf("HelpRequested.Usage empty — expected --help text")
+	}
+}
+
 // --- no --auth-token flag (secret must not appear in argv) --------------
 
 func TestLoadArgs_NoAuthTokenFlag(t *testing.T) {
