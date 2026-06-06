@@ -65,6 +65,12 @@ try {
         $global:LASTEXITCODE = 0
     }
 
+    # Stop a running otto-tray before extraction — the .exe is locked by
+    # the running process otherwise and Copy-Item fails with "in use".
+    Info "Stopping running tray (if any) ..."
+    Get-Process otto-tray -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 500
+
     # Expand-Archive has no strip-components: expand to temp, move inner folder up.
     Info "Extracting to $OttoHome ..."
     $exdir = Join-Path $tmp 'extract'

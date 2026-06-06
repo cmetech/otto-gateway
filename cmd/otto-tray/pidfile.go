@@ -32,17 +32,8 @@ func readPIDFile(path string) (int, error) {
 	return pid, nil
 }
 
-// processAlive reports whether the given PID is currently running.
-// Uses os.FindProcess + Signal(0) — the canonical liveness probe.
-// Windows treats Signal(0) through os.Process as a probe via
-// OpenProcess + exit-code check at the syscall layer.
-func processAlive(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	p, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	return p.Signal(syscall0()) == nil
-}
+// processAlive is implemented per-OS in pidfile_darwin.go and
+// pidfile_windows.go. Windows does not honor Signal(0) (it returns
+// ErrUnsupported for everything but Kill), so the per-OS split is
+// load-bearing — the earlier shared codepath reported every Windows
+// gateway PID as dead.

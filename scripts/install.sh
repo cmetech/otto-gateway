@@ -113,6 +113,15 @@ main() {
         "$OTTO_HOME/scripts/otto-gw" stop >/dev/null 2>&1 || true
     fi
 
+    # Stop a running otto-tray before extraction — the .app bundle's
+    # MacOS/otto-tray copy is in-use otherwise. killall is silent when
+    # nothing is running and is in /usr/bin on every supported macOS.
+    if [ "$PLATFORM_OS" = "darwin" ]; then
+        killall otto-tray 2>/dev/null || true
+        # Give launchd a moment to reap before we overwrite the bundle.
+        sleep 1
+    fi
+
     info "Extracting to $OTTO_HOME ..."
     mkdir -p "$OTTO_HOME"
     tar -xzf "$tmp/$archive" -C "$OTTO_HOME" --strip-components=1

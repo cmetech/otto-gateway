@@ -2,6 +2,19 @@
 
 package main
 
-import "syscall"
+import (
+	"os"
+	"syscall"
+)
 
-func syscall0() syscall.Signal { return syscall.Signal(0) }
+// processAlive uses the canonical POSIX kill(0) probe.
+func processAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	p, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	return p.Signal(syscall.Signal(0)) == nil
+}
