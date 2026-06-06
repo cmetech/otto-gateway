@@ -193,7 +193,17 @@ func (r *Registry) Get(ctx context.Context, sid, cwd string) (*Entry, error) {
 					return nil, ErrRegistryClosed
 				}
 			} else {
-				// Alive + ready: return cached entry.
+				// Alive + ready: refresh LastUsed under r.mu before
+				// returning so the reaper's snapshot-then-iterate cannot
+				// reap this entry between our handoff and the handler's
+				// entry.Mu.Lock. Closes audit
+				// session-reap-vs-get-handoff-race: the previous code
+				// returned without touching LastUsed (per D-11 "advance
+				// only at response complete"), but D-11 is about
+				// stream-continuity reaping which D-12's TryLock already
+				// covers. The handoff-window race is a separate boundary
+				// that requires a fresh timestamp.
+				e.LastUsed = time.Now()
 				r.mu.Unlock()
 				return e, nil
 			}
