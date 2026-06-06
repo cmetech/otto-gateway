@@ -583,6 +583,12 @@ func TestAfter_RoundTripDecrypt_EntityNamesWithDigits(t *testing.T) {
 	}{
 		{"IPv4", "192.168.1.42"},
 		{"IPv6", "2001:db8::1"},
+		// Audit pii-decrypt-regex-misses-underscore-entities: entity names
+		// containing underscores (SIP_URI, MAC_ADDRESS) were silently
+		// passed through unchanged because decryptTokenRe's entity group
+		// was [A-Za-z0-9]+ (letters + digits, no underscore).
+		{"SIP_URI", "sip:alice@example.com"},
+		{"MAC_ADDRESS", "00:1A:2B:3C:4D:5E"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.entity, func(t *testing.T) {
