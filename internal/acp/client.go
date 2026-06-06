@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"runtime/debug"
 	"sync"
+	"syscall"
 	"sync/atomic"
 	"time"
 
@@ -303,6 +304,26 @@ func New(cfg Config) (*Client, error) {
 	// grandchildren). No-op on Windows. Build-tagged in
 	// pool_pgid_{unix,windows}.go.
 	applyPgidAttr(cmd)
+	// Audit acp-grandchildren-not-killed-on-close: override
+	// exec.CommandContext's default cancel (single SIGKILL to leader PID
+	// only) with a pgrp-aware kill so kiro-cli's tool-server children
+	// (MCP servers, language servers, file readers) are reaped along
+	// with the leader. Without this they reparent to init and survive
+	// the gateway. No-op on Windows via the killProcessGroup stub.
+	//
+	// WaitDelay bounds how long Wait() waits for I/O to drain after
+	// the process is signaled before forcibly closing stdio. Two
+	// seconds is generous for kiro-cli's shutdown handler.
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return os.ErrProcessDone
+		}
+		// SIGKILL is delivered to the whole pgrp (leader + children).
+		// Ignore ESRCH so an already-exited subprocess doesn't surface
+		// a noisy error on the shutdown path.
+		return killProcessGroup(cmd.Process.Pid, syscall.SIGKILL)
+	}
+	cmd.WaitDelay = 2 * time.Second
 	if err := cmd.Start(); err != nil {
 		cancel()
 		return nil, fmt.Errorf("acp: start %q: %w", cfg.Command, err)
@@ -1096,12 +1117,25 @@ func (c *Client) Close() error {
 		// happy teardown path; only genuinely unexpected exit errors flow
 		// through to firstErr.
 		if c.cmd != nil {
+			pid := 0
+			if c.cmd.Process != nil {
+				pid = c.cmd.Process.Pid
+			}
 			if err := c.cmd.Wait(); err != nil && firstErr == nil {
 				if !isExpectedTeardownExit(err) {
 					firstErr = fmt.Errorf("acp: cmd wait: %w", err)
 				} else {
 					c.cfg.Logger.Debug("acp: cmd exited via context cancellation (expected)", "err", err)
 				}
+			}
+			// Audit acp-grandchildren-not-killed-on-close: defensive
+			// second pgrp-kill to catch any race where the leader exited
+			// before its children reparented. ESRCH (no such process)
+			// is the expected outcome and is silently ignored — we are
+			// signaling -pid, so it fires only if grandchildren are
+			// still alive in that pgrp. No-op on Windows.
+			if pid > 0 {
+				_ = killProcessGroup(pid, syscall.SIGKILL)
 			}
 		}
 	})
