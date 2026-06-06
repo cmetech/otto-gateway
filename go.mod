@@ -1,6 +1,6 @@
 module otto-gateway
 
-go 1.24
+go 1.25.0
 
 require (
 	github.com/go-chi/chi/v5 v5.3.0
@@ -11,6 +11,7 @@ require (
 	github.com/DeRuina/timberjack v1.4.5
 	github.com/jdkato/prose/v2 v2.0.0
 	github.com/oklog/ulid/v2 v2.1.1
+	golang.org/x/sys v0.45.0
 	pgregory.net/rapid v1.3.0
 )
 
