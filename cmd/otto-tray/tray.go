@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/energye/systray"
@@ -31,7 +32,12 @@ type trayState struct {
 	cfg          TrayConfig
 	dashboardURL string
 	current      State
-	startedAt    time.Time
+	// startedAt holds the moment the operator last clicked Start /
+	// Restart. The poller reads it through a *time.Time alias so a
+	// stale read between the click and the next tick still produces
+	// a coherent in-budget calculation; updates are atomic-pointer
+	// swaps so reader and writer don't need a shared mutex.
+	startedAt    atomic.Pointer[time.Time]
 	pollerCancel context.CancelFunc
 	stateCh      chan stateOutput
 
@@ -88,11 +94,7 @@ func (s *trayState) onReady(isFirstRun bool) func() {
 		s.pollerCancel = cancel
 		probe := s.makeProbe()
 		tick := time.NewTicker(3 * time.Second).C
-		startedAt := time.Time{}
-		s.mu.Lock()
-		s.startedAt = startedAt
-		s.mu.Unlock()
-		go runPoller(ctx, probe, tick, s.stateCh, &startedAt)
+		go runPoller(ctx, probe, tick, s.stateCh, s.getStartedAt)
 		go s.uiLoop()
 
 		go func() {
@@ -183,10 +185,24 @@ func (s *trayState) applyState(out stateOutput) {
 	}
 }
 
+// getStartedAt returns the last-recorded start timestamp, or the
+// zero time when the operator has not clicked Start yet.
+func (s *trayState) getStartedAt() time.Time {
+	if t := s.startedAt.Load(); t != nil {
+		return *t
+	}
+	return time.Time{}
+}
+
+// setStartedNow records 'now' as the start moment so the poller's
+// 30-second StartingBudget window covers the warm-up.
+func (s *trayState) setStartedNow() {
+	now := time.Now()
+	s.startedAt.Store(&now)
+}
+
 func (s *trayState) handleStart() {
-	s.mu.Lock()
-	s.startedAt = time.Now()
-	s.mu.Unlock()
+	s.setStartedNow()
 	res := runWrapper(s.installRoot, "start")
 	if res.ExitCode != 0 || res.Err != nil {
 		notify("OTTO Gateway", "Failed to start: "+firstLine(res.Stderr))
@@ -201,9 +217,7 @@ func (s *trayState) handleStop() {
 }
 
 func (s *trayState) handleRestart() {
-	s.mu.Lock()
-	s.startedAt = time.Now()
-	s.mu.Unlock()
+	s.setStartedNow()
 	res := runWrapper(s.installRoot, "restart")
 	if res.ExitCode != 0 || res.Err != nil {
 		notify("OTTO Gateway", "Failed to restart: "+firstLine(res.Stderr))

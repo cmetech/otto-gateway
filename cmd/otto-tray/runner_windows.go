@@ -22,7 +22,6 @@ func wrapperCommand(installRoot, verb string) (string, []string) {
 	return "pwsh", []string{"-NoProfile", "-File", script, verb}
 }
 
-//nolint:unused // wired in by Task 12 tray UI
 func detachProcessGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		CreationFlags: createNewProcessGroup | detachedProcess,

@@ -12,8 +12,6 @@ import (
 
 // runResult captures everything the tray needs to surface an error
 // in a notification. Empty Stderr + ExitCode 0 = success.
-//
-//nolint:unused // wired in by Task 12 tray UI
 type runResult struct {
 	ExitCode int
 	Stdout   string
@@ -27,8 +25,6 @@ type runResult struct {
 // tray does not signal the gateway. A 30s timeout matches the
 // wrapper's own readiness wait — anything longer is reported as a
 // failure to the user.
-//
-//nolint:unused // wired in by Task 12 tray UI
 func runWrapper(installRoot, verb string) runResult {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

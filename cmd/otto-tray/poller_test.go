@@ -25,7 +25,7 @@ func TestPoller_EmitsStateOnEachTick(t *testing.T) {
 	out := make(chan stateOutput, 4)
 
 	startedAt := time.Now().Add(-1 * time.Hour)
-	go runPoller(ctx, probe.probe, tick, out, &startedAt)
+	go runPoller(ctx, probe.probe, tick, out, func() time.Time { return startedAt })
 
 	tick <- time.Now()
 	select {
@@ -60,7 +60,7 @@ func TestPoller_ExitsOnContextCancel(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		runPoller(ctx, probe.probe, tick, out, &startedAt)
+		runPoller(ctx, probe.probe, tick, out, func() time.Time { return startedAt })
 		close(done)
 	}()
 	cancel()

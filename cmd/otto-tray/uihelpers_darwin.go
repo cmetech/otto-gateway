@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"time"
 
 	"github.com/energye/systray"
@@ -57,10 +58,16 @@ func escapeApplescript(s string) string {
 	return string(out)
 }
 
+// exeForAutostart returns the canonical binary path to embed in the
+// LaunchAgent plist. We resolve symlinks so the plist survives the
+// PATH symlink being relinked on upgrade.
 func exeForAutostart() (string, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return "", fmt.Errorf("resolve exe: %w", err)
+	}
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		return resolved, nil
 	}
 	return exe, nil
 }

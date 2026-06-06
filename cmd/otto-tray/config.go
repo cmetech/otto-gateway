@@ -74,8 +74,6 @@ func writeFileAtomic(path string, body []byte) error {
 
 // trayConfigPath returns the canonical path of tray.json for the
 // install root.
-//
-//nolint:unused // wired in by Task 13 main.go
 func trayConfigPath(installRoot string) string {
 	return filepath.Join(installRoot, "tray.json")
 }

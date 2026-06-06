@@ -46,8 +46,6 @@ func launchAgentPlistPath() string {
 // installLaunchAgent writes the plist and (unless skipLaunchctl)
 // calls launchctl bootstrap. Tests pass skipLaunchctl=true so they
 // verify file behavior without touching the real launchd.
-//
-//nolint:unused // wired in by Task 12 tray UI
 func installLaunchAgent(execPath string, skipLaunchctl bool) error {
 	body := launchAgentPlist(execPath)
 	path := launchAgentPlistPath()
@@ -70,7 +68,6 @@ func installLaunchAgent(execPath string, skipLaunchctl bool) error {
 	return nil
 }
 
-//nolint:unused // wired in by Task 12 tray UI
 func uninstallLaunchAgent(skipLaunchctl bool) error {
 	path := launchAgentPlistPath()
 	if !skipLaunchctl {
