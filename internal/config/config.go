@@ -586,7 +586,7 @@ func LoadArgs(args []string) (Config, error) {
 		ollamaPath      = fs.String("ollama-path-prefix", cfg.OllamaPathPrefix, "route prefix for the Ollama surface")
 		anthropicPath   = fs.String("anthropic-path-prefix", cfg.AnthropicPathPrefix, "route prefix for the Anthropic surface")
 		openaiPath      = fs.String("openai-path-prefix", cfg.OpenAIPathPrefix, "route prefix for the OpenAI surface")
-		allowedIPs      = fs.String("allowed-ips", "", "comma-split CIDR/IP allowlist")
+		allowedIPs      = fs.String("allowed-ips", joinAllowedIPs(cfg.AllowedIPs), "comma-split CIDR/IP allowlist")
 		authTrustXFF    = fs.Bool("auth-trust-xff", cfg.AuthTrustXFF, "trust X-Forwarded-For in the IP allowlist check")
 		version         = fs.Bool("version", false, "print version and exit")
 	)
@@ -646,6 +646,18 @@ func LoadArgs(args []string) (Config, error) {
 				errs = append(errs, fmt.Errorf("enabled-surfaces: %w", verr))
 			}
 		case "allowed-ips":
+			// Audit config-loadargs-empty-allowed-ips-flag-silently-disables-allowlist:
+			// reject explicit empty strings on a security-relevant knob.
+			// A wrapper script with an unset shell variable expanding to
+			// --allowed-ips="" previously silently overwrote an
+			// env-resolved allowlist with nil and enabled allow-all. The
+			// flag default is now env-derived (joinAllowedIPs above) so
+			// "flag unset → env wins" works without an explicit pass; an
+			// explicit empty is an obvious configuration mistake.
+			if strings.TrimSpace(*allowedIPs) == "" {
+				errs = append(errs, errors.New("allowed-ips: explicit empty value not allowed; use --allowed-ips=0.0.0.0/0 to opt in to allow-all"))
+				return
+			}
 			prefixes, perr := parseCIDRs(splitCommaTrim(*allowedIPs))
 			if perr != nil {
 				errs = append(errs, fmt.Errorf("allowed-ips: %w", perr))
@@ -908,6 +920,22 @@ func getEnvInt(key string, def int) (int, error) {
 // (/32 for IPv4, /128 for IPv6). All entry-level errors are accumulated via
 // errors.Join and returned together. Returns (nil, nil) when entries is nil;
 // returns an empty non-nil slice when entries is non-nil but zero-length.
+// joinAllowedIPs renders []netip.Prefix back into a comma-separated
+// string for use as the --allowed-ips flag default. Mirrors the
+// "default seeded from env-resolved cfg" pattern used by
+// --enabled-surfaces (line 585) so flag-unset = env-wins works without
+// requiring an explicit Visit case to merge.
+func joinAllowedIPs(prefixes []netip.Prefix) string {
+	if len(prefixes) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(prefixes))
+	for _, p := range prefixes {
+		parts = append(parts, p.String())
+	}
+	return strings.Join(parts, ",")
+}
+
 func parseCIDRs(entries []string) ([]netip.Prefix, error) {
 	if entries == nil {
 		return nil, nil

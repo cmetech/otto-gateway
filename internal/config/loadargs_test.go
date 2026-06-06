@@ -85,6 +85,36 @@ func TestLoadArgs_FlagWins_CommaSlice_AllowedIPs(t *testing.T) {
 	}
 }
 
+// TestLoadArgs_AllowedIPs_EmptyFlagRejected is the regression test for
+// audit config-loadargs-empty-allowed-ips-flag-silently-disables-allowlist.
+// An explicit --allowed-ips="" used to silently overwrite an
+// env-resolved allowlist with nil → IPAllowlist middleware took the
+// allow-all fast path. Post-fix, --allowed-ips="" is rejected.
+func TestLoadArgs_AllowedIPs_EmptyFlagRejected(t *testing.T) {
+	t.Setenv("ALLOWED_IPS", "10.0.0.0/24,192.168.1.0/24")
+	_, err := config.LoadArgs([]string{"--allowed-ips="})
+	if err == nil {
+		t.Fatal("LoadArgs with --allowed-ips=\"\" must return error, got nil")
+	}
+	if !strings.Contains(err.Error(), "allowed-ips") {
+		t.Errorf("error = %v; want it to mention allowed-ips", err)
+	}
+}
+
+// TestLoadArgs_AllowedIPs_FlagUnsetUsesEnv confirms the flag default is
+// env-derived: when --allowed-ips is not passed, the env-resolved value
+// survives. Companion to TestLoadArgs_AllowedIPs_EmptyFlagRejected.
+func TestLoadArgs_AllowedIPs_FlagUnsetUsesEnv(t *testing.T) {
+	t.Setenv("ALLOWED_IPS", "10.0.0.0/24")
+	cfg, err := config.LoadArgs([]string{})
+	if err != nil {
+		t.Fatalf("LoadArgs: %v", err)
+	}
+	if len(cfg.AllowedIPs) != 1 || cfg.AllowedIPs[0].String() != "10.0.0.0/24" {
+		t.Errorf("AllowedIPs = %v; want [10.0.0.0/24] from env (flag default must be env-derived)", cfg.AllowedIPs)
+	}
+}
+
 func TestLoadArgs_FlagWins_WhitespaceSlice_KiroArgs(t *testing.T) {
 	// t.Setenv: cannot use t.Parallel().
 	t.Setenv("KIRO_ARGS", "acp")
