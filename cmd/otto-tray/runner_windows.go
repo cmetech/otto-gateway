@@ -10,7 +10,6 @@ import (
 
 const (
 	createNewProcessGroup = 0x00000200
-	detachedProcess       = 0x00000008
 )
 
 // wrapperCommand returns the executable and args to run the otto-gw
@@ -38,8 +37,16 @@ func wrapperCommand(installRoot, verb string) (string, []string) {
 	return shell, []string{"-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, verb}
 }
 
+// detachProcessGroup puts the wrapper in its own process group so that
+// quitting the tray does not propagate SIGINT/Ctrl-Break to the gateway.
+// We deliberately do NOT pass DETACHED_PROCESS — that flag strips all
+// console handles from the child, and the wrapper script's internal
+// Start-Process -NoNewWindow then has no console to inherit, so
+// launching otto-gateway.exe from inside the wrapper silently misfires.
+// CREATE_NEW_PROCESS_GROUP alone is enough to outlive the tray.
 func detachProcessGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		CreationFlags: createNewProcessGroup | detachedProcess,
+		CreationFlags: createNewProcessGroup,
+		HideWindow:    true,
 	}
 }

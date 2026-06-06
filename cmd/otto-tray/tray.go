@@ -121,7 +121,7 @@ func (s *trayState) wireCallbacks() {
 	s.miStart.Click(func() { go s.handleStart() })
 	s.miStop.Click(func() { go s.handleStop() })
 	s.miRestart.Click(func() { go s.handleRestart() })
-	s.miDashboard.Click(func() { go openURL(s.dashboardURL) })
+	s.miDashboard.Click(func() { go openURL(s.dashboardURL + "/admin") })
 	s.miCopyHealth.Click(func() { go copyToClipboard(s.dashboardURL + "/health") })
 	s.miPrefsLogin.Click(func() { go s.toggleLaunchAtLogin() })
 	s.miPrefsStart.Click(func() { go s.toggleStartGatewayOnLaunch() })
