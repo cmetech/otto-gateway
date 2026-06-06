@@ -298,7 +298,55 @@ func (r *Registry) createEntry(ctx context.Context, sid, cwd string, e *Entry) (
 	e.creating = false
 	r.mu.Unlock()
 	e.closeReady()
+
+	// Spawn a per-Entry watcher that observes client.Done() and flips
+	// the entry to Dead on unexpected subprocess exit (OOM, segfault,
+	// SIGTERM from outside, broken pipe after laptop sleep/wake). Without
+	// this, a crashed subprocess leaves the entry returning 500 to every
+	// retry of its sid for up to the full TTL window (default 30 min)
+	// until the reaper notices LastUsed.Before(cutoff). r.wg tracks the
+	// watcher so Registry.Close cleanly drains it.
+	r.wg.Add(1)
+	go r.watchEntry(sid, e)
 	return e, nil
+}
+
+// watchEntry waits for the entry's client to fire Done() and marks the
+// entry Dead. Exits cleanly on registry shutdown. Idempotent against
+// races with Delete and the reaper: both paths already use the
+// "if entries[sid] == e then delete + Dead = true" guard.
+func (r *Registry) watchEntry(sid string, e *Entry) {
+	defer r.wg.Done()
+	if e == nil || e.Client == nil {
+		return
+	}
+	select {
+	case <-e.Client.Done():
+	case <-r.closing:
+		// Registry is shutting down; Close will handle teardown for
+		// every entry in its snapshot. No work for the watcher.
+		return
+	}
+	// Subprocess exited. Take r.mu and, only if the map still points to
+	// our entry, delete + flip Dead. Concurrent Delete / reap may have
+	// already cleared it — that's fine, the guard absorbs the race.
+	r.mu.Lock()
+	if cur, ok := r.entries[sid]; ok && cur == e {
+		delete(r.entries, sid)
+		e.Dead = true
+	}
+	r.mu.Unlock()
+	// Best-effort client close — Done() typically fires because Close
+	// already ran (Delete, reaper, registry shutdown), so this is a
+	// no-op via PoolClient.Close's idempotency. We still call it to
+	// cover the readLoop-EOF path (subprocess crash) where the client
+	// fired Done() via defer c.cancel() but Close was never invoked.
+	_ = e.Client.Close()
+	if r.cfg.Logger != nil {
+		r.cfg.Logger.Warn("session: subprocess exited unexpectedly",
+			"sid", sid,
+			"idle_for", time.Since(e.LastUsed))
+	}
 }
 
 // Delete tears down a session synchronously. D-08 semantics:
