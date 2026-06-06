@@ -196,6 +196,18 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 			if stop := runHandle.StopWatchdog(); stop != nil {
 				stop()
 			}
+			// Audit plugin-chain-streaming-shortcircuit-skips-posthooks:
+			// fire PostHooks symmetrically with the non-streaming Collect
+			// path (collect.go:179-183) so LoggingHook.After +
+			// ChatTraceHook.After observe rejected streaming requests
+			// and their startTimes entries don't leak. Errors are
+			// swallowed at WARN — a misbehaving audit hook must not block
+			// error delivery to the client.
+			if pErr := eng.RunPostHooks(streamCtx, req, sc); pErr != nil {
+				a.cfg.Logger.Warn("anthropic: posthook error on streaming short-circuit (swallowed)",
+					"err", pErr,
+					"request_id", plugin.RequestIDFromContext(ctx))
+			}
 			writeError(w, http.StatusUnauthorized, errAuthentication, shortCircuitMessage(sc))
 			return
 		}

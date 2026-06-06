@@ -247,6 +247,15 @@ func (a *Adapter) handleChat(w http.ResponseWriter, r *http.Request) {
 		if stop := run.StopWatchdog(); stop != nil {
 			stop()
 		}
+		// Audit plugin-chain-streaming-shortcircuit-skips-posthooks:
+		// fire PostHooks symmetrically with the non-streaming Collect
+		// path so LoggingHook.After + ChatTraceHook.After observe
+		// rejected streaming requests and their startTimes don't leak.
+		if pErr := eng.RunPostHooks(streamCtx, req, sc); pErr != nil {
+			a.cfg.Logger.Warn("ollama.chat: posthook error on streaming short-circuit (swallowed)",
+				"err", pErr,
+				"request_id", plugin.RequestIDFromContext(ctx))
+		}
 		writeError(w, http.StatusUnauthorized, shortCircuitMessage(sc))
 		return
 	}
@@ -489,6 +498,15 @@ func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 		// D-03 / Pitfall 4: nil-guard the watchdog stop function.
 		if stop := run.StopWatchdog(); stop != nil {
 			stop()
+		}
+		// Audit plugin-chain-streaming-shortcircuit-skips-posthooks:
+		// fire PostHooks symmetrically with the non-streaming Collect
+		// path so LoggingHook.After + ChatTraceHook.After observe
+		// rejected streaming requests and their startTimes don't leak.
+		if pErr := eng.RunPostHooks(streamCtx, req, sc); pErr != nil {
+			a.cfg.Logger.Warn("ollama.generate: posthook error on streaming short-circuit (swallowed)",
+				"err", pErr,
+				"request_id", plugin.RequestIDFromContext(ctx))
 		}
 		writeError(w, http.StatusUnauthorized, shortCircuitMessage(sc))
 		return

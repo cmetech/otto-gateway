@@ -84,7 +84,9 @@ func newAuthErrorResp() *canonical.ChatResponse {
 // fakeEngine.Run flow (integration_test.go:144-160) which only honors
 // runChunks. Collect is unused in the streaming path.
 type shortCircuitFakeEngine struct {
-	runHandle RunHandle
+	runHandle     RunHandle
+	postHookCalls int
+	postHookResp  *canonical.ChatResponse
 }
 
 func (f *shortCircuitFakeEngine) Collect(_ context.Context, _ *canonical.ChatRequest) (*canonical.ChatResponse, error) {
@@ -95,9 +97,13 @@ func (f *shortCircuitFakeEngine) Run(_ context.Context, _ *canonical.ChatRequest
 	return f.runHandle, nil
 }
 
-// RunPostHooks is a no-op for the short-circuit tests. The short-
-// circuit guard fires BEFORE runSSEEmitter opens SSE headers.
-func (f *shortCircuitFakeEngine) RunPostHooks(_ context.Context, _ *canonical.ChatRequest, _ *canonical.ChatResponse) error {
+// RunPostHooks records the invocation so audit-fix-tier tests can assert
+// that the streaming short-circuit path now fires PostHooks symmetrically
+// with the non-streaming Collect path (audit
+// plugin-chain-streaming-shortcircuit-skips-posthooks).
+func (f *shortCircuitFakeEngine) RunPostHooks(_ context.Context, _ *canonical.ChatRequest, resp *canonical.ChatResponse) error {
+	f.postHookCalls++
+	f.postHookResp = resp
 	return nil
 }
 
@@ -130,18 +136,19 @@ func newShortCircuitRunHandle() *fakeRunHandle {
 // Mirrors integration_test.go's mountedAdapter + newFakeAdapter without
 // going through the openai package's fakeEngine (which can't inject a
 // custom RunHandle).
-func mountShortCircuitAdapter(t *testing.T) *httptest.Server {
+func mountShortCircuitAdapter(t *testing.T) (*httptest.Server, *shortCircuitFakeEngine) {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{}))
+	eng := &shortCircuitFakeEngine{runHandle: newShortCircuitRunHandle()}
 	a := New(Config{
 		Logger: logger,
-		Engine: &shortCircuitFakeEngine{runHandle: newShortCircuitRunHandle()},
+		Engine: eng,
 	})
 	r := chi.NewRouter()
 	r.Route("/v1", func(sub chi.Router) {
 		a.RegisterRoutes(sub)
 	})
-	return httptest.NewServer(r)
+	return httptest.NewServer(r), eng
 }
 
 // TestOpenAI_StreamingShortCircuit_ChatCompletions exercises
@@ -154,7 +161,7 @@ func mountShortCircuitAdapter(t *testing.T) *httptest.Server {
 func TestOpenAI_StreamingShortCircuit_ChatCompletions(t *testing.T) {
 	defer goleak.VerifyNone(t)
 
-	srv := mountShortCircuitAdapter(t)
+	srv, eng := mountShortCircuitAdapter(t)
 	defer srv.Close()
 
 	body := strings.NewReader(`{"model":"auto","messages":[{"role":"user","content":"hi"}],"stream":true}`)
@@ -221,5 +228,16 @@ func TestOpenAI_StreamingShortCircuit_ChatCompletions(t *testing.T) {
 	}
 	if bytes.Contains(respBody, []byte("event: ")) {
 		t.Errorf("body contains SSE marker \"event: \" — T-08.1-HEADER-LEAK regression; body=%s", respBody)
+	}
+	// Audit plugin-chain-streaming-shortcircuit-skips-posthooks regression
+	// guard: streaming short-circuit MUST fire PostHooks exactly once
+	// (symmetric with non-streaming Collect path).
+	if eng.postHookCalls != 1 {
+		t.Errorf("RunPostHooks calls = %d; want 1 (streaming short-circuit must fire PostHooks)",
+			eng.postHookCalls)
+	}
+	if eng.postHookResp == nil || eng.postHookResp.StopReason != canonical.StopError {
+		t.Errorf("RunPostHooks resp = %+v; want non-nil with StopReason=StopError",
+			eng.postHookResp)
 	}
 }

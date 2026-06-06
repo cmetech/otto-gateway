@@ -153,6 +153,15 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 			if stop := runHandle.StopWatchdog(); stop != nil {
 				stop()
 			}
+			// Audit plugin-chain-streaming-shortcircuit-skips-posthooks:
+			// fire PostHooks symmetrically with the non-streaming Collect
+			// path so LoggingHook.After + ChatTraceHook.After observe
+			// rejected streaming requests and their startTimes don't leak.
+			if pErr := eng.RunPostHooks(streamCtx, req, sc); pErr != nil {
+				a.cfg.Logger.Warn("openai: posthook error on streaming short-circuit (swallowed)",
+					"err", pErr,
+					"request_id", plugin.RequestIDFromContext(ctx))
+			}
 			writeError(w, http.StatusUnauthorized, errAuthentication, shortCircuitMessage(sc))
 			return
 		}

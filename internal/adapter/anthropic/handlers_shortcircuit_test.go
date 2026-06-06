@@ -80,7 +80,9 @@ func newAuthErrorResp() *canonical.ChatResponse {
 // RunHandle whose ShortCircuitResponse() is non-nil. Collect is unused in
 // the streaming path.
 type shortCircuitFakeEngine struct {
-	runHandle RunHandle
+	runHandle           RunHandle
+	postHookCalls       int
+	postHookResp        *canonical.ChatResponse
 }
 
 func (f *shortCircuitFakeEngine) Collect(_ context.Context, _ *canonical.ChatRequest) (*canonical.ChatResponse, error) {
@@ -91,10 +93,13 @@ func (f *shortCircuitFakeEngine) Run(_ context.Context, _ *canonical.ChatRequest
 	return f.runHandle, nil
 }
 
-// RunPostHooks is a no-op for the short-circuit tests. The short-circuit
-// guard at handlers.go fires BEFORE runSSEEmitter opens headers, so the
-// streaming PostHook call site (Task 2 step 3) is unreachable here.
-func (f *shortCircuitFakeEngine) RunPostHooks(_ context.Context, _ *canonical.ChatRequest, _ *canonical.ChatResponse) error {
+// RunPostHooks records the invocation so audit-fix-tier tests can assert
+// that the streaming short-circuit path now fires PostHooks symmetrically
+// with the non-streaming Collect path (audit
+// plugin-chain-streaming-shortcircuit-skips-posthooks).
+func (f *shortCircuitFakeEngine) RunPostHooks(_ context.Context, _ *canonical.ChatRequest, resp *canonical.ChatResponse) error {
+	f.postHookCalls++
+	f.postHookResp = resp
 	return nil
 }
 
@@ -190,5 +195,18 @@ func TestAnthropic_StreamingShortCircuit_Messages(t *testing.T) {
 	}
 	if bytes.Contains(respBody, []byte("data: ")) {
 		t.Errorf("body contains SSE marker \"data: \" — T-08.1-HEADER-LEAK regression; body=%s", respBody)
+	}
+	// Audit plugin-chain-streaming-shortcircuit-skips-posthooks regression
+	// guard: the streaming short-circuit MUST fire PostHooks exactly once
+	// (symmetric with the non-streaming Collect path) so LoggingHook.After
+	// and ChatTraceHook.After observe rejected streaming requests and
+	// their startTimes entries don't leak.
+	if eng.postHookCalls != 1 {
+		t.Errorf("RunPostHooks calls = %d; want 1 (streaming short-circuit must fire PostHooks)",
+			eng.postHookCalls)
+	}
+	if eng.postHookResp == nil || eng.postHookResp.StopReason != canonical.StopError {
+		t.Errorf("RunPostHooks resp = %+v; want non-nil with StopReason=StopError (the short-circuit response)",
+			eng.postHookResp)
 	}
 }

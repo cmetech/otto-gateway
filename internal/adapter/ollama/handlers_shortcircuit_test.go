@@ -80,7 +80,9 @@ func newAuthErrorResp() *canonical.ChatResponse {
 //
 // Collect is unused in the streaming path and returns nil/nil.
 type shortCircuitFakeEngine struct {
-	runHandle RunHandle
+	runHandle     RunHandle
+	postHookCalls int
+	postHookResp  *canonical.ChatResponse
 }
 
 func (f *shortCircuitFakeEngine) Collect(_ context.Context, _ *canonical.ChatRequest) (*canonical.ChatResponse, error) {
@@ -91,10 +93,13 @@ func (f *shortCircuitFakeEngine) Run(_ context.Context, _ *canonical.ChatRequest
 	return f.runHandle, nil
 }
 
-// RunPostHooks is a no-op for the short-circuit tests. The short-
-// circuit guard fires BEFORE runNDJSONEmitter opens headers, so the
-// streaming PostHook call site (Task 3 step 2) is unreachable here.
-func (f *shortCircuitFakeEngine) RunPostHooks(_ context.Context, _ *canonical.ChatRequest, _ *canonical.ChatResponse) error {
+// RunPostHooks records the invocation so audit-fix-tier tests can assert
+// that the streaming short-circuit path now fires PostHooks symmetrically
+// with the non-streaming Collect path (audit
+// plugin-chain-streaming-shortcircuit-skips-posthooks).
+func (f *shortCircuitFakeEngine) RunPostHooks(_ context.Context, _ *canonical.ChatRequest, resp *canonical.ChatResponse) error {
+	f.postHookCalls++
+	f.postHookResp = resp
 	return nil
 }
 
@@ -183,6 +188,13 @@ func TestOllama_StreamingShortCircuit_Chat(t *testing.T) {
 	w := doPost(t, a, "/chat", body)
 
 	assertOllamaShortCircuitInvariants(t, w.Body.Bytes(), w.Code, w.Header().Get("Content-Type"))
+	// Audit plugin-chain-streaming-shortcircuit-skips-posthooks regression.
+	if eng.postHookCalls != 1 {
+		t.Errorf("RunPostHooks calls = %d; want 1", eng.postHookCalls)
+	}
+	if eng.postHookResp == nil || eng.postHookResp.StopReason != canonical.StopError {
+		t.Errorf("RunPostHooks resp = %+v; want non-nil with StopReason=StopError", eng.postHookResp)
+	}
 }
 
 // TestOllama_StreamingShortCircuit_Generate exercises handleGenerate's Plan
@@ -199,4 +211,12 @@ func TestOllama_StreamingShortCircuit_Generate(t *testing.T) {
 	w := doPost(t, a, "/generate", body)
 
 	assertOllamaShortCircuitInvariants(t, w.Body.Bytes(), w.Code, w.Header().Get("Content-Type"))
+	// Audit plugin-chain-streaming-shortcircuit-skips-posthooks regression.
+	// Pitfall 6: handleGenerate is independent of handleChat — both must fire.
+	if eng.postHookCalls != 1 {
+		t.Errorf("RunPostHooks calls = %d; want 1", eng.postHookCalls)
+	}
+	if eng.postHookResp == nil || eng.postHookResp.StopReason != canonical.StopError {
+		t.Errorf("RunPostHooks resp = %+v; want non-nil with StopReason=StopError", eng.postHookResp)
+	}
 }
