@@ -6,5 +6,7 @@ package icon
 
 import _ "embed"
 
+// Template is the raw PNG bytes of the menu-bar / system-tray icon.
+//
 //go:embed template.png
 var Template []byte
