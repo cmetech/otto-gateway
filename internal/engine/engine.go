@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"time"
 
 	"otto-gateway/internal/canonical"
@@ -167,7 +168,7 @@ func (e *Engine) Run(ctx context.Context, req *canonical.ChatRequest) (*Run, err
 
 	// (1) PreHook traversal (Codex H-4 short-circuit).
 	for _, h := range e.cfg.PreHooks {
-		resp, err := h.Before(ctx, req)
+		resp, err := e.callPreHookSafe(ctx, h, req)
 		if err != nil {
 			return nil, fmt.Errorf("engine: prehook: %w", err)
 		}
@@ -256,11 +257,52 @@ func (e *Engine) Run(ctx context.Context, req *canonical.ChatRequest) (*Run, err
 // access; this method passes the nil through without panicking.
 func (e *Engine) RunPostHooks(ctx context.Context, req *canonical.ChatRequest, resp *canonical.ChatResponse) error {
 	for _, h := range e.cfg.PostHooks {
-		if hookErr := h.After(ctx, req, resp); hookErr != nil {
+		if hookErr := e.callPostHookSafe(ctx, h, req, resp); hookErr != nil {
 			return fmt.Errorf("engine: posthook: %w", hookErr)
 		}
 	}
 	return nil
+}
+
+// callPreHookSafe invokes h.Before with a defer-recover guard. A
+// panicking hook (nil deref, map nil-write, unguarded type assertion)
+// would otherwise unwind into the HTTP handler — net/http's per-handler
+// recover keeps the process alive, but for streaming surfaces that have
+// already written response headers the connection is torn down with no
+// terminal `message_stop`/`[DONE]`/`done:true` frame and the client
+// SDK sees a truncated stream. Treat a recovered panic as a normal
+// hook error so the existing engine error-wrapping handles teardown.
+//
+// Audit engine-hook-panic-no-recover. The same guard is applied to
+// every Pre/Post hook iteration in Run + Collect + RunPostHooks.
+func (e *Engine) callPreHookSafe(ctx context.Context, h PreHook, req *canonical.ChatRequest) (resp *canonical.ChatResponse, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			e.cfg.Logger.Error("engine.hook.panic",
+				"hook", fmt.Sprintf("%T", h),
+				"kind", "pre",
+				"err", fmt.Sprintf("%v", r),
+				"stack", string(debug.Stack()))
+			resp = nil
+			err = fmt.Errorf("engine: hook panic: %v", r)
+		}
+	}()
+	return h.Before(ctx, req)
+}
+
+// callPostHookSafe is the PostHook twin of callPreHookSafe.
+func (e *Engine) callPostHookSafe(ctx context.Context, h PostHook, req *canonical.ChatRequest, resp *canonical.ChatResponse) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			e.cfg.Logger.Error("engine.hook.panic",
+				"hook", fmt.Sprintf("%T", h),
+				"kind", "post",
+				"err", fmt.Sprintf("%v", r),
+				"stack", string(debug.Stack()))
+			err = fmt.Errorf("engine: hook panic: %v", r)
+		}
+	}()
+	return h.After(ctx, req, resp)
 }
 
 // newCompletedRun builds a *Run that carries a PreHook-supplied response

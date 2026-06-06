@@ -177,7 +177,7 @@ func (e *Engine) CollectFromRun(ctx context.Context, run *Run, req *canonical.Ch
 	// In-place mutation is allowed (resp is a pointer to the struct);
 	// non-nil error aborts the collect.
 	for _, h := range e.cfg.PostHooks {
-		if hookErr := h.After(ctx, req, resp); hookErr != nil {
+		if hookErr := e.callPostHookSafe(ctx, h, req, resp); hookErr != nil {
 			return nil, fmt.Errorf("engine: posthook: %w", hookErr)
 		}
 	}
