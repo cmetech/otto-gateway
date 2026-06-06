@@ -81,6 +81,15 @@ func (n *nerEngine) Detect(text string) []span {
 	out := make([]span, 0, len(entities))
 	cursor := 0
 	for _, e := range entities {
+		// Audit pii-ner-empty-entity-text-zero-length-span: prose's
+		// tokenizer can normalize an entity to empty after stripping
+		// punctuation. strings.Index(text[cursor:], "") returns 0, so a
+		// zero-length span at position cursor would land in the output,
+		// poison the Summary counter, and (for replace mode) emit a
+		// spurious "[PERSON_N]" sentinel mid-text. Skip empty.
+		if e.Text == "" {
+			continue
+		}
 		var name string
 		switch e.Label {
 		case "PERSON":

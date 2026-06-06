@@ -32,11 +32,25 @@
 
 package pii
 
+import (
+	"log/slog"
+	"sync"
+)
+
 // maxDepth is the recursion-depth bound. Beyond this depth WalkStrings
 // returns the subtree unchanged — defense against pathological inputs
 // from external tool servers. 64 covers any realistic canonical content
 // tree by orders of magnitude.
 const maxDepth = 64
+
+// walkDepthTruncatedWarnOnce gates the "WalkStrings reached maxDepth"
+// warn behind a process-wide sync.Once. Audit
+// pii-walk-maxdepth-silent-passthrough: previously the walker returned
+// the over-depth subtree verbatim with ZERO log signal, leaving an
+// adversarial tool server able to ship PII at depth>64 untouched. The
+// Once gate keeps the log noise bounded under sustained attack while
+// surfacing the first occurrence so operators can investigate.
+var walkDepthTruncatedWarnOnce sync.Once
 
 // WalkStrings walks v and returns a new value with every string LEAF
 // replaced by transform(leaf). Map keys are preserved verbatim; non-
@@ -51,6 +65,13 @@ func WalkStrings(v any, transform func(string) string) any {
 // string LEAF; everything else falls through the default arm unchanged.
 func walkStrings(v any, transform func(string) string, depth int) any {
 	if depth > maxDepth {
+		walkDepthTruncatedWarnOnce.Do(func() {
+			slog.Default().Warn(
+				"pii.walk.depth_truncated",
+				"max_depth", maxDepth,
+				"note", "subtree returned unredacted; PII at depth > maxDepth may have leaked. Logging once per process.",
+			)
+		})
 		return v
 	}
 	switch x := v.(type) {

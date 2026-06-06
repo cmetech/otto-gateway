@@ -47,11 +47,18 @@ func TestApplyMode_Encrypt(t *testing.T) {
 }
 
 func TestApplyMode_Encrypt_EmptyKeyFailSafe(t *testing.T) {
-	// Empty key would make EncryptValue fail; ApplyMode logs warn and
-	// returns the plaintext (visible rather than silent broken token).
+	// Audit pii-encrypt-failure-leaks-plaintext: empty key makes
+	// EncryptValue fail. Previously ApplyMode logged Warn and returned
+	// plaintext, defeating encrypt mode's threat model (LLM provider
+	// sees PII). Fail closed: fall back to the replace-mode shape so
+	// the entity is at least redacted.
 	got := ApplyMode("encrypt", "Email", "corey@cmetech.io", 0, nil, nil)
-	if got != "corey@cmetech.io" {
-		t.Errorf("encrypt fail-safe: got %q, want plaintext fallback %q", got, "corey@cmetech.io")
+	if got != "[EMAIL]" {
+		t.Errorf("encrypt fail-closed: got %q, want [EMAIL] (must NOT leak plaintext on encrypt failure)", got)
+	}
+	got2 := ApplyMode("encrypt", "Email", "corey@cmetech.io", 3, nil, nil)
+	if got2 != "[EMAIL_3]" {
+		t.Errorf("encrypt fail-closed (counter): got %q, want [EMAIL_3]", got2)
 	}
 }
 

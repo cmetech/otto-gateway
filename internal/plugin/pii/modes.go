@@ -28,7 +28,15 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 )
+
+// hashTagEmptyKeyWarnOnce gates the empty-key warn log behind a
+// process-wide sync.Once so a chatty request (hundreds of hash applies)
+// does not spam slog. Boot validation already prevents this state in
+// production; this is defense in depth without log flood. Audit
+// pii-hashtag-empty-key-warns-but-still-emits.
+var hashTagEmptyKeyWarnOnce sync.Once
 
 // hashTagLen is the truncated hex length of the HMAC-SHA256 tag in the
 // hash-mode output. 8 hex chars = 32 bits of entropy per D-05 default —
@@ -67,10 +75,12 @@ func canonicalForm(s string) string {
 // even when the operator doesn't read the redacted tokens themselves.
 func hashTag(hashKey []byte, value string) string {
 	if len(hashKey) == 0 {
-		slog.Default().Warn(
-			"pii.hash: empty key — slice-5 boot validation should prevent this",
-			"sentinel", UnkeyedHashSentinel,
-		)
+		hashTagEmptyKeyWarnOnce.Do(func() {
+			slog.Default().Warn(
+				"pii.hash: empty key — slice-5 boot validation should prevent this (logging once per process)",
+				"sentinel", UnkeyedHashSentinel,
+			)
+		})
 		return UnkeyedHashSentinel
 	}
 	mac := hmac.New(sha256.New, hashKey)
@@ -156,11 +166,20 @@ func ApplyMode(mode, entity, value string, counter int, hashKey, encryptKey []by
 	case "encrypt":
 		tok, err := EncryptValue(encryptKey, entity, value)
 		if err != nil {
+			// Audit pii-encrypt-failure-leaks-plaintext: previously
+			// returned the raw plaintext on encrypt failure, defeating
+			// the entire purpose of encrypt mode (the LLM provider
+			// would see PII). Fail closed: fall back to the replace
+			// shape so the entity is at least redacted. Operator sees
+			// the WARN; client gets [ENTITY_N] instead of leaked PII.
 			slog.Default().Warn(
-				"pii.ApplyMode: encrypt failed, leaving plaintext",
+				"pii.ApplyMode: encrypt failed, falling back to replace",
 				"mode", mode, "entity", entity, "err", err,
 			)
-			return value
+			if counter > 0 {
+				return fmt.Sprintf("[%s_%d]", entUpper, counter)
+			}
+			return fmt.Sprintf("[%s]", entUpper)
 		}
 		return tok
 	default:
