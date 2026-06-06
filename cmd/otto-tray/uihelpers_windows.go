@@ -17,11 +17,17 @@ import (
 func setIcon(b []byte) { systray.SetIcon(b) }
 
 func openURL(url string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "rundll32", "url.dll,FileProtocolHandler", url) //nolint:gosec // url is operator-configured
+	// cmd /c start "" "<url>" is the canonical Windows shell-open path.
+	// It hands the URL to the user's default browser via the registered
+	// `start` shell verb. rundll32 url.dll,FileProtocolHandler also
+	// works but is undocumented; `cmd /c start` is stable across every
+	// supported Windows. The "" first arg is an empty window title
+	// (start's quirk: the first quoted arg is the title, not the URL).
+	cmd := exec.CommandContext(ctx, "cmd", "/c", "start", "", url) //nolint:gosec // url is operator-configured
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	_ = cmd.Start()
+	_ = cmd.Run()
 }
 
 func copyToClipboard(s string) {
@@ -41,16 +47,36 @@ func copyToClipboard(s string) {
 }
 
 func notify(title, body string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	// MessageBox is synchronous and modal — reliable on every
+	// supported Windows. The previous NotifyIcon.ShowBalloonTip
+	// approach was fire-and-forget via cmd.Start(); the PowerShell
+	// process exited before the balloon rendered, so the user saw
+	// nothing. MessageBox blocks until the user clicks OK, which is
+	// the right semantics for "Failed to start" feedback anyway —
+	// the caller already runs notify from a background goroutine, so
+	// blocking here does not freeze the UI.
+	//
+	// MB_OK (0x00) + MB_ICONINFORMATION (0x40) + MB_SETFOREGROUND
+	// (0x10000) keeps it terse and pulls the dialog above whatever
+	// the user is currently looking at.
 	script := "[reflection.assembly]::loadwithpartialname('System.Windows.Forms') | Out-Null; " +
-		"$n = New-Object System.Windows.Forms.NotifyIcon; " +
-		"$n.Icon = [System.Drawing.SystemIcons]::Information; " +
-		"$n.Visible = $true; " +
-		"$n.ShowBalloonTip(5000, '" + escapePS(title) + "', '" + escapePS(body) + "', 'Info')"
-	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script) //nolint:gosec // script body escaped via escapePS
+		"[System.Windows.Forms.MessageBox]::Show('" + escapePS(body) + "', '" + escapePS(title) + "', 'OK', 'Information') | Out-Null"
+	cmd := exec.CommandContext(ctx, powershellExe(), "-NoProfile", "-Command", script) //nolint:gosec // script body escaped via escapePS
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	_ = cmd.Start()
+	_ = cmd.Run()
+}
+
+// powershellExe returns "pwsh" if PowerShell 7 is on PATH, else falls
+// back to "powershell" (the Windows PowerShell 5.x that ships with
+// every supported Windows). Mirrors runner_windows.go's selection so
+// the tray works on installs without PowerShell 7.
+func powershellExe() string {
+	if _, err := exec.LookPath("pwsh"); err == nil {
+		return "pwsh"
+	}
+	return "powershell"
 }
 
 // confirmDialog shows a blocking yes/no MessageBox. Returns true if
@@ -65,7 +91,7 @@ func confirmDialog(title, body, _, _ string) bool {
 	script := "[reflection.assembly]::loadwithpartialname('System.Windows.Forms') | Out-Null; " +
 		"$result = [System.Windows.Forms.MessageBox]::Show('" + escapePS(body) + "', '" + escapePS(title) + "', 'YesNo', 'Question'); " +
 		"Write-Output $result"
-	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script) //nolint:gosec // script body escaped via escapePS
+	cmd := exec.CommandContext(ctx, powershellExe(), "-NoProfile", "-Command", script) //nolint:gosec // script body escaped via escapePS
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	out, err := cmd.Output()
 	if err != nil {

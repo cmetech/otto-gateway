@@ -130,9 +130,14 @@ cross-otto-tray-darwin-amd64:
 
 cross-otto-tray-windows-amd64:
 	@mkdir -p $(BUILD_DIR)
+	# -H windowsgui marks the binary as GUI subsystem so Windows does
+	# NOT allocate a console window when the tray launches (whether
+	# from Start-Process, the Run-key login-item, or a double-click).
+	# A console-subsystem tray would pop an empty terminal on every
+	# launch — the v2.0.1 symptom.
 	CGO_ENABLED=1 GOOS=windows GOARCH=amd64 \
 		CC=$${CC:-x86_64-w64-mingw32-gcc} \
-		go build -ldflags="$(LDFLAGS)" -o $(BUILD_DIR)/$(TRAY_BINARY)-windows-amd64.exe $(TRAY_PKG)
+		go build -ldflags="$(LDFLAGS) -H windowsgui" -o $(BUILD_DIR)/$(TRAY_BINARY)-windows-amd64.exe $(TRAY_PKG)
 
 cross-otto-tray: cross-otto-tray-darwin-arm64 cross-otto-tray-darwin-amd64 cross-otto-tray-windows-amd64 ## Cross-compile otto-tray for darwin + windows
 

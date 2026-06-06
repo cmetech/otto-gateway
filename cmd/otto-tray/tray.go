@@ -68,6 +68,7 @@ func (s *trayState) onReady(isFirstRun bool) func() {
 	return func() {
 		setIcon(icon.Template)
 		systray.SetTooltip("OTTO Gateway")
+		platformOnReady()
 
 		s.miHeader = systray.AddMenuItem("OTTO Gateway · starting…", "")
 		s.miHeader.Disable()
