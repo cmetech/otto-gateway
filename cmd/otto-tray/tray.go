@@ -142,6 +142,13 @@ func (s *trayState) makeProbe() probeFunc {
 			return true, false, Snapshot{}
 		}
 		snap, _ := client.snapshot()
+		// /health/hooks is a separate endpoint — failures here are
+		// silently ignored (the absence of hook data just means the
+		// FSM cannot light up "degraded by hook error"; it does not
+		// invalidate the running state).
+		if hooks, err := client.hooks(); err == nil {
+			snap.Hooks = hooks
+		}
 		return true, true, snap
 	}
 }

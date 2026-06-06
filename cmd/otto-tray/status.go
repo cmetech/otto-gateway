@@ -24,6 +24,12 @@ type Snapshot struct {
 	// Convenience accessors populated by snapshot() — JSON-skipped.
 	PoolAlive int `json:"-"`
 	PoolSize  int `json:"-"`
+
+	// Hooks is the /health/hooks side-fetched chain — populated by the
+	// tray probe (NOT by the snapshot endpoint) so the FSM can degrade
+	// on a non-empty LastError. Empty when /health/hooks is unreachable
+	// or returns a non-2xx; the FSM treats absence as "no hook signal".
+	Hooks []HookEntry `json:"-"`
 }
 
 // PoolStats mirrors internal/admin.SnapshotPool. Only Size/Alive
@@ -35,13 +41,14 @@ type PoolStats struct {
 }
 
 // HookEntry mirrors internal/server.HookDescription. The tray
-// surfaces only enabled count + name for the menu header — it does
-// NOT use this for degraded detection because the wire shape has no
-// per-hook health field.
+// surfaces enabled count + name for the menu header AND uses
+// LastError to drive the degraded state when an enabled hook has
+// reported an error since its last successful invocation.
 type HookEntry struct {
-	Name    string `json:"name"`
-	Kind    string `json:"kind"`
-	Enabled bool   `json:"enabled"`
+	Name      string `json:"name"`
+	Kind      string `json:"kind"`
+	Enabled   bool   `json:"enabled"`
+	LastError string `json:"last_error,omitempty"`
 }
 
 type hooksEnvelope struct {

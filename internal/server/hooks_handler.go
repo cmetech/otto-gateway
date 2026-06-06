@@ -44,6 +44,11 @@ type HookDescription struct {
 	Kind    string         `json:"kind"`
 	Enabled bool           `json:"enabled"`
 	Config  map[string]any `json:"config"`
+	// LastError is the most recent error the hook surfaced during a
+	// Pre/Post invocation, or empty when the hook is healthy. The
+	// engine's HookErrorReporter populates this; the tray's degraded
+	// state lights up when any enabled hook has a non-empty value.
+	LastError string `json:"last_error,omitempty"`
 }
 
 // HooksDescriptionSource is the consumer-defined interface hooksHandler

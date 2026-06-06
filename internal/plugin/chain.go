@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sync"
 
 	"otto-gateway/internal/engine"
 )
@@ -52,10 +53,55 @@ type Chain struct {
 // describe whitelist, never secrets like tokens, regex patterns, or
 // hash keys).
 type HookDescription struct {
-	Name    string         `json:"name"`
-	Kind    string         `json:"kind"`
-	Enabled bool           `json:"enabled"`
-	Config  map[string]any `json:"config"`
+	Name      string         `json:"name"`
+	Kind      string         `json:"kind"`
+	Enabled   bool           `json:"enabled"`
+	Config    map[string]any `json:"config"`
+	LastError string         `json:"last_error,omitempty"`
+}
+
+// HookErrorTracker records the most recent error each hook produced
+// during a Run/Collect cycle. The engine calls Record after every Pre
+// or Post hook invocation (nil err clears the slot); /health/hooks
+// reads via DescribeWith for the LastError surface. Goroutine-safe.
+type HookErrorTracker struct {
+	errs sync.Map // map[string]string — hookName → last error message; "" = cleared.
+}
+
+// NewHookErrorTracker returns an empty tracker ready for engine wiring.
+func NewHookErrorTracker() *HookErrorTracker { return &HookErrorTracker{} }
+
+// Record matches engine.Config.HookErrorReporter. A nil err clears
+// the slot (treated as a successful call); an unnamed hook is a
+// no-op (we'd have nothing to attribute the error to).
+func (t *HookErrorTracker) Record(hook any, err error) {
+	if t == nil {
+		return
+	}
+	name := hookName(hook)
+	if name == "" {
+		return
+	}
+	if err == nil {
+		t.errs.Store(name, "")
+		return
+	}
+	t.errs.Store(name, err.Error())
+}
+
+// LastError returns the most recent non-empty error for the named
+// hook, or "" when the hook has not errored since the last clear or
+// has not been observed yet.
+func (t *HookErrorTracker) LastError(name string) string {
+	if t == nil {
+		return ""
+	}
+	if v, ok := t.errs.Load(name); ok {
+		if s, _ := v.(string); s != "" {
+			return s
+		}
+	}
+	return ""
 }
 
 // Describer is the consumer-defined interface each hook implements to
@@ -174,13 +220,24 @@ func (c Chain) Filter(allowlist []string) (Chain, error) {
 //   - Config is whatever the hook reports via Describer (nil if the
 //     hook doesn't implement Describer).
 func (c Chain) Describe() (pre, post []HookDescription) {
+	return c.DescribeWith(nil)
+}
+
+// DescribeWith is Describe but with per-hook LastError populated from
+// the given tracker. A nil tracker behaves identically to Describe.
+// Operators use this via cmd/otto-gateway/main.go's hooksDescriptionAdapter.
+func (c Chain) DescribeWith(t *HookErrorTracker) (pre, post []HookDescription) {
 	pre = make([]HookDescription, 0, len(c.Pre))
 	for _, h := range c.Pre {
-		pre = append(pre, describe(h, "Pre"))
+		d := describe(h, "Pre")
+		d.LastError = t.LastError(d.Name)
+		pre = append(pre, d)
 	}
 	post = make([]HookDescription, 0, len(c.Post))
 	for _, h := range c.Post {
-		post = append(post, describe(h, "Post"))
+		d := describe(h, "Post")
+		d.LastError = t.LastError(d.Name)
+		post = append(post, d)
 	}
 	return pre, post
 }

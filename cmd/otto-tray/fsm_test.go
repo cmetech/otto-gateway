@@ -56,6 +56,41 @@ func TestComputeState_StartingWhenPIDButNoHealthInsideBudget(t *testing.T) {
 	}
 }
 
+func TestComputeState_DegradedOnEnabledHookError(t *testing.T) {
+	got := computeState(stateInput{
+		PIDAlive: true,
+		HealthOK: true,
+		Snapshot: Snapshot{
+			PoolAlive: 4, PoolSize: 4,
+			Hooks: []HookEntry{
+				{Name: "PIIRedactionHook", Enabled: true, LastError: "encrypt: empty key"},
+			},
+		},
+	})
+	if got.State != StateDegraded {
+		t.Fatalf("hook error → want %s, got %s", StateDegraded, got.State)
+	}
+	if got.Detail != "hook PIIRedactionHook: encrypt: empty key" {
+		t.Fatalf("detail: got %q, want substring of hook+error", got.Detail)
+	}
+}
+
+func TestComputeState_DisabledHookErrorDoesNotDegrade(t *testing.T) {
+	got := computeState(stateInput{
+		PIDAlive: true,
+		HealthOK: true,
+		Snapshot: Snapshot{
+			PoolAlive: 4, PoolSize: 4,
+			Hooks: []HookEntry{
+				{Name: "DisabledHook", Enabled: false, LastError: "still failing"},
+			},
+		},
+	})
+	if got.State != StateRunning {
+		t.Fatalf("disabled hook error must not degrade: got %s", got.State)
+	}
+}
+
 func TestComputeState_ErrorAfterThreeHealthFailuresOutsideBudget(t *testing.T) {
 	got := computeState(stateInput{
 		PIDAlive:       true,

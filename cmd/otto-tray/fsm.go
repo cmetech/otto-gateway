@@ -52,5 +52,10 @@ func computeState(in stateInput) stateOutput {
 	if in.Snapshot.PoolSize > 0 && in.Snapshot.PoolAlive == 0 {
 		return stateOutput{State: StateDegraded, Detail: "pool empty"}
 	}
+	for _, h := range in.Snapshot.Hooks {
+		if h.Enabled && h.LastError != "" {
+			return stateOutput{State: StateDegraded, Detail: "hook " + h.Name + ": " + h.LastError}
+		}
+	}
 	return stateOutput{State: StateRunning}
 }

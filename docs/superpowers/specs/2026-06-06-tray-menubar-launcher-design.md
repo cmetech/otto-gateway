@@ -113,7 +113,7 @@ A goroutine polls every 3 seconds:
 | `stopped`  | hollow circle | PID file absent, or points at a dead PID.                                       |
 | `starting` | spinner       | PID alive, `/health` not yet 2xx. Bounded to a 30s window (kiro warmup budget). |
 | `running`  | filled green  | `/health` returns 2xx.                                                          |
-| `degraded` | amber         | `/health` 2xx but `/health/pool` reports no ready slots, or `/health/hooks` reports a hook in error. |
+| `degraded` | amber         | `/health` 2xx but `/health/pool` reports no ready slots, or `/health/hooks` reports an enabled hook with a non-empty `last_error`. |
 | `error`    | red triangle  | PID alive but `/health` 5xx or unreachable after 3 consecutive failures.        |
 
 The poller reads the PID file at
