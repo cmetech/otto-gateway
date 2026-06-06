@@ -165,3 +165,18 @@ func (s *Stream) Result() (*FinalResult, error) {
 	defer s.mu.Unlock()
 	return s.result, s.err
 }
+
+// SessionID returns the ACP session id captured at newStream time. Safe
+// to call concurrently — the underlying result pointer is stable after
+// newStream allocates it (only ChunkCount + StopReason mutate). Used by
+// handleNotification to drop session/update frames whose session id
+// does not match the active stream (audit
+// acp-late-update-cross-session-leak).
+func (s *Stream) SessionID() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.result == nil {
+		return ""
+	}
+	return s.result.SessionID
+}

@@ -1059,6 +1059,20 @@ func (c *Client) handleNotification(frame rpcFrame) {
 				"method", frame.Method)
 			return
 		}
+		// Audit acp-late-update-cross-session-leak: late session/update
+		// notifications carrying a stale session id (kiro-cli buffering
+		// after the prompt response, or specific tool_call_update
+		// flushes) used to push onto whatever activeStream was non-nil,
+		// corrupting the new prompt's stream with text from the old one.
+		// Compare update.SessionID against the stream's session id and
+		// drop the chunk on mismatch.
+		if streamSID := s.SessionID(); streamSID != "" && update.SessionID != "" && update.SessionID != streamSID {
+			c.cfg.Logger.Warn("acp.stream.cross_session_drop",
+				"update_session_id", update.SessionID,
+				"active_session_id", streamSID,
+				"method", frame.Method)
+			return
+		}
 		// push with client lifetime context for backpressure (D-03 + REVIEW FIX).
 		if err := s.push(c.clientCtx, chunk); err != nil {
 			if errors.Is(err, errPushAfterClose) {
