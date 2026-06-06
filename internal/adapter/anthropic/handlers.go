@@ -250,7 +250,29 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if resp != nil && resp.StopReason == canonical.StopError {
-				writeError(w, http.StatusUnauthorized, errAuthentication, shortCircuitMessage(resp))
+				// Audit anthropic-rerouted-stream-writes-json-on-short-circuit:
+				// the client wired up the SDK as SSE (wire.Stream was
+				// true at request entry). A JSON 401 envelope here makes
+				// @anthropic-ai/sdk's MessageStream parser see "request
+				// ended without sending any chunks" — the v1.8.3
+				// regression. Emit a 200 SSE error frame instead so the
+				// SDK surfaces a proper APIError with the short-circuit
+				// message. Headers have NOT been written yet on this
+				// branch — set them now.
+				flusher, ok := w.(http.Flusher)
+				if !ok {
+					// No flusher (test harness writer, etc.) — fall back
+					// to JSON 401. Same wire-shape mismatch the audit
+					// flags, but unavoidable without a flusher.
+					writeError(w, http.StatusUnauthorized, errAuthentication, shortCircuitMessage(resp))
+					return
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.Header().Set("Connection", "keep-alive")
+				w.Header().Set("X-Accel-Buffering", "no")
+				w.WriteHeader(http.StatusOK)
+				writeSSEError(w, flusher, errAuthentication, shortCircuitMessage(resp))
 				return
 			}
 			// The CLIENT asked for stream=true (wire.Stream was true at

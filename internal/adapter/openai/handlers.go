@@ -84,6 +84,18 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 	}
 
 	req := wireToChatRequest(&wire, r)
+	// Audit openai-empty-messages-after-decode-not-rejected: an inbound
+	// payload like {"messages":[{"role":"user","content":[]}]} has
+	// len(wire.Messages) == 1 but decodeMessageContent returns "" for
+	// every part — wireToChatRequest's text==""-skip drops every entry,
+	// leaving canonical Messages empty + System empty. Without this
+	// guard the engine would issue a no-prompt Prompt and tie up a pool
+	// slot until idle-timeout fires. Mirror the wire-level rejection
+	// shape so SDK clients see a consistent invalid_request_error.
+	if len(req.Messages) == 0 && req.System == "" {
+		writeError(w, http.StatusBadRequest, errInvalidRequest, "`messages` decoded to empty content")
+		return
+	}
 
 	// Phase 8 PLUG-03 — stamp the bearer credential onto ctx so AuthHook
 	// (canonical-layer Pre hook) can validate. The auth.Bearer chi

@@ -118,6 +118,10 @@ type ollamaChatResponse struct {
 	PromptEvalDuration int64                     `json:"prompt_eval_duration"`
 	EvalCount          int                       `json:"eval_count"`
 	EvalDuration       int64                     `json:"eval_duration"`
+	// Error carries a free-form error message on the terminal frame for
+	// failure paths (e.g. stream-idle timeout). Audit
+	// ollama-ndjson-idle-timeout-terminal-frame-missing-fields.
+	Error string `json:"error,omitempty"`
 }
 
 type ollamaChatResponseMessage struct {
@@ -177,6 +181,10 @@ type ollamaGenerateResponse struct {
 	PromptEvalDuration int64  `json:"prompt_eval_duration"`
 	EvalCount          int    `json:"eval_count"`
 	EvalDuration       int64  `json:"eval_duration"`
+	// Error mirrors ollamaChatResponse.Error for the /api/generate
+	// terminal-error path. Audit
+	// ollama-ndjson-idle-timeout-terminal-frame-missing-fields.
+	Error string `json:"error,omitempty"`
 }
 
 // ----------------------------------------------------------------------------

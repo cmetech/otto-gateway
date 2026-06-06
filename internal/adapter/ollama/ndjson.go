@@ -418,12 +418,15 @@ func runNDJSONEmitter(ctx context.Context, cancelFn context.CancelFunc, w http.R
 			return aggregateOllamaResponse(req, state, canonical.StopUnknown), fmt.Errorf("ollama: ndjson ctx: %w", ctx.Err())
 
 		case <-idleC:
-			// Quick 260531-ruv — stream-idle fire. Emit a terminal NDJSON
-			// error line (`{"error":...,"done":true}` shape matches the
-			// existing terminal pattern) + flush, then return a wrapped
-			// canonical.ErrStreamIdleTimeout so the handler errors.Is-
-			// checks it. The aggregated response is non-nil so PostHooks
-			// observe forensics.
+			// Quick 260531-ruv — stream-idle fire. Audit
+			// ollama-ndjson-idle-timeout-terminal-frame-missing-fields:
+			// previously emitted a bare {"error":"...","done":true} with
+			// no model / created_at / message — strict Ollama SDK
+			// consumers (ollama-js, LangFlow's Ollama loader) rejected
+			// or mis-rendered it. Now build via
+			// chatResponseToWire / generateResponseToWire so every
+			// terminal envelope carries the documented field set, with
+			// DoneReason="error" + Error="stream idle timeout".
 			logger.Warn(
 				"stream.idle_timeout",
 				"surface", "ollama",
@@ -431,10 +434,21 @@ func runNDJSONEmitter(ctx context.Context, cancelFn context.CancelFunc, w http.R
 				"elapsed_ms", streamIdle.Milliseconds(),
 				"request_id", plugin.RequestIDFromContext(ctx),
 			)
-			errLine := fmt.Sprintf(`{"error":"stream idle timeout","done":true}` + "\n")
-			_, _ = w.Write([]byte(errLine))
-			flusher.Flush()
-			return aggregateOllamaResponse(req, state, canonical.StopUnknown),
+			emptyResp := aggregateOllamaResponse(req, state, canonical.StopUnknown)
+			if isChat {
+				frame := chatResponseToWire(emptyResp, start, model)
+				frame.Done = true
+				frame.DoneReason = "error"
+				frame.Error = "stream idle timeout"
+				_ = marshalAndWrite(w, flusher, frame, cancelFn)
+			} else {
+				frame := generateResponseToWire(emptyResp, start, model)
+				frame.Done = true
+				frame.DoneReason = "error"
+				frame.Error = "stream idle timeout"
+				_ = marshalAndWrite(w, flusher, frame, cancelFn)
+			}
+			return emptyResp,
 				fmt.Errorf("ollama: ndjson %w", canonical.ErrStreamIdleTimeout)
 
 		case c, ok := <-chunks:
