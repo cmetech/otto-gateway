@@ -166,16 +166,44 @@ func (e *Engine) Run(ctx context.Context, req *canonical.ChatRequest) (*Run, err
 		return nil, fmt.Errorf("engine: run: req is nil")
 	}
 
+	// Audit plugin-chain-run-error-leaks-starttimes-entries: track whether
+	// any PreHook completed so the post-PreHook error paths (NewSession,
+	// SetModel, Prompt failures) can fire PostHooks before returning. Each
+	// PreHook that completed may have stored state in a per-instance
+	// sync.Map keyed by request_id (LoggingHook.startTimes,
+	// ChatTraceHook.startTimes). Without this cleanup every transient
+	// ACP failure leaks one orphan entry per Pre+Post-stateful hook.
+	preHooksCompleted := 0
+
 	// (1) PreHook traversal (Codex H-4 short-circuit).
 	for _, h := range e.cfg.PreHooks {
 		resp, err := e.callPreHookSafe(ctx, h, req)
 		if err != nil {
+			// Best-effort cleanup for state-storing PreHooks that ran
+			// before this failure. Swallow PostHook errors — the
+			// returned engine error must surface to the caller.
+			if preHooksCompleted > 0 {
+				if pErr := e.RunPostHooks(ctx, req, nil); pErr != nil {
+					e.cfg.Logger.Warn("engine: posthook cleanup after prehook error", "err", pErr)
+				}
+			}
 			return nil, fmt.Errorf("engine: prehook: %w", err)
 		}
 		if resp != nil {
 			// Short-circuit: carry the response on the Run handle
 			// so Collect returns it verbatim. Do NOT touch ACP.
 			return newCompletedRun(e, req, resp), nil
+		}
+		preHooksCompleted++
+	}
+
+	// runErrCleanup is invoked on any post-PreHook error path. By this
+	// point every PreHook has stored its state; PostHooks must fire to
+	// LoadAndDelete it. resp is intentionally nil — production PostHooks
+	// (LoggingHook, ChatTraceHook) nil-guard resp access.
+	runErrCleanup := func() {
+		if pErr := e.RunPostHooks(ctx, req, nil); pErr != nil {
+			e.cfg.Logger.Warn("engine: posthook cleanup after run error", "err", pErr)
 		}
 	}
 
@@ -188,6 +216,7 @@ func (e *Engine) Run(ctx context.Context, req *canonical.ChatRequest) (*Run, err
 	// (4) ACP session lifecycle.
 	sid, err := e.cfg.ACP.NewSession(ctx, cwd)
 	if err != nil {
+		runErrCleanup()
 		return nil, fmt.Errorf("engine: new session: %w", err)
 	}
 	e.cfg.Logger.Debug("engine.new_session.ok", "session_id", sid, "cwd", cwd)
@@ -196,6 +225,7 @@ func (e *Engine) Run(ctx context.Context, req *canonical.ChatRequest) (*Run, err
 	if req.Model != "" && req.Model != "auto" {
 		if err := e.cfg.ACP.SetModel(ctx, sid, req.Model); err != nil {
 			e.cfg.ACP.Cancel(sid)
+			runErrCleanup()
 			return nil, fmt.Errorf("engine: set model: %w", err)
 		}
 	}
@@ -204,6 +234,7 @@ func (e *Engine) Run(ctx context.Context, req *canonical.ChatRequest) (*Run, err
 	stream, err := e.cfg.ACP.Prompt(ctx, sid, blocks)
 	if err != nil {
 		e.cfg.ACP.Cancel(sid)
+		runErrCleanup()
 		return nil, fmt.Errorf("engine: prompt: %w", err)
 	}
 	e.cfg.Logger.Debug("engine.prompt.sent", "session_id", sid, "blocks", len(blocks))

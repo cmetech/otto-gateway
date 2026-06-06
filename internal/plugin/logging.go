@@ -64,6 +64,11 @@ import (
 	"otto-gateway/internal/plugin/pii"
 )
 
+// emptyRequestIDWarnOnce gates the empty-request-id warn (Audit
+// plugin-chain-empty-request-id-collides-starttimes) so a misconfigured
+// chain does not spam slog with one log line per request.
+var emptyRequestIDWarnOnce sync.Once
+
 // LoggingHook implements both engine.PreHook and engine.PostHook. It is
 // the canonical-layer observation seam for every request that survives
 // auth. See package docstring for the threat-model context and the
@@ -161,6 +166,21 @@ func (h *LoggingHook) Before(ctx context.Context, req *canonical.ChatRequest) (*
 		slog.Int("message_count", mcount),
 	)
 
+	// Audit plugin-chain-empty-request-id-collides-starttimes: when
+	// RequestIDFromContext returns "" (test invocations, future
+	// internal caller missing the stamp, or RequestIDHook filtered
+	// out of ENABLED_HOOKS), two concurrent requests would store on
+	// the same "" key — the second Before overwrote the first, and
+	// After's LoadAndDelete on "" returned the wrong stamp, so
+	// duration_ms was wrong. Skip the Store on empty rid and log a
+	// once-per-process Warn so the misconfiguration is visible.
+	if rid == "" {
+		emptyRequestIDWarnOnce.Do(func() {
+			h.logger().Warn("plugin.logging.empty_request_id",
+				"note", "duration_ms will be 0; ensure RequestIDHook is enabled. Logging once per process.")
+		})
+		return nil, nil
+	}
 	// Stash start time keyed by request_id. The sync.Map is the safe
 	// cross-Pre/Post bridge — see package docstring rationale.
 	h.startTimes.Store(rid, time.Now())
