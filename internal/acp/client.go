@@ -479,6 +479,18 @@ func (c *Client) writerLoop(ctx context.Context) {
 
 // pingLoop sends a periodic ping to detect subprocess health.
 // ACP-06: 60s default interval; exits cleanly on Close().
+//
+// Audit acp-ping-loop-exits-silently-on-non-cancel-failure +
+// pool-hung-subprocess-not-replaceable-no-liveness-preemption: previously
+// any non-{Canceled, ErrClientClosed} ping failure logged a Warn and
+// returned the loop, leaving the slot "alive" from the pool's
+// perspective (Done() never fired). A hung-but-not-exited kiro-cli
+// (laptop sleep/wake, embedding-model contention, wedged tool call)
+// would silently wedge a slot until the user's per-request ctx
+// expired. Now: on unexpected ping failure, call c.cancel() to
+// propagate teardown — Done() closes, exit_watcher sees the slot is
+// dead, respawnSlot fires on the next acquire. Matches the
+// crash-and-replace deployment posture.
 func (c *Client) pingLoop(ctx context.Context) {
 	defer c.wg.Done()
 	ticker := time.NewTicker(c.cfg.PingInterval)
@@ -492,7 +504,9 @@ func (c *Client) pingLoop(ctx context.Context) {
 				if errors.Is(err, context.Canceled) || errors.Is(err, ErrClientClosed) {
 					return // expected on Close()
 				}
-				c.cfg.Logger.Warn("acp: ping failed", "err", err)
+				c.cfg.Logger.Warn("acp.ping.escalated_to_close",
+					"err", err)
+				c.cancel()
 				return
 			}
 			cancel()
