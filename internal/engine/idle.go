@@ -54,6 +54,20 @@ var ErrStreamIdleTimeout = canonical.ErrStreamIdleTimeout
 // We use time.NewTimer + drain-safe Stop (not time.After) because
 // time.After leaks until the duration elapses; time.NewTimer is the
 // established Go pattern for cancellable idle watchdogs.
+//
+// NOTE on session lifetime ownership (audit
+// engine-rangechunks-ctx-exit-caller-must-cancel): callers MUST ensure
+// ctx cancellation also triggers ACP.Cancel(sessionID) on their session
+// — either via engine.Run's AfterFunc watchdog (which engine.Collect /
+// engine.CollectFromRun rely on; ctx cancel routes through the
+// watchdog to fire Cancel) or by explicitly invoking Cancel on the
+// error-return path. The helper does NOT own session lifetime; if
+// ctx exits and no Cancel fires, the underlying acp.Stream.readLoop
+// continues producing into a 64-slot buffer, fills it, and blocks
+// indefinitely on the client-lifetime ctx. A future caller that
+// passes a derived ctx not paired with the engine watchdog (e.g.,
+// context.WithTimeout for a separate surface) MUST handle Cancel
+// explicitly on the error return.
 func RangeChunksWithIdleTimeout(
 	ctx context.Context,
 	stream Stream,

@@ -162,6 +162,15 @@ func NewWithCommit(cfg config.Config, logger *slog.Logger, version, commit strin
 	s.router = chi.NewRouter()
 
 	// Middleware order is non-negotiable: RequestID first, then Recoverer, then accessLog.
+	//
+	// CAUTION (audit server-recoverer-blind-to-handler-goroutines): chi
+	// Recoverer covers ONLY the goroutine that runs next.ServeHTTP. Any
+	// `go func() {...}` spawned inside a handler (background drainer,
+	// admin SSE tee, future plugin fan-out) MUST defer-recover locally
+	// — a panic there bypasses Recoverer and terminates the whole
+	// process. The current adapter/engine/admin code does not spawn
+	// such goroutines on the request hot path; this comment is the
+	// guardrail for future contributors.
 	s.router.Use(middleware.RequestID)
 	s.router.Use(middleware.Recoverer)
 	s.router.Use(accessLog(logger))

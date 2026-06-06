@@ -156,10 +156,18 @@ func (e *Engine) CollectFromRun(ctx context.Context, run *Run, req *canonical.Ch
 					"elapsed_ms", e.cfg.StreamIdleTimeout.Milliseconds(),
 				)
 			}
+			// Audit engine-collect-idle-timeout-no-explicit-cancel: fire
+			// ACP.Cancel explicitly so the pool slot is released
+			// independently of the request ctx terminating. Cancel is
+			// idempotent (RESEARCH.md Pitfall 4); the AfterFunc
+			// watchdog firing later is harmless.
+			e.cfg.ACP.Cancel(run.sessionID)
 			return nil, fmt.Errorf("engine: collect: %w", rangeErr)
 		}
 		final, rerr := run.stream.Result()
 		if rerr != nil {
+			// Same Cancel discipline as the idle-timeout branch above.
+			e.cfg.ACP.Cancel(run.sessionID)
 			return nil, fmt.Errorf("engine: collect result: %w", rerr)
 		}
 		// D-06 teardown: stop() prevents the AfterFunc goroutine from firing

@@ -440,6 +440,14 @@ func runSSEEmitter(ctx context.Context, w http.ResponseWriter, run RunHandle, re
 			// Do NOT emit [DONE] — the stream tore down before natural end.
 			// Quick 260530-df2: return the partial aggregated response so
 			// handlers fire PostHooks for forensics + duration_ms.
+			// Audit openai-watchdog-stop-leaked-on-error-paths: stop the
+			// AfterFunc so it doesn't fire a spurious session/cancel
+			// AFTER our explicit error path (Cancel is idempotent at the
+			// engine layer; suppressing the redundant audit-event entry
+			// is the actual win).
+			if stop := run.StopWatchdog(); stop != nil {
+				stop()
+			}
 			e.logger.Debug("openai: sse client disconnect", "session_id", run.SessionID())
 			return e.aggregatedResponse(canonical.StopUnknown, nil), fmt.Errorf("openai: sse ctx: %w", ctx.Err())
 
@@ -449,6 +457,9 @@ func runSSEEmitter(ctx context.Context, w http.ResponseWriter, run RunHandle, re
 			// the canonical marker, and return wrapped
 			// canonical.ErrStreamIdleTimeout for handler errors.Is
 			// detection. Frame shape matches errorInner in errors.go.
+			if stop := run.StopWatchdog(); stop != nil {
+				stop()
+			}
 			e.logger.Warn(
 				"stream.idle_timeout",
 				"surface", "openai",
@@ -468,6 +479,9 @@ func runSSEEmitter(ctx context.Context, w http.ResponseWriter, run RunHandle, re
 				return finalizeSSE(e, run)
 			}
 			if err := e.applyChunk(c); err != nil {
+				if stop := run.StopWatchdog(); stop != nil {
+					stop()
+				}
 				return e.aggregatedResponse(canonical.StopUnknown, nil), err
 			}
 			if idleTimer != nil {
@@ -533,6 +547,12 @@ func finalizeSSE(e *sseEmitter, run RunHandle) (*canonical.ChatResponse, error) 
 		// Log at debug (not error — the stream just cut off; the client-side
 		// will see a truncated stream, which is acceptable per A5).
 		// Quick 260530-df2: return the partial aggregation for forensics.
+		// Audit openai-watchdog-stop-leaked-on-error-paths: stop the
+		// watchdog (Cancel already had its chance; this just suppresses
+		// the redundant audit-event when ctx subsequently cancels).
+		if stop := run.StopWatchdog(); stop != nil {
+			stop()
+		}
 		e.logger.Debug("openai: sse stream result error", "err", rerr)
 		return e.aggregatedResponse(canonical.StopUnknown, nil), fmt.Errorf("openai: sse stream result: %w", rerr)
 	}

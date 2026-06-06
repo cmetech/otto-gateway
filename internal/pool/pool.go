@@ -494,6 +494,14 @@ func (p *Pool) NewSession(ctx context.Context, cwd string) (string, error) {
 		// acquired
 	case <-ctx.Done():
 		return "", fmt.Errorf("pool: acquire cancelled: %w", ctx.Err())
+	// Audit pool-newsession-blocks-on-closed-pool: post-Close NewSession
+	// used to race between caller-ctx and a slot-release that returned a
+	// closed client (wasted round-trip through respawn → ErrClientClosed
+	// during shutdown). Selecting on p.closing returns a clean
+	// "pool: closed" error so operators can distinguish shutdown-induced
+	// failures from real ones in slog.
+	case <-p.closing:
+		return "", errors.New("pool: closed")
 	}
 	p.debugLog("pool.acquire", "slot", slot.Label)
 
