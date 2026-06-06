@@ -249,3 +249,55 @@ func TestChain_Filter_UnknownNameError(t *testing.T) {
 		t.Logf("note: err2 is not a multi-error (Join); proceeding (single-error contract is also acceptable as long as both names appear)")
 	}
 }
+
+// --- HookErrorTracker --------------------------------------------------------
+
+func TestHookErrorTracker_NilSafe(t *testing.T) {
+	var tracker *HookErrorTracker
+	tracker.Record(&fakePreHook{name: "A"}, errors.New("boom"))
+	if got := tracker.LastError("A"); got != "" {
+		t.Fatalf("nil tracker should be no-op, got %q", got)
+	}
+}
+
+func TestHookErrorTracker_RecordsAndClears(t *testing.T) {
+	tracker := NewHookErrorTracker()
+	hook := &fakePreHook{name: "PII"}
+
+	tracker.Record(hook, errors.New("boom"))
+	if got := tracker.LastError("PII"); got != "boom" {
+		t.Fatalf("after Record(err): got %q, want boom", got)
+	}
+
+	tracker.Record(hook, nil)
+	if got := tracker.LastError("PII"); got != "" {
+		t.Fatalf("after Record(nil): got %q, want empty", got)
+	}
+}
+
+func TestHookErrorTracker_UnnamedHookIsNoop(t *testing.T) {
+	tracker := NewHookErrorTracker()
+	// An anonymous struct has no Name() method and no exported type name —
+	// hookName returns "" so Record must silently drop.
+	tracker.Record(struct{}{}, errors.New("boom"))
+	// No panic, no slot — verified by the tracker being empty for any key.
+	if got := tracker.LastError(""); got != "" {
+		t.Fatalf("unnamed hook should not store, got %q", got)
+	}
+}
+
+func TestChain_DescribeWith_PopulatesLastError(t *testing.T) {
+	tracker := NewHookErrorTracker()
+	callLog := []string{}
+	pre := &fakePreHook{name: "PreA", callLog: &callLog}
+	chain := Chain{Pre: []engine.PreHook{pre}}
+
+	tracker.Record(pre, errors.New("preflight failed"))
+	preDesc, _ := chain.DescribeWith(tracker)
+	if len(preDesc) != 1 {
+		t.Fatalf("describe length: got %d, want 1", len(preDesc))
+	}
+	if preDesc[0].LastError != "preflight failed" {
+		t.Errorf("LastError: got %q, want preflight failed", preDesc[0].LastError)
+	}
+}

@@ -323,6 +323,15 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 	}
 	chain = filteredChain
 
+	// hookErrors is the per-hook last-error tracker shared by every
+	// engine instance (the global engine + every per-session engine
+	// factory below). The engine's safe-call wrappers call into
+	// hookErrors.Record after each Pre/Post invocation; the
+	// hooksDescriptionAdapter reads from it when /health/hooks renders.
+	// The tray's degraded state lights up when any enabled hook has a
+	// non-empty LastError surfaced here.
+	hookErrors := plugin.NewHookErrorTracker()
+
 	// Quick 260531-ruv: convert raw seconds to time.Duration once,
 	// thread it into the engine + each adapter.Config + each per-
 	// session engine factory. Zero stays zero (helper interprets it
@@ -356,6 +365,7 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 			PreHooks:          chain.Pre,
 			PostHooks:         chain.Post,
 			StreamIdleTimeout: streamIdle,
+			HookErrorReporter: hookErrors.Record,
 		})
 
 		// Plan 05-03: construct the dedicated-session registry alongside
@@ -414,9 +424,10 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 				Logger:            logger,
 				ACP:               entry,
 				DefaultCWD:        cfg.KiroCWD,
-				PreHooks:          chain.Pre,  // Phase 8 — per-session chain
-				PostHooks:         chain.Post, // Phase 8 — per-session chain
-				StreamIdleTimeout: streamIdle, // quick 260531-ruv
+				PreHooks:          chain.Pre,         // Phase 8 — per-session chain
+				PostHooks:         chain.Post,        // Phase 8 — per-session chain
+				StreamIdleTimeout: streamIdle,        // quick 260531-ruv
+				HookErrorReporter: hookErrors.Record, // /health/hooks LastError surface
 			})}
 		}
 		openaiEngineForSession = func(entry *session.Entry) openai.Engine {
@@ -424,9 +435,10 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 				Logger:            logger,
 				ACP:               entry,
 				DefaultCWD:        cfg.KiroCWD,
-				PreHooks:          chain.Pre,  // Phase 8
-				PostHooks:         chain.Post, // Phase 8
-				StreamIdleTimeout: streamIdle, // quick 260531-ruv
+				PreHooks:          chain.Pre,         // Phase 8
+				PostHooks:         chain.Post,        // Phase 8
+				StreamIdleTimeout: streamIdle,        // quick 260531-ruv
+				HookErrorReporter: hookErrors.Record, // /health/hooks LastError surface
 			})}
 		}
 		anthropicEngineForSession = func(entry *session.Entry) anthropic.Engine {
@@ -434,9 +446,10 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 				Logger:            logger,
 				ACP:               entry,
 				DefaultCWD:        cfg.KiroCWD,
-				PreHooks:          chain.Pre,  // Phase 8
-				PostHooks:         chain.Post, // Phase 8
-				StreamIdleTimeout: streamIdle, // quick 260531-ruv
+				PreHooks:          chain.Pre,         // Phase 8
+				PostHooks:         chain.Post,        // Phase 8
+				StreamIdleTimeout: streamIdle,        // quick 260531-ruv
+				HookErrorReporter: hookErrors.Record, // /health/hooks LastError surface
 			})}
 		}
 	}
@@ -705,11 +718,11 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 		OllamaVersionHandler: ollamaVersionHandler, // Codex M-4 split accessor
 		Surfaces:             surfaces,
 		Pool:                 poolForServer,
-		PoolDetail:           poolDetailForServer,                   // Plan 05-03 D-15
-		PoolHealth:           poolHealthForServer,                   // /health/pool — pool serving-health probe
-		Registry:             registryForServer,                     // Plan 05-03 D-14/D-16
-		AdminHandler:         adminHandler,                          // Phase 6.1 admin observability UI
-		Hooks:                hooksDescriptionAdapter{chain: chain}, // Phase 8 OBSV-04 — /health/hooks
+		PoolDetail:           poolDetailForServer,                                        // Plan 05-03 D-15
+		PoolHealth:           poolHealthForServer,                                        // /health/pool — pool serving-health probe
+		Registry:             registryForServer,                                          // Plan 05-03 D-14/D-16
+		AdminHandler:         adminHandler,                                               // Phase 6.1 admin observability UI
+		Hooks:                hooksDescriptionAdapter{chain: chain, tracker: hookErrors}, // Phase 8 OBSV-04 — /health/hooks
 	})
 
 	return a, cleanup, nil
@@ -865,11 +878,12 @@ func (a cmdPoolHealthAdapter) Health() server.PoolHealth {
 // poolStatsAdapter / poolDetailAdapter — the field-by-field copy
 // happens at the cmd-level boundary.
 type hooksDescriptionAdapter struct {
-	chain plugin.Chain
+	chain   plugin.Chain
+	tracker *plugin.HookErrorTracker
 }
 
 func (h hooksDescriptionAdapter) Describe() (pre, post []server.HookDescription) {
-	pluginPre, pluginPost := h.chain.Describe()
+	pluginPre, pluginPost := h.chain.DescribeWith(h.tracker)
 	return convertHookDescriptions(pluginPre), convertHookDescriptions(pluginPost)
 }
 
@@ -881,10 +895,11 @@ func convertHookDescriptions(in []plugin.HookDescription) []server.HookDescripti
 	out := make([]server.HookDescription, len(in))
 	for i, x := range in {
 		out[i] = server.HookDescription{
-			Name:    x.Name,
-			Kind:    x.Kind,
-			Enabled: x.Enabled,
-			Config:  x.Config,
+			Name:      x.Name,
+			Kind:      x.Kind,
+			Enabled:   x.Enabled,
+			Config:    x.Config,
+			LastError: x.LastError,
 		}
 	}
 	return out

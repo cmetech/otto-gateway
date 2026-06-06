@@ -115,6 +115,10 @@ try {
     Write-Host "`nNext steps (new terminal):"
     Write-Host "  otto-gw start     # launch the gateway"
     Write-Host "  otto-gw status    # verify it is up"
+    $trayExe = Join-Path $OttoHome 'bin\otto-tray.exe'
+    if (Test-Path $trayExe) {
+        Write-Host "  Start-Process `"$trayExe`"   # or, launch the tray app"
+    }
     Write-Host "  Invoke-RestMethod http://127.0.0.1:18080/health"
 } finally {
     Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue

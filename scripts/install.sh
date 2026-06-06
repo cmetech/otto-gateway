@@ -119,6 +119,11 @@ main() {
 
     if [ "$PLATFORM_OS" = "darwin" ]; then
         xattr -d com.apple.quarantine "$OTTO_HOME/bin/otto-gateway" 2>/dev/null || true
+        # otto-tray ships only in the darwin and windows tarballs;
+        # silently no-op if the binary is absent (e.g. on linux installs).
+        if [ -f "$OTTO_HOME/bin/otto-tray" ]; then
+            xattr -d com.apple.quarantine "$OTTO_HOME/bin/otto-tray" 2>/dev/null || true
+        fi
     fi
 
     if command -v kiro-cli >/dev/null 2>&1; then
@@ -159,6 +164,9 @@ main() {
     printf '\nNext steps:\n'
     printf '  %s start     # launch the gateway\n' "$cmd"
     printf '  %s status    # verify it is up\n' "$cmd"
+    if [ -f "$OTTO_HOME/bin/otto-tray" ]; then
+        printf '  open %s/bin/otto-tray   # or, launch the menu-bar app\n' "$OTTO_HOME"
+    fi
     printf '  curl -sf http://127.0.0.1:18080/health\n'
 }
 

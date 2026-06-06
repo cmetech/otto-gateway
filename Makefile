@@ -18,6 +18,7 @@ PKG_INSTALL := docs/INSTALL.md
 
 .PHONY: all build run test test-race lint fmt fmt-check vet examples tidy clean cross ci arch-lint start stop status e2e e2e-list e2e-sdk-setup help \
         cross-darwin-arm64 cross-darwin-amd64 cross-linux-amd64 cross-windows-amd64 \
+        cross-otto-tray cross-otto-tray-darwin-arm64 cross-otto-tray-darwin-amd64 cross-otto-tray-windows-amd64 \
         package package-all package-checksums package-darwin-arm64 package-darwin-amd64 package-linux-amd64 package-windows-amd64
 
 all: lint test build ## Lint, test, and build for the host platform
@@ -101,6 +102,40 @@ cross-windows-amd64:
 	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 \
 		go build -ldflags="$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY)-windows-amd64.exe $(PKG)
 
+# ---------------------------------------------------------------------------
+# otto-tray cross-compile (darwin + windows ONLY; no linux tray).
+#
+# The tray uses energye/systray which requires cgo on every platform. Cgo
+# is contained to this binary alone — the gateway above stays cgo-free.
+#
+# Prerequisites:
+#   * darwin builds: Xcode Command Line Tools (`xcode-select --install`).
+#   * windows builds from macOS: `brew install mingw-w64`. The CC override
+#     below picks up the standard mingw GCC; without it the target fails
+#     with a clear cgo link error and the gateway's own build is unaffected.
+# ---------------------------------------------------------------------------
+
+TRAY_BINARY := otto-tray
+TRAY_PKG    := ./cmd/$(TRAY_BINARY)
+
+cross-otto-tray-darwin-arm64:
+	@mkdir -p $(BUILD_DIR)
+	CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
+		go build -ldflags="$(LDFLAGS)" -o $(BUILD_DIR)/$(TRAY_BINARY)-darwin-arm64 $(TRAY_PKG)
+
+cross-otto-tray-darwin-amd64:
+	@mkdir -p $(BUILD_DIR)
+	CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 \
+		go build -ldflags="$(LDFLAGS)" -o $(BUILD_DIR)/$(TRAY_BINARY)-darwin-amd64 $(TRAY_PKG)
+
+cross-otto-tray-windows-amd64:
+	@mkdir -p $(BUILD_DIR)
+	CGO_ENABLED=1 GOOS=windows GOARCH=amd64 \
+		CC=$${CC:-x86_64-w64-mingw32-gcc} \
+		go build -ldflags="$(LDFLAGS)" -o $(BUILD_DIR)/$(TRAY_BINARY)-windows-amd64.exe $(TRAY_PKG)
+
+cross-otto-tray: cross-otto-tray-darwin-arm64 cross-otto-tray-darwin-amd64 cross-otto-tray-windows-amd64 ## Cross-compile otto-tray for darwin + windows
+
 # Distribution packaging — produces a self-contained otto_gateway/ folder
 # the user extracts on their laptop:
 #
@@ -176,25 +211,31 @@ define codesign_adhoc
 	fi
 endef
 
-package-darwin-arm64: cross-darwin-arm64 $(PKG_README) $(PKG_INSTALL) ## Build otto_gateway-darwin-arm64-<version>.tar.gz
+package-darwin-arm64: cross-darwin-arm64 cross-otto-tray-darwin-arm64 $(PKG_README) $(PKG_INSTALL) ## Build otto_gateway-darwin-arm64-<version>.tar.gz
 	$(call codesign_adhoc,$(BUILD_DIR)/$(BINARY)-darwin-arm64)
+	$(call codesign_adhoc,$(BUILD_DIR)/$(TRAY_BINARY)-darwin-arm64)
 	@$(call stage_unix,darwin,arm64,)
+	cp $(BUILD_DIR)/$(TRAY_BINARY)-darwin-arm64 $(DIST_DIR)/otto_gateway/bin/$(TRAY_BINARY)
 	cd $(DIST_DIR) && tar -czf otto_gateway-darwin-arm64-$(VERSION).tar.gz otto_gateway
 	@echo "→ $(DIST_DIR)/otto_gateway-darwin-arm64-$(VERSION).tar.gz"
 
-package-darwin-amd64: cross-darwin-amd64 $(PKG_README) $(PKG_INSTALL)
+package-darwin-amd64: cross-darwin-amd64 cross-otto-tray-darwin-amd64 $(PKG_README) $(PKG_INSTALL)
 	$(call codesign_adhoc,$(BUILD_DIR)/$(BINARY)-darwin-amd64)
+	$(call codesign_adhoc,$(BUILD_DIR)/$(TRAY_BINARY)-darwin-amd64)
 	@$(call stage_unix,darwin,amd64,)
+	cp $(BUILD_DIR)/$(TRAY_BINARY)-darwin-amd64 $(DIST_DIR)/otto_gateway/bin/$(TRAY_BINARY)
 	cd $(DIST_DIR) && tar -czf otto_gateway-darwin-amd64-$(VERSION).tar.gz otto_gateway
 	@echo "→ $(DIST_DIR)/otto_gateway-darwin-amd64-$(VERSION).tar.gz"
 
+# Linux intentionally has NO tray binary — tray support is darwin/windows only.
 package-linux-amd64: cross-linux-amd64 $(PKG_README) $(PKG_INSTALL)
 	@$(call stage_unix,linux,amd64,)
 	cd $(DIST_DIR) && tar -czf otto_gateway-linux-amd64-$(VERSION).tar.gz otto_gateway
 	@echo "→ $(DIST_DIR)/otto_gateway-linux-amd64-$(VERSION).tar.gz"
 
-package-windows-amd64: cross-windows-amd64 $(PKG_README) $(PKG_INSTALL)
+package-windows-amd64: cross-windows-amd64 cross-otto-tray-windows-amd64 $(PKG_README) $(PKG_INSTALL)
 	@$(call stage_unix,windows,amd64,.exe)
+	cp $(BUILD_DIR)/$(TRAY_BINARY)-windows-amd64.exe $(DIST_DIR)/otto_gateway/bin/$(TRAY_BINARY).exe
 	@command -v zip >/dev/null 2>&1 || { echo "ERROR: zip not installed (required for Windows package)" >&2; exit 1; }
 	cd $(DIST_DIR) && zip -r -q otto_gateway-windows-amd64-$(VERSION).zip otto_gateway
 	@echo "→ $(DIST_DIR)/otto_gateway-windows-amd64-$(VERSION).zip"

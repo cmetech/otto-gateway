@@ -91,6 +91,14 @@ type Config struct {
 	// PostHooks is the Phase 8 PostHook chain. Collect iterates in
 	// order after the response is assembled; non-nil error propagates.
 	PostHooks []PostHook
+	// HookErrorReporter is called by the engine after every Pre/Post
+	// hook invocation. err is non-nil when the hook returned an error
+	// (or panicked, recovered by callPreHookSafe / callPostHookSafe);
+	// nil when the hook completed successfully. The reporter is
+	// expected to record the latest error for surfacing on
+	// /health/hooks. A nil reporter is a no-op so tests and callers
+	// without a Chain still function. Wired in cmd/otto-gateway/main.go.
+	HookErrorReporter func(hook any, err error)
 }
 
 // Engine is the concrete orchestrator. Construct via New.
@@ -317,6 +325,9 @@ func (e *Engine) callPreHookSafe(ctx context.Context, h PreHook, req *canonical.
 			resp = nil
 			err = fmt.Errorf("engine: hook panic: %v", r)
 		}
+		if e.cfg.HookErrorReporter != nil {
+			e.cfg.HookErrorReporter(h, err)
+		}
 	}()
 	return h.Before(ctx, req)
 }
@@ -331,6 +342,9 @@ func (e *Engine) callPostHookSafe(ctx context.Context, h PostHook, req *canonica
 				"err", fmt.Sprintf("%v", r),
 				"stack", string(debug.Stack()))
 			err = fmt.Errorf("engine: hook panic: %v", r)
+		}
+		if e.cfg.HookErrorReporter != nil {
+			e.cfg.HookErrorReporter(h, err)
 		}
 	}()
 	return h.After(ctx, req, resp)

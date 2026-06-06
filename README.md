@@ -119,6 +119,12 @@ all hooks, chat-trace off), and puts `otto-gw` on your PATH. Pin a version with
 chat requests without it. See [`docs/INSTALL.md`](docs/INSTALL.md) for the manual
 archive install and per-OS detail.
 
+macOS and Windows installs also drop a menu-bar / system-tray launcher at
+`~/.otto-gw/bin/otto-tray` (or `otto-tray.exe`) — optional, off by default.
+See [Optional: launch the menu-bar / system-tray app](docs/operator-quickstart.md#optional-launch-the-menu-bar--system-tray-app-macos--windows)
+in the operator quickstart for what it does and how to remove its login-item
+registration.
+
 ---
 
 ### From source (developers)

@@ -18,6 +18,55 @@ import (
 	"time"
 )
 
+// helpUsage renders the canonical --help text using a FlagSet
+// seeded with zero-value Config defaults. Called only from the
+// meta-flag short-circuit path; the regular Parse flow renders its
+// own buffer with env-resolved defaults.
+func helpUsage() string {
+	var cfg Config
+	fs := flag.NewFlagSet("otto-gateway", flag.ContinueOnError)
+	var buf bytes.Buffer
+	fs.SetOutput(&buf)
+	fs.String("http-addr", cfg.HTTPAddr, "HTTP listen address")
+	fs.String("kiro-cmd", cfg.KiroCmd, "kiro-cli binary name or path")
+	fs.String("kiro-args", strings.Join(cfg.KiroArgs, " "), "kiro-cli arguments (whitespace-split)")
+	fs.String("kiro-cwd", cfg.KiroCWD, "working directory for kiro-cli subprocess")
+	fs.Bool("debug", cfg.Debug, "enable debug-level logging")
+	fs.Duration("ping-interval", cfg.PingInterval, "kiro-cli heartbeat interval (Go duration)")
+	fs.Int("pool-size", cfg.PoolSize, "number of warm kiro-cli subprocesses")
+	fs.Duration("session-ttl", cfg.SessionTTL, "idle stateful-session reap threshold (Go duration; SESSION_TTL_MS also accepts ms-integer)")
+	fs.Int("session-max", cfg.SessionMax, "maximum concurrent stateful sessions (SESSION_MAX)")
+	fs.String("enabled-surfaces", strings.Join(cfg.EnabledSurfaces, ","), "comma-split list of enabled HTTP surfaces")
+	fs.String("ollama-path-prefix", cfg.OllamaPathPrefix, "route prefix for the Ollama surface")
+	fs.String("anthropic-path-prefix", cfg.AnthropicPathPrefix, "route prefix for the Anthropic surface")
+	fs.String("openai-path-prefix", cfg.OpenAIPathPrefix, "route prefix for the OpenAI surface")
+	fs.String("allowed-ips", joinAllowedIPs(cfg.AllowedIPs), "comma-split CIDR/IP allowlist")
+	fs.Bool("auth-trust-xff", cfg.AuthTrustXFF, "trust X-Forwarded-For in the IP allowlist check")
+	fs.Bool("version", false, "print version and exit")
+	fs.Usage()
+	return buf.String()
+}
+
+// scanMetaFlag returns "version" or "help" if those meta-flags
+// appear anywhere in args (in their `--version`, `-version`,
+// `--help`, `-help`, or `-h` forms). It stops at a bare `--`
+// (POSIX end-of-flags marker). Returns "" when no meta-flag was
+// requested.
+func scanMetaFlag(args []string) string {
+	for _, a := range args {
+		if a == "--" {
+			return ""
+		}
+		switch a {
+		case "--version", "-version":
+			return "version"
+		case "--help", "-help", "-h":
+			return "help"
+		}
+	}
+	return ""
+}
+
 // ErrVersionRequested is returned by LoadArgs when --version was passed.
 // main() checks for it and prints version.Version then exits 0 — the config
 // package itself NEVER calls os.Exit (process exit is main's responsibility).
@@ -554,6 +603,29 @@ func deriveChatTraceFile(logFile string) string {
 //     state and the function is testable. Its output is discarded so --help /
 //     parse errors do not pollute stderr during tests.
 func LoadArgs(args []string) (Config, error) {
+	// Meta-flag pre-scan: --version and --help/-h must short-circuit
+	// BEFORE Load() runs env validation, so they work even when env
+	// is misconfigured (e.g. PII_ENCRYPT_KEY required by env-mode
+	// PII but unset). The version/help paths inspect no env state, so
+	// running them ahead of Load() loses nothing and unblocks the
+	// "otto-gw version" wrapper subcommand on fresh installs.
+	if hit := scanMetaFlag(args); hit != "" {
+		switch hit {
+		case "version":
+			return Config{}, ErrVersionRequested
+		case "help":
+			// Render usage from a FlagSet seeded with a zero-value
+			// Config so --help works even when env validation would
+			// fail (e.g. PII_ENCRYPT_KEY missing). The flag defaults
+			// shown will be zero values rather than env-resolved
+			// defaults, but the flag NAMES + descriptions are what
+			// matter for --help. Defining the flags below in one
+			// place would let us share rendering — for now we accept
+			// the duplication and keep the divergence small.
+			return Config{}, &HelpRequested{Usage: helpUsage()}
+		}
+	}
+
 	cfg, err := Load()
 	if err != nil {
 		return cfg, err
