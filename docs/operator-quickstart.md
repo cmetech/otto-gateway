@@ -154,7 +154,7 @@ The install drops `bin/otto-tray` (or `bin/otto-tray.exe`) alongside `bin/otto-g
 
 Launch it:
 
-- **macOS:** `open ~/.otto-gw/bin/otto-tray`
+- **macOS:** `open "~/.otto-gw/OTTO Tray.app"` (or double-click `OTTO Tray.app` in Finder). The install script generates a minimal `.app` wrapper around the binary with `LSUIElement=true` so the icon goes to the menu bar with no Dock entry. Running the raw `~/.otto-gw/bin/otto-tray` binary via `open` won't work — `open` falls back to Terminal for unwrapped Mach-O executables and the menu-bar item never appears.
 - **Windows:** `Start-Process "$env:USERPROFILE\.otto-gw\bin\otto-tray.exe"`, or double-click `%USERPROFILE%\.otto-gw\bin\otto-tray.exe` in Explorer.
 
 The icon appears in the menu bar (macOS) or system tray (Windows). From its menu you can:

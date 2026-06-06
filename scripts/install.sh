@@ -123,6 +123,45 @@ main() {
         # silently no-op if the binary is absent (e.g. on linux installs).
         if [ -f "$OTTO_HOME/bin/otto-tray" ]; then
             xattr -d com.apple.quarantine "$OTTO_HOME/bin/otto-tray" 2>/dev/null || true
+            # Build a minimal .app bundle wrapper so `open` reaches the
+            # tray as a proper menu-bar agent. Running a plain Mach-O
+            # binary via `open` falls back to Terminal.app — the binary
+            # then can't reliably take an NSStatusBar item and the
+            # terminal window stays open. LSUIElement=true keeps the
+            # app out of the Dock and Cmd-Tab list (menu-bar-only).
+            # The MacOS/ exec is a symlink to avoid duplicating the
+            # ~9 MB binary on disk.
+            app_dir="$OTTO_HOME/OTTO Tray.app"
+            rm -rf "$app_dir"
+            mkdir -p "$app_dir/Contents/MacOS"
+            ln -sf "$OTTO_HOME/bin/otto-tray" "$app_dir/Contents/MacOS/otto-tray"
+            cat > "$app_dir/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>io.cmetech.otto-tray</string>
+    <key>CFBundleName</key>
+    <string>OTTO Tray</string>
+    <key>CFBundleExecutable</key>
+    <string>otto-tray</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleVersion</key>
+    <string>${VERSION#v}</string>
+    <key>CFBundleShortVersionString</key>
+    <string>${VERSION#v}</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>LSMinimumSystemVersion</key>
+    <string>10.13</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+</dict>
+</plist>
+PLIST
+            xattr -dr com.apple.quarantine "$app_dir" 2>/dev/null || true
         fi
     fi
 
@@ -164,8 +203,8 @@ main() {
     printf '\nNext steps:\n'
     printf '  %s start     # launch the gateway\n' "$cmd"
     printf '  %s status    # verify it is up\n' "$cmd"
-    if [ -f "$OTTO_HOME/bin/otto-tray" ]; then
-        printf '  open %s/bin/otto-tray   # or, launch the menu-bar app\n' "$OTTO_HOME"
+    if [ -d "$OTTO_HOME/OTTO Tray.app" ]; then
+        printf "  open '%s/OTTO Tray.app'   # or, launch the menu-bar app\n" "$OTTO_HOME"
     fi
     printf '  curl -sf http://127.0.0.1:18080/health\n'
 }
