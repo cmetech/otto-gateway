@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/energye/systray"
@@ -45,6 +46,28 @@ func notify(title, body string) {
 	script := fmt.Sprintf(`display notification "%s" with title "%s"`,
 		escapeApplescript(body), escapeApplescript(title))
 	_ = exec.CommandContext(ctx, "osascript", "-e", script).Run() //nolint:gosec // script body escaped via escapeApplescript
+}
+
+// confirmDialog shows a blocking yes/no dialog. Returns true if the
+// user clicked the affirmative button, false if they clicked the
+// negative button OR if the dialog could not be shown (we never
+// block on a degraded osascript).
+func confirmDialog(title, body, yesLabel, noLabel string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	// `display dialog` returns "button returned:<label>" on stdout
+	// when the user picks a button; the exit code is 0 in both yes
+	// and no cases. On cancel via ESC it returns non-zero and the
+	// process state's exit code is 1 — treat that as "no".
+	script := fmt.Sprintf(`display dialog "%s" with title "%s" buttons {"%s", "%s"} default button "%s" cancel button "%s"`,
+		escapeApplescript(body), escapeApplescript(title),
+		escapeApplescript(noLabel), escapeApplescript(yesLabel),
+		escapeApplescript(yesLabel), escapeApplescript(noLabel))
+	out, err := exec.CommandContext(ctx, "osascript", "-e", script).Output() //nolint:gosec // script body escaped via escapeApplescript
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(out), "button returned:"+yesLabel)
 }
 
 func escapeApplescript(s string) string {

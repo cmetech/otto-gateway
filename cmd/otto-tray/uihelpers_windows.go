@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"syscall"
 	"time"
 
@@ -50,6 +51,27 @@ func notify(title, body string) {
 	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script) //nolint:gosec // script body escaped via escapePS
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	_ = cmd.Start()
+}
+
+// confirmDialog shows a blocking yes/no MessageBox. Returns true if
+// the user clicked the affirmative button. Falls back to false on
+// any error (we never block silently).
+func confirmDialog(title, body, _, _ string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	// MessageBox returns 6 for Yes, 7 for No. The PowerShell exit
+	// code propagates that integer. Captures the result via stdout
+	// so we don't depend on $LASTEXITCODE plumbing.
+	script := "[reflection.assembly]::loadwithpartialname('System.Windows.Forms') | Out-Null; " +
+		"$result = [System.Windows.Forms.MessageBox]::Show('" + escapePS(body) + "', '" + escapePS(title) + "', 'YesNo', 'Question'); " +
+		"Write-Output $result"
+	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script) //nolint:gosec // script body escaped via escapePS
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	out, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(out), "Yes")
 }
 
 func escapePS(s string) string {
