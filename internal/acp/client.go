@@ -409,7 +409,14 @@ func (c *Client) readLoop(ctx context.Context) {
 	for {
 		frame, err := c.framer.readFrame()
 		if err != nil {
-			// EOF or read error — subprocess exited or pipe closed.
+			// Distinguish payload-too-big from generic EOF / pipe close so
+			// operators can correlate slot churn with frame size in
+			// /admin tail. The slot still dies (cap exceeded → scanner
+			// cannot resync) but the failure mode is now nameable.
+			if errors.Is(err, ErrFrameTooLong) {
+				c.cfg.Logger.Warn("acp.framer.frame_too_long",
+					"max_bytes", maxFrameSize)
+			}
 			c.failPending(ErrClientClosed)
 			return
 		}

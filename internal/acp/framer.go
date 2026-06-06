@@ -7,10 +7,26 @@ package acp
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
 )
+
+// maxFrameSize bounds the largest ACP frame the framer will read. Prior
+// value 1 MiB was tripped by any large tool_call_update payload
+// (large file read, large code block, image/base64) and turned the
+// resulting bufio.ErrTooLong into a slot-killing EOF in the readLoop.
+// 16 MiB is generous — kiro-cli's tool outputs rarely exceed a few MiB
+// even on file reads of large logs — but bounds the worst case so an
+// adversarial output cannot grow memory unbounded.
+const maxFrameSize = 16 * 1024 * 1024
+
+// ErrFrameTooLong is returned by readFrame when the inbound frame
+// exceeds maxFrameSize. The readLoop logs it as a distinct
+// acp.framer.frame_too_long event so the operator can correlate slot
+// churn with payload size in /admin tail.
+var ErrFrameTooLong = errors.New("acp: frame exceeds max size")
 
 // framer handles NDJSON (newline-delimited JSON) encoding/decoding over an
 // io.Reader/io.Writer pair. Typical usage: readFrame reads from subprocess stdout;
@@ -22,12 +38,13 @@ type framer struct {
 }
 
 // newFramer constructs a framer backed by the given reader and writer.
-// The scanner buffer is set to 1 MB (sc.Buffer is mandatory — ACP frames can exceed the
-// default 64 KB limit for large prompts).
+// Scanner is configured with a 64 KiB initial buffer and a 16 MiB cap
+// (see maxFrameSize). Initial 64 KiB keeps small-frame allocations
+// cheap; the cap absorbs occasional large tool outputs without
+// crashing the slot.
 func newFramer(r io.Reader, w io.Writer) *framer {
 	sc := bufio.NewScanner(r)
-	// CRITICAL: default scanner limit is 64 KB; ACP frames can be larger.
-	sc.Buffer(make([]byte, 64*1024), 1024*1024)
+	sc.Buffer(make([]byte, 64*1024), maxFrameSize)
 	return &framer{
 		scanner: sc,
 		enc:     json.NewEncoder(w),
@@ -36,12 +53,17 @@ func newFramer(r io.Reader, w io.Writer) *framer {
 
 // readFrame reads the next newline-delimited JSON frame from the underlying reader.
 // Returns io.EOF when the reader is exhausted (subprocess exited or pipe closed).
+// Returns ErrFrameTooLong when an inbound frame exceeds maxFrameSize so
+// callers can distinguish "payload too big" from generic read failure.
 //
 // CRITICAL: scanner.Bytes() returns a slice into the scanner's internal buffer.
 // The buffer is reused on each Scan() call, so readFrame always copies before returning.
 func (f *framer) readFrame() (json.RawMessage, error) {
 	if !f.scanner.Scan() {
 		if err := f.scanner.Err(); err != nil {
+			if errors.Is(err, bufio.ErrTooLong) {
+				return nil, ErrFrameTooLong
+			}
 			return nil, fmt.Errorf("acp: framer read: %w", err)
 		}
 		return nil, io.EOF

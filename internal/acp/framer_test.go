@@ -103,6 +103,51 @@ func TestFramerLargeFrame(t *testing.T) {
 	}
 }
 
+// TestFramerLargeFrame_AboveOldCap reproduces the failure mode from audit
+// acp-framer-oversized-frame-kills-slot. The previous scanner cap was
+// 1 MiB; any kiro-cli frame larger than that returned bufio.ErrTooLong
+// which the readLoop treated as EOF, killing the pool slot. After the
+// fix the framer absorbs frames up to maxFrameSize (16 MiB) and only
+// trips the cap on truly pathological payloads.
+func TestFramerLargeFrame_AboveOldCap(t *testing.T) {
+	t.Parallel()
+	pr, pw := io.Pipe()
+	payload := strings.Repeat("x", 1500000) // 1.5 MiB — over old 1 MiB cap
+	go func() {
+		f := newFramer(nil, pw)
+		if err := f.writeFrame(map[string]any{"data": payload}); err != nil {
+			pw.CloseWithError(err)
+			return
+		}
+		_ = pw.Close()
+	}()
+	rf := newFramer(pr, nil)
+	raw, err := rf.readFrame()
+	if err != nil {
+		t.Fatalf("readFrame 1.5MiB: %v (would have been bufio.ErrTooLong under old 1MiB cap)", err)
+	}
+	if len(raw) < 1500000 {
+		t.Errorf("expected raw >= 1500000 bytes, got %d", len(raw))
+	}
+}
+
+// TestFramerErrFrameTooLong verifies the new ErrFrameTooLong sentinel
+// fires when an inbound frame exceeds maxFrameSize. Uses bytes.Buffer
+// (not io.Pipe) so the writer side cannot deadlock when the scanner
+// abandons reading on cap-exceeded.
+func TestFramerErrFrameTooLong(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	buf.WriteString(`{"data":"`)
+	buf.WriteString(strings.Repeat("a", maxFrameSize+1024))
+	buf.WriteString(`"}` + "\n")
+	rf := newFramer(&buf, nil)
+	_, err := rf.readFrame()
+	if !errors.Is(err, ErrFrameTooLong) {
+		t.Fatalf("readFrame oversize: err = %v; want ErrFrameTooLong", err)
+	}
+}
+
 // TestFramerEOF verifies readFrame returns io.EOF when the reader is closed.
 func TestFramerEOF(t *testing.T) {
 	t.Parallel()
