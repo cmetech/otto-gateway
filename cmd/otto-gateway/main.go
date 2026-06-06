@@ -31,9 +31,11 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/DeRuina/timberjack"
@@ -60,6 +62,18 @@ import (
 const warmupDeadline = 30 * time.Second
 
 func main() {
+	// Install the SIGINT/SIGTERM handler at the very top of main so the
+	// boot window (config load, logger build, pool.Warmup) is covered.
+	// Without this, Ctrl-C during pool.Warmup terminates the process via
+	// Go's default signal handler before any signal.Notify is wired, and
+	// kiro-cli children (placed in their own pgrps by applyPgidAttr) are
+	// orphaned because the terminal-driven SIGINT never reaches them.
+	// Threading this ctx into newApp lets pool.Warmup's warmCtx inherit
+	// cancellation so a boot-time signal drains partial pool state via
+	// the cleanup closure rather than orphaning subprocesses.
+	bootCtx, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stopSignals()
+
 	cfg, err := config.LoadArgs(os.Args[1:])
 	// Meta-flag exit-0 cases handled BEFORE the error→exit(1) path. main owns
 	// process exit; the config package NEVER calls os.Exit.
@@ -81,6 +95,10 @@ func main() {
 	logger, closeLogger := buildLogger(cfg)
 	defer closeLogger()
 
+	// Surface that the signal handler is engaged from t≈0 so an operator
+	// can confirm in logs that the boot window is covered.
+	logger.Info("boot: signal handler installed", "signals", []string{"SIGINT", "SIGTERM"})
+
 	// Surface which env file (if any) the wrapper sourced. The bash and
 	// PowerShell wrappers export OTTO_ENV_FILE_LOADED with the resolved
 	// path so operators can confirm in the structured log which file is
@@ -101,14 +119,14 @@ func main() {
 		"trust_xff", cfg.AuthTrustXFF,
 	)
 
-	app, cleanup, err := newApp(context.Background(), cfg, logger)
+	app, cleanup, err := newApp(bootCtx, cfg, logger)
 	if err != nil {
 		logger.Error("startup failed", "err", err)
 		os.Exit(1)
 	}
 	defer cleanup()
 
-	if err := app.srv.RunUntilSignal(context.Background()); err != nil {
+	if err := app.srv.RunUntilSignal(bootCtx); err != nil {
 		logger.Error("server stopped with error", "err", err)
 		os.Exit(1)
 	}
