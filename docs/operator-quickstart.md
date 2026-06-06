@@ -148,6 +148,38 @@ On Windows substitute `.\scripts\otto-gw.ps1 <command>` and drop `-f` (the Power
 
 ---
 
+## Optional: launch the menu-bar / system-tray app (macOS + Windows)
+
+The install drops `bin/otto-tray` (or `bin/otto-tray.exe`) alongside `bin/otto-gateway` on macOS and Windows. The tray app is **optional** — every operation it exposes is also available via the wrappers on the command line. Linux installs do not ship the tray.
+
+Launch it:
+
+- **macOS:** `open ~/.otto-gw/bin/otto-tray`
+- **Windows:** `Start-Process "$env:USERPROFILE\.otto-gw\bin\otto-tray.exe"`, or double-click `%USERPROFILE%\.otto-gw\bin\otto-tray.exe` in Explorer.
+
+The icon appears in the menu bar (macOS) or system tray (Windows). From its menu you can:
+
+- **Start, Stop, Restart** the gateway. These call the same `otto-gw` / `otto-gw.ps1` wrapper as the CLI — same env files, same config; the tray is not a second source of truth.
+- **Open dashboard** — opens `/admin` in your default browser.
+- **Copy health URL** — puts `http://127.0.0.1:18080/health` on the clipboard.
+- **Preferences → Launch tray at login** — when on, the tray re-appears every login (LaunchAgent on macOS at `~/Library/LaunchAgents/io.cmetech.otto-tray.plist`; `HKCU\…\Run\OttoTray` on Windows). Off by default; the installer never touches login-items.
+- **Preferences → Start gateway when tray launches** — when on, the gateway starts automatically a moment after the icon appears.
+
+The header line shows the live state — `running`, `starting`, `degraded` (pool empty), `error`, or `stopped` — and is polled every 3 seconds against `/health` and `/admin/api/snapshot`. Start/Stop/Restart are enabled or greyed depending on the current state.
+
+### Removing login-item registration
+
+If you toggled "Launch tray at login" on and later want to remove the LaunchAgent (macOS) or `HKCU\Run` value (Windows), run:
+
+```sh
+~/.otto-gw/bin/otto-tray --uninstall          # macOS
+& "$env:USERPROFILE\.otto-gw\bin\otto-tray.exe" --uninstall   # Windows
+```
+
+This removes only the login-item registration; the binary itself stays put (delete it with the rest of `~/.otto-gw/` whenever you wish).
+
+---
+
 ## `init` — non-interactive form for scripts / CI
 
 Both wrappers accept flags so `init` can be driven without prompts:
