@@ -504,6 +504,25 @@ func (p *Pool) NewSession(ctx context.Context, cwd string) (string, error) {
 	// the slot from p.all so the pool effective size shrinks (D-03).
 	if !p.slotAlive(slot) {
 		if err := p.respawnSlot(ctx, slot); err != nil {
+			// WR-07 / audit pool-respawn-ctx-cancel-shrinks-pool-permanently:
+			// distinguish caller-disconnect ctx cancellation from genuine
+			// spawn failures. A laptop reconnecting after sleep with
+			// multiple cached client tabs hitting dead slots used to walk
+			// the pool 4→3→2→1→0 because every disconnect-during-respawn
+			// landed in removeSlot. The slot is still dead (we haven't
+			// swapped a new client in) so re-queue it; the next acquirer
+			// retries the respawn rather than starving on a shrunken pool.
+			// recordSpawnErr was intentionally skipped on ctx-cancel inside
+			// respawnSlot so /health/pool LastSpawnError stays clean.
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				select {
+				case p.slots <- slot:
+					p.debugLog("pool.respawn.deferred", "slot", slot.Label, "err", err.Error())
+				case <-p.closing:
+					// Pool shutting down — Close drains p.all itself.
+				}
+				return "", fmt.Errorf("pool: respawn slot %s deferred: %w", slot.Label, err)
+			}
 			p.removeSlot(slot)
 			return "", fmt.Errorf("pool: respawn slot %s: %w", slot.Label, err)
 		}
