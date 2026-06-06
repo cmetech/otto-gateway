@@ -8,22 +8,110 @@ on:
 permissions:
   contents: write
 
+# The release runs as a three-job pipeline because the new otto-tray
+# binary needs cgo, and cross-compiling cgo for darwin from a linux
+# runner does not work (clang has no darwin sysroot). Split:
+#
+#   build-macos   — macos-latest. Builds darwin/{arm64,amd64} gateway +
+#                   darwin tray (cgo via Xcode CLT). Uploads dist/*.tar.gz.
+#   build-linux   — ubuntu-latest. Builds linux/amd64 + windows/amd64
+#                   gateway + windows/amd64 tray (cgo via mingw-w64).
+#                   Uploads dist/*.tar.gz + dist/*.zip.
+#   publish       — ubuntu-latest. Collects artifacts from both builds,
+#                   regenerates SHA256SUMS across the combined set, and
+#                   creates the GitHub Release.
+#
+# The split keeps the gateway's pure-Go cross-compile property intact
+# (linux runner can still build the gateway for any GOOS at CGO_ENABLED=0)
+# and contains the cgo cost to the per-OS jobs that actually need it.
+
 jobs:
-  release:
-    runs-on: ubuntu-latest
+  build-macos:
+    runs-on: macos-latest
     steps:
-      - name: Checkout (full history so git describe sees the tag)
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
 
-      - name: Build full release set
-        run: make package-all
+      - name: Build darwin gateway + darwin tray
+        run: |
+          make cross-darwin-arm64 cross-darwin-amd64 \
+               cross-otto-tray-darwin-arm64 cross-otto-tray-darwin-amd64
+          make package-darwin-arm64 package-darwin-amd64
+
+      - name: Upload darwin artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: darwin
+          path: dist/otto_gateway-darwin-*.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install mingw-w64 (cgo for windows tray)
+        run: sudo apt-get update && sudo apt-get install -y mingw-w64
+
+      - name: Build linux gateway + windows gateway + windows tray
+        run: |
+          make cross-linux-amd64 cross-windows-amd64 \
+               cross-otto-tray-windows-amd64
+          make package-linux-amd64 package-windows-amd64
+
+      - name: Upload linux/windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-windows
+          path: |
+            dist/otto_gateway-linux-amd64-*.tar.gz
+            dist/otto_gateway-windows-amd64-*.zip
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: [build-macos, build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download darwin artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: darwin
+          path: dist/
+
+      - name: Download linux/windows artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-windows
+          path: dist/
+
+      - name: Regenerate SHA256SUMS across the combined set
+        run: |
+          cd dist
+          ls -lh
+          # Mirrors Makefile's package-checksums recipe — produced here
+          # rather than in either build job because neither job sees the
+          # other's archives. Format matches the operator's shasum -c flow.
+          shasum -a 256 otto_gateway-*-"$GITHUB_REF_NAME".tar.gz \
+                        otto_gateway-*-"$GITHUB_REF_NAME".zip \
+            > SHA256SUMS-"$GITHUB_REF_NAME".txt
+          cat SHA256SUMS-"$GITHUB_REF_NAME".txt
 
       - name: Publish GitHub Release
         env:
