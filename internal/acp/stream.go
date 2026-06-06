@@ -2,11 +2,19 @@ package acp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
 	"otto-gateway/internal/canonical"
 )
+
+// errPushAfterClose is returned by Stream.push when the stream has already
+// been closed. Callers swallow this (typically with a Warn log) — the chunk
+// is dropped silently because the consumer has already torn down. This
+// replaces the previous send-on-closed-channel panic from the readLoop
+// goroutine.
+var errPushAfterClose = errors.New("acp: stream push after close")
 
 // FinalResult holds per-stream metadata available after Chunks closes.
 // Callers obtain it via Stream.Result() which blocks until the stream is done.
@@ -56,6 +64,17 @@ type Stream struct {
 	done      chan struct{}
 	closeOnce sync.Once
 
+	// sendMu serializes close() against in-flight push(). push() holds
+	// RLock during the send; close() takes Lock to wait for in-flight
+	// pushes to drain or bail before it closes s.chunks. The closed flag
+	// is set under Lock before s.chunks is closed so a push that wins the
+	// RLock race after close() landed bails out without touching the
+	// channel. close() closes s.done BEFORE taking Lock so any push
+	// already blocked on a full chunks buffer can wake via the <-s.done
+	// arm and release its RLock.
+	sendMu sync.RWMutex
+	closed bool
+
 	mu     sync.Mutex
 	result *FinalResult
 	err    error
@@ -78,7 +97,17 @@ func newStream(_ context.Context, sessionID string) *Stream {
 // push sends chunk to the stream channel with backpressure.
 // REVIEW FIX (Codex MEDIUM): blocks on select rather than dropping chunks silently.
 // ctx should be the client lifetime context so backpressure respects Close().
+//
+// Concurrency: holds sendMu.RLock for the duration of the send. The select
+// observes <-s.done so a close() racing with a blocked push (per-prompt ctx
+// cancel while the client ctx is still alive) wakes this goroutine and
+// returns errPushAfterClose instead of panicking on send-to-closed.
 func (s *Stream) push(ctx context.Context, ch canonical.Chunk) error {
+	s.sendMu.RLock()
+	defer s.sendMu.RUnlock()
+	if s.closed {
+		return errPushAfterClose
+	}
 	select {
 	case s.chunks <- ch:
 		s.mu.Lock()
@@ -87,6 +116,8 @@ func (s *Stream) push(ctx context.Context, ch canonical.Chunk) error {
 		return nil
 	case <-ctx.Done():
 		return fmt.Errorf("acp: stream push cancelled: %w", ctx.Err())
+	case <-s.done:
+		return errPushAfterClose
 	}
 }
 
@@ -103,6 +134,13 @@ func (s *Stream) push(ctx context.Context, ch canonical.Chunk) error {
 // the Prompt happy path calls close(&FinalResult{StopReason: stop}, nil).
 func (s *Stream) close(result *FinalResult, err error) {
 	s.closeOnce.Do(func() {
+		// Close s.done FIRST (no lock required) so any push() currently
+		// blocked on a full s.chunks buffer wakes via the <-s.done arm and
+		// releases sendMu.RLock. Only then can sendMu.Lock() be acquired
+		// without deadlocking against the in-flight push.
+		close(s.done)
+		s.sendMu.Lock()
+		s.closed = true
 		s.mu.Lock()
 		if s.result == nil {
 			// Defensive — newStream always allocates, but guard so the merge
@@ -115,7 +153,7 @@ func (s *Stream) close(result *FinalResult, err error) {
 		s.err = err
 		s.mu.Unlock()
 		close(s.chunks)
-		close(s.done)
+		s.sendMu.Unlock()
 	})
 }
 

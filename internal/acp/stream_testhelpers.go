@@ -30,6 +30,11 @@ func NewStreamForTest(sessionID string) *Stream {
 // Returns true if the chunk was accepted, false if the channel is full
 // (caller should size their test data to fit).
 func (s *Stream) PushForTest(ch canonical.Chunk) bool {
+	s.sendMu.RLock()
+	defer s.sendMu.RUnlock()
+	if s.closed {
+		return false
+	}
 	select {
 	case s.chunks <- ch:
 		s.mu.Lock()

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -369,15 +370,29 @@ func NewWithConn(rwc io.ReadWriteCloser, cfg Config) *Client {
 // no in-flight caller hangs.
 func (c *Client) readLoop(ctx context.Context) {
 	defer c.wg.Done()
+	// Belt-and-suspenders panic guard. The primary fix for send-on-closed
+	// races lives in Stream.push/close (sendMu serialization). This recover
+	// exists so a future regression in dispatch/translation code cannot
+	// crash the whole gateway from this goroutine — net/http's per-handler
+	// recover does not cover readLoop.
+	defer func() {
+		if r := recover(); r != nil {
+			c.cfg.Logger.Error("acp: readLoop panic recovered",
+				"err", fmt.Sprintf("%v", r),
+				"stack", string(debug.Stack()))
+			c.failPending(ErrClientClosed)
+		}
+	}()
 	// CR-03 fix: propagate readLoop death to clientCtx. If the subprocess
 	// crashes before Close() is called, clientCtx must be cancelled so any
 	// subsequent caller of send() unblocks with ErrClientClosed instead of
 	// hanging on c.writeCh forever.
 	//
 	// Defer order (LIFO; last-registered runs first):
-	//   1. stream-cleanup defer (registered last → runs first)
-	//   2. c.cancel() (cancels clientCtx → unblocks Prompt/Initialize callers)
-	//   3. c.wg.Done() (signals Close()'s wg.Wait() to proceed → runs last)
+	//   1. recover (registered first → runs last)
+	//   2. stream-cleanup defer (registered last → runs first)
+	//   3. c.cancel() (cancels clientCtx → unblocks Prompt/Initialize callers)
+	//   4. c.wg.Done() (signals Close()'s wg.Wait() to proceed)
 	// Do NOT reorder these defers.
 	defer c.cancel()
 	defer func() {
@@ -995,7 +1010,16 @@ func (c *Client) handleNotification(frame rpcFrame) {
 		}
 		// push with client lifetime context for backpressure (D-03 + REVIEW FIX).
 		if err := s.push(c.clientCtx, chunk); err != nil {
-			c.cfg.Logger.Warn("acp: stream push failed", "err", err)
+			if errors.Is(err, errPushAfterClose) {
+				// Late notification — the active stream was closed (per-prompt
+				// ctx cancel or readLoop teardown) between our streamMu unlock
+				// and the push. Drop the chunk. This is the race that used to
+				// panic on send-to-closed-channel before sendMu serialization.
+				c.cfg.Logger.Warn("acp.stream.push_after_close",
+					"method", frame.Method)
+			} else {
+				c.cfg.Logger.Warn("acp: stream push failed", "err", err)
+			}
 		}
 
 	default:
