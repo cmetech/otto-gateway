@@ -129,12 +129,25 @@ main() {
             # then can't reliably take an NSStatusBar item and the
             # terminal window stays open. LSUIElement=true keeps the
             # app out of the Dock and Cmd-Tab list (menu-bar-only).
-            # The MacOS/ exec is a symlink to avoid duplicating the
-            # ~9 MB binary on disk.
+            #
+            # Why we COPY (not symlink) the binary: macOS's runtime
+            # signature verification treats Contents/MacOS/<exe> as the
+            # bundle's canonical executable and rejects symlinks for it.
+            # The published binary was adhoc-signed standalone, so when
+            # the bundle wraps it, the embedded signature reports
+            # `Info.plist=not bound` and NSStatusBar registration
+            # silently no-ops — the v2.0.3 symptom.
+            #
+            # Why we RE-SIGN the bundle: after the Info.plist is in
+            # place, an adhoc codesign --deep --force binds the
+            # signature to the bundle's resources (Info.plist + the
+            # MacOS/ payload). Without this rebind the Cocoa runtime
+            # refuses to attach a menu-bar item.
             app_dir="$OTTO_HOME/OTTO Tray.app"
             rm -rf "$app_dir"
             mkdir -p "$app_dir/Contents/MacOS"
-            ln -sf "$OTTO_HOME/bin/otto-tray" "$app_dir/Contents/MacOS/otto-tray"
+            cp "$OTTO_HOME/bin/otto-tray" "$app_dir/Contents/MacOS/otto-tray"
+            chmod +x "$app_dir/Contents/MacOS/otto-tray"
             cat > "$app_dir/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -158,10 +171,24 @@ main() {
     <string>10.13</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
 </dict>
 </plist>
 PLIST
             xattr -dr com.apple.quarantine "$app_dir" 2>/dev/null || true
+            # Re-sign the bundle ad-hoc so the signature is bound to
+            # the Info.plist and the in-bundle payload. Silently no-op
+            # if codesign is missing (e.g. Xcode CLT not installed) —
+            # the bundle still functions for users who manually grant
+            # Gatekeeper consent, but flag it so the operator knows.
+            if command -v codesign >/dev/null 2>&1; then
+                codesign --sign - --force --deep --options runtime "$app_dir" 2>/dev/null \
+                    && ok "signed OTTO Tray.app (adhoc)" \
+                    || warn "codesign on OTTO Tray.app failed — first-launch may need manual Gatekeeper approval"
+            else
+                warn "codesign not found — skipping ad-hoc sign of OTTO Tray.app"
+            fi
         fi
     fi
 
