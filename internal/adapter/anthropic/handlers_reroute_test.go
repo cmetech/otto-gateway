@@ -35,6 +35,9 @@ type rerouteFakeEngine struct {
 	collectFromRunCalled bool
 	// Did the original wire have Stream=true? (set by Run for assertion.)
 	sawStreamTrueAtRun bool
+	// postHookCalls tracks RunPostHooks invocations. Audit
+	// ollama-reroute-double-posthook-fires applies symmetrically here.
+	postHookCalls int
 }
 
 func (e *rerouteFakeEngine) Collect(_ context.Context, _ *canonical.ChatRequest) (*canonical.ChatResponse, error) {
@@ -61,6 +64,7 @@ func (e *rerouteFakeEngine) Run(_ context.Context, req *canonical.ChatRequest) (
 }
 
 func (e *rerouteFakeEngine) RunPostHooks(_ context.Context, _ *canonical.ChatRequest, _ *canonical.ChatResponse) error {
+	e.postHookCalls++
 	return nil
 }
 
@@ -146,5 +150,13 @@ func TestHandleMessages_StreamReroute_OnPreHookStreamDisable(t *testing.T) {
 	// the re-route branch fired AFTER Run, not before.
 	if !eng.sawStreamTrueAtRun {
 		t.Error("rerouteFakeEngine.Run did not observe Stream=true on inbound req — wire-decode broken")
+	}
+
+	// (5) Audit ollama-reroute-double-posthook-fires (applies symmetrically
+	// to anthropic's synthetic-SSE re-route): handler MUST NOT call
+	// RunPostHooks — CollectFromRun already ran the chain. Pre-fix: 1.
+	// Post-fix: 0. A second call corrupts PII decrypt and double-logs.
+	if eng.postHookCalls != 0 {
+		t.Errorf("handler called RunPostHooks %d times on synthetic-SSE re-route; want 0", eng.postHookCalls)
 	}
 }

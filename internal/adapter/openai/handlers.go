@@ -219,17 +219,13 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 			// application/json here would trip OpenAI SDK clients with
 			// "request ended without sending any chunks" — the v1.8.3
 			// regression that motivated this path.
+			// Audit ollama-reroute-double-posthook-fires (applies
+			// symmetrically here): CollectFromRun above already fired
+			// the PostHook chain. Do NOT call RunPostHooks again on
+			// resp — corrupts PII decrypt and double-logs LoggingHook /
+			// ChatTraceHook.
 			if err := runSyntheticSSEFromResponse(streamCtx, w, resp, wire.Model, a.cfg.Logger); err != nil {
 				a.cfg.Logger.Debug("openai: synthetic SSE terminated", "err", err)
-			}
-			if resp != nil {
-				if pErr := eng.RunPostHooks(streamCtx, req, resp); pErr != nil {
-					a.cfg.Logger.Warn(
-						"openai: PostHook error (synthetic SSE — swallowed; client already received stream)",
-						"err", pErr,
-						"request_id", plugin.RequestIDFromContext(ctx),
-					)
-				}
 			}
 			return
 		}

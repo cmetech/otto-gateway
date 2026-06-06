@@ -27,6 +27,12 @@ type rerouteFakeEngine struct {
 
 	collectFromRunCalled bool
 	sawStreamTrueAtRun   bool
+
+	// postHookCalls tracks how many times RunPostHooks is invoked. Used
+	// by the ollama-reroute-double-posthook-fires regression: the
+	// handler MUST NOT call RunPostHooks after CollectFromRun (which
+	// already runs the chain). Pre-fix this was 1; post-fix it is 0.
+	postHookCalls int
 }
 
 func (e *rerouteFakeEngine) Collect(_ context.Context, _ *canonical.ChatRequest) (*canonical.ChatResponse, error) {
@@ -45,6 +51,7 @@ func (e *rerouteFakeEngine) Run(_ context.Context, req *canonical.ChatRequest) (
 }
 
 func (e *rerouteFakeEngine) RunPostHooks(_ context.Context, _ *canonical.ChatRequest, _ *canonical.ChatResponse) error {
+	e.postHookCalls++
 	return nil
 }
 
@@ -127,5 +134,15 @@ func TestHandleChat_StreamReroute_OnPreHookStreamDisable(t *testing.T) {
 	}
 	if !eng.sawStreamTrueAtRun {
 		t.Error("rerouteFakeEngine.Run did not observe Stream=true on inbound req — wire-decode broken")
+	}
+	// Audit ollama-reroute-double-posthook-fires: handler MUST NOT
+	// invoke RunPostHooks on the re-route path — CollectFromRun above
+	// already ran the chain. Pre-fix this was 1 (the redundant call),
+	// post-fix it is 0. A second call corrupts the PII decrypt PostHook
+	// (operates on already-decrypted content) and double-logs the
+	// LoggingHook / ChatTraceHook records.
+	if eng.postHookCalls != 0 {
+		t.Errorf("handler called RunPostHooks %d times on re-route; want 0 (CollectFromRun already ran the chain)",
+			eng.postHookCalls)
 	}
 }

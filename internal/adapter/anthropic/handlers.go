@@ -260,17 +260,14 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 			// application/json here would trip Anthropic SDK clients (and
 			// any other SSE consumer) with "request ended without sending
 			// any chunks" — the v1.8.3 regression that motivated this path.
+			// Audit ollama-reroute-double-posthook-fires (applies
+			// symmetrically here): CollectFromRun above already fired
+			// the PostHook chain (collect.go:179-183). Do NOT call
+			// RunPostHooks again on resp — a second pass corrupts
+			// non-idempotent hooks (PII decrypt operates on already-
+			// decrypted content) and double-logs idempotent ones.
 			if err := runSyntheticSSEFromResponse(streamCtx, w, resp, wire.Model, a.cfg.Logger); err != nil {
 				a.cfg.Logger.Debug("anthropic: synthetic SSE terminated", "err", err)
-			}
-			if resp != nil {
-				if pErr := eng.RunPostHooks(streamCtx, req, resp); pErr != nil {
-					a.cfg.Logger.Warn(
-						"anthropic: PostHook error (synthetic SSE — swallowed; client already received stream)",
-						"err", pErr,
-						"request_id", plugin.RequestIDFromContext(ctx),
-					)
-				}
 			}
 			return
 		}

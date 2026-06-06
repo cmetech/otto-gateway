@@ -315,17 +315,16 @@ func (a *Adapter) handleChat(w http.ResponseWriter, r *http.Request) {
 		// and other stream-only callers) sees application/x-ndjson with
 		// the expected done:false ... done:true frame sequence. Writing
 		// application/json here would break stream parsers.
+		//
+		// Audit ollama-reroute-double-posthook-fires: do NOT call
+		// eng.RunPostHooks here. CollectFromRun above already ran the
+		// PostHook chain on resp (collect.go:179-183); a second
+		// invocation re-runs every PostHook on the SAME response —
+		// idempotent for LoggingHook / ChatTraceHook (duplicate records)
+		// but actively destructive for PII decrypt (operates on already-
+		// decrypted content, errors-swallowed or worse).
 		if err := runSyntheticNDJSONFromResponse(streamCtx, w, resp, wire.Model, true, start, a.cfg.Logger); err != nil {
 			a.cfg.Logger.Debug("ollama: synthetic chat NDJSON terminated", "err", err)
-		}
-		if resp != nil {
-			if pErr := eng.RunPostHooks(streamCtx, req, resp); pErr != nil {
-				a.cfg.Logger.Warn(
-					"ollama: PostHook error (synthetic NDJSON — swallowed; client already received stream)",
-					"err", pErr,
-					"request_id", plugin.RequestIDFromContext(ctx),
-				)
-			}
 		}
 		return
 	}
@@ -548,18 +547,10 @@ func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 			stripFencesFromResponse(resp)
 		}
 		// Same synthetic-NDJSON re-route as /api/chat above. See that
-		// site for rationale.
+		// site for rationale. Audit ollama-reroute-double-posthook-fires:
+		// PostHooks already fired inside CollectFromRun — do not re-fire.
 		if err := runSyntheticNDJSONFromResponse(streamCtx, w, resp, wire.Model, false, start, a.cfg.Logger); err != nil {
 			a.cfg.Logger.Debug("ollama: synthetic generate NDJSON terminated", "err", err)
-		}
-		if resp != nil {
-			if pErr := eng.RunPostHooks(streamCtx, req, resp); pErr != nil {
-				a.cfg.Logger.Warn(
-					"ollama: PostHook error (synthetic NDJSON — swallowed; client already received stream)",
-					"err", pErr,
-					"request_id", plugin.RequestIDFromContext(ctx),
-				)
-			}
 		}
 		return
 	}
