@@ -454,8 +454,17 @@ func (c *Client) readLoop(ctx context.Context) {
 // writerLoop is the sole goroutine that calls framer.writeFrame.
 // All other goroutines send their serialised request bytes to writeCh.
 // ACP-02: one reader + one writer goroutine; writeCh serialises all framer writes.
+//
+// Audit acp-writer-loop-error-deadlocks-pending-callers: defer c.cancel()
+// so a write failure (subprocess stdin pipe closed prematurely, broken
+// pipe) propagates immediately to clientCtx. Without this, concurrent
+// send() callers blocked on writeCh would only unblock when the readLoop
+// eventually detected subprocess death (stdout EOF) — a window that can
+// be hundreds of seconds long if kiro-cli closes stdin but keeps stdout
+// alive. Mirrors readLoop's existing defer c.cancel() pattern.
 func (c *Client) writerLoop(ctx context.Context) {
 	defer c.wg.Done()
+	defer c.cancel()
 	for {
 		select {
 		case data := <-c.writeCh:
