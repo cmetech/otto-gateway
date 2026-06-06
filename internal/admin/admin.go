@@ -182,13 +182,18 @@ func Handler(deps Deps) http.Handler {
 	//   - direct (unit tests):   strip "/static/"
 	// We use the chi wildcard URLParam("*") to extract the file path and bypass
 	// StripPrefix entirely, serving directly from staticFS regardless of mount context.
-	r.Handle("/static/*", http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+	// Audit admin-static-handler-accepts-any-http-method: r.Handle accepts
+	// arbitrary methods (POST/PUT/DELETE etc.) and serves the asset 200 OK.
+	// Not a security issue (static assets are public) but it diverges from
+	// the rest of the admin surface which uses r.Get exclusively. Restrict
+	// to GET so non-GET correctly returns 405.
+	r.Get("/static/*", func(w http.ResponseWriter, req *http.Request) {
 		// chi sets the wildcard URLParam("*") to the path portion after /static/
 		// regardless of whether the handler is mounted or called directly.
 		// This makes the FileServer mount-path-agnostic.
 		filePath := chi.URLParam(req, "*")
 		http.ServeFileFS(w, req, staticFS, filePath)
-	}))
+	})
 
 	// Insertion point 2: register the SSE log-tail route (D-08).
 	// Route ordering: page → snapshot → static → SSE.

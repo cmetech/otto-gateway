@@ -92,6 +92,18 @@ func (h *handler) sseHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	path := h.deps.LogPaths[source]
+	// Audit admin-sse-log-source-key-mismatch-silent-broken-tailer:
+	// LogPathOrder listing a source not present in LogPaths previously
+	// constructed a Tailer with path="" that quietly DEBUG-logged once
+	// per 250ms tick and served no data. Surface the misconfiguration
+	// as a 400 with a clear envelope so operators do not chase a dead
+	// log stream.
+	if path == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = fmt.Fprintf(w, `{"error":"source %q listed in LogPathOrder but missing from LogPaths"}`, source)
+		return
+	}
 	tailer := h.tailers.Get(source, path)
 
 	// Set SSE headers BEFORE writing any body (Pitfall 3 — nginx buffering).

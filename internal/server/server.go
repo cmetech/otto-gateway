@@ -339,6 +339,15 @@ func (s *Server) Run(ctx context.Context) error {
 		Addr:              s.addr,
 		Handler:           s.router,
 		ReadHeaderTimeout: 10 * time.Second, // mitigates Slowloris (gosec G112)
+		// Audit server-http-no-idle-readtimeout: cap how long keep-alive
+		// connections survive on the server side. Without this, laptop
+		// sleep/wake cycles + flaky Wi-Fi leave half-open TCP sockets
+		// that consume FDs until the kernel TCP-keepalive cleans up.
+		// 120s is comfortably above typical chat-client polling and well
+		// below the kernel default. WriteTimeout is intentionally OMITTED
+		// — setting it would truncate legitimate long-running SSE/NDJSON
+		// streams.
+		IdleTimeout: 120 * time.Second,
 	}
 
 	errCh := make(chan error, 1)
