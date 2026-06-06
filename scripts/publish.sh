@@ -555,6 +555,20 @@ upload_to_artifactory() {
             ARTIFACTORY_ABORTED=1
             continue
         fi
+        # 3xx redirects (302 in particular) always mean Cloudflare Access
+        # intercepted the request because the mTLS client cert was
+        # expired, missing, or untrusted — Artifactory's JFrog backend
+        # itself returns 201/200/204 on a successful PUT and never
+        # redirects. Treat ANY 3xx as a hard failure and abort to avoid
+        # spending time uploading payload that will be silently dropped.
+        # Surface a hint pointing at the cert path so the operator can
+        # check expiry with `openssl x509 -in <cert> -noout -dates`.
+        if [[ "$http_status" -ge 300 && "$http_status" -lt 400 ]]; then
+            log_message "  [FAIL] artifactory: $f — HTTP $http_status (Cloudflare Access redirect; check mTLS cert at $ARTIFACTORY_CERT_PATH for expiry)"
+            ARTIFACTORY_UPLOAD_FAILS=$((ARTIFACTORY_UPLOAD_FAILS + 1))
+            ARTIFACTORY_ABORTED=1
+            continue
+        fi
         if [[ "$http_status" -lt 200 || "$http_status" -ge 400 ]]; then
             log_message "  [FAIL] artifactory: $f — HTTP $http_status"
             ARTIFACTORY_UPLOAD_FAILS=$((ARTIFACTORY_UPLOAD_FAILS + 1))
