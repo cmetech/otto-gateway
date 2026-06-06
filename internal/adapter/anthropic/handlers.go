@@ -295,6 +295,19 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 		}
 		resp, err := runSSEEmitter(streamCtx, w, runHandle, wire.Model, a.cfg.StreamIdleTimeout, a.cfg.Logger)
 		if err != nil {
+			// Audit anthropic-flusher-assertion-fail-swallowed: the
+			// no-flusher branch returns BEFORE any bytes are written,
+			// so a JSON 500 envelope is still legal. Render it
+			// explicitly instead of falling through (which would leave
+			// the client with an empty 200 body and no PostHook
+			// observability). All other errors — ctx cancel, mid-stream
+			// emitter — happen after WriteHeader and cannot be
+			// converted to JSON; debug-log and swallow.
+			if errors.Is(err, errNoFlusher) {
+				a.cfg.Logger.Error("anthropic: sse emitter no flusher", "err", err)
+				writeError(w, http.StatusInternalServerError, errAPI, "internal error")
+				return
+			}
 			// runSSEEmitter has already written SSE headers + frames
 			// (the error path inside the emitter handles its own
 			// `event: error` frame on mid-stream Result() errors —

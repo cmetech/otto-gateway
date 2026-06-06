@@ -557,6 +557,12 @@ func (e *sseEmitter) flushPendingToolUseIfNeeded() error {
 }
 
 // runSSEEmitter is the entry point for the SSE streaming branch. It
+// errNoFlusher is returned by runSSEEmitter when the ResponseWriter
+// does not implement http.Flusher. Distinct from in-flight emitter
+// errors so handlers.go can render a JSON 500 instead of swallowing.
+// Audit anthropic-flusher-assertion-fail-swallowed.
+var errNoFlusher = errors.New("anthropic: response writer is not flusher")
+
 // asserts the http.Flusher capability BEFORE writing any bytes (a
 // missing Flusher returns an error and the caller is responsible for
 // rendering a JSON 500 — see handlers.go), then sets the streaming
@@ -585,8 +591,13 @@ func runSSEEmitter(ctx context.Context, w http.ResponseWriter, run RunHandle, mo
 	if !ok {
 		// Caller (handlers.go) is responsible for translating this into
 		// a JSON 500 envelope. We have NOT written any bytes yet so the
-		// caller is free to call writeError.
-		return nil, errors.New("anthropic: response writer is not flusher")
+		// caller is free to call writeError. Audit
+		// anthropic-flusher-assertion-fail-swallowed: returned as a
+		// typed sentinel so the handler can distinguish "writer doesn't
+		// implement Flusher" (recoverable — JSON 500 still possible)
+		// from "client disconnected mid-stream" (must remain silent
+		// because headers are already on the wire).
+		return nil, errNoFlusher
 	}
 
 	w.Header().Set("Content-Type", "text/event-stream")

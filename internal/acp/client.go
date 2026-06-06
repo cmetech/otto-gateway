@@ -1027,7 +1027,15 @@ func (c *Client) handleNotification(frame rpcFrame) {
 		// permission responses no longer share fifo ordering with normal
 		// RPC sends, which is fine — they're independent JSON-RPC frames.
 		if err := c.framer.writeFrame(json.RawMessage(data)); err != nil {
-			c.cfg.Logger.Warn("acp: permission response write failed", "err", err)
+			// Audit acp-permission-response-direct-write-races-shutdown:
+			// kiro-cli deadlocks waiting for this response (D-20). A
+			// dropped response — whether from Close racing the readLoop
+			// or a transient pipe stall — makes the slot unusable
+			// regardless. Escalate by cancelling clientCtx so the slot
+			// gets replaced via exit_watcher instead of silently wedging.
+			c.cfg.Logger.Warn("acp.permission_response.write_failed_escalating",
+				"err", err)
+			c.cancel()
 		}
 
 	case "session/update", "session/notification", "_kiro.dev/session/update":
