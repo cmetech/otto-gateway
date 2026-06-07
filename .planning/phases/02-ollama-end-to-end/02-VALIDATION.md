@@ -114,6 +114,6 @@ Real-kiro integration tests reuse Phase 1's `resolveKiroCLI()` + `LOOP24_INTEGRA
 - [x] Wave 0 covers all MISSING references
 - [x] No watch-mode flags
 - [x] Feedback latency < 30s for quick / 90s for full
-- [x] `nyquist_compliant: true` set in frontmatter
+- [x] Frontmatter compliance flag set to true
 
 **Approval:** approved 2026-06-07
