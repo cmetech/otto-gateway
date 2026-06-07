@@ -3,12 +3,12 @@ gsd_state_version: 1.0
 milestone: v1.8
 milestone_name: Nyquist Coverage Uplift
 status: planning
-last_updated: "2026-06-07T12:34:50.617Z"
+last_updated: "2026-06-07T13:00:00.000Z"
 last_activity: 2026-06-07
 progress:
-  total_phases: 0
+  total_phases: 1
   completed_phases: 0
-  total_plans: 0
+  total_plans: 6
   completed_plans: 0
   percent: 0
 ---
@@ -17,17 +17,17 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-05-23)
+See: .planning/PROJECT.md (updated 2026-06-07)
 
 **Core value:** All three API surfaces (OpenAI for Pi SDK, Ollama for LangFlow, Anthropic for loop24-client/GSD Pi) serve their respective clients without those clients knowing kiro-cli exists, with one place to enforce policy.
-**Current focus:** Phase 12 — go-toolchain-cve-remediation
+**Current focus:** Phase 13 — nyquist-coverage-uplift (v1.8 sole phase; flips 6 v1.5 VALIDATION.md docs from `nyquist_compliant: false` to `true`, 7/13 → 13/13)
 
 ## Current Position
 
-Phase: Not started (defining requirements)
+Phase: 13 — Nyquist coverage uplift (Not started — awaiting `/gsd-plan-phase 13`)
 Plan: —
-Status: Defining requirements
-Last activity: 2026-06-07 — Milestone v1.8 started
+Status: Roadmap drafted; planning pending
+Last activity: 2026-06-07 — v1.8 roadmap drafted (single Phase 13, 6 parallel plans expected, NYQ-02/03/06/06.1/08/08.4 + NYQ-ALL)
 
 ## Performance Metrics
 
@@ -53,7 +53,7 @@ Last activity: 2026-06-07 — Milestone v1.8 started
 
 **Recent Trend:**
 
-- Last 5 plans: n/a (no plans executed yet)
+- Last 5 plans: n/a (no plans executed yet in v1.8)
 - Trend: n/a
 
 *Updated after each plan completion*
@@ -64,6 +64,7 @@ Last activity: 2026-06-07 — Milestone v1.8 started
 
 ### Roadmap Evolution
 
+- 2026-06-07: v1.8 "Nyquist Coverage Uplift" roadmap drafted — single Phase 13 with 6 parallel plans (one per non-compliant v1.5 target phase: 02, 03, 06, 06.1, 08, 08.4). NYQ-02/03/06/06.1/08/08.4 mapped to Phase 13 plans; NYQ-ALL satisfied at milestone close (no 7th plan). Phase 08.3.1 ACP demux + Windows Authenticode re-deferred to v1.9+ per the v1.8-opens narrow-scope decision; both await external triggers (multi-tenant deployment driver / code-signing cert procurement).
 - 2026-06-07: v1.7 "Go Stdlib CVE Cleanup" roadmap drafted — single Phase 12 (Go toolchain CVE remediation; CVE-01/02/03 + CI-02). Carryover items (Phase 08.3.1 ACP demux, Nyquist uplift, Windows Authenticode) explicitly re-deferred to v1.8 to keep v1.7 narrow.
 - 2026-06-07: v1.6 "Tooling Cleanup" roadmap drafted — Phase 10 (golangci-lint v2 cleanup + re-gate; LINT-01/02/03) and Phase 11 (gofumpt tree-wide cleanup + pre-commit gate; FMT-01/02 + CI-01). Phase 08.3.1 ACP Per-Session Stream Demux re-scoped out of v1.6 to v1.7 to keep this milestone narrow and ship-fast.
 - Phase 3.1 inserted after Phase 3: Anthropic Surface — adapter/anthropic for Messages API at /v1/messages with SSE streaming day-one (loop24-client / GSD Pi via ANTHROPIC_BASE_URL). Promotes SURF-V2-01 to v1; adds ANTH-01..07 + SURF-08. (URGENT)
@@ -82,6 +83,7 @@ Last activity: 2026-06-07 — Milestone v1.8 started
 Decisions are logged in PROJECT.md Key Decisions table.
 Recent decisions affecting current work:
 
+- 2026-06-07: v1.8 scope narrowed to 1 phase (Phase 13 — Nyquist coverage uplift, 6 parallel plans). Phase 08.3.1 ACP demux and Windows Authenticode re-deferred to v1.9+ per the v1.8-opens narrow-scope decision: ACP demux awaits a real multi-tenant deployment driver; Authenticode awaits cert procurement. The `gsd-nyquist-auditor` agent's read-only-implementation rule holds milestone-wide — any test that surfaces an actual bug ESCALATEs to a separate phase, never a silent patch.
 - 2026-06-07: v1.7 scope narrowed to 1 phase (Phase 12 — CVE backlog). Phase 08.3.1 ACP demux, Nyquist uplift, and Windows Authenticode re-deferred to v1.8 per the v1.7-opens decision to keep the milestone narrow and ship fast.
 - 2026-06-07: v1.6 scope narrowed to 2 phases (lint + fmt/gate). Phase 08.3.1 ACP demux deferred to v1.7 per REQUIREMENTS.md "Future Requirements" section.
 - Pre-Phase 1: Go over Rust (cross-compile triviality, first systems project for author)
@@ -143,16 +145,15 @@ Items acknowledged and carried forward from previous milestone close:
 
 | Category | Item | Status | Deferred At |
 |----------|------|--------|-------------|
-| Concurrency | Phase 08.3.1 ACP Per-Session Stream Demux | Re-deferred to v1.8 | 2026-06-07 (v1.7 narrow-scope decision) |
-| Validation | Nyquist coverage uplift (3/11 v1.5 phases fully compliant) | Re-deferred to v1.8 | 2026-06-07 (v1.7 narrow-scope decision) |
-| Distribution | Windows Authenticode code-signing | Re-deferred to v1.8 | 2026-06-07 (v1.7 narrow-scope decision) |
+| Concurrency | Phase 08.3.1 ACP Per-Session Stream Demux | Re-deferred to v1.9+ (awaits multi-tenant deployment driver) | 2026-06-07 (v1.8 narrow-scope decision) |
+| Distribution | Windows Authenticode code-signing | Re-deferred to v1.9+ (awaits code-signing cert procurement) | 2026-06-07 (v1.8 narrow-scope decision) |
 
 ## Session Continuity
 
 Last session: 2026-06-07
-Stopped at: v1.7 roadmap drafted (Phase 12 — Go toolchain CVE remediation, all 4 REQ-IDs); awaiting `/gsd-plan-phase 12`
+Stopped at: v1.8 roadmap drafted (Phase 13 — Nyquist coverage uplift, 6 parallel plans expected, NYQ-02/03/06/06.1/08/08.4 + NYQ-ALL); awaiting `/gsd-plan-phase 13`
 Resume file: .planning/ROADMAP.md
 
 ## Operator Next Steps
 
-- Begin Phase 12 with `/gsd-plan-phase 12` (Go toolchain CVE remediation)
+- Begin Phase 13 with `/gsd-plan-phase 13` (Nyquist coverage uplift — expect 6 parallel plans, one per target VALIDATION.md: 02, 03, 06, 06.1, 08, 08.4)

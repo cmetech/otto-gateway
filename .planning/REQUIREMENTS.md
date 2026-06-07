@@ -55,14 +55,14 @@ Explicit exclusions to keep v1.8 narrow and ship-fast (mirrors v1.6 + v1.7 disci
 
 | REQ-ID | Phase | Plan | Status |
 |--------|-------|------|--------|
-| NYQ-02 | — | — | Active |
-| NYQ-03 | — | — | Active |
-| NYQ-06 | — | — | Active |
-| NYQ-06.1 | — | — | Active |
-| NYQ-08 | — | — | Active |
-| NYQ-08.4 | — | — | Active |
-| NYQ-ALL | — | — | Active |
+| NYQ-02 | Phase 13 | TBD (13-NN) | Pending |
+| NYQ-03 | Phase 13 | TBD (13-NN) | Pending |
+| NYQ-06 | Phase 13 | TBD (13-NN) | Pending |
+| NYQ-06.1 | Phase 13 | TBD (13-NN) | Pending |
+| NYQ-08 | Phase 13 | TBD (13-NN) | Pending |
+| NYQ-08.4 | Phase 13 | TBD (13-NN) | Pending |
+| NYQ-ALL | Phase 13 (milestone-close audit) | — (satisfied automatically when NYQ-02..08.4 all Complete + v1.8 milestone audit passes) | Pending |
 
 ---
 
-*Milestone v1.8 opened 2026-06-07.*
+*Milestone v1.8 opened 2026-06-07. Roadmap drafted 2026-06-07: single Phase 13 with 6 parallel plans (one per target VALIDATION.md), NYQ-ALL satisfied at milestone close. Phase 08.3.1 ACP demux + Windows Authenticode re-deferred to v1.9+ per v1.8-opens narrow-scope decision.*

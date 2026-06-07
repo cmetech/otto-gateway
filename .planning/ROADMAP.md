@@ -20,7 +20,7 @@ adapter-over-canonical layout (brief §3.13) and trust-gate suite (brief
 - ✅ **v1.5 audit WARNINGs** — Phases 1, 1.1, 2, 3, 3.1, 4, 5, 6, 6.1, 8, 8.1, 8.2, 8.3, 8.4, 9 (shipped 2026-06-04). [Archive](milestones/v1.5-ROADMAP.md)
 - ✅ **v1.6 Tooling Cleanup** — Phases 10, 11 (shipped 2026-06-07). golangci-lint v2 baseline drained from 49→0, CI lint gate restored, gofumpt clean tree-wide, pre-commit hook enabled. [Archive](milestones/v1.6-ROADMAP.md) · [Audit](milestones/v1.6-MILESTONE-AUDIT.md)
 - ✅ **v1.7 Go Stdlib CVE Cleanup** — Phase 12 (shipped 2026-06-07). `go.mod` bumped 1.25.0 → 1.26.4; govulncheck 23 → 0; `make ci` exits 0 end-to-end without carve-outs for the first time since v1.5. [Archive](milestones/v1.7-ROADMAP.md) · [Audit](milestones/v1.7-MILESTONE-AUDIT.md)
-- 📋 **v1.8 (Planned)** — Phase 08.3.1 ACP per-session stream demux + Nyquist coverage uplift + Windows Authenticode code-signing. Scope finalized via `/gsd-new-milestone v1.8`.
+- 🚧 **v1.8 Nyquist Coverage Uplift** — Phase 13 (active; opened 2026-06-07). Flip the 6 remaining v1.5 phase VALIDATION.md docs from `nyquist_compliant: false` to `nyquist_compliant: true` (compliance ratio 7/13 → 13/13) via the `gsd-nyquist-auditor` agent run in parallel across 6 independent target phases. Phase 08.3.1 ACP demux + Windows Authenticode re-deferred to v1.9+ per v1.8-opens narrow-scope decision.
 
 ## Phases
 
@@ -72,13 +72,27 @@ Full per-phase detail: [v1.7-ROADMAP.md archive](milestones/v1.7-ROADMAP.md) · 
 
 </details>
 
-### 📋 v1.8 (Planned)
+### 🚧 v1.8 Nyquist Coverage Uplift (Active — opened 2026-06-07)
 
-To be scoped via `/gsd-new-milestone v1.8`. Carried-forward candidates:
+- [ ] **Phase 13: Nyquist coverage uplift** — Cross-cutting sweep flipping the 6 v1.5 phase VALIDATION.md docs with `nyquist_compliant: false` (phases 02, 03, 06, 06.1, 08, 08.4) up to the post-08.1 validation standard. 6 independent plans (one per target phase) run as a single parallel wave via the `gsd-nyquist-auditor` agent; each plan owns one target phase's VALIDATION.md and any new `*_test.go` files needed to fill the per-task verification map. NYQ-02 / NYQ-03 / NYQ-06 / NYQ-06.1 / NYQ-08 / NYQ-08.4 / NYQ-ALL.
 
-- [ ] **Phase 08.3.1: ACP Per-Session Stream Demux** (carried from v1.5, re-re-deferred from v1.6 and v1.7). Replace single-slot `c.activeStream` with per-sessionID map; closes WR-04 silent cross-session leak race.
-- [ ] **Nyquist coverage uplift.** 6 of 13 v1.5 phases non-compliant. Bring older phases up to the post-08.1 validation standard.
-- [ ] **Windows Authenticode code-signing.** Seed `001-authenticode-code-signing-windows-distribution`. Long pole — requires code-signing certificate procurement.
+**Re-deferred to v1.9+ (out of v1.8 scope per opening decision):**
+- Phase 08.3.1 (ACP Per-Session Stream Demux) — awaits a real multi-tenant deployment driver.
+- Windows Authenticode code-signing — awaits code-signing certificate procurement.
+
+## Phase Details
+
+### Phase 13: Nyquist coverage uplift
+**Goal**: Flip the 6 v1.5 phase VALIDATION.md docs currently marked `nyquist_compliant: false` (phases 02, 03, 06, 06.1, 08, 08.4) to `nyquist_compliant: true` so the milestone-wide compliance ratio goes from 7/13 to 13/13 with no implementation changes — every shipped phase carries a complete per-task verification map, Wave 0 fixtures section, and manual-only written rationales.
+**Depends on**: Phase 12 (v1.7 shipped — `make ci` exits 0 end-to-end; clean baseline so any new `*_test.go` files land on a green tree)
+**Requirements**: NYQ-02, NYQ-03, NYQ-06, NYQ-06.1, NYQ-08, NYQ-08.4, NYQ-ALL
+**Success Criteria** (what must be TRUE):
+  1. `grep -l 'nyquist_compliant: true' .planning/phases/*/[0-9]*-VALIDATION.md | wc -l` reports **13** (was 7 at v1.8 open); `grep -l 'nyquist_compliant: false' .planning/phases/*/[0-9]*-VALIDATION.md | wc -l` reports **0**.
+  2. For each of the 6 target VALIDATION.md docs (02, 03, 06, 06.1, 08, 08.4), the "Per-Task Verification Map" table contains one row for every task ID present in the corresponding PLAN.md — every row has either an automated `<verify>` command, a Wave 0 fixture reference, or an explicit manual-only rationale (no blank "Test Type" or "Automated Command" cells outside the manual-only column).
+  3. For each of the 6 target VALIDATION.md docs, the "Validation Sign-Off" checklist has all six boxes ticked (no 3 consecutive tasks without automated verify, no watch-mode flags, Wave 0 covers all MISSING references, feedback latency under per-phase budget, frontmatter flipped).
+  4. The `gsd-nyquist-auditor` agent's read-only-implementation rule held milestone-wide: `git diff main...HEAD -- ':!*_test.go' ':!*VALIDATION.md' ':!testdata/'` reports zero production-source edits attributable to Phase 13 plans (any ESCALATEd implementation bug landed as a separate post-Phase-13 phase).
+  5. The v1.8 milestone audit (`.planning/milestones/v1.8-MILESTONE-AUDIT.md` once written) records verdict **passed** with NYQ-ALL marked Satisfied — confirmed by the same two `grep` commands from criterion 1 plus the per-target sign-off checklists from criterion 3.
+**Plans**: TBD (6 parallel plans expected: 13-01 through 13-06, one per target phase — 02, 03, 06, 06.1, 08, 08.4 — runnable as a single wave because each plan's writes are confined to a distinct `.planning/phases/<target>/` subtree plus the corresponding package's `*_test.go` files. NYQ-ALL is satisfied automatically at milestone close once all 6 plans are Complete; no 7th plan.)
 
 ## Progress
 
@@ -87,3 +101,4 @@ To be scoped via `/gsd-new-milestone v1.8`. Carried-forward candidates:
 | 1, 1.1, 2, 3, 3.1, 4, 5, 6, 6.1, 8, 8.1, 8.2, 8.3, 8.4, 9 | v1.5 | 57/57 | Complete | 2026-06-04 |
 | 10, 11 | v1.6 | 5/5 | Complete | 2026-06-07 |
 | 12 | v1.7 | 1/1 | Complete | 2026-06-07 |
+| 13 | v1.8 | 0/6 | Not started | - |
