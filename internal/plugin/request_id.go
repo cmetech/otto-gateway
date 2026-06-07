@@ -151,4 +151,3 @@ func RequestIDFromContext(ctx context.Context) string {
 func NewRequestID() string {
 	return ulid.Make().String()
 }
-
