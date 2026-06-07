@@ -78,7 +78,8 @@ Full per-phase detail: [v1.6-ROADMAP.md archive](milestones/v1.6-ROADMAP.md) · 
   3. CI's `Vulnerability scan` step (under the `lint + test-race + arch-lint + govulncheck` job in `.github/workflows/ci.yml`) is green on the milestone-closing commit on `main` — verifiable by run URL in the phase summary.
   4. `make ci` (gofumpt → vet → build → lint → test-race → arch-lint → examples → govulncheck → cross) exits 0 end-to-end on a clean checkout of `main` — closes the v1.6 Phase 11 D-11-01 `(govulncheck routed to v1.7)` carve-out.
   5. No opportunistic changes outside CVE scope: `git diff main..HEAD -- ':!go.mod' ':!go.sum' ':!.planning/**'` is empty of non-CVE-justified edits (residual taint fixes count as in-scope; refactors do not).
-**Plans**: TBD
+**Plans**: 1 plan
+- [ ] 12-01-PLAN.md — Bump Go toolchain to a patched release (drains 23 stdlib CVEs); rerun govulncheck; close v1.6 D-11-01 carve-out; verify make ci exits 0 end-to-end (CVE-01, CVE-02, CVE-03, CI-02)
 **Status**: Pending
 
 ## Progress
@@ -87,4 +88,4 @@ Full per-phase detail: [v1.6-ROADMAP.md archive](milestones/v1.6-ROADMAP.md) · 
 |-------|-----------|----------------|--------|-----------|
 | 1, 1.1, 2, 3, 3.1, 4, 5, 6, 6.1, 8, 8.1, 8.2, 8.3, 8.4, 9 | v1.5 | 57/57 | Complete | 2026-06-04 |
 | 10, 11 | v1.6 | 5/5 | Complete | 2026-06-07 |
-| 12 | v1.7 | 0/0 | Not started | — |
+| 12 | v1.7 | 0/1 | In progress | — |
