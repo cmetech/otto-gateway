@@ -19,17 +19,23 @@ import "strings"
 const defaultContextWindow = 50
 
 // hasContextWithin reports whether any of keywords appears (case-
-// insensitively) within window bytes before matchStart or after matchEnd
-// in text. nil/empty keywords returns true.
-func hasContextWithin(text string, matchStart, matchEnd int, keywords []string, window int) bool {
+// insensitively) within defaultContextWindow bytes before matchStart or
+// after matchEnd in text. nil/empty keywords returns true.
+//
+// Note: the window was previously a parameter but always received
+// defaultContextWindow at every call site (production + tests). Dropped
+// to satisfy unparam (Phase 10 Wave 2); if a recognizer needs a custom
+// window in the future, expose it via a sibling helper rather than
+// re-introducing the always-defaultContextWindow parameter here.
+func hasContextWithin(text string, matchStart, matchEnd int, keywords []string) bool {
 	if len(keywords) == 0 {
 		return true
 	}
-	lo := matchStart - window
+	lo := matchStart - defaultContextWindow
 	if lo < 0 {
 		lo = 0
 	}
-	hi := matchEnd + window
+	hi := matchEnd + defaultContextWindow
 	if hi > len(text) {
 		hi = len(text)
 	}

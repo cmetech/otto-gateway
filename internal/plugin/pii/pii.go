@@ -220,7 +220,7 @@ func (h *PIIRedactionHook) collectRegexSpans(
 				continue
 			}
 			if len(r.ContextKeywords) > 0 &&
-				!hasContextWithin(s, start, end, r.ContextKeywords, defaultContextWindow) {
+				!hasContextWithin(s, start, end, r.ContextKeywords) {
 				continue
 			}
 			cand := span{Name: r.Name, Value: match, Start: start, End: end}
@@ -256,7 +256,6 @@ func (h *PIIRedactionHook) collectRegexSpans(
 // mergeSpansGreedy in redact(), so this function only needs to filter
 // and book-keep; the merge step drops anything that conflicts.
 func (h *PIIRedactionHook) acceptNERSpans(
-	s string,
 	candidates []span,
 	regexSpans []span,
 	counters map[string]int,
@@ -423,7 +422,7 @@ func (h *PIIRedactionHook) Before(ctx context.Context, req *canonical.ChatReques
 		var nerSpans []span
 		if h.NER != nil {
 			candidates := h.NER.Detect(s)
-			nerSpans = h.acceptNERSpans(s, candidates, regexSpans, counters, nextN, summary)
+			nerSpans = h.acceptNERSpans(candidates, regexSpans, counters, nextN, summary)
 		}
 		all := mergeSpansGreedy(regexSpans, nerSpans)
 		if len(all) == 0 {
