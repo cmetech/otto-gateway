@@ -30,13 +30,18 @@ applies uniformly to all three. The gateway being faster than Node
 and shipping as one binary is bonus — the surface compatibility
 and the single governance surface are the load-bearing properties.
 
-## Current Milestone: v1.7 (Planned)
+## Current Milestone: v1.7 Go Stdlib CVE Cleanup
 
-**Goal:** TBD via `/gsd-new-milestone v1.7`. Carried-forward candidates:
-- **Go stdlib CVE backlog** (unmasked by v1.6 Phase 10). `govulncheck ./...` fails on multiple Go stdlib CVEs that pre-existed but were hidden behind v1.6's broken lint gate.
-- **Phase 08.3.1 ACP Per-Session Stream Demux** (carried from v1.5, re-deferred from v1.6).
-- **Nyquist coverage uplift.**
-- **Windows Authenticode code-signing.**
+**Goal:** Drain the Go stdlib CVE backlog `govulncheck` flagged on `main` after v1.6 Phase 10 restored the lint gate, so `make ci` exits 0 end-to-end and the brief §3.12 trust-gate sequence holds without the v1.6 carve-out.
+
+**Target features:**
+- Go toolchain pin (`go` directive in `go.mod`) bumped to a patched 1.25.x or 1.26.x release that resolves the flagged CVEs (GO-2026-5039, -5037, -4982, -4980, -4971, -4947, -4946, -4870, …)
+- `govulncheck ./...` exits 0 on a clean checkout of `main`; CI's `Vulnerability scan` step in the lint job passes
+- Any residual application-level taints (where the gateway code calls into a vulnerable stdlib function path) are addressed — fix, document as unreachable, or apply a scoped `//gosec:exempt` equivalent if govulncheck supports one
+
+**Key context:** v1.6 shipped 2026-06-07 with the lint gate restored. The first thing the restored gate surfaced was a multi-CVE backlog in the Go stdlib that pre-existed but had been masked because the CI lint job always failed first. v1.7 is narrowly scoped — just the CVE backlog — to ship fast. Three carryover items (Phase 08.3.1 ACP demux, Nyquist uplift, Windows Authenticode signing) are explicitly deferred to v1.8 per the v1.7-opens decision to keep the milestone narrow.
+
+The CVE list is captured in `.planning/phases/10-golangci-lint-v2-cleanup-re-gate/10-04-SUMMARY.md` "Unmasked follow-up". The govulncheck output on commit `e6c715c` (v1.6 close) is reproducible via the CI lint job for run id 27080012241.
 
 ## Previous Milestone: v1.6 Tooling Cleanup (SHIPPED 2026-06-07)
 

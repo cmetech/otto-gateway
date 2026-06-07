@@ -1,17 +1,16 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.6
-milestone_name: Tooling Cleanup
-status: completed
-stopped_at: v1.6 roadmap drafted (Phase 10 lint cleanup, Phase 11 fmt + pre-commit gate); awaiting `/gsd-plan-phase 10`
-last_updated: "2026-06-07T02:39:34.477Z"
-last_activity: 2026-06-07 -- Phase 11 marked complete
+milestone: v1.7
+milestone_name: Go Stdlib CVE Cleanup
+status: planning
+last_updated: "2026-06-07T03:20:04.061Z"
+last_activity: 2026-06-07
 progress:
-  total_phases: 2
-  completed_phases: 2
-  total_plans: 5
-  completed_plans: 5
-  percent: 100
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
@@ -25,10 +24,10 @@ See: .planning/PROJECT.md (updated 2026-05-23)
 
 ## Current Position
 
-Phase: 11 — COMPLETE
-Plan: 1 of 1
-Status: Phase 11 complete
-Last activity: 2026-06-07 -- Phase 11 marked complete
+Phase: Not started (defining requirements)
+Plan: —
+Status: Defining requirements
+Last activity: 2026-06-07 — Milestone v1.7 started
 
 ## Performance Metrics
 
