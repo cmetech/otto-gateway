@@ -53,7 +53,7 @@ Full per-phase detail: [v1.5-ROADMAP.md archive](milestones/v1.5-ROADMAP.md)
 
 ### 📋 v1.6 Tooling Cleanup (Planned)
 
-- [ ] **Phase 10: golangci-lint v2 cleanup + re-gate** — drain the 49-issue v2 baseline to zero, then remove `continue-on-error: true` so lint failures block merges.
+- [x] **Phase 10: golangci-lint v2 cleanup + re-gate** — drain the 49-issue v2 baseline to zero, then remove `continue-on-error: true` so lint failures block merges. (completed 2026-06-07)
 - [ ] **Phase 11: gofumpt tree-wide cleanup + pre-commit gate** — flush `gofumpt -d .` to zero diffs and add a pre-commit gate (hook or `make pre-commit` target) so lint+fmt regressions cannot land silently again.
 
 ## Phase Details
@@ -69,10 +69,10 @@ Full per-phase detail: [v1.5-ROADMAP.md archive](milestones/v1.5-ROADMAP.md)
   4. Any `//nolint:linter` directive added during the phase carries a `// <rationale>` comment in the diff that introduces it.
 **Plans**: 4 plans
 Plans:
-- [ ] 10-01-PLAN.md — Wave 1 mechanical drain: staticcheck QF1001 (3) + unused (4) + revive redefines-builtin-id (3) + gosec G301 (2) + noctx (4); per-category decision record for these 5 categories.
-- [ ] 10-02-PLAN.md — Wave 2 wrapcheck (9) + unparam (13) drain; production fixes for 2 unparam sites; 11 scoped //nolint:unparam exemptions with rationale; per-category decision record.
-- [ ] 10-03-PLAN.md — Wave 3 real review: gosec G703 (1) + gosec G705 (2) + bodyclose (1) + nilerr (1) + revive remainder (6: 3 stutters + 2 unexported-return + 1 godoc).
-- [ ] 10-04-PLAN.md — Wave 4 re-gate: remove continue-on-error + TODO from .github/workflows/ci.yml; negative-test PR proves lint job blocks merges.
+- [x] 10-01-PLAN.md — Wave 1 mechanical drain: staticcheck QF1001 (3) + unused (4) + revive redefines-builtin-id (3) + gosec G301 (2) + noctx (4); per-category decision record for these 5 categories.
+- [x] 10-02-PLAN.md — Wave 2 wrapcheck (9) + unparam (13) drain; production fixes for 2 unparam sites; 11 scoped //nolint:unparam exemptions with rationale; per-category decision record.
+- [x] 10-03-PLAN.md — Wave 3 real review: gosec G703 (1) + gosec G705 (2) + bodyclose (1) + nilerr (1) + revive remainder (6: 3 stutters + 2 unexported-return + 1 godoc).
+- [x] 10-04-PLAN.md — Wave 4 re-gate: remove continue-on-error + TODO from .github/workflows/ci.yml; negative-test PR proves lint job blocks merges.
 
 ### Phase 11: gofumpt tree-wide cleanup + pre-commit gate
 **Goal**: `gofumpt -d .` reports no diffs on `main` and operators can't push lint/fmt regressions without surfacing them locally.
@@ -90,5 +90,5 @@ Plans:
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
 | 1, 1.1, 2, 3, 3.1, 4, 5, 6, 6.1, 8, 8.1, 8.2, 8.3, 8.4, 9 | v1.5 | 57/57 | Complete | 2026-06-04 |
-| 10 | v1.6 | 0/0 | Not started | — |
+| 10 | v1.6 | 4/4 | Complete   | 2026-06-07 |
 | 11 | v1.6 | 0/0 | Not started | — |
