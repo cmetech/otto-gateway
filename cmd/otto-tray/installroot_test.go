@@ -43,3 +43,29 @@ func TestResolveInstallRoot_WalksUpFromExecutable(t *testing.T) {
 		t.Fatalf("install root: got %q, want %q", gotResolved, wantResolved)
 	}
 }
+
+// When the tray is launched from inside a macOS .app bundle (as the
+// installer wraps it), the executable lives at
+// <root>/OTTO Tray.app/Contents/MacOS/otto-tray. The naive Dir(Dir(exe))
+// walk lands on .app/Contents; install root must step over the bundle.
+func TestResolveInstallRoot_WalksOverDotAppBundle(t *testing.T) {
+	t.Setenv("OTTO_HOME", "")
+	root := t.TempDir()
+	macosDir := filepath.Join(root, "OTTO Tray.app", "Contents", "MacOS")
+	if err := os.MkdirAll(macosDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	exe := filepath.Join(macosDir, "otto-tray")
+	if err := os.WriteFile(exe, []byte("stub"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := resolveInstallRootFrom(exe)
+	if err != nil {
+		t.Fatalf("resolveInstallRootFrom: %v", err)
+	}
+	wantResolved, _ := filepath.EvalSymlinks(root)
+	gotResolved, _ := filepath.EvalSymlinks(got)
+	if gotResolved != wantResolved {
+		t.Fatalf("install root: got %q, want %q", gotResolved, wantResolved)
+	}
+}

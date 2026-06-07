@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // resolveInstallRoot returns the install root of the OTTO Gateway
@@ -39,6 +40,25 @@ func resolveInstallRootFrom(execPath string) (string, error) {
 		resolved = execPath
 	}
 	binDir := filepath.Dir(resolved)
+	// macOS .app bundle layout: <install_root>/OTTO Tray.app/Contents/MacOS/otto-tray.
+	// The installer wraps the binary in a bundle so `open` reaches it as
+	// a proper menu-bar agent. The default Dir(Dir(exe)) walk lands on
+	// .app/Contents, which has no scripts/ or .env.otto-gw — start fails
+	// and dashboard reads the wrong env. Detect the bundle layout and
+	// step over .app to reach the real install root.
+	if filepath.Base(binDir) == "MacOS" {
+		contents := filepath.Dir(binDir)
+		if filepath.Base(contents) == "Contents" {
+			appDir := filepath.Dir(contents)
+			if strings.HasSuffix(appDir, ".app") {
+				root := filepath.Dir(appDir)
+				if root == "" || root == "." {
+					return "", errors.New("cannot resolve install root from " + execPath)
+				}
+				return root, nil
+			}
+		}
+	}
 	root := filepath.Dir(binDir)
 	if root == "" || root == "." {
 		return "", errors.New("cannot resolve install root from " + execPath)
