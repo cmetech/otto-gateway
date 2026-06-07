@@ -986,7 +986,10 @@ func buildLogger(cfg config.Config) (*slog.Logger, func()) {
 	// but a direct binary invocation with LOG_FILE=/path/that/dne.log
 	// should not silently lose every log line.
 	if dir := filepath.Dir(logFile); dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0o750); err != nil {
+		// G703 exemption: LOG_FILE is operator-supplied at process boot
+		// (not request-time), so taint analysis flags but no untrusted
+		// inbound surface reaches this mkdir.
+		if err := os.MkdirAll(dir, 0o750); err != nil { //nolint:gosec // G703: operator-controlled boot path (LOG_FILE env), not request-time
 			// Fall back to stdout rather than silently dropping logs.
 			// The error itself surfaces on first write attempt below.
 			slog.New(slog.NewJSONHandler(os.Stderr, nil)).

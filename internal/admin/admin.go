@@ -192,7 +192,9 @@ func Handler(deps Deps) http.Handler {
 		// regardless of whether the handler is mounted or called directly.
 		// This makes the FileServer mount-path-agnostic.
 		filePath := chi.URLParam(req, "*")
-		http.ServeFileFS(w, req, staticFS, filePath)
+		// G703 exemption: embed.FS rejects '..' traversal per Go 1.16+ spec;
+		// staticFS is rooted at internal/admin/static/ (operator-public assets only).
+		http.ServeFileFS(w, req, staticFS, filePath) //nolint:gosec // G703: embed.FS rejects '..' per Go 1.16+ spec; staticFS rooted at internal/admin/static/
 	})
 
 	// Insertion point 2: register the SSE log-tail route (D-08).

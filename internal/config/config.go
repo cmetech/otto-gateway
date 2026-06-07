@@ -490,7 +490,10 @@ func Load() (Config, error) {
 	}
 	if chatTrace {
 		if dir := filepath.Dir(chatTraceFile); dir != "" && dir != "." {
-			if mkErr := os.MkdirAll(dir, 0o750); mkErr != nil {
+			// G703 exemption: CHAT_TRACE_FILE is operator-supplied at process
+			// boot (not request-time), so taint analysis flags but no untrusted
+			// inbound surface reaches this mkdir.
+			if mkErr := os.MkdirAll(dir, 0o750); mkErr != nil { //nolint:gosec // G703: operator-controlled boot path (CHAT_TRACE_FILE env), not request-time
 				errs = append(errs, fmt.Errorf("CHAT_TRACE_FILE: parent unwritable %q: %w", dir, mkErr))
 			}
 		}

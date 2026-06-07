@@ -24,6 +24,7 @@ package admin
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -88,7 +89,11 @@ func (h *handler) sseHandler(w http.ResponseWriter, r *http.Request) {
 	if !slices.Contains(h.deps.LogPathOrder, source) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
-		_, _ = fmt.Fprintf(w, `{"error":"unknown source: %s"}`, source)
+		// G705 mitigation: json.Encoder quote-escapes the untrusted source
+		// value so it cannot inject structural JSON or HTML.
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"error": "unknown source: " + source,
+		})
 		return
 	}
 	path := h.deps.LogPaths[source]
@@ -101,7 +106,12 @@ func (h *handler) sseHandler(w http.ResponseWriter, r *http.Request) {
 	if path == "" {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
-		_, _ = fmt.Fprintf(w, `{"error":"source %q listed in LogPathOrder but missing from LogPaths"}`, source)
+		// G705 mitigation: json.Encoder quote-escapes the untrusted source value.
+		// Preserve the original %q-quoted appearance by formatting the source via
+		// strconv.Quote before embedding in the human-readable message.
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"error": fmt.Sprintf("source %q listed in LogPathOrder but missing from LogPaths", source),
+		})
 		return
 	}
 	tailer := h.tailers.Get(source, path)
