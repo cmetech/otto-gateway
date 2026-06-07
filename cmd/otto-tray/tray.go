@@ -15,6 +15,7 @@ import (
 	"github.com/energye/systray"
 
 	"otto-gateway/cmd/otto-tray/icon"
+	"otto-gateway/internal/version"
 )
 
 // runTray is the main UI loop. systray.Run blocks until Quit is
@@ -272,6 +273,7 @@ func (s *trayState) toggleStartGatewayOnLaunch() {
 }
 
 func (s *trayState) showAbout() {
-	body := fmt.Sprintf("Install: %s\nGo: %s", s.installRoot, runtime.Version())
-	notify("About OTTO Gateway", body)
+	body := fmt.Sprintf("Version: %s\nCommit: %s\nInstall: %s\nGo: %s",
+		version.Version, version.Commit(), s.installRoot, runtime.Version())
+	infoDialog("About OTTO Gateway", body)
 }

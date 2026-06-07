@@ -48,6 +48,22 @@ func notify(title, body string) {
 	_ = exec.CommandContext(ctx, "osascript", "-e", script).Run() //nolint:gosec // script body escaped via escapeApplescript
 }
 
+// infoDialog shows a blocking single-button informational dialog. Used
+// for About and other "user asked for this, show it modally" surfaces.
+// `display dialog` (vs. `display notification`) is the right call here
+// because the OTTO Tray.app bundle does not register for the User
+// Notifications API — notification banners silently no-op for LSUIElement
+// agents that haven't been granted notification permission, which is the
+// v2.0.8 "About does nothing" symptom. A modal dialog has no permission
+// gate and is the standard idiom for an "About" surface anyway.
+func infoDialog(title, body string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	script := fmt.Sprintf(`display dialog "%s" with title "%s" buttons {"OK"} default button "OK" with icon note`,
+		escapeApplescript(body), escapeApplescript(title))
+	_ = exec.CommandContext(ctx, "osascript", "-e", script).Run() //nolint:gosec // script body escaped via escapeApplescript
+}
+
 // confirmDialog shows a blocking yes/no dialog. Returns true if the
 // user clicked the affirmative button, false if they clicked the
 // negative button OR if the dialog could not be shown (we never

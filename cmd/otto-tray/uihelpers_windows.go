@@ -68,6 +68,13 @@ func notify(title, body string) {
 	_ = cmd.Run()
 }
 
+// infoDialog shows a blocking single-button informational dialog. Used
+// for About and other "user asked for this, show it modally" surfaces.
+// Windows already presents notify() via MessageBox (modal), so we share
+// the same primitive — distinct from the macOS split where notify is a
+// notification-center banner and infoDialog is a real dialog.
+func infoDialog(title, body string) { notify(title, body) }
+
 // powershellExe returns "pwsh" if PowerShell 7 is on PATH, else falls
 // back to "powershell" (the Windows PowerShell 5.x that ships with
 // every supported Windows). Mirrors runner_windows.go's selection so
