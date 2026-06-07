@@ -102,6 +102,6 @@ All passed against live `kiro-cli` on 2026-05-24 (streamed reply: "Hi! How can I
 - [x] Wave 0 covers all MISSING references
 - [x] No watch-mode flags
 - [x] Feedback latency < 90s
-- [x] `nyquist_compliant: true` set in frontmatter
+- [x] nyquist_compliant flipped to true in frontmatter
 
 **Approval:** approved 2026-06-07
