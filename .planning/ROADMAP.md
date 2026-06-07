@@ -19,7 +19,7 @@ adapter-over-canonical layout (brief §3.13) and trust-gate suite (brief
 
 - ✅ **v1.5 audit WARNINGs** — Phases 1, 1.1, 2, 3, 3.1, 4, 5, 6, 6.1, 8, 8.1, 8.2, 8.3, 8.4, 9 (shipped 2026-06-04). [Archive](milestones/v1.5-ROADMAP.md)
 - ✅ **v1.6 Tooling Cleanup** — Phases 10, 11 (shipped 2026-06-07). golangci-lint v2 baseline drained from 49→0, CI lint gate restored, gofumpt clean tree-wide, pre-commit hook enabled. [Archive](milestones/v1.6-ROADMAP.md) · [Audit](milestones/v1.6-MILESTONE-AUDIT.md)
-- 📋 **v1.7 (Planned)** — Go stdlib CVE backlog (unmasked by Phase 10 govulncheck) + Phase 08.3.1 ACP per-session stream demux + Nyquist coverage uplift + Windows Authenticode code-signing. Scope finalized via `/gsd-new-milestone v1.7`.
+- 📋 **v1.7 Go Stdlib CVE Cleanup (Active)** — Phase 12. Drain the Go stdlib CVE backlog (`govulncheck` failures unmasked by v1.6 Phase 10's lint-gate restoration) so `make ci` exits 0 end-to-end without the v1.6 carve-out. Carryover items (Phase 08.3.1 ACP demux, Nyquist uplift, Windows Authenticode) explicitly re-deferred to v1.8.
 
 ## Phases
 
@@ -62,14 +62,24 @@ Full per-phase detail: [v1.6-ROADMAP.md archive](milestones/v1.6-ROADMAP.md) · 
 
 </details>
 
-### 📋 v1.7 (Planned)
+### 📋 v1.7 Go Stdlib CVE Cleanup (Active)
 
-To be scoped via `/gsd-new-milestone v1.7`. Carried-forward candidates:
+- [ ] **Phase 12: Go toolchain CVE remediation** — Bump the `go` directive in `go.mod` (and any toolchain pin) to a patched 1.25.x / 1.26.x release that resolves the govulncheck-flagged stdlib CVE chain (GO-2026-5039, -5037, -4982, -4980, -4971, -4947, -4946, -4870, …), refresh transitive deps via `go mod tidy`, address residual application-level taints (fix or document unreachability), and confirm CI's Vulnerability scan step passes on `main`. Closes the v1.6 Phase 11 D-11-01 carve-out so `make ci` exits 0 end-to-end. CVE-01, CVE-02, CVE-03, CI-02.
 
-- [ ] **Go stdlib CVE backlog (unmasked by Phase 10).** `govulncheck ./...` fails on multiple Go stdlib CVEs (GO-2026-5039, -5037, -4982, -4980, -4971, -4947, -4946, -4870, …). Pre-existed v1.6 but were hidden behind the failing lint step. Starting move: bump Go toolchain pin to a patched 1.25.x or 1.26.x release.
-- [ ] **Phase 08.3.1: ACP Per-Session Stream Demux** (carried from v1.5, re-deferred from v1.6). Replace single-slot `c.activeStream` with per-sessionID map; closes WR-04 silent cross-session leak race.
-- [ ] **Nyquist coverage uplift.** 3/11 v1.5 phases fully compliant.
-- [ ] **Windows Authenticode code-signing.** Seed `001-authenticode-code-signing-windows-distribution`.
+## Phase Details
+
+### Phase 12: Go toolchain CVE remediation
+**Goal**: `make ci` exits 0 end-to-end on a clean checkout of `main` because the Go toolchain pin is on a patched release and `govulncheck ./...` reports zero findings (or only residuals with documented unreachability).
+**Depends on**: v1.6 Phase 11 (lint + fmt gates already restored — Vulnerability scan is now the only red CI step)
+**Requirements**: CVE-01, CVE-02, CVE-03, CI-02
+**Success Criteria** (what must be TRUE):
+  1. `govulncheck ./...` from a clean checkout of `main` exits 0 (or every residual finding is annotated with a written unreachability rationale in the phase's PLAN.md / SUMMARY.md).
+  2. The `go` directive in `go.mod` is on a patched Go release (≥ the minimum patch level that closes the CVE-01 list); `go mod tidy` is clean and the commit message records the chosen version + the headline CVE it patches.
+  3. CI's `Vulnerability scan` step (under the `lint + test-race + arch-lint + govulncheck` job in `.github/workflows/ci.yml`) is green on the milestone-closing commit on `main` — verifiable by run URL in the phase summary.
+  4. `make ci` (gofumpt → vet → build → lint → test-race → arch-lint → examples → govulncheck → cross) exits 0 end-to-end on a clean checkout of `main` — closes the v1.6 Phase 11 D-11-01 `(govulncheck routed to v1.7)` carve-out.
+  5. No opportunistic changes outside CVE scope: `git diff main..HEAD -- ':!go.mod' ':!go.sum' ':!.planning/**'` is empty of non-CVE-justified edits (residual taint fixes count as in-scope; refactors do not).
+**Plans**: TBD
+**Status**: Pending
 
 ## Progress
 
@@ -77,3 +87,4 @@ To be scoped via `/gsd-new-milestone v1.7`. Carried-forward candidates:
 |-------|-----------|----------------|--------|-----------|
 | 1, 1.1, 2, 3, 3.1, 4, 5, 6, 6.1, 8, 8.1, 8.2, 8.3, 8.4, 9 | v1.5 | 57/57 | Complete | 2026-06-04 |
 | 10, 11 | v1.6 | 5/5 | Complete | 2026-06-07 |
+| 12 | v1.7 | 0/0 | Not started | — |

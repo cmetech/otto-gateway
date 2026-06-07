@@ -50,11 +50,11 @@ Explicit exclusions to keep v1.7 narrow and ship-fast (mirrors v1.6's discipline
 
 | REQ-ID | Phase | Plan | Status |
 |--------|-------|------|--------|
-| CVE-01 | — | — | Active |
-| CVE-02 | — | — | Active |
-| CVE-03 | — | — | Active |
-| CI-02 | — | — | Active |
+| CVE-01 | Phase 12 | — | Active |
+| CVE-02 | Phase 12 | — | Active |
+| CVE-03 | Phase 12 | — | Active |
+| CI-02 | Phase 12 | — | Active |
 
 ---
 
-*Milestone v1.7 opened 2026-06-07.*
+*Milestone v1.7 opened 2026-06-07. Roadmapped 2026-06-07 — single phase (Phase 12) covers all 4 REQ-IDs.*

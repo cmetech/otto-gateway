@@ -6,7 +6,7 @@ status: planning
 last_updated: "2026-06-07T03:20:04.061Z"
 last_activity: 2026-06-07
 progress:
-  total_phases: 0
+  total_phases: 1
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -20,14 +20,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-23)
 
 **Core value:** All three API surfaces (OpenAI for Pi SDK, Ollama for LangFlow, Anthropic for loop24-client/GSD Pi) serve their respective clients without those clients knowing kiro-cli exists, with one place to enforce policy.
-**Current focus:** Phase 11 — gofumpt-tree-wide-cleanup-pre-commit-gate
+**Current focus:** Phase 12 — Go toolchain CVE remediation (v1.7)
 
 ## Current Position
 
-Phase: Not started (defining requirements)
+Phase: 12 — Go toolchain CVE remediation (not started)
 Plan: —
-Status: Defining requirements
-Last activity: 2026-06-07 — Milestone v1.7 started
+Status: Roadmapped; awaiting `/gsd-plan-phase 12`
+Last activity: 2026-06-07 — v1.7 roadmap drafted (single phase covers CVE-01, CVE-02, CVE-03, CI-02)
 
 ## Performance Metrics
 
@@ -64,6 +64,7 @@ Last activity: 2026-06-07 — Milestone v1.7 started
 
 ### Roadmap Evolution
 
+- 2026-06-07: v1.7 "Go Stdlib CVE Cleanup" roadmap drafted — single Phase 12 (Go toolchain CVE remediation; CVE-01/02/03 + CI-02). Carryover items (Phase 08.3.1 ACP demux, Nyquist uplift, Windows Authenticode) explicitly re-deferred to v1.8 to keep v1.7 narrow.
 - 2026-06-07: v1.6 "Tooling Cleanup" roadmap drafted — Phase 10 (golangci-lint v2 cleanup + re-gate; LINT-01/02/03) and Phase 11 (gofumpt tree-wide cleanup + pre-commit gate; FMT-01/02 + CI-01). Phase 08.3.1 ACP Per-Session Stream Demux re-scoped out of v1.6 to v1.7 to keep this milestone narrow and ship-fast.
 - Phase 3.1 inserted after Phase 3: Anthropic Surface — adapter/anthropic for Messages API at /v1/messages with SSE streaming day-one (loop24-client / GSD Pi via ANTHROPIC_BASE_URL). Promotes SURF-V2-01 to v1; adds ANTH-01..07 + SURF-08. (URGENT)
 - Phase 1.1 inserted after Phase 1: ACP Wire Alignment — fix 10 wire-shape defects discovered during Phase 2 discuss; add real-kiro session/prompt round-trip integration test as Phase 2 unblock gate (URGENT)
@@ -81,6 +82,7 @@ Last activity: 2026-06-07 — Milestone v1.7 started
 Decisions are logged in PROJECT.md Key Decisions table.
 Recent decisions affecting current work:
 
+- 2026-06-07: v1.7 scope narrowed to 1 phase (Phase 12 — CVE backlog). Phase 08.3.1 ACP demux, Nyquist uplift, and Windows Authenticode re-deferred to v1.8 per the v1.7-opens decision to keep the milestone narrow and ship fast.
 - 2026-06-07: v1.6 scope narrowed to 2 phases (lint + fmt/gate). Phase 08.3.1 ACP demux deferred to v1.7 per REQUIREMENTS.md "Future Requirements" section.
 - Pre-Phase 1: Go over Rust (cross-compile triviality, first systems project for author)
 - Pre-Phase 1: Dual API surface (OpenAI + Ollama) on one binary, one canonical engine
@@ -141,14 +143,16 @@ Items acknowledged and carried forward from previous milestone close:
 
 | Category | Item | Status | Deferred At |
 |----------|------|--------|-------------|
-| Concurrency | Phase 08.3.1 ACP Per-Session Stream Demux | Re-deferred to v1.7 | 2026-06-07 (v1.6 narrow-scope decision) |
+| Concurrency | Phase 08.3.1 ACP Per-Session Stream Demux | Re-deferred to v1.8 | 2026-06-07 (v1.7 narrow-scope decision) |
+| Validation | Nyquist coverage uplift (3/11 v1.5 phases fully compliant) | Re-deferred to v1.8 | 2026-06-07 (v1.7 narrow-scope decision) |
+| Distribution | Windows Authenticode code-signing | Re-deferred to v1.8 | 2026-06-07 (v1.7 narrow-scope decision) |
 
 ## Session Continuity
 
-Last session: 2026-06-07T00:56:58.244Z
-Stopped at: v1.6 roadmap drafted (Phase 10 lint cleanup, Phase 11 fmt + pre-commit gate); awaiting `/gsd-plan-phase 10`
+Last session: 2026-06-07
+Stopped at: v1.7 roadmap drafted (Phase 12 — Go toolchain CVE remediation, all 4 REQ-IDs); awaiting `/gsd-plan-phase 12`
 Resume file: .planning/ROADMAP.md
 
 ## Operator Next Steps
 
-- Begin Phase 10 with `/gsd-plan-phase 10` (golangci-lint v2 cleanup + re-gate)
+- Begin Phase 12 with `/gsd-plan-phase 12` (Go toolchain CVE remediation)
