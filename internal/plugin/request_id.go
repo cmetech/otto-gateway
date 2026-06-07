@@ -39,7 +39,6 @@ package plugin
 
 import (
 	"context"
-	"io"
 	"log/slog"
 
 	"otto-gateway/internal/canonical"
@@ -153,10 +152,3 @@ func NewRequestID() string {
 	return ulid.Make().String()
 }
 
-// newRequestIDFromReader is the deterministic-test variant — accepts
-// a user-supplied entropy source so a test can pin the id via a
-// fixed-seed reader. Not exported; only the test files in this
-// package use it.
-func newRequestIDFromReader(r io.Reader) string {
-	return ulid.MustNew(ulid.Now(), r).String()
-}

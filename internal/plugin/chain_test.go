@@ -44,20 +44,6 @@ func (f *fakePreHook) Before(_ context.Context, _ *canonical.ChatRequest) (*cano
 // RequestIDHook.Name() — preferred name-extractor over reflect).
 func (f *fakePreHook) Name() string { return f.name }
 
-// fakePostHook records After calls. Used to cross-check post-side
-// Describe handling.
-type fakePostHook struct {
-	name    string
-	callLog *[]string
-}
-
-func (f *fakePostHook) After(_ context.Context, _ *canonical.ChatRequest, _ *canonical.ChatResponse) error {
-	*f.callLog = append(*f.callLog, f.name)
-	return nil
-}
-
-func (f *fakePostHook) Name() string { return f.name }
-
 // --- Tests ---------------------------------------------------------------
 
 // TestChain_RegistrationOrder proves the slice order = execution order
