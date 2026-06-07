@@ -1,17 +1,16 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.7
-milestone_name: Go Stdlib CVE Cleanup
-status: completed
-stopped_at: v1.7 roadmap drafted (Phase 12 — Go toolchain CVE remediation, all 4 REQ-IDs); awaiting `/gsd-plan-phase 12`
-last_updated: "2026-06-07T03:52:28.895Z"
-last_activity: 2026-06-07 -- Phase 12 marked complete
+milestone: v1.8
+milestone_name: Nyquist Coverage Uplift
+status: planning
+last_updated: "2026-06-07T12:34:50.617Z"
+last_activity: 2026-06-07
 progress:
-  total_phases: 1
-  completed_phases: 1
-  total_plans: 1
-  completed_plans: 1
-  percent: 100
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
@@ -25,10 +24,10 @@ See: .planning/PROJECT.md (updated 2026-05-23)
 
 ## Current Position
 
-Phase: 12 — COMPLETE
-Plan: 1 of 1
-Status: Phase 12 complete
-Last activity: 2026-06-07 -- Phase 12 marked complete
+Phase: Not started (defining requirements)
+Plan: —
+Status: Defining requirements
+Last activity: 2026-06-07 — Milestone v1.8 started
 
 ## Performance Metrics
 

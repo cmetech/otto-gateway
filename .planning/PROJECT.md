@@ -30,12 +30,24 @@ applies uniformly to all three. The gateway being faster than Node
 and shipping as one binary is bonus — the surface compatibility
 and the single governance surface are the load-bearing properties.
 
-## Current Milestone: v1.8 (Planned)
+## Current Milestone: v1.8 Nyquist Coverage Uplift
 
-**Goal:** TBD via `/gsd-new-milestone v1.8`. Carried-forward candidates:
-- **Phase 08.3.1 ACP Per-Session Stream Demux** (carried from v1.5, re-re-deferred from v1.6 and v1.7).
-- **Nyquist coverage uplift.** 6 of 13 v1.5 phases non-compliant.
-- **Windows Authenticode code-signing.** Long pole — requires cert procurement.
+**Goal:** Bring the 6 v1.5 phases with `nyquist_compliant: false` up to the post-08.1 validation standard so every shipped phase carries a complete VALIDATION.md contract — per-task verification map, Wave 0 fixtures, sampling rate, manual-only justifications — and future audits can trust the test-suite's "what would regress if this broke" story for the whole codebase.
+
+**Target features:**
+- 6 phase VALIDATION.md docs flipped from `nyquist_compliant: false` to `nyquist_compliant: true`: phases 02 (Ollama end-to-end), 03 (OpenAI surface), 06 (tool-call path), 06.1 (admin observability UI), 08 (plugin hook chain), 08.4 (US Address PII coverage)
+- Per-task verification map filled for every task in those phases (automated `<verify>` command OR Wave 0 stub fixture OR explicit manual-only with written rationale)
+- Wave 0 requirements section enumerated (fixtures the phase's first feature task needs) — most should already exist from the historical execution, just not documented
+- Sampling-rate constraints met: no 3 consecutive tasks without automated verify; max feedback latency under the per-phase budget
+- Any test gaps found during the uplift are addressed via the `gsd-nyquist-auditor` agent's adversarial-stance protocol (write a test that can fail; ESCALATE if the implementation doesn't satisfy the requirement)
+
+**Key context:** v1.5 shipped before audit-trail discipline tightened around per-task verification mapping. 6 of the 13 v1.5 phases have VALIDATION.md docs marked `nyquist_compliant: false` because either the per-task map is incomplete, Wave 0 requirements are absent, or manual-only items lack written rationale. The implementations themselves test fine — v2.0.11 passes the full test suite (18/18 packages, race-detector clean) — but the VALIDATION.md contracts don't yet articulate what each task's regression signal looks like.
+
+This is a cross-cutting sweep, not a per-phase feature build. Estimated 1-3 hr/phase × 6 = ~1-2 days of focused work. The `gsd-nyquist-auditor` agent is adversarial by design: its starting hypothesis is that the implementation does NOT meet the requirement, and it writes tests that can fail. Test files are read-write; implementation files are read-only (any bug found is ESCALATEd, not silently patched).
+
+Two carryover items (Phase 08.3.1 ACP demux, Windows Authenticode signing) are explicitly deferred to v1.9+ per the v1.8-opens decision to keep the milestone narrow: ACP demux awaits a multi-tenant deployment driver; Authenticode awaits cert procurement.
+
+The 6 target phases and the 7 already-compliant ones were surveyed in the v1.7-close conversation: compliant = 01, 03.1, 04, 05, 08.1, 08.3, 08.3.2 (one is a reverted phase kept for history); non-compliant = 02, 03, 06, 06.1, 08, 08.4. The "3/11" figure in v1.5's audit was stale; actual baseline at v1.8 open is 7/13 compliant.
 
 ## Previous Milestone: v1.7 Go Stdlib CVE Cleanup (SHIPPED 2026-06-07)
 
