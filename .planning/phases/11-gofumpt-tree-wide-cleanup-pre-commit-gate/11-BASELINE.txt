@@ -1,0 +1,6 @@
+# Phase 11 baseline — captured at commit eaf87f7 on 2026-06-07T02:21:37Z
+
+## FMT-01 — gofumpt -d . status
+
+## FMT-02 — make ci probe (relevant steps only)
+(govulncheck fails on unmasked Go stdlib CVEs — routed to v1.7 per Phase 10 closure; not in Phase 11 scope)
