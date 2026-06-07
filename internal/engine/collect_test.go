@@ -186,7 +186,7 @@ func TestCollect_AggregatesKiroNativeToolCallAsNarration(t *testing.T) {
 	idxChecking := strings.Index(text, "checking weather ")
 	idxNarration := strings.Index(text, "[tool: get_weather]\n")
 	idxDone := strings.Index(text, " done")
-	if !(idxChecking < idxNarration && idxNarration < idxDone) {
+	if idxChecking >= idxNarration || idxNarration >= idxDone {
 		t.Errorf("expected order checking < narration < done; got indices %d, %d, %d in %q",
 			idxChecking, idxNarration, idxDone, text)
 	}
