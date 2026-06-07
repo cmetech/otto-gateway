@@ -44,13 +44,11 @@ linters:
       excludes:
         - G304  # file inclusion via variable — false positives during dev; revisit later
     wrapcheck:
-      ignoreSigs:
-        - .Errorf(
-        - errors.New(
-        - errors.Unwrap(
+      # v2 schema uses kebab-case. Defaults already cover .Errorf,
+      # errors.New, errors.Unwrap, .Wrap, .Wrapf, .WithMessage,
+      # .WithMessagef, .WithStack — extend with errors.Join only.
+      extra-ignore-sigs:
         - errors.Join(
-        - .Wrap(
-        - .Wrapf(
   exclusions:
     rules:
       # Test files get a relaxed rule set — panics, t.Fatal, fixture wiring etc.
