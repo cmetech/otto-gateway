@@ -23,45 +23,43 @@ linters:
     - unparam         # unused parameters
     - unused          # unused identifiers
     - wrapcheck       # wrap errors at package boundaries
-
-linters-settings:
-  revive:
+  settings:
+    revive:
+      rules:
+        - name: exported               # require godoc on exported symbols
+        - name: var-naming
+        - name: package-comments
+        - name: error-return
+        - name: error-naming
+        - name: error-strings
+        - name: if-return
+        - name: increment-decrement
+        - name: range
+        - name: receiver-naming
+        - name: time-naming
+        - name: unexported-return
+        - name: unreachable-code
+        - name: redefines-builtin-id
+    gosec:
+      excludes:
+        - G304  # file inclusion via variable — false positives during dev; revisit later
+    wrapcheck:
+      ignoreSigs:
+        - .Errorf(
+        - errors.New(
+        - errors.Unwrap(
+        - errors.Join(
+        - .Wrap(
+        - .Wrapf(
+  exclusions:
     rules:
-      - name: exported               # require godoc on exported symbols
-      - name: var-naming
-      - name: package-comments
-      - name: error-return
-      - name: error-naming
-      - name: error-strings
-      - name: if-return
-      - name: increment-decrement
-      - name: range
-      - name: receiver-naming
-      - name: time-naming
-      - name: unexported-return
-      - name: unreachable-code
-      - name: redefines-builtin-id
-  gosec:
-    excludes:
-      - G304  # file inclusion via variable — false positives during dev; revisit later
-  wrapcheck:
-    ignoreSigs:
-      - .Errorf(
-      - errors.New(
-      - errors.Unwrap(
-      - errors.Join(
-      - .Wrap(
-      - .Wrapf(
-
-issues:
-  exclude-rules:
-    # Test files get a relaxed rule set — panics, t.Fatal, fixture wiring etc.
-    - path: _test\.go
-      linters:
-        - errcheck
-        - wrapcheck
-        - gosec
-    # main.go is allowed to log.Fatal / os.Exit
-    - path: cmd/.*main\.go
-      linters:
-        - wrapcheck
+      # Test files get a relaxed rule set — panics, t.Fatal, fixture wiring etc.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - wrapcheck
+          - gosec
+      # main.go is allowed to log.Fatal / os.Exit
+      - path: cmd/.*main\.go
+        linters:
+          - wrapcheck
