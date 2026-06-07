@@ -54,7 +54,7 @@ Full per-phase detail: [v1.5-ROADMAP.md archive](milestones/v1.5-ROADMAP.md)
 ### 📋 v1.6 Tooling Cleanup (Planned)
 
 - [x] **Phase 10: golangci-lint v2 cleanup + re-gate** — drain the 49-issue v2 baseline to zero, then remove `continue-on-error: true` so lint failures block merges. (completed 2026-06-07)
-- [ ] **Phase 11: gofumpt tree-wide cleanup + pre-commit gate** — flush `gofumpt -d .` to zero diffs and add a pre-commit gate (hook or `make pre-commit` target) so lint+fmt regressions cannot land silently again.
+- [x] **Phase 11: gofumpt tree-wide cleanup + pre-commit gate** — flush `gofumpt -d .` to zero diffs and add a pre-commit gate (hook or `make pre-commit` target) so lint+fmt regressions cannot land silently again. (completed 2026-06-07)
 
 ## Phase Details
 
@@ -85,7 +85,7 @@ Plans:
   4. Documentation (operator-quickstart.md or DEVELOPERS.md) tells a fresh contributor how to enable the pre-commit gate.
 **Plans**: 1 plan
 Plans:
-- [ ] 11-01-PLAN.md — Verify FMT-01 baseline, verify FMT-02 brief §3.12 sequence (govulncheck carved out to v1.7), add gofumpt to .pre-commit-config.yaml, document pre-commit gate enablement in docs/operating.md.
+- [x] 11-01-PLAN.md — Verify FMT-01 baseline, verify FMT-02 brief §3.12 sequence (govulncheck carved out to v1.7), add gofumpt to .pre-commit-config.yaml, document pre-commit gate enablement in docs/operating.md.
 
 ## Progress
 
@@ -93,4 +93,4 @@ Plans:
 |-------|-----------|----------------|--------|-----------|
 | 1, 1.1, 2, 3, 3.1, 4, 5, 6, 6.1, 8, 8.1, 8.2, 8.3, 8.4, 9 | v1.5 | 57/57 | Complete | 2026-06-04 |
 | 10 | v1.6 | 4/4 | Complete   | 2026-06-07 |
-| 11 | v1.6 | 0/1 | Not started | — |
+| 11 | v1.6 | 1/1 | Complete   | 2026-06-07 |

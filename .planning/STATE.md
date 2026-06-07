@@ -4,14 +4,14 @@ milestone: v1.6
 milestone_name: Tooling Cleanup
 status: completed
 stopped_at: v1.6 roadmap drafted (Phase 10 lint cleanup, Phase 11 fmt + pre-commit gate); awaiting `/gsd-plan-phase 10`
-last_updated: "2026-06-07T02:17:37.457Z"
-last_activity: 2026-06-07 -- Phase 10 marked complete
+last_updated: "2026-06-07T02:39:34.477Z"
+last_activity: 2026-06-07 -- Phase 11 marked complete
 progress:
   total_phases: 2
-  completed_phases: 1
-  total_plans: 4
-  completed_plans: 4
-  percent: 50
+  completed_phases: 2
+  total_plans: 5
+  completed_plans: 5
+  percent: 100
 ---
 
 # Project State
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-23)
 
 **Core value:** All three API surfaces (OpenAI for Pi SDK, Ollama for LangFlow, Anthropic for loop24-client/GSD Pi) serve their respective clients without those clients knowing kiro-cli exists, with one place to enforce policy.
-**Current focus:** Phase 10 — golangci-lint-v2-cleanup-re-gate
+**Current focus:** Phase 11 — gofumpt-tree-wide-cleanup-pre-commit-gate
 
 ## Current Position
 
-Phase: 10 — COMPLETE
-Plan: 1 of 4
-Status: Phase 10 complete
-Last activity: 2026-06-07 -- Phase 10 marked complete
+Phase: 11 — COMPLETE
+Plan: 1 of 1
+Status: Phase 11 complete
+Last activity: 2026-06-07 -- Phase 11 marked complete
 
 ## Performance Metrics
 

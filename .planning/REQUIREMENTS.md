@@ -58,9 +58,9 @@ Explicit exclusions to keep v1.6 narrow and ship-fast:
 | LINT-01 | Phase 10 | 10-01, 10-02, 10-03 | Complete |
 | LINT-02 | Phase 10 | 10-04 | Complete |
 | LINT-03 | Phase 10 | 10-04 | Complete |
-| FMT-01 | Phase 11 | — | Pending |
-| FMT-02 | Phase 11 | — | Pending |
-| CI-01 | Phase 11 | — | Pending |
+| FMT-01 | Phase 11 | 11-01 | Complete |
+| FMT-02 | Phase 11 | 11-01 | Complete (govulncheck routed to v1.7) |
+| CI-01 | Phase 11 | 11-01 | Complete |
 
 ---
 
