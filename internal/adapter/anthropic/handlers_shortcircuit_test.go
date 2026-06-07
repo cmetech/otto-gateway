@@ -80,9 +80,9 @@ func newAuthErrorResp() *canonical.ChatResponse {
 // RunHandle whose ShortCircuitResponse() is non-nil. Collect is unused in
 // the streaming path.
 type shortCircuitFakeEngine struct {
-	runHandle           RunHandle
-	postHookCalls       int
-	postHookResp        *canonical.ChatResponse
+	runHandle     RunHandle
+	postHookCalls int
+	postHookResp  *canonical.ChatResponse
 }
 
 func (f *shortCircuitFakeEngine) Collect(_ context.Context, _ *canonical.ChatRequest) (*canonical.ChatResponse, error) {

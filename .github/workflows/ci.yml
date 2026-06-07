@@ -168,8 +168,14 @@ jobs:
   # operator notices. Real uploads stay a manual operator action.
   publish-dry-run:
     name: publish.sh dry-run + Layer-1 tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # macos-latest because `make package-all` cross-compiles otto-tray
+    # for darwin via cgo, which needs the system clang+sysroot. A linux
+    # runner can't satisfy that — release.yml handles it by splitting
+    # macos and linux build jobs. The CI dry-run job assembles the full
+    # release set on one runner, so it lives on macos with mingw-w64
+    # installed for the windows-tray leg.
+    runs-on: macos-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -180,13 +186,11 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      # `make package-windows-amd64` needs `zip` and ubuntu-latest does
-      # not ship it preinstalled — cheap safety belt.
-      - name: Install zip
-        run: sudo apt-get update && sudo apt-get install -y zip
+      - name: Install mingw-w64 (cgo for windows tray)
+        run: brew install mingw-w64
 
       - name: Install shellcheck
-        run: sudo apt-get install -y shellcheck
+        run: brew install shellcheck
 
       - name: Build full release set (make package-all)
         run: make package-all
@@ -197,20 +201,12 @@ jobs:
       - name: publish.sh -n (dry-run plan only)
         run: |
           set -euo pipefail
-          # CI has no Artifactory cert and no mc alias configured. With
-          # default-d, the script narrows to whichever destination is
-          # available; under ubuntu-latest neither is. Force -d to a
-          # never-fully-resolved destination would still fail prereqs.
-          # Instead we assert the manifest validates and the plan block
-          # would render by simulating a configured mc alias — the spec
-          # contract here is "dry-run prints the plan and exits 0" given
-          # at least one destination is available.
-          #
-          # Configure a stub alias pointing at play.min.io purely so the
-          # alias-list prereq passes; we never upload (the -n flag aborts
-          # before Phase 3).
-          curl -sL https://dl.min.io/client/mc/release/linux-amd64/mc \
-            -o /usr/local/bin/mc && chmod +x /usr/local/bin/mc
+          # CI has no Artifactory cert and no mc alias configured. We
+          # simulate a configured mc alias so the alias-list prereq
+          # passes; the -n flag aborts before any real upload. Contract:
+          # dry-run prints the plan and exits 0 given at least one
+          # destination is available.
+          brew install minio-mc
           mc alias set myminio https://play.min.io \
             Q3AM3UQ867SPQQA43P2F zuf+tfteSlswRu7BJ86wekitnifILbZam1KYY3TG
           out=$(./scripts/publish.sh -n 2>&1)

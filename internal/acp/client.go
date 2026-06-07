@@ -11,8 +11,8 @@ import (
 	"os/exec"
 	"runtime/debug"
 	"sync"
-	"syscall"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"otto-gateway/internal/canonical"

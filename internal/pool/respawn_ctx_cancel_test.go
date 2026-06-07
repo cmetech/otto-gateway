@@ -18,8 +18,8 @@ import (
 // the caller's ctx interrupts mid-flight.
 type ctxBlockingFactory struct {
 	clients     []pool.PoolClient
-	warmupCount atomic.Int32 // pre-warmup Spawns dispense without blocking
-	postIdx     atomic.Int32 // post-warmup Spawn index into clients[1:]
+	warmupCount atomic.Int32  // pre-warmup Spawns dispense without blocking
+	postIdx     atomic.Int32  // post-warmup Spawn index into clients[1:]
 	gate        chan struct{} // closed to release post-warmup Spawn
 }
 
