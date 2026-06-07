@@ -497,6 +497,77 @@ ssh -L 11434:localhost:11434 user@gateway-host
 
 Then visit `http://localhost:11434/admin` in your local browser.
 
+## Pre-commit gate
+
+The repo ships a `pre-commit` framework config at `.pre-commit-config.yaml`
+that runs `gofumpt`, `golangci-lint`, `gitleaks`, `shellcheck`, and the
+standard whitespace/YAML/JSON/large-file checks against staged files on
+every `git commit`. The gate exists to catch formatting and lint
+regressions locally — `gofumpt` drift in particular has silently landed
+on `main` before, and Phase 11's CI-01 requirement closes that gap by
+making the gate a one-command local install.
+
+### Prerequisites
+
+Install the `pre-commit` framework once per machine:
+
+```bash
+# macOS (Homebrew):
+brew install pre-commit
+
+# Cross-platform (pip / pipx):
+pip install pre-commit
+# Or, isolated:
+pipx install pre-commit
+```
+
+Install `gofumpt` once per machine (the hook delegates to whichever
+`gofumpt` is on the operator's PATH):
+
+```bash
+go install mvdan.cc/gofumpt@latest
+```
+
+### Enable the gate
+
+From the repo root, in each fresh clone, run once:
+
+```bash
+pre-commit install
+```
+
+This writes `.git/hooks/pre-commit` for the current clone. It does not
+persist across fresh clones — every contributor runs this command once
+per checkout.
+
+### What the gate runs
+
+The hooks declared in `.pre-commit-config.yaml`:
+
+- `gofumpt` — strict Go formatting (delegates to
+  `scripts/pre-commit-gofumpt.sh`)
+- `golangci-lint` — Go linters
+- `gitleaks` — secret scanning
+- `shellcheck` — shell-script linting
+- `end-of-file-fixer`, `trailing-whitespace`, `check-yaml`,
+  `check-json`, `check-merge-conflict`, `check-added-large-files`
+  — generic hygiene
+- `go-mod-tidy` — ensures `go.mod` / `go.sum` are tidy on Go-file edits
+
+### Run on the whole tree manually
+
+```bash
+pre-commit run --all-files            # all hooks against the whole tree
+pre-commit run gofumpt --all-files    # just the gofumpt hook
+```
+
+### Bypass note
+
+`git commit --no-verify` skips the gate. Using it is discouraged: it
+defeats the local CI-01 surface and lets formatting/lint regressions
+land. If you need to commit urgently, run `make fmt-check lint` by
+hand first and only then bypass.
+
 ## Known Limitations
 
 ### encrypt + streaming clients (fixed in T-5b)
