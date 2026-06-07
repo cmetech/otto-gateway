@@ -213,7 +213,7 @@ func TestAdmin_SSEHandler_FlusherCastFailure(t *testing.T) {
 	inner := httptest.NewRecorder()
 	nfw := &noFlushResponseWriter{rec: inner}
 
-	req := httptest.NewRequest(http.MethodGet, "/logs/stream", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/logs/stream", nil)
 	h.sseHandler(nfw, req)
 
 	if inner.Code != http.StatusInternalServerError {
@@ -507,7 +507,7 @@ func TestAdmin_AdminGo_TailerWired(t *testing.T) {
 	// wrapper to defeat the http.Flusher cast.
 	inner := httptest.NewRecorder()
 	nfw := &noFlushResponseWriter{rec: inner}
-	req := httptest.NewRequest(http.MethodGet, "/logs/stream", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/logs/stream", nil)
 	handler.ServeHTTP(nfw, req)
 
 	if inner.Code == http.StatusNotFound {
@@ -605,7 +605,7 @@ func TestSSEHandler_UnknownSource_400(t *testing.T) {
 	}
 	handler := Handler(deps)
 
-	req := httptest.NewRequest(http.MethodGet, "/logs/stream?source=bogus", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/logs/stream?source=bogus", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -650,7 +650,7 @@ func TestSSEHandler_DefaultSourceIsMain(t *testing.T) {
 	// "no source ↔ default to main" path did NOT short-circuit to 400.
 	inner := httptest.NewRecorder()
 	nfw := &noFlushResponseWriter{rec: inner}
-	req := httptest.NewRequest(http.MethodGet, "/logs/stream", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/logs/stream", nil)
 	handler.ServeHTTP(nfw, req)
 
 	if inner.Code != http.StatusInternalServerError {

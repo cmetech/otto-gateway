@@ -32,6 +32,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -74,7 +75,7 @@ func main() {
 	_, _ = outFile.WriteString(header)
 	_, _ = inFile.WriteString(header)
 
-	cmd := exec.Command(kiroBin, kiroArgs...) //nolint:gosec // diagnostic tool; argv is operator-supplied
+	cmd := exec.CommandContext(context.Background(), kiroBin, kiroArgs...) //nolint:gosec // diagnostic tool; argv is operator-supplied
 	cmd.Stderr = os.Stderr
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
