@@ -18,7 +18,8 @@ adapter-over-canonical layout (brief §3.13) and trust-gate suite (brief
 ## Milestones
 
 - ✅ **v1.5 audit WARNINGs** — Phases 1, 1.1, 2, 3, 3.1, 4, 5, 6, 6.1, 8, 8.1, 8.2, 8.3, 8.4, 9 (shipped 2026-06-04). [Archive](milestones/v1.5-ROADMAP.md)
-- 📋 **v1.6 Tooling Cleanup (Planned)** — drain the trust-gate violation backlog (golangci-lint v2 + gofumpt) and restore lint as a merge gate. Narrow-scope, ship-fast milestone.
+- ✅ **v1.6 Tooling Cleanup** — Phases 10, 11 (shipped 2026-06-07). golangci-lint v2 baseline drained from 49→0, CI lint gate restored, gofumpt clean tree-wide, pre-commit hook enabled. [Archive](milestones/v1.6-ROADMAP.md) · [Audit](milestones/v1.6-MILESTONE-AUDIT.md)
+- 📋 **v1.7 (Planned)** — Go stdlib CVE backlog (unmasked by Phase 10 govulncheck) + Phase 08.3.1 ACP per-session stream demux + Nyquist coverage uplift + Windows Authenticode code-signing. Scope finalized via `/gsd-new-milestone v1.7`.
 
 ## Phases
 
@@ -51,46 +52,28 @@ Full per-phase detail: [v1.5-ROADMAP.md archive](milestones/v1.5-ROADMAP.md)
 
 </details>
 
-### 📋 v1.6 Tooling Cleanup (Planned)
+<details>
+<summary>✅ v1.6 Tooling Cleanup — SHIPPED 2026-06-07 (2 phases, 5 plans)</summary>
 
-- [x] **Phase 10: golangci-lint v2 cleanup + re-gate** — drain the 49-issue v2 baseline to zero, then remove `continue-on-error: true` so lint failures block merges. (completed 2026-06-07)
-- [x] **Phase 11: gofumpt tree-wide cleanup + pre-commit gate** — flush `gofumpt -d .` to zero diffs and add a pre-commit gate (hook or `make pre-commit` target) so lint+fmt regressions cannot land silently again. (completed 2026-06-07)
+- [x] **Phase 10: golangci-lint v2 cleanup + re-gate** — Drain the 49-issue v2 baseline to zero across 3 waves of category-grouped fixes, then remove `continue-on-error: true` and prove the gate fires via negative-test PR #1. Wave 4's "single ci.yml edit" expanded into a 5-commit closeout of latent v2-schema migration rot (gofumpt drift + action v6→v7 + version v2.1.6→v2.12.2 + wrapcheck.ignoreSigs→extra-ignore-sigs). LINT-01/02/03. (2026-06-07)
+- [x] **Phase 11: gofumpt tree-wide cleanup + pre-commit gate** — FMT-01 already at 0 thanks to Phase 10 work; verified. FMT-02 §3.12 sequence exits 0 minus the v1.7-routed govulncheck step. CI-01 added gofumpt hook to existing `.pre-commit-config.yaml` (via `scripts/pre-commit-gofumpt.sh` shell delegate per D-11-03) + enablement docs in `docs/operating.md`. (2026-06-07)
 
-## Phase Details
+Full per-phase detail: [v1.6-ROADMAP.md archive](milestones/v1.6-ROADMAP.md) · audit: [v1.6-MILESTONE-AUDIT.md](milestones/v1.6-MILESTONE-AUDIT.md)
 
-### Phase 10: golangci-lint v2 cleanup + re-gate
-**Goal**: `golangci-lint run` exits 0 on `main` and CI lint failures block merges.
-**Depends on**: Phase 9 (v1.5 trust-gate baseline)
-**Requirements**: LINT-01, LINT-02, LINT-03
-**Success Criteria** (what must be TRUE):
-  1. `~/go/bin/golangci-lint run --timeout=5m` against `.golangci.yml` (v2 schema, pin v2.1.6) exits 0 on a clean checkout of `main`.
-  2. `.github/workflows/ci.yml`'s golangci-lint step has no `continue-on-error: true` and the TODO comment introduced in commit `f3a70fc` is gone; a CI run with a deliberately-introduced lint violation fails the job.
-  3. Every linter category from the baseline (wrapcheck, unparam, revive, gosec, unused, noctx, staticcheck, bodyclose, nilerr) has a per-category decision record in the phase's PLAN.md or SUMMARY.md stating fix policy, rule disable, or exemption pattern with rationale.
-  4. Any `//nolint:linter` directive added during the phase carries a `// <rationale>` comment in the diff that introduces it.
-**Plans**: 4 plans
-Plans:
-- [x] 10-01-PLAN.md — Wave 1 mechanical drain: staticcheck QF1001 (3) + unused (4) + revive redefines-builtin-id (3) + gosec G301 (2) + noctx (4); per-category decision record for these 5 categories.
-- [x] 10-02-PLAN.md — Wave 2 wrapcheck (9) + unparam (13) drain; production fixes for 2 unparam sites; 11 scoped //nolint:unparam exemptions with rationale; per-category decision record.
-- [x] 10-03-PLAN.md — Wave 3 real review: gosec G703 (1) + gosec G705 (2) + bodyclose (1) + nilerr (1) + revive remainder (6: 3 stutters + 2 unexported-return + 1 godoc).
-- [x] 10-04-PLAN.md — Wave 4 re-gate: remove continue-on-error + TODO from .github/workflows/ci.yml; negative-test PR proves lint job blocks merges.
+</details>
 
-### Phase 11: gofumpt tree-wide cleanup + pre-commit gate
-**Goal**: `gofumpt -d .` reports no diffs on `main` and operators can't push lint/fmt regressions without surfacing them locally.
-**Depends on**: Phase 10
-**Requirements**: FMT-01, FMT-02, CI-01
-**Success Criteria** (what must be TRUE):
-  1. `gofumpt -d .` from a clean clone of `main` prints nothing and exits 0, including across `cmd/` and `internal/adapter/*` where the Phase 2/3.1/8 drift lives.
-  2. `make ci` on a clean checkout runs the full brief §3.12 sequence (gofumpt → vet → build → lint → test-race → arch-lint → examples → govulncheck → cross) and exits 0 end-to-end.
-  3. A pre-commit hook OR an explicit `make pre-commit` target invokes `gofumpt -l .` and `golangci-lint run` against staged files and blocks the commit/exits non-zero when violations are present; the hook-vs-make-target choice and rationale are recorded in the phase's PLAN.md.
-  4. Documentation (operator-quickstart.md or DEVELOPERS.md) tells a fresh contributor how to enable the pre-commit gate.
-**Plans**: 1 plan
-Plans:
-- [x] 11-01-PLAN.md — Verify FMT-01 baseline, verify FMT-02 brief §3.12 sequence (govulncheck carved out to v1.7), add gofumpt to .pre-commit-config.yaml, document pre-commit gate enablement in docs/operating.md.
+### 📋 v1.7 (Planned)
+
+To be scoped via `/gsd-new-milestone v1.7`. Carried-forward candidates:
+
+- [ ] **Go stdlib CVE backlog (unmasked by Phase 10).** `govulncheck ./...` fails on multiple Go stdlib CVEs (GO-2026-5039, -5037, -4982, -4980, -4971, -4947, -4946, -4870, …). Pre-existed v1.6 but were hidden behind the failing lint step. Starting move: bump Go toolchain pin to a patched 1.25.x or 1.26.x release.
+- [ ] **Phase 08.3.1: ACP Per-Session Stream Demux** (carried from v1.5, re-deferred from v1.6). Replace single-slot `c.activeStream` with per-sessionID map; closes WR-04 silent cross-session leak race.
+- [ ] **Nyquist coverage uplift.** 3/11 v1.5 phases fully compliant.
+- [ ] **Windows Authenticode code-signing.** Seed `001-authenticode-code-signing-windows-distribution`.
 
 ## Progress
 
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
 | 1, 1.1, 2, 3, 3.1, 4, 5, 6, 6.1, 8, 8.1, 8.2, 8.3, 8.4, 9 | v1.5 | 57/57 | Complete | 2026-06-04 |
-| 10 | v1.6 | 4/4 | Complete   | 2026-06-07 |
-| 11 | v1.6 | 1/1 | Complete   | 2026-06-07 |
+| 10, 11 | v1.6 | 5/5 | Complete | 2026-06-07 |

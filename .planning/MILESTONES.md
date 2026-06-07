@@ -1,5 +1,45 @@
 # Milestones
 
+## v1.6 Tooling Cleanup (Shipped: 2026-06-07)
+
+**Phases completed:** 2 phases (10, 11)
+**Plans:** 5 across the 2 phases
+**Requirements:** 6/6 satisfied (LINT-01, LINT-02, LINT-03, FMT-01, FMT-02 with documented v1.7 carve-out, CI-01)
+**Timeline:** 2026-06-07 (single-day milestone — planned, executed, audited, archived)
+**Commits (feat+fix+docs):** 31
+**Branching:** none (commits on `main`)
+
+**Delivered:** Drained the trust-gate violation backlog (golangci-lint v2 baseline 49 → 0 violations) and restored CI's lint step as a hard merge gate. Added a local pre-commit gofumpt hook + contributor enablement docs so lint/fmt regressions cannot land silently on either side of the gate.
+
+**Key accomplishments:**
+
+- **golangci-lint v2 cleanup, 49 → 0** — Phase 10 across 3 waves of category-grouped fixes: Wave 1 mechanical (staticcheck QF1001, unused, revive redefines-builtin-id, gosec G301, noctx; 16 sites), Wave 2 wrapcheck wraps + unparam triage (22 sites, 11 of which got scoped `//nolint:unparam` with rationale for test-helper signature stability), Wave 3 real-review for gosec G703/G705 + bodyclose + nilerr + revive remainder (11 sites, including a targeted `json.NewEncoder` rewrite for G705 XSS in admin/sse.go).
+- **CI lint gate restored** — Phase 10 Wave 4 removed `continue-on-error: true` from `.github/workflows/ci.yml`. Proven by a deliberate negative-test PR (#1) whose lint step failed with `internal/version/lintbreaker.go:5:6: func unusedHelperForGateNegativeTest is unused (unused)`, exit code non-zero, vs. the same workflow on `main` reporting `golangci-lint found no issues`.
+- **5-layer CI-config rot exposed and closed** — Wave 4 caught what the gate's absence had been hiding: gofumpt trailing-blank-line regression in `internal/plugin/request_id.go`; `golangci-lint-action@v6` cannot install golangci-lint v2.x → bump to `@v7`; pin `v2.1.6` was built with Go 1.24 vs go.mod's Go 1.25.0 → bump to `v2.12.2` (built with Go 1.26); `wrapcheck.ignoreSigs` was v1 schema → migrate to v2 `extra-ignore-sigs`. Each closed in its own atomic commit with rationale.
+- **gofumpt tree-wide clean** — `gofumpt -l .` returns empty on `main`. The pre-existing v1.5 drift across `cmd/` and `internal/adapter/*` was incidentally cleaned during Phase 10 work (notably Wave 4's `52da974`); Phase 11 verified.
+- **Pre-commit gate operational** — `.pre-commit-config.yaml` carries a gofumpt hook (via `scripts/pre-commit-gofumpt.sh` shell delegate per D-11-03) alongside the pre-existing golangci-lint hook (pin matches CI's `v2.12.2`). `docs/operating.md` documents `pre-commit install` enablement.
+- **Per-category decision record** — every linter category from the baseline (wrapcheck, unparam, revive, gosec, unused, noctx, staticcheck, bodyclose, nilerr) has a documented fix-policy / exemption-pattern in `10-04-SUMMARY.md` "LINT-03 evidence" table.
+
+**Open decisions resolved at close:**
+
+- **D-11-01 govulncheck routed to v1.7.** Phase 10's gate restoration unmasked Go stdlib CVE failures in `govulncheck`. v1.6's narrow envelope does not include vulnerability cleanup. Captured in PROJECT.md "Deferred to v1.7" + REQUIREMENTS.md "Future Requirements".
+- **D-11-02 pre-commit hook over `make pre-commit` target.** The codebase already had `.pre-commit-config.yaml`; adding gofumpt there is lowest-friction. `make pre-commit` was rejected as unnecessary surface.
+- **D-11-03 shell delegate extraction.** The plan's inline-bash YAML hook entry tripped `mapping values are not allowed` because of `: ` inside the install hint. Extracted to `scripts/pre-commit-gofumpt.sh` with no behavioral change.
+
+**Known deferred / accepted tech debt (carried to v1.7):**
+
+- **Go stdlib CVE backlog** — `govulncheck ./...` fails on multiple CVEs (GO-2026-5039, -5037, -4982, -4980, -4971, -4947, -4946, -4870, …). Pre-existed v1.6 but were hidden by the failing lint step. v1.7 starting move: bump Go toolchain pin and re-run.
+- **Phase 08.3.1 ACP Per-Session Stream Demux** — carried from v1.5, re-deferred from v1.6.
+- **Nyquist coverage uplift** — 3/11 v1.5 phases fully compliant.
+- **Windows Authenticode code-signing.**
+
+**Audit references:**
+- `.planning/milestones/v1.6-MILESTONE-AUDIT.md` — full pre-close audit (status: passed; 2 non-blocking warnings closed at audit time)
+- `.planning/milestones/v1.6-ROADMAP.md` — archived per-phase detail
+- `.planning/milestones/v1.6-REQUIREMENTS.md` — archived traceability
+
+---
+
 ## v1.5 audit WARNINGs (Shipped: 2026-06-04)
 
 **Phases completed:** 13 phases (01, 01.1, 02, 03, 03.1, 04, 05, 06, 06.1, 08, 08.1, 08.2, 08.3, 08.4, 9) + 1 deferred to v1.6 (08.3.1) + 1 reverted (08.3.2)

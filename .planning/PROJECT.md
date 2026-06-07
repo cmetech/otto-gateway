@@ -30,16 +30,28 @@ applies uniformly to all three. The gateway being faster than Node
 and shipping as one binary is bonus — the surface compatibility
 and the single governance surface are the load-bearing properties.
 
-## Current Milestone: v1.6 Tooling Cleanup
+## Current Milestone: v1.7 (Planned)
 
-**Goal:** Drain the trust-gate violation backlog (golangci-lint v2 + gofumpt) and restore lint as a merge gate before the next feature milestone.
+**Goal:** TBD via `/gsd-new-milestone v1.7`. Carried-forward candidates:
+- **Go stdlib CVE backlog** (unmasked by v1.6 Phase 10). `govulncheck ./...` fails on multiple Go stdlib CVEs that pre-existed but were hidden behind v1.6's broken lint gate.
+- **Phase 08.3.1 ACP Per-Session Stream Demux** (carried from v1.5, re-deferred from v1.6).
+- **Nyquist coverage uplift.**
+- **Windows Authenticode code-signing.**
 
-**Target features:**
-- golangci-lint v2 baseline reaches 0 issues, then `continue-on-error: true` is removed from `.github/workflows/ci.yml`
-- gofumpt tree-wide pass so `make ci` and CI's `gofumpt -d .` both report clean
-- Decision-record either a fix or a documented `//nolint` exemption for every category — wrapcheck (9), unparam (13), revive (9), gosec (5), unused (4), noctx (4), staticcheck (3), bodyclose (1), nilerr (1)
+## Previous Milestone: v1.6 Tooling Cleanup (SHIPPED 2026-06-07)
 
-**Key context:** v1.5 shipped 2026-06-04 with 63/63 requirements. The CI lint job has been silently broken since the workflow was added on 2026-05-28 (pin v1.62.2 cannot read .golangci.yml's v2 schema). The pin was bumped to v2.1.6 in commit `f3a70fc` (2026-06-06), which surfaced 49 pre-existing v2 violations. Lint is currently `continue-on-error: true` so merges don't block — that exemption ends with this milestone. Other v1.5 carryovers (Phase 08.3.1 ACP per-session demux, Nyquist uplift, Authenticode signing) are explicitly deferred to v1.7 — v1.6 is scoped narrowly to the tooling debt so it ships fast.
+<details>
+<summary>v1.6 SHIPPED — 2 phases, 5 plans, 31 commits, 6/6 REQ-IDs (1 with documented v1.7 carve-out)</summary>
+
+**Delivered:** golangci-lint v2 baseline drained from 49 violations to 0; `.github/workflows/ci.yml` lint step is once again a hard merge gate (negative-test PR #1 confirmed); `gofumpt -d .` clean tree-wide; `.pre-commit-config.yaml` extended with a gofumpt hook + `scripts/pre-commit-gofumpt.sh` shell delegate; `docs/operating.md` documents `pre-commit install` enablement for fresh contributors.
+
+**Key wins:** Phase 10 Wave 4 caught 5 layers of latent CI-config rot the gate's absence had been hiding (gofumpt drift in request_id.go; `golangci-lint-action@v6` incompatible with v2.x → bump to `@v7`; `v2.1.6` built with Go 1.24 vs go.mod 1.25.0 → bump to v2.12.2; `wrapcheck.ignoreSigs` was v1 schema → migrate to v2 `extra-ignore-sigs`). Phase 11 was kept narrow per CLAUDE.md discipline — single plan, four tasks.
+
+**Out-of-scope carryover to v1.7:** Phase 10's gate restoration unmasked Go stdlib CVE failures in `govulncheck`. Captured in [`10-04-SUMMARY.md`](phases/10-golangci-lint-v2-cleanup-re-gate/10-04-SUMMARY.md) "Unmasked follow-up".
+
+**Archived:** [`milestones/v1.6-ROADMAP.md`](milestones/v1.6-ROADMAP.md) · [`milestones/v1.6-REQUIREMENTS.md`](milestones/v1.6-REQUIREMENTS.md) · [`milestones/v1.6-MILESTONE-AUDIT.md`](milestones/v1.6-MILESTONE-AUDIT.md)
+
+</details>
 
 ## Requirements
 
@@ -157,4 +169,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-06-04 — Milestone v1.5 "audit WARNINGs" SHIPPED. 13 phases done (01, 01.1, 02, 03, 03.1, 04, 05, 06, 06.1, 08, 08.1, 08.2, 08.3, 08.4, 9), 57 plans, 63/63 requirements satisfied including the v1.5-closing PII-01 (US Address PII Coverage). All three API surfaces (Ollama `/api/chat`, OpenAI `/v1/chat/completions`, Anthropic `/v1/messages`) routing through one canonical engine to a warm `kiro-cli` pool with the plugin guardrails chain enforcing auth, request-id, structured logging, and PII redaction. Single static binary cross-compiles to darwin-arm64/amd64, linux-amd64, windows-amd64 from macOS — v1.10.0 published to GitHub Releases with operator HUMAN-UAT confirming 33/33 needle checks across all 3 surfaces on the Windows splunk box. One phase (08.3.1 ACP Per-Session Stream Demux) deferred to v1.6 as multi-tenant concurrency hardening; not exploitable under v1's POOL_SIZE=4 model. Reverted 08.3.2 (fake-kiro-cli machinery) in favor of a prompt-only PII smoke fix. Carried v1.6 first-phase candidates: tree-wide gofumpt cleanup + go.mod 1.23 → 1.24 bump + Phase 08.3.1 bundle. Milestone artifacts archived at `.planning/milestones/v1.5-{ROADMAP,REQUIREMENTS,MILESTONE-AUDIT}.md`. Full per-phase history in `.planning/MILESTONES.md`.*
+*Last updated: 2026-06-07 — Milestone v1.6 "Tooling Cleanup" SHIPPED. 2 phases (10, 11), 5 plans, 6/6 REQ-IDs (LINT-01/02/03 + FMT-01/02 + CI-01) satisfied; FMT-02 carries a documented `(govulncheck routed to v1.7)` carve-out. Single-day milestone (planned + executed 2026-06-07). 31 commits, 66 files changed, +3854/-180 LOC (heavy on planning docs). Phase 10 drained the golangci-lint v2 baseline from 49 violations to 0 across 4 waves and restored the CI lint step as a hard merge gate (proven via negative-test PR #1). Wave 4 caught 5 layers of latent CI-config rot the gate's absence had been hiding — gofumpt drift, `golangci-lint-action@v6` incompatible with v2.x → `@v7`, pin `v2.1.6` (Go 1.24 build) vs go.mod 1.25.0 → `v2.12.2` (Go 1.26 build), `wrapcheck.ignoreSigs` v1 schema → v2 `extra-ignore-sigs`. Phase 11 verified gofumpt clean, added a gofumpt hook to `.pre-commit-config.yaml` (via `scripts/pre-commit-gofumpt.sh` shell delegate after the inline-bash YAML parse error per D-11-03), and documented `pre-commit install` enablement in `docs/operating.md`. Unmasked v1.7 follow-up: Go stdlib CVEs flagged by `govulncheck` (GO-2026-5039, -5037, -4982, -4980, -4971, -4947, -4946, -4870, …). v1.7 backlog: stdlib CVE cleanup + Phase 08.3.1 ACP demux + Nyquist uplift + Authenticode signing. Milestone artifacts archived at `.planning/milestones/v1.6-{ROADMAP,REQUIREMENTS,MILESTONE-AUDIT}.md`. Full per-phase history in `.planning/MILESTONES.md`.*
