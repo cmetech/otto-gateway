@@ -36,7 +36,7 @@ env:
   # golangci-lint v2.x required because .golangci.yml uses v2 schema;
   # v1.x silently fails to load the config and reports a confusing
   # Go-version error instead.
-  GOLANGCI_LINT_VERSION: v2.1.6
+  GOLANGCI_LINT_VERSION: v2.12.2
   GO_ARCH_LINT_VERSION:  v1.15.0
   GOVULNCHECK_VERSION:   v1.1.4
 
