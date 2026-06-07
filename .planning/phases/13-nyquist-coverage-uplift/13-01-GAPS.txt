@@ -1,0 +1,29 @@
+# Phase 08.4 Gap Classification for Plan 13-01
+# Generated: 2026-06-07
+# Source: .planning/phases/08.4-us-address-pii-coverage/08.4-01-PLAN.md
+#
+# Format: <task_id> | <plan> | <current_state> | <classification> | <proposed_action>
+#
+# Columns:
+#   task_id        — task ID from 08.4-01-PLAN.md
+#   plan           — plan containing the task
+#   current_state  — state in 08.4-VALIDATION.md BEFORE this uplift (all rows were placeholder)
+#   classification — one of: auto, wave0, manual-only, escalate-candidate
+#   proposed_action — what the auditor should do to fill the gap
+#
+# Classification rationale:
+#   auto            — task has <verify><automated> command that runs in <60s; map row gets that command
+#   wave0           — covered by Wave 0 fixture (test infra assumed but not yet declared as automated)
+#   manual-only     — no programmatic verify possible; written rationale required
+#   escalate-candidate — gap can only be closed by a new behavioral test not yet written
+#
+# NOTE: 08.4-01-PLAN.md contains 4 task IDs: R, G, F, H (TDD RED, GREEN, REFACTOR + HUMAN-UAT).
+# The BASELINE.txt "tasks=5" count includes the overall plan-level TDD cycle (R+G+F counted as
+# a single atomic vertical slice) plus the checkpoint — the 4 task IDs below are per-PLAN.md.
+# All automated tasks (R, G, F) already have <verify><automated> blocks and commits exist
+# (51929d2, 8ac2da6, 99137e0) per 08.4-01-SUMMARY.md.
+
+08.4-01-R | 08.4-01 | placeholder | auto | Fill per-task map row: test(08.4): verified failing via `go test -race -run 'TestUSAddressRecognizer_CapturedSpan|TestPIIRedactionHook_USAddressFullCoverage' ./internal/plugin/pii/... -timeout 60s` exits non-zero. Automated command: `go test -race -run 'TestUSAddressRecognizer_CapturedSpan|TestUSStateRecognizer_CapturedSpan|TestUSZIPRecognizer_CapturedSpan|TestUSAddressRecognizer_RejectsNonAddressShapes|TestUSStateRecognizer_RejectsEnglishWords|TestUSZIPRecognizer_ValidatorRejectsAllSameDigit|TestPIIRedactionHook_USAddressFullCoverage' ./internal/plugin/pii/... -timeout 60s` (exits non-zero at RED = verified failing; exits 0 at GREEN+ = verified passing).
+08.4-01-G | 08.4-01 | placeholder | auto | Fill per-task map row: feat(08.4): the same automated command as R now exits 0 confirming GREEN passes; commit 8ac2da6. Automated command: `go test -race -run 'TestUSAddressRecognizer_CapturedSpan|TestUSStateRecognizer_CapturedSpan|TestUSZIPRecognizer_CapturedSpan|TestUSAddressRecognizer_RejectsNonAddressShapes|TestUSStateRecognizer_RejectsEnglishWords|TestUSZIPRecognizer_ValidatorRejectsAllSameDigit|TestPIIRedactionHook_USAddressFullCoverage' ./internal/plugin/pii/... -timeout 60s`
+08.4-01-F | 08.4-01 | placeholder | auto | Fill per-task map row: refactor(08.4): full trust-gate run. Automated command: `go test -race ./internal/plugin/pii/... -timeout 120s` for quick; `make ci` for full trust-gate. Commit 99137e0 + chore 8b44262.
+08.4-01-H | 08.4-01 | placeholder | manual-only | Fill per-task map row: HUMAN-UAT checkpoint — no programmatic verify possible without live kiro-cli + Claude on production OS. Rationale: Task H is a `checkpoint:human-verify gate="blocking-human"` that requires operator to run `test-pii.ps1 pii` on Windows splunk box AND `test-pii.sh pii` on POSIX against a live gateway with PII_REDACTION_MODE=encrypt. Output: write manual-only rationale in the per-task map row.
