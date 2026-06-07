@@ -37,3 +37,9 @@ repos:
         entry: bash -c 'go mod tidy && git diff --exit-code go.mod go.sum'
         pass_filenames: false
         files: ^(go\.mod|go\.sum|.*\.go)$
+      - id: gofumpt
+        name: gofumpt
+        language: system
+        entry: scripts/pre-commit-gofumpt.sh
+        files: \.go$
+        pass_filenames: true
