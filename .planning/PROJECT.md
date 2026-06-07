@@ -30,20 +30,29 @@ applies uniformly to all three. The gateway being faster than Node
 and shipping as one binary is bonus — the surface compatibility
 and the single governance surface are the load-bearing properties.
 
-## Current Milestone: v1.7 Go Stdlib CVE Cleanup
+## Current Milestone: v1.8 (Planned)
 
-**Goal:** Drain the Go stdlib CVE backlog `govulncheck` flagged on `main` after v1.6 Phase 10 restored the lint gate, so `make ci` exits 0 end-to-end and the brief §3.12 trust-gate sequence holds without the v1.6 carve-out.
+**Goal:** TBD via `/gsd-new-milestone v1.8`. Carried-forward candidates:
+- **Phase 08.3.1 ACP Per-Session Stream Demux** (carried from v1.5, re-re-deferred from v1.6 and v1.7).
+- **Nyquist coverage uplift.** 6 of 13 v1.5 phases non-compliant.
+- **Windows Authenticode code-signing.** Long pole — requires cert procurement.
 
-**Target features:**
-- Go toolchain pin (`go` directive in `go.mod`) bumped to a patched 1.25.x or 1.26.x release that resolves the flagged CVEs (GO-2026-5039, -5037, -4982, -4980, -4971, -4947, -4946, -4870, …)
-- `govulncheck ./...` exits 0 on a clean checkout of `main`; CI's `Vulnerability scan` step in the lint job passes
-- Any residual application-level taints (where the gateway code calls into a vulnerable stdlib function path) are addressed — fix, document as unreachable, or apply a scoped `//gosec:exempt` equivalent if govulncheck supports one
+## Previous Milestone: v1.7 Go Stdlib CVE Cleanup (SHIPPED 2026-06-07)
 
-**Key context:** v1.6 shipped 2026-06-07 with the lint gate restored. The first thing the restored gate surfaced was a multi-CVE backlog in the Go stdlib that pre-existed but had been masked because the CI lint job always failed first. v1.7 is narrowly scoped — just the CVE backlog — to ship fast. Three carryover items (Phase 08.3.1 ACP demux, Nyquist uplift, Windows Authenticode signing) are explicitly deferred to v1.8 per the v1.7-opens decision to keep the milestone narrow.
+<details>
+<summary>v1.7 SHIPPED — 1 phase, 1 plan, 8 commits, 4/4 REQ-IDs (zero carve-outs)</summary>
 
-The CVE list is captured in `.planning/phases/10-golangci-lint-v2-cleanup-re-gate/10-04-SUMMARY.md` "Unmasked follow-up". The govulncheck output on commit `e6c715c` (v1.6 close) is reproducible via the CI lint job for run id 27080012241.
+**Delivered:** `go.mod`'s `go` directive bumped from `1.25.0` to `1.26.4` (two-step: 1.26.3 → tighten to 1.26.4 after Wave 1 surfaced 2 reachable residuals). All 23 baseline stdlib CVEs (GO-2026-5039 through GO-2025-4007) drained to zero. `make ci` exits 0 end-to-end for the first time since v1.5 shipped — closes v1.6 Phase 11 D-11-01 carve-out. CI run [27081876026](https://github.com/cmetech/otto-gateway/actions/runs/27081876026) reports all 3 jobs green (lint+test-race+arch-lint+govulncheck, publish-dry-run, cross-compile).
 
-## Previous Milestone: v1.6 Tooling Cleanup (SHIPPED 2026-06-07)
+**Production diff:** `go.mod | 2 +-` (one line). Scope discipline held: zero opportunistic edits.
+
+**Notable decision D-12-01:** Two-step Go bump (1.25.0 → 1.26.3 → 1.26.4). The executor initially targeted 1.26.3 to match the developer's local toolchain. Wave 1's govulncheck run found 2 reachable residuals (GO-2026-5039 in net/http, GO-2026-5037 in x509). Rather than `//nolint:gosec` them, tightening to 1.26.4 (minimum patch level that closes all 23 CVEs) was the cleaner outcome — zero residual taints, zero exemptions.
+
+**Archived:** [`milestones/v1.7-ROADMAP.md`](milestones/v1.7-ROADMAP.md) · [`milestones/v1.7-REQUIREMENTS.md`](milestones/v1.7-REQUIREMENTS.md) · [`milestones/v1.7-MILESTONE-AUDIT.md`](milestones/v1.7-MILESTONE-AUDIT.md) (audit verdict: passed, zero warnings)
+
+</details>
+
+## Earlier: v1.6 Tooling Cleanup (SHIPPED 2026-06-07)
 
 <details>
 <summary>v1.6 SHIPPED — 2 phases, 5 plans, 31 commits, 6/6 REQ-IDs (1 with documented v1.7 carve-out)</summary>
@@ -174,4 +183,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-06-07 — Milestone v1.6 "Tooling Cleanup" SHIPPED. 2 phases (10, 11), 5 plans, 6/6 REQ-IDs (LINT-01/02/03 + FMT-01/02 + CI-01) satisfied; FMT-02 carries a documented `(govulncheck routed to v1.7)` carve-out. Single-day milestone (planned + executed 2026-06-07). 31 commits, 66 files changed, +3854/-180 LOC (heavy on planning docs). Phase 10 drained the golangci-lint v2 baseline from 49 violations to 0 across 4 waves and restored the CI lint step as a hard merge gate (proven via negative-test PR #1). Wave 4 caught 5 layers of latent CI-config rot the gate's absence had been hiding — gofumpt drift, `golangci-lint-action@v6` incompatible with v2.x → `@v7`, pin `v2.1.6` (Go 1.24 build) vs go.mod 1.25.0 → `v2.12.2` (Go 1.26 build), `wrapcheck.ignoreSigs` v1 schema → v2 `extra-ignore-sigs`. Phase 11 verified gofumpt clean, added a gofumpt hook to `.pre-commit-config.yaml` (via `scripts/pre-commit-gofumpt.sh` shell delegate after the inline-bash YAML parse error per D-11-03), and documented `pre-commit install` enablement in `docs/operating.md`. Unmasked v1.7 follow-up: Go stdlib CVEs flagged by `govulncheck` (GO-2026-5039, -5037, -4982, -4980, -4971, -4947, -4946, -4870, …). v1.7 backlog: stdlib CVE cleanup + Phase 08.3.1 ACP demux + Nyquist uplift + Authenticode signing. Milestone artifacts archived at `.planning/milestones/v1.6-{ROADMAP,REQUIREMENTS,MILESTONE-AUDIT}.md`. Full per-phase history in `.planning/MILESTONES.md`.*
+*Last updated: 2026-06-07 — Milestone v1.7 "Go Stdlib CVE Cleanup" SHIPPED. 1 phase (Phase 12), 1 plan, 4/4 REQ-IDs (CVE-01/02/03 + CI-02) satisfied, zero carve-outs. Single-day milestone. 8 commits, 9 files changed, +892/-34 LOC (production diff: `go.mod | 2 +-`). `go.mod` bumped 1.25.0 → 1.26.4 (two-step per D-12-01: 1.26.3 surfaced 2 reachable residuals in net/http and x509, tightened to 1.26.4 — minimum patch level that closes all 23 baseline stdlib CVEs from GO-2026-5039 through GO-2025-4007). `govulncheck ./...` clean. `make ci` exits 0 end-to-end for the first time since v1.5 shipped — closes v1.6 Phase 11 D-11-01 carve-out. CI run 27081876026 confirms all 3 jobs green (lint+test-race+arch-lint+govulncheck, publish-dry-run, cross-compile). Audit verdict: passed, zero warnings. v1.8 backlog: Phase 08.3.1 ACP demux (re-re-deferred) + Nyquist coverage uplift (6 of 13 v1.5 phases non-compliant) + Windows Authenticode signing (cert procurement). Milestone artifacts archived at `.planning/milestones/v1.7-{ROADMAP,REQUIREMENTS,MILESTONE-AUDIT}.md`. Full per-phase history in `.planning/MILESTONES.md`.*

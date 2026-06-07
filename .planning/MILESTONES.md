@@ -1,5 +1,41 @@
 # Milestones
 
+## v1.7 Go Stdlib CVE Cleanup (Shipped: 2026-06-07)
+
+**Phases completed:** 1 phase (Phase 12)
+**Plans:** 1
+**Requirements:** 4/4 satisfied (CVE-01, CVE-02, CVE-03, CI-02) — zero carve-outs
+**Timeline:** 2026-06-07 (same-day milestone — planned, executed, audited, archived in a single session)
+**Commits (feat+fix+docs):** 8
+**Branching:** none (commits on `main`)
+
+**Delivered:** Closed the v1.6 Phase 11 D-11-01 carve-out by bumping `go.mod`'s `go` directive from `1.25.0` to `1.26.4`. Drained all 23 baseline stdlib CVEs (GO-2026-5039 through GO-2025-4007) to zero. `make ci` exits 0 end-to-end for the first time since v1.5 shipped.
+
+**Key accomplishments:**
+
+- **23 → 0 stdlib CVEs** — One-line bump in `go.mod` (`go 1.25.0` → `go 1.26.4`) plus `go mod tidy` (no `go.sum` delta). `~/go/bin/govulncheck ./...` reports `No vulnerabilities found.`
+- **D-12-01 two-step decision** — Initial bump to `1.26.3` to match the developer's local toolchain surfaced 2 reachable residuals (GO-2026-5039 in `net/http`, GO-2026-5037 in `x509`). Rather than `//nolint:gosec` exempt them, tightening to `1.26.4` (minimum patch level that closes all 23 CVEs) yielded zero residual taints and zero exemptions. Two commits + an extra `go mod tidy` traded for a cleaner final state. Documented as D-12-01.
+- **D-11-01 carve-out closed** — `make ci` runs the full brief §3.12 sequence end-to-end (gofumpt → vet → build → lint → test-race → arch-lint → examples → govulncheck → cross) and exits 0. 12-01-SUMMARY.md carries 13 cross-references to the carve-out language in 11-01-SUMMARY.md confirming the closure.
+- **CI fully green** — CI run [27081876026](https://github.com/cmetech/otto-gateway/actions/runs/27081876026) is the first since the v1.6 lint gate was restored where all 3 jobs report success simultaneously: `lint + test-race + arch-lint + govulncheck` ✓, `publish.sh dry-run + Layer-1 tests` ✓, `cross-compile (darwin arm64+amd64, linux amd64, windows amd64)` ✓.
+- **Scope discipline held** — Production source diff is `go.mod | 2 +-`. Zero opportunistic edits. No language-feature uptake, no test refactors, no third-party dep bumps beyond `go mod tidy` auto-resolution. The CLAUDE.md "Don't refactor beyond what the task requires" discipline held end-to-end through both Phase 10's complex multi-wave drain and Phase 12's micro-bump.
+
+**Open decisions resolved at close:**
+
+- **D-12-01 Two-step Go bump** — see Key accomplishments above. Final pin: `go 1.26.4`.
+
+**Known deferred / accepted tech debt (carried to v1.8):**
+
+- **Phase 08.3.1 ACP Per-Session Stream Demux** — carried from v1.5, re-re-deferred from v1.6 and v1.7. Multi-tenant concern not exploitable under v1's POOL_SIZE=4 model.
+- **Nyquist coverage uplift** — 6 of 13 v1.5 phases have `nyquist_compliant: false`. (The previously-documented "3/11" figure was stale.) Bring older phases up to the post-08.1 validation standard.
+- **Windows Authenticode code-signing** — Long pole; requires code-signing certificate procurement.
+
+**Audit references:**
+- `.planning/milestones/v1.7-MILESTONE-AUDIT.md` — full pre-close audit (status: passed; **zero warnings**)
+- `.planning/milestones/v1.7-ROADMAP.md` — archived per-phase detail
+- `.planning/milestones/v1.7-REQUIREMENTS.md` — archived traceability
+
+---
+
 ## v1.6 Tooling Cleanup (Shipped: 2026-06-07)
 
 **Phases completed:** 2 phases (10, 11)
