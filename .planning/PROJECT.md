@@ -74,6 +74,7 @@ v1.6 ("Tooling Cleanup") milestone scope — opened 2026-06-06 via `/gsd-new-mil
 
 **Deferred to v1.7 (explicitly out of v1.6 scope):**
 
+- **Go stdlib CVE backlog (unmasked by Phase 10)** — `govulncheck ./...` fails on `main` with multiple Go stdlib CVEs (GO-2026-5039, -5037, -4982, -4980, -4971, -4947, -4946, -4870, …). These pre-existed v1.6 but were hidden because Phase 10's lint step always failed first; Phase 10 Wave 4's gate restoration exposed them. v1.7 starting move: bump the Go toolchain pin to the latest 1.25.x or 1.26.x patch series, re-run `govulncheck`, and clean up any remaining application-level taints. Captured in `.planning/phases/10-golangci-lint-v2-cleanup-re-gate/10-04-SUMMARY.md` "Unmasked follow-up".
 - **Phase 08.3.1: ACP Per-Session Stream Demux** — deferred from v1.5. Replace single-slot `c.activeStream *Stream` with per-sessionID map; closes WR-04 silent cross-session leak race. Needed only for multi-tenant scenarios v1 does not run.
 - **Nyquist coverage uplift** — 3/11 phases fully compliant in v1.5. Bring older phases up to the post-08.1 validation standard.
 - **Authenticode code-signing for Windows** — seed `001-authenticode-code-signing-windows-distribution` documents the rationale.
