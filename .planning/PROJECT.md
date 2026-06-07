@@ -30,6 +30,17 @@ applies uniformly to all three. The gateway being faster than Node
 and shipping as one binary is bonus — the surface compatibility
 and the single governance surface are the load-bearing properties.
 
+## Current Milestone: v1.6 Tooling Cleanup
+
+**Goal:** Drain the trust-gate violation backlog (golangci-lint v2 + gofumpt) and restore lint as a merge gate before the next feature milestone.
+
+**Target features:**
+- golangci-lint v2 baseline reaches 0 issues, then `continue-on-error: true` is removed from `.github/workflows/ci.yml`
+- gofumpt tree-wide pass so `make ci` and CI's `gofumpt -d .` both report clean
+- Decision-record either a fix or a documented `//nolint` exemption for every category — wrapcheck (9), unparam (13), revive (9), gosec (5), unused (4), noctx (4), staticcheck (3), bodyclose (1), nilerr (1)
+
+**Key context:** v1.5 shipped 2026-06-04 with 63/63 requirements. The CI lint job has been silently broken since the workflow was added on 2026-05-28 (pin v1.62.2 cannot read .golangci.yml's v2 schema). The pin was bumped to v2.1.6 in commit `f3a70fc` (2026-06-06), which surfaced 49 pre-existing v2 violations. Lint is currently `continue-on-error: true` so merges don't block — that exemption ends with this milestone. Other v1.5 carryovers (Phase 08.3.1 ACP per-session demux, Nyquist uplift, Authenticode signing) are explicitly deferred to v1.7 — v1.6 is scoped narrowly to the tooling debt so it ships fast.
+
 ## Requirements
 
 ### Validated
@@ -55,13 +66,18 @@ and the single governance surface are the load-bearing properties.
 
 <!-- Current scope for v1.6. -->
 
-v1.6 milestone scope — to be defined via `/gsd-new-milestone v1.6`. Carried-forward items recommended as the v1.6 first phase:
+v1.6 ("Tooling Cleanup") milestone scope — opened 2026-06-06 via `/gsd-new-milestone v1.6`:
 
-- [ ] **gofumpt tree-wide cleanup** — resolve pre-existing drift across `cmd/` + `internal/adapter/*` so `make ci` passes locally at `fmt-check`. Documented in `.planning/milestones/v1.5-phases/08.1-…/deferred-items.md` (when phase archival runs).
-- [ ] **go.mod 1.23 → 1.24 bump** (or Go-1.23 rewrite of `internal/admin/tail_test.go`) — `testing.Context()` requires Go 1.24.
-- [ ] **Phase 08.3.1: ACP Per-Session Stream Demux** — deferred from v1.5. Replace single-slot `c.activeStream *Stream` with per-sessionID map; closes WR-04 silent cross-session leak race. Required only for future multi-tenant gateway scenarios.
-- [ ] **Nyquist coverage uplift** — 3/11 phases fully compliant in v1.5. Bring older phases up to the post-08.1 validation standard.
-- [ ] **Authenticode code-signing for Windows** — seed `001-authenticode-code-signing-windows-distribution` in `.planning/seeds/` documents the rationale; v1.6 candidate for distribution-trust improvement.
+- [ ] **LINT-01**: golangci-lint v2 baseline reaches 0 issues (49 pre-existing violations across wrapcheck/unparam/revive/gosec/etc. — categories documented in Current Milestone section above)
+- [ ] **LINT-02**: `continue-on-error: true` removed from the golangci-lint step in `.github/workflows/ci.yml`; lint failures block merges
+- [ ] **FMT-01**: gofumpt tree-wide pass so `gofumpt -d .` reports clean from a fresh clone — covers pre-existing drift across `cmd/` + `internal/adapter/*` (Phase 2/3.1/8 origin); `make ci` succeeds at the fmt-check step
+
+**Deferred to v1.7 (explicitly out of v1.6 scope):**
+
+- **Phase 08.3.1: ACP Per-Session Stream Demux** — deferred from v1.5. Replace single-slot `c.activeStream *Stream` with per-sessionID map; closes WR-04 silent cross-session leak race. Needed only for multi-tenant scenarios v1 does not run.
+- **Nyquist coverage uplift** — 3/11 phases fully compliant in v1.5. Bring older phases up to the post-08.1 validation standard.
+- **Authenticode code-signing for Windows** — seed `001-authenticode-code-signing-windows-distribution` documents the rationale.
+- **go.mod 1.23 → 1.24 bump** — **resolved**: go.mod was already advanced to `go 1.25.0` during v1.5 work; this carryover item is moot.
 
 ### Out of Scope
 
