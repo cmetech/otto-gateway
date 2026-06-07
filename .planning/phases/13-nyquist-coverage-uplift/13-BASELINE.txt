@@ -1,0 +1,25 @@
+# Phase 13 baseline — captured 2026-06-07
+
+## Compliance survey
+
+01-foundations                                               true
+02-ollama-end-to-end                                         false
+03-openai-surface                                            false
+03.1-anthropic-surface                                       true
+04-streaming                                                 true
+05-pool-stateful-sessions                                    true
+06-tool-call-path                                            false
+06.1-admin-observability-ui                                  false
+08-plugin-hook-chain                                         false
+08.1-close-gap-integ-01-streaming-mode-prehook-short-circuit-v1-5 true
+08.3-acp-prompt-non-blocking-refactor                        true
+08.3.2-pii-smoke-test-methodology-fix                        true
+08.4-us-address-pii-coverage                                 false
+
+## Targets and task surface
+  02-ollama-end-to-end                               plans=6   tasks=23  VALIDATION=yes
+  03-openai-surface                                  plans=4   tasks=15  VALIDATION=yes
+  06-tool-call-path                                  plans=5   tasks=23  VALIDATION=yes
+  06.1-admin-observability-ui                        plans=4   tasks=14  VALIDATION=yes
+  08-plugin-hook-chain                               plans=5   tasks=31  VALIDATION=yes
+  08.4-us-address-pii-coverage                       plans=1   tasks=5   VALIDATION=yes

@@ -92,7 +92,15 @@ Full per-phase detail: [v1.7-ROADMAP.md archive](milestones/v1.7-ROADMAP.md) · 
   3. For each of the 6 target VALIDATION.md docs, the "Validation Sign-Off" checklist has all six boxes ticked (no 3 consecutive tasks without automated verify, no watch-mode flags, Wave 0 covers all MISSING references, feedback latency under per-phase budget, frontmatter flipped).
   4. The `gsd-nyquist-auditor` agent's read-only-implementation rule held milestone-wide: `git diff main...HEAD -- ':!*_test.go' ':!*VALIDATION.md' ':!testdata/'` reports zero production-source edits attributable to Phase 13 plans (any ESCALATEd implementation bug landed as a separate post-Phase-13 phase).
   5. The v1.8 milestone audit (`.planning/milestones/v1.8-MILESTONE-AUDIT.md` once written) records verdict **passed** with NYQ-ALL marked Satisfied — confirmed by the same two `grep` commands from criterion 1 plus the per-target sign-off checklists from criterion 3.
-**Plans**: TBD (6 parallel plans expected: 13-01 through 13-06, one per target phase — 02, 03, 06, 06.1, 08, 08.4 — runnable as a single wave because each plan's writes are confined to a distinct `.planning/phases/<target>/` subtree plus the corresponding package's `*_test.go` files. NYQ-ALL is satisfied automatically at milestone close once all 6 plans are Complete; no 7th plan.)
+**Plans**: 6 plans (single parallel wave; planned 2026-06-07)
+- [ ] 13-01-PLAN.md — NYQ-08.4 (Phase 08.4 US Address PII Coverage; 5 tasks; smallest target)
+- [ ] 13-02-PLAN.md — NYQ-06.1 (Phase 06.1 Admin Observability UI; 14 tasks; UI-shaped)
+- [ ] 13-03-PLAN.md — NYQ-03 (Phase 03 OpenAI Surface; 15 tasks; adapter pattern)
+- [ ] 13-04-PLAN.md — NYQ-02 (Phase 02 Ollama End-to-End; 23 tasks; first runnable slice)
+- [ ] 13-05-PLAN.md — NYQ-06 (Phase 06 Tool-Call Path; 23 tasks; engine + jsonformat)
+- [ ] 13-06-PLAN.md — NYQ-08 (Phase 08 Plugin Hook Chain; 31 tasks; largest target)
+
+NYQ-ALL is satisfied automatically at milestone close once all 6 plans complete; no 7th plan.
 
 ## Progress
 
