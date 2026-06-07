@@ -18,7 +18,7 @@ adapter-over-canonical layout (brief §3.13) and trust-gate suite (brief
 ## Milestones
 
 - ✅ **v1.5 audit WARNINGs** — Phases 1, 1.1, 2, 3, 3.1, 4, 5, 6, 6.1, 8, 8.1, 8.2, 8.3, 8.4, 9 (shipped 2026-06-04). [Archive](milestones/v1.5-ROADMAP.md)
-- 📋 **v1.6 (Planned)** — concurrency hardening + format/tooling cleanup. First phase to bundle: gofumpt tree-wide pass + go.mod 1.24 bump + Phase 08.3.1 (ACP Per-Session Stream Demux, deferred from v1.5).
+- 📋 **v1.6 Tooling Cleanup (Planned)** — drain the trust-gate violation backlog (golangci-lint v2 + gofumpt) and restore lint as a merge gate. Narrow-scope, ship-fast milestone.
 
 ## Phases
 
@@ -33,7 +33,7 @@ adapter-over-canonical layout (brief §3.13) and trust-gate suite (brief
 - [x] **Phase 4: Streaming** — NDJSON (Ollama) and SSE (OpenAI + Anthropic) off one canonical chunk channel, with disconnect cancellation (2026-05-25)
 - [x] **Phase 5: Pool + Stateful Sessions** — Warm `POOL_SIZE` pool plus `X-Session-Id` registry, both visible on `/health/agents` (2026-05-26)
 - [x] **Phase 6: Tool-Call Path** — Canonical tool calls rendered per-surface, with `coerceToolCall` for plain-JSON-as-text (2026-05-27)
-- [x] **Phase 6.1: Admin Observability UI** *(INSERTED)* — Dark-mode `/admin` page rendering `/health` + `/health/agents` (2026-05-28)
+- [x] **Phase 6.1: Admin Observability UI** *(INSERTED)* — Dark-mode `/admin` page rendering `/health` + `/health/agents` with brand palette (2026-05-28)
 - [x] **Phase 8: Plugin Hook Chain** — `PreHook`/`PostHook` over canonical types, with RequestID, Auth, Logging, PII redaction (2026-05-28)
 - [x] **Phase 8.1: Close gap INTEG-01 + v1.5 audit WARNINGs** *(INSERTED)* — Streaming-mode PreHook short-circuit fix + auth posture docs + REQUIREMENTS.md traceability fixes (2026-05-30)
 - [x] **Phase 8.2: Ollama `format` Parity** *(INSERTED)* — LangFlow `format:"json"` / `format:<schema>` steered via canonical PreHook (GEN_RULES block); response fence-stripped (2026-06-03)
@@ -44,20 +44,46 @@ adapter-over-canonical layout (brief §3.13) and trust-gate suite (brief
 **Reverted (kept for history):**
 - Phase 08.3.2 (PII Smoke Test Methodology Fix) — superseded by prompt-only fix in `scripts/test-pii.{ps1,sh}` (REVERTED 2026-06-04, commit `ff10594`)
 
-**Deferred to v1.6:**
-- Phase 08.3.1 (ACP Per-Session Stream Demux) — WR-04 cross-session leak race not exploitable under v1's POOL_SIZE=4 pool model (each `acp.Client` bound to one worker slot). Carried forward into v1.6 multi-tenant concurrency hardening.
+**Deferred to v1.6/v1.7:**
+- Phase 08.3.1 (ACP Per-Session Stream Demux) — WR-04 cross-session leak race not exploitable under v1's POOL_SIZE=4 pool model (each `acp.Client` bound to one worker slot). Re-scoped to v1.7 per v1.6 narrow-scope decision.
 
 Full per-phase detail: [v1.5-ROADMAP.md archive](milestones/v1.5-ROADMAP.md)
 
 </details>
 
-### 📋 v1.6 (Planned)
+### 📋 v1.6 Tooling Cleanup (Planned)
 
-- [ ] **Phase 10 (v1.6-01): Format & tooling cleanup + multi-tenant concurrency hardening** — bundle tree-wide `gofumpt` cleanup, `go.mod` 1.23 → 1.24 bump (or Go-1.23 rewrite of `internal/admin/tail_test.go`), and Phase 08.3.1 ACP per-session stream demux (replace `c.activeStream *Stream` single-slot with per-sessionID map; closes WR-04 silent cross-session leak race for future multi-tenant gateway scenarios). Start with `/gsd-new-milestone v1.6`.
+- [ ] **Phase 10: golangci-lint v2 cleanup + re-gate** — drain the 49-issue v2 baseline to zero, then remove `continue-on-error: true` so lint failures block merges.
+- [ ] **Phase 11: gofumpt tree-wide cleanup + pre-commit gate** — flush `gofumpt -d .` to zero diffs and add a pre-commit gate (hook or `make pre-commit` target) so lint+fmt regressions cannot land silently again.
+
+## Phase Details
+
+### Phase 10: golangci-lint v2 cleanup + re-gate
+**Goal**: `golangci-lint run` exits 0 on `main` and CI lint failures block merges.
+**Depends on**: Phase 9 (v1.5 trust-gate baseline)
+**Requirements**: LINT-01, LINT-02, LINT-03
+**Success Criteria** (what must be TRUE):
+  1. `~/go/bin/golangci-lint run --timeout=5m` against `.golangci.yml` (v2 schema, pin v2.1.6) exits 0 on a clean checkout of `main`.
+  2. `.github/workflows/ci.yml`'s golangci-lint step has no `continue-on-error: true` and the TODO comment introduced in commit `f3a70fc` is gone; a CI run with a deliberately-introduced lint violation fails the job.
+  3. Every linter category from the baseline (wrapcheck, unparam, revive, gosec, unused, noctx, staticcheck, bodyclose, nilerr) has a per-category decision record in the phase's PLAN.md or SUMMARY.md stating fix policy, rule disable, or exemption pattern with rationale.
+  4. Any `//nolint:linter` directive added during the phase carries a `// <rationale>` comment in the diff that introduces it.
+**Plans**: TBD
+
+### Phase 11: gofumpt tree-wide cleanup + pre-commit gate
+**Goal**: `gofumpt -d .` reports no diffs on `main` and operators can't push lint/fmt regressions without surfacing them locally.
+**Depends on**: Phase 10
+**Requirements**: FMT-01, FMT-02, CI-01
+**Success Criteria** (what must be TRUE):
+  1. `gofumpt -d .` from a clean clone of `main` prints nothing and exits 0, including across `cmd/` and `internal/adapter/*` where the Phase 2/3.1/8 drift lives.
+  2. `make ci` on a clean checkout runs the full brief §3.12 sequence (gofumpt → vet → build → lint → test-race → arch-lint → examples → govulncheck → cross) and exits 0 end-to-end.
+  3. A pre-commit hook OR an explicit `make pre-commit` target invokes `gofumpt -l .` and `golangci-lint run` against staged files and blocks the commit/exits non-zero when violations are present; the hook-vs-make-target choice and rationale are recorded in the phase's PLAN.md.
+  4. Documentation (operator-quickstart.md or DEVELOPERS.md) tells a fresh contributor how to enable the pre-commit gate.
+**Plans**: TBD
 
 ## Progress
 
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
 | 1, 1.1, 2, 3, 3.1, 4, 5, 6, 6.1, 8, 8.1, 8.2, 8.3, 8.4, 9 | v1.5 | 57/57 | Complete | 2026-06-04 |
-| 10 (v1.6-01) | v1.6 | 0/0 | Not started | — |
+| 10 | v1.6 | 0/0 | Not started | — |
+| 11 | v1.6 | 0/0 | Not started | — |

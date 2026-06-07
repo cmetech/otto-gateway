@@ -6,7 +6,7 @@ status: planning
 last_updated: "2026-06-07T00:56:58.244Z"
 last_activity: 2026-06-07
 progress:
-  total_phases: 0
+  total_phases: 2
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -20,14 +20,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-23)
 
 **Core value:** All three API surfaces (OpenAI for Pi SDK, Ollama for LangFlow, Anthropic for loop24-client/GSD Pi) serve their respective clients without those clients knowing kiro-cli exists, with one place to enforce policy.
-**Current focus:** Phase 9 — distribution
+**Current focus:** Phase 10 — golangci-lint v2 cleanup + re-gate (v1.6 Tooling Cleanup)
 
 ## Current Position
 
-Phase: Not started (defining requirements)
-Plan: —
-Status: Defining requirements
-Last activity: 2026-06-07 — Milestone v1.6 started
+Phase: 10 — golangci-lint v2 cleanup + re-gate
+Plan: — (awaiting `/gsd-plan-phase 10`)
+Status: Roadmap drafted; ready for phase planning
+Last activity: 2026-06-07 — v1.6 roadmap created (Phases 10, 11)
 
 ## Performance Metrics
 
@@ -64,6 +64,7 @@ Last activity: 2026-06-07 — Milestone v1.6 started
 
 ### Roadmap Evolution
 
+- 2026-06-07: v1.6 "Tooling Cleanup" roadmap drafted — Phase 10 (golangci-lint v2 cleanup + re-gate; LINT-01/02/03) and Phase 11 (gofumpt tree-wide cleanup + pre-commit gate; FMT-01/02 + CI-01). Phase 08.3.1 ACP Per-Session Stream Demux re-scoped out of v1.6 to v1.7 to keep this milestone narrow and ship-fast.
 - Phase 3.1 inserted after Phase 3: Anthropic Surface — adapter/anthropic for Messages API at /v1/messages with SSE streaming day-one (loop24-client / GSD Pi via ANTHROPIC_BASE_URL). Promotes SURF-V2-01 to v1; adds ANTH-01..07 + SURF-08. (URGENT)
 - Phase 1.1 inserted after Phase 1: ACP Wire Alignment — fix 10 wire-shape defects discovered during Phase 2 discuss; add real-kiro session/prompt round-trip integration test as Phase 2 unblock gate (URGENT)
 - Phase 8 edited: edited fields: goal, requirements (+PLUG-06), success_criteria (+SC6 PIIRedactionHook)
@@ -80,6 +81,7 @@ Last activity: 2026-06-07 — Milestone v1.6 started
 Decisions are logged in PROJECT.md Key Decisions table.
 Recent decisions affecting current work:
 
+- 2026-06-07: v1.6 scope narrowed to 2 phases (lint + fmt/gate). Phase 08.3.1 ACP demux deferred to v1.7 per REQUIREMENTS.md "Future Requirements" section.
 - Pre-Phase 1: Go over Rust (cross-compile triviality, first systems project for author)
 - Pre-Phase 1: Dual API surface (OpenAI + Ollama) on one binary, one canonical engine
 - Pre-Phase 1: Adapter-over-canonical layout — `internal/adapter/{ollama,openai}` ↔ `internal/canonical` ↔ `internal/engine`
@@ -139,14 +141,14 @@ Items acknowledged and carried forward from previous milestone close:
 
 | Category | Item | Status | Deferred At |
 |----------|------|--------|-------------|
-| *(none)* | | | |
+| Concurrency | Phase 08.3.1 ACP Per-Session Stream Demux | Re-deferred to v1.7 | 2026-06-07 (v1.6 narrow-scope decision) |
 
 ## Session Continuity
 
-Last session: 2026-06-04T12:00:00.000Z
-Stopped at: Phase 08.4-01 source delivery complete (RED/GREEN/REFACTOR + gofumpt chore); awaiting Task H operator HUMAN-UAT on Windows splunk box + POSIX dev box
-Resume file: .planning/phases/08.4-us-address-pii-coverage/08.4-01-SUMMARY.md
+Last session: 2026-06-07T00:56:58.244Z
+Stopped at: v1.6 roadmap drafted (Phase 10 lint cleanup, Phase 11 fmt + pre-commit gate); awaiting `/gsd-plan-phase 10`
+Resume file: .planning/ROADMAP.md
 
 ## Operator Next Steps
 
-- Start the next milestone with /gsd-new-milestone
+- Begin Phase 10 with `/gsd-plan-phase 10` (golangci-lint v2 cleanup + re-gate)

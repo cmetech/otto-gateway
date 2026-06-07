@@ -55,12 +55,12 @@ Explicit exclusions to keep v1.6 narrow and ship-fast:
 
 | REQ-ID | Phase | Plan | Status |
 |--------|-------|------|--------|
-| LINT-01 | — | — | Active |
-| LINT-02 | — | — | Active |
-| LINT-03 | — | — | Active |
-| FMT-01 | — | — | Active |
-| FMT-02 | — | — | Active |
-| CI-01 | — | — | Active |
+| LINT-01 | Phase 10 | — | Pending |
+| LINT-02 | Phase 10 | — | Pending |
+| LINT-03 | Phase 10 | — | Pending |
+| FMT-01 | Phase 11 | — | Pending |
+| FMT-02 | Phase 11 | — | Pending |
+| CI-01 | Phase 11 | — | Pending |
 
 ---
 
