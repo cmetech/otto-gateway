@@ -490,7 +490,7 @@ func Load() (Config, error) {
 	}
 	if chatTrace {
 		if dir := filepath.Dir(chatTraceFile); dir != "" && dir != "." {
-			if mkErr := os.MkdirAll(dir, 0o755); mkErr != nil {
+			if mkErr := os.MkdirAll(dir, 0o750); mkErr != nil {
 				errs = append(errs, fmt.Errorf("CHAT_TRACE_FILE: parent unwritable %q: %w", dir, mkErr))
 			}
 		}
