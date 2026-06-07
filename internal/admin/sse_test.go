@@ -274,7 +274,10 @@ func TestAdmin_SSEBackfillAndLive(t *testing.T) {
 
 	respCh := make(chan *http.Response, 1)
 	go func() {
-		resp, err := http.DefaultClient.Do(httpReq)
+		// bodyclose exemption: resp is handed off via respCh and the
+		// receiver site (case resp = <-respCh) holds the defer Close
+		// below. The analyzer cannot trace ownership across the channel.
+		resp, err := http.DefaultClient.Do(httpReq) //nolint:bodyclose // body closed at receiver site via defer below
 		if err == nil {
 			respCh <- resp
 		}

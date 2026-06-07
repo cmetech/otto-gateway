@@ -108,7 +108,7 @@ func (f *fakeEngine) Run(_ context.Context, req *canonical.ChatRequest) (RunHand
 		// No canned response but an error: surface via Stream.Result().
 		ch := make(chan canonical.Chunk)
 		close(ch)
-		return &fakeRunHandle{stream: &fakeStream{chunks: ch, err: f.collectErr}}, nil
+		return &fakeRunHandle{stream: &fakeStream{chunks: ch, err: f.collectErr}}, nil //nolint:nilerr // collectErr surfaced via Stream.Result() per fake engine contract
 	}
 	return nil, nil
 }
