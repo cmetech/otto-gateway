@@ -12,13 +12,13 @@
 
 ### Vulnerability remediation (govulncheck)
 
-- [ ] **CVE-01**: `govulncheck ./...` exits 0 from a clean checkout of `main` against the Go stdlib CVE list flagged at v1.6 close (GO-2026-5039, -5037, -4982, -4980, -4971, -4947, -4946, -4870, plus any others surfaced in CI run [27080012241](https://github.com/cmetech/otto-gateway/actions/runs/27080012241)'s Vulnerability scan step). Resolution path per finding: prefer toolchain bump (a single `go` directive change in `go.mod` resolves most stdlib CVEs); for any residual finding where the gateway code reaches the vulnerable function path, either fix the calling code or document the unreachability with a written rationale in the implementing phase's PLAN.md or SUMMARY.md.
-- [ ] **CVE-02**: The `go` directive in `go.mod` (and any toolchain pin in `go.work` or related files) is bumped to a patched Go release that resolves the CVE-01 findings. The bump is the minimum change necessary — no opportunistic language-feature uptake or test-helper refactors. Rationale for the chosen Go version (e.g. "1.25.4 — patches GO-2026-5039 stdlib chain in net/http", "1.26.0 — adopts the canonical x509.Verify hardening") captured in the commit message.
-- [ ] **CVE-03**: CI's `Vulnerability scan` step (under the `lint + test-race + arch-lint + govulncheck` job in `.github/workflows/ci.yml`) passes on `main` post-bump. Verified by a successful CI run on `main` after the milestone-closing commit.
+- [x] **CVE-01**: `govulncheck ./...` exits 0 from a clean checkout of `main` against the Go stdlib CVE list flagged at v1.6 close (GO-2026-5039, -5037, -4982, -4980, -4971, -4947, -4946, -4870, plus any others surfaced in CI run [27080012241](https://github.com/cmetech/otto-gateway/actions/runs/27080012241)'s Vulnerability scan step). Resolution path per finding: prefer toolchain bump (a single `go` directive change in `go.mod` resolves most stdlib CVEs); for any residual finding where the gateway code reaches the vulnerable function path, either fix the calling code or document the unreachability with a written rationale in the implementing phase's PLAN.md or SUMMARY.md.
+- [x] **CVE-02**: The `go` directive in `go.mod` (and any toolchain pin in `go.work` or related files) is bumped to a patched Go release that resolves the CVE-01 findings. The bump is the minimum change necessary — no opportunistic language-feature uptake or test-helper refactors. Rationale for the chosen Go version (e.g. "1.25.4 — patches GO-2026-5039 stdlib chain in net/http", "1.26.0 — adopts the canonical x509.Verify hardening") captured in the commit message.
+- [x] **CVE-03**: CI's `Vulnerability scan` step (under the `lint + test-race + arch-lint + govulncheck` job in `.github/workflows/ci.yml`) passes on `main` post-bump. Verified by a successful CI run on `main` after the milestone-closing commit.
 
 ### Trust-gate completion (v1.6 carve-out close)
 
-- [ ] **CI-02**: `make ci` (the full brief §3.12 sequence: gofumpt → vet → build → lint → test-race → arch-lint → examples → govulncheck → cross) exits 0 end-to-end on a clean checkout of `main`. Closes the documented carve-out in v1.6 Phase 11's `11-01-SUMMARY.md` D-11-01.
+- [x] **CI-02**: `make ci` (the full brief §3.12 sequence: gofumpt → vet → build → lint → test-race → arch-lint → examples → govulncheck → cross) exits 0 end-to-end on a clean checkout of `main`. Closes the documented carve-out in v1.6 Phase 11's `11-01-SUMMARY.md` D-11-01.
 
 ---
 
@@ -50,10 +50,10 @@ Explicit exclusions to keep v1.7 narrow and ship-fast (mirrors v1.6's discipline
 
 | REQ-ID | Phase | Plan | Status |
 |--------|-------|------|--------|
-| CVE-01 | Phase 12 | — | Active |
-| CVE-02 | Phase 12 | — | Active |
-| CVE-03 | Phase 12 | — | Active |
-| CI-02 | Phase 12 | — | Active |
+| CVE-01 | Phase 12 | 12-01 | Complete |
+| CVE-02 | Phase 12 | 12-01 | Complete |
+| CVE-03 | Phase 12 | 12-01 | Complete |
+| CI-02 | Phase 12 | 12-01 | Complete |
 
 ---
 

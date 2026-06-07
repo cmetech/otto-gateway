@@ -64,7 +64,7 @@ Full per-phase detail: [v1.6-ROADMAP.md archive](milestones/v1.6-ROADMAP.md) · 
 
 ### 📋 v1.7 Go Stdlib CVE Cleanup (Active)
 
-- [ ] **Phase 12: Go toolchain CVE remediation** — Bump the `go` directive in `go.mod` (and any toolchain pin) to a patched 1.25.x / 1.26.x release that resolves the govulncheck-flagged stdlib CVE chain (GO-2026-5039, -5037, -4982, -4980, -4971, -4947, -4946, -4870, …), refresh transitive deps via `go mod tidy`, address residual application-level taints (fix or document unreachability), and confirm CI's Vulnerability scan step passes on `main`. Closes the v1.6 Phase 11 D-11-01 carve-out so `make ci` exits 0 end-to-end. CVE-01, CVE-02, CVE-03, CI-02.
+- [x] **Phase 12: Go toolchain CVE remediation** — Bump the `go` directive in `go.mod` (and any toolchain pin) to a patched 1.25.x / 1.26.x release that resolves the govulncheck-flagged stdlib CVE chain (GO-2026-5039, -5037, -4982, -4980, -4971, -4947, -4946, -4870, …), refresh transitive deps via `go mod tidy`, address residual application-level taints (fix or document unreachability), and confirm CI's Vulnerability scan step passes on `main`. Closes the v1.6 Phase 11 D-11-01 carve-out so `make ci` exits 0 end-to-end. CVE-01, CVE-02, CVE-03, CI-02. (completed 2026-06-07)
 
 ## Phase Details
 
@@ -79,7 +79,7 @@ Full per-phase detail: [v1.6-ROADMAP.md archive](milestones/v1.6-ROADMAP.md) · 
   4. `make ci` (gofumpt → vet → build → lint → test-race → arch-lint → examples → govulncheck → cross) exits 0 end-to-end on a clean checkout of `main` — closes the v1.6 Phase 11 D-11-01 `(govulncheck routed to v1.7)` carve-out.
   5. No opportunistic changes outside CVE scope: `git diff main..HEAD -- ':!go.mod' ':!go.sum' ':!.planning/**'` is empty of non-CVE-justified edits (residual taint fixes count as in-scope; refactors do not).
 **Plans**: 1 plan
-- [ ] 12-01-PLAN.md — Bump Go toolchain to a patched release (drains 23 stdlib CVEs); rerun govulncheck; close v1.6 D-11-01 carve-out; verify make ci exits 0 end-to-end (CVE-01, CVE-02, CVE-03, CI-02)
+- [x] 12-01-PLAN.md — Bump Go toolchain to a patched release (drains 23 stdlib CVEs); rerun govulncheck; close v1.6 D-11-01 carve-out; verify make ci exits 0 end-to-end (CVE-01, CVE-02, CVE-03, CI-02)
 **Status**: Pending
 
 ## Progress
@@ -88,4 +88,4 @@ Full per-phase detail: [v1.6-ROADMAP.md archive](milestones/v1.6-ROADMAP.md) · 
 |-------|-----------|----------------|--------|-----------|
 | 1, 1.1, 2, 3, 3.1, 4, 5, 6, 6.1, 8, 8.1, 8.2, 8.3, 8.4, 9 | v1.5 | 57/57 | Complete | 2026-06-04 |
 | 10, 11 | v1.6 | 5/5 | Complete | 2026-06-07 |
-| 12 | v1.7 | 0/1 | In progress | — |
+| 12 | v1.7 | 1/1 | Complete   | 2026-06-07 |
