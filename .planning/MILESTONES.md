@@ -1,5 +1,18 @@
 # Milestones
 
+## v1.8 Nyquist Coverage Uplift (Shipped: 2026-06-07)
+
+**Phases completed:** 1 phases, 6 plans, 8 tasks
+
+**Key accomplishments:**
+
+- One-liner:
+- Phase 02 (Ollama End-to-End) VALIDATION.md lifted from nyquist_compliant: false to true — 23-row per-task verification map filled, all 9 Wave 0 fixtures confirmed, 6 sign-off boxes ticked, zero production source edits.
+- Nyquist audit of Phase 06 (Tool-Call Path): per-task map populated for all 20 VALIDATION.md V-rows, frontmatter flipped to `nyquist_compliant: true`, all 6 sign-off boxes ticked. Zero production source edits. All auto-classified rows verified green under `go test -race ./internal/engine/...`.
+- Lifted Phase 08 (Plugin Hook Chain) VALIDATION.md to the post-08.1 Nyquist standard: filled all 26 task rows, ticked Wave 0 requirements, verified sampling continuity, ticked 6 sign-off boxes, and flipped `nyquist_compliant: false → true` — largest target in the v1.8 milestone (5 plans, 26 tasks, 4-hook chain covering auth, PII, logging, and chain ordering).
+
+---
+
 ## v1.7 Go Stdlib CVE Cleanup (Shipped: 2026-06-07)
 
 **Phases completed:** 1 phase (Phase 12)
@@ -30,6 +43,7 @@
 - **Windows Authenticode code-signing** — Long pole; requires code-signing certificate procurement.
 
 **Audit references:**
+
 - `.planning/milestones/v1.7-MILESTONE-AUDIT.md` — full pre-close audit (status: passed; **zero warnings**)
 - `.planning/milestones/v1.7-ROADMAP.md` — archived per-phase detail
 - `.planning/milestones/v1.7-REQUIREMENTS.md` — archived traceability
@@ -70,6 +84,7 @@
 - **Windows Authenticode code-signing.**
 
 **Audit references:**
+
 - `.planning/milestones/v1.6-MILESTONE-AUDIT.md` — full pre-close audit (status: passed; 2 non-blocking warnings closed at audit time)
 - `.planning/milestones/v1.6-ROADMAP.md` — archived per-phase detail
 - `.planning/milestones/v1.6-REQUIREMENTS.md` — archived traceability
@@ -112,6 +127,7 @@
 - Phase 08.4 documented accepted_deviations: WR-NEW-03 USState span subsumes trailing ZIP; BL-NEW-01 acknowledged AP-2 residual on English-word + 5-digit-quantity ambiguity (inherent RE2 limit, no lookahead).
 
 **Audit references:**
+
 - `.planning/milestones/v1.5-MILESTONE-AUDIT.md` — full pre-close audit (status: passed)
 - `.planning/milestones/v1.5-ROADMAP.md` — archived per-phase detail
 - `.planning/milestones/v1.5-REQUIREMENTS.md` — archived traceability

@@ -30,26 +30,28 @@ applies uniformly to all three. The gateway being faster than Node
 and shipping as one binary is bonus — the surface compatibility
 and the single governance surface are the load-bearing properties.
 
-## Current Milestone: v1.8 Nyquist Coverage Uplift
+## Current Milestone: (awaiting `/gsd-new-milestone`)
 
-**Goal:** Bring the 6 v1.5 phases with `nyquist_compliant: false` up to the post-08.1 validation standard so every shipped phase carries a complete VALIDATION.md contract — per-task verification map, Wave 0 fixtures, sampling rate, manual-only justifications — and future audits can trust the test-suite's "what would regress if this broke" story for the whole codebase.
+v1.8 shipped 2026-06-07. Next milestone scope is undecided. Carryover candidates: Phase 08.3.1 ACP Per-Session Stream Demux (awaits multi-tenant deployment driver) and Windows Authenticode code-signing (awaits cert procurement).
 
-**Target features:**
-- 6 phase VALIDATION.md docs flipped from `nyquist_compliant: false` to `nyquist_compliant: true`: phases 02 (Ollama end-to-end), 03 (OpenAI surface), 06 (tool-call path), 06.1 (admin observability UI), 08 (plugin hook chain), 08.4 (US Address PII coverage)
-- Per-task verification map filled for every task in those phases (automated `<verify>` command OR Wave 0 stub fixture OR explicit manual-only with written rationale)
-- Wave 0 requirements section enumerated (fixtures the phase's first feature task needs) — most should already exist from the historical execution, just not documented
-- Sampling-rate constraints met: no 3 consecutive tasks without automated verify; max feedback latency under the per-phase budget
-- Any test gaps found during the uplift are addressed via the `gsd-nyquist-auditor` agent's adversarial-stance protocol (write a test that can fail; ESCALATE if the implementation doesn't satisfy the requirement)
+## Previous Milestone: v1.8 Nyquist Coverage Uplift (SHIPPED 2026-06-07)
 
-**Key context:** v1.5 shipped before audit-trail discipline tightened around per-task verification mapping. 6 of the 13 v1.5 phases have VALIDATION.md docs marked `nyquist_compliant: false` because either the per-task map is incomplete, Wave 0 requirements are absent, or manual-only items lack written rationale. The implementations themselves test fine — v2.0.11 passes the full test suite (18/18 packages, race-detector clean) — but the VALIDATION.md contracts don't yet articulate what each task's regression signal looks like.
+<details>
+<summary>v1.8 SHIPPED — 1 phase, 6 plans, 36 commits, 7/7 REQ-IDs (zero carve-outs)</summary>
 
-This is a cross-cutting sweep, not a per-phase feature build. Estimated 1-3 hr/phase × 6 = ~1-2 days of focused work. The `gsd-nyquist-auditor` agent is adversarial by design: its starting hypothesis is that the implementation does NOT meet the requirement, and it writes tests that can fail. Test files are read-write; implementation files are read-only (any bug found is ESCALATEd, not silently patched).
+**Delivered:** 6 v1.5 phase VALIDATION.md docs flipped from `nyquist_compliant: false` to `nyquist_compliant: true` — phases 02 (Ollama E2E), 03 (OpenAI Surface), 06 (Tool-Call Path), 06.1 (Admin Obs UI), 08 (Plugin Hook Chain), 08.4 (US Address PII Coverage). Milestone-wide compliance ratio: **7/13 → 13/13**. Each target VALIDATION.md now carries a complete per-task verification map (4–26 task rows), Wave 0 fixtures, manual-only rationales, and all 6 sign-off boxes ticked.
 
-Two carryover items (Phase 08.3.1 ACP demux, Windows Authenticode signing) are explicitly deferred to v1.9+ per the v1.8-opens decision to keep the milestone narrow: ACP demux awaits a multi-tenant deployment driver; Authenticode awaits cert procurement.
+**Production diff:** Zero non-test source edits across all 6 plans (read-only-implementation rule held milestone-wide). `git diff main...HEAD -- ':!*_test.go' ':!*VALIDATION.md' ':!testdata/' ':!.planning/'` empty.
 
-The 6 target phases and the 7 already-compliant ones were surveyed in the v1.7-close conversation: compliant = 01, 03.1, 04, 05, 08.1, 08.3, 08.3.2 (one is a reverted phase kept for history); non-compliant = 02, 03, 06, 06.1, 08, 08.4. The "3/11" figure in v1.5's audit was stale; actual baseline at v1.8 open is 7/13 compliant.
+**Execution shape:** 6 plans dispatched as a single parallel wave via the `gsd-nyquist-auditor` agent (6 git worktrees). Phase verification returned `human_needed` with 3 pre-existing operator-deferred UAT items (Phase 08.4 PII smoke, loop24-client tool-call UAT, Phase 06 `TestE2E_Tools_Cancel`); user approved and the items persist in 13-HUMAN-UAT.md.
 
-## Previous Milestone: v1.7 Go Stdlib CVE Cleanup (SHIPPED 2026-06-07)
+**Notable workflow note:** Two stray untracked files (`13-01-SUMMARY.md`, `13-04-GAPS.txt`) appeared in the main worktree before the SDK cleanup-wave merge; verified byte-identical to the worktree-committed versions and recovered via manual `git merge --no-ff` per worktree. Root cause likely the cleanup helper's pre-merge check leaking files — manual merge path worked cleanly. Tracking-debt observation: SUMMARY.md `requirements_completed` frontmatter empty for 4 of 6 plans (substantively complete via PLAN frontmatter + shell-criterion verification).
+
+**Archived:** [`milestones/v1.8-ROADMAP.md`](milestones/v1.8-ROADMAP.md) · [`milestones/v1.8-REQUIREMENTS.md`](milestones/v1.8-REQUIREMENTS.md) · [`milestones/v1.8-MILESTONE-AUDIT.md`](milestones/v1.8-MILESTONE-AUDIT.md) (audit verdict: passed, 7/7 requirements satisfied)
+
+</details>
+
+## Earlier: v1.7 Go Stdlib CVE Cleanup (SHIPPED 2026-06-07)
 
 <details>
 <summary>v1.7 SHIPPED — 1 phase, 1 plan, 8 commits, 4/4 REQ-IDs (zero carve-outs)</summary>
@@ -195,4 +197,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-06-07 — Phase 13 (Nyquist Coverage Uplift) complete: 6/6 plans, 6/6 target VALIDATION.md docs flipped to `nyquist_compliant: true`. Milestone-wide compliance ratio: 7/13 → 13/13. Zero production source edits. 3 inherited UAT items tracked in `13-HUMAN-UAT.md`. v1.8 ready for milestone audit + completion. Earlier: Milestone v1.7 "Go Stdlib CVE Cleanup" SHIPPED. 1 phase (Phase 12), 1 plan, 4/4 REQ-IDs (CVE-01/02/03 + CI-02) satisfied, zero carve-outs. Single-day milestone. 8 commits, 9 files changed, +892/-34 LOC (production diff: `go.mod | 2 +-`). `go.mod` bumped 1.25.0 → 1.26.4 (two-step per D-12-01: 1.26.3 surfaced 2 reachable residuals in net/http and x509, tightened to 1.26.4 — minimum patch level that closes all 23 baseline stdlib CVEs from GO-2026-5039 through GO-2025-4007). `govulncheck ./...` clean. `make ci` exits 0 end-to-end for the first time since v1.5 shipped — closes v1.6 Phase 11 D-11-01 carve-out. CI run 27081876026 confirms all 3 jobs green (lint+test-race+arch-lint+govulncheck, publish-dry-run, cross-compile). Audit verdict: passed, zero warnings. v1.8 backlog: Phase 08.3.1 ACP demux (re-re-deferred) + Nyquist coverage uplift (6 of 13 v1.5 phases non-compliant) + Windows Authenticode signing (cert procurement). Milestone artifacts archived at `.planning/milestones/v1.7-{ROADMAP,REQUIREMENTS,MILESTONE-AUDIT}.md`. Full per-phase history in `.planning/MILESTONES.md`.*
+*Last updated: 2026-06-07 — Milestone v1.8 "Nyquist Coverage Uplift" SHIPPED. 1 phase (Phase 13), 6 plans, 7/7 REQ-IDs (NYQ-02/03/06/06.1/08/08.4/ALL) satisfied, zero carve-outs. Single-day milestone. 36 commits, 32 files changed, +3113/-239 LOC. Compliance ratio flipped 7/13 → 13/13 with zero production source edits. 3 inherited operator-deferred UAT items tracked in `13-HUMAN-UAT.md` (Phase 08.4 PII smoke, loop24-client tool-call UAT, Phase 06 `TestE2E_Tools_Cancel`). Milestone audit verdict: passed, zero blockers. Carryover to next milestone: Phase 08.3.1 ACP demux + Windows Authenticode (both await external triggers). Earlier: Milestone v1.7 "Go Stdlib CVE Cleanup" SHIPPED. 1 phase (Phase 12), 1 plan, 4/4 REQ-IDs (CVE-01/02/03 + CI-02) satisfied, zero carve-outs. Single-day milestone. 8 commits, 9 files changed, +892/-34 LOC (production diff: `go.mod | 2 +-`). `go.mod` bumped 1.25.0 → 1.26.4 (two-step per D-12-01: 1.26.3 surfaced 2 reachable residuals in net/http and x509, tightened to 1.26.4 — minimum patch level that closes all 23 baseline stdlib CVEs from GO-2026-5039 through GO-2025-4007). `govulncheck ./...` clean. `make ci` exits 0 end-to-end for the first time since v1.5 shipped — closes v1.6 Phase 11 D-11-01 carve-out. CI run 27081876026 confirms all 3 jobs green (lint+test-race+arch-lint+govulncheck, publish-dry-run, cross-compile). Audit verdict: passed, zero warnings. v1.8 backlog: Phase 08.3.1 ACP demux (re-re-deferred) + Nyquist coverage uplift (6 of 13 v1.5 phases non-compliant) + Windows Authenticode signing (cert procurement). Milestone artifacts archived at `.planning/milestones/v1.7-{ROADMAP,REQUIREMENTS,MILESTONE-AUDIT}.md`. Full per-phase history in `.planning/MILESTONES.md`.*

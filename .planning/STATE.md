@@ -2,16 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.8
 milestone_name: Nyquist Coverage Uplift
-status: milestone_complete
-last_updated: 2026-06-07T13:44:37.750Z
-last_activity: 2026-06-07 -- Phase 13 execution started
+status: Awaiting next milestone
+last_updated: "2026-06-07T13:53:35.773Z"
+last_activity: 2026-06-07 — Milestone v1.8 completed and archived
 progress:
   total_phases: 1
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 6
-  completed_plans: 72
-  percent: 0
-stopped_at: Milestone complete (Phase 13 was final phase)
+  completed_plans: 6
+  percent: 100
 ---
 
 # Project State
@@ -25,10 +24,10 @@ See: .planning/PROJECT.md (updated 2026-06-07)
 
 ## Current Position
 
-Phase: 13
-Plan: Not started
-Status: Milestone complete
-Last activity: 2026-06-07
+Phase: Milestone v1.8 complete
+Plan: —
+Status: Awaiting next milestone
+Last activity: 2026-06-07 — Milestone v1.8 completed and archived
 
 ## Performance Metrics
 
@@ -149,6 +148,9 @@ Items acknowledged and carried forward from previous milestone close:
 |----------|------|--------|-------------|
 | Concurrency | Phase 08.3.1 ACP Per-Session Stream Demux | Re-deferred to v1.9+ (awaits multi-tenant deployment driver) | 2026-06-07 (v1.8 narrow-scope decision) |
 | Distribution | Windows Authenticode code-signing | Re-deferred to v1.9+ (awaits code-signing cert procurement) | 2026-06-07 (v1.8 narrow-scope decision) |
+| Tracking | 30 quick_tasks marked `missing` (stale tracking entries — substantive work shipped 2026-05-23..2026-06-03, see Quick Tasks Completed table) | Acknowledged at v1.8 close | 2026-06-07 (v1.8 close) |
+| Tracking | 1 todo + 1 seed (Authenticode dormant) | Acknowledged at v1.8 close | 2026-06-07 (v1.8 close) |
+| Verification | 8 UAT gaps + 3 verification_gaps in `human_needed` state (includes Phase 13 HUMAN-UAT — 3 inherited operator-deferred smoke tests from Phase 06/08.4) | Acknowledged at v1.8 close — none are new v1.8 blockers | 2026-06-07 (v1.8 close) |
 
 ## Session Continuity
 
@@ -158,4 +160,4 @@ Resume file: .planning/ROADMAP.md
 
 ## Operator Next Steps
 
-- Begin Phase 13 with `/gsd-plan-phase 13` (Nyquist coverage uplift — expect 6 parallel plans, one per target VALIDATION.md: 02, 03, 06, 06.1, 08, 08.4)
+- Start the next milestone with /gsd-new-milestone
