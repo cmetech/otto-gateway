@@ -329,7 +329,11 @@ func (e *Engine) callPreHookSafe(ctx context.Context, h PreHook, req *canonical.
 			e.cfg.HookErrorReporter(h, err)
 		}
 	}()
-	return h.Before(ctx, req)
+	resp, err = h.Before(ctx, req)
+	if err != nil {
+		return resp, fmt.Errorf("engine: prehook: %w", err)
+	}
+	return resp, nil
 }
 
 // callPostHookSafe is the PostHook twin of callPreHookSafe.
@@ -347,7 +351,10 @@ func (e *Engine) callPostHookSafe(ctx context.Context, h PostHook, req *canonica
 			e.cfg.HookErrorReporter(h, err)
 		}
 	}()
-	return h.After(ctx, req, resp)
+	if err = h.After(ctx, req, resp); err != nil {
+		return fmt.Errorf("engine: posthook: %w", err)
+	}
+	return nil
 }
 
 // newCompletedRun builds a *Run that carries a PreHook-supplied response

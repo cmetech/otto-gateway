@@ -174,7 +174,7 @@ func sseLoop(
 	for {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return fmt.Errorf("admin.sse: ctx done: %w", ctx.Err())
 
 		case <-tickerC:
 			// Keepalive ping — prevents idle TCP connections from timing out.

@@ -30,6 +30,7 @@ package pii
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sync"
 )
 
@@ -128,7 +129,11 @@ func (s *Summary) MarshalJSON() ([]byte, error) {
 	if s == nil {
 		return []byte("null"), nil
 	}
-	return json.Marshal(s.Counts())
+	b, err := json.Marshal(s.Counts())
+	if err != nil {
+		return nil, fmt.Errorf("pii.summary: marshal: %w", err)
+	}
+	return b, nil
 }
 
 // summaryKey is the unexported, struct-typed context key used by

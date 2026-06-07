@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"runtime/debug"
 	"time"
@@ -365,7 +366,7 @@ func (a *Adapter) resolveEngine(r *http.Request) (Engine, *session.Entry, error)
 	}
 	entry, err := a.cfg.Registry.Get(r.Context(), sid, a.cfg.KiroCWD)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("ollama.handlers: session lookup: %w", err)
 	}
 	return a.cfg.EngineForSession(entry), entry, nil
 }

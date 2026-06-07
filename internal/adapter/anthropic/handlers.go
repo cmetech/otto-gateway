@@ -3,6 +3,7 @@ package anthropic
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"otto-gateway/internal/auth"
@@ -401,7 +402,7 @@ func (a *Adapter) resolveEngine(r *http.Request) (Engine, *session.Entry, error)
 	}
 	entry, err := a.cfg.Registry.Get(r.Context(), sid, a.cfg.KiroCWD)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("anthropic.handlers: session lookup: %w", err)
 	}
 	return a.cfg.EngineForSession(entry), entry, nil
 }

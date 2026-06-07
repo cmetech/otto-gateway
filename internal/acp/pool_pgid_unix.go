@@ -3,6 +3,7 @@
 package acp
 
 import (
+	"fmt"
 	"os/exec"
 	"syscall"
 )
@@ -44,5 +45,8 @@ func applyPgidAttr(cmd *exec.Cmd) {
 // SIGKILL exec.CommandContext already issues on ctx cancellation, now
 // delivered to the leader (whose own process group equals its pid).
 func killProcessGroup(pid int, sig syscall.Signal) error {
-	return syscall.Kill(-pid, sig)
+	if err := syscall.Kill(-pid, sig); err != nil {
+		return fmt.Errorf("acp.pool.pgid: kill pgroup: %w", err)
+	}
+	return nil
 }

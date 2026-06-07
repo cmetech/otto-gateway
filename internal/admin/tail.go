@@ -24,6 +24,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -420,7 +421,7 @@ func (t *Tailer) readLines(r *bufio.Reader, carry string) (string, error) {
 				// Carry any trailing partial bytes into the next tick.
 				return current, nil
 			}
-			return current, err
+			return current, fmt.Errorf("admin.tail: read line: %w", err)
 		}
 	}
 }
