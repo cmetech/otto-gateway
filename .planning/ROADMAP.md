@@ -67,7 +67,12 @@ Full per-phase detail: [v1.5-ROADMAP.md archive](milestones/v1.5-ROADMAP.md)
   2. `.github/workflows/ci.yml`'s golangci-lint step has no `continue-on-error: true` and the TODO comment introduced in commit `f3a70fc` is gone; a CI run with a deliberately-introduced lint violation fails the job.
   3. Every linter category from the baseline (wrapcheck, unparam, revive, gosec, unused, noctx, staticcheck, bodyclose, nilerr) has a per-category decision record in the phase's PLAN.md or SUMMARY.md stating fix policy, rule disable, or exemption pattern with rationale.
   4. Any `//nolint:linter` directive added during the phase carries a `// <rationale>` comment in the diff that introduces it.
-**Plans**: TBD
+**Plans**: 4 plans
+Plans:
+- [ ] 10-01-PLAN.md — Wave 1 mechanical drain: staticcheck QF1001 (3) + unused (4) + revive redefines-builtin-id (3) + gosec G301 (2) + noctx (4); per-category decision record for these 5 categories.
+- [ ] 10-02-PLAN.md — Wave 2 wrapcheck (9) + unparam (13) drain; production fixes for 2 unparam sites; 11 scoped //nolint:unparam exemptions with rationale; per-category decision record.
+- [ ] 10-03-PLAN.md — Wave 3 real review: gosec G703 (1) + gosec G705 (2) + bodyclose (1) + nilerr (1) + revive remainder (6: 3 stutters + 2 unexported-return + 1 godoc).
+- [ ] 10-04-PLAN.md — Wave 4 re-gate: remove continue-on-error + TODO from .github/workflows/ci.yml; negative-test PR proves lint job blocks merges.
 
 ### Phase 11: gofumpt tree-wide cleanup + pre-commit gate
 **Goal**: `gofumpt -d .` reports no diffs on `main` and operators can't push lint/fmt regressions without surfacing them locally.
