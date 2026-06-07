@@ -109,4 +109,4 @@ NYQ-ALL is satisfied automatically at milestone close once all 6 plans complete;
 | 1, 1.1, 2, 3, 3.1, 4, 5, 6, 6.1, 8, 8.1, 8.2, 8.3, 8.4, 9 | v1.5 | 57/57 | Complete | 2026-06-04 |
 | 10, 11 | v1.6 | 5/5 | Complete | 2026-06-07 |
 | 12 | v1.7 | 1/1 | Complete | 2026-06-07 |
-| 13 | v1.8 | 6/6 | Complete   | 2026-06-07 |
+| 13 | v1.8 | 6/6 | Complete    | 2026-06-07 |

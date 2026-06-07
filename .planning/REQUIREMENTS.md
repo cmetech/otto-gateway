@@ -14,16 +14,16 @@
 
 Each of the 6 non-compliant v1.5 phases gets one REQ-ID. Compliance criterion (same for every phase): the phase's VALIDATION.md satisfies all five sign-off constraints — per-task verification map filled, Wave 0 requirements enumerated, no 3 consecutive tasks without automated verify, no watch-mode flags, feedback latency under the per-phase budget — and the frontmatter flips from `nyquist_compliant: false` to `nyquist_compliant: true`.
 
-- [ ] **NYQ-02**: Phase 02 (Ollama end-to-end). VALIDATION.md flipped to `nyquist_compliant: true` with the per-task map filled for every task in the original PLAN.md (verifiable by `grep "nyquist_compliant: true" .planning/phases/02-*/02-VALIDATION.md`).
-- [ ] **NYQ-03**: Phase 03 (OpenAI surface). Same compliance criterion against `.planning/phases/03-*/03-VALIDATION.md`.
-- [ ] **NYQ-06**: Phase 06 (Tool-call path). Same compliance criterion against `.planning/phases/06-*/06-VALIDATION.md`.
-- [ ] **NYQ-06.1**: Phase 06.1 (Admin observability UI). Same compliance criterion against `.planning/phases/06.1-*/06.1-VALIDATION.md`.
-- [ ] **NYQ-08**: Phase 08 (Plugin hook chain). Same compliance criterion against `.planning/phases/08-*/08-VALIDATION.md`. Note: this is the largest target phase (most tasks, most surface area).
-- [ ] **NYQ-08.4**: Phase 08.4 (US Address PII coverage). Same compliance criterion against `.planning/phases/08.4-*/08.4-VALIDATION.md`. Should be the smallest because the phase shipped recently under tighter discipline; expect lightweight gaps.
+- [x] **NYQ-02**: Phase 02 (Ollama end-to-end). VALIDATION.md flipped to `nyquist_compliant: true` with the per-task map filled for every task in the original PLAN.md (verifiable by `grep "nyquist_compliant: true" .planning/phases/02-*/02-VALIDATION.md`).
+- [x] **NYQ-03**: Phase 03 (OpenAI surface). Same compliance criterion against `.planning/phases/03-*/03-VALIDATION.md`.
+- [x] **NYQ-06**: Phase 06 (Tool-call path). Same compliance criterion against `.planning/phases/06-*/06-VALIDATION.md`.
+- [x] **NYQ-06.1**: Phase 06.1 (Admin observability UI). Same compliance criterion against `.planning/phases/06.1-*/06.1-VALIDATION.md`.
+- [x] **NYQ-08**: Phase 08 (Plugin hook chain). Same compliance criterion against `.planning/phases/08-*/08-VALIDATION.md`. Note: this is the largest target phase (most tasks, most surface area).
+- [x] **NYQ-08.4**: Phase 08.4 (US Address PII coverage). Same compliance criterion against `.planning/phases/08.4-*/08.4-VALIDATION.md`. Should be the smallest because the phase shipped recently under tighter discipline; expect lightweight gaps.
 
 ### Milestone-level sign-off
 
-- [ ] **NYQ-ALL**: All 13 v1.5 phase VALIDATION.md docs (or however many exist) report `nyquist_compliant: true` at milestone close. Compliance ratio goes from 7/13 to 13/13. Verified by a shell loop counting `nyquist_compliant: true` against the count of `*-VALIDATION.md` files under `.planning/phases/`. The milestone audit confirms.
+- [x] **NYQ-ALL**: All 13 v1.5 phase VALIDATION.md docs (or however many exist) report `nyquist_compliant: true` at milestone close. Compliance ratio goes from 7/13 to 13/13. Verified by a shell loop counting `nyquist_compliant: true` against the count of `*-VALIDATION.md` files under `.planning/phases/`. The milestone audit confirms.
 
 ---
 
