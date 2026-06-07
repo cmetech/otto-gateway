@@ -1,0 +1,117 @@
+# Phase 08 — Plugin Hook Chain — Per-Task Gap Classification
+# Generated: 2026-06-07 by plan 13-06
+# Format: TASK_ID | PLAN | WAVE | BEHAVIORAL_AREA | GAP_CLASS | RESOLVE_TO | NOTES
+#
+# GAP CLASSES:
+#   COVERED    — automated test exists and passes (green)
+#   MANUAL     — manual-only verification with documented rationale
+#   PII-XREF   — PII behavior owned by plan 13-01; this plan references existing test
+#   E2E        — covered by e2e (build tag; not in core plugin suite)
+#   INFRA      — static/doc assertion (arch-lint, source grep, doc check)
+#
+# NOTE on task count: The BASELINE.txt records "tasks=31" for Phase 08 but
+# direct enumeration of the five PLAN.md files yields 26 task entries:
+#   08-01: 5 tasks (1 checkpoint + 4 auto)
+#   08-02: 4 tasks
+#   08-03: 4 tasks
+#   08-04: 5 tasks
+#   08-05: 8 tasks (including Task 4b and Task 7 checkpoint)
+# TOTAL: 26 tasks
+# The discrepancy (26 vs 31) is a planner-count artifact. The per-task map
+# covers all 26 plan task IDs, plus VALIDATION.md had 15 behavioral category
+# rows (some tasks map to multiple behaviors). The GAPS.txt below enumerates
+# all 26 task IDs.
+#
+# ─────────────────────────────────────────────────────────────────────────
+# PLAN 08-01 — Foundation Slice: plugin.Chain + RequestIDHook + arch-lint
+# ─────────────────────────────────────────────────────────────────────────
+
+08-01-01 | 08-01 | 1 | package-legitimacy-checkpoint | MANUAL | manual-only | Human-verify checkpoint for oklog/ulid/v2; auto-approved per user directive; package is Peter Bourgon's well-known repo. No automated test possible — decision recorded in 08-01-SUMMARY.md.
+
+08-01-02 | 08-01 | 1 | chain-ordering + goleak-gate | COVERED | go test ./internal/plugin -run TestChain_RegistrationOrder -race | Wave 0 scaffold: TestChain_RegistrationOrder, TestChain_ShortCircuit, TestChain_Filter_EmptyAllowlist_Passthrough, TestChain_Filter_PreservesRegistrationOrder, TestChain_Describe_NilSafe in chain_test.go; TestRequestID_* in request_id_test.go; goleak gate in testmain_test.go. All pass.
+
+08-01-03 | 08-01 | 1 | chain-type + filter + describe | COVERED | go test ./internal/plugin -run 'TestChain_' -race | Chain.Filter typo-fail-fast via TestChain_Filter_UnknownNameError; registration-order preservation via TestChain_Filter_PreservesRegistrationOrder; Describe nil-safe via TestChain_Describe_NilSafe. All pass.
+
+08-01-04 | 08-01 | 1 | request-id-hook + ulid + ctx | COVERED | go test ./internal/plugin -run 'TestRequestID_' -race | TestRequestID_GeneratesULID_WhenAbsent, TestRequestID_HonorsInboundID, TestRequestIDFromContext_AbsentReturnsEmpty, TestRequestID_SlogCorrelation. All pass.
+
+08-01-05 | 08-01 | 2 | arch-lint-plugin-component | INFRA | go-arch-lint check | .go-arch-lint.yml declares plugin + plugin_pii components with correct mayDependOn. Verified by 08-01 executor (go-arch-lint check exits 0).
+
+# ─────────────────────────────────────────────────────────────────────────
+# PLAN 08-02 — AuthHook: constant-time compare + canonical short-circuit
+# ─────────────────────────────────────────────────────────────────────────
+
+08-02-01 | 08-02 | 2 | canonical-bearer-ctx-bridge | COVERED | go test ./internal/canonical -run TestWithBearerToken -race | canonical.WithBearerToken + BearerTokenFromContext: round-trip, absent-returns-false, empty-stamp-stored. All pass (auth_ctx_test.go).
+
+08-02-02 | 08-02 | 2 | auth-hook-wave0-scaffold | COVERED | go test ./internal/plugin -run 'TestAuthHook_' -race | 9 Wave 0 tests: EmptyTokens_Passthrough, ValidToken_Passthrough, InvalidToken_ShortCircuit, MissingToken_ShortCircuit, EmptyStringToken_ShortCircuit, MultipleTokens_AcceptsAnyMatch, Name, Describe_NoSecrets, ConstantTimeCompareSourceAudit. All pass.
+
+08-02-03 | 08-02 | 2 | auth-hook-impl + constant-time | COVERED | go test ./internal/plugin -run 'TestAuthHook_' -race | AuthHook implementation satisfies all 9 tests. subtle.ConstantTimeCompare confirmed by source-audit test. T-8-AUTH and T-8-LEAK mitigations verified.
+
+08-02-04 | 08-02 | 2 | adapter-ctx-stamp-bearer | COVERED | go test ./internal/adapter/... -race | All three adapter handlers (ollama, openai, anthropic) stamp canonical.WithBearerToken before engine.Run. Existing adapter test suite passes without regression.
+
+# ─────────────────────────────────────────────────────────────────────────
+# PLAN 08-03 — LoggingHook: slog correlation + pii.SummaryFromContext seam
+# ─────────────────────────────────────────────────────────────────────────
+
+08-03-01 | 08-03 | 2 | pii-summary-wave0-scaffold | COVERED | go test ./internal/plugin/pii -run 'TestSummary_|TestWithSummary_|TestSummaryFromContext_' -race | 6 Wave 0 summary tests: AddIncrementsCount, AddIsRaceSafe, WithSummary_RoundTrip, SummaryFromContext_AbsentReturnsZero, EmptyCountsSerializable, NilSafeAdd. All pass in pii/summary_test.go.
+
+08-03-02 | 08-03 | 2 | pii-summary-impl + ctx-seam | COVERED | go test ./internal/plugin/pii -run 'TestSummary_|TestWithSummary_|TestSummaryFromContext_' -race | pii.Summary implementation with sync.Mutex (race-safe), nil-receiver-safe Add, MarshalJSON, ctx roundtrip. All 6 tests pass.
+
+08-03-03 | 08-03 | 2 | logging-hook-wave0-scaffold | COVERED | go test ./internal/plugin -run 'TestLoggingHook_' -race | 9 Wave 0 tests: Before_EmitsCorrelatedRecord, After_EmitsDurationAndStopReason, After_NilResponseSafe, NilLogger_FallsBackToDefault, EmitsRedactedSummary_WhenPresent, OmitsRedactedSummary_WhenAbsent, SourceAudit_NoRawContent, Name, Describe. All defined in logging_test.go.
+
+08-03-04 | 08-03 | 2 | logging-hook-impl + timing + d04 | COVERED | go test ./internal/plugin -run 'TestLoggingHook_' -race | LoggingHook implementation with sync.Map timing, RequestIDFromContext, pii.SummaryFromContext. T-8-PII source-audit passes (no slog.Any(request) / slog.SetDefault). All 9 tests pass.
+
+# ─────────────────────────────────────────────────────────────────────────
+# PLAN 08-04 — PIIRedactionHook: walker + recognizers + modes + hook
+# (PII sub-package tests owned by plan 13-01)
+# ─────────────────────────────────────────────────────────────────────────
+
+08-04-01 | 08-04 | 2 | pii-all-wave0-scaffold | PII-XREF | go test ./internal/plugin/pii -race | Wave 0 scaffold for all PII components. Tests defined in walk_test.go, luhn_test.go, recognizers_test.go, modes_test.go, pii_test.go. Owned by plan 13-01 (internal/plugin/pii/*_test.go). This plan's map row references 08-01-SUMMARY + 08-04-SUMMARY as execution evidence.
+
+08-04-02 | 08-04 | 2 | pii-walk + luhn-impl | PII-XREF | go test ./internal/plugin/pii -run 'TestWalkStrings_|TestLuhnCheck_' -race | WalkStrings (maxDepth=64, string-leaves-only, no reflect) + LuhnCheck (length-bounded, non-digit strip). Tests in internal/plugin/pii/ owned by 13-01.
+
+08-04-03 | 08-04 | 2 | pii-recognizers + validators | PII-XREF | go test ./internal/plugin/pii -run 'TestEmail|TestIPv4|TestIPv6|TestSSN|TestCreditCard|TestUSPhone|TestRecognizers_' -race | Six recognizers (Email/IPv4/IPv6/SSN/CreditCard/USPhone) with post-validators. MustCompile at init; no per-request compile. Tests owned by 13-01.
+
+08-04-04 | 08-04 | 2 | pii-modes + hmac-sha256 | PII-XREF | go test ./internal/plugin/pii -run 'TestApplyMode_' -race | ApplyMode with HMAC-SHA256 (NOT raw sha256), canonical form (lowercase+trim), 8-hex-char tag. T-8-HASH mitigated. Tests owned by 13-01.
+
+08-04-05 | 08-04 | 2 | pii-redaction-hook + summary-producer | PII-XREF | go test ./internal/plugin/pii -run 'TestPIIRedactionHook_' -race | PIIRedactionHook: D-03 walker scope, D-04 summary seam production, D-05 hash mode, counter-scope per-request, Describe no-secrets. 11 tests in pii_test.go owned by 13-01.
+
+# ─────────────────────────────────────────────────────────────────────────
+# PLAN 08-05 — Integration Slice: main.go + /health/hooks + e2e
+# ─────────────────────────────────────────────────────────────────────────
+
+08-05-01 | 08-05 | 3 | wave0-config+filter+handler-scaffold | COVERED | go test ./internal/config ./internal/plugin ./internal/server -race | Wave 0 scaffold: plugin_config_test.go (11 TestLoad_ tests), chain_filter_test.go (5 TestChainFilter_ tests), hooks_handler_test.go (7 TestHooksHandler_ tests). All pass.
+
+08-05-02 | 08-05 | 3 | config-load-5-env-keys | COVERED | go test ./internal/config -race | config.Load parses EnabledHooks, PIIRedactionEnabled, PIIEnabledEntities, PIIRedactionMode, PIIHashKey. validatePIIMode + validatePIIEntities boot errors. mode=hash requires key (T-8-HASH-BOOT). 11 tests pass.
+
+08-05-03 | 08-05 | 3 | chain-filter-finalize | COVERED | go test ./internal/plugin -run 'TestChainFilter_' -race | Chain.Filter four-hook contract: empty passthrough, registration-order-not-allowlist-order, unknown error, single-hook, LoggingHook-in-both-Pre-and-Post. 5 tests pass.
+
+08-05-04 | 08-05 | 3 | health-hooks-handler + interface | COVERED | go test ./internal/server -run 'TestHooksHandler_' -race | GET /health/hooks: empty chain, four-hook JSON envelope, entry shape, secret-omission audit (T-8-LEAK), POST 405, auth-exempt, registration-order. 7 tests pass.
+
+08-05-04b | 08-05 | 3 | x-request-id-adapter-stamp | COVERED | go test ./internal/adapter/... -race | All three adapter handlers stamp plugin.WithRequestID on ctx from X-Request-Id header (generated if absent). 6 new round-trip tests (2 per adapter). Existing adapter tests green.
+
+08-05-05 | 08-05 | 3 | main-wiring-chain-filter-hooks | COVERED | go build ./cmd/otto-gateway && go test ./... -timeout 120s -race | main.go constructs plugin.Chain literal (D-01), calls chain.Filter(cfg.EnabledHooks) (D-02), injects chain.Pre+chain.Post into engine.Config, wires hooksDescriptionAdapter into server.Config (TRST-04 preserved), removes auth.Bearer chi middleware (Pattern F closure). Full suite green.
+
+08-05-06 | 08-05 | 3 | e2e-plugin-chain | E2E | OTTO_E2E=1 go test -tags e2e ./tests/e2e/... -run TestE2E_ -race | 9-scenario real-binary e2e: HealthHooks_DefaultChain, HealthHooks_AuthExempt, HealthHooks_NoSecretLeak, HealthHooks_POST_Returns405, PIIRedaction_Email (may skip), BadBearer_AllThreeSurfaces (SC1), BootError_UnknownHook (T-8-CFG), BootError_HashModeNoKey (T-8-HASH-BOOT), EnabledHooks_Filter_PreservesOrder (SC5). SC1+SC5+SC7+T-8-CFG+T-8-LEAK+T-8-HASH-BOOT confirmed.
+
+08-05-07 | 08-05 | 4 | operator-workflow-human-verify | MANUAL | manual-only | Blocking human-verify checkpoint: operator confirms /health/hooks JSON, SC1 three-surface short-circuit, SC5 ENABLED_HOOKS filter, SC6 PII redaction, D-05 hash-key rotation, T-8-HASH-BOOT boot-fail-fast, docs/operating.md updated. Approved per 08-05-SUMMARY.md.
+
+# ─────────────────────────────────────────────────────────────────────────
+# VALIDATION.md BEHAVIORAL CATEGORIES (cross-ref to plan task IDs above)
+# These are the 15 rows in the original 08-VALIDATION.md per-task map.
+# Each maps to one or more task IDs enumerated above.
+# ─────────────────────────────────────────────────────────────────────────
+# chain-Pre-ordering          → 08-01-02, 08-01-03
+# PostHook-unconditional      → 08-01-02, 08-01-03
+# RequestID-ULID-ctx          → 08-01-04
+# LoggingHook-slog-correlation → 08-03-03, 08-03-04
+# pii-walker                  → 08-04-01, 08-04-02 (13-01 owned)
+# pii-recognizers             → 08-04-03 (13-01 owned)
+# pii-modes                   → 08-04-04 (13-01 owned)
+# pii-counter                 → 08-04-05 (13-01 owned)
+# config-validation           → 08-05-02
+# health-hooks                → 08-05-04, 08-05-06
+# short-circuit               → 08-05-06 (SC1 e2e)
+# arch-lint                   → 08-01-05
+# leak-check                  → 08-01-02 (goleak gate)
+# gosec                       → INFRA (CI gate)
+# auth-hook                   → 08-02-02, 08-02-03
