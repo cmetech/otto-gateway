@@ -3,6 +3,8 @@
 /dist/
 otto-gateway
 otto-gateway.exe
+otto-tray
+otto-tray.exe
 # Do not ignore the Go source directory that shares the binary name.
 !/cmd/otto-gateway/
 
