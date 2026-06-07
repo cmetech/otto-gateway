@@ -2,9 +2,9 @@
 gsd_state_version: 1.0
 milestone: v1.8
 milestone_name: Nyquist Coverage Uplift
-status: planning
-last_updated: "2026-06-07T13:00:00.000Z"
-last_activity: 2026-06-07
+status: executing
+last_updated: "2026-06-07T13:17:41.790Z"
+last_activity: 2026-06-07 -- Phase 13 execution started
 progress:
   total_phases: 1
   completed_phases: 0
@@ -20,14 +20,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-07)
 
 **Core value:** All three API surfaces (OpenAI for Pi SDK, Ollama for LangFlow, Anthropic for loop24-client/GSD Pi) serve their respective clients without those clients knowing kiro-cli exists, with one place to enforce policy.
-**Current focus:** Phase 13 — nyquist-coverage-uplift (v1.8 sole phase; flips 6 v1.5 VALIDATION.md docs from `nyquist_compliant: false` to `true`, 7/13 → 13/13)
+**Current focus:** Phase 13 — nyquist-coverage-uplift
 
 ## Current Position
 
-Phase: 13 — Nyquist coverage uplift (Not started — awaiting `/gsd-plan-phase 13`)
-Plan: —
-Status: Roadmap drafted; planning pending
-Last activity: 2026-06-07 — v1.8 roadmap drafted (single Phase 13, 6 parallel plans expected, NYQ-02/03/06/06.1/08/08.4 + NYQ-ALL)
+Phase: 13 (nyquist-coverage-uplift) — EXECUTING
+Plan: 1 of 6
+Status: Executing Phase 13
+Last activity: 2026-06-07 -- Phase 13 execution started
 
 ## Performance Metrics
 

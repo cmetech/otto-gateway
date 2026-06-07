@@ -74,7 +74,7 @@ Full per-phase detail: [v1.7-ROADMAP.md archive](milestones/v1.7-ROADMAP.md) · 
 
 ### 🚧 v1.8 Nyquist Coverage Uplift (Active — opened 2026-06-07)
 
-- [ ] **Phase 13: Nyquist coverage uplift** — Cross-cutting sweep flipping the 6 v1.5 phase VALIDATION.md docs with `nyquist_compliant: false` (phases 02, 03, 06, 06.1, 08, 08.4) up to the post-08.1 validation standard. 6 independent plans (one per target phase) run as a single parallel wave via the `gsd-nyquist-auditor` agent; each plan owns one target phase's VALIDATION.md and any new `*_test.go` files needed to fill the per-task verification map. NYQ-02 / NYQ-03 / NYQ-06 / NYQ-06.1 / NYQ-08 / NYQ-08.4 / NYQ-ALL.
+- [x] **Phase 13: Nyquist coverage uplift** — Cross-cutting sweep flipping the 6 v1.5 phase VALIDATION.md docs with `nyquist_compliant: false` (phases 02, 03, 06, 06.1, 08, 08.4) up to the post-08.1 validation standard. 6 independent plans (one per target phase) run as a single parallel wave via the `gsd-nyquist-auditor` agent; each plan owns one target phase's VALIDATION.md and any new `*_test.go` files needed to fill the per-task verification map. NYQ-02 / NYQ-03 / NYQ-06 / NYQ-06.1 / NYQ-08 / NYQ-08.4 / NYQ-ALL. (completed 2026-06-07)
 
 **Re-deferred to v1.9+ (out of v1.8 scope per opening decision):**
 - Phase 08.3.1 (ACP Per-Session Stream Demux) — awaits a real multi-tenant deployment driver.
@@ -93,12 +93,12 @@ Full per-phase detail: [v1.7-ROADMAP.md archive](milestones/v1.7-ROADMAP.md) · 
   4. The `gsd-nyquist-auditor` agent's read-only-implementation rule held milestone-wide: `git diff main...HEAD -- ':!*_test.go' ':!*VALIDATION.md' ':!testdata/'` reports zero production-source edits attributable to Phase 13 plans (any ESCALATEd implementation bug landed as a separate post-Phase-13 phase).
   5. The v1.8 milestone audit (`.planning/milestones/v1.8-MILESTONE-AUDIT.md` once written) records verdict **passed** with NYQ-ALL marked Satisfied — confirmed by the same two `grep` commands from criterion 1 plus the per-target sign-off checklists from criterion 3.
 **Plans**: 6 plans (single parallel wave; planned 2026-06-07)
-- [ ] 13-01-PLAN.md — NYQ-08.4 (Phase 08.4 US Address PII Coverage; 5 tasks; smallest target)
-- [ ] 13-02-PLAN.md — NYQ-06.1 (Phase 06.1 Admin Observability UI; 14 tasks; UI-shaped)
-- [ ] 13-03-PLAN.md — NYQ-03 (Phase 03 OpenAI Surface; 15 tasks; adapter pattern)
-- [ ] 13-04-PLAN.md — NYQ-02 (Phase 02 Ollama End-to-End; 23 tasks; first runnable slice)
-- [ ] 13-05-PLAN.md — NYQ-06 (Phase 06 Tool-Call Path; 23 tasks; engine + jsonformat)
-- [ ] 13-06-PLAN.md — NYQ-08 (Phase 08 Plugin Hook Chain; 31 tasks; largest target)
+- [x] 13-01-PLAN.md — NYQ-08.4 (Phase 08.4 US Address PII Coverage; 5 tasks; smallest target)
+- [x] 13-02-PLAN.md — NYQ-06.1 (Phase 06.1 Admin Observability UI; 14 tasks; UI-shaped)
+- [x] 13-03-PLAN.md — NYQ-03 (Phase 03 OpenAI Surface; 15 tasks; adapter pattern)
+- [x] 13-04-PLAN.md — NYQ-02 (Phase 02 Ollama End-to-End; 23 tasks; first runnable slice)
+- [x] 13-05-PLAN.md — NYQ-06 (Phase 06 Tool-Call Path; 23 tasks; engine + jsonformat)
+- [x] 13-06-PLAN.md — NYQ-08 (Phase 08 Plugin Hook Chain; 31 tasks; largest target)
 
 NYQ-ALL is satisfied automatically at milestone close once all 6 plans complete; no 7th plan.
 
@@ -109,4 +109,4 @@ NYQ-ALL is satisfied automatically at milestone close once all 6 plans complete;
 | 1, 1.1, 2, 3, 3.1, 4, 5, 6, 6.1, 8, 8.1, 8.2, 8.3, 8.4, 9 | v1.5 | 57/57 | Complete | 2026-06-04 |
 | 10, 11 | v1.6 | 5/5 | Complete | 2026-06-07 |
 | 12 | v1.7 | 1/1 | Complete | 2026-06-07 |
-| 13 | v1.8 | 0/6 | Not started | - |
+| 13 | v1.8 | 6/6 | Complete   | 2026-06-07 |
