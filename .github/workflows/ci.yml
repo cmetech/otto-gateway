@@ -85,14 +85,7 @@ jobs:
       # binary cache and version pin in one place. `make lint` calls
       # `golangci-lint run ./...` directly; this action covers that
       # invocation without re-installing the binary.
-      # TEMPORARILY non-blocking: the codebase has ~49 pre-existing lint
-      # violations from before .golangci.yml moved to v2 schema (config
-      # silently parsed under v1.62.2 → exclusions ignored). Tracking
-      # cleanup in a follow-up — for now we still run lint for visibility
-      # but don't gate merges on it. Remove continue-on-error once the
-      # backlog is drained.
       - name: golangci-lint
-        continue-on-error: true
         uses: golangci/golangci-lint-action@v6
         with:
           version: ${{ env.GOLANGCI_LINT_VERSION }}
