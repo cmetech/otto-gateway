@@ -4,7 +4,7 @@
 
 BINARY      := otto-gateway
 PKG         := ./cmd/$(BINARY)
-VERSION     ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "0.0.0-dev")
+VERSION     ?= $(shell git describe --tags --always --dirty --match='v[0-9]*' 2>/dev/null || echo "0.0.0-dev")
 LDFLAGS     := -s -w -X otto-gateway/internal/version.Version=$(VERSION)
 BUILD_DIR   := bin
 DIST_DIR    := dist
