@@ -72,15 +72,15 @@ type RingBuffer struct {
 }
 
 // NewRingBuffer allocates a ring buffer with the given capacity.
-// Panics if cap ≤ 0 (callers must pass a positive capacity; the
+// Panics if capacity ≤ 0 (callers must pass a positive capacity; the
 // RingBufferLines const satisfies this at all call sites).
-func NewRingBuffer(cap int) *RingBuffer {
-	if cap <= 0 {
+func NewRingBuffer(capacity int) *RingBuffer {
+	if capacity <= 0 {
 		panic("admin: RingBuffer capacity must be > 0")
 	}
 	return &RingBuffer{
-		cap:  cap,
-		data: make([]string, cap),
+		cap:  capacity,
+		data: make([]string, capacity),
 	}
 }
 

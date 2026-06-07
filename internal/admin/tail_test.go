@@ -120,17 +120,17 @@ func TestAdmin_RingBuffer_EmptyReturnsNilOrEmpty(t *testing.T) {
 func TestAdmin_RingBuffer_DoubleFull(t *testing.T) {
 	defer goleak.VerifyNone(t)
 
-	cap := 5
-	rb := NewRingBuffer(cap)
-	// Push 2*cap lines; only the last cap should survive.
-	for i := 0; i < 2*cap; i++ {
+	capacity := 5
+	rb := NewRingBuffer(capacity)
+	// Push 2*capacity lines; only the last capacity should survive.
+	for i := 0; i < 2*capacity; i++ {
 		rb.Push(string(rune('a' + i)))
 	}
 	got := rb.Copy()
-	if len(got) != cap {
-		t.Fatalf("expected %d elements, got %d", cap, len(got))
+	if len(got) != capacity {
+		t.Fatalf("expected %d elements, got %d", capacity, len(got))
 	}
-	// Last cap lines are "f","g","h","i","j" (index 5..9 in 'a'+offset).
+	// Last capacity lines are "f","g","h","i","j" (index 5..9 in 'a'+offset).
 	expected := []string{"f", "g", "h", "i", "j"}
 	for i, want := range expected {
 		if got[i] != want {
