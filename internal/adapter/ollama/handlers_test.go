@@ -857,7 +857,7 @@ func (s *formatIntegStream) Result() (*canonical.FinalResult, error) {
 // buildFormatIntegAdapter constructs the full chain engine + adapter for
 // the format-parity integration tests. The jsonformat hook is wired with
 // enabled=true, matching the production default.
-func buildFormatIntegAdapter(t *testing.T, acp *formatIntegrationACP) (*Adapter, *formatIntegrationACP) {
+func buildFormatIntegAdapter(t *testing.T, acp *formatIntegrationACP) (*Adapter, *formatIntegrationACP) { //nolint:unparam // adapter-pair return contract
 	t.Helper()
 	logger := testutil.Logger(t)
 	eng := engine.New(engine.Config{

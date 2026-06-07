@@ -863,7 +863,7 @@ func TestPool_Cancel_ReleasesSlot(t *testing.T) {
 // waitForSlotDead polls the SlotAlive accessor until the slot flips dead
 // or timeout elapses. Returns true if the slot became dead within
 // timeout, false otherwise.
-func waitForSlotDead(p *pool.Pool, label string, timeout time.Duration) bool {
+func waitForSlotDead(p *pool.Pool, label string, timeout time.Duration) bool { //nolint:unparam // timeout param kept polymorphic for future timing tests
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		alive, found := p.SlotAlive(label)

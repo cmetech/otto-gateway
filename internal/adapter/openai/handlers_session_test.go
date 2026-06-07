@@ -118,7 +118,7 @@ func mountedSessionAdapter(a *Adapter) *httptest.Server {
 	return httptest.NewServer(r)
 }
 
-func doChatCompletions(t *testing.T, srv *httptest.Server, sid, body string) *http.Response {
+func doChatCompletions(t *testing.T, srv *httptest.Server, sid, body string) *http.Response { //nolint:unparam // helper-pair symmetry with anthropic/ollama variants
 	t.Helper()
 	req, err := http.NewRequestWithContext(context.Background(),
 		http.MethodPost, srv.URL+"/v1/chat/completions", strings.NewReader(body))

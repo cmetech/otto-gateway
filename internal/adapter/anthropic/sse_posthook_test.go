@@ -30,7 +30,7 @@ import (
 //
 // model is "auto" so it matches existing golden conventions; req is
 // supplied by the caller so tool_use tests can attach tools[].
-func runSSEEmitterAndPostHooks(t *testing.T, ctx context.Context, eng Engine, req *canonical.ChatRequest, chunks []canonical.Chunk, final *canonical.FinalResult, finalErr error, logger *slog.Logger) (*httptest.ResponseRecorder, *canonical.ChatResponse, error) {
+func runSSEEmitterAndPostHooks(t *testing.T, ctx context.Context, eng Engine, req *canonical.ChatRequest, chunks []canonical.Chunk, final *canonical.FinalResult, finalErr error, logger *slog.Logger) (*httptest.ResponseRecorder, *canonical.ChatResponse, error) { //nolint:unparam // helper-pair symmetry with openai variant; result shape contract
 	t.Helper()
 	ch := make(chan canonical.Chunk, len(chunks)+1)
 	for _, c := range chunks {

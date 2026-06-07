@@ -57,7 +57,7 @@ func userMessage(text string) canonical.Message {
 
 // freshHook constructs a fully-enabled PIIRedactionHook in replace mode
 // for tests that don't care about other config knobs.
-func freshHook(mode string) *PIIRedactionHook {
+func freshHook(mode string) *PIIRedactionHook { //nolint:unparam // mode param kept polymorphic for future mask/hash/drop coverage
 	return &PIIRedactionHook{
 		Enabled:     true,
 		Mode:        mode,

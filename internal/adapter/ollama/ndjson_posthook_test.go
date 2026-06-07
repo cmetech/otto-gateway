@@ -29,7 +29,7 @@ func nilLoggerJSON(buf *bytes.Buffer) *slog.Logger {
 // supplied chunks/FinalResult and, on completion, fires
 // eng.RunPostHooks with the aggregated response. Mirrors handlers.go's
 // call sequence (handleChat / handleGenerate after Task 3 step 2).
-func runNDJSONEmitterAndPostHooks(t *testing.T, ctx context.Context, eng Engine, req *canonical.ChatRequest, chunks []canonical.Chunk, isChat bool, final *canonical.FinalResult, finalErr error, logger *slog.Logger) (*httptest.ResponseRecorder, *canonical.ChatResponse, error) {
+func runNDJSONEmitterAndPostHooks(t *testing.T, ctx context.Context, eng Engine, req *canonical.ChatRequest, chunks []canonical.Chunk, isChat bool, final *canonical.FinalResult, finalErr error, logger *slog.Logger) (*httptest.ResponseRecorder, *canonical.ChatResponse, error) { //nolint:unparam // helper-pair symmetry with anthropic variant
 	t.Helper()
 	ch := make(chan canonical.Chunk, len(chunks)+1)
 	for _, c := range chunks {

@@ -28,7 +28,7 @@ func jsonCaptureLogger(buf *bytes.Buffer) *slog.Logger {
 // chunks/FinalResult and, on completion, fires eng.RunPostHooks with
 // the aggregated response. Mirrors handlers.go's call sequence after
 // Task 4 step 2.
-func runSSEEmitterAndPostHooks(t *testing.T, ctx context.Context, eng Engine, req *canonical.ChatRequest, chunks []canonical.Chunk, final *canonical.FinalResult, finalErr error, logger *slog.Logger) (*httptest.ResponseRecorder, *canonical.ChatResponse, error) {
+func runSSEEmitterAndPostHooks(t *testing.T, ctx context.Context, eng Engine, req *canonical.ChatRequest, chunks []canonical.Chunk, final *canonical.FinalResult, finalErr error, logger *slog.Logger) (*httptest.ResponseRecorder, *canonical.ChatResponse, error) { //nolint:unparam // helper-pair symmetry with anthropic variant
 	t.Helper()
 	ch := make(chan canonical.Chunk, len(chunks)+1)
 	for _, c := range chunks {

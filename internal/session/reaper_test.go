@@ -15,7 +15,7 @@ import (
 // or timeout elapses. Returns true on observed-true, false on timeout.
 // Lightweight stand-in for require.Eventually (no testify dependency
 // — testify is not vendored).
-func eventually(t *testing.T, predicate func() bool, timeout, interval time.Duration, msg string) {
+func eventually(t *testing.T, predicate func() bool, timeout, interval time.Duration, msg string) { //nolint:unparam // timeout param kept polymorphic for future polling tests
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {

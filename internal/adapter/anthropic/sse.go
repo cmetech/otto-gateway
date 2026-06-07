@@ -494,11 +494,13 @@ func (e *sseEmitter) applyChunk(c canonical.Chunk) error {
 // the aggregated response to RunPostHooks after the streaming branch
 // completes. Without it, LoggingHook.After observes an empty resp and
 // chat-trace.log's post_chain_out record has no content[].
-func (e *sseEmitter) aggregatedResponse(req *canonical.ChatRequest, stop canonical.StopReason) *canonical.ChatResponse {
+func (e *sseEmitter) aggregatedResponse(stop canonical.StopReason) *canonical.ChatResponse {
+	// Note: req used to be a parameter; every caller passed nil and
+	// model was therefore always "". Dropped to satisfy unparam (Phase
+	// 10 Wave 2). Preserve the prior behavior (model="") to keep this
+	// wave behavior-neutral; e.model carries the wire model and a
+	// future caller can opt in by reading it explicitly.
 	model := ""
-	if req != nil {
-		model = req.Model
-	}
 	content := []canonical.ContentPart{
 		{Kind: canonical.ContentKindText, Text: e.aggText.String()},
 	}
@@ -633,7 +635,7 @@ func runSSEEmitter(ctx context.Context, w http.ResponseWriter, run RunHandle, mo
 		// aggregated response so handlers can observe the failed
 		// request via PostHooks. StopUnknown matches the empty-content
 		// case.
-		return e.aggregatedResponse(nil, canonical.StopUnknown), err
+		return e.aggregatedResponse(canonical.StopUnknown), err
 	}
 
 	ticker := time.NewTicker(PingInterval)
@@ -701,7 +703,7 @@ func runSSEEmitterLoop(ctx context.Context, e *sseEmitter, run RunHandle, ticker
 			// duration_ms even on disconnect (T-df2-03 sync.Map leak
 			// mitigation requires the After call to LoadAndDelete).
 			e.logger.Debug("anthropic: sse client disconnect", "session_id", run.SessionID())
-			return e.aggregatedResponse(nil, canonical.StopUnknown), fmt.Errorf("anthropic: sse ctx: %w", ctx.Err())
+			return e.aggregatedResponse(canonical.StopUnknown), fmt.Errorf("anthropic: sse ctx: %w", ctx.Err())
 
 		case <-idleC:
 			// Quick 260531-ruv — stream-idle fire. Emit an Anthropic-
@@ -719,12 +721,12 @@ func runSSEEmitterLoop(ctx context.Context, e *sseEmitter, run RunHandle, ticker
 			)
 			writeSSEError(e.w, e.flusher, errAPI,
 				fmt.Sprintf("upstream stream idle for %ds", int(streamIdle.Seconds())))
-			return e.aggregatedResponse(nil, canonical.StopUnknown),
+			return e.aggregatedResponse(canonical.StopUnknown),
 				fmt.Errorf("anthropic: sse %w", canonical.ErrStreamIdleTimeout)
 
 		case <-tickerC:
 			if err := e.writeEvent("ping", pingEvent{Type: "ping"}); err != nil {
-				return e.aggregatedResponse(nil, canonical.StopUnknown), err
+				return e.aggregatedResponse(canonical.StopUnknown), err
 			}
 
 		case c, ok := <-chunks:
@@ -736,7 +738,7 @@ func runSSEEmitterLoop(ctx context.Context, e *sseEmitter, run RunHandle, ticker
 				e.logger.Debug("anthropic.sse.first_chunk", "session_id", run.SessionID(), "kind", c.Kind)
 			}
 			if err := e.applyChunk(c); err != nil {
-				return e.aggregatedResponse(nil, canonical.StopUnknown), err
+				return e.aggregatedResponse(canonical.StopUnknown), err
 			}
 			// Quick 260531-ruv — drain-safe reset on chunk arrival.
 			if idleTimer != nil {
@@ -790,7 +792,7 @@ func finalizeStream(e *sseEmitter, run RunHandle) (*canonical.ChatResponse, erro
 		// response so handlers can fire PostHooks on the terminal-
 		// error path. Operators want forensics on partial completion.
 		writeSSEError(e.w, e.flusher, errAPI, "stream terminated")
-		return e.aggregatedResponse(nil, canonical.StopUnknown), fmt.Errorf("anthropic: sse stream result: %w", rerr)
+		return e.aggregatedResponse(canonical.StopUnknown), fmt.Errorf("anthropic: sse stream result: %w", rerr)
 	}
 
 	// D-06 teardown: prevent watchdog from firing spurious Cancel after natural
@@ -830,17 +832,17 @@ func finalizeStream(e *sseEmitter, run RunHandle) (*canonical.ChatResponse, erro
 		},
 		Usage: messageDeltaUsage{OutputTokens: 0}, // D-12 honest zeros
 	}); err != nil {
-		return e.aggregatedResponse(nil, stopReason), err
+		return e.aggregatedResponse(stopReason), err
 	}
 
 	if err := e.writeEvent("message_stop", messageStop{Type: "message_stop"}); err != nil {
-		return e.aggregatedResponse(nil, stopReason), err
+		return e.aggregatedResponse(stopReason), err
 	}
 	// Quick 260530-df2 — clean stream completion: return the fully-
 	// aggregated canonical response so handlers.go (after Task 2 step 3)
 	// hands it to eng.RunPostHooks. Without this, LoggingHook.After
 	// observes nothing and chat-trace.log's post_chain_out is missing.
-	return e.aggregatedResponse(nil, stopReason), nil
+	return e.aggregatedResponse(stopReason), nil
 }
 
 // runSyntheticSSEFromResponse writes the aggregated *canonical.ChatResponse

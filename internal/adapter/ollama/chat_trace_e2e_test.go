@@ -214,7 +214,7 @@ func TestOllama_NoDoublePostHookFire(t *testing.T) {
 // RunHandle. Returns the (resp, body, err) tuple. Test-helper that
 // honors the wide signature without the PostHook wrapper that
 // sse_posthook_test.go's helper uses (we drive Post ourselves above).
-func runNDJSONEmitterDirect(t *testing.T, ctx context.Context, run RunHandle, isChat bool, req *canonical.ChatRequest) (*canonical.ChatResponse, []byte, error) {
+func runNDJSONEmitterDirect(t *testing.T, ctx context.Context, run RunHandle, isChat bool, req *canonical.ChatRequest) (*canonical.ChatResponse, []byte, error) { //nolint:unparam // helper-pair symmetry with runNDJSONEmitterAndPostHooks
 	t.Helper()
 	w := newDiscardFlusher()
 	resp, err := runNDJSONEmitter(ctx, noopCancelFn, w, run, "auto", isChat, time.Now(), nilLogger(), req, 0)

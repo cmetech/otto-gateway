@@ -104,7 +104,7 @@ func newSessionTestAdapter(poolEng *fakeEngine, reg SessionRegistry, sessionEng 
 
 // doPostWithSid is doPost with a configurable X-Session-Id header (and
 // the required anthropic-version header).
-func doPostWithSid(t *testing.T, a *Adapter, sid, body string) *httptest.ResponseRecorder {
+func doPostWithSid(t *testing.T, a *Adapter, sid, body string) *httptest.ResponseRecorder { //nolint:unparam // helper-pair symmetry with openai/ollama variants
 	t.Helper()
 	r := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/messages", strings.NewReader(body))
 	r.Header.Set("Content-Type", "application/json")
