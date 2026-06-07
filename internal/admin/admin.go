@@ -170,7 +170,7 @@ func Handler(deps Deps) http.Handler {
 	// GET /docs — placeholder Docs page (real content lands in a later step).
 	r.Get("/docs", h.docsHandler)
 
-	// GET /api/snapshot — return unified AdminSnapshot JSON (D-05).
+	// GET /api/snapshot — return unified Snapshot JSON (D-05).
 	r.Get("/api/snapshot", h.snapshotHandler)
 
 	// GET /static/* — serve embedded CSS/JS assets.

@@ -200,7 +200,7 @@ func NewTailer(path string, logger *slog.Logger) *Tailer {
 //
 // The caller MUST call Unsubscribe when done or when the caller's context
 // is cancelled — failing to unsubscribe leaks the shared tailer goroutine.
-func (t *Tailer) Subscribe(ctx context.Context) *subscriber {
+func (t *Tailer) Subscribe(ctx context.Context) *subscriber { //nolint:revive // *subscriber is package-private by design; returned opaquely as a handle for Unsubscribe, no callers outside internal/admin/
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	sub := &subscriber{

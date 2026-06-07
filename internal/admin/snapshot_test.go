@@ -15,7 +15,7 @@ import (
 )
 
 // TestAdmin_SnapshotHandler verifies GET /api/snapshot returns 200 with
-// application/json and a valid AdminSnapshot body.
+// application/json and a valid Snapshot body.
 func TestAdmin_SnapshotHandler(t *testing.T) {
 	defer goleak.VerifyNone(t)
 
@@ -59,9 +59,9 @@ func TestAdmin_SnapshotHandler(t *testing.T) {
 		t.Errorf("Cache-Control: want no-store, got %q", cacheControl)
 	}
 
-	var snap AdminSnapshot
+	var snap Snapshot
 	if err := json.NewDecoder(rec.Body).Decode(&snap); err != nil {
-		t.Fatalf("decode AdminSnapshot: %v", err)
+		t.Fatalf("decode Snapshot: %v", err)
 	}
 
 	// Status must be one of the valid values.
@@ -137,9 +137,9 @@ func TestAdmin_SnapshotNilSafe(t *testing.T) {
 		t.Fatalf("GET /api/snapshot with nil deps: want 200, got %d", rec.Code)
 	}
 
-	var snap AdminSnapshot
+	var snap Snapshot
 	if err := json.NewDecoder(rec.Body).Decode(&snap); err != nil {
-		t.Fatalf("decode AdminSnapshot: %v", err)
+		t.Fatalf("decode Snapshot: %v", err)
 	}
 
 	if snap.Pool.Size != 0 {
@@ -178,32 +178,32 @@ func TestAdmin_ComputeStatus(t *testing.T) {
 
 	cases := []struct {
 		name   string
-		snap   AdminSnapshot
+		snap   Snapshot
 		expect string
 	}{
 		{
 			name:   "all_alive_is_ok",
-			snap:   AdminSnapshot{Pool: SnapshotPool{Size: 4, Alive: 4, Busy: 0}},
+			snap:   Snapshot{Pool: SnapshotPool{Size: 4, Alive: 4, Busy: 0}},
 			expect: "ok",
 		},
 		{
 			name:   "some_alive_is_degraded",
-			snap:   AdminSnapshot{Pool: SnapshotPool{Size: 4, Alive: 2, Busy: 0}},
+			snap:   Snapshot{Pool: SnapshotPool{Size: 4, Alive: 2, Busy: 0}},
 			expect: "degraded",
 		},
 		{
 			name:   "zero_alive_is_down",
-			snap:   AdminSnapshot{Pool: SnapshotPool{Size: 4, Alive: 0, Busy: 0}},
+			snap:   Snapshot{Pool: SnapshotPool{Size: 4, Alive: 0, Busy: 0}},
 			expect: "down",
 		},
 		{
 			name:   "zero_size_is_down",
-			snap:   AdminSnapshot{Pool: SnapshotPool{Size: 0, Alive: 0, Busy: 0}},
+			snap:   Snapshot{Pool: SnapshotPool{Size: 0, Alive: 0, Busy: 0}},
 			expect: "down",
 		},
 		{
 			name:   "size_zero_even_if_alive_nonzero",
-			snap:   AdminSnapshot{Pool: SnapshotPool{Size: 0, Alive: 1, Busy: 0}},
+			snap:   Snapshot{Pool: SnapshotPool{Size: 0, Alive: 1, Busy: 0}},
 			expect: "down",
 		},
 	}
@@ -263,9 +263,9 @@ func TestSnapshot_LogSources_PresentAndOrdered(t *testing.T) {
 			if rec.Code != http.StatusOK {
 				t.Fatalf("snapshot: want 200, got %d", rec.Code)
 			}
-			var snap AdminSnapshot
+			var snap Snapshot
 			if err := json.NewDecoder(rec.Body).Decode(&snap); err != nil {
-				t.Fatalf("decode AdminSnapshot: %v", err)
+				t.Fatalf("decode Snapshot: %v", err)
 			}
 			if snap.LogSources == nil {
 				t.Fatalf("log_sources rendered as null (want empty array)")
@@ -301,7 +301,7 @@ func TestSnapshot_LogSources_DefensiveCopy(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	var snap AdminSnapshot
+	var snap Snapshot
 	if err := json.NewDecoder(rec.Body).Decode(&snap); err != nil {
 		t.Fatalf("decode: %v", err)
 	}

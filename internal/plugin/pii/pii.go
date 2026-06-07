@@ -81,7 +81,7 @@ import (
 //	EntityActions    — optional per-entity action override map (Task 4).
 //	                   Empty = global Mode applies to all recognizers
 //	                   (today's behavior).
-type PIIRedactionHook struct {
+type PIIRedactionHook struct { //nolint:revive // PIIRedactionHook is the registered hook name across cmd/, adapter/, plugin/, admin/, server/, and e2e tests (24 caller files); rename deferred to a dedicated API surface rename phase
 	Recognizers []Recognizer
 	Enabled     bool
 	Mode        string

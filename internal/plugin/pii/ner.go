@@ -47,7 +47,7 @@ type nerEngine struct {
 
 // NewNEREngine constructs an engine. The prose tagger/tokenizer global
 // state is NOT touched until the first Detect call.
-func NewNEREngine() *nerEngine {
+func NewNEREngine() *nerEngine { //nolint:revive // nerEngine deliberately package-private; consumed only via PIIRedactionHook.NER field, no callers outside internal/plugin/pii/
 	return &nerEngine{}
 }
 

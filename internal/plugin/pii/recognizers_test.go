@@ -863,7 +863,7 @@ func stripGoCommentsLocal(src []byte) []byte {
 		}
 		if i+1 < len(src) && src[i] == '/' && src[i+1] == '*' {
 			i += 2
-			for i+1 < len(src) && !(src[i] == '*' && src[i+1] == '/') {
+			for i+1 < len(src) && !(src[i] == '*' && src[i+1] == '/') { //nolint:staticcheck // QF1001: !(end-of-comment) reads more clearly than De Morgan'd alternative in this test scanner
 				i++
 			}
 			if i+1 < len(src) {

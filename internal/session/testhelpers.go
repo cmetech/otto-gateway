@@ -9,12 +9,10 @@ import (
 	"otto-gateway/internal/engine"
 )
 
-// Test-only helper.
-//
-// NewEntryForTest returns a fully-constructed *Entry with Client wired
-// to the caller-supplied engine.ACPClient, SessionID set to sid, and
-// LastUsed initialised to time.Now(). The returned Entry has an
-// unlocked Mu.
+// NewEntryForTest is a test-only helper that returns a fully-constructed
+// *Entry with Client wired to the caller-supplied engine.ACPClient,
+// SessionID set to sid, and LastUsed initialised to time.Now(). The
+// returned Entry has an unlocked Mu.
 //
 // This is the CANONICAL Entry-construction seam for cross-package
 // adapter tests (plan 05-03 Task 3 calls session.NewEntryForTest from

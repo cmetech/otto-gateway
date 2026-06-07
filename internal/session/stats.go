@@ -23,7 +23,7 @@ type Stats struct {
 // Model is nullable (*string, encoded as null when LastModel == "")
 // because a freshly-created entry has no model bound until the first
 // SetModel call.
-type SessionDetail struct {
+type SessionDetail struct { //nolint:revive // SessionDetail kept to avoid clash with (*Registry).Detail() method and adapter shim in cmd/otto-gateway/main.go
 	// ID is the client-supplied sid (the X-Session-Id header value).
 	ID string `json:"id"`
 	// Alive is true when !Entry.Dead.

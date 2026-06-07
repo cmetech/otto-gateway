@@ -52,7 +52,7 @@ func LuhnCheck(s string) bool {
 	}
 	// Length gate: digitCount >= 13 && digitCount <= 19 (RESEARCH
 	// Example 2 line 873).
-	if !(digitCount >= 13 && digitCount <= 19) {
+	if digitCount < 13 || digitCount > 19 {
 		return false
 	}
 	return sum%10 == 0

@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// AdminSnapshot is the unified JSON shape returned by GET /admin/api/snapshot.
+// Snapshot is the unified JSON shape returned by GET /admin/api/snapshot.
 // It composes pool detail + session detail into one atomic snapshot taken at
 // one instant on the server (D-05 — single aggregator endpoint).
 // Snake_case JSON tags are the load-bearing wire contract.
@@ -17,7 +17,7 @@ import (
 // when no sources are configured — defensive-copied from
 // Deps.LogPathOrder so a snapshot consumer mutating the slice cannot
 // reach into the live admin Deps.
-type AdminSnapshot struct {
+type Snapshot struct {
 	Status        string         `json:"status"`
 	Version       string         `json:"version"`
 	Commit        string         `json:"commit"`
@@ -30,7 +30,7 @@ type AdminSnapshot struct {
 	LogSources    []string       `json:"log_sources"`
 }
 
-// SnapshotPool is the pool sub-object of AdminSnapshot.
+// SnapshotPool is the pool sub-object of Snapshot.
 type SnapshotPool struct {
 	Size  int            `json:"size"`
 	Alive int            `json:"alive"`
@@ -82,7 +82,7 @@ type SnapshotSess struct {
 // Cache-Control: no-store is set so client-side pollers do not cache
 // the response (RESEARCH anti-pattern: pollers must not cache).
 func (h *handler) snapshotHandler(w http.ResponseWriter, r *http.Request) {
-	snap := AdminSnapshot{
+	snap := Snapshot{
 		Version:       h.deps.Version,
 		Commit:        h.deps.Commit,
 		Debug:         h.deps.Debug,
@@ -152,7 +152,7 @@ func (h *handler) snapshotHandler(w http.ResponseWriter, r *http.Request) {
 //   - "down" when Pool.Size == 0 OR Pool.Alive == 0
 //   - "degraded" when Pool.Alive < Pool.Size
 //   - "ok" otherwise (all slots alive)
-func computeStatus(snap AdminSnapshot) string {
+func computeStatus(snap Snapshot) string {
 	if snap.Pool.Size == 0 || snap.Pool.Alive == 0 {
 		return "down"
 	}
