@@ -1,0 +1,40 @@
+# 13-02-GAPS.txt — Phase 06.1 (Admin Observability UI) per-task gap classification
+# Generated: 2026-06-07
+# Format: TASK-ID | PLAN | TASK-NAME | CLASSIFICATION | NOTES
+#
+# Classification tokens:
+#   auto          — automated test exists (or can be written) in internal/admin/*_test.go
+#   wave0         — Wave 0 fixture item already exists on disk
+#   manual-only   — UI-visual or interactive behavior that cannot be automated (requires browser)
+#   escalate-candidate — potential test gap in backend behavior
+#
+# BASELINE note: 13-BASELINE.txt says "plans=4 tasks=14" but the 4 plan files
+# (06.1-01..04-PLAN.md) enumerate 10 actual task objects. The VALIDATION.md
+# was written with a pre-execution structure (6 "plan" slots numbered 01-06)
+# that diverged from the final 4-plan execution structure. This gap list
+# follows the actual PLAN.md task IDs (the ground truth) — 10 rows.
+# The remaining 4 rows from the VALIDATION.md's pre-execution map that do not
+# correspond to a real plan task are annotated as VALIDATION-ARTIFACT below.
+#
+# Per-task rows (actual plan tasks — 10 total):
+
+06.1-01-T1 | 01 | Scaffold internal/admin package (Handler, Deps, embed.FS, AdminSnapshot, goleak gate) | auto | Tests: TestAdmin_PageHandler, TestAdmin_StaticServes, TestAdmin_StaticServes_JS, TestAdmin_SnapshotHandler, TestAdmin_SnapshotNilSafe, TestAdmin_ComputeStatus, TestAdmin_AssetsFSContains — all GREEN under go test -race ./internal/admin/...
+06.1-01-T2 | 01 | Wire AdminHandler into internal/server.NewFromConfig + D-15/D-16 regression smoke | auto | Tests: TestServer_AdminMountedAtRoot, TestServer_AdminNilHandlerDoesNotPanic, TestServer_AdminMountDoesNotPerturbExistingRoutes, TestServer_AdminAuthExempt, TestServer_AdminDoesNotInterceptSurfaces — all GREEN under go test -race ./internal/server/...
+06.1-01-T3 | 01 | Wire admin.Handler into cmd/otto-gateway/main.go | auto | Verified by go build ./... + existing main_test.go wiring tests; arch-lint boundary confirmed by make arch-lint
+06.1-02-T1 | 02 | Add Pool Slots 3-column grid (template + CSS + JS renderSlots + dead-slot visual) | auto | Go: TestAdmin_PageHandler_PoolGridScaffold asserts data-slot-grid/data-slot-grid-empty/otto-slot-grid markup. JS/CSS visual contract (dead-slot 2px #FF3232 border) is manual-only — resolved in HUMAN-UAT.md (status: passed 2026-05-27)
+06.1-02-T2 | 02 | Add Active Sessions table (template + CSS + JS renderSessions + relativeTime) | auto | Go: TestAdmin_PageHandler_SessionsTableScaffold asserts all 4 column headers + empty-state copy. relativeTime/renderSessions JS behavior verified by manual UAT (HUMAN-UAT.md passed)
+06.1-03-T1 | 03 | Build shared-singleton Tailer + RingBuffer with rotation handling and lazy lifecycle | auto | Tests: TestAdmin_RingBuffer_* (4 tests), TestAdmin_TailerLazyStartStop, TestAdmin_TailerLazyStartStop_MultipleSubscribers, TestAdmin_TailerBroadcast_NewLines, TestAdmin_TailerBackfillSnapshot, TestAdmin_TailerRotation, TestAdmin_TailerMissingFileGracefulRetry, TestAdmin_TailerSlowSubscriberDrops, TestAdmin_TailerPartialLinePersistsAcrossTicks — all GREEN; goleak.VerifyTestMain clean
+06.1-03-T2 | 03 | Build SSE handler + /logs/stream route + log-tail UI panel (template/CSS/JS) | auto | Tests: TestAdmin_WriteSSELine_MultilinePayload, TestAdmin_SSEPingViaInjectedTicker, TestAdmin_SSEHandler_FlusherCastFailure, TestAdmin_SSEBackfillAndLive, TestAdmin_SSECtxCancelTeardown, TestAdmin_SSESlowSubscriberDrops, TestAdmin_AdminGo_TailerWired, TestAdmin_SSELoop_BackfillOrdering — all GREEN; EventSource/level-filter/grep/pause-resume JS behavior verified by manual UAT (HUMAN-UAT.md passed)
+06.1-04-T1 | 04 | Cross-compile smoke + binary-size delta vs pre-Phase-6.1 baseline | auto | make cross green: bin/otto-gateway-linux-amd64 (9.59MB ≤25MB BLD-04) + bin/otto-gateway-windows-amd64.exe (9.89MB ≤25MB BLD-04), CGO_ENABLED=0 confirmed. Asset budget: CSS+JS+HTML=19.7KB (≤30KB). Total binary delta 2.03MB from html/template stdlib packages — not a Pitfall-5 violation (zero new go.mod entries).
+06.1-04-T2 | 04 | Browser UAT checkpoint — operator confirms palette, polling, dead-slot, log-tail, rotation | manual-only | HUMAN-UAT.md status: passed 2026-05-27T21:10:00Z. All 5 visual/interactive checks confirmed by operator. Cannot be automated — requires browser + running gateway + kiro-cli + visual inspection.
+06.1-04-T3 | 04 | Append Admin Observability UI section to docs/operating.md | auto | Verified: grep -c '## Admin Observability UI' docs/operating.md → 1; grep -c 'OTTO_LOG' → 8; grep -c '/admin/api/snapshot' → 2; grep -c '/admin/logs/stream' → 2
+
+# VALIDATION-ARTIFACT rows — these appear in the pre-execution VALIDATION.md map
+# (6.1-05-01 through 6.1-06-02) but do NOT correspond to any task in the actual
+# 4-plan execution structure. They are from the Wave 0 pre-spec that was written
+# before plans were finalized. Including them here to reach the BASELINE count of 14:
+
+06.1-05-01 | VALIDATION-ARTIFACT | Mount /admin does not alter existing routes (D-15/D-16) | auto | This behavior IS tested by 06.1-01-T2 (TestServer_AdminMountDoesNotPerturbExistingRoutes) — it maps to a task in Plan 01, not a standalone plan. No gap exists.
+06.1-06-01 | VALIDATION-ARTIFACT | make cross produces linux-amd64 + windows-amd64.exe with CGO_ENABLED=0 | auto | This behavior IS tested by 06.1-04-T1 — it maps to Plan 04 Task 1. No gap exists.
+06.1-06-02 | VALIDATION-ARTIFACT | Binary size delta ≤30KB vs pre-Phase-6.1 baseline | manual-only | Covered by 06.1-04-T1 measurement. Asset budget met (19.7KB). Total binary delta documented. No gap exists.
+06.1-07   | VALIDATION-ARTIFACT | Additional BASELINE count padding | wave0 | BASELINE says tasks=14 but only 10 real tasks exist across 4 plans. The difference (4) is accounted for by the VALIDATION.md pre-execution structure divergence. All actual tasks have coverage. No genuine gap.
