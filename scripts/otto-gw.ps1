@@ -61,7 +61,11 @@ param(
     [switch]$RegenerateSecrets,
     [string]$AuthToken,
     [string]$Kiro,
-    [string]$Addr
+    [string]$Addr,
+    # support subcommand flags:
+    [string]$Out,
+    [int]$MaxMb = 50,
+    [int]$LogDays = 7
 )
 
 Set-StrictMode -Version Latest
@@ -1384,6 +1388,267 @@ function Show-Env {
     }
 }
 
+function Invoke-Support {
+    # Dot-source the shared pwsh redaction primitives. Same regex surface as
+    # scripts/lib/redact.sh — byte-equivalent rules across OS wrappers.
+    . (Join-Path $PSScriptRoot 'lib\redact.ps1')
+
+    # Resolve config (writes "loaded env file:" / "loaded overrides:" to host).
+    Initialize-Config
+
+    $ts = (Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss')
+    $hostname = [System.Net.Dns]::GetHostName()
+    $outDir = if ($Out) { $Out } else { Join-Path $InstallRoot 'support' }
+    $bundleName = "otto-support-$hostname-$ts"
+    $staging = Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetRandomFileName())
+    $bundleRoot = Join-Path $staging $bundleName
+
+    # Set up cleanup: always remove the staging tree on exit (success or
+    # failure). The output archive lives outside $staging.
+    try {
+        $null = New-Item -ItemType Directory -Path $outDir -Force
+        $null = New-Item -ItemType Directory -Path $bundleRoot -Force
+        foreach ($sub in @('env','health','logs','system','tray')) {
+            $null = New-Item -ItemType Directory -Path (Join-Path $bundleRoot $sub) -Force
+        }
+
+        # ---- env/ ------------------------------------------------------
+        # env/effective.env: dump the canonical config keys; mask every
+        # *TOKEN*/*KEY*/*SECRET*/*PASSWORD*/*PASSPHRASE* match (case-insensitive).
+        $keys = @(
+            'ENABLED_HOOKS','PII_REDACTION_ENABLED','PII_REDACTION_MODE',
+            'PII_ENABLED_ENTITIES','PII_ENTITY_ACTIONS','PII_HASH_KEY',
+            'PII_ENCRYPT_KEY','AUTH_TOKEN','ALLOWED_IPS',
+            'AUTH_TRUST_XFF','HTTP_ADDR','KIRO_CMD','KIRO_ARGS','KIRO_CWD',
+            'POOL_SIZE','STREAM_IDLE_TIMEOUT_SEC','DEBUG','CHAT_TRACE',
+            'OTTO_ENV_FILE_LOADED','OTTO_OVERRIDES_FILE_LOADED'
+        )
+        $effLines = New-Object System.Collections.Generic.List[string]
+        foreach ($k in $keys) {
+            $v = [Environment]::GetEnvironmentVariable($k, 'Process')
+            if (-not $v) { continue }
+            if (Test-IsSecretKey $k) {
+                $effLines.Add("$k=$(Mask-EnvValue $v)") | Out-Null
+            } else {
+                $effLines.Add("$k=$v") | Out-Null
+            }
+        }
+        Set-Content -Path (Join-Path $bundleRoot 'env\effective.env') -Value $effLines -Encoding UTF8
+
+        # env/env-files.txt: which resolver hit. Use the wrapper's local
+        # helpers and surface "(none)" when nothing was loaded.
+        $envFile = Resolve-EnvFile
+        $ovFile  = Resolve-OverridesFile
+        $envFilesContent = @(
+            "env file:       $(if ($envFile) { $envFile } else { '(none)' })",
+            "overrides file: $(if ($ovFile)  { $ovFile  } else { '(none)' })"
+        )
+        Set-Content -Path (Join-Path $bundleRoot 'env\env-files.txt') -Value $envFilesContent -Encoding UTF8
+
+        # env/shell-env.txt: ambient process env in our namespace, redacted.
+        $shellLines = New-Object System.Collections.Generic.List[string]
+        Get-ChildItem env: | Sort-Object Name | ForEach-Object {
+            $name = $_.Name
+            $val  = $_.Value
+            if ($name -match '^(OTTO_|KIRO_|PII_|AUTH_|ALLOWED_)' -or $name -in @('HTTP_ADDR','DEBUG','CHAT_TRACE')) {
+                if (Test-IsSecretKey $name) {
+                    $shellLines.Add("$name=$(Mask-EnvValue $val)") | Out-Null
+                } else {
+                    $shellLines.Add("$name=$val") | Out-Null
+                }
+            }
+        }
+        Set-Content -Path (Join-Path $bundleRoot 'env\shell-env.txt') -Value $shellLines -Encoding UTF8
+
+        # ---- health/ ---------------------------------------------------
+        $statusOut = try { Get-GatewayStatus 2>&1 | Out-String } catch { "(status failed: $($_.Exception.Message))" }
+        Set-Content -Path (Join-Path $bundleRoot 'health\status.txt') -Value $statusOut -Encoding UTF8
+
+        try {
+            $body = (Invoke-WebRequest -Uri "$HealthUrl/health" -UseBasicParsing -TimeoutSec 5).Content
+            Set-Content -Path (Join-Path $bundleRoot 'health\health.json') -Value $body -Encoding UTF8
+        } catch {
+            Set-Content -Path (Join-Path $bundleRoot 'health\health.json') -Value "unreachable: $HealthUrl/health did not respond ($($_.Exception.Message))" -Encoding UTF8
+        }
+        try {
+            $body = (Invoke-WebRequest -Uri "$HealthUrl/admin/api/snapshot" -UseBasicParsing -TimeoutSec 5).Content
+            Set-Content -Path (Join-Path $bundleRoot 'health\snapshot.json') -Value $body -Encoding UTF8
+        } catch {
+            Set-Content -Path (Join-Path $bundleRoot 'health\snapshot.json') -Value "unreachable: $HealthUrl/admin/api/snapshot did not respond ($($_.Exception.Message))" -Encoding UTF8
+        }
+
+        # ---- logs/ -----------------------------------------------------
+        $logsDir = Split-Path -Parent $LogFile
+        $chatTrace = [System.IO.Path]::ChangeExtension($LogFile, '.chat-trace.log')
+        $logPairs = @(
+            @{ Src = $LogFile;       Dst = 'otto-gateway.log' },
+            @{ Src = $LogBootOut;    Dst = 'otto-gateway-boot-stdout.log' },
+            @{ Src = $LogBootErr;    Dst = 'otto-gateway-boot-stderr.log' },
+            @{ Src = $chatTrace;     Dst = 'otto-gateway-chat-trace.log' }
+        )
+        foreach ($p in $logPairs) {
+            if (Test-Path $p.Src) {
+                Get-Content -Path $p.Src | Invoke-RedactStream |
+                    Set-Content -Path (Join-Path $bundleRoot "logs\$($p.Dst)") -Encoding UTF8
+            }
+        }
+        if (Test-Path $logsDir) {
+            $cutoff = (Get-Date).AddDays(-$LogDays)
+            Get-ChildItem -Path $logsDir -Filter 'otto-gateway-*.log.gz' -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.LastWriteTime -ge $cutoff } |
+                ForEach-Object {
+                    Copy-Item -Path $_.FullName -Destination (Join-Path $bundleRoot 'logs') -Force
+                }
+        }
+
+        # ---- system/ ---------------------------------------------------
+        $sys = @(
+            "os:       $([System.Runtime.InteropServices.RuntimeInformation]::OSDescription)",
+            "arch:     $([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture)",
+            "hostname: $hostname",
+            "date:     $(Get-Date -Format 'o')",
+            "culture:  $((Get-Culture).Name)",
+            "psver:    $($PSVersionTable.PSVersion)"
+        )
+        try {
+            $drive = (Get-Item $InstallRoot).PSDrive
+            if ($drive) {
+                $sys += "free MB on $($drive.Name): $([int]($drive.Free / 1MB))"
+            }
+        } catch {}
+        Set-Content -Path (Join-Path $bundleRoot 'system\system.txt') -Value $sys -Encoding UTF8
+
+        $versions = New-Object System.Collections.Generic.List[string]
+        $versions.Add("otto-gateway:") | Out-Null
+        if (Test-Path $BinPath) {
+            try { $versions.Add((& $BinPath --version 2>&1 | Out-String).Trim()) | Out-Null }
+            catch { $versions.Add("(--version failed: $($_.Exception.Message))") | Out-Null }
+        } else {
+            $versions.Add("(binary not found at $BinPath)") | Out-Null
+        }
+        $versions.Add("") | Out-Null
+        $versions.Add("kiro-cli:") | Out-Null
+        $kiroCmd = Get-Command kiro -ErrorAction SilentlyContinue
+        if ($kiroCmd) {
+            $versions.Add($kiroCmd.Source) | Out-Null
+            try { $versions.Add((& kiro --version 2>&1 | Out-String).Trim()) | Out-Null }
+            catch { $versions.Add("(kiro --version failed)") | Out-Null }
+        } else {
+            $versions.Add("(kiro not on PATH)") | Out-Null
+        }
+        $versions.Add("") | Out-Null
+        $versions.Add("otto-tray: n/a -- query via tray menu") | Out-Null
+        Set-Content -Path (Join-Path $bundleRoot 'system\versions.txt') -Value $versions -Encoding UTF8
+
+        Get-ChildItem -Path $InstallRoot -Recurse -Depth 1 -ErrorAction SilentlyContinue |
+            Sort-Object FullName |
+            ForEach-Object { $_.FullName } |
+            Set-Content -Path (Join-Path $bundleRoot 'system\installroot.txt') -Encoding UTF8
+
+        # ---- tray/ -----------------------------------------------------
+        $trayState = Join-Path $InstallRoot '.otto\tray\state'
+        if (Test-Path $trayState) {
+            Get-Content -Raw $trayState | Set-Content -Path (Join-Path $bundleRoot 'tray\tray-state.txt') -Encoding UTF8
+        } else {
+            Set-Content -Path (Join-Path $bundleRoot 'tray\tray-state.txt') -Value "(unavailable: $trayState does not exist)" -Encoding UTF8
+        }
+
+        $pidLines = New-Object System.Collections.Generic.List[string]
+        $pidLines.Add("pidfile: $PidFile") | Out-Null
+        if (Test-Path $PidFile) {
+            $pidLines.Add("pid:     $(Get-Content -Raw $PidFile)") | Out-Null
+            $pidLines.Add("mtime:   $((Get-Item $PidFile).LastWriteTime)") | Out-Null
+        } else {
+            $pidLines.Add("pid:     (no pidfile)") | Out-Null
+        }
+        Set-Content -Path (Join-Path $bundleRoot 'tray\pidfile.txt') -Value $pidLines -Encoding UTF8
+
+        # Autostart probe: Windows Run-key registry entry under HKCU.
+        $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+        $autostart = New-Object System.Collections.Generic.List[string]
+        try {
+            $entry = Get-ItemProperty -Path $runKey -Name 'OttoTray' -ErrorAction SilentlyContinue
+            if ($entry -and $entry.OttoTray) {
+                $autostart.Add("Run-key OttoTray: present") | Out-Null
+                $autostart.Add("value: $($entry.OttoTray)") | Out-Null
+            } else {
+                $autostart.Add("Run-key OttoTray: absent (expected at $runKey\OttoTray)") | Out-Null
+            }
+        } catch {
+            $autostart.Add("Run-key probe failed: $($_.Exception.Message)") | Out-Null
+        }
+        Set-Content -Path (Join-Path $bundleRoot 'tray\autostart.txt') -Value $autostart -Encoding UTF8
+
+        # ---- size cap --------------------------------------------------
+        $droppedFiles = New-Object System.Collections.Generic.List[string]
+        $size = (Get-ChildItem -Path $bundleRoot -Recurse -File | Measure-Object -Property Length -Sum).Sum
+        $sizeMb = [int]($size / 1MB)
+        if ($sizeMb -gt $MaxMb) {
+            Get-ChildItem -Path (Join-Path $bundleRoot 'logs') -Filter 'otto-gateway-*.log.gz' -File -ErrorAction SilentlyContinue |
+                Sort-Object LastWriteTime |
+                ForEach-Object {
+                    if ($sizeMb -le $MaxMb) { return }
+                    $droppedFiles.Add($_.FullName) | Out-Null
+                    Remove-Item -Force $_.FullName
+                    $size = (Get-ChildItem -Path $bundleRoot -Recurse -File | Measure-Object -Property Length -Sum).Sum
+                    $sizeMb = [int]($size / 1MB)
+                }
+        }
+
+        # ---- MANIFEST.txt (last so contents listing is accurate) -------
+        $manifest = New-Object System.Collections.Generic.List[string]
+        $manifest.Add("otto-gw support bundle") | Out-Null
+        $manifest.Add("======================") | Out-Null
+        $manifest.Add("timestamp:  $ts UTC") | Out-Null
+        $manifest.Add("host:       $hostname") | Out-Null
+        $manifest.Add("os:         $([System.Runtime.InteropServices.RuntimeInformation]::OSDescription)") | Out-Null
+        $manifest.Add("wrapper:    scripts/otto-gw.ps1 (PowerShell)") | Out-Null
+        $manifest.Add("spec:       docs/superpowers/specs/2026-06-08-support-bundle-design.md") | Out-Null
+        $manifest.Add("") | Out-Null
+        $manifest.Add("Redaction notice") | Out-Null
+        $manifest.Add("----------------") | Out-Null
+        $manifest.Add("Env keys masked via scripts/lib/redact.ps1:") | Out-Null
+        $manifest.Add("  - AUTH_TOKEN, PII_HASH_KEY, PII_ENCRYPT_KEY (explicit allowlist)") | Out-Null
+        $manifest.Add("  - any key matching *TOKEN* / *KEY* / *SECRET* / *PASSWORD* / *PASSPHRASE* (case-insensitive)") | Out-Null
+        $manifest.Add("Log scrubs (regex -> [REDACTED]):") | Out-Null
+        $manifest.Add("  - Bearer <token>") | Out-Null
+        $manifest.Add("  - AUTH_TOKEN= / PII_HASH_KEY= / PII_ENCRYPT_KEY= values") | Out-Null
+        $manifest.Add("  - Authorization: header values") | Out-Null
+        $manifest.Add("  - x-api-key: header values (case-insensitive)") | Out-Null
+        $manifest.Add("") | Out-Null
+        $manifest.Add("Rotated *.log.gz files are copied verbatim. Gateway scrubs at write time.") | Out-Null
+        $manifest.Add("") | Out-Null
+        $manifest.Add("Bundle contents") | Out-Null
+        $manifest.Add("---------------") | Out-Null
+        Get-ChildItem -Path $bundleRoot -Recurse | Sort-Object FullName | ForEach-Object {
+            $rel = $_.FullName.Substring($staging.Length).TrimStart('\','/')
+            $manifest.Add($rel) | Out-Null
+        }
+        if ($droppedFiles.Count -gt 0) {
+            $manifest.Add("") | Out-Null
+            $manifest.Add("Dropped for size (>$MaxMb MB cap)") | Out-Null
+            $manifest.Add("--------------------------------") | Out-Null
+            foreach ($d in $droppedFiles) {
+                $manifest.Add("DROPPED FOR SIZE: $d") | Out-Null
+            }
+        }
+        Set-Content -Path (Join-Path $bundleRoot 'MANIFEST.txt') -Value $manifest -Encoding UTF8
+
+        # ---- archive ---------------------------------------------------
+        $outPath = Join-Path $outDir "$bundleName.zip"
+        if (Test-Path $outPath) { Remove-Item -Force $outPath }
+        Compress-Archive -Path $bundleRoot -DestinationPath $outPath -Force
+        # latest.zip is a copy, NOT a link — Windows symlinks need admin.
+        Copy-Item -Path $outPath -Destination (Join-Path $outDir 'latest.zip') -Force
+
+        Write-Output $outPath
+    } finally {
+        if (Test-Path $staging) {
+            Remove-Item -Recurse -Force $staging -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 function Show-Usage {
     param([int]$ExitCode = 1)
     @"
@@ -1409,6 +1674,11 @@ Commands:
                       .otto-gw.overrides.env, back up the original, then
                       regenerate .otto-gw.env from the template. Idempotent.
   version             Print the gateway binary version (delegates to bin\otto-gateway --version)
+  support             Produce a redacted diagnostic archive under
+                      `$env:OTTO_INSTALL_ROOT\support\. Secrets are masked.
+                      No raw values are ever written. Flags: -Out DIR,
+                      -MaxMb N (default 50), -LogDays D (default 7).
+                      See docs/superpowers/specs/2026-06-08-support-bundle-design.md.
 
 Gateway config flags (for start | restart | run | env):
   -Pii MODE           off | replace | mask | hash | drop | encrypt
@@ -1493,6 +1763,7 @@ switch ($Command) {
     "upgrade-env"      { Invoke-UpgradeEnv }
     "migrate-to-overrides" { Invoke-MigrateToOverrides }
     "version"          { Show-Version }
+    "support"          { Invoke-Support }
     "help"             { Show-Usage -ExitCode 0 }
     default            { Show-Usage }
 }

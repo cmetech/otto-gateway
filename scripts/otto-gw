@@ -1695,6 +1695,353 @@ print_env() {
     done
 }
 
+# support [--out DIR] [--max-mb N] [--log-days D]
+#
+# Produce a redacted diagnostic archive at
+# $OTTO_INSTALL_ROOT/support/otto-support-<host>-<ts>.tar.gz plus a
+# `support/latest.tar.gz` alias (a copy, NOT a symlink — Windows parity).
+#
+# Layout (locked by docs/superpowers/specs/2026-06-08-support-bundle-design.md
+# §Bundle Layout — six trees + MANIFEST.txt, no extras, no omissions):
+#   MANIFEST.txt, env/, health/, logs/, system/, tray/
+#
+# Redaction rules live in scripts/lib/redact.sh and apply to BOTH the env
+# dump and the log copies before they enter the staging tree. The original
+# files on disk are never modified. The literal AUTH_TOKEN / PII_HASH_KEY /
+# PII_ENCRYPT_KEY values — and any *TOKEN* / *KEY* / *SECRET* / *PASSWORD* /
+# *PASSPHRASE* match (case-insensitive) — are masked via mask_env_value.
+support() {
+    # FLAG_SHOW_SECRETS is referenced defensively below: even if some future
+    # caller smuggles --show-secrets into the support path, this local masks
+    # it out. The support bundle ALWAYS masks; this is a design constraint
+    # (no raw secrets, ever — spec §Constraints).
+    local FLAG_SHOW_SECRETS=0
+    local FLAG_OUT="" FLAG_MAX_MB=50 FLAG_LOG_DAYS=7
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --out) FLAG_OUT="$2"; shift 2 ;;
+            --max-mb) FLAG_MAX_MB="$2"; shift 2 ;;
+            --log-days) FLAG_LOG_DAYS="$2"; shift 2 ;;
+            -h|--help)
+                cat <<'EOF'
+Usage: otto-gw support [--out DIR] [--max-mb N] [--log-days D]
+
+Produce a redacted diagnostic archive under $OTTO_INSTALL_ROOT/support/
+(or --out DIR). Secrets are masked. No raw values are ever written.
+
+  --out DIR        override output directory (default: $OTTO_INSTALL_ROOT/support)
+  --max-mb N       bundle size cap in MB (default 50; oldest rotated logs dropped)
+  --log-days D     include rotated .log.gz files modified in last D days (default 7)
+EOF
+                return 0
+                ;;
+            *)
+                echo "support: unknown flag: $1" >&2
+                return 2
+                ;;
+        esac
+    done
+
+    # Source the shared redaction primitives. Same resolution pattern as the
+    # rest of the wrapper uses for sibling files.
+    # shellcheck source=lib/redact.sh
+    source "$OTTO_SCRIPT_DIR/lib/redact.sh"
+
+    # Resolve config (this also writes "loaded env file:" / "loaded overrides:"
+    # to stderr — captured in the bundle's MANIFEST/system area indirectly via
+    # env-files.txt). load_config sets KIRO_CMD etc. as side effects.
+    load_config
+
+    local ts host out_dir bundle_name staging bundle_root
+    ts=$(date -u +%Y%m%d-%H%M%S)
+    host=$(hostname -s 2>/dev/null || hostname)
+    out_dir="${FLAG_OUT:-$OTTO_INSTALL_ROOT/support}"
+    bundle_name="otto-support-${host}-${ts}"
+    staging=$(mktemp -d)
+    bundle_root="$staging/$bundle_name"
+
+    # Cleanup the staging dir even on failure. The output archive lives
+    # outside the staging dir so this trap does NOT delete it.
+    # shellcheck disable=SC2064
+    trap "rm -rf '$staging'" EXIT
+
+    mkdir -p "$out_dir" "$bundle_root"/{env,health,logs,system,tray}
+
+    # ---- env/ ----------------------------------------------------------
+    # env/effective.env: extend print_env's mask logic to every *TOKEN* /
+    # *KEY* / *SECRET* / *PASSWORD* / *PASSPHRASE* env var, not just the
+    # explicit three. We DON'T call print_env directly because its mask
+    # surface is intentionally small (only the explicit three) — the
+    # support bundle's stricter mask is a defense-in-depth requirement.
+    {
+        local k v
+        for k in ENABLED_HOOKS PII_REDACTION_ENABLED PII_REDACTION_MODE \
+                 PII_ENABLED_ENTITIES PII_ENTITY_ACTIONS PII_HASH_KEY \
+                 PII_ENCRYPT_KEY AUTH_TOKEN ALLOWED_IPS \
+                 AUTH_TRUST_XFF HTTP_ADDR KIRO_CMD KIRO_ARGS KIRO_CWD \
+                 POOL_SIZE STREAM_IDLE_TIMEOUT_SEC DEBUG CHAT_TRACE \
+                 OTTO_ENV_FILE_LOADED OTTO_OVERRIDES_FILE_LOADED; do
+            v="${!k:-}"
+            [[ -z "$v" ]] && continue
+            if is_secret_key "$k"; then
+                echo "$k=$(mask_env_value "$v")"
+            else
+                echo "$k=$v"
+            fi
+        done
+    } > "$bundle_root/env/effective.env"
+
+    # env/env-files.txt: which resolver actually hit.
+    {
+        local ef of
+        ef="$(resolve_env_file)"
+        of="$(resolve_overrides_file)"
+        echo "env file:       ${ef:-(none)}"
+        echo "overrides file: ${of:-(none)}"
+    } > "$bundle_root/env/env-files.txt"
+
+    # env/shell-env.txt: ambient shell vars in the OTTO_/KIRO_/PII_/AUTH_/
+    # ALLOWED_/HTTP_ADDR/DEBUG/CHAT_TRACE namespaces, redacted. We can't
+    # iterate `env` output verbatim because that dumps the FULL environment
+    # (PATH, HOME, etc.); filtering by prefix keeps the surface bounded.
+    {
+        local line key val
+        while IFS= read -r line; do
+            # Strip everything from '=' to EOL to isolate the key for the
+            # secret-test, but keep the original line around for output.
+            key="${line%%=*}"
+            if [[ -z "$key" || "$key" == "$line" ]]; then continue; fi
+            # Only keep keys in the OTTO/KIRO/PII/AUTH/ALLOWED namespace,
+            # plus the explicit HTTP_ADDR / DEBUG / CHAT_TRACE singletons.
+            case "$key" in
+                OTTO_*|KIRO_*|PII_*|AUTH_*|ALLOWED_*|HTTP_ADDR|DEBUG|CHAT_TRACE) ;;
+                *) continue ;;
+            esac
+            val="${line#*=}"
+            if is_secret_key "$key"; then
+                echo "$key=$(mask_env_value "$val")"
+            else
+                echo "$key=$val"
+            fi
+        done < <(env | sort)
+    } > "$bundle_root/env/shell-env.txt"
+
+    # ---- health/ -------------------------------------------------------
+    # status() exits non-zero when the gateway is stopped (so `otto-gw status`
+    # in a shell pipeline returns a useful code). We don't want the support
+    # subcommand to abort on a stopped gateway. With `set -e` active, a bare
+    # `( status 2>&1 || true ) > file` still propagates the subshell exit
+    # through the enclosing function — bash's set-e-in-subshell-in-function
+    # gotcha. Capturing via `$( ... || true )` is the documented escape:
+    # command substitution always treats the subshell exit as a value, not
+    # a fail-fast trigger.
+    local status_out
+    status_out=$( ( status 2>&1 ) || true )
+    printf '%s\n' "$status_out" > "$bundle_root/health/status.txt"
+
+    # health.json / snapshot.json: best-effort live probe. On failure write
+    # an "unreachable: <reason>" sentinel so triage can tell "no probe ran"
+    # from "probe ran and got an empty body".
+    if curl -sf -m 5 "${OTTO_ADDR}/health" > "$bundle_root/health/health.json" 2>/dev/null; then
+        :
+    else
+        echo "unreachable: ${OTTO_ADDR}/health did not respond within 5s" > "$bundle_root/health/health.json"
+    fi
+    if curl -sf -m 5 "${OTTO_ADDR}/admin/api/snapshot" > "$bundle_root/health/snapshot.json" 2>/dev/null; then
+        :
+    else
+        echo "unreachable: ${OTTO_ADDR}/admin/api/snapshot did not respond within 5s" > "$bundle_root/health/snapshot.json"
+    fi
+
+    # ---- logs/ ---------------------------------------------------------
+    # Copy through redact_stream so masked tokens are in the bundle but the
+    # source files on disk stay verbatim (operators sometimes need to grep
+    # their own logs with the real values). Missing source files are silently
+    # skipped — common during early-life installs.
+    local logs_dir; logs_dir="$(dirname "$OTTO_LOG")"
+    local chat_trace_log; chat_trace_log="${OTTO_LOG%.log}-chat-trace.log"
+    local src dst
+    for pair in \
+        "$OTTO_LOG:otto-gateway.log" \
+        "$OTTO_LOG_BOOT:otto-gateway-boot.log" \
+        "$chat_trace_log:otto-gateway-chat-trace.log"; do
+        src="${pair%%:*}"
+        dst="${pair##*:}"
+        if [[ -f "$src" ]]; then
+            redact_stream < "$src" > "$bundle_root/logs/$dst"
+        fi
+    done
+
+    # Rotated *.log.gz within the --log-days window. -mtime -N is portable
+    # across BSD and GNU find. The wrapper gateway scrubs at write time so
+    # we don't gunzip/regzip here (would force gzip in the redaction path
+    # and break BSD/GNU portability). MANIFEST notes the deferral.
+    if [[ -d "$logs_dir" ]]; then
+        find "$logs_dir" -maxdepth 1 -name 'otto-gateway-*.log.gz' -mtime -"$FLAG_LOG_DAYS" -print 2>/dev/null | while IFS= read -r gz; do
+            cp -p "$gz" "$bundle_root/logs/" 2>/dev/null || true
+        done
+    fi
+
+    # ---- system/ -------------------------------------------------------
+    {
+        echo "uname:    $(uname -a)"
+        echo "arch:     $(uname -m)"
+        echo "hostname: $host"
+        echo "date:     $(date)"
+        echo "LANG:     ${LANG:-}"
+        echo "LC_ALL:   ${LC_ALL:-}"
+        echo "df -h $OTTO_INSTALL_ROOT:"
+        df -h "$OTTO_INSTALL_ROOT" 2>/dev/null | tail -n 1 || echo "(unavailable)"
+    } > "$bundle_root/system/system.txt"
+
+    {
+        echo "otto-gateway:"
+        if [[ -x "$OTTO_BIN" ]]; then
+            "$OTTO_BIN" --version 2>&1 || echo "(--version failed)"
+        else
+            echo "(binary not found at $OTTO_BIN)"
+        fi
+        echo
+        echo "kiro-cli:"
+        if command -v kiro >/dev/null 2>&1; then
+            command -v kiro
+            kiro --version 2>&1 || echo "(kiro --version failed)"
+        else
+            echo "(kiro not on PATH)"
+        fi
+        echo
+        echo "otto-tray: n/a — query via tray menu (wrapper does not embed tray version)"
+    } > "$bundle_root/system/versions.txt"
+
+    # 2-level listing of the install root (per spec). Sorted so triage can
+    # diff bundles across captures.
+    find "$OTTO_INSTALL_ROOT" -maxdepth 2 -print 2>/dev/null | sort > "$bundle_root/system/installroot.txt"
+
+    # ---- tray/ ---------------------------------------------------------
+    {
+        local tray_state="$OTTO_INSTALL_ROOT/.otto/tray/state"
+        if [[ -f "$tray_state" ]]; then
+            cat "$tray_state"
+        else
+            echo "(unavailable: $tray_state does not exist)"
+        fi
+    } > "$bundle_root/tray/tray-state.txt"
+
+    {
+        echo "pidfile: $OTTO_PID"
+        if [[ -f "$OTTO_PID" ]]; then
+            echo "pid:     $(cat "$OTTO_PID")"
+            # GNU stat uses -c %y, BSD stat uses -f %Sm. Try GNU first; fall
+            # back to BSD. Either flavor of failure is fine — best-effort.
+            local mtime
+            mtime=$(stat -c %y "$OTTO_PID" 2>/dev/null || stat -f %Sm "$OTTO_PID" 2>/dev/null || echo "(unavailable)")
+            echo "mtime:   $mtime"
+        else
+            echo "pid:     (no pidfile)"
+        fi
+    } > "$bundle_root/tray/pidfile.txt"
+
+    {
+        local plist="$HOME/Library/LaunchAgents/com.otto.tray.plist"
+        if [[ "$(uname)" == "Darwin" ]]; then
+            if [[ -f "$plist" ]]; then
+                echo "LaunchAgent: present at $plist"
+            else
+                echo "LaunchAgent: absent (expected at $plist)"
+            fi
+        else
+            echo "autostart probe: only macOS LaunchAgent is checked from the wrapper; Windows Run-key is probed by the pwsh wrapper instead"
+        fi
+    } > "$bundle_root/tray/autostart.txt"
+
+    # ---- Size cap enforcement -----------------------------------------
+    # du -sm yields whole MB. If we're over cap, drop the oldest rotated
+    # gz files until we're under, listing each drop in MANIFEST below.
+    local dropped_files=()
+    local current_mb
+    current_mb=$(du -sm "$bundle_root" 2>/dev/null | awk '{print $1}')
+    if [[ -n "$current_mb" && "$current_mb" -gt "$FLAG_MAX_MB" ]]; then
+        # Sort by mtime ascending (oldest first). BSD `stat -f %m` prints
+        # epoch seconds; GNU `stat -c %Y` prints the same. We tab-pair the
+        # epoch with the path, sort numerically, then strip the prefix.
+        # Fall back gracefully if both flavors miss: filename-sort is
+        # deterministic enough for the "we have to drop *something*" case.
+        local gz_list gz_path epoch
+        gz_list=""
+        for gz_path in "$bundle_root/logs/"otto-gateway-*.log.gz; do
+            [[ -e "$gz_path" ]] || continue
+            epoch=$(stat -f %m "$gz_path" 2>/dev/null || stat -c %Y "$gz_path" 2>/dev/null || echo 0)
+            gz_list+="${epoch}	${gz_path}"$'\n'
+        done
+        if [[ -n "$gz_list" ]]; then
+            local sorted
+            sorted=$(printf '%s' "$gz_list" | sort -n | awk -F'\t' '{print $2}')
+            while IFS= read -r gz; do
+                [[ -z "$gz" ]] && continue
+                rm -f "$gz"
+                dropped_files+=("$gz")
+                current_mb=$(du -sm "$bundle_root" 2>/dev/null | awk '{print $1}')
+                if [[ -n "$current_mb" && "$current_mb" -le "$FLAG_MAX_MB" ]]; then
+                    break
+                fi
+            done <<< "$sorted"
+        fi
+    fi
+
+    # ---- MANIFEST.txt (written LAST so contents listing is accurate) ---
+    {
+        echo "otto-gw support bundle"
+        echo "======================"
+        echo "timestamp:  $ts UTC"
+        echo "host:       $host"
+        echo "os:         $(uname -a)"
+        echo "wrapper:    scripts/otto-gw (POSIX bash)"
+        echo "spec:       docs/superpowers/specs/2026-06-08-support-bundle-design.md"
+        echo
+        echo "Redaction notice"
+        echo "----------------"
+        echo "Env keys masked via scripts/lib/redact.sh:"
+        echo "  - AUTH_TOKEN, PII_HASH_KEY, PII_ENCRYPT_KEY (explicit allowlist)"
+        echo "  - any key matching *TOKEN* / *KEY* / *SECRET* / *PASSWORD* / *PASSPHRASE* (case-insensitive)"
+        echo "Log scrubs (regex -> [REDACTED]):"
+        echo "  - Bearer <token>"
+        echo "  - ^(AUTH_TOKEN|PII_HASH_KEY|PII_ENCRYPT_KEY)= lines"
+        echo "  - Authorization: header values"
+        echo "  - x-api-key: header values (case-insensitive)"
+        echo
+        echo "Rotated *.log.gz files are copied verbatim. Gateway already"
+        echo "scrubs at write time, so the on-disk gz files already have"
+        echo "masked content — re-redacting would require gunzip/gzip in"
+        echo "the bash path and was deferred to keep this wrapper portable."
+        echo
+        echo "Bundle contents"
+        echo "---------------"
+        ( cd "$staging" && find "$bundle_name" -maxdepth 3 -print | sort )
+        if [[ "${#dropped_files[@]}" -gt 0 ]]; then
+            echo
+            echo "Dropped for size (>$FLAG_MAX_MB MB cap)"
+            echo "--------------------------------------"
+            local d
+            for d in "${dropped_files[@]}"; do
+                echo "DROPPED FOR SIZE: $d"
+            done
+        fi
+    } > "$bundle_root/MANIFEST.txt"
+
+    # ---- Archive --------------------------------------------------------
+    local out_path="$out_dir/$bundle_name.tar.gz"
+    if ! tar -czf "$out_path" -C "$staging" "$bundle_name"; then
+        echo "support: tar failed for $out_path" >&2
+        return 1
+    fi
+    # latest.tar.gz is a COPY (not a symlink) for parity with the Windows
+    # wrapper's Copy-Item — design constraint §Output Location.
+    cp -f "$out_path" "$out_dir/latest.tar.gz"
+
+    echo "$out_path"
+    return 0
+}
+
 usage() {
     local exit_code="${1:-1}"
     if [[ "$exit_code" -eq 0 ]]; then
@@ -1722,6 +2069,11 @@ Commands:
                       .otto-gw.overrides.env, back up the original, then
                       regenerate .otto-gw.env from the template. Idempotent.
   version             Print the gateway binary version (delegates to bin/otto-gateway --version)
+  support [--out DIR] [--max-mb N] [--log-days D]
+                      Produce a redacted diagnostic archive under
+                      $OTTO_INSTALL_ROOT/support/. Secrets are masked. No raw
+                      values are ever written. See
+                      docs/superpowers/specs/2026-06-08-support-bundle-design.md.
 
 Gateway config flags (for start | restart | run | env):
   --pii MODE          off | replace | mask | hash | drop | encrypt
@@ -1818,6 +2170,11 @@ Commands:
                       .otto-gw.overrides.env, back up the original, then
                       regenerate .otto-gw.env from the template. Idempotent.
   version             Print the gateway binary version (delegates to bin/otto-gateway --version)
+  support [--out DIR] [--max-mb N] [--log-days D]
+                      Produce a redacted diagnostic archive under
+                      $OTTO_INSTALL_ROOT/support/. Secrets are masked. No raw
+                      values are ever written. See
+                      docs/superpowers/specs/2026-06-08-support-bundle-design.md.
 
 Gateway config flags (for start | restart | run | env):
   --pii MODE          off | replace | mask | hash | drop | encrypt
@@ -1910,6 +2267,7 @@ case "$CMD" in
     status)  status ;;
     logs)    logs "${1:-}" ;;
     version) show_version ;;
+    support) support "$@" ;;
     upgrade-env) upgrade_env_cmd "$@" ;;
     migrate-to-overrides) migrate_to_overrides_cmd "$@" ;;
     help|-h|--help) usage 0 ;;
