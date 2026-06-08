@@ -113,3 +113,17 @@ func exeForAutostart() (string, error) {
 
 func installAutostart(exe string) error { return installLaunchAgent(exe, false) }
 func uninstallAutostart() error         { return uninstallLaunchAgent(false) }
+
+// revealBundle opens Finder with the given path selected. Mirrors openURL's
+// shape (5s timeout, best-effort, no error surfacing). `open -R <path>` is
+// the documented Finder reveal verb. Path comes from a wrapper subprocess
+// we just spawned — same trust boundary as the dashboard URL.
+func revealBundle(path string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = exec.CommandContext(ctx, "open", "-R", path).Run() //nolint:gosec // path originates from the wrapper we just ran
+}
+
+// bundleExt returns the archive extension that the bash wrapper produces.
+// Used for the fallback path when the wrapper's stdout is empty.
+func bundleExt() string { return ".tar.gz" }
