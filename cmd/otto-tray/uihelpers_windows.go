@@ -128,3 +128,20 @@ func exeForAutostart() (string, error) {
 
 func installAutostart(exe string) error { return installRunKey(exe) }
 func uninstallAutostart() error         { return uninstallRunKey() }
+
+// revealBundle opens Explorer with the given file selected. Mirrors openURL's
+// shape (10s timeout, hidden window, best-effort). `explorer.exe /select,<path>`
+// is the documented "open parent folder and highlight this file" verb.
+// explorer.exe returns non-zero exit codes on success, so we deliberately
+// ignore the cmd.Run error — fire and forget.
+func revealBundle(path string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "explorer.exe", "/select,"+path) //nolint:gosec // path originates from the wrapper we just ran
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: false}
+	_ = cmd.Run()
+}
+
+// bundleExt returns the archive extension that the pwsh wrapper produces.
+// Used for the fallback path when the wrapper's stdout is empty.
+func bundleExt() string { return ".zip" }

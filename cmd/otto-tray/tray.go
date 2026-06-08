@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -49,6 +50,7 @@ type trayState struct {
 	miRestart    *systray.MenuItem
 	miDashboard  *systray.MenuItem
 	miCopyHealth *systray.MenuItem
+	miSupport    *systray.MenuItem
 	miPrefsLogin *systray.MenuItem
 	miPrefsStart *systray.MenuItem
 	miAbout      *systray.MenuItem
@@ -82,6 +84,8 @@ func (s *trayState) onReady(isFirstRun bool) func() {
 		systray.AddSeparator()
 		s.miDashboard = systray.AddMenuItem("Open dashboard", s.dashboardURL)
 		s.miCopyHealth = systray.AddMenuItem("Copy health URL", "")
+		systray.AddSeparator()
+		s.miSupport = systray.AddMenuItem("Create Support Bundle…", "Produce a redacted diagnostic archive")
 		systray.AddSeparator()
 		prefs := systray.AddMenuItem("Preferences", "")
 		s.miPrefsLogin = prefs.AddSubMenuItemCheckbox("Launch tray at login", "", s.cfg.LaunchAtLogin)
@@ -124,6 +128,7 @@ func (s *trayState) wireCallbacks() {
 	s.miRestart.Click(func() { go s.handleRestart() })
 	s.miDashboard.Click(func() { go openURL(s.dashboardURL + "/admin") })
 	s.miCopyHealth.Click(func() { go copyToClipboard(s.dashboardURL + "/health") })
+	s.miSupport.Click(func() { go s.handleSupportBundle() })
 	s.miPrefsLogin.Click(func() { go s.toggleLaunchAtLogin() })
 	s.miPrefsStart.Click(func() { go s.toggleStartGatewayOnLaunch() })
 	s.miAbout.Click(func() { go s.showAbout() })
@@ -231,6 +236,76 @@ func (s *trayState) handleRestart() {
 	if res.ExitCode != 0 || res.Err != nil {
 		notify("OTTO Gateway", "Failed to restart: "+firstLine(res.Stderr))
 	}
+}
+
+// handleSupportBundle is the click handler for the "Create Support Bundle…"
+// menu item. Sequence:
+//
+//  1. Confirmation dialog (no surprise file creation).
+//  2. Shell out to the wrapper's `support` verb, sync. The wrapper does all
+//     collection + redaction + archiving and prints the archive path on
+//     stdout.
+//  3. Show a notification with the path and reveal the file in
+//     Finder / Explorer.
+//
+// On failure: dialog with the tail of stderr. No retries — the wrapper
+// either produced the archive or it didn't; iterating wouldn't change
+// the failure mode.
+//
+// The 30s timeout on runWrapper is comfortable: collection completes in
+// seconds per design §Tray Integration.
+func (s *trayState) handleSupportBundle() {
+	if !confirmDialog(
+		"Create Support Bundle",
+		"Create a redacted support bundle? Secrets will be masked. Continue?",
+		"Create", "Cancel",
+	) {
+		return
+	}
+
+	res := runWrapper(s.installRoot, "support")
+	if res.ExitCode != 0 || res.Err != nil {
+		body := "Failed to create support bundle."
+		tail := tailLines(res.Stderr, 20)
+		if tail != "" {
+			body += "\n\n" + tail
+		}
+		infoDialog("Support Bundle Failed", body)
+		return
+	}
+
+	// Wrapper prints the absolute archive path on stdout. Fall back to the
+	// `latest.<ext>` alias when stdout is empty (rare — happens if a shell
+	// rc file injected extra output that pushed our line off the tail).
+	path := strings.TrimSpace(res.Stdout)
+	if path == "" {
+		path = filepath.Join(s.installRoot, "support", "latest"+bundleExt())
+	}
+
+	notify("OTTO Gateway", "Support bundle saved:\n"+path)
+	revealBundle(path)
+}
+
+// tailLines returns the last n non-empty lines of s, joined with "\n".
+// Used to bound how much stderr the failure dialog shows — full stderr
+// can easily exceed what fits in a modal.
+func tailLines(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	lines := strings.Split(s, "\n")
+	kept := make([]string, 0, n)
+	for i := len(lines) - 1; i >= 0; i-- {
+		t := strings.TrimSpace(lines[i])
+		if t == "" {
+			continue
+		}
+		kept = append([]string{t}, kept...)
+		if len(kept) >= n {
+			break
+		}
+	}
+	return strings.Join(kept, "\n")
 }
 
 func (s *trayState) toggleLaunchAtLogin() {
