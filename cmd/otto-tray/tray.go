@@ -6,8 +6,10 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -269,6 +271,20 @@ func (s *trayState) handleSupportBundle() {
 		tail := tailLines(res.Stderr, 20)
 		if tail != "" {
 			body += "\n\n" + tail
+		}
+		// Persist full stderr/stdout to disk so the user can attach the
+		// file even after dismissing this dialog. Best-effort: write
+		// failures are silent (any write error would itself be noise
+		// the user cannot act on).
+		logDir := filepath.Join(s.installRoot, "support")
+		if mkErr := os.MkdirAll(logDir, 0o755); mkErr == nil {
+			logPath := filepath.Join(logDir, "last-error.log")
+			content := "exit=" + strconv.Itoa(res.ExitCode) + "\n\n" +
+				"--- stderr ---\n" + res.Stderr + "\n" +
+				"--- stdout ---\n" + res.Stdout + "\n"
+			if writeErr := os.WriteFile(logPath, []byte(content), 0o644); writeErr == nil {
+				body += "\n\nDetails saved to:\n" + logPath
+			}
 		}
 		infoDialog("Support Bundle Failed", body)
 		return

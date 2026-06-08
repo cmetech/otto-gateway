@@ -188,12 +188,15 @@ package-checksums: ## Generate SHA256SUMS-<version>.txt for all archives in dist
 define stage_unix
 	rm -rf $(DIST_DIR)/otto_gateway
 	mkdir -p $(DIST_DIR)/otto_gateway/bin
-	mkdir -p $(DIST_DIR)/otto_gateway/scripts
+	mkdir -p $(DIST_DIR)/otto_gateway/scripts/lib
 	mkdir -p $(DIST_DIR)/otto_gateway/logs
 	cp $(BUILD_DIR)/$(BINARY)-$(1)-$(2)$(3) $(DIST_DIR)/otto_gateway/bin/$(BINARY)$(3)
 	cp scripts/otto-gw scripts/otto-gw.ps1 scripts/otto-gw.bat scripts/setup.bat scripts/start.bat scripts/stop.bat scripts/status.bat scripts/.env.otto-gw.example scripts/test-pii.sh scripts/test-pii.ps1 $(DIST_DIR)/otto_gateway/scripts/
+	cp scripts/lib/redact.sh scripts/lib/redact.ps1 $(DIST_DIR)/otto_gateway/scripts/lib/
 	chmod 755 $(DIST_DIR)/otto_gateway/scripts/otto-gw
 	chmod 755 $(DIST_DIR)/otto_gateway/scripts/test-pii.sh
+	chmod 644 $(DIST_DIR)/otto_gateway/scripts/lib/redact.sh
+	chmod 644 $(DIST_DIR)/otto_gateway/scripts/lib/redact.ps1
 	cp $(PKG_README) $(DIST_DIR)/otto_gateway/README.md
 	cp $(PKG_INSTALL) $(DIST_DIR)/otto_gateway/INSTALL.md
 	: > $(DIST_DIR)/otto_gateway/logs/.gitkeep
