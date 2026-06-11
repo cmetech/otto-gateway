@@ -306,6 +306,13 @@ func Load() (Config, error) {
 	if err != nil {
 		errs = append(errs, err)
 	}
+	// C-2 (REL-CFG-02) fail-fast: PING_INTERVAL <= 0 reaches time.NewTicker in
+	// acp/client.go and panics with "non-positive interval for NewTicker" inside
+	// the ping goroutine. Boot error here prevents the raw goroutine panic. Use
+	// "> 0" (not ">= 0") because zero is also invalid for time.NewTicker.
+	if pingInterval <= 0 {
+		errs = append(errs, fmt.Errorf("PING_INTERVAL: must be > 0, got %v", pingInterval))
+	}
 
 	authTokens := getEnvStrSliceComma("AUTH_TOKEN", nil)
 
