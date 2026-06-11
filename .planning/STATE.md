@@ -1,17 +1,16 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.9
-milestone_name: Reliability Hardening
-status: ready-to-tag-v1.9.1
-stopped_at: Phase 17 complete — make ci exit 0; verifier 5/5 PASS; review clean (0 critical, 1 warning, 2 info); security 13/13 CLOSED. Ready to tag v1.9.1 and push.
-last_updated: "2026-06-11T23:30:00Z"
-last_activity: 2026-06-11 -- Phase 17 verified + reviewed + secured. v1.9.1 release ready.
+milestone: v1.10.3
+milestone_name: Reliability Closeout
+status: planning
+last_updated: "2026-06-11T23:47:54.756Z"
+last_activity: 2026-06-11
 progress:
-  total_phases: 23
-  completed_phases: 22
-  total_plans: 81
-  completed_plans: 81
-  percent: 100
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
@@ -21,16 +20,15 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-07)
 
 **Core value:** All three API surfaces (OpenAI for Pi SDK, Ollama for LangFlow, Anthropic for loop24-client/GSD Pi) serve their respective clients without those clients knowing kiro-cli exists, with one place to enforce policy.
-**Current focus:** Phase 17 — trust-gate-restoration
+**Current focus:** v1.10.3 Reliability Closeout — Phase 18 (Reliability long-tail) opens execution
 
 ## Current Position
 
-Phase: 17 (trust-gate-restoration) — COMPLETE (3/3 plans landed)
-Plan: 3/3 (17-01 f727b24, 17-02 ca258f9, 17-03 b78fd09)
-Milestone: v1.9 Reliability Hardening — SHIPPED 2026-06-11; v1.9.1 trust-gate restoration READY to tag
-Audit: 27/27 requirements, 8/8 seams WIRED, 26/26 threats CLOSED
-Status: Ready to tag v1.9.1 — make ci exit 0 end-to-end at HEAD ca258f9
-Last activity: 2026-06-11 -- Plan 17-02 complete (ca258f9); REL-POOL-02 test 20/20 PASS (60/60 across 3 rounds) under -race with goleak; make ci exit 0 end-to-end. Phase 17 trust-gate restoration complete.
+Milestone: v1.10.3 Reliability Closeout — PLANNING
+Phases scaffolded: 18 (Reliability long-tail), 19 (acp.Stream concurrency fix), 20 (Code-review backlog burn-down)
+Requirements: 17 (REL-CFG-05/06/07 + REL-HTTP-06/07 + REL-OBSV-02/03/04 + REL-TRAY-08/09 + REL-ACP-01 + QUAL-01..06)
+Status: Milestone scaffold written. Ready for /gsd-discuss-phase 18 (or /gsd-plan-phase 18 directly — scope is well-bounded from REQUIREMENTS.md).
+Last activity: 2026-06-11 — Milestone v1.10.3 scaffold written; 3 phases added to ROADMAP
 
 ## Performance Metrics
 

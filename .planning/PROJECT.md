@@ -32,13 +32,22 @@ and the single governance surface are the load-bearing properties.
 
 ## Current State
 
-**Shipped:** v1.9 Reliability Hardening (2026-06-11)
-- 23 reliability findings closed (1 Critical + 8 High + 14 Medium); `-race` trust gate restored via REL-POOL-05 atomic.Int64 LastUsed; pool lifecycle hardened on Linux/darwin/Windows; mid-stream death surfaced honestly to OpenAI + Ollama + Anthropic clients; tray honest on macOS + Windows; config fail-closed.
-- Audit: [milestones/v1.9-MILESTONE-AUDIT.md](milestones/v1.9-MILESTONE-AUDIT.md) — 27/27 requirements, 8/8 cross-phase seams WIRED, 26/26 threats CLOSED.
+**Shipped:** v1.10.2 — Reliability Hardening + Trust-Gate Restoration (2026-06-11)
+- GSD milestone "v1.9 Reliability Hardening" + Phase 17 "Trust-Gate Restoration" folded into product release tag `v1.10.2`.
+- 23 reliability findings closed (1 Critical + 8 High + 14 Medium) + 6 trust-gate items. `-race` trust gate restored; `make ci` exit 0 end-to-end; arch-lint TRST-04 boundary preserved via `canonical.ErrPoolExhausted`.
+- Release: https://github.com/cmetech/otto-gateway/releases/tag/v1.10.2
+- Audit: [milestones/v1.9-MILESTONE-AUDIT.md](milestones/v1.9-MILESTONE-AUDIT.md) — 27/27 requirements, 8/8 cross-phase seams WIRED, 26/26 + 13/13 threats CLOSED.
 
-## Next Milestone Goals
+## Current Milestone: v1.10.3 Reliability Closeout
 
-**v1.10 (planned):** Close the 12 Low-severity findings deferred from v1.9 (P-7, P-8, H-6, H-7, T-8, T-9, C-4, C-5, C-6, O-2, O-3, O-4). Carryover candidates: Phase 08.3.1 ACP Per-Session Stream Demux (awaits multi-tenant deployment driver), Windows Authenticode code-signing (awaits cert procurement). Run `/gsd-new-milestone` to scope and define requirements.
+**Goal:** Close the deferred long-tail from the 2026-06-11 reliability review + Phase 16/17 code reviews — small, well-scoped fixes that each remove a specific way the gateway lies to its operator or its CI signal.
+
+**Target features:**
+- **Reliability tail** (8 deferred Low-severity findings from the 2026-06-11 audit): config hardening (C-4/5/6), observability symmetry (O-2/3/4), HTTP error logging (H-6/7), tray honesty (T-8/9).
+- **Concurrency fix** (1 production race): `acp.Stream.Result` copies `*s.result` under `s.mu` to remove the Phase 17 test-side workaround.
+- **Code-review backlog burn-down** (6 Info findings deferred from Phase 16/17 close): escapeApplescript hardening, tooltipForState dedup, forceCloseCh contract doc, tailLines O(n²) cleanup, dead-test-var removal, stale-comment fix.
+
+**Out of scope:** SEED-001 Authenticode (no cert yet), Phase 08.3.1 ACP demux (still no multi-tenant driver), new features, performance work.
 
 <details>
 <summary>v1.9 Reliability Hardening — full scope (collapsed)</summary>

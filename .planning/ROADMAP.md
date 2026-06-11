@@ -21,7 +21,9 @@ adapter-over-canonical layout (brief §3.13) and trust-gate suite (brief
 - ✅ **v1.6 Tooling Cleanup** — Phases 10, 11 (shipped 2026-06-07). golangci-lint v2 baseline drained from 49→0, CI lint gate restored, gofumpt clean tree-wide, pre-commit hook enabled. [Archive](milestones/v1.6-ROADMAP.md) · [Audit](milestones/v1.6-MILESTONE-AUDIT.md)
 - ✅ **v1.7 Go Stdlib CVE Cleanup** — Phase 12 (shipped 2026-06-07). `go.mod` bumped 1.25.0 → 1.26.4; govulncheck 23 → 0; `make ci` exits 0 end-to-end without carve-outs for the first time since v1.5. [Archive](milestones/v1.7-ROADMAP.md) · [Audit](milestones/v1.7-MILESTONE-AUDIT.md)
 - ✅ **v1.8 Nyquist Coverage Uplift** — Phase 13 (shipped 2026-06-07). Flipped the 6 remaining v1.5 phase VALIDATION.md docs from `nyquist_compliant: false` to `nyquist_compliant: true` (compliance ratio 7/13 → 13/13). Zero production source edits. 3 inherited operator-deferred UAT items tracked in 13-HUMAN-UAT.md. [Archive](milestones/v1.8-ROADMAP.md) · [Audit](milestones/v1.8-MILESTONE-AUDIT.md)
-- ✅ **v1.9 Reliability Hardening** — Phases 14, 15, 16 (shipped 2026-06-11). 23 reliability findings (1 Critical + 8 High + 14 Mediums) closed; `-race` trust gate restored via REL-POOL-05 atomic.Int64 LastUsed; pool lifecycle hardened on all 3 OSes; mid-stream death surfaced honestly to clients; tray honest on macOS + Windows. 12 Lows deferred to v1.10. [Archive](milestones/v1.9-ROADMAP.md) · [Audit](milestones/v1.9-MILESTONE-AUDIT.md)
+- ✅ **v1.9 Reliability Hardening** — Phases 14, 15, 16 (shipped 2026-06-11). 23 reliability findings (1 Critical + 8 High + 14 Mediums) closed; `-race` trust gate restored via REL-POOL-05 atomic.Int64 LastUsed; pool lifecycle hardened on all 3 OSes; mid-stream death surfaced honestly to clients; tray honest on macOS + Windows. 12 Lows deferred to v1.10.3. [Archive](milestones/v1.9-ROADMAP.md) · [Audit](milestones/v1.9-MILESTONE-AUDIT.md)
+- ✅ **v1.9.1 Trust-Gate Restoration** *(folded into v1.10.2 release tag)* — Phase 17 (shipped 2026-06-11). `make ci` exit 0 end-to-end restored; arch-lint TRST-04 boundary preserved via `canonical.ErrPoolExhausted`; REL-POOL-02 goleak flake closed (60/60 race-clean); gosec G301/G306 + gofmt drift + dead-code closed. Release: [v1.10.2](https://github.com/cmetech/otto-gateway/releases/tag/v1.10.2).
+- 🚧 **v1.10.3 Reliability Closeout** — Phases 18, 19, 20 (opened 2026-06-11). Close the 8 deferred Low-severity findings from the 2026-06-11 reliability review (C-4/5/6, H-6/7, O-2/3/4, T-8/9) + 1 production race surfaced by Phase 17 (acp.Stream s.mu ordering, REL-ACP-01) + 6 Info-level code review cleanups (QUAL-01..06). No new features; no surface expansion.
 
 ## Phases
 
@@ -100,9 +102,19 @@ Full details: [milestones/v1.9-ROADMAP.md](milestones/v1.9-ROADMAP.md)
 
 </details>
 
+<details open>
+<summary>🚧 v1.10.3 Reliability Closeout — IN PROGRESS (opened 2026-06-11, 3 phases planned)</summary>
+
+- [ ] **Phase 18: Reliability long-tail** — Close 10 of the 11 deferred Low-severity reliability findings as a single phase with 3 parallel plans. Config hardening (REL-CFG-05/06/07): degenerate ALLOWED_IPS/AUTH_TOKEN env values rejected loudly, KIRO_CMD/KIRO_CWD errors named, port-in-use discovered pre-warmup. Observability symmetry (REL-OBSV-02/03/04, REL-HTTP-06/07): worker recovery logged, kiro-cli stderr routed to structured log file, admin log-tail path single-sourced, Ollama streaming error WARN-logged, panic recovery on tailer/watchdog/ctx-watcher goroutines. Tray honesty (REL-TRAY-08/09): dotenv read errors loud, macOS tray diagnostics either correct or removed.
+- [ ] **Phase 19: acp.Stream concurrency fix** — REL-ACP-01: `acp.Stream.Result` copies `*s.result` under `s.mu` instead of racing close(s.done) against the StopReason write. Single-plan phase. After landing, the Phase 17 test-side drain-Chunks-then-Result workaround in `regression_rel_pool_02_test.go` can be reverted (verified by 60/60 race-clean iterations).
+- [ ] **Phase 20: Code-review backlog burn-down** — Single-plan mechanical batch closing 6 Info-level findings deferred from Phase 16/17 reviews: escapeApplescript newline/control-char escape (QUAL-01), tooltipForState shared build-tag dedup (QUAL-02), forceCloseCh contract documented or relocated (QUAL-03), tailLines O(n²) prepend replaced with collect-then-reverse (QUAL-04), dead sessions/sessionsMu vars removed from REL-POOL-02 test (QUAL-05), stale removeSlot comment fixed in respawn_ctx_cancel_test (QUAL-06). Refactor-only; no behavior change.
+
+</details>
+
 ## Phase Details
 
 v1.9 phase details archived to [milestones/v1.9-ROADMAP.md](milestones/v1.9-ROADMAP.md).
+v1.10.3 phase details captured in REQUIREMENTS.md (15 REQ-IDs traced to Phases 18/19/20).
 (Prior milestones' details retained in their respective `milestones/v{ver}-ROADMAP.md` archives.)
 
 ## Progress
@@ -129,3 +141,36 @@ Plans:
 - [x] 17-01-PLAN.md — Move ErrPoolExhausted to canonical package, restore TRST-04 boundary (D-17-01) [2026-06-11 — f727b24]
 - [x] 17-02-PLAN.md — Deflake TestRegression_REL_POOL_02_CtrlCOrphansChildren to 20/20 under -race (D-17-04) [2026-06-11 — ca258f9]
 - [x] 17-03-PLAN.md — Mechanical batch: gofmt + gofumpt + gosec G301/G306 + Pool.removeSlot dead-code removal (D-17-02) [2026-06-11 — b78fd09]
+
+### Phase 18: Reliability long-tail
+
+**Goal:** [To be planned]
+**Requirements**: TBD
+**Depends on:** Phase 17
+**Plans:** 0 plans
+
+Plans:
+
+- [ ] TBD (run /gsd-plan-phase 18 to break down)
+
+### Phase 19: acp.Stream concurrency fix
+
+**Goal:** [To be planned]
+**Requirements**: TBD
+**Depends on:** Phase 18
+**Plans:** 0 plans
+
+Plans:
+
+- [ ] TBD (run /gsd-plan-phase 19 to break down)
+
+### Phase 20: Code-review backlog burn-down
+
+**Goal:** [To be planned]
+**Requirements**: TBD
+**Depends on:** Phase 19
+**Plans:** 0 plans
+
+Plans:
+
+- [ ] TBD (run /gsd-plan-phase 20 to break down)
