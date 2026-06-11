@@ -397,8 +397,13 @@ func (t *Tailer) readLines(r *bufio.Reader, carry string) (string, error) {
 		if len(chunk) > 0 {
 			current += chunk
 			// Enforce the per-line size cap to bound memory growth in
-			// case a log producer never emits a newline. If the carry
-			// exceeds TailerMaxLineBytes, truncate it and emit a marker.
+			// case a log producer never emits a newline OR emits a
+			// multi-MB newline-terminated line (H-5 / REL-HTTP-05).
+			// This first check handles the unterminated-fragment path:
+			// a chunk that grew current past the cap without a '\n'
+			// gets truncated and broadcast immediately so we do not
+			// hold the whole payload in memory waiting for a
+			// terminator that may never arrive.
 			if len(current) > TailerMaxLineBytes && !strings.HasSuffix(current, "\n") {
 				t.logger.Debug("admin: tailer line exceeds max",
 					"bytes", len(current), "max", TailerMaxLineBytes)
@@ -412,6 +417,19 @@ func (t *Tailer) readLines(r *bufio.Reader, carry string) (string, error) {
 				// bufio.Scanner.Text() semantics.
 				line := strings.TrimSuffix(current, "\n")
 				line = strings.TrimSuffix(line, "\r")
+				// H-5 fix: cap newline-terminated lines too. The prior
+				// check above only fires when !HasSuffix("\n"), so a
+				// multi-MB line that arrives with a trailing '\n' in
+				// a single ReadString call bypassed truncation and
+				// flowed unbounded through the ring buffer and SSE
+				// stream. Truncate here before broadcast so the
+				// memory cost is bounded by TailerMaxLineBytes for
+				// ALL paths.
+				if len(line) > TailerMaxLineBytes {
+					t.logger.Debug("admin: tailer line truncated at cap",
+						"bytes", len(line), "max", TailerMaxLineBytes)
+					line = line[:TailerMaxLineBytes]
+				}
 				t.broadcast(line)
 				current = ""
 			}
