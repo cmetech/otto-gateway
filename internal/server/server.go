@@ -355,6 +355,13 @@ func NewFromConfig(cfg Config) *Server {
 				AllowedPrefixes:    cfg.AllowedPrefixes,
 				TrustXForwardedFor: cfg.AuthTrustXFF, // Codex H-7
 			}))
+			// REL-HTTP-04 (H-4) / Plan 16-02: per-request body-read
+			// deadline on chat-body POSTs. Path-scoped — admin POSTs
+			// and catalog routes (/api/tags, /api/show, …) do NOT get
+			// the wrapper (D-04a). Applied here at the per-prefix
+			// sub-router level so the deadline runs AFTER IP
+			// allowlist (denied requests do not arm the timer).
+			r.Use(withBodyReadDeadline(cfg.BodyReadTimeout))
 			for _, sm := range mounts {
 				sm.Router.RegisterRoutes(r)
 			}
