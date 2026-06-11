@@ -24,10 +24,10 @@ See: .planning/PROJECT.md (updated 2026-06-07)
 
 ## Current Position
 
-Phase: Not started (defining requirements)
-Plan: —
-Status: Defining requirements
-Last activity: 2026-06-11 — Milestone v1.9 started
+Phase: 14 (Verify Reliability Findings) — not started
+Plan: — (next step: `/gsd-plan-phase 14`)
+Status: Roadmap drafted; Phase 14 is the next executable step (read-only verification ledger that gates Phases 15 + 16)
+Last activity: 2026-06-11 — v1.9 ROADMAP.md authored: 3 phases (14, 15, 16), 24 REL-* requirements mapped 1:1, Phase 14 gates downstream fix phases
 
 ## Performance Metrics
 
