@@ -178,6 +178,6 @@ Plans:
 | 10, 11 | v1.6 | 5/5 | Complete | 2026-06-07 |
 | 12 | v1.7 | 1/1 | Complete | 2026-06-07 |
 | 13 | v1.8 | 6/6 | Complete    | 2026-06-07 |
-| 14 | v1.9 | 4/4 | Complete   | 2026-06-11 |
+| 14 | v1.9 | 4/4 | Complete    | 2026-06-11 |
 | 15 | v1.9 | 0/TBD | Not started | — |
 | 16 | v1.9 | 0/TBD | Not started | — |
