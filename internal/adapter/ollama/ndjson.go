@@ -777,3 +777,19 @@ func runSyntheticNDJSONFromResponse(_ context.Context, w http.ResponseWriter, re
 	flusher.Flush()
 	return nil
 }
+
+// writePoolExhaustedOllama writes a 503 response with the D-07 Ollama
+// surface-native pool-exhaustion body and a Retry-After: 5 header.
+//
+// Body: {"error":"pool_exhausted: all workers busy; retry in 5s"}
+//
+// Called by handlers.go on the streaming and non-streaming paths when
+// errors.Is(err, pool.ErrPoolExhausted) is true.
+func writePoolExhaustedOllama(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Retry-After", "5")
+	w.WriteHeader(http.StatusServiceUnavailable)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"error": "pool_exhausted: all workers busy; retry in 5s",
+	})
+}

@@ -12,6 +12,7 @@ import (
 	"otto-gateway/internal/engine"
 	"otto-gateway/internal/plugin"
 	"otto-gateway/internal/plugin/pii"
+	"otto-gateway/internal/pool"
 	"otto-gateway/internal/session"
 )
 
@@ -152,6 +153,12 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 		if err != nil {
 			// engine.Run failed BEFORE any SSE headers were written — safe to
 			// respond with a normal JSON 500 envelope (T-02-33: log raw, generic message).
+			// D-07 REL-POOL-01: pool exhaustion maps to 503 + Retry-After:5 with
+			// a surface-native OpenAI error body instead of a generic 500.
+			if errors.Is(err, pool.ErrPoolExhausted) {
+				writePoolExhaustedOpenAI(w)
+				return
+			}
 			a.cfg.Logger.Error("openai: engine.Run error", "err", err)
 			writeError(w, http.StatusInternalServerError, errAPI, "internal error")
 			return
@@ -269,6 +276,11 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 	// Non-streaming path (SC1 curl use case).
 	resp, err := eng.Collect(ctx, req)
 	if err != nil {
+		// D-07 REL-POOL-01: pool exhaustion maps to 503 + Retry-After:5.
+		if errors.Is(err, pool.ErrPoolExhausted) {
+			writePoolExhaustedOpenAI(w)
+			return
+		}
 		// Quick 260531-ruv — idle-timeout maps to 504.
 		if errors.Is(err, canonical.ErrStreamIdleTimeout) {
 			a.cfg.Logger.Warn(

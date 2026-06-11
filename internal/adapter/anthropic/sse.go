@@ -1045,3 +1045,20 @@ func runSyntheticSSEFromResponse(_ context.Context, w http.ResponseWriter, resp 
 
 	return e.writeEvent("message_stop", messageStop{Type: "message_stop"})
 }
+
+// writePoolExhaustedAnthropic writes a 503 response with the D-07 Anthropic
+// surface-native pool-exhaustion body and a Retry-After: 5 header.
+//
+// Body: {"type":"error","error":{"type":"overloaded_error","message":"all workers busy; retry in 5s"}}
+//
+// Called by handlers.go on the streaming and non-streaming paths when
+// errors.Is(err, pool.ErrPoolExhausted) is true.
+func writePoolExhaustedAnthropic(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Retry-After", "5")
+	w.WriteHeader(http.StatusServiceUnavailable)
+	_ = json.NewEncoder(w).Encode(errorEnvelope{
+		Type:  "error",
+		Error: errorInner{Type: "overloaded_error", Message: "all workers busy; retry in 5s"},
+	})
+}
