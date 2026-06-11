@@ -36,7 +36,7 @@ Each of the 23 in-scope findings is re-verified against the current `main` sourc
 
 ### PostHook / goroutine discipline (Phase 16)
 
-- [ ] **REL-HOOKS-01** (G-1, Medium): Non-streaming aggregation error paths (idle-timeout 504, `Result()`-error 500) run the PostHook chain before propagating the error. `LoggingHook.startTimes` / `ChatTraceHook.startTimes` `sync.Map` entries no longer leak under retry storms on a wedged kiro. `chat-trace.log` gets its `post_chain_out` record on failed requests too.
+- [x] **REL-HOOKS-01** (G-1, Medium): Non-streaming aggregation error paths (idle-timeout 504, `Result()`-error 500) run the PostHook chain before propagating the error. `LoggingHook.startTimes` / `ChatTraceHook.startTimes` `sync.Map` entries no longer leak under retry storms on a wedged kiro. `chat-trace.log` gets its `post_chain_out` record on failed requests too.
 
 ### Tray / wrapper reliability (Phase 15 + 16)
 

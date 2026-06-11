@@ -4,13 +4,13 @@ milestone: v1.9
 milestone_name: Reliability Hardening
 status: executing
 stopped_at: Completed 16-01-PLAN.md
-last_updated: "2026-06-11T18:07:23.000Z"
+last_updated: "2026-06-11T18:17:05.142Z"
 last_activity: 2026-06-11 -- Phase 16 execution started
 progress:
   total_phases: 22
   completed_phases: 20
   total_plans: 78
-  completed_plans: 74
+  completed_plans: 75
   percent: 91
 ---
 
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-06-07)
 ## Current Position
 
 Phase: 16 (fix-mediums) — EXECUTING
-Plan: 2 of 5
+Plan: 3 of 5
 Status: Ready to execute
 Last activity: 2026-06-11 -- Phase 16 execution started
 
@@ -63,6 +63,7 @@ Last activity: 2026-06-11 -- Phase 16 execution started
 | Phase 08.2 P01 | 45m | 8 tasks | 10 files |
 | Phase 08.4 P01 | 35m | 3 tasks (R/G/F) + Task H pending | 7 files |
 | Phase 16 P01 | 35min | 4 tasks | 18 files |
+| Phase 16 P03 | 15min | 1 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -103,6 +104,8 @@ Recent decisions affecting current work:
 - [Phase ?]: Plan 16-01: Stream.ctx field carries //nolint:containedctx — per-request ctx is load-bearing for P-4 push backpressure scoping
 - [Phase ?]: Plan 16-01: P-6 used taskkill /T /F (Option A) rather than CreateJobObject — stdlib-only, single nolint annotation
 - [Phase ?]: Plan 16-01: lastProgressAt seeded at Warmup completion to avoid post-warmup false-degraded window
+- [Phase ?]: Plan 16-03: engine.Collect rangeErr block split into idle-timeout + generic loopErr branches; both call PostHooks-with-nil before return
+- [Phase ?]: Plan 16-03: After() methods LoadAndDelete unconditionally then nil-resp early-return — reclaim runs first regardless of resp shape
 
 ### Pending Todos
 
@@ -162,7 +165,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-06-11T18:07:22.994Z
+Last session: 2026-06-11T18:16:06.425Z
 Stopped at: Completed 16-01-PLAN.md
 Resume file: None
 
