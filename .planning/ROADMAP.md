@@ -142,7 +142,13 @@ Plans:
   8. Running the Windows `support` verb while the gateway is stopped produces a complete support bundle on disk — `Get-GatewayStatus`'s pidfile-absent / stale-pid branches no longer terminate the script. (REL-TRAY-02)
   9. When the gateway dies on macOS, the menu-bar icon and tooltip change to a state the user can observe at a glance, and critical failures route through a channel (icon swap, dialog, or title append) that does not silently no-op for the LSUIElement agent. (REL-TRAY-03)
 
-**Plans**: TBD
+**Plans**: 3 plans
+Plans:
+
+- [ ] 15-01-PLAN.md — Pool/ACP + shutdown plumbing: P-1 bounded acquire + ErrPoolExhausted + transient re-queue (REL-POOL-01); P-2 + H-1 shutdownCh + RegisterOnShutdown + two-signal goroutine + explicit cleanup before os.Exit (REL-POOL-02, REL-HTTP-01); P-3 identity-guarded activeStream nil (REL-POOL-03). Wave 1.
+- [ ] 15-02-PLAN.md — HTTP error-frame surfaces: H-2 remove StopWatchdog from OpenAI idle-timeout path (REL-HTTP-02); H-3 surface-native terminal frames + WARN log on mid-stream death — OpenAI + Ollama (REL-HTTP-03). Wave 1 (parallel with 15-01; zero server.go overlap).
+- [ ] 15-03-PLAN.md — Tray/wrapper: T-1 PID identity check in tray + bash + ps1 (REL-TRAY-01); T-2 Get-GatewayStatus returns object — Windows support bundle completes when down (REL-TRAY-02); T-3 applyState calls setIconForState + SetTooltip + 3 icon state assets (REL-TRAY-03). Wave 1 (parallel with 15-01 and 15-02).
+
 **UI hint**: yes
 
 ### Phase 16: Fix Mediums
@@ -179,5 +185,5 @@ Plans:
 | 12 | v1.7 | 1/1 | Complete | 2026-06-07 |
 | 13 | v1.8 | 6/6 | Complete    | 2026-06-07 |
 | 14 | v1.9 | 4/4 | Complete    | 2026-06-11 |
-| 15 | v1.9 | 0/TBD | Not started | — |
+| 15 | v1.9 | 0/3 | Not started | — |
 | 16 | v1.9 | 0/TBD | Not started | — |
