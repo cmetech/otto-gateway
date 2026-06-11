@@ -713,6 +713,22 @@ func (p *Pool) NewSession(ctx context.Context, cwd string) (string, error) {
 					p.mu.Unlock()
 					return "", fmt.Errorf("pool: closed during respawn: %w", err)
 				}
+				// WR-03 fix (phase 16 review): mark dead BEFORE re-queue
+				// so the next acquirer's slotAlive() check trips the
+				// respawn path deterministically. respawnSlot's step 1
+				// already called slot.Client.Close() on the OLD client;
+				// that close fires Done() which the OLD exit-watcher
+				// observes and (asynchronously) takes p.mu to flip
+				// slot.dead=true. But there is a window between our
+				// p.slots <- slot send below and the exit-watcher
+				// acquiring p.mu: a fast NewSession can dequeue the
+				// slot, see slot.dead==false in slotAlive, and call
+				// NewSession against the already-closed Client — which
+				// surfaces a confusing `pool: new-session: acp: client
+				// closed` to the handler. Setting dead under p.mu here
+				// closes that window: the dequeuer's slotAlive sees
+				// dead==true and triggers a fresh respawn.
+				slot.dead = true
 				select {
 				case p.slots <- slot:
 					p.debugLog("pool.respawn.deferred", "slot", slot.Label, "err", err.Error())
@@ -741,6 +757,14 @@ func (p *Pool) NewSession(ctx context.Context, cwd string) (string, error) {
 				p.mu.Unlock()
 				return "", fmt.Errorf("pool: closed during respawn: %w", err)
 			}
+			// WR-03 fix (phase 16 review): mark dead BEFORE re-queue so
+			// the next acquirer's slotAlive() check trips a fresh
+			// respawn. Same race as the ctx-cancel arm above — the OLD
+			// exit-watcher would set dead asynchronously, but the next
+			// NewSession can dequeue first and call NewSession on the
+			// already-closed Client. See the ctx-cancel arm for the
+			// full rationale.
+			slot.dead = true
 			select {
 			case p.slots <- slot:
 				p.debugLog("pool.respawn.transient_requeue", "slot", slot.Label, "err", err.Error())
