@@ -143,7 +143,22 @@ func TestRegression_REL_POOL_02_CtrlCOrphansChildren(t *testing.T) {
 			cancelsAfter,
 		)
 	}
-	t.Logf("cancels after pool.Close(): %d (expected >= 2)", cancelsAfter)
+	// WR-04 fix (phase 15 review): tighten the assertion to require EACH
+	// client received its OWN Cancel. The pre-WR-04 form (cancelsAfter >= 2)
+	// would pass if one client saw both cancels and the other saw none —
+	// a regression where closeAll iterates sessionSlots in a way that
+	// double-cancels the same session would not be caught.
+	bc0Cancels := bc0.cancelCallList()
+	bc1Cancels := bc1.cancelCallList()
+	if len(bc0Cancels) == 0 || len(bc1Cancels) == 0 {
+		t.Fatalf(
+			"post-fix: expected each fake client to receive at least one Cancel; "+
+				"bc0=%v bc1=%v",
+			bc0Cancels, bc1Cancels,
+		)
+	}
+	t.Logf("cancels after pool.Close(): %d (bc0=%d bc1=%d, both must be > 0)",
+		cancelsAfter, len(bc0Cancels), len(bc1Cancels))
 
 	// Unblock the blocking clients so goroutines can exit cleanly.
 	close(bc0.gate)
