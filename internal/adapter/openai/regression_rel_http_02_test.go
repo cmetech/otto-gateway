@@ -12,13 +12,12 @@ package openai
 // generating — and goes back into the free queue.
 //
 // The reproducer instruments a custom RunHandle that records whether
-// StopWatchdog() returned true (AfterFunc was active and is now stopped). It
-// then asserts that the only cancel mechanism (the watchdog) was suppressed
-// without a compensating explicit cancel call.
+// StopWatchdog() was called. Post-fix: StopWatchdog is NOT called on the idleC
+// path, letting the watchdog AfterFunc fire Cancel naturally via the deferred
+// cancelFn on handler return.
 //
-// Post-fix: either (a) StopWatchdog is NOT called on the idleC path (letting
-// the AfterFunc fire Cancel), or (b) an explicit Cancel call is added before
-// StopWatchdog(). Unskip in Phase 15 fix commit and flip the assertion.
+// H-2 fix (REL-HTTP-02): unskipped in Phase 15. Assertion flipped from pre-fix
+// "watchdogCalled==true" to post-fix "watchdogCalled==false".
 
 import (
 	"context"
@@ -56,13 +55,12 @@ func (h *trackingRunHandle) StopWatchdog() func() bool {
 	}
 }
 
-// TestRegression_REL_HTTP_02_IdleTimeoutReturnsHungWorker demonstrates that
-// the idle-timeout branch in runSSEEmitter stops the engine watchdog (which
-// carries the ACP Cancel mechanism) but never issues an explicit Cancel.
-// Pre-fix: watchdog is stopped = Cancel AfterFunc is suppressed = the kiro-cli
-// session keeps running after the slot is returned to the free pool.
+// TestRegression_REL_HTTP_02_IdleTimeoutReturnsHungWorker verifies that
+// the idle-timeout branch in runSSEEmitter does NOT call StopWatchdog().
+// Post-fix: the watchdog AfterFunc fires Cancel naturally via the deferred
+// cancelFn on handler return — no slot is returned with a still-generating
+// kiro-cli worker.
 func TestRegression_REL_HTTP_02_IdleTimeoutReturnsHungWorker(t *testing.T) {
-	t.Skip("REL-HTTP-02 (H-2): regression test — unskip in Phase 15 fix commit")
 	defer goleak.VerifyNone(t)
 
 	// Set up a fakeStream whose Chunks() channel never produces a value —
@@ -87,8 +85,7 @@ func TestRegression_REL_HTTP_02_IdleTimeoutReturnsHungWorker(t *testing.T) {
 	ctx := context.Background()
 
 	// Drive runSSEEmitter with a short idle timeout (100ms) so the idle branch
-	// fires quickly. Pre-fix: the idleC branch calls StopWatchdog()() but does
-	// not explicitly call Cancel(sessionID).
+	// fires quickly. Post-fix: the idleC branch must NOT call StopWatchdog().
 	const idleTimeout = 100 * time.Millisecond
 	_, err := runSSEEmitter(ctx, rec, run, &canonical.ChatRequest{}, "auto", idleTimeout, nullLogger())
 
@@ -97,29 +94,21 @@ func TestRegression_REL_HTTP_02_IdleTimeoutReturnsHungWorker(t *testing.T) {
 		t.Fatalf("expected ErrStreamIdleTimeout, got %v", err)
 	}
 
-	// Pre-fix observable (assertion 1): StopWatchdog was called on the idle path.
-	// This is the mechanism that suppresses ACP Cancel.
-	if !run.watchdogCalled {
-		t.Error("pre-fix reproducer: StopWatchdog() was NOT called on idle-timeout path; " +
-			"expected it to be called (suppressing ACP Cancel)")
+	// Post-fix assertion: StopWatchdog was NOT called on the idle path.
+	// The watchdog AfterFunc must fire Cancel naturally (via deferred cancelFn
+	// on handler return), not be suppressed by an explicit StopWatchdog() call.
+	if run.watchdogCalled {
+		t.Error("post-fix regression: StopWatchdog() was called on idle-timeout path; " +
+			"this suppresses ACP Cancel and returns a hung worker to the free pool (H-2 bug)")
 	}
 
-	// Pre-fix observable (assertion 2): The watchdog AfterFunc was stopped
-	// (returned true), meaning the ACP Cancel mechanism was suppressed.
-	if !run.watchdogStopped {
-		t.Error("pre-fix reproducer: watchdog stop function returned false; " +
-			"expected true (AfterFunc was alive and is now cancelled without issuing Cancel)")
+	// Corollary: if watchdogCalled is false, watchdogStopped must also be false.
+	if run.watchdogStopped {
+		t.Error("post-fix regression: watchdog stop function was invoked; " +
+			"StopWatchdog() must not be called on the idle-timeout path")
 	}
 
-	// The critical gap: the idleC branch stops the watchdog but emits no Cancel.
-	// The pool's ctx-watcher releases the slot on ctx.Done (which fires after
-	// runSSEEmitter returns and the streaming handler calls cancelFn). The
-	// slot re-enters the free queue carrying a still-generating kiro session.
-	//
-	// Post-fix: either (a) watchdogCalled is false (AfterFunc fires Cancel
-	// naturally), OR (b) an explicit cancel call occurs that this tracking handle
-	// could observe — flip the assertion in the Phase 15 unskip commit.
-	t.Logf("pre-fix observable confirmed: watchdogCalled=%v watchdogStopped=%v — "+
-		"ACP Cancel was suppressed via StopWatchdog(); no explicit Cancel issued",
+	t.Logf("post-fix verified: watchdogCalled=%v watchdogStopped=%v — "+
+		"ACP Cancel fires naturally via watchdog AfterFunc; no suppression on idle path",
 		run.watchdogCalled, run.watchdogStopped)
 }

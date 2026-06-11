@@ -457,9 +457,15 @@ func runSSEEmitter(ctx context.Context, w http.ResponseWriter, run RunHandle, re
 			// the canonical marker, and return wrapped
 			// canonical.ErrStreamIdleTimeout for handler errors.Is
 			// detection. Frame shape matches errorInner in errors.go.
-			if stop := run.StopWatchdog(); stop != nil {
-				stop()
-			}
+			//
+			// H-2 fix (REL-HTTP-02): do NOT call StopWatchdog here.
+			// The watchdog's AfterFunc carries the ACP Cancel mechanism.
+			// Calling StopWatchdog() suppresses Cancel — leaving the
+			// kiro-cli worker generating into a freed slot. Let the
+			// deferred cancelFn (set by the handler on handler return)
+			// trigger the watchdog AfterFunc naturally so Cancel fires.
+			// Mirrors the Ollama NDJSON idle-timeout path which already
+			// omits StopWatchdog() on the idleC arm.
 			e.logger.Warn(
 				"stream.idle_timeout",
 				"surface", "openai",
@@ -479,9 +485,10 @@ func runSSEEmitter(ctx context.Context, w http.ResponseWriter, run RunHandle, re
 				return finalizeSSE(e, run)
 			}
 			if err := e.applyChunk(c); err != nil {
-				if stop := run.StopWatchdog(); stop != nil {
-					stop()
-				}
+				// H-2 fix (REL-HTTP-02): do NOT call StopWatchdog on
+				// write-error path. Same rationale as the idleC arm: let
+				// the deferred cancelFn trigger the watchdog AfterFunc so
+				// ACP Cancel fires naturally rather than being suppressed.
 				return e.aggregatedResponse(canonical.StopUnknown, nil), err
 			}
 			if idleTimer != nil {
