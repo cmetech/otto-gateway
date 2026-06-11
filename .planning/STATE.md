@@ -2,11 +2,11 @@
 gsd_state_version: 1.0
 milestone: v1.9
 milestone_name: Reliability Hardening
-status: planning
-last_updated: "2026-06-11T11:57:24.227Z"
-last_activity: 2026-06-11
+status: verifying
+last_updated: "2026-06-11T12:27:39.935Z"
+last_activity: "2026-06-11 — v1.9 ROADMAP.md authored: 3 phases (14, 15, 16), 24 REL-* requirements mapped 1:1, Phase 14 gates downstream fix phases"
 progress:
-  total_phases: 0
+  total_phases: 3
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -155,9 +155,9 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-06-07
-Stopped at: v1.8 roadmap drafted (Phase 13 — Nyquist coverage uplift, 6 parallel plans expected, NYQ-02/03/06/06.1/08/08.4 + NYQ-ALL); awaiting `/gsd-plan-phase 13`
-Resume file: .planning/ROADMAP.md
+Last session: 2026-06-11T12:27:39.930Z
+Stopped at: Phase 14 context gathered
+Resume file: .planning/phases/14-verify-reliability-findings/14-CONTEXT.md
 
 ## Operator Next Steps
 
