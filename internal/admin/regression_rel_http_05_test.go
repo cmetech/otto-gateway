@@ -23,6 +23,7 @@ package admin
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -38,11 +39,21 @@ import (
 // the subscriber channel to deliver it. Pre-fix observable: the received line
 // has length > TailerMaxLineBytes (full line delivered, cap not enforced).
 func TestRegression_REL_HTTP_05_AdminTailerLineCapBypass(t *testing.T) {
-	t.Skip("REL-HTTP-05 (H-5): regression test — unskip in Phase 16 fix commit")
 	defer goleak.VerifyNone(t)
 
 	dir := t.TempDir()
 	logPath := dir + "/test.log"
+
+	// Pre-create the file so the tailer's reopen() can seek-to-EOF on
+	// an EMPTY file. The Tailer's D-10 invariant ("never backfill
+	// historical content") means a file created AFTER the first poll
+	// would have its initial contents skipped — reopen() seeks to EOF
+	// of the existing file. Touching it empty first lets the tailer
+	// position itself at byte 0, and the append below is then read on
+	// the next poll tick.
+	if err := os.WriteFile(logPath, nil, 0o644); err != nil {
+		t.Fatalf("create empty log: %v", err)
+	}
 
 	tailer := NewTailer(logPath, discardLogger())
 
@@ -66,17 +77,16 @@ func TestRegression_REL_HTTP_05_AdminTailerLineCapBypass(t *testing.T) {
 
 	line := received[0]
 
-	// Pre-fix observable: the received line length exceeds TailerMaxLineBytes
-	// because the cap check was bypassed (line was newline-terminated).
-	if len(line) <= TailerMaxLineBytes {
-		t.Errorf("pre-fix reproducer: received line length %d is <= TailerMaxLineBytes (%d) — "+
-			"cap was enforced; bug may already be fixed",
-			len(line), TailerMaxLineBytes)
-	} else {
-		t.Logf("pre-fix observable confirmed: received line length %d > TailerMaxLineBytes (%d); "+
+	// Post-fix (Plan 16-02 Task 2): the cap is enforced unconditionally —
+	// regardless of newline termination. A 5×TailerMaxLineBytes line
+	// terminated by '\n' must be truncated at TailerMaxLineBytes.
+	if len(line) > TailerMaxLineBytes {
+		t.Errorf("post-fix invariant violated: received line length %d > TailerMaxLineBytes (%d); "+
 			"newline-terminated multi-MB line bypassed the cap",
 			len(line), TailerMaxLineBytes)
+	} else {
+		t.Logf("post-fix confirmed: received line length %d <= TailerMaxLineBytes (%d); "+
+			"cap enforced on newline-terminated line",
+			len(line), TailerMaxLineBytes)
 	}
-
-	// Post-fix assertion (unskip in Phase 16): len(line) <= TailerMaxLineBytes.
 }
