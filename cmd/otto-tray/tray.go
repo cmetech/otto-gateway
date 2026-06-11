@@ -181,6 +181,11 @@ func (s *trayState) applyState(out stateOutput) {
 	s.current = out.State
 	s.mu.Unlock()
 
+	// T-3 fix (REL-TRAY-03): always-visible state signal on every FSM transition (D-11).
+	// Icon and tooltip are the primary gateway-death signal; notify() is secondary.
+	setIconForState(out.State)
+	systray.SetTooltip(tooltipForState(out.State, out.Detail))
+
 	header := fmt.Sprintf("OTTO Gateway · %s", out.State)
 	if out.Detail != "" {
 		header += " (" + out.Detail + ")"
