@@ -1,16 +1,16 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.8
-milestone_name: Nyquist Coverage Uplift
-status: Awaiting next milestone
-last_updated: "2026-06-07T13:53:35.773Z"
-last_activity: 2026-06-07 — Milestone v1.8 completed and archived
+milestone: v1.9
+milestone_name: Reliability Hardening
+status: planning
+last_updated: "2026-06-11T11:57:24.227Z"
+last_activity: 2026-06-11
 progress:
-  total_phases: 1
-  completed_phases: 1
-  total_plans: 6
-  completed_plans: 6
-  percent: 100
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
@@ -24,10 +24,10 @@ See: .planning/PROJECT.md (updated 2026-06-07)
 
 ## Current Position
 
-Phase: Milestone v1.8 complete
+Phase: Not started (defining requirements)
 Plan: —
-Status: Awaiting next milestone
-Last activity: 2026-06-08 - Completed quick task 260608-m1j: Implement support-bundle feature per docs/superpowers/specs/2026-06-08-support-bundle-design.md
+Status: Defining requirements
+Last activity: 2026-06-11 — Milestone v1.9 started
 
 ## Performance Metrics
 

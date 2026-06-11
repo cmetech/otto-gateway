@@ -30,9 +30,23 @@ applies uniformly to all three. The gateway being faster than Node
 and shipping as one binary is bonus — the surface compatibility
 and the single governance surface are the load-bearing properties.
 
-## Current Milestone: (awaiting `/gsd-new-milestone`)
+## Current Milestone: v1.9 Reliability Hardening
 
-v1.8 shipped 2026-06-07. Next milestone scope is undecided. Carryover candidates: Phase 08.3.1 ACP Per-Session Stream Demux (awaits multi-tenant deployment driver) and Windows Authenticode code-signing (awaits cert procurement).
+**Goal:** Drive the 23 Critical/High/Medium findings from `docs/reviews/2026-06-11-reliability-review.md` to closure — kill silent-failure modes and orphaned-process paths under the everyday laptop-shutdown / sleep-wake / mid-stream-disconnect scenarios.
+
+**Target work (23 findings, scoped from a 35-finding review at commit `9212d5b`):**
+- **Pool / ACP lifecycle (6):** P-1 (Critical: pool→0 then every request hangs), P-2 (Ctrl-C orphans kiro-cli trees), P-3 (stale `awaitPromptResult` clobbers next stream → silent empty 200), P-4 (slow consumer blocks readLoop → ping SIGKILLs healthy worker), P-5 (data race on `Entry.LastUsed`), P-6 (Windows pgid kill is a no-op)
+- **HTTP surface (5):** H-1 (shutdown blocks 30s on admin SSE → exit 1), H-2 (OpenAI idle-timeout returns hung worker to free pool without cancel), H-3 (silent mid-stream truncation on OpenAI + Ollama), H-4 (no body-read deadline → hour-scale stalls), H-5 (admin tailer 1 MB cap bypassed by newline-terminated lines)
+- **Goroutine / hooks (1):** G-1 (non-streaming aggregation skips PostHooks → unbounded `sync.Map` leak in LoggingHook/ChatTraceHook)
+- **Tray / UI (7):** T-1 (PID identity unchecked → Stop/Restart can kill innocent recycled PID), T-2 (Windows support-bundle `exit 1` aborts collection when gateway is down), T-3 (gateway death effectively invisible on macOS), T-4 (Windows `notify()` is a blocking modal on the uiLoop), T-5 (tray shows running while pool wedged), T-6 (Windows bundle-path stdout pollution), T-7 (support-bundle size/time unbounded → SIGKILL + leaked staging dir)
+- **Config / observability (4):** C-1 (silent coercion of zero/negative pool/session knobs), C-2 (`PING_INTERVAL<0` crashes with raw goroutine panic, not config error), C-3 (`EMBEDDING_MODEL_DEFAULT` documented but never read), O-1 (pool exhaustion completely silent at default log level)
+
+**Phase structure (by severity):**
+- **Phase 14: Verify reliability findings** — Audit each of the 23 against current source. Tag confirmed / false-positive / needs-deeper-investigation. No fix work. Gate that fix phases consume.
+- **Phase 15: Fix Critical + High** (9 findings: P-1, P-2, P-3, H-1, H-2, H-3, T-1, T-2, T-3) — Load-bearing failure paths only.
+- **Phase 16: Fix Mediums** (14 findings: P-4, P-5, P-6, H-4, H-5, G-1, T-4, T-5, T-6, T-7, C-1, C-2, C-3, O-1) — Includes P-5 (the `-race` regression) so trust-gate posture is restored.
+
+**Out of scope (rolled to v1.10 backlog):** All 12 Low findings from the review (P-7, P-8, H-6, H-7, T-8, T-9, C-4, C-5, C-6, O-2, O-3, O-4). Carryover candidates from v1.8: Phase 08.3.1 ACP Per-Session Stream Demux (awaits multi-tenant deployment driver), Windows Authenticode code-signing (awaits cert procurement).
 
 ## Previous Milestone: v1.8 Nyquist Coverage Uplift (SHIPPED 2026-06-07)
 
@@ -104,13 +118,18 @@ v1.8 shipped 2026-06-07. Next milestone scope is undecided. Carryover candidates
 
 ### Active
 
-<!-- Current scope for v1.6. -->
+<!-- Current scope for v1.9 Reliability Hardening. -->
 
-v1.6 ("Tooling Cleanup") milestone scope — opened 2026-06-06 via `/gsd-new-milestone v1.6`:
+v1.9 ("Reliability Hardening") milestone scope — opened 2026-06-11 via `/gsd-new-milestone v1.9`. Detailed REQ-ID list in `.planning/REQUIREMENTS.md`. High-level categories:
 
-- [ ] **LINT-01**: golangci-lint v2 baseline reaches 0 issues (49 pre-existing violations across wrapcheck/unparam/revive/gosec/etc. — categories documented in Current Milestone section above)
-- [ ] **LINT-02**: `continue-on-error: true` removed from the golangci-lint step in `.github/workflows/ci.yml`; lint failures block merges
-- [ ] **FMT-01**: gofumpt tree-wide pass so `gofumpt -d .` reports clean from a fresh clone — covers pre-existing drift across `cmd/` + `internal/adapter/*` (Phase 2/3.1/8 origin); `make ci` succeeds at the fmt-check step
+- [ ] **REL-VERIFY-\***: Phase 14 — confirm each of the 23 review findings is real against current source before any fix work
+- [ ] **REL-POOL-\***: Subprocess pool / ACP lifecycle reliability (no permanent pool shrink; no orphaned process trees; no silent stream-clobber on slot reuse; correct Windows process-tree kill; data-race-free session metadata)
+- [ ] **REL-HTTP-\***: HTTP surface reliability (graceful shutdown that doesn't hang on long-lived SSE; idle-timeout that cancels the hung worker; mid-stream worker death surfaces as an explicit error frame on all three surfaces; bounded request-body read; admin tailer line cap enforced)
+- [ ] **REL-HOOKS-\***: PostHook discipline on non-streaming error paths (no `sync.Map` leaks, no missing chat-trace records on failed requests)
+- [ ] **REL-TRAY-\***: Tray + wrapper reliability (PID-identity check before stop/restart; macOS gateway-death surfacing; non-modal Windows notify; tray probe uses `/health/pool`; bundle-path parsing tolerant of stdout chatter; bounded bundle size/time)
+- [ ] **REL-CFG-\***: Config + observability (fail-fast on negative/zero pool/session/ping knobs; pool-wait diagnostic visible at default log level; degenerate `EMBEDDING_MODEL_DEFAULT` documented or removed)
+
+Source of truth for the underlying findings: [`docs/reviews/2026-06-11-reliability-review.md`](../docs/reviews/2026-06-11-reliability-review.md).
 
 **Deferred to v1.7 (explicitly out of v1.6 scope):**
 
@@ -197,4 +216,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-06-07 — Milestone v1.8 "Nyquist Coverage Uplift" SHIPPED. 1 phase (Phase 13), 6 plans, 7/7 REQ-IDs (NYQ-02/03/06/06.1/08/08.4/ALL) satisfied, zero carve-outs. Single-day milestone. 36 commits, 32 files changed, +3113/-239 LOC. Compliance ratio flipped 7/13 → 13/13 with zero production source edits. 3 inherited operator-deferred UAT items tracked in `13-HUMAN-UAT.md` (Phase 08.4 PII smoke, loop24-client tool-call UAT, Phase 06 `TestE2E_Tools_Cancel`). Milestone audit verdict: passed, zero blockers. Carryover to next milestone: Phase 08.3.1 ACP demux + Windows Authenticode (both await external triggers). Earlier: Milestone v1.7 "Go Stdlib CVE Cleanup" SHIPPED. 1 phase (Phase 12), 1 plan, 4/4 REQ-IDs (CVE-01/02/03 + CI-02) satisfied, zero carve-outs. Single-day milestone. 8 commits, 9 files changed, +892/-34 LOC (production diff: `go.mod | 2 +-`). `go.mod` bumped 1.25.0 → 1.26.4 (two-step per D-12-01: 1.26.3 surfaced 2 reachable residuals in net/http and x509, tightened to 1.26.4 — minimum patch level that closes all 23 baseline stdlib CVEs from GO-2026-5039 through GO-2025-4007). `govulncheck ./...` clean. `make ci` exits 0 end-to-end for the first time since v1.5 shipped — closes v1.6 Phase 11 D-11-01 carve-out. CI run 27081876026 confirms all 3 jobs green (lint+test-race+arch-lint+govulncheck, publish-dry-run, cross-compile). Audit verdict: passed, zero warnings. v1.8 backlog: Phase 08.3.1 ACP demux (re-re-deferred) + Nyquist coverage uplift (6 of 13 v1.5 phases non-compliant) + Windows Authenticode signing (cert procurement). Milestone artifacts archived at `.planning/milestones/v1.7-{ROADMAP,REQUIREMENTS,MILESTONE-AUDIT}.md`. Full per-phase history in `.planning/MILESTONES.md`.*
+*Last updated: 2026-06-11 — Milestone v1.9 "Reliability Hardening" OPENED. Driver: `docs/reviews/2026-06-11-reliability-review.md` (35 findings; 23 in scope as Critical/High/Medium, 12 Lows deferred to v1.10). Phase shape: 14 (Verify) → 15 (Critical+High fixes, 9) → 16 (Medium fixes, 14). Phase 16 includes P-5 (`Entry.LastUsed` data race) so trust-gate `-race` posture is restored. Earlier: Milestone v1.8 "Nyquist Coverage Uplift" SHIPPED. 1 phase (Phase 13), 6 plans, 7/7 REQ-IDs (NYQ-02/03/06/06.1/08/08.4/ALL) satisfied, zero carve-outs. Single-day milestone. 36 commits, 32 files changed, +3113/-239 LOC. Compliance ratio flipped 7/13 → 13/13 with zero production source edits. 3 inherited operator-deferred UAT items tracked in `13-HUMAN-UAT.md` (Phase 08.4 PII smoke, loop24-client tool-call UAT, Phase 06 `TestE2E_Tools_Cancel`). Milestone audit verdict: passed, zero blockers. Carryover to next milestone: Phase 08.3.1 ACP demux + Windows Authenticode (both await external triggers). Earlier: Milestone v1.7 "Go Stdlib CVE Cleanup" SHIPPED. 1 phase (Phase 12), 1 plan, 4/4 REQ-IDs (CVE-01/02/03 + CI-02) satisfied, zero carve-outs. Single-day milestone. 8 commits, 9 files changed, +892/-34 LOC (production diff: `go.mod | 2 +-`). `go.mod` bumped 1.25.0 → 1.26.4 (two-step per D-12-01: 1.26.3 surfaced 2 reachable residuals in net/http and x509, tightened to 1.26.4 — minimum patch level that closes all 23 baseline stdlib CVEs from GO-2026-5039 through GO-2025-4007). `govulncheck ./...` clean. `make ci` exits 0 end-to-end for the first time since v1.5 shipped — closes v1.6 Phase 11 D-11-01 carve-out. CI run 27081876026 confirms all 3 jobs green (lint+test-race+arch-lint+govulncheck, publish-dry-run, cross-compile). Audit verdict: passed, zero warnings. v1.8 backlog: Phase 08.3.1 ACP demux (re-re-deferred) + Nyquist coverage uplift (6 of 13 v1.5 phases non-compliant) + Windows Authenticode signing (cert procurement). Milestone artifacts archived at `.planning/milestones/v1.7-{ROADMAP,REQUIREMENTS,MILESTONE-AUDIT}.md`. Full per-phase history in `.planning/MILESTONES.md`.*
