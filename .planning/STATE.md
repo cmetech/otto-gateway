@@ -1,11 +1,11 @@
 ---
 gsd_state_version: 1.0
 milestone: v1.9
-milestone_name: milestone
-status: executing
-stopped_at: Completed 17-02-PLAN.md (REL-POOL-02 goleak deflake — ca258f9). Phase 17 complete; make ci exit 0 end-to-end; v1.9.1 ready to ship.
-last_updated: "2026-06-11T23:03:45Z"
-last_activity: 2026-06-11 -- Plan 17-02 complete (ca258f9); REL-POOL-02 test 20/20 PASS (60/60 across 3 rounds) under -race with goleak. Phase 17 trust-gate restoration complete; make ci exit 0 end-to-end.
+milestone_name: Reliability Hardening
+status: ready-to-tag-v1.9.1
+stopped_at: Phase 17 complete — make ci exit 0; verifier 5/5 PASS; review clean (0 critical, 1 warning, 2 info); security 13/13 CLOSED. Ready to tag v1.9.1 and push.
+last_updated: "2026-06-11T23:30:00Z"
+last_activity: 2026-06-11 -- Phase 17 verified + reviewed + secured. v1.9.1 release ready.
 progress:
   total_phases: 23
   completed_phases: 22
