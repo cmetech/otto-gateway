@@ -2,10 +2,10 @@
 gsd_state_version: 1.0
 milestone: v1.9
 milestone_name: Reliability Hardening
-status: executing
-stopped_at: Completed 16-02-PLAN.md
+status: phase-complete
+stopped_at: Phase 16 complete — verifier PASSED 17/17, code review clean (0 critical, 4 warnings, 5 info)
 last_updated: "2026-06-11T19:11:43.309Z"
-last_activity: 2026-06-11 -- Phase 16 Plan 05 (Config) complete
+last_activity: 2026-06-11 -- Phase 16 (fix-mediums) complete — all 5 plans, 14 Medium reliability findings closed
 progress:
   total_phases: 22
   completed_phases: 21
@@ -25,10 +25,10 @@ See: .planning/PROJECT.md (updated 2026-06-07)
 
 ## Current Position
 
-Phase: 16 (fix-mediums) — EXECUTING
-Plan: 5 of 5 complete (16-01, 16-03, 16-05); Wave 1 remaining: 16-02 (HTTP); Wave 2: 16-04 (Tray)
-Status: Wave 1 in progress
-Last activity: 2026-06-11 -- Phase 16 Plan 05 (Config) complete
+Phase: 16 (fix-mediums) — COMPLETE
+Plan: 5 of 5 complete (16-01 Pool/ACP, 16-02 HTTP, 16-03 Hooks, 16-04 Tray, 16-05 Config)
+Status: Phase 16 closed — verifier PASSED, code review clean. Ready for /gsd-secure-phase 16 or /gsd-complete-milestone.
+Last activity: 2026-06-11 -- Phase 16 (fix-mediums) complete
 
 ## Performance Metrics
 
