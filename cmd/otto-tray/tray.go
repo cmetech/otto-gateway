@@ -204,9 +204,21 @@ func (s *trayState) applyState(out stateOutput) {
 		s.miRestart.Enable()
 	}
 
-	if prev == StateRunning && (out.State == StateError || out.State == StateStopped) {
-		notify("OTTO Gateway", fmt.Sprintf("Gateway is %s", out.State))
+	s.notifyTransition(prev, out.State)
+}
+
+// notifyTransition emits a user-facing notification on
+// running → error/stopped transitions. Split out of applyState so the
+// REL-TRAY-04 regression test can drive it without a live systray.
+//
+// RED stage of REL-TRAY-04 (T-4): notifyFn is invoked synchronously. The
+// GREEN commit wraps the dispatch in `go func()` so a blocking notify
+// (Windows MessageBox waits for user click) cannot wedge uiLoop.
+func (s *trayState) notifyTransition(prev, next State) {
+	if prev != StateRunning || (next != StateError && next != StateStopped) {
+		return
 	}
+	notifyFn("OTTO Gateway", fmt.Sprintf("Gateway is %s", next))
 }
 
 // getStartedAt returns the last-recorded start timestamp, or the

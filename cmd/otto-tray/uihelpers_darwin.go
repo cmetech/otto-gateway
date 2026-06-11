@@ -67,10 +67,22 @@ func copyToClipboard(s string) {
 	_ = cmd.Wait()
 }
 
+// notifyFn is the package-level seam tests inject to capture or block notify.
+// Mirrors the Windows seam (REL-TRAY-04 / T-4) for platform symmetry — the
+// applyState dispatch in tray.go runs notifyFn in a goroutine on both
+// platforms so the FSM transition path is identical regardless of OS.
+var notifyFn = notifyImpl
+
+// notify is the public entrypoint kept for backwards compatibility with
+// callers outside applyState (handleStart/Stop/Restart error toasts, support
+// bundle dialogs). It routes through notifyFn so test injection covers every
+// call path.
+func notify(title, body string) { notifyFn(title, body) }
+
 // As of v1.9, icon/tooltip via setIconForState is the primary state signal;
 // notification banners are a secondary best-effort signal (LSUIElement agents
 // may not receive notification permission — see REL-TRAY-03 / D-12).
-func notify(title, body string) {
+func notifyImpl(title, body string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	script := fmt.Sprintf(`display notification "%s" with title "%s"`,

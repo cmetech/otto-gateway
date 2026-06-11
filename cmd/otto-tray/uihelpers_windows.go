@@ -71,7 +71,23 @@ func copyToClipboard(s string) {
 	_ = cmd.Wait()
 }
 
-func notify(title, body string) {
+// notifyFn is the package-level seam tests inject to capture or block notify.
+// REL-TRAY-04 (T-4) fix: applyState dispatches through notifyFn in a goroutine
+// so a slow / modal MessageBox cannot wedge the uiLoop. The variable is also
+// the injection point the REL-TRAY-04 regression test uses to simulate a
+// 30-second MessageBox stall without spawning PowerShell.
+var notifyFn = notifyImpl
+
+// notify is the public entrypoint kept for backwards compatibility with
+// callers outside applyState (handleStart/Stop/Restart error toasts, support
+// bundle dialogs). It routes through notifyFn so test injection covers every
+// call path; the regression test asserts on the applyState path specifically.
+func notify(title, body string) { notifyFn(title, body) }
+
+// notifyImpl is the platform MessageBox implementation. Blocking on purpose —
+// MessageBox returns only after the user clicks OK. applyState wraps the call
+// in a fire-and-forget goroutine so the modal does not freeze the uiLoop.
+func notifyImpl(title, body string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	// MessageBox is synchronous and modal — reliable on every
@@ -80,8 +96,9 @@ func notify(title, body string) {
 	// process exited before the balloon rendered, so the user saw
 	// nothing. MessageBox blocks until the user clicks OK, which is
 	// the right semantics for "Failed to start" feedback anyway —
-	// the caller already runs notify from a background goroutine, so
-	// blocking here does not freeze the UI.
+	// the caller already runs notify from a background goroutine
+	// (T-4 fix: applyState wraps notifyFn in `go func()`), so blocking
+	// here does not freeze the UI.
 	//
 	// MB_OK (0x00) + MB_ICONINFORMATION (0x40) + MB_SETFOREGROUND
 	// (0x10000) keeps it terse and pulls the dialog above whatever
