@@ -128,4 +128,4 @@ Plans:
 
 - [ ] 17-01-PLAN.md — Move ErrPoolExhausted to canonical package, restore TRST-04 boundary (D-17-01)
 - [ ] 17-02-PLAN.md — Deflake TestRegression_REL_POOL_02_CtrlCOrphansChildren to 20/20 under -race (D-17-04)
-- [ ] 17-03-PLAN.md — Mechanical batch: gofmt + gofumpt + gosec G301/G306 + Pool.removeSlot dead-code removal (D-17-02)
+- [x] 17-03-PLAN.md — Mechanical batch: gofmt + gofumpt + gosec G301/G306 + Pool.removeSlot dead-code removal (D-17-02) [2026-06-11 — b78fd09]

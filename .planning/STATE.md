@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.9
 milestone_name: Reliability Hardening
-status: phase-17-pending
-stopped_at: v1.9 ready to ship but make ci surfaced trust-gate debt — Phase 17 opened to close it (arch-lint, gosec, fmt, goleak flake)
-last_updated: "2026-06-11T22:04:37.094Z"
-last_activity: 2026-06-11 -- Phase 17 opened: Trust-Gate Restoration
+status: executing
+stopped_at: Completed 17-03-PLAN.md (mechanical trust-gate batch)
+last_updated: "2026-06-11T22:39:32Z"
+last_activity: 2026-06-11 -- Plan 17-03 complete; fmt + gosec + dead-code closed (b78fd09). 17-01 + 17-02 pending.
 progress:
-  total_phases: 22
+  total_phases: 23
   completed_phases: 21
-  total_plans: 78
-  completed_plans: 78
-  percent: 95
+  total_plans: 81
+  completed_plans: 79
+  percent: 92
 ---
 
 # Project State
@@ -21,14 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-07)
 
 **Core value:** All three API surfaces (OpenAI for Pi SDK, Ollama for LangFlow, Anthropic for loop24-client/GSD Pi) serve their respective clients without those clients knowing kiro-cli exists, with one place to enforce policy.
-**Current focus:** v1.9 SHIPPED 2026-06-11. Next: /gsd-new-milestone (v1.10).
+**Current focus:** Phase 17 — trust-gate-restoration
 
 ## Current Position
 
+Phase: 17 (trust-gate-restoration) — EXECUTING
+Plan: 2 of 3 (17-03 complete; 17-01 + 17-02 pending)
 Milestone: v1.9 Reliability Hardening — SHIPPED 2026-06-11
 Audit: 27/27 requirements, 8/8 seams WIRED, 26/26 threats CLOSED
-Status: Archived and tagged. Ready for /gsd-new-milestone to open v1.10.
-Last activity: 2026-06-11 -- v1.9 milestone archived
+Status: Executing Phase 17
+Last activity: 2026-06-11 -- Plan 17-03 complete (b78fd09); fmt + gosec G301/G306 + Pool.removeSlot dead-code closed. make ci progresses past fmt/lint/test-race; arch-lint failure remains (17-01's scope).
 
 ## Performance Metrics
 
@@ -67,6 +69,7 @@ Last activity: 2026-06-11 -- v1.9 milestone archived
 | Phase 16 P05 | 12min | 3 tasks (TDD R/G × 3) | 7 files |
 | Phase 16 P02 | 25min | 3 tasks | 9 files |
 | Phase 16 P04 | 13min | 4 tasks | 10 files |
+| Phase 17 P03 | 12min | 5 tasks (batched 1 commit per D-17-02) | 5 files |
 
 ## Accumulated Context
 
@@ -118,6 +121,9 @@ Recent decisions affecting current work:
 - [Phase ?]: Plan 16-02: Task 3 D-05 shipped atomic per D-02 — new health_status_test.go could not compile against unmodified PoolStats; same posture as Plan 16-05 Task 3 (be7abbc) and Plan 16-01 Task 4 (775015d)
 - [Phase ?]: Phase 16 Plan 04: notifyTransition extracted from applyState (testability — applyState touches systray.MenuItem pointers, untestable without systray.Run); local fn := notifyFn snapshot before goroutine launch closes -race window
 - [Phase ?]: Phase 16 Plan 04: T-6/T-7 regression tests permanent-skip stubs (Phase 15 T-2/T-3 precedent for Windows-only PS1-resident fixes); T-7 timeout via Stopwatch+Test-Deadline+throw rather than Start-Job to avoid 20+ $using: scoping in pwsh-unverifiable code
+- [Phase 17]: Plan 17-03 executed as single atomic commit per D-17-02 (5 mechanical fixes in 1 commit; revert-as-unit guarantee). 14 ins / 28 del across 5 files; small bounded diff. Commit b78fd09.
+- [Phase 17]: Plan 17-03 D-17-05 single-user laptop posture rationale recorded inline in commit body for the 0o600 WriteFile tightening on tray.go last-error.log — no cross-user reader exists; support-bundle may contain kiro-cli stderr.
+- [Phase 17]: Plan 17-03 dead-code stale-comment policy: minimize the diff — kept "removed in Phase 17" annotations rather than full comment removal so future readers grepping for removeSlot find the historical context explaining the WR-07 / CR-01 / REL-POOL-01 D-08 design rationale.
 
 ### Pending Todos
 
@@ -177,8 +183,8 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-06-11T19:10:47.875Z
-Stopped at: Completed 16-02-PLAN.md
+Last session: 2026-06-11T22:39:32Z
+Stopped at: Completed 17-03-PLAN.md (mechanical trust-gate batch — b78fd09)
 Resume file: None
 
 ## Operator Next Steps
