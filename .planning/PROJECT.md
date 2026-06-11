@@ -30,7 +30,18 @@ applies uniformly to all three. The gateway being faster than Node
 and shipping as one binary is bonus — the surface compatibility
 and the single governance surface are the load-bearing properties.
 
-## Current Milestone: v1.9 Reliability Hardening
+## Current State
+
+**Shipped:** v1.9 Reliability Hardening (2026-06-11)
+- 23 reliability findings closed (1 Critical + 8 High + 14 Medium); `-race` trust gate restored via REL-POOL-05 atomic.Int64 LastUsed; pool lifecycle hardened on Linux/darwin/Windows; mid-stream death surfaced honestly to OpenAI + Ollama + Anthropic clients; tray honest on macOS + Windows; config fail-closed.
+- Audit: [milestones/v1.9-MILESTONE-AUDIT.md](milestones/v1.9-MILESTONE-AUDIT.md) — 27/27 requirements, 8/8 cross-phase seams WIRED, 26/26 threats CLOSED.
+
+## Next Milestone Goals
+
+**v1.10 (planned):** Close the 12 Low-severity findings deferred from v1.9 (P-7, P-8, H-6, H-7, T-8, T-9, C-4, C-5, C-6, O-2, O-3, O-4). Carryover candidates: Phase 08.3.1 ACP Per-Session Stream Demux (awaits multi-tenant deployment driver), Windows Authenticode code-signing (awaits cert procurement). Run `/gsd-new-milestone` to scope and define requirements.
+
+<details>
+<summary>v1.9 Reliability Hardening — full scope (collapsed)</summary>
 
 **Goal:** Drive the 23 Critical/High/Medium findings from `docs/reviews/2026-06-11-reliability-review.md` to closure — kill silent-failure modes and orphaned-process paths under the everyday laptop-shutdown / sleep-wake / mid-stream-disconnect scenarios.
 
@@ -47,6 +58,8 @@ and the single governance surface are the load-bearing properties.
 - **Phase 16: Fix Mediums** (14 findings: P-4, P-5, P-6, H-4, H-5, G-1, T-4, T-5, T-6, T-7, C-1, C-2, C-3, O-1) — Includes P-5 (the `-race` regression) so trust-gate posture is restored.
 
 **Out of scope (rolled to v1.10 backlog):** All 12 Low findings from the review (P-7, P-8, H-6, H-7, T-8, T-9, C-4, C-5, C-6, O-2, O-3, O-4). Carryover candidates from v1.8: Phase 08.3.1 ACP Per-Session Stream Demux (awaits multi-tenant deployment driver), Windows Authenticode code-signing (awaits cert procurement).
+
+</details>
 
 ## Previous Milestone: v1.8 Nyquist Coverage Uplift (SHIPPED 2026-06-07)
 

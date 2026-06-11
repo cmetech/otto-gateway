@@ -1,5 +1,31 @@
 # Milestones
 
+## v1.9 Reliability Hardening (Shipped: 2026-06-11)
+
+**Phases completed:** 3 phases (14, 15, 16), 12 plans
+**Requirements:** 27/27 satisfied
+**Audit:** [milestones/v1.9-MILESTONE-AUDIT.md](milestones/v1.9-MILESTONE-AUDIT.md) · **Archive:** [milestones/v1.9-ROADMAP.md](milestones/v1.9-ROADMAP.md)
+
+**Key accomplishments:**
+
+- **23 reliability findings closed** (1 Critical + 8 High + 14 Medium) from the 2026-06-11 reliability review. Every finding verified by Phase 14's ledger before fix work began (read-only-implementation rule, zero production source edits in Phase 14).
+- **`go test -race ./...` clean tree-wide** — REL-POOL-05 closed the `Entry.LastUsed` race via `atomic.Int64` conversion. The `-race` trust gate is restored for the first time since v1.5.
+- **Pool lifecycle hardened on all 3 OSes** — bounded slot acquisition with typed HTTP 503 + Retry-After (REL-POOL-01), explicit `cleanup()` on every Ctrl-C path + in-flight stream Cancel during grace + two-signal force-exit (REL-POOL-02), CAS-guarded `activeStream` clear (REL-POOL-03), Windows process-tree kill via `taskkill /T /F` (REL-POOL-06), per-request stream ctx so slow consumers can't poison the readLoop (REL-POOL-04).
+- **Mid-stream death surfaced honestly to clients** — OpenAI receives `data: {"error":...}` + `[DONE]` and Ollama receives `done:true, done_reason:"error"` on kiro-cli crashes; gateway WARN-logs the death with `worker_pid`, `kiro_exit_code`, `bytes_streamed`, `session_id` fields (REL-HTTP-03). Long-lived admin SSE no longer blocks the full 30s shutdown grace (REL-HTTP-01).
+- **Tray honest on macOS + Windows** — PID identity verified before any kill/stop action via `verifyGatewayIdentity` (REL-TRAY-01); macOS icon/tooltip transition on FSM state change (REL-TRAY-03); Windows support-bundle completes even when the gateway is stopped (REL-TRAY-02 — `Get-GatewayStatus` returns object, no longer `exit 1`); non-blocking notify with 3-attempt/500ms-backoff retry (REL-TRAY-04); bundle size/time bounded with staging cleanup on timeout (REL-TRAY-07).
+- **Config fail-closed** — negative/zero values for `POOL_SIZE`, `SESSION_TTL_MS`, `SESSION_MAX`, `SESSION_TICK_INTERVAL_MS`, `CHAT_TRACE_MAX_AGE_DAYS` now produce loud boot errors naming the offending variable; `POOL_SIZE > 256` rejected as sanity violation; `PING_INTERVAL <= 0` produces a named boot error instead of raw `time.NewTicker` panic; `EMBEDDING_MODEL_DEFAULT` Warn when set but unimplemented + CLAUDE.md doc fix; pool exhaustion no longer silent at default log level.
+- **Phase 16 sequential auto-degrade pattern** — worktree execution auto-degraded to sequential when `origin/HEAD` divergence from current HEAD was detected (#683). All 5 Phase 16 plans ran serially on the main working tree with RED→GREEN TDD discipline. Pattern documented for future milestones with similar branch posture.
+
+**Issues deferred (acknowledged at close):**
+
+- REL-TRAY-02 + REL-TRAY-03 — platform-specific operator gates; code wired + statically verified, awaits human run on target platform
+- 12 Low-severity findings — rolled to v1.10
+- 5 Info-level code review findings from Phase 16 — non-blocking quality work
+- 3 inherited operator-deferred smoke tests from v1.8 — not v1.9 blockers
+- Nyquist VALIDATION.md for Phases 14, 16 — milestone scope was reliability bug-fix, not feature coverage
+
+---
+
 ## v1.8 Nyquist Coverage Uplift (Shipped: 2026-06-07)
 
 **Phases completed:** 1 phases, 6 plans, 8 tasks

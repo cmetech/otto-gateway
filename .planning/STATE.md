@@ -2,10 +2,10 @@
 gsd_state_version: 1.0
 milestone: v1.9
 milestone_name: Reliability Hardening
-status: phase-complete
-stopped_at: Phase 16 complete — verifier PASSED 17/17, code review clean (0 critical, 4 warnings, 5 info)
-last_updated: "2026-06-11T19:11:43.309Z"
-last_activity: 2026-06-11 -- Phase 16 (fix-mediums) complete — all 5 plans, 14 Medium reliability findings closed
+status: milestone-shipped
+stopped_at: v1.9 Reliability Hardening shipped 2026-06-11 — ready for /gsd-new-milestone
+last_updated: "2026-06-11T20:00:00.000Z"
+last_activity: 2026-06-11 -- v1.9 milestone archived and tagged
 progress:
   total_phases: 22
   completed_phases: 21
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-07)
 
 **Core value:** All three API surfaces (OpenAI for Pi SDK, Ollama for LangFlow, Anthropic for loop24-client/GSD Pi) serve their respective clients without those clients knowing kiro-cli exists, with one place to enforce policy.
-**Current focus:** Phase 16 — fix-mediums
+**Current focus:** v1.9 SHIPPED 2026-06-11. Next: /gsd-new-milestone (v1.10).
 
 ## Current Position
 
-Phase: 16 (fix-mediums) — COMPLETE
-Plan: 5 of 5 complete (16-01 Pool/ACP, 16-02 HTTP, 16-03 Hooks, 16-04 Tray, 16-05 Config)
-Status: Phase 16 closed — verifier PASSED, code review clean. Ready for /gsd-secure-phase 16 or /gsd-complete-milestone.
-Last activity: 2026-06-11 -- Phase 16 (fix-mediums) complete
+Milestone: v1.9 Reliability Hardening — SHIPPED 2026-06-11
+Audit: 27/27 requirements, 8/8 seams WIRED, 26/26 threats CLOSED
+Status: Archived and tagged. Ready for /gsd-new-milestone to open v1.10.
+Last activity: 2026-06-11 -- v1.9 milestone archived
 
 ## Performance Metrics
 
