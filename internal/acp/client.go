@@ -1094,8 +1094,16 @@ func (c *Client) handleNotification(frame rpcFrame) {
 				"method", frame.Method)
 			return
 		}
-		// push with client lifetime context for backpressure (D-03 + REVIEW FIX).
-		if err := s.push(c.clientCtx, chunk); err != nil {
+		// P-4 fix (REL-POOL-04): push with the stream's PER-REQUEST ctx
+		// rather than c.clientCtx (the client lifetime). A stalled SSE
+		// consumer that fills the 64-chunk buffer used to block the
+		// readLoop goroutine on c.clientCtx — the readLoop is the same
+		// goroutine that dispatches ping responses, so a stalled
+		// consumer starved the pingLoop and triggered
+		// "acp.ping.escalated_to_close" SIGKILL on a healthy worker.
+		// Using s.Ctx() means the stalled consumer fails its OWN
+		// request when ctx expires and the readLoop is freed.
+		if err := s.push(s.Ctx(), chunk); err != nil {
 			if errors.Is(err, errPushAfterClose) {
 				// Late notification — the active stream was closed (per-prompt
 				// ctx cancel or readLoop teardown) between our streamMu unlock

@@ -38,8 +38,11 @@ import (
 // the readLoop uses a separate path for ping dispatch independent of the consumer
 // drain state.
 func TestRegression_REL_POOL_04_ConsumerBlockedReadLoop(t *testing.T) {
-	t.Skip("REL-POOL-04 (P-4): regression test — unskip in Phase 16 fix commit")
-
+	// P-4 (REL-POOL-04) fix shipped in Phase 16-01:
+	//   internal/acp/stream.go — Stream.ctx field + Stream.Ctx() accessor
+	//   internal/acp/client.go — handleNotification passes s.Ctx() to push
+	// A stalled consumer now fails its OWN request via per-request ctx
+	// instead of blocking the readLoop goroutine and starving the pingLoop.
 	defer goleak.VerifyNone(t)
 
 	// escalationFired counts how many times the pingLoop issued a

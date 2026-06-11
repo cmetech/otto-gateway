@@ -61,6 +61,18 @@ type Stream struct {
 
 	chunks chan canonical.Chunk // send side (internal)
 
+	// ctx is the per-request context captured at newStream time. It is the
+	// caller's Prompt ctx — bounded by the per-request timeout / client
+	// disconnect, NOT by the client lifetime context. P-4 fix
+	// (REL-POOL-04): handleNotification calls s.push with s.Ctx() (a
+	// per-request ctx) rather than c.clientCtx. A stalled SSE consumer
+	// that fills the chunk buffer used to block the readLoop goroutine
+	// against c.clientCtx; with per-request ctx the stalled consumer
+	// fails its OWN request when ctx times out, and the readLoop is
+	// freed to dispatch the next frame (including ping responses, which
+	// previously starved and SIGKILLed a healthy worker).
+	ctx context.Context //nolint:containedctx // load-bearing per-request ctx for P-4 (REL-POOL-04) — stream lifetime is bounded by Prompt ctx
+
 	done      chan struct{}
 	closeOnce sync.Once
 
@@ -83,15 +95,34 @@ type Stream struct {
 // newStream constructs a Stream for the given sessionID.
 // The internal channel is buffered (64 slots) to allow kiro-cli to emit bursts
 // without blocking the readLoop goroutine.
-func newStream(_ context.Context, sessionID string) *Stream {
+//
+// P-4 fix (REL-POOL-04): the per-request ctx is captured on the Stream so
+// handleNotification can pass it to push instead of c.clientCtx. A nil ctx
+// is tolerated (test helpers may pass nil); push() guards against nil and
+// falls back to context.Background() so the select arm <-ctx.Done() never
+// fires spuriously.
+func newStream(ctx context.Context, sessionID string) *Stream {
 	ch := make(chan canonical.Chunk, 64)
 	s := &Stream{
 		Chunks: ch,
 		chunks: ch,
+		ctx:    ctx,
 		done:   make(chan struct{}),
 		result: &FinalResult{SessionID: sessionID},
 	}
 	return s
+}
+
+// Ctx returns the per-request context captured at newStream time, or
+// context.Background() if the stream was constructed with a nil ctx
+// (test helpers). Used by handleNotification to bound push() backpressure
+// to the per-request lifetime rather than the client lifetime — the P-4
+// (REL-POOL-04) fix.
+func (s *Stream) Ctx() context.Context {
+	if s.ctx == nil {
+		return context.Background()
+	}
+	return s.ctx
 }
 
 // push sends chunk to the stream channel with backpressure.
