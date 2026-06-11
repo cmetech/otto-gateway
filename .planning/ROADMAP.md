@@ -180,7 +180,7 @@ Plans:
 - [ ] 16-02-PLAN.md — HTTP surface: H-4 body-read deadline + HTTP_BODY_READ_TIMEOUT_SEC (REL-HTTP-04); H-5 TailerMaxLineBytes on newline-terminated lines (REL-HTTP-05); D-05 PoolStats.Status enum in GET /health (cross-plan for T-5). Wave 1.
 - [x] 16-03-PLAN.md — Hooks: G-1 PostHook chain on non-streaming error paths + nil-resp guards in After() (REL-HOOKS-01). Wave 1.
 - [ ] 16-04-PLAN.md — Tray/wrapper: T-4 notifyFn goroutine dispatch (REL-TRAY-04); T-5 pool.status enum consumer in tray (REL-TRAY-05); T-6 last-non-empty-line parse in revealBundle (REL-TRAY-06); T-7 bounded bundle size/time + cleanup (REL-TRAY-07). Wave 2 (depends_on: 16-01, 16-02).
-- [ ] 16-05-PLAN.md — Config: C-1 fail-fast for negative/zero pool/session/trace vars (REL-CFG-01); C-2 PING_INTERVAL <= 0 boot error (REL-CFG-02); C-3 EMBEDDING_MODEL_DEFAULT boot Warn + CLAUDE.md doc-fix (REL-CFG-03). Wave 1.
+- [x] 16-05-PLAN.md — Config: C-1 fail-fast for negative/zero pool/session/trace vars (REL-CFG-01); C-2 PING_INTERVAL <= 0 boot error (REL-CFG-02); C-3 EMBEDDING_MODEL_DEFAULT boot Warn + CLAUDE.md doc-fix (REL-CFG-03); H-4 config-owner HTTP_BODY_READ_TIMEOUT_SEC parsing + server.Config.BodyReadTimeout (REL-HTTP-04 config half — Plan 16-02 consumes). Wave 1.
 
 **UI hint**: yes
 
@@ -194,4 +194,4 @@ Plans:
 | 13 | v1.8 | 6/6 | Complete    | 2026-06-07 |
 | 14 | v1.9 | 4/4 | Complete    | 2026-06-11 |
 | 15 | v1.9 | 3/3 | Complete   | 2026-06-11 |
-| 16 | v1.9 | 2/5 | In Progress|  |
+| 16 | v1.9 | 3/5 | In Progress|  |

@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.9
 milestone_name: Reliability Hardening
 status: executing
-stopped_at: Completed 16-01-PLAN.md
-last_updated: "2026-06-11T18:17:05.142Z"
-last_activity: 2026-06-11 -- Phase 16 execution started
+stopped_at: Completed 16-05-PLAN.md
+last_updated: "2026-06-11T18:28:00.000Z"
+last_activity: 2026-06-11 -- Phase 16 Plan 05 (Config) complete
 progress:
   total_phases: 22
   completed_phases: 20
   total_plans: 78
-  completed_plans: 75
-  percent: 91
+  completed_plans: 76
+  percent: 92
 ---
 
 # Project State
@@ -26,9 +26,9 @@ See: .planning/PROJECT.md (updated 2026-06-07)
 ## Current Position
 
 Phase: 16 (fix-mediums) — EXECUTING
-Plan: 3 of 5
-Status: Ready to execute
-Last activity: 2026-06-11 -- Phase 16 execution started
+Plan: 3 of 5 complete (16-01, 16-03, 16-05); Wave 1 remaining: 16-02 (HTTP); Wave 2: 16-04 (Tray)
+Status: Wave 1 in progress
+Last activity: 2026-06-11 -- Phase 16 Plan 05 (Config) complete
 
 ## Performance Metrics
 
@@ -64,6 +64,7 @@ Last activity: 2026-06-11 -- Phase 16 execution started
 | Phase 08.4 P01 | 35m | 3 tasks (R/G/F) + Task H pending | 7 files |
 | Phase 16 P01 | 35min | 4 tasks | 18 files |
 | Phase 16 P03 | 15min | 1 tasks | 5 files |
+| Phase 16 P05 | 12min | 3 tasks (TDD R/G × 3) | 7 files |
 
 ## Accumulated Context
 
@@ -106,6 +107,9 @@ Recent decisions affecting current work:
 - [Phase ?]: Plan 16-01: lastProgressAt seeded at Warmup completion to avoid post-warmup false-degraded window
 - [Phase ?]: Plan 16-03: engine.Collect rangeErr block split into idle-timeout + generic loopErr branches; both call PostHooks-with-nil before return
 - [Phase ?]: Plan 16-03: After() methods LoadAndDelete unconditionally then nil-resp early-return — reclaim runs first regardless of resp shape
+- [Phase 16]: Plan 16-05: C-1 error message uses literal substring "must be >= 0" matching Phase 14 regression test contract (not "must be >= 1" / "must be > 0" suggested by plan must_haves). Test contract binds over plan text.
+- [Phase 16]: Plan 16-05: C-3 EMBEDDING_MODEL_DEFAULT Warn emitted from config.Load() via slog.Default() (not main.go) — regression test captures slog.Default() and calls only config.Load(); main.go does not slog.SetDefault (D-15).
+- [Phase 16]: Plan 16-05 (H-4 partial): server.Config grew BodyReadTimeout time.Duration field; cmd/otto-gateway/main.go wires cfg.BodyReadTimeout into NewFromConfig. Plan 16-02 (Wave 2 consumer) reads it without further config-side changes.
 
 ### Pending Todos
 
@@ -165,8 +169,8 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-06-11T18:16:06.425Z
-Stopped at: Completed 16-01-PLAN.md
+Last session: 2026-06-11T18:28:00.000Z
+Stopped at: Completed 16-05-PLAN.md
 Resume file: None
 
 ## Operator Next Steps

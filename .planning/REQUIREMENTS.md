@@ -50,9 +50,9 @@ Each of the 23 in-scope findings is re-verified against the current `main` sourc
 
 ### Config / observability (Phase 16)
 
-- [ ] **REL-CFG-01** (C-1, Medium): Negative or zero values for `POOL_SIZE`, `SESSION_MAX`, `SESSION_TTL_MS`, `SESSION_TICK_INTERVAL_MS`, `CHAT_TRACE_MAX_AGE_DAYS` are loud boot errors that name the variable, matching the existing fail-fast posture for `STREAM_IDLE_TIMEOUT_SEC`. `POOL_SIZE` gets a sanity upper bound.
-- [ ] **REL-CFG-02** (C-2, Medium): `PING_INTERVAL <= 0` is validated in `config.Load` as a boot error (named) rather than crashing the process via a raw goroutine panic from `time.NewTicker`. The panic — if it ever fires defensively — lands in the structured log file.
-- [ ] **REL-CFG-03** (C-3, Medium): `EMBEDDING_MODEL_DEFAULT` is either implemented/stubbed coherently OR the gateway logs an explicit startup `Warn` when it is set, and the docs / CLAUDE.md env-var contract are corrected.
+- [x] **REL-CFG-01** (C-1, Medium): Negative or zero values for `POOL_SIZE`, `SESSION_MAX`, `SESSION_TTL_MS`, `SESSION_TICK_INTERVAL_MS`, `CHAT_TRACE_MAX_AGE_DAYS` are loud boot errors that name the variable, matching the existing fail-fast posture for `STREAM_IDLE_TIMEOUT_SEC`. `POOL_SIZE` gets a sanity upper bound.
+- [x] **REL-CFG-02** (C-2, Medium): `PING_INTERVAL <= 0` is validated in `config.Load` as a boot error (named) rather than crashing the process via a raw goroutine panic from `time.NewTicker`. The panic — if it ever fires defensively — lands in the structured log file.
+- [x] **REL-CFG-03** (C-3, Medium): `EMBEDDING_MODEL_DEFAULT` is either implemented/stubbed coherently OR the gateway logs an explicit startup `Warn` when it is set, and the docs / CLAUDE.md env-var contract are corrected.
 - [x] **REL-CFG-04** (O-1, Medium): Pool exhaustion (acquire blocked) is visible at default log level via a `Warn("pool: waiting for free slot", ...)` line the first time a request parks. Operators can diagnose "the gateway silently stopped answering" from the log alone.
 
 ## v2 Requirements (Deferred to v1.10)
@@ -119,7 +119,7 @@ To be filled by `gsd-roadmapper` during Phase 14/15/16 creation.
 | REL-TRAY-05 (T-5) | 16 | pending |
 | REL-TRAY-06 (T-6) | 16 | pending |
 | REL-TRAY-07 (T-7) | 16 | pending |
-| REL-CFG-01 (C-1) | 16 | pending |
-| REL-CFG-02 (C-2) | 16 | pending |
-| REL-CFG-03 (C-3) | 16 | pending |
+| REL-CFG-01 (C-1) | 16 | fulfilled (Plan 16-05) |
+| REL-CFG-02 (C-2) | 16 | fulfilled (Plan 16-05) |
+| REL-CFG-03 (C-3) | 16 | fulfilled (Plan 16-05) |
 | REL-CFG-04 (O-1) | 16 | pending |
