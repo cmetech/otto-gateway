@@ -219,7 +219,37 @@ func (h *ChatTraceHook) Before(ctx context.Context, req *canonical.ChatRequest) 
 	}
 
 	h.emit(rec)
-	h.startTimes.Store(rid, time.Now())
+
+	// WR-02 (phase 16 review) — mirror the logging.go empty-rid guard.
+	// Two bugs collapsed into one fix:
+	//
+	//  1. The local `rid` above may be freshly minted via NewRequestID()
+	//     when ctx had no id. After's path looks up startTimes keyed on
+	//     RequestIDFromContext(ctx) — if ctx was empty, that lookup
+	//     returns "" and never finds the minted-rid entry, so every
+	//     empty-ctx-rid request leaks an entry in the sync.Map.
+	//
+	//  2. When RequestIDHook is filtered out of ENABLED_HOOKS and
+	//     ChatTraceHook is wired (the CHAT_TRACE=true auto-prepend path
+	//     in config.go:615), two concurrent requests would both Store
+	//     under "" — second Before overwrites first; both Afters race
+	//     for the single LoadAndDelete; one After observes the OTHER
+	//     request's stamp and emits a duration_ms from the wrong start.
+	//
+	// Fix: only Store when ctx has a real request_id. Empty-rid Afters
+	// will LoadAndDelete("") which returns nothing and duration_ms = 0,
+	// matching LoggingHook's empty-rid path. emptyRequestIDWarnOnce is
+	// shared with LoggingHook (logging.go:70) so the warn is once per
+	// process across both hooks.
+	ctxRID := RequestIDFromContext(ctx)
+	if ctxRID == "" {
+		emptyRequestIDWarnOnce.Do(func() {
+			h.logger().Warn("plugin.chat_trace.empty_request_id",
+				"note", "duration_ms will be 0; ensure RequestIDHook is enabled. Logging once per process.")
+		})
+		return nil, nil
+	}
+	h.startTimes.Store(ctxRID, time.Now())
 	return nil, nil
 }
 
