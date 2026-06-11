@@ -116,12 +116,31 @@ jobs:
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+        # Idempotent: if the release was pre-created (e.g. operator wrote
+        # rich notes via `gh release create --notes-file ...` before
+        # pushing the tag), upload assets to it with --clobber so re-runs
+        # also overwrite cleanly. Otherwise create it fresh with
+        # auto-generated commit-log notes. Either flow ships the same
+        # five-file asset set; --clobber is the magic word that makes
+        # re-runs safe (closed v1.10.2 incident — manual-create-first
+        # collided with the workflow's fresh-create assumption).
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            dist/otto_gateway-darwin-arm64-"$GITHUB_REF_NAME".tar.gz \
-            dist/otto_gateway-darwin-amd64-"$GITHUB_REF_NAME".tar.gz \
-            dist/otto_gateway-linux-amd64-"$GITHUB_REF_NAME".tar.gz \
-            dist/otto_gateway-windows-amd64-"$GITHUB_REF_NAME".zip \
-            dist/SHA256SUMS-"$GITHUB_REF_NAME".txt \
-            --title "$GITHUB_REF_NAME" \
-            --generate-notes
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME already exists — uploading assets to it."
+            gh release upload "$GITHUB_REF_NAME" \
+              dist/otto_gateway-darwin-arm64-"$GITHUB_REF_NAME".tar.gz \
+              dist/otto_gateway-darwin-amd64-"$GITHUB_REF_NAME".tar.gz \
+              dist/otto_gateway-linux-amd64-"$GITHUB_REF_NAME".tar.gz \
+              dist/otto_gateway-windows-amd64-"$GITHUB_REF_NAME".zip \
+              dist/SHA256SUMS-"$GITHUB_REF_NAME".txt \
+              --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              dist/otto_gateway-darwin-arm64-"$GITHUB_REF_NAME".tar.gz \
+              dist/otto_gateway-darwin-amd64-"$GITHUB_REF_NAME".tar.gz \
+              dist/otto_gateway-linux-amd64-"$GITHUB_REF_NAME".tar.gz \
+              dist/otto_gateway-windows-amd64-"$GITHUB_REF_NAME".zip \
+              dist/SHA256SUMS-"$GITHUB_REF_NAME".txt \
+              --title "$GITHUB_REF_NAME" \
+              --generate-notes
+          fi
