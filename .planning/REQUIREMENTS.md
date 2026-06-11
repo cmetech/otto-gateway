@@ -43,10 +43,10 @@ Each of the 23 in-scope findings is re-verified against the current `main` sourc
 - [ ] **REL-TRAY-01** (T-1, High): Wrapper Stop/Restart and tray probes verify PID identity (process name / command line) before trusting the pidfile. A recycled PID is treated as "stopped" rather than "error", and Stop/Restart cannot kill an unrelated process.
 - [ ] **REL-TRAY-02** (T-2, High): The Windows support bundle completes when the gateway is down. `Get-GatewayStatus`'s `exit 1` no longer aborts `Invoke-Support` mid-collection. Bundle is obtainable in the primary triage scenario it was built for.
 - [ ] **REL-TRAY-03** (T-3, High): Gateway death is visibly surfaced on macOS — icon/tooltip change per FSM state, and critical failures route through a channel that does not silently no-op for LSUIElement agents.
-- [ ] **REL-TRAY-04** (T-4, Medium): Windows `notify()` is non-blocking. Calling it from `applyState` does not stall the uiLoop for up to 30s or pop a foreground-stealing modal on every intentional stop.
-- [ ] **REL-TRAY-05** (T-5, Medium): The tray reports degraded when the pool is wedged (busy-but-not-serving). The status probe consumes `/health/pool` and treats snapshot errors as degraded-unknown rather than zero-value-healthy.
-- [ ] **REL-TRAY-06** (T-6, Medium): The Windows tray parses the support-bundle archive path correctly even when the wrapper writes config chatter to stdout. `revealBundle` opens the actual bundle, not a path containing log lines.
-- [ ] **REL-TRAY-07** (T-7, Medium): The support bundle's size and time budgets are actually bounded. Live-log copies are capped before redaction. The wrapper's verb timeout accommodates long redactions and emits progress to stderr; staging directories are cleaned up on timeout.
+- [x] **REL-TRAY-04** (T-4, Medium): Windows `notify()` is non-blocking. Calling it from `applyState` does not stall the uiLoop for up to 30s or pop a foreground-stealing modal on every intentional stop.
+- [x] **REL-TRAY-05** (T-5, Medium): The tray reports degraded when the pool is wedged (busy-but-not-serving). The status probe consumes `/health/pool` and treats snapshot errors as degraded-unknown rather than zero-value-healthy.
+- [x] **REL-TRAY-06** (T-6, Medium): The Windows tray parses the support-bundle archive path correctly even when the wrapper writes config chatter to stdout. `revealBundle` opens the actual bundle, not a path containing log lines.
+- [x] **REL-TRAY-07** (T-7, Medium): The support bundle's size and time budgets are actually bounded. Live-log copies are capped before redaction. The wrapper's verb timeout accommodates long redactions and emits progress to stderr; staging directories are cleaned up on timeout.
 
 ### Config / observability (Phase 16)
 

@@ -4,14 +4,14 @@ milestone: v1.9
 milestone_name: Reliability Hardening
 status: executing
 stopped_at: Completed 16-02-PLAN.md
-last_updated: "2026-06-11T18:51:38.326Z"
+last_updated: "2026-06-11T19:11:43.309Z"
 last_activity: 2026-06-11 -- Phase 16 Plan 05 (Config) complete
 progress:
   total_phases: 22
-  completed_phases: 20
+  completed_phases: 21
   total_plans: 78
-  completed_plans: 77
-  percent: 91
+  completed_plans: 78
+  percent: 95
 ---
 
 # Project State
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-06-07)
 ## Current Position
 
 Phase: 16 (fix-mediums) — EXECUTING
-Plan: 4 of 5 complete (16-01, 16-03, 16-05); Wave 1 remaining: 16-02 (HTTP); Wave 2: 16-04 (Tray)
+Plan: 5 of 5 complete (16-01, 16-03, 16-05); Wave 1 remaining: 16-02 (HTTP); Wave 2: 16-04 (Tray)
 Status: Wave 1 in progress
 Last activity: 2026-06-11 -- Phase 16 Plan 05 (Config) complete
 
@@ -66,6 +66,7 @@ Last activity: 2026-06-11 -- Phase 16 Plan 05 (Config) complete
 | Phase 16 P03 | 15min | 1 tasks | 5 files |
 | Phase 16 P05 | 12min | 3 tasks (TDD R/G × 3) | 7 files |
 | Phase 16 P02 | 25min | 3 tasks | 9 files |
+| Phase 16 P04 | 13min | 4 tasks | 10 files |
 
 ## Accumulated Context
 
@@ -115,6 +116,8 @@ Recent decisions affecting current work:
 - [Phase ?]: Plan 16-02: PoolStatsSource interface extended with IsExhausted/LastProgressAt (vs sibling interface) so cmd/otto-gateway/main.go poolStatsAdapter naturally owns the full pool→health bridge
 - [Phase ?]: Plan 16-02: PoolStats.Status field rendered WITHOUT omitempty — empty string is a meaningful 'pool not wired' signal; tray probe (Plan 16-04) can distinguish degraded-mode boot from a wired-but-OK pool
 - [Phase ?]: Plan 16-02: Task 3 D-05 shipped atomic per D-02 — new health_status_test.go could not compile against unmodified PoolStats; same posture as Plan 16-05 Task 3 (be7abbc) and Plan 16-01 Task 4 (775015d)
+- [Phase ?]: Phase 16 Plan 04: notifyTransition extracted from applyState (testability — applyState touches systray.MenuItem pointers, untestable without systray.Run); local fn := notifyFn snapshot before goroutine launch closes -race window
+- [Phase ?]: Phase 16 Plan 04: T-6/T-7 regression tests permanent-skip stubs (Phase 15 T-2/T-3 precedent for Windows-only PS1-resident fixes); T-7 timeout via Stopwatch+Test-Deadline+throw rather than Start-Job to avoid 20+ $using: scoping in pwsh-unverifiable code
 
 ### Pending Todos
 
@@ -174,7 +177,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-06-11T18:51:38.321Z
+Last session: 2026-06-11T19:10:47.875Z
 Stopped at: Completed 16-02-PLAN.md
 Resume file: None
 
