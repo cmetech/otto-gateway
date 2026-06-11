@@ -92,7 +92,7 @@ Full per-phase detail: [v1.8-ROADMAP.md archive](milestones/v1.8-ROADMAP.md) · 
 <details open>
 <summary>🚧 v1.9 Reliability Hardening — IN PROGRESS (opened 2026-06-11, 3 phases planned)</summary>
 
-- [ ] **Phase 14: Verify Reliability Findings** — Read-only audit of each of the 23 Critical/High/Medium findings from `docs/reviews/2026-06-11-reliability-review.md` against current `main` source. Produces `.planning/phases/14-*/14-VERIFICATION-LEDGER.md`: every finding tagged `confirmed` / `false-positive` / `needs-investigation` with file:line evidence. Tests may be added to prove a finding real/false; **no production source edits**. Ledger gates Phase 15/16 scope — false-positive findings are dropped from downstream phases before those phases plan their tasks. Covers REL-VERIFY-CRIT, REL-VERIFY-HIGH, REL-VERIFY-MED, REL-VERIFY-GATE.
+- [x] **Phase 14: Verify Reliability Findings** — Read-only audit of each of the 23 Critical/High/Medium findings from `docs/reviews/2026-06-11-reliability-review.md` against current `main` source. Produces `.planning/phases/14-*/14-VERIFICATION-LEDGER.md`: every finding tagged `confirmed` / `false-positive` / `needs-investigation` with file:line evidence. Tests may be added to prove a finding real/false; **no production source edits**. Ledger gates Phase 15/16 scope — false-positive findings are dropped from downstream phases before those phases plan their tasks. Covers REL-VERIFY-CRIT, REL-VERIFY-HIGH, REL-VERIFY-MED, REL-VERIFY-GATE. (completed 2026-06-11)
 - [ ] **Phase 15: Fix Critical + High** — Production fixes for the 1 Critical + 8 High findings confirmed by Phase 14's ledger. Pool / ACP lifecycle: P-1 bounded slot acquire with typed 503 + re-queue on respawn-failure (REL-POOL-01), P-2 deferred cleanup runs on every shutdown exit code + in-flight stream cancel during grace + second-SIGINT force exit (REL-POOL-02), P-3 CAS-guarded `activeStream` clear (REL-POOL-03). HTTP surface: H-1 long-lived SSE unwinds during grace (REL-HTTP-01), H-2 explicit `session/cancel` before slot return on idle-timeout / write-error (REL-HTTP-02), H-3 surface-native terminal error frames + WARN log on mid-stream worker death (REL-HTTP-03). Tray: T-1 PID-identity verification before stop/restart (REL-TRAY-01), T-2 Windows support-bundle completes when gateway is down (REL-TRAY-02), T-3 macOS gateway-death visibility via icon/tooltip + non-no-op channel (REL-TRAY-03). **Depends on Phase 14 ledger.**
 - [ ] **Phase 16: Fix Mediums** — Production fixes for the 14 Mediums confirmed by Phase 14's ledger. Pool: P-4 readLoop liveness independent of consumer drain (REL-POOL-04), P-5 race-free `Entry.LastUsed` restoring `-race` trust gate (REL-POOL-05), P-6 Windows process-tree kill via job object / `taskkill /T /F` (REL-POOL-06). HTTP: H-4 per-request body-read deadline (REL-HTTP-04), H-5 admin tailer line-cap enforced for newline-terminated lines (REL-HTTP-05). Hooks: G-1 non-streaming error paths run PostHook chain (REL-HOOKS-01). Tray: T-4 non-blocking Windows notify (REL-TRAY-04), T-5 tray consumes `/health/pool` + treats snapshot errors as degraded (REL-TRAY-05), T-6 Windows bundle-path parses last non-empty line (REL-TRAY-06), T-7 bounded bundle size/time with progress to stderr + staging cleanup on timeout (REL-TRAY-07). Config / observability: C-1 fail-fast on negative/zero pool/session knobs + `POOL_SIZE` upper bound (REL-CFG-01), C-2 `PING_INTERVAL <= 0` boot error (REL-CFG-02), C-3 `EMBEDDING_MODEL_DEFAULT` documented or warned at boot (REL-CFG-03), O-1 `Warn("pool: waiting for free slot", ...)` at default log level (REL-CFG-04). **Depends on Phase 14 ledger.**
 
@@ -116,10 +116,10 @@ Full per-phase detail: [v1.8-ROADMAP.md archive](milestones/v1.8-ROADMAP.md) · 
 **Plans**: 4 plans
 Plans:
 
-- [ ] 14-01-PLAN.md — Pool/ACP: verify P-1..P-6 (REL-POOL-01..06) — 6 evidence files + 5 t.Skip Go reproducers + 1 manual Windows pgid reproducer + ledger fragment 01 (+ master ledger merge if last to finish)
-- [ ] 14-02-PLAN.md — HTTP: verify H-1..H-5 (REL-HTTP-01..05) — 5 evidence files + 6 t.Skip Go reproducers (H-3 spans OpenAI + Ollama) + ledger fragment 02
-- [ ] 14-03-PLAN.md — Tray/wrapper: verify T-1..T-7 (REL-TRAY-01..07) — 7 evidence files + 7 t.Skip Go stubs (T-2/T-3/T-6 point at manual scripts) + 3 manual reproducer scripts + ledger fragment 03
-- [ ] 14-04-PLAN.md — Config/Hooks/Obs: verify G-1, C-1..C-3, O-1 (REL-HOOKS-01, REL-CFG-01..04) — 5 evidence files + 5 t.Skip Go reproducers (C-1/C-2 direct templates of TestLoad_StreamIdleTimeoutSec_Negative) + ledger fragment 04
+- [x] 14-01-PLAN.md — Pool/ACP: verify P-1..P-6 (REL-POOL-01..06) — 6 evidence files + 5 t.Skip Go reproducers + 1 manual Windows pgid reproducer + ledger fragment 01 (+ master ledger merge if last to finish)
+- [x] 14-02-PLAN.md — HTTP: verify H-1..H-5 (REL-HTTP-01..05) — 5 evidence files + 6 t.Skip Go reproducers (H-3 spans OpenAI + Ollama) + ledger fragment 02
+- [x] 14-03-PLAN.md — Tray/wrapper: verify T-1..T-7 (REL-TRAY-01..07) — 7 evidence files + 7 t.Skip Go stubs (T-2/T-3/T-6 point at manual scripts) + 3 manual reproducer scripts + ledger fragment 03
+- [x] 14-04-PLAN.md — Config/Hooks/Obs: verify G-1, C-1..C-3, O-1 (REL-HOOKS-01, REL-CFG-01..04) — 5 evidence files + 5 t.Skip Go reproducers (C-1/C-2 direct templates of TestLoad_StreamIdleTimeoutSec_Negative) + ledger fragment 04
 
 **Cross-cutting constraints:**
 
@@ -178,6 +178,6 @@ Plans:
 | 10, 11 | v1.6 | 5/5 | Complete | 2026-06-07 |
 | 12 | v1.7 | 1/1 | Complete | 2026-06-07 |
 | 13 | v1.8 | 6/6 | Complete    | 2026-06-07 |
-| 14 | v1.9 | 0/TBD | Not started | — |
+| 14 | v1.9 | 4/4 | Complete   | 2026-06-11 |
 | 15 | v1.9 | 0/TBD | Not started | — |
 | 16 | v1.9 | 0/TBD | Not started | — |
