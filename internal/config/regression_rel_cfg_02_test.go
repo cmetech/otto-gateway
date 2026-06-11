@@ -33,8 +33,6 @@ import (
 //   - "0s" (trying to disable pings)
 //   - "-60000ms" (negative millisecond integer — Node compat format)
 func TestRegression_REL_CFG_02_PingIntervalPanic(t *testing.T) {
-	t.Skip("REL-CFG-02 (C-2): regression test — unskip in Phase 16 fix commit")
-
 	cases := []struct {
 		name  string
 		value string
