@@ -6,56 +6,134 @@ package server_test
 // indefinitely inside decodeJSONBody — until kernel TCP keepalive (~2h default)
 // reaps the connection.
 //
-// Pre-fix observable: the handler does NOT return within a bounded deadline when
-// the request body reader stalls. The test uses a 3s watchdog: if the handler
-// has not returned within 3s, the pre-fix condition is confirmed. The stall is
-// then released to let the test exit cleanly.
+// Post-fix (Plan 16-02): a per-request body-read deadline is applied via
+// time.AfterFunc + r.Body.Close() to all chat-body POST handlers. When the
+// deadline fires, r.Body.Close() unblocks the handler's io.ReadAll / json.Decode
+// call. The deadline applies ONLY to the body-read phase — long SSE response
+// writes are unaffected because the timer is stopped after the body has been
+// fully read (or its lifetime is scoped to the wrapper).
 //
-// Post-fix: a per-request read deadline via
-// http.ResponseController.SetReadDeadline() (or equivalent) causes the handler
-// to return within the configured deadline. Unskip in Phase 16 fix commit and
-// flip the assertion.
+// This file contains two regression tests:
+//   - TestRegression_REL_HTTP_04_BodyReadDeadline — the headline H-4 fix:
+//     a stalled chat-body POST returns within the configured deadline.
+//   - TestRegression_REL_HTTP_04_SSEWriteUnaffected — must_haves bullet 2:
+//     after the body is read, the handler can write SSE-style chunks for
+//     much longer than the body-read deadline without being interrupted.
 
 import (
 	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"go.uber.org/goleak"
+
+	"otto-gateway/internal/server"
+	"otto-gateway/internal/testutil"
 )
 
-// stalledReader blocks all Read calls until its gate channel is closed, then
-// returns io.EOF. It simulates a client that sent the request header but stalls
-// mid-body (e.g. Wi-Fi drop, machine sleep mid-upload from LangFlow).
+// stalledReader blocks all Read calls until its gate channel is closed or
+// the body is closed by the server-side deadline wrapper (which causes
+// the next Read to return io.ErrClosedPipe-style error).
 type stalledReader struct {
-	gate <-chan struct{} // close to unblock
+	gate   <-chan struct{} // close to unblock
+	closed chan struct{}   // closed by Close() — used to wake parked Reads
+}
+
+func newStalledReader(gate <-chan struct{}) *stalledReader {
+	return &stalledReader{gate: gate, closed: make(chan struct{})}
 }
 
 func (s *stalledReader) Read(p []byte) (int, error) {
-	<-s.gate // block until released
-	return 0, io.EOF
+	select {
+	case <-s.gate:
+		return 0, io.EOF
+	case <-s.closed:
+		// Body was closed mid-read by the deadline wrapper.
+		return 0, io.ErrUnexpectedEOF
+	}
 }
 
-// TestRegression_REL_HTTP_04_BodyReadDeadlineMissing demonstrates that the HTTP
-// server has no per-request body-read deadline. A POST with a stalled body
-// reader parks the handler goroutine indefinitely.
-//
-// The test drives srv.ServeHTTP directly (no real TCP; no server startup needed)
-// via httptest.NewRecorder + httptest.NewRequestWithContext so the handler runs
-// inline in a goroutine. A 3s watchdog confirms the handler has NOT returned
-// (pre-fix observable). After the watchdog fires, the gate is closed to let the
-// handler exit and prevent a goroutine leak.
-func TestRegression_REL_HTTP_04_BodyReadDeadlineMissing(t *testing.T) {
-	t.Skip("REL-HTTP-04 (H-4): regression test — unskip in Phase 16 fix commit")
+func (s *stalledReader) Close() error {
+	select {
+	case <-s.closed:
+		// already closed
+	default:
+		close(s.closed)
+	}
+	return nil
+}
+
+// readingChatRegistrar registers a stub /chat/completions POST handler that
+// attempts to read its entire request body via io.ReadAll, then writes a
+// 200 response. With the H-4 fix in place, r.Body.Close() fired by the
+// deadline wrapper unblocks the io.ReadAll call.
+func readingChatRegistrar(observed chan<- error) server.RouteRegistrar {
+	return stubRouteRegistrar{fn: func(r chi.Router) {
+		r.Post("/chat/completions", func(w http.ResponseWriter, req *http.Request) {
+			_, err := io.ReadAll(req.Body)
+			select {
+			case observed <- err:
+			default:
+			}
+			if err != nil {
+				// Body-read failed (deadline fired or client cancelled).
+				w.WriteHeader(http.StatusRequestTimeout)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		})
+	}}
+}
+
+// sseWriteRegistrar registers a stub /chat/completions POST handler that
+// reads its body fully, then writes 10 SSE-style chunks across 1 second.
+// Proves the body-read deadline does NOT bound response writes.
+func sseWriteRegistrar() server.RouteRegistrar {
+	return stubRouteRegistrar{fn: func(r chi.Router) {
+		r.Post("/chat/completions", func(w http.ResponseWriter, req *http.Request) {
+			// Drain the body (fast — small body).
+			_, _ = io.Copy(io.Discard, req.Body)
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			flusher, _ := w.(http.Flusher)
+			// Total write phase = 1 second, far longer than BodyReadTimeout=200ms below.
+			for i := 0; i < 10; i++ {
+				_, _ = w.Write([]byte("data: chunk\n\n"))
+				if flusher != nil {
+					flusher.Flush()
+				}
+				time.Sleep(100 * time.Millisecond)
+			}
+		})
+	}}
+}
+
+// TestRegression_REL_HTTP_04_BodyReadDeadline asserts that a POST handler
+// reading the request body returns within the configured BodyReadTimeout
+// when the client stalls mid-body. Pre-fix the handler would park
+// indefinitely; post-fix r.Body.Close() fired by time.AfterFunc wakes
+// the io.ReadAll call within the deadline.
+func TestRegression_REL_HTTP_04_BodyReadDeadline(t *testing.T) {
 	defer goleak.VerifyNone(t)
 
-	srv := newTestServer(t)
+	deadline := 200 * time.Millisecond
+	observed := make(chan error, 1)
+	srv := server.NewFromConfig(server.Config{
+		Logger:          testutil.Logger(t),
+		BodyReadTimeout: deadline,
+		Surfaces: []server.SurfaceMount{
+			{Prefix: "/v1", Router: readingChatRegistrar(observed)},
+		},
+	})
 
 	gate := make(chan struct{})
-	body := &stalledReader{gate: gate}
+	defer close(gate) // safety: release if handler never gets there
+	body := newStalledReader(gate)
 
 	reqCtx, reqCancel := context.WithCancel(context.Background())
 	defer reqCancel()
@@ -63,39 +141,75 @@ func TestRegression_REL_HTTP_04_BodyReadDeadlineMissing(t *testing.T) {
 	req := httptest.NewRequestWithContext(reqCtx, http.MethodPost,
 		"/v1/chat/completions", body)
 	req.Header.Set("Content-Type", "application/json")
-	// Content-Length unknown (no length header) — simulates a streaming upload
-	// body that stalls before sending the JSON payload.
 	rec := httptest.NewRecorder()
 
-	// Run the handler in a goroutine so the test can observe its liveness.
 	handlerDone := make(chan struct{})
+	start := time.Now()
 	go func() {
 		defer close(handlerDone)
 		srv.ServeHTTP(rec, req)
 	}()
 
-	// Give the handler a brief moment to reach the body-read inside decodeJSONBody.
-	time.Sleep(100 * time.Millisecond)
-
-	// Pre-fix observable: the handler has NOT returned after 3s because the body
-	// read is unbounded. The watchdog confirms the stall.
+	// Post-fix: handler must return within ~deadline + small slack.
+	// Choose 2s as a generous ceiling for CI noise; deadline itself is 200ms.
 	select {
 	case <-handlerDone:
-		// Handler returned without reading the full body — bug may already be fixed.
-		t.Errorf("pre-fix reproducer: handler returned unexpectedly within 3s of body stall; " +
-			"if a body-read deadline was added, this test should be unskipped in Phase 16")
+		elapsed := time.Since(start)
+		if elapsed > 2*time.Second {
+			t.Errorf("handler took %v to return; want < 2s after %v BodyReadTimeout", elapsed, deadline)
+		}
+		// Confirm the body-read path actually fired (not a 404 short-circuit).
+		select {
+		case err := <-observed:
+			if err == nil {
+				t.Errorf("handler observed nil body-read error; want non-nil (deadline should have closed body)")
+			}
+		case <-time.After(100 * time.Millisecond):
+			t.Errorf("handler returned but never observed a body-read attempt")
+		}
 	case <-time.After(3 * time.Second):
-		// Handler is still parked on the stalled body read — pre-fix confirmed.
-		t.Log("pre-fix observable confirmed: handler parked on stalled body read for 3s")
+		t.Fatalf("post-fix observable failed: handler still parked 3s after start (BodyReadTimeout=%v not enforced)", deadline)
 	}
+}
 
-	// Release the stall and cancel the request to allow the handler to exit
-	// cleanly (prevents goroutine leak caught by goleak.VerifyNone).
-	close(gate)
-	reqCancel()
-	select {
-	case <-handlerDone:
-	case <-time.After(5 * time.Second):
-		t.Error("handler did not exit within 5s after stall released")
+// TestRegression_REL_HTTP_04_SSEWriteUnaffected asserts must_haves bullet 2:
+// after the body is read, long SSE response writes are unaffected by the
+// BodyReadTimeout. The handler writes 10 SSE chunks across 1 second; the
+// body-read deadline is 200ms. The deadline is body-phase-only.
+func TestRegression_REL_HTTP_04_SSEWriteUnaffected(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	deadline := 200 * time.Millisecond
+	srv := server.NewFromConfig(server.Config{
+		Logger:          testutil.Logger(t),
+		BodyReadTimeout: deadline,
+		Surfaces: []server.SurfaceMount{
+			{Prefix: "/v1", Router: sseWriteRegistrar()},
+		},
+	})
+
+	// Small in-memory body — readable immediately, fully consumed before
+	// the timer fires.
+	req := httptest.NewRequestWithContext(context.Background(),
+		http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"ok":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	start := time.Now()
+	srv.ServeHTTP(rec, req)
+	elapsed := time.Since(start)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("response status: got %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	// Total SSE-write phase is 10 * 100ms = 1s. If the deadline incorrectly
+	// fired during writes, the response would be truncated and elapsed << 1s.
+	if elapsed < 900*time.Millisecond {
+		t.Errorf("SSE write phase took %v; want >= 900ms (deadline %v must NOT bound response writes)", elapsed, deadline)
+	}
+	// And the body must contain all 10 chunks.
+	got := rec.Body.String()
+	if strings.Count(got, "data: chunk") != 10 {
+		t.Errorf("SSE chunks count: got %d, want 10; body=%q", strings.Count(got, "data: chunk"), got)
 	}
 }
