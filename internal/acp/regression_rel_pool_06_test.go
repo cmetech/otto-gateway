@@ -26,5 +26,5 @@ import "testing"
 // Phase 16's fix: create a Windows job object with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
 // per spawn, or implement taskkill /T /F /PID as cmd.Cancel fallback.
 func TestRegression_REL_POOL_06_WindowsPgidNoop(t *testing.T) {
-	t.Skip("REL-POOL-06 (P-6): manual reproducer — see tests/reliability/manual/REL-POOL-06-repro.go for Windows-only reproducer")
+	t.Skip("REL-POOL-06 (P-6): manual validation required — run tests/reliability/manual/REL-POOL-06-repro.go on Windows; fix shipped in pool_pgid_windows.go killProcessGroup (taskkill /T /F)")
 }
