@@ -45,9 +45,11 @@ adapter-over-canonical layout (brief §3.13) and trust-gate suite (brief
 - [x] **Phase 9: Distribution** — Cross-compile Linux+Windows+darwin from macOS, full trust-gate CI matrix gating merges (2026-05-28)
 
 **Reverted (kept for history):**
+
 - Phase 08.3.2 (PII Smoke Test Methodology Fix) — superseded by prompt-only fix in `scripts/test-pii.{ps1,sh}` (REVERTED 2026-06-04, commit `ff10594`)
 
 **Deferred to v1.6/v1.7:**
+
 - Phase 08.3.1 (ACP Per-Session Stream Demux) — WR-04 cross-session leak race not exploitable under v1's POOL_SIZE=4 pool model (each `acp.Client` bound to one worker slot). Re-scoped to v1.7 per v1.6 narrow-scope decision.
 
 Full per-phase detail: [v1.5-ROADMAP.md archive](milestones/v1.5-ROADMAP.md)
@@ -81,6 +83,7 @@ Full per-phase detail: [v1.7-ROADMAP.md archive](milestones/v1.7-ROADMAP.md) · 
 Full per-phase detail: [v1.8-ROADMAP.md archive](milestones/v1.8-ROADMAP.md) · audit: [v1.8-MILESTONE-AUDIT.md](milestones/v1.8-MILESTONE-AUDIT.md)
 
 **Re-deferred to v1.9+ (out of v1.8 scope per opening decision):**
+
 - Phase 08.3.1 (ACP Per-Session Stream Demux) — awaits a real multi-tenant deployment driver.
 - Windows Authenticode code-signing — awaits code-signing certificate procurement.
 
@@ -98,22 +101,37 @@ Full per-phase detail: [v1.8-ROADMAP.md archive](milestones/v1.8-ROADMAP.md) · 
 ## Phase Details
 
 ### Phase 14: Verify Reliability Findings
+
 **Goal**: Every Critical/High/Medium finding from the 2026-06-11 reliability review is independently confirmed against current `main` source before any fix work is scheduled, so Phase 15 and Phase 16 plan against verified failure paths — not against a stale snapshot.
 **Depends on**: Nothing (opens v1.9; v1.8 shipped clean)
 **Requirements**: REL-VERIFY-CRIT, REL-VERIFY-HIGH, REL-VERIFY-MED, REL-VERIFY-GATE
 **Success Criteria** (what must be TRUE):
+
   1. A verification ledger at `.planning/phases/14-*/14-VERIFICATION-LEDGER.md` lists all 23 findings (P-1, P-2, P-3, P-4, P-5, P-6, H-1, H-2, H-3, H-4, H-5, G-1, T-1, T-2, T-3, T-4, T-5, T-6, T-7, C-1, C-2, C-3, O-1) with a `confirmed` / `false-positive` / `needs-investigation` tag and a current-source file:line citation.
   2. Every `confirmed` row carries either a failing test, an instrumented reproducer command, or a code-walk note showing the failure path still exists at the cited site.
   3. Every `false-positive` row carries a current-source citation showing the failure path no longer exists, plus the REL-* REQ-ID it removes from Phase 15 / Phase 16 scope.
   4. The ledger is the explicit input to `/gsd-plan-phase 15` and `/gsd-plan-phase 16` — those phases plan only against `confirmed` rows. Deferrals (`needs-investigation`) are documented with a reason and a target follow-up phase.
   5. `git diff main...HEAD -- ':!*_test.go' ':!.planning/' ':!docs/'` is empty at phase close (read-only-implementation rule, same posture as v1.8 Phase 13).
-**Plans**: TBD
+
+**Plans**: 4 plans
+Plans:
+
+- [ ] 14-01-PLAN.md — Pool/ACP: verify P-1..P-6 (REL-POOL-01..06) — 6 evidence files + 5 t.Skip Go reproducers + 1 manual Windows pgid reproducer + ledger fragment 01 (+ master ledger merge if last to finish)
+- [ ] 14-02-PLAN.md — HTTP: verify H-1..H-5 (REL-HTTP-01..05) — 5 evidence files + 6 t.Skip Go reproducers (H-3 spans OpenAI + Ollama) + ledger fragment 02
+- [ ] 14-03-PLAN.md — Tray/wrapper: verify T-1..T-7 (REL-TRAY-01..07) — 7 evidence files + 7 t.Skip Go stubs (T-2/T-3/T-6 point at manual scripts) + 3 manual reproducer scripts + ledger fragment 03
+- [ ] 14-04-PLAN.md — Config/Hooks/Obs: verify G-1, C-1..C-3, O-1 (REL-HOOKS-01, REL-CFG-01..04) — 5 evidence files + 5 t.Skip Go reproducers (C-1/C-2 direct templates of TestLoad_StreamIdleTimeoutSec_Negative) + ledger fragment 04
+
+**Cross-cutting constraints:**
+
+- Read-only-implementation rule: `git diff main...HEAD -- ':!*_test.go' ':!.planning/' ':!docs/' ':!tests/reliability/'` empty at plan close
 
 ### Phase 15: Fix Critical + High
+
 **Goal**: The 1 Critical + 8 High failure modes confirmed by Phase 14's ledger no longer trigger under the everyday laptop-shutdown / sleep-wake / mid-stream-disconnect scenarios the review was scoped against — pool exhaustion is recoverable and surfaced, Ctrl-C stops orphaning kiro-cli trees, queued requests cannot receive silent empty 200s, mid-stream worker death is visible to clients on all surfaces, and the tray is honest about gateway state on macOS / Windows.
 **Depends on**: Phase 14 (consumes the verification ledger; any finding tagged `false-positive` drops its REL-* requirement from this phase's scope before planning).
 **Requirements**: REL-POOL-01 (P-1), REL-POOL-02 (P-2), REL-POOL-03 (P-3), REL-HTTP-01 (H-1), REL-HTTP-02 (H-2), REL-HTTP-03 (H-3), REL-TRAY-01 (T-1), REL-TRAY-02 (T-2), REL-TRAY-03 (T-3)
 **Success Criteria** (what must be TRUE):
+
   1. With the pool intentionally driven to zero healthy slots (e.g. by killing every kiro-cli mid-flight), the next chat request returns a typed HTTP 503 within a bounded wait instead of hanging indefinitely, and the pool re-warms slots on demand — operator does not have to restart the binary to recover. (REL-POOL-01)
   2. Killing the gateway with Ctrl-C during a streaming response leaves zero `kiro-cli` processes alive after the binary exits — verified by `ps` / Task Manager — and a second Ctrl-C during the shutdown grace forces immediate exit *after* cleanup runs. (REL-POOL-02)
   3. After a stream is cancelled mid-flight (idle-timeout or client disconnect) and the slot is recycled, the next request acquiring that slot receives its actual generated content — it never receives a well-formed but empty response. (REL-POOL-03)
@@ -123,14 +141,17 @@ Full per-phase detail: [v1.8-ROADMAP.md archive](milestones/v1.8-ROADMAP.md) · 
   7. Wrapper `Stop` / `Restart` and the tray probe verify PID identity (process name / command line) before trusting a live pid; a recycled PID reads as "stopped" and Stop/Restart cannot kill an unrelated process. (REL-TRAY-01)
   8. Running the Windows `support` verb while the gateway is stopped produces a complete support bundle on disk — `Get-GatewayStatus`'s pidfile-absent / stale-pid branches no longer terminate the script. (REL-TRAY-02)
   9. When the gateway dies on macOS, the menu-bar icon and tooltip change to a state the user can observe at a glance, and critical failures route through a channel (icon swap, dialog, or title append) that does not silently no-op for the LSUIElement agent. (REL-TRAY-03)
+
 **Plans**: TBD
 **UI hint**: yes
 
 ### Phase 16: Fix Mediums
+
 **Goal**: The 14 Medium failure modes confirmed by Phase 14's ledger are closed so the laptop deployment is robust under everyday use — no `-race` regressions, no orphaned Windows process trees, no silent memory leaks under retry storms, no quiet config silent-coercion, no half-helpful tray indicators, and pool exhaustion is diagnosable from the log alone.
 **Depends on**: Phase 14 (consumes the verification ledger; any finding tagged `false-positive` drops its REL-* requirement from this phase's scope before planning). May run in parallel with Phase 15 if planning permits, but most plans touch the same files as Phase 15 (pool, openai/sse, ollama/ndjson, tray) and are likely serialized.
 **Requirements**: REL-POOL-04 (P-4), REL-POOL-05 (P-5), REL-POOL-06 (P-6), REL-HTTP-04 (H-4), REL-HTTP-05 (H-5), REL-HOOKS-01 (G-1), REL-TRAY-04 (T-4), REL-TRAY-05 (T-5), REL-TRAY-06 (T-6), REL-TRAY-07 (T-7), REL-CFG-01 (C-1), REL-CFG-02 (C-2), REL-CFG-03 (C-3), REL-CFG-04 (O-1)
 **Success Criteria** (what must be TRUE):
+
   1. `go test -race ./...` passes clean tree-wide on `main` — the `Entry.LastUsed` race is closed and the trust-gate `-race` posture is restored. (REL-POOL-05)
   2. With a deliberately stalled chunk consumer (e.g. an SSE client that stops reading), the gateway no longer escalates the worker's ping to SIGKILL on a healthy kiro-cli — the request fails its own deadline instead of poisoning the slot. (REL-POOL-04)
   3. On Windows, killing a stateful session or restarting the gateway leaves zero `kiro-cli` (or kiro child) processes alive after the binary exits, and slot teardown does not pay a 2s `WaitDelay` penalty. (REL-POOL-06)
@@ -145,6 +166,7 @@ Full per-phase detail: [v1.8-ROADMAP.md archive](milestones/v1.8-ROADMAP.md) · 
   12. Booting with `PING_INTERVAL=-60000` (or `0`) produces a config-loader boot error that names `PING_INTERVAL` — the process no longer dies via a raw goroutine panic from `time.NewTicker`, and any defensive panic that does fire lands in the structured log file. (REL-CFG-02)
   13. Booting with `EMBEDDING_MODEL_DEFAULT=foo` either implements/stubs the embeddings surface coherently OR emits a startup `Warn` line that the variable is set but unimplemented; CLAUDE.md / docs no longer claim it's wired when it isn't. (REL-CFG-03)
   14. Driving the pool to full saturation (every slot acquired) causes the gateway to emit a `Warn("pool: waiting for free slot", "busy", ..., "size", ...)` line the first time a request parks at the default log level — operators can diagnose "the gateway silently stopped answering" from the log alone. (REL-CFG-04)
+
 **Plans**: TBD
 **UI hint**: yes
 

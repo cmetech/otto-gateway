@@ -27,13 +27,13 @@ Phase 14 is a **read-only audit** of the 23 Critical/High/Medium findings in `do
 
 ### Parallelization — 4 plans by subsystem
 
-- **D-04:** Phase 14 splits into **4 parallel plans**, each running in its own git worktree (mirrors v1.8 Phase 13's 6-worktree shape via `gsd-nyquist-auditor`). Plan ownership:
+- **D-04 [informational]:** Phase 14 splits into **4 parallel plans**, each running in its own git worktree (mirrors v1.8 Phase 13's 6-worktree shape via `gsd-nyquist-auditor`). Plan ownership:
   - **Plan 14-01: Pool/ACP (6 findings)** — P-1, P-2, P-3, P-4, P-5, P-6 → REL-POOL-01..06
   - **Plan 14-02: HTTP (5 findings)** — H-1, H-2, H-3, H-4, H-5 → REL-HTTP-01..05
   - **Plan 14-03: Tray (7 findings)** — T-1, T-2, T-3, T-4, T-5, T-6, T-7 → REL-TRAY-01..07
   - **Plan 14-04: Config / Hooks / Observability (5 findings)** — G-1, C-1, C-2, C-3, O-1 → REL-HOOKS-01, REL-CFG-01..04
-- **D-05:** Each plan writes a **ledger fragment** (`14-LEDGER-FRAGMENT-{01..04}.md`) plus its share of per-finding evidence files. The orchestrator (executor closing the phase) merges the 4 fragments into `14-VERIFICATION-LEDGER.md`. Plans do not need to coordinate at runtime — fragment files have no overlap.
-- **D-06:** Plans use the standard `gsd-executor` agent (not `gsd-nyquist-auditor`, which is v1.8-specific). No specialized auditor agent is needed — this is straightforward read-and-write work.
+- **D-05 [informational]:** Each plan writes a **ledger fragment** (`14-LEDGER-FRAGMENT-{01..04}.md`) plus its share of per-finding evidence files. The orchestrator (executor closing the phase) merges the 4 fragments into `14-VERIFICATION-LEDGER.md`. Plans do not need to coordinate at runtime — fragment files have no overlap.
+- **D-06 [informational]:** Plans use the standard `gsd-executor` agent (not `gsd-nyquist-auditor`, which is v1.8-specific). No specialized auditor agent is needed — this is straightforward read-and-write work.
 
 ### Ledger format — master table + per-finding evidence files
 
@@ -68,7 +68,7 @@ Phase 14 is a **read-only audit** of the 23 Critical/High/Medium findings in `do
   }
   ```
   CI stays green at Phase 14 close (`go test -race ./...` passes — trust gate intact). The tests ARE compiled (`t.Skip` doesn't exclude compilation) so they catch any signature drift, but don't run. They're discoverable via `go test -run TestRegression_REL_ -v` — operators can see the full list of regression tests waiting to be unskipped.
-- **D-13:** Phase 15 fix commits include both the source fix AND the `t.Skip()` removal in the same atomic commit, so the PR diff shows red→green on the reproducer alongside the production change. This is the verification mechanism for Phase 15 success criteria — every Critical+High criterion is observable as a regression test flipping green.
+- **D-13 [informational]:** Phase 15 fix commits include both the source fix AND the `t.Skip()` removal in the same atomic commit, so the PR diff shows red→green on the reproducer alongside the production change. This is the verification mechanism for Phase 15 success criteria — every Critical+High criterion is observable as a regression test flipping green. *(Documented here for Phase 15/16 planning — not a Phase 14 plan-task obligation.)*
 
 ### Claude's Discretion (no further input needed)
 
