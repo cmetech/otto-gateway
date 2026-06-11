@@ -31,8 +31,8 @@ Each of the 23 in-scope findings is re-verified against the current `main` sourc
 - [ ] **REL-HTTP-01** (H-1, High): Graceful shutdown no longer blocks the full 30s grace and exits non-zero when an admin log-tail (or any long-lived SSE) connection is open. Long-lived streams receive a shutdown signal and unwind cleanly during the grace period.
 - [ ] **REL-HTTP-02** (H-2, High): On the OpenAI idle-timeout and mid-stream write-error branches, the hung kiro-cli session is explicitly cancelled before the slot returns to the free pool. Subsequent requests cannot acquire a slot whose worker is still mid-abandoned-prompt.
 - [ ] **REL-HTTP-03** (H-3, High): Mid-stream worker death emits a surface-native terminal error frame on OpenAI (`data: {"error":...}` + `[DONE]`) and Ollama (`done:true, done_reason:"error"`) and is logged at WARN. Clients no longer see a half-finished answer presented as complete.
-- [ ] **REL-HTTP-04** (H-4, Medium): A stalled mid-request-body upload no longer parks the handler goroutine for hours. Per-request body read deadlines bound the read phase without breaking long SSE response writes.
-- [ ] **REL-HTTP-05** (H-5, Medium): The admin tailer's per-line cap is enforced for newline-terminated lines too. A multi-MB chat-trace line cannot fan out uncapped through the ring buffer or the SSE stream.
+- [x] **REL-HTTP-04** (H-4, Medium): A stalled mid-request-body upload no longer parks the handler goroutine for hours. Per-request body read deadlines bound the read phase without breaking long SSE response writes.
+- [x] **REL-HTTP-05** (H-5, Medium): The admin tailer's per-line cap is enforced for newline-terminated lines too. A multi-MB chat-trace line cannot fan out uncapped through the ring buffer or the SSE stream.
 
 ### PostHook / goroutine discipline (Phase 16)
 
