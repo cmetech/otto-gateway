@@ -34,10 +34,20 @@ type Snapshot struct {
 
 // PoolStats mirrors internal/admin.SnapshotPool. Only Size/Alive
 // matter for the tray's "pool N/M ready" header.
+//
+// REL-TRAY-05 (T-5) fix: Status is the operational-status enum added by
+// Plan 16-02 to /health JSON (rendered as the same `status` key under
+// the `pool` sub-tree of /admin/api/snapshot — see internal/admin
+// SnapshotPool plumbing).  Empty string means the gateway is running a
+// build that pre-dates the enum (degraded-mode boot signal); the FSM
+// treats empty as "no status signal" so the legacy Alive/Size rule
+// keeps working. "degraded" and "exhausted" each drive StateDegraded
+// in fsm.go.
 type PoolStats struct {
-	Size  int `json:"size"`
-	Alive int `json:"alive"`
-	Busy  int `json:"busy"`
+	Size   int    `json:"size"`
+	Alive  int    `json:"alive"`
+	Busy   int    `json:"busy"`
+	Status string `json:"status"`
 }
 
 // HookEntry mirrors internal/server.HookDescription. The tray
