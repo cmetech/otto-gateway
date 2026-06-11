@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"otto-gateway/internal/acp"
@@ -47,10 +48,20 @@ type Entry struct {
 	// createEntry. Cached so Entry.NewSession can return it without
 	// another RPC (the engine.ACPClient.NewSession contract).
 	SessionID string
-	// LastUsed is the wall-clock timestamp the reaper compares against
-	// the TTL cutoff (D-10, D-12). Updated by MarkUsed at response
-	// complete, NEVER at request start (D-11).
-	LastUsed time.Time
+	// lastUsedNs is the wall-clock timestamp (time.Now().UnixNano()) the
+	// reaper compares against the TTL cutoff (D-10, D-12). Updated by
+	// MarkUsed at response complete, NEVER at request start (D-11).
+	//
+	// P-5 fix (REL-POOL-05): previously typed `LastUsed time.Time` and
+	// written without a consistent mutex — Registry.Get wrote under r.mu
+	// at registry.go:206, Entry.MarkUsed wrote without any lock at
+	// entry_acp.go:78, and watchEntry/stats read without any lock.
+	// `go test -race` flagged the multi-word time.Time write/write race.
+	// Converted to atomic.Int64 (UnixNano) with the public LastUsed()
+	// accessor below; all read sites switched from `e.LastUsed` to
+	// `e.LastUsed()`. The unexported lowercase field name prevents
+	// callers from accidentally reverting to direct field access.
+	lastUsedNs atomic.Int64
 	// LastModel caches the most-recently-set model id for the D-09
 	// diff-skip path: SetModel returns early when modelID == LastModel.
 	LastModel string
@@ -203,7 +214,10 @@ func (r *Registry) Get(ctx context.Context, sid, cwd string) (*Entry, error) {
 				// stream-continuity reaping which D-12's TryLock already
 				// covers. The handoff-window race is a separate boundary
 				// that requires a fresh timestamp.
-				e.LastUsed = time.Now()
+				// P-5 fix (REL-POOL-05): atomic write replaces the
+				// previous unguarded `e.LastUsed = time.Now()` (multi-word
+				// time.Time wrote raced MarkUsed at entry_acp.go).
+				e.lastUsedNs.Store(time.Now().UnixNano())
 				r.mu.Unlock()
 				return e, nil
 			}
@@ -304,7 +318,9 @@ func (r *Registry) createEntry(ctx context.Context, sid, cwd string, e *Entry) (
 	}
 	e.Client = client
 	e.SessionID = sessionID
-	e.LastUsed = time.Now()
+	// P-5 fix (REL-POOL-05): atomic write replaces the previous
+	// `e.LastUsed = time.Now()` for the createEntry publish path.
+	e.lastUsedNs.Store(time.Now().UnixNano())
 	e.creating = false
 	r.mu.Unlock()
 	e.closeReady()
@@ -355,7 +371,7 @@ func (r *Registry) watchEntry(sid string, e *Entry) {
 	if r.cfg.Logger != nil {
 		r.cfg.Logger.Warn("session: subprocess exited unexpectedly",
 			"sid", sid,
-			"idle_for", time.Since(e.LastUsed))
+			"idle_for", time.Since(e.LastUsed()))
 	}
 }
 

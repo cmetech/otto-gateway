@@ -70,12 +70,33 @@ func (e *Entry) Cancel(sessionID string) {
 	e.Client.Cancel(sessionID)
 }
 
-// MarkUsed updates LastUsed to time.Now(). Per D-11, surface handlers
-// call this in a defer AFTER stream.Result() returns — NEVER at request
-// start. Combined with D-12 (reaper TryLock skip), this means a session
-// streaming continuously will never be reaped, even past TTL.
+// MarkUsed updates the entry's last-used timestamp to time.Now(). Per
+// D-11, surface handlers call this in a defer AFTER stream.Result()
+// returns — NEVER at request start. Combined with D-12 (reaper TryLock
+// skip), this means a session streaming continuously will never be
+// reaped, even past TTL.
+//
+// P-5 fix (REL-POOL-05): writes via atomic.Int64.Store rather than the
+// previous unguarded `e.LastUsed = time.Now()` assignment that raced
+// concurrent reads at registry.go:358 and stats.go:100.
 func (e *Entry) MarkUsed() {
-	e.LastUsed = time.Now()
+	e.lastUsedNs.Store(time.Now().UnixNano())
+}
+
+// LastUsed returns the entry's last-used timestamp.
+//
+// P-5 fix (REL-POOL-05): replaces direct access to the (former)
+// Entry.LastUsed time.Time field. Reads via atomic.Int64.Load — no
+// mutex required, race-free under -race.
+func (e *Entry) LastUsed() time.Time {
+	ns := e.lastUsedNs.Load()
+	if ns == 0 {
+		// Zero atomic value → zero time.Time (preserves the
+		// time.Time{} default that callers relied on before the
+		// atomic conversion).
+		return time.Time{}
+	}
+	return time.Unix(0, ns)
 }
 
 // acpStreamShim adapts *acp.Stream (Chunks is a FIELD; Result returns

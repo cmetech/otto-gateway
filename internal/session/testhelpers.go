@@ -29,11 +29,26 @@ import (
 // right type; adapter tests interact with the entry through
 // engine.ACPClient methods only, so the wiring is transparent.
 func NewEntryForTest(client engine.ACPClient, sid string) *Entry {
-	return &Entry{
+	e := &Entry{
 		Client:    &acpClientForTestAdapter{c: client},
 		SessionID: sid,
-		LastUsed:  time.Now(),
 	}
+	// P-5 fix (REL-POOL-05): LastUsed is now an atomic.Int64 field
+	// (lastUsedNs); initialise via Store so the accessor returns the
+	// expected wall-clock time.Now() default.
+	e.lastUsedNs.Store(time.Now().UnixNano())
+	return e
+}
+
+// SetLastUsedForTest is a test-only helper to overwrite the entry's
+// last-used timestamp directly. Used by reaper tests that need to
+// backdate an entry past the TTL cutoff. The previous test pattern of
+// `e.Mu.Lock(); e.LastUsed = t; e.Mu.Unlock()` no longer compiles since
+// P-5 (REL-POOL-05) converted LastUsed from a time.Time field to an
+// atomic.Int64; this helper preserves test ergonomics without exposing
+// the internal field name to tests.
+func (e *Entry) SetLastUsedForTest(t time.Time) {
+	e.lastUsedNs.Store(t.UnixNano())
 }
 
 // acpClientForTestAdapter wraps an engine.ACPClient to satisfy the

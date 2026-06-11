@@ -252,7 +252,8 @@ func TestOpenAIHandleChatCompletions_TakesEntryMutex(t *testing.T) {
 		},
 	}
 	entry := session.NewEntryForTest(fakeACPClient{}, "sid-mtx")
-	before := entry.LastUsed
+	// P-5 fix (REL-POOL-05): LastUsed is now a method accessor (atomic.Int64 backing).
+	before := entry.LastUsed()
 	reg := &fakeSessionRegistry{entry: entry}
 	sessionEng := &sessionEngine{inner: poolEng}
 	a := newSessionTestAdapter(poolEng, reg, sessionEng)
@@ -271,8 +272,8 @@ func TestOpenAIHandleChatCompletions_TakesEntryMutex(t *testing.T) {
 	} else {
 		entry.Mu.Unlock()
 	}
-	if !entry.LastUsed.After(before) {
-		t.Errorf("entry.LastUsed not advanced: before=%v, after=%v", before, entry.LastUsed)
+	if !entry.LastUsed().After(before) {
+		t.Errorf("entry.LastUsed not advanced: before=%v, after=%v", before, entry.LastUsed())
 	}
 }
 

@@ -97,7 +97,7 @@ func (r *Registry) Detail() []SessionDetail {
 					m := e.LastModel
 					modelPtr = &m
 				}
-				lastUsed = e.LastUsed
+				lastUsed = e.LastUsed()
 				e.Mu.Unlock()
 			}
 		}

@@ -522,21 +522,22 @@ func TestEntry_SetModel_SkipsWhenUnchanged(t *testing.T) {
 // timestamps.
 func TestEntry_MarkUsed_UpdatesLastUsed(t *testing.T) {
 	e := session.NewEntryForTest(nil, "sid-mu")
-	t0 := e.LastUsed
+	// P-5 fix: LastUsed is now an accessor method (atomic.Int64 backing).
+	t0 := e.LastUsed()
 
 	// Tiny sleep so the second MarkUsed produces a measurably later
 	// timestamp on platforms with coarse clock resolution.
 	time.Sleep(2 * time.Millisecond)
 	e.MarkUsed()
-	if !e.LastUsed.After(t0) {
-		t.Errorf("MarkUsed did not advance LastUsed: t0=%v t1=%v", t0, e.LastUsed)
+	if !e.LastUsed().After(t0) {
+		t.Errorf("MarkUsed did not advance LastUsed: t0=%v t1=%v", t0, e.LastUsed())
 	}
 
-	t1 := e.LastUsed
+	t1 := e.LastUsed()
 	time.Sleep(2 * time.Millisecond)
 	e.MarkUsed()
-	if e.LastUsed.Before(t1) {
-		t.Errorf("MarkUsed produced regressing timestamp: t1=%v t2=%v", t1, e.LastUsed)
+	if e.LastUsed().Before(t1) {
+		t.Errorf("MarkUsed produced regressing timestamp: t1=%v t2=%v", t1, e.LastUsed())
 	}
 }
 
@@ -613,8 +614,8 @@ func TestRegistry_Detail_RowShape(t *testing.T) {
 	if row.Model != nil {
 		t.Errorf("row.Model = %v; want nil (no SetModel yet)", *row.Model)
 	}
-	if !row.LastUsed.Equal(e.LastUsed) {
-		t.Errorf("row.LastUsed = %v; want %v", row.LastUsed, e.LastUsed)
+	if !row.LastUsed.Equal(e.LastUsed()) {
+		t.Errorf("row.LastUsed = %v; want %v", row.LastUsed, e.LastUsed())
 	}
 
 	// SetModel then re-check Model is a non-nil pointer.

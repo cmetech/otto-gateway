@@ -76,7 +76,7 @@ func (r *Registry) reapOnce() {
 			// and the surface handler's defer e.Mu.Unlock runs.
 			continue
 		}
-		if es.entry.LastUsed.Before(cutoff) {
+		if es.entry.LastUsed().Before(cutoff) {
 			// Truly idle: D-11 LastUsed only advances at response
 			// complete, D-12 TryLock confirmed no in-flight stream.
 			// Defensive Cancel before Close (the Cancel is best-effort
@@ -100,11 +100,11 @@ func (r *Registry) reapOnce() {
 				if closeErr != nil {
 					r.cfg.Logger.Warn("session: reap close failed",
 						"sid", es.sid, "err", closeErr,
-						"idle_for", now.Sub(es.entry.LastUsed))
+						"idle_for", now.Sub(es.entry.LastUsed()))
 				} else {
 					r.cfg.Logger.Info("session: reaped",
 						"sid", es.sid,
-						"idle_for", now.Sub(es.entry.LastUsed))
+						"idle_for", now.Sub(es.entry.LastUsed()))
 				}
 			}
 		}

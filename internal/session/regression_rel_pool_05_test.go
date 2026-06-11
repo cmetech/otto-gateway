@@ -36,8 +36,14 @@ import (
 // (or all sites locked under e.Mu consistently) so all four read/write sites
 // are race-free.
 func TestRegression_REL_POOL_05_LastUsedRace(t *testing.T) {
-	t.Skip("REL-POOL-05 (P-5): regression test — unskip in Phase 16 fix commit")
-
+	// P-5 (REL-POOL-05) fix shipped in Phase 16-01:
+	//   internal/session/registry.go — Entry.LastUsed converted from
+	//     time.Time to atomic.Int64 (lastUsedNs) under sync/atomic;
+	//     all writes use Store; all reads use the LastUsed() accessor.
+	//   internal/session/entry_acp.go — MarkUsed writes via Store; new
+	//     LastUsed() accessor returns time.Unix(0, .Load()).
+	//   internal/session/reaper.go, stats.go — call sites updated.
+	// `go test -race` no longer reports a DATA RACE on this field.
 	defer goleak.VerifyNone(t)
 
 	// Build a registry matching the reaper_test.go template (TTL=200ms,

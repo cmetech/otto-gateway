@@ -54,12 +54,10 @@ func TestReaper_ReapsIdleSessionInRealTime(t *testing.T) {
 	// Backdate LastUsed past the cutoff so the next reaper tick fires.
 	// In production MarkUsed runs in a defer at response complete; this
 	// test setup matches "entry created, response just finished".
-	// Write under e.Mu to match the reaper's TryLock-then-read discipline
-	// (D-11/D-12) — without the lock the race detector flags the
-	// concurrent test-write vs reaper-read.
-	e.Mu.Lock()
-	e.LastUsed = time.Now().Add(-500 * time.Millisecond)
-	e.Mu.Unlock()
+	// P-5 fix (REL-POOL-05): LastUsed is now atomic.Int64. The reaper
+	// reads via the LastUsed() accessor (atomic.Load) — no mutex
+	// discipline required at the test write site.
+	e.SetLastUsedForTest(time.Now().Add(-500 * time.Millisecond))
 
 	eventually(t, func() bool {
 		return r.SessionCount() == 0
@@ -97,10 +95,12 @@ func TestReaper_SkipsInFlightSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	// Acquire Mu then backdate — keep the write under the same lock
-	// the reaper uses for reads, satisfying the race detector.
+	// P-5 fix (REL-POOL-05): atomic.Int64 write — no mutex required.
+	e.SetLastUsedForTest(time.Now().Add(-500 * time.Millisecond))
+	// Acquire Mu for whatever the rest of this test body needs
+	// (preserved from the pre-fix structure; the lock no longer
+	// protects LastUsed itself).
 	e.Mu.Lock()
-	e.LastUsed = time.Now().Add(-500 * time.Millisecond)
 
 	// Hold Mu for 300ms — that's ~12 ticks. The entry must survive
 	// every tick during the hold.
@@ -186,11 +186,10 @@ func TestReaper_CancelsAndClosesOnReap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	// Backdate so the next tick reaps. Write under e.Mu so the race
-	// detector is happy (reaper reads LastUsed under TryLock).
-	e.Mu.Lock()
-	e.LastUsed = time.Now().Add(-1 * time.Second)
-	e.Mu.Unlock()
+	// Backdate so the next tick reaps. P-5 fix (REL-POOL-05): atomic
+	// write replaces the e.Mu.Lock()/e.LastUsed=.../e.Mu.Unlock()
+	// dance — the reaper reads via the atomic LastUsed() accessor.
+	e.SetLastUsedForTest(time.Now().Add(-1 * time.Second))
 
 	eventually(t, func() bool {
 		return r.SessionCount() == 0
@@ -239,11 +238,12 @@ func TestReaper_HandlesMultipleEntries(t *testing.T) {
 	// last 2 fresh.
 	pastCutoff := time.Now().Add(-1 * time.Second)
 	freshNow := time.Now()
+	// P-5 fix (REL-POOL-05): use atomic accessor instead of direct field write.
 	for i := 0; i < 3; i++ {
-		entries[i].LastUsed = pastCutoff
+		entries[i].SetLastUsedForTest(pastCutoff)
 	}
 	for i := 3; i < n; i++ {
-		entries[i].LastUsed = freshNow
+		entries[i].SetLastUsedForTest(freshNow)
 	}
 
 	r.ReapOnceForTest()
