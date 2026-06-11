@@ -256,6 +256,22 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 			// the truncated stream stand (Pitfall 3 / A5).
 			a.cfg.Logger.Debug("openai: sse emitter terminated", "err", err)
 		}
+		// CR-02 fix (phase 15 review): on idle-timeout the worker is still
+		// generating. The previous flow relied on `defer cancelFn()` (line
+		// 151) firing on handler return to trigger the watchdog AfterFunc
+		// and Cancel — but PostHooks run BEFORE the deferred cancelFn
+		// executes. On a 1-slot pool the next request waits in NewSession's
+		// bounded acquire for the full PostHook latency, then times out.
+		// Fire cancelFn() now so the watchdog issues session/cancel + the
+		// pool slot returns before PostHooks runs. PostHooks consume a
+		// detached ctx (context.WithoutCancel) so they observe correct
+		// deadlines on their own work but do not depend on the worker
+		// streamCtx that we just cancelled.
+		postCtx := streamCtx
+		if errors.Is(err, canonical.ErrStreamIdleTimeout) {
+			cancelFn()
+			postCtx = context.WithoutCancel(streamCtx)
+		}
 		// Quick 260530-df2 — fire PostHooks on the aggregated response.
 		// resp is non-nil even on disconnect / mid-stream Result()
 		// error so PostHooks observe forensics. Hook errors are logged
@@ -265,7 +281,7 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 		// eng.Collect and so PostHooks fire there via Collect's
 		// existing traversal — no change needed for that path.
 		if resp != nil {
-			if pErr := eng.RunPostHooks(streamCtx, req, resp); pErr != nil {
+			if pErr := eng.RunPostHooks(postCtx, req, resp); pErr != nil {
 				a.cfg.Logger.Warn("openai: posthook error after streaming completion",
 					"err", pErr, "surface", "openai.chat")
 			}

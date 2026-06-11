@@ -326,6 +326,19 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 			// not an error — but still useful to log at debug.
 			a.cfg.Logger.Debug("anthropic: sse emitter terminated", "err", err)
 		}
+		// CR-02 fix (phase 15 review, applied symmetrically to anthropic):
+		// on idle-timeout the kiro-cli worker keeps generating until the
+		// deferred cancelFn fires on handler return — meanwhile PostHooks
+		// run and the pool slot stays occupied. Fire cancelFn() now so
+		// the watchdog AfterFunc issues session/cancel + the slot returns
+		// BEFORE PostHooks runs. PostHooks operate on a detached ctx
+		// (context.WithoutCancel) so their own work observes correct
+		// deadlines and does not see the cancellation we just induced.
+		postCtx := streamCtx
+		if errors.Is(err, canonical.ErrStreamIdleTimeout) {
+			cancelFn()
+			postCtx = context.WithoutCancel(streamCtx)
+		}
 		// Quick 260530-df2 — fire PostHooks on the aggregated response
 		// so LoggingHook.After + ChatTraceHook.After + any audit hook
 		// observes every streaming request. PostHook errors are logged
@@ -336,7 +349,7 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 		// error instead — the divergence is documented in
 		// collect.go's tail call site.
 		if resp != nil {
-			if pErr := eng.RunPostHooks(streamCtx, req, resp); pErr != nil {
+			if pErr := eng.RunPostHooks(postCtx, req, resp); pErr != nil {
 				a.cfg.Logger.Warn("anthropic: posthook error after streaming completion",
 					"err", pErr)
 			}

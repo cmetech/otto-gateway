@@ -449,6 +449,17 @@ func runNDJSONEmitter(ctx context.Context, cancelFn context.CancelFunc, w http.R
 				frame.Error = "stream idle timeout"
 				_ = marshalAndWrite(w, flusher, frame, cancelFn)
 			}
+			// CR-02 fix (phase 15 review, applied symmetrically to ollama):
+			// fire cancelFn() now so the watchdog AfterFunc issues
+			// session/cancel + the pool slot returns BEFORE the handler's
+			// PostHooks run. Without this, the kiro-cli worker keeps
+			// generating into a slot the next acquirer is waiting on; on a
+			// 1-slot pool that turns NewSession's bounded acquire into a
+			// PostHook-latency-bounded wait followed by ErrPoolExhausted.
+			// cancelFn is idempotent — marshalAndWrite may already have
+			// fired it on write failure, the watchdog AfterFunc may already
+			// have fired Cancel, and Pool.Cancel is itself idempotent.
+			cancelFn()
 			return emptyResp,
 				fmt.Errorf("ollama: ndjson %w", canonical.ErrStreamIdleTimeout)
 
