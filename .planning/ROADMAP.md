@@ -116,3 +116,14 @@ v1.9 phase details archived to [milestones/v1.9-ROADMAP.md](milestones/v1.9-ROAD
 | 14 | v1.9 | 4/4 | Complete    | 2026-06-11 |
 | 15 | v1.9 | 3/3 | Complete   | 2026-06-11 |
 | 16 | v1.9 | 5/5 | Complete   | 2026-06-11 |
+
+### Phase 17: Trust-Gate Restoration
+
+**Goal:** [To be planned]
+**Requirements**: TBD
+**Depends on:** Phase 16
+**Plans:** 0 plans
+
+Plans:
+
+- [ ] TBD (run /gsd-plan-phase 17 to break down)

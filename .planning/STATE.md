@@ -2,10 +2,10 @@
 gsd_state_version: 1.0
 milestone: v1.9
 milestone_name: Reliability Hardening
-status: milestone-shipped
-stopped_at: v1.9 Reliability Hardening shipped 2026-06-11 — ready for /gsd-new-milestone
-last_updated: "2026-06-11T20:00:00.000Z"
-last_activity: 2026-06-11 -- v1.9 milestone archived and tagged
+status: phase-17-pending
+stopped_at: v1.9 ready to ship but make ci surfaced trust-gate debt — Phase 17 opened to close it (arch-lint, gosec, fmt, goleak flake)
+last_updated: "2026-06-11T22:04:37.094Z"
+last_activity: 2026-06-11 -- Phase 17 opened: Trust-Gate Restoration
 progress:
   total_phases: 22
   completed_phases: 21
