@@ -2,18 +2,13 @@ package ollama
 
 // Regression test for REL-HTTP-03 (H-3) — Ollama surface:
 // When kiro-cli dies mid-stream, run.Stream().Result() returns a non-nil error.
-// The current finalizeNDJSON path logs at debug and returns without emitting a
-// `{"done":true,"done_reason":"error"}` terminal line. The client receives HTTP
-// 200 + partial NDJSON lines + clean TCP close. LangFlow's NDJSON consumer
-// never sees the `done:true` marker it aggregates on.
+// Post-fix: finalizeNDJSON emits a done:true + done_reason:error terminal line
+// and logs at WARN (D-09/D-10), so LangFlow's NDJSON aggregator gets an explicit
+// end-of-stream marker instead of a silent truncated body.
 //
-// Pre-fix observable: the NDJSON body does NOT contain `"done_reason":"error"`,
-// and does NOT contain a `{"done":true,...}` terminal line after the mid-stream
-// worker death.
-//
-// Post-fix: emit the same surface-native terminal error line the idle-timeout
-// path already emits (ndjson.go:437-450 for chat; :445-450 for generate), log
-// at WARN. Unskip in Phase 15 fix commit and flip assertions.
+// H-3 fix (REL-HTTP-03): unskipped in Phase 15. Assertions flipped from
+// pre-fix "body does NOT contain done_reason:error / done:true" to post-fix
+// "body DOES contain done_reason:error AND done:true".
 
 import (
 	"context"
@@ -26,17 +21,16 @@ import (
 	"otto-gateway/internal/canonical"
 )
 
-// TestRegression_REL_HTTP_03_MidStreamTruncationIsSilent demonstrates that a
-// mid-stream terminal error on the Ollama NDJSON surface silently truncates
-// the stream without emitting a done:true terminal line or done_reason:"error".
+// TestRegression_REL_HTTP_03_MidStreamTruncationIsSilent verifies that a
+// mid-stream terminal error on the Ollama NDJSON surface emits a done:true +
+// done_reason:error terminal line rather than silently truncating the stream.
 //
 // The reproducer uses fakeRunHandle with a fakeStream whose final result carries
 // a non-nil error (simulating kiro-cli dying after partial chunk delivery). The
 // emitter finishes via finalizeNDJSON, which calls run.Stream().Result() and
-// encounters the error — falling through to the silent return path.
+// encounters the error — post-fix it emits the terminal done:true frame and
+// logs at WARN.
 func TestRegression_REL_HTTP_03_MidStreamTruncationIsSilent(t *testing.T) {
-	t.Skip("REL-HTTP-03 (H-3): regression test — unskip in Phase 15 fix commit")
-
 	// Pre-populate with one text chunk then close the channel.
 	// This triggers the chunks-closed → finalizeNDJSON path, where Result()
 	// returns an error simulating kiro-cli mid-stream death.
@@ -63,25 +57,21 @@ func TestRegression_REL_HTTP_03_MidStreamTruncationIsSilent(t *testing.T) {
 
 	// runNDJSONEmitter should return a non-nil error wrapping the worker death.
 	if err == nil {
-		t.Error("pre-fix reproducer: runNDJSONEmitter returned nil error on worker death; expected non-nil")
+		t.Error("post-fix: runNDJSONEmitter returned nil error on worker death; expected non-nil")
 	}
 
 	body := rec.Body.String()
 
-	// Pre-fix observable (assertion 1): body does NOT contain done_reason:"error".
-	// The idle-timeout path emits it (ndjson.go:441); finalizeNDJSON does not on
-	// the error path.
-	if strings.Contains(body, `"done_reason":"error"`) {
-		t.Errorf("pre-fix reproducer: body unexpectedly contains done_reason:error — "+
-			"bug may already be fixed; body=%q", body)
+	// Post-fix assertion 1: body DOES contain done_reason:"error".
+	if !strings.Contains(body, `"done_reason":"error"`) {
+		t.Errorf("post-fix regression: body does not contain done_reason:error; body=%q", body)
 	}
 
-	// Pre-fix observable (assertion 2): body does NOT contain a terminal
-	// done:true line. Clients that aggregate on done:true never see end-of-stream.
-	if strings.Contains(body, `"done":true`) {
-		t.Errorf("pre-fix reproducer: body unexpectedly contains done:true — "+
-			"bug may already be fixed; body=%q", body)
+	// Post-fix assertion 2: body DOES contain a terminal done:true line.
+	// LangFlow's NDJSON aggregator needs this to recognize end-of-stream on failure.
+	if !strings.Contains(body, `"done":true`) {
+		t.Errorf("post-fix regression: body does not contain done:true; body=%q", body)
 	}
 
-	t.Logf("pre-fix observable confirmed: no done:true or done_reason:error in truncated Ollama stream; body=%q", body)
+	t.Logf("post-fix verified: done:true and done_reason:error present in Ollama body after mid-stream worker death; body=%q", body)
 }

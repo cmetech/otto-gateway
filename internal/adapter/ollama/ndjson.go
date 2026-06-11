@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -540,12 +541,49 @@ func aggregateOllamaResponse(req *canonical.ChatRequest, state *emitterState, st
 func finalizeNDJSON(w http.ResponseWriter, flusher http.Flusher, run RunHandle, model string, isChat bool, start time.Time, logger *slog.Logger, state *emitterState, req *canonical.ChatRequest) (*canonical.ChatResponse, error) {
 	final, rerr := run.Stream().Result()
 	if rerr != nil {
-		// Mid-stream / terminal engine error after headers: cannot send JSON 500.
-		// Debug-log and return; no done:true line (D-05 truncation).
+		// H-3 fix (REL-HTTP-03): mid-stream worker death — emit surface-native
+		// done:true + done_reason:error terminal line so Ollama clients (LangFlow
+		// NDJSON aggregator) see an explicit end-of-stream marker instead of a
+		// silent truncated body. WARN log with all D-09/D-10 required fields.
+		//
 		// Quick 260530-df2: still return the partial aggregation so
 		// PostHooks fire for forensics + duration_ms.
-		logger.Debug("ollama: ndjson stream result error", "err", rerr)
-		return aggregateOllamaResponse(req, state, canonical.StopUnknown), fmt.Errorf("ollama: ndjson stream result: %w", rerr)
+
+		// D-09/D-10 WARN log: session_id, worker_pid, kiro_exit_code, bytes_streamed.
+		// worker_pid: RunHandle interface does not expose a PID accessor; log 0
+		// as a placeholder until the interface is extended.
+		// bytes_streamed: ndjson emitter does not yet wire a bytes counter; log 0.
+		logArgs := []any{
+			"session_id", run.SessionID(),
+			"worker_pid", 0, // worker_pid: counter not yet wired in RunHandle interface
+			"bytes_streamed", 0, // bytes_streamed: counter not yet wired in ndjson emitter
+			"err", rerr,
+		}
+		var exitErr *exec.ExitError
+		if errors.As(rerr, &exitErr) {
+			logArgs = append(logArgs, "kiro_exit_code", exitErr.ExitCode())
+		}
+		// kiro_exit_code omitted when rerr chain has no *exec.ExitError
+		logger.Warn("ollama: ndjson worker terminated mid-stream", logArgs...)
+
+		// Emit D-09 Ollama surface-native terminal error line: done:true + done_reason:error.
+		// Mirror the idle-timeout path (ndjson.go idleC arm) which already emits this pattern.
+		emptyResp := aggregateOllamaResponse(req, state, canonical.StopUnknown)
+		if isChat {
+			frame := chatResponseToWire(emptyResp, start, model)
+			frame.Done = true
+			frame.DoneReason = "error"
+			frame.Error = "upstream_disconnect: worker terminated mid-stream"
+			_ = marshalAndWrite(w, flusher, frame, nil)
+		} else {
+			frame := generateResponseToWire(emptyResp, start, model)
+			frame.Done = true
+			frame.DoneReason = "error"
+			frame.Error = "upstream_disconnect: worker terminated mid-stream"
+			_ = marshalAndWrite(w, flusher, frame, nil)
+		}
+
+		return emptyResp, fmt.Errorf("ollama: ndjson stream result: %w", rerr)
 	}
 
 	// D-06 teardown: prevent watchdog from emitting spurious Cancel after natural
