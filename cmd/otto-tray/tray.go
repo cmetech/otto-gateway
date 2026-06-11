@@ -153,7 +153,20 @@ func (s *trayState) makeProbe() probeFunc {
 		if !ok {
 			return true, false, Snapshot{}
 		}
-		snap, _ := client.snapshot()
+		// REL-TRAY-05 (T-5) fix: do not swallow snapshot errors. The
+		// pre-fix code (snap, _ := client.snapshot()) discarded JSON
+		// decode failures and connection resets; the FSM then saw a
+		// zero-value Snapshot with PoolSize=0, which masks the
+		// Alive==0 rule and Pool.Status enum — the tray reported
+		// StateRunning while the pool was wedged. Now: return
+		// (true, false, Snapshot{}) so the FSM treats a snapshot
+		// error the same as a failed /health probe — the
+		// StartingBudget/HealthFailures path lights up Starting or
+		// Error.
+		snap, err := client.snapshot()
+		if err != nil {
+			return true, false, Snapshot{}
+		}
 		// /health/hooks is a separate endpoint — failures here are
 		// silently ignored (the absence of hook data just means the
 		// FSM cannot light up "degraded by hook error"; it does not

@@ -52,6 +52,20 @@ func computeState(in stateInput) stateOutput {
 	if in.Snapshot.PoolSize > 0 && in.Snapshot.PoolAlive == 0 {
 		return stateOutput{State: StateDegraded, Detail: "pool empty"}
 	}
+	// REL-TRAY-05 (T-5) fix: consume the pool.status enum surfaced by
+	// /health (Plan 16-02 — D-05). The server-side rule already handles
+	// the "busy-but-not-serving" wedge (Busy==Alive==Size && stale
+	// LastProgressAt) and the exhausted-slot case; we just light up
+	// StateDegraded when the enum reports either. Empty status
+	// (degraded-mode boot / pre-Plan-16-02 build) falls through to the
+	// happy path, which is the right default — the existing Alive==0
+	// rule above still catches real failures on older builds.
+	switch in.Snapshot.Pool.Status {
+	case "degraded":
+		return stateOutput{State: StateDegraded, Detail: "pool stalled"}
+	case "exhausted":
+		return stateOutput{State: StateDegraded, Detail: "pool exhausted"}
+	}
 	for _, h := range in.Snapshot.Hooks {
 		if h.Enabled && h.LastError != "" {
 			return stateOutput{State: StateDegraded, Detail: "hook " + h.Name + ": " + h.LastError}
