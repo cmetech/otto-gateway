@@ -176,7 +176,7 @@ Plans:
 **Plans**: 5 plans
 Plans:
 
-- [ ] 16-01-PLAN.md — Pool/ACP: P-4 per-request ctx for stream.push (REL-POOL-04); P-5 atomic Entry.LastUsed closes -race (REL-POOL-05); P-6 Windows taskkill /T /F (REL-POOL-06); O-1 throttled Warn on first park + D-05a LastProgressAt (REL-CFG-04). Wave 1.
+- [x] 16-01-PLAN.md — Pool/ACP: P-4 per-request ctx for stream.push (REL-POOL-04); P-5 atomic Entry.LastUsed closes -race (REL-POOL-05); P-6 Windows taskkill /T /F (REL-POOL-06); O-1 throttled Warn on first park + D-05a LastProgressAt (REL-CFG-04). Wave 1.
 - [ ] 16-02-PLAN.md — HTTP surface: H-4 body-read deadline + HTTP_BODY_READ_TIMEOUT_SEC (REL-HTTP-04); H-5 TailerMaxLineBytes on newline-terminated lines (REL-HTTP-05); D-05 PoolStats.Status enum in GET /health (cross-plan for T-5). Wave 1.
 - [ ] 16-03-PLAN.md — Hooks: G-1 PostHook chain on non-streaming error paths + nil-resp guards in After() (REL-HOOKS-01). Wave 1.
 - [ ] 16-04-PLAN.md — Tray/wrapper: T-4 notifyFn goroutine dispatch (REL-TRAY-04); T-5 pool.status enum consumer in tray (REL-TRAY-05); T-6 last-non-empty-line parse in revealBundle (REL-TRAY-06); T-7 bounded bundle size/time + cleanup (REL-TRAY-07). Wave 2 (depends_on: 16-01, 16-02).
@@ -194,4 +194,4 @@ Plans:
 | 13 | v1.8 | 6/6 | Complete    | 2026-06-07 |
 | 14 | v1.9 | 4/4 | Complete    | 2026-06-11 |
 | 15 | v1.9 | 3/3 | Complete   | 2026-06-11 |
-| 16 | v1.9 | 0/5 | Not started | — |
+| 16 | v1.9 | 1/5 | In Progress|  |

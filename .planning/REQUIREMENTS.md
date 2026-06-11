@@ -22,9 +22,9 @@ Each of the 23 in-scope findings is re-verified against the current `main` sourc
 - [ ] **REL-POOL-01** (P-1, Critical): The kiro-cli pool no longer shrinks permanently to zero on transient respawn failures. Slot acquisition has a bounded wait that surfaces as a typed HTTP 503 instead of an indefinite hang. Operator can recover without restarting the binary.
 - [ ] **REL-POOL-02** (P-2, High): Ctrl-C during a long generation no longer orphans `kiro-cli` process trees. The `defer cleanup()` path runs on every shutdown exit code; in-flight streams are cancelled during the shutdown grace; a second SIGINT forces immediate exit *after* cleanup.
 - [ ] **REL-POOL-03** (P-3, High): The "stale `awaitPromptResult` nils the next prompt's `activeStream`" race is closed via compare-and-swap. A queued request acquiring a recycled slot can no longer receive a silent empty 200 response.
-- [ ] **REL-POOL-04** (P-4, Medium): A slow/stalled chunk consumer no longer starves the readLoop into ping-escalation SIGKILLing a healthy worker. The readLoop signals liveness independently of consumer drain rate.
-- [ ] **REL-POOL-05** (P-5, Medium): `Entry.LastUsed` no longer races between `Registry.Get`'s alive-entry handoff and `MarkUsed` / reaper reads. `go test -race ./...` passes clean; trust-gate posture is restored.
-- [ ] **REL-POOL-06** (P-6, Medium): Windows `cmd.Cancel` and `killProcessGroup` actually kill the kiro-cli process tree (not silent no-ops). No 2s `WaitDelay` penalty on every slot teardown; grandchildren do not survive.
+- [x] **REL-POOL-04** (P-4, Medium): A slow/stalled chunk consumer no longer starves the readLoop into ping-escalation SIGKILLing a healthy worker. The readLoop signals liveness independently of consumer drain rate.
+- [x] **REL-POOL-05** (P-5, Medium): `Entry.LastUsed` no longer races between `Registry.Get`'s alive-entry handoff and `MarkUsed` / reaper reads. `go test -race ./...` passes clean; trust-gate posture is restored.
+- [x] **REL-POOL-06** (P-6, Medium): Windows `cmd.Cancel` and `killProcessGroup` actually kill the kiro-cli process tree (not silent no-ops). No 2s `WaitDelay` penalty on every slot teardown; grandchildren do not survive.
 
 ### HTTP surface reliability (Phase 15 + 16)
 
@@ -53,7 +53,7 @@ Each of the 23 in-scope findings is re-verified against the current `main` sourc
 - [ ] **REL-CFG-01** (C-1, Medium): Negative or zero values for `POOL_SIZE`, `SESSION_MAX`, `SESSION_TTL_MS`, `SESSION_TICK_INTERVAL_MS`, `CHAT_TRACE_MAX_AGE_DAYS` are loud boot errors that name the variable, matching the existing fail-fast posture for `STREAM_IDLE_TIMEOUT_SEC`. `POOL_SIZE` gets a sanity upper bound.
 - [ ] **REL-CFG-02** (C-2, Medium): `PING_INTERVAL <= 0` is validated in `config.Load` as a boot error (named) rather than crashing the process via a raw goroutine panic from `time.NewTicker`. The panic — if it ever fires defensively — lands in the structured log file.
 - [ ] **REL-CFG-03** (C-3, Medium): `EMBEDDING_MODEL_DEFAULT` is either implemented/stubbed coherently OR the gateway logs an explicit startup `Warn` when it is set, and the docs / CLAUDE.md env-var contract are corrected.
-- [ ] **REL-CFG-04** (O-1, Medium): Pool exhaustion (acquire blocked) is visible at default log level via a `Warn("pool: waiting for free slot", ...)` line the first time a request parks. Operators can diagnose "the gateway silently stopped answering" from the log alone.
+- [x] **REL-CFG-04** (O-1, Medium): Pool exhaustion (acquire blocked) is visible at default log level via a `Warn("pool: waiting for free slot", ...)` line the first time a request parks. Operators can diagnose "the gateway silently stopped answering" from the log alone.
 
 ## v2 Requirements (Deferred to v1.10)
 

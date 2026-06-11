@@ -3,14 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.9
 milestone_name: Reliability Hardening
 status: executing
-last_updated: "2026-06-11T16:33:35.040Z"
-last_activity: 2026-06-11 -- Phase 15 execution started
+stopped_at: Completed 16-01-PLAN.md
+last_updated: "2026-06-11T18:07:23.000Z"
+last_activity: 2026-06-11 -- Phase 16 execution started
 progress:
-  total_phases: 3
-  completed_phases: 2
-  total_plans: 7
-  completed_plans: 7
-  percent: 67
+  total_phases: 22
+  completed_phases: 20
+  total_plans: 78
+  completed_plans: 74
+  percent: 91
 ---
 
 # Project State
@@ -20,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-07)
 
 **Core value:** All three API surfaces (OpenAI for Pi SDK, Ollama for LangFlow, Anthropic for loop24-client/GSD Pi) serve their respective clients without those clients knowing kiro-cli exists, with one place to enforce policy.
-**Current focus:** Phase 15 — fix-critical-high
+**Current focus:** Phase 16 — fix-mediums
 
 ## Current Position
 
-Phase: 15 (fix-critical-high) — EXECUTING
-Plan: 1 of 3
-Status: Executing Phase 15
-Last activity: 2026-06-11 -- Phase 15 execution started
+Phase: 16 (fix-mediums) — EXECUTING
+Plan: 2 of 5
+Status: Ready to execute
+Last activity: 2026-06-11 -- Phase 16 execution started
 
 ## Performance Metrics
 
@@ -61,6 +62,7 @@ Last activity: 2026-06-11 -- Phase 15 execution started
 *Updated after each plan completion*
 | Phase 08.2 P01 | 45m | 8 tasks | 10 files |
 | Phase 08.4 P01 | 35m | 3 tasks (R/G/F) + Task H pending | 7 files |
+| Phase 16 P01 | 35min | 4 tasks | 18 files |
 
 ## Accumulated Context
 
@@ -97,6 +99,10 @@ Recent decisions affecting current work:
 - 2026-06-04: Phase 08.4 USState regex restructured to two alternation arms (comma-prefixed permissive trail OR line-start ZIP-required trail) to honor AP-2 in production. Diverges from literal RESEARCH.md regex. See 08.4-01-SUMMARY.md.
 - 2026-06-04: Phase 08.4 USAddress whitespace tightened from `\s+` to `[ \t]+` so RE2's `\s` does not let `\n` smuggle multi-line text into a single span (Pitfall 3).
 - 2026-06-04: `make ci` lint step has 93 pre-existing project tech-debt issues (verified pre-existing on base 315f1cc); PII-01 introduced none. Deferred to a future lint-debt-closeout phase. All other trust gates (gofumpt, vet, build, test-race, arch-lint, examples) green.
+- [Phase ?]: Plan 16-01: Entry.LastUsed converted to unexported atomic.Int64 (lastUsedNs) — lowercase name prevents accidental direct field access
+- [Phase ?]: Plan 16-01: Stream.ctx field carries //nolint:containedctx — per-request ctx is load-bearing for P-4 push backpressure scoping
+- [Phase ?]: Plan 16-01: P-6 used taskkill /T /F (Option A) rather than CreateJobObject — stdlib-only, single nolint annotation
+- [Phase ?]: Plan 16-01: lastProgressAt seeded at Warmup completion to avoid post-warmup false-degraded window
 
 ### Pending Todos
 
@@ -156,9 +162,9 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-06-11T16:33:35.034Z
-Stopped at: Phase 16 context gathered
-Resume file: .planning/phases/16-fix-mediums/16-CONTEXT.md
+Last session: 2026-06-11T18:07:22.994Z
+Stopped at: Completed 16-01-PLAN.md
+Resume file: None
 
 ## Operator Next Steps
 
