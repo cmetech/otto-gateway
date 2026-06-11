@@ -115,6 +115,16 @@ type Config struct {
 	// POOL-01: default 4 for Node parity; Phase 2 shipped a default of 1).
 	// Set-but-unparseable yields a Load() error.
 	PoolSize int
+	// BodyReadTimeout is the per-request HTTP body-read deadline applied to
+	// chat-body POST handlers (REL-HTTP-04 / Plan 16-02). Plan 16-05 owns
+	// the config-side parsing of HTTP_BODY_READ_TIMEOUT_SEC; Plan 16-02
+	// applies the time.AfterFunc-based deadline wrapper that calls
+	// r.Body.Close() on expiry so SSE response writes are unaffected
+	// (D-04b). Default 30s; <= 0 is a boot error (D-04 fail-fast). The
+	// _SEC env-var suffix matches STREAM_IDLE_TIMEOUT_SEC; the field on
+	// Config is a time.Duration so callers do not re-multiply by
+	// time.Second.
+	BodyReadTimeout time.Duration
 	// StreamIdleTimeoutSec is the server-side idle-stream watchdog
 	// timeout in seconds (quick 260531-ruv). Default 30. Zero is VALID
 	// and disables the watchdog (legacy hang-forever behavior, opt-in).
@@ -314,6 +324,17 @@ func Load() (Config, error) {
 	if err != nil {
 		errs = append(errs, err)
 	}
+	// C-1 (REL-CFG-01) fail-fast: POOL_SIZE silently coerced to 1 by
+	// pool.Config.applyDefaults when <= 0. Match STREAM_IDLE_TIMEOUT_SEC posture
+	// (config.go:366-368) — emit a named boot error so misconfigured deployments
+	// fail loudly. Upper bound 256 (D-discretion sanity ceiling: any system that
+	// genuinely needs > 256 concurrent kiro-cli workers is unsupported).
+	if poolSize < 0 {
+		errs = append(errs, fmt.Errorf("POOL_SIZE: must be >= 0, got %d", poolSize))
+	}
+	if poolSize > 256 {
+		errs = append(errs, fmt.Errorf("POOL_SIZE: sanity cap exceeded (max 256), got %d", poolSize))
+	}
 
 	ollamaPath := getEnvStr("OLLAMA_PATH_PREFIX", "/api")
 	openaiPath := getEnvStr("OPENAI_PATH_PREFIX", "/v1")
@@ -337,12 +358,23 @@ func Load() (Config, error) {
 	if err != nil {
 		errs = append(errs, err)
 	}
+	// C-1 (REL-CFG-01) fail-fast: SESSION_TTL_MS silently coerced to 30m by
+	// session.Config.applyDefaults when <= 0. Negative values are nonsensical for
+	// an idle-reap threshold. Match STREAM_IDLE_TIMEOUT_SEC posture.
+	if sessionTTL < 0 {
+		errs = append(errs, fmt.Errorf("SESSION_TTL_MS: must be >= 0, got %v", sessionTTL))
+	}
 
 	// Phase 5 D-06: SESSION_MAX cap (default 32). NEW env var — no Node
 	// equivalent; documented in docs/operating.md.
 	sessionMax, err := getEnvInt("SESSION_MAX", 32)
 	if err != nil {
 		errs = append(errs, err)
+	}
+	// C-1 (REL-CFG-01) fail-fast: SESSION_MAX silently coerced to 32 by
+	// session.Config.applyDefaults when <= 0. Match STREAM_IDLE_TIMEOUT_SEC posture.
+	if sessionMax < 0 {
+		errs = append(errs, fmt.Errorf("SESSION_MAX: must be >= 0, got %d", sessionMax))
 	}
 
 	// Phase 5 Plan 05-03 Task 5 (e2e injection seam): SESSION_TICK_INTERVAL_MS
@@ -353,6 +385,12 @@ func Load() (Config, error) {
 	sessionTickInterval, err := getEnvDuration("SESSION_TICK_INTERVAL_MS", 60*time.Second)
 	if err != nil {
 		errs = append(errs, err)
+	}
+	// C-1 (REL-CFG-01) fail-fast: SESSION_TICK_INTERVAL_MS silently coerced to
+	// 60s by session.Config.applyDefaults when <= 0. Match STREAM_IDLE_TIMEOUT_SEC
+	// posture.
+	if sessionTickInterval < 0 {
+		errs = append(errs, fmt.Errorf("SESSION_TICK_INTERVAL_MS: must be >= 0, got %v", sessionTickInterval))
 	}
 
 	// Quick 260531-ruv — STREAM_IDLE_TIMEOUT_SEC. Default 30 (seconds).
@@ -365,6 +403,18 @@ func Load() (Config, error) {
 	}
 	if streamIdleTimeoutSec < 0 {
 		errs = append(errs, fmt.Errorf("STREAM_IDLE_TIMEOUT_SEC: must be >= 0, got %d", streamIdleTimeoutSec))
+	}
+
+	// H-4 (REL-HTTP-04) config owner — Plan 16-05 parses HTTP_BODY_READ_TIMEOUT_SEC;
+	// Plan 16-02 owns the server-side body-read wrapper that consumes BodyReadTimeout
+	// off server.Config. D-04: default 30s; <= 0 is a boot error (fail-fast posture
+	// matching C-1/C-2). _SEC suffix matches STREAM_IDLE_TIMEOUT_SEC convention.
+	bodyReadTimeoutSec, err := getEnvInt("HTTP_BODY_READ_TIMEOUT_SEC", 30)
+	if err != nil {
+		errs = append(errs, err)
+	}
+	if bodyReadTimeoutSec <= 0 {
+		errs = append(errs, fmt.Errorf("HTTP_BODY_READ_TIMEOUT_SEC: must be > 0, got %d", bodyReadTimeoutSec))
 	}
 
 	// Phase 8 D-02 / D-05: five new env keys for the plugin chain.
@@ -488,6 +538,12 @@ func Load() (Config, error) {
 	if err != nil {
 		errs = append(errs, err)
 	}
+	// C-1 (REL-CFG-01) fail-fast: CHAT_TRACE_MAX_AGE_DAYS negative is nonsensical
+	// for timberjack MaxAge — silently bypasses the retention pruning window
+	// (T-ll2-01 leak window guard). Match STREAM_IDLE_TIMEOUT_SEC posture.
+	if chatTraceMaxAgeDays < 0 {
+		errs = append(errs, fmt.Errorf("CHAT_TRACE_MAX_AGE_DAYS: must be >= 0, got %d", chatTraceMaxAgeDays))
+	}
 	if chatTrace {
 		if dir := filepath.Dir(chatTraceFile); dir != "" && dir != "." {
 			// G703 exemption: CHAT_TRACE_FILE is operator-supplied at process
@@ -545,6 +601,7 @@ func Load() (Config, error) {
 		AuthToken:                 authTokens,
 		AllowedIPs:                allowedIPs,
 		PoolSize:                  poolSize,
+		BodyReadTimeout:           time.Duration(bodyReadTimeoutSec) * time.Second,
 		StreamIdleTimeoutSec:      streamIdleTimeoutSec,
 		OllamaPathPrefix:          ollamaPath,
 		OpenAIPathPrefix:          openaiPath,
