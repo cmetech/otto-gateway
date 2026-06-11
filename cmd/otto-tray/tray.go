@@ -364,12 +364,12 @@ func (s *trayState) handleSupportBundle() {
 		// failures are silent (any write error would itself be noise
 		// the user cannot act on).
 		logDir := filepath.Join(s.installRoot, "support")
-		if mkErr := os.MkdirAll(logDir, 0o755); mkErr == nil {
+		if mkErr := os.MkdirAll(logDir, 0o750); mkErr == nil {
 			logPath := filepath.Join(logDir, "last-error.log")
 			content := "exit=" + strconv.Itoa(res.ExitCode) + "\n\n" +
 				"--- stderr ---\n" + res.Stderr + "\n" +
 				"--- stdout ---\n" + res.Stdout + "\n"
-			if writeErr := os.WriteFile(logPath, []byte(content), 0o644); writeErr == nil {
+			if writeErr := os.WriteFile(logPath, []byte(content), 0o600); writeErr == nil {
 				body += "\n\nDetails saved to:\n" + logPath
 			}
 		}

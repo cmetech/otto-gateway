@@ -198,11 +198,11 @@ func New(cfg config.Config, logger *slog.Logger, version string) *Server {
 // NewWithCommit is like New but also accepts a commit hash for the version endpoint.
 func NewWithCommit(cfg config.Config, logger *slog.Logger, version, commit string) *Server {
 	s := &Server{
-		cfg:        cfg,
-		logger:     logger,
-		version:    version,
-		commit:     commit,
-		start:      time.Now(),
+		cfg:          cfg,
+		logger:       logger,
+		version:      version,
+		commit:       commit,
+		start:        time.Now(),
 		addr:         cfg.HTTPAddr,
 		shutdownCh:   make(chan struct{}),
 		forceCloseCh: make(chan struct{}),

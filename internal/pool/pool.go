@@ -271,7 +271,8 @@ func (p *Pool) slotAlive(slot *Slot) bool {
 //  5. Spawn a fresh exit-watcher for the NEW client.
 //
 // On any failure the wrapped error is returned; the caller is expected
-// to call removeSlot to drop the dead slot from p.all (D-03).
+// to re-queue the slot via the same release path as the ctx-cancel
+// branch (D-03; the removeSlot path was removed as dead code in Phase 17).
 func (p *Pool) respawnSlot(ctx context.Context, slot *Slot) error {
 	// Step 1: close OLD client first so OLD exit-watcher exits cleanly
 	// via its <-slot.Client.Done() branch (Pitfall 2).
@@ -333,21 +334,6 @@ func (p *Pool) respawnSlot(ctx context.Context, slot *Slot) error {
 	p.startExitWatcher(slot, newDone)
 	p.mu.Unlock()
 	return nil
-}
-
-// removeSlot drops slot from p.all so the pool effective size shrinks
-// (Phase 5 D-03 — respawn failure path). Held under p.mu briefly.
-// The slot is NOT returned to p.slots; subsequent NewSession callers
-// will compete for the remaining alive slots.
-func (p *Pool) removeSlot(slot *Slot) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	for i, s := range p.all {
-		if s == slot {
-			p.all = append(p.all[:i], p.all[i+1:]...)
-			return
-		}
-	}
 }
 
 // Models returns a defensive copy of the captured model catalog.
@@ -692,8 +678,9 @@ func (p *Pool) NewSession(ctx context.Context, cwd string) (string, error) {
 			// spawn failures. A laptop reconnecting after sleep with
 			// multiple cached client tabs hitting dead slots used to walk
 			// the pool 4→3→2→1→0 because every disconnect-during-respawn
-			// landed in removeSlot. The slot is still dead (we haven't
-			// swapped a new client in) so re-queue it; the next acquirer
+			// landed in the dead-slot drop path (removed in Phase 17). The
+			// slot is still dead (we haven't swapped a new client in) so
+			// re-queue it; the next acquirer
 			// retries the respawn rather than starving on a shrunken pool.
 			// recordSpawnErr was intentionally skipped on ctx-cancel inside
 			// respawnSlot so /health/pool LastSpawnError stays clean.
@@ -744,7 +731,8 @@ func (p *Pool) NewSession(ctx context.Context, cwd string) (string, error) {
 				return "", fmt.Errorf("pool: respawn slot %s deferred: %w", slot.Label, err)
 			}
 			// WR-07 transient respawn failure: re-queue the slot instead of
-			// calling removeSlot. This preserves the pool's effective size so
+			// dropping it from p.all (the dead-slot drop path was removed
+			// in Phase 17). This preserves the pool's effective size so
 			// the next acquirer can retry the respawn (REL-POOL-01 D-08).
 			// A caller-disconnect (ctx-cancel) landed in the re-queue branch
 			// above; this arm is reached only for genuine (non-ctx) transient

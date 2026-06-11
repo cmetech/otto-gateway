@@ -59,7 +59,6 @@ func newBlockingPromptClient() *blockingPromptClient {
 // (deferred cleanup is unconditional, or main.go:131's os.Exit is replaced
 // with cleanup(); closeLogger(); os.Exit(1)).
 func TestRegression_REL_POOL_02_CtrlCOrphansChildren(t *testing.T) {
-
 	defer goleak.VerifyNone(t)
 
 	// Build a size-2 pool with two blocking clients to simulate two

@@ -54,7 +54,6 @@ func (f *transientErrFactory) Spawn(_ context.Context, _ acp.Config) (pool.PoolC
 // (like the ctx-cancel path at pool.go:525-532 does) so Stats().Size stays at 1
 // and the pool can recover when the transient condition clears.
 func TestRegression_REL_POOL_01_PoolShrinksToZero(t *testing.T) {
-
 	defer goleak.VerifyNone(t)
 
 	fc0 := &fakeClient{} // warmup client — will be killed by fireDone()
