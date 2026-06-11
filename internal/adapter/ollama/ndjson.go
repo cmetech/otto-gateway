@@ -579,22 +579,32 @@ func finalizeNDJSON(w http.ResponseWriter, flusher http.Flusher, run RunHandle, 
 
 		// Emit D-09 Ollama surface-native terminal error line: done:true + done_reason:error.
 		// Mirror the idle-timeout path (ndjson.go idleC arm) which already emits this pattern.
-		emptyResp := aggregateOllamaResponse(req, state, canonical.StopUnknown)
+		//
+		// WR-02 fix (phase 15 review): renamed from `emptyResp` — the
+		// variable carries the FULL aggregated text accumulated from chunks
+		// that arrived BEFORE the worker died, not an empty response.
+		// TODO: PII decrypt PostHook may receive partially-encrypted
+		// ciphertext here (the truncated prefix of an encrypted span).
+		// The pii.DecryptHook is expected to handle invalid ciphertext
+		// defensively; if a "PostHook PII decrypt: invalid ciphertext"
+		// log line appears alongside an upstream_disconnect terminal
+		// frame, this site is the correlation source.
+		partialResp := aggregateOllamaResponse(req, state, canonical.StopUnknown)
 		if isChat {
-			frame := chatResponseToWire(emptyResp, start, model)
+			frame := chatResponseToWire(partialResp, start, model)
 			frame.Done = true
 			frame.DoneReason = "error"
 			frame.Error = "upstream_disconnect: worker terminated mid-stream"
 			_ = marshalAndWrite(w, flusher, frame, nil)
 		} else {
-			frame := generateResponseToWire(emptyResp, start, model)
+			frame := generateResponseToWire(partialResp, start, model)
 			frame.Done = true
 			frame.DoneReason = "error"
 			frame.Error = "upstream_disconnect: worker terminated mid-stream"
 			_ = marshalAndWrite(w, flusher, frame, nil)
 		}
 
-		return emptyResp, fmt.Errorf("ollama: ndjson stream result: %w", rerr)
+		return partialResp, fmt.Errorf("ollama: ndjson stream result: %w", rerr)
 	}
 
 	// D-06 teardown: prevent watchdog from emitting spurious Cancel after natural

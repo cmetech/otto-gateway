@@ -587,6 +587,12 @@ func finalizeSSE(e *sseEmitter, run RunHandle) (*canonical.ChatResponse, error) 
 		_, _ = fmt.Fprintf(e.w, "data: [DONE]\n\n")
 		e.flusher.Flush()
 
+		// WR-02 fix (phase 15 review): aggregatedResponse returns the FULL
+		// text accumulated from chunks that arrived BEFORE the worker died.
+		// PostHooks (notably PII decrypt) consume this aggregated text;
+		// truncated ciphertext may surface as a "PostHook PII decrypt:
+		// invalid ciphertext" log line that correlates with the
+		// upstream_disconnect terminal frame emitted above.
 		return e.aggregatedResponse(canonical.StopUnknown, nil), fmt.Errorf("openai: sse stream result: %w", rerr)
 	}
 
