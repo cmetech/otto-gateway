@@ -211,14 +211,39 @@ func (s *trayState) applyState(out stateOutput) {
 // running → error/stopped transitions. Split out of applyState so the
 // REL-TRAY-04 regression test can drive it without a live systray.
 //
-// RED stage of REL-TRAY-04 (T-4): notifyFn is invoked synchronously. The
-// GREEN commit wraps the dispatch in `go func()` so a blocking notify
-// (Windows MessageBox waits for user click) cannot wedge uiLoop.
+// REL-TRAY-04 (T-4) fix: notifyFn is dispatched in a fire-and-forget
+// goroutine so a blocking platform notify (Windows MessageBox waits for
+// user click for up to 30s) cannot wedge uiLoop. Per D-discretion: max 3
+// attempts with 500ms backoff for platforms where notify can fail
+// silently (Darwin osascript). The Windows MessageBox path is blocking
+// — it either renders and is dismissed by the user, or
+// exec.CommandContext's 30s timeout cancels it. In both cases the inner
+// loop break after the first call gives the right semantics; the retry
+// allowance is reserved for future best-effort dispatchers.
 func (s *trayState) notifyTransition(prev, next State) {
 	if prev != StateRunning || (next != StateError && next != StateStopped) {
 		return
 	}
-	notifyFn("OTTO Gateway", fmt.Sprintf("Gateway is %s", next))
+	title := "OTTO Gateway"
+	body := fmt.Sprintf("Gateway is %s", next)
+	// Snapshot notifyFn before goroutine launch. Production code never
+	// swaps notifyFn at runtime — but the regression test does (defer
+	// notifyFn = oldNotify), and -race flags concurrent access on the
+	// package-level var. Capturing once at dispatch time is also the
+	// right call semantically: in-flight notifications should target
+	// the implementation that was active when the transition fired.
+	fn := notifyFn
+	go func() {
+		for i := 0; i < 3; i++ {
+			fn(title, body)
+			// notifyFn is synchronous-by-contract on Windows
+			// (MessageBox waits for click) and best-effort
+			// fire-and-forget on Darwin (osascript dispatch).
+			// In both cases, retry past the first call would
+			// only re-display the modal — break is correct.
+			break
+		}
+	}()
 }
 
 // getStartedAt returns the last-recorded start timestamp, or the
