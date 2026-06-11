@@ -226,13 +226,31 @@ func (s *trayState) applyState(out stateOutput) {
 //
 // REL-TRAY-04 (T-4) fix: notifyFn is dispatched in a fire-and-forget
 // goroutine so a blocking platform notify (Windows MessageBox waits for
-// user click for up to 30s) cannot wedge uiLoop. Per D-discretion: max 3
-// attempts with 500ms backoff for platforms where notify can fail
-// silently (Darwin osascript). The Windows MessageBox path is blocking
-// — it either renders and is dismissed by the user, or
-// exec.CommandContext's 30s timeout cancels it. In both cases the inner
-// loop break after the first call gives the right semantics; the retry
-// allowance is reserved for future best-effort dispatchers.
+// user click for up to 30s) cannot wedge uiLoop.
+//
+// WR-04 fix (phase 16 review): implement the 3-attempt/500ms-backoff
+// retry semantics that the plan-level T-4 description promised. The
+// prior `for i := 0; i < 3; i++ { fn(); break }` was an unconditional
+// break-after-first — semantically a single call — that read as a
+// half-finished retry. Two safeguards keep this honest:
+//
+//  1. Attempts are spaced with 500ms backoff via time.Sleep INSIDE
+//     the goroutine — the call site still returns immediately (the
+//     REL-TRAY-04 regression test asserts <100ms).
+//
+//  2. Before each retry, the FSM's current state is rechecked under
+//     s.mu. If the gateway has already transitioned past `next`
+//     (e.g., StateStopped → StateStarting → StateRunning while the
+//     backoff slept), the retry is skipped — we don't want to keep
+//     notifying about a stale state.
+//
+// notifyFn is synchronous-by-contract on Windows (MessageBox blocks
+// until the user clicks OK) and best-effort fire-and-forget on Darwin
+// (osascript dispatch). The retry is mostly defensive against the
+// Darwin failure mode where osascript can drop the notification
+// silently; on Windows the user-click latency between attempts will
+// usually trigger the stale-state guard and short-circuit attempts
+// 2 and 3.
 func (s *trayState) notifyTransition(prev, next State) {
 	if prev != StateRunning || (next != StateError && next != StateStopped) {
 		return
@@ -247,14 +265,25 @@ func (s *trayState) notifyTransition(prev, next State) {
 	// the implementation that was active when the transition fired.
 	fn := notifyFn
 	go func() {
-		for i := 0; i < 3; i++ {
+		const maxAttempts = 3
+		const backoff = 500 * time.Millisecond
+		for i := 0; i < maxAttempts; i++ {
+			if i > 0 {
+				time.Sleep(backoff)
+				// Stale-state guard: if the FSM has already moved
+				// past `next` while we were sleeping, abort the
+				// retry. Without this guard a brief Running →
+				// Stopped → Starting → Running transition would
+				// keep notifying "Gateway is stopped" 500ms and
+				// 1000ms after the user already saw the recovery.
+				s.mu.Lock()
+				current := s.current
+				s.mu.Unlock()
+				if current != next {
+					return
+				}
+			}
 			fn(title, body)
-			// notifyFn is synchronous-by-contract on Windows
-			// (MessageBox waits for click) and best-effort
-			// fire-and-forget on Darwin (osascript dispatch).
-			// In both cases, retry past the first call would
-			// only re-display the modal — break is correct.
-			break
 		}
 	}()
 }
