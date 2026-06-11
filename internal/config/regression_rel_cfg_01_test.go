@@ -30,8 +30,6 @@ import (
 // boot error from config.Load(). This is a direct copy of the
 // TestLoad_StreamIdleTimeoutSec_Negative pattern from config_test.go:655-667.
 func TestRegression_REL_CFG_01_NegativeZeroEnvCoercion(t *testing.T) {
-	t.Skip("REL-CFG-01 (C-1): regression test — unskip in Phase 16 fix commit")
-
 	cases := []struct {
 		name    string
 		envVar  string
