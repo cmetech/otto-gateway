@@ -567,12 +567,33 @@ func (p *Pool) NewSession(ctx context.Context, cwd string) (string, error) {
 			// recordSpawnErr was intentionally skipped on ctx-cancel inside
 			// respawnSlot so /health/pool LastSpawnError stays clean.
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				// CR-01 fix (phase 15 review): re-queue UNDER p.mu with an
+				// explicit p.closed check rather than racing close(p.closing)
+				// against the channel send. The previous select-on-p.closing
+				// arm had a runtime-window between case-selection and the send
+				// where Close() could fire and the slot would be re-queued
+				// into p.slots after p.all was already nilled and the
+				// underlying Client closed — a subsequent NewSession would
+				// then dequeue a dead slot. Locking p.mu serialises with
+				// closeAll's p.mu critical section; the explicit p.closed
+				// check makes the shutdown-induced drop deterministic.
+				p.mu.Lock()
+				if p.closed {
+					p.mu.Unlock()
+					return "", fmt.Errorf("pool: closed during respawn: %w", err)
+				}
 				select {
 				case p.slots <- slot:
 					p.debugLog("pool.respawn.deferred", "slot", slot.Label, "err", err.Error())
-				case <-p.closing:
-					// Pool shutting down — Close drains p.all itself.
+				default:
+					// p.slots is buffered with cap == cfg.Size and p.all
+					// length is bounded by the same cap, so this default
+					// arm is unreachable in steady state; keep it so a
+					// future change that makes the buffer asymmetric
+					// (or a duplicate-requeue bug) drops the slot rather
+					// than deadlocking under p.mu.
 				}
+				p.mu.Unlock()
 				return "", fmt.Errorf("pool: respawn slot %s deferred: %w", slot.Label, err)
 			}
 			// WR-07 transient respawn failure: re-queue the slot instead of
@@ -581,12 +602,21 @@ func (p *Pool) NewSession(ctx context.Context, cwd string) (string, error) {
 			// A caller-disconnect (ctx-cancel) landed in the re-queue branch
 			// above; this arm is reached only for genuine (non-ctx) transient
 			// failures (disk full, fd exhaustion, etc.) — slot stays in p.all.
+			//
+			// CR-01 fix (phase 15 review): same shutdown-race mitigation as
+			// the ctx-cancel arm above — re-queue under p.mu + p.closed check.
+			p.mu.Lock()
+			if p.closed {
+				p.mu.Unlock()
+				return "", fmt.Errorf("pool: closed during respawn: %w", err)
+			}
 			select {
 			case p.slots <- slot:
 				p.debugLog("pool.respawn.transient_requeue", "slot", slot.Label, "err", err.Error())
-			case <-p.closing:
-				// Pool shutting down — Close drains p.all itself.
+			default:
+				// Unreachable in steady state — see ctx-cancel arm above.
 			}
+			p.mu.Unlock()
 			return "", fmt.Errorf("pool: respawn slot %s: %w", slot.Label, err)
 		}
 	}
