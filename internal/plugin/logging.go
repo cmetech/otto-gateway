@@ -211,6 +211,14 @@ func (h *LoggingHook) Before(ctx context.Context, req *canonical.ChatRequest) (*
 func (h *LoggingHook) After(ctx context.Context, _ *canonical.ChatRequest, resp *canonical.ChatResponse) error {
 	rid := RequestIDFromContext(ctx)
 
+	// G-1 (REL-HOOKS-01) — LoadAndDelete unconditionally so the
+	// startTimes sync.Map entry is reclaimed on every code path,
+	// including the non-streaming error paths in engine.Collect /
+	// anthropic.CollectAnthropicChat which now call After with a
+	// nil resp. The nil-resp guard below is layered AFTER this so
+	// the reclaim runs first; the audit-grade plugin.after record
+	// is still emitted on the error path (operators can correlate
+	// the request_id even though no stop_reason is available).
 	var start time.Time
 	if v, ok := h.startTimes.LoadAndDelete(rid); ok {
 		if t, tok := v.(time.Time); tok {
@@ -228,11 +236,16 @@ func (h *LoggingHook) After(ctx context.Context, _ *canonical.ChatRequest, resp 
 		slog.String("request_id", rid),
 		slog.Int64("duration_ms", durationMS),
 	)
-	if resp != nil {
-		// slog.Any on the typed StopReason; consumer-side decode is
-		// integer (per canonical/stop_reason.go iota positions).
-		attrs = append(attrs, slog.Any("stop_reason", resp.StopReason))
+	if resp == nil {
+		// G-1 error path — no resp fields to publish; entry was
+		// already reclaimed above. Emit the request_id +
+		// duration_ms record so observability is preserved.
+		h.logger().LogAttrs(ctx, slog.LevelInfo, "plugin.after", attrs...)
+		return nil
 	}
+	// slog.Any on the typed StopReason; consumer-side decode is
+	// integer (per canonical/stop_reason.go iota positions).
+	attrs = append(attrs, slog.Any("stop_reason", resp.StopReason))
 
 	// D-04 seam: emit redaction summary when present. slog.Any on the
 	// Counts() map specifically — NEVER on the Summary struct itself

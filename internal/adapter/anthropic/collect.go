@@ -167,6 +167,13 @@ func CollectAnthropicChat(ctx context.Context, eng Engine, req *canonical.ChatRe
 		}
 	}
 	if loopErr := rangeLoop(); loopErr != nil {
+		// G-1 (REL-HOOKS-01) fix: run PostHooks with nil resp on both
+		// the idle-timeout and the generic loopErr shapes so the
+		// ChatTraceHook / LoggingHook startTimes entries are reclaimed
+		// on every error path. RunPostHooks tolerates a nil resp by
+		// contract (engine.go RunPostHooks docstring); the After()
+		// methods nil-guard their resp access.
+		_ = eng.RunPostHooks(ctx, req, nil)
 		if errors.Is(loopErr, canonical.ErrStreamIdleTimeout) {
 			// WARN-log with the canonical attr set so operators can
 			// correlate the timeout against pool slot releases.
@@ -181,6 +188,11 @@ func CollectAnthropicChat(ctx context.Context, eng Engine, req *canonical.ChatRe
 
 	final, rerr := run.Stream().Result()
 	if rerr != nil {
+		// G-1 (REL-HOOKS-01) fix: run PostHooks with nil resp on the
+		// Result()-error path. Same rationale as the loopErr branch
+		// above — reclaim the startTimes entries before propagating
+		// the error.
+		_ = eng.RunPostHooks(ctx, req, nil)
 		return nil, fmt.Errorf("anthropic: collect result: %w", rerr)
 	}
 

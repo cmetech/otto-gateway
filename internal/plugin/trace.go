@@ -244,6 +244,11 @@ func (h *ChatTraceHook) After(ctx context.Context, _ *canonical.ChatRequest, res
 	}
 
 	rid := RequestIDFromContext(ctx)
+	// G-1 (REL-HOOKS-01) — LoadAndDelete unconditionally so the
+	// startTimes sync.Map entry is reclaimed on every code path,
+	// including the non-streaming error paths in engine.Collect /
+	// anthropic.CollectAnthropicChat which now call After with a
+	// nil resp.
 	var start time.Time
 	if v, ok := h.startTimes.LoadAndDelete(rid); ok {
 		if t, tok := v.(time.Time); tok {
@@ -263,10 +268,16 @@ func (h *ChatTraceHook) After(ctx context.Context, _ *canonical.ChatRequest, res
 		Surface:    surface,
 		DurationMS: durationMS,
 	}
-	if resp != nil {
-		rec.StopReason = resp.StopReason
-		rec.Content = resp.Message.Content
+	if resp == nil {
+		// G-1 error path — entry was already reclaimed above; emit
+		// the post_chain_out record with the duration_ms bridge but
+		// no stop_reason / content, so chat-trace.log is complete
+		// for failed requests.
+		h.emit(rec)
+		return nil
 	}
+	rec.StopReason = resp.StopReason
+	rec.Content = resp.Message.Content
 
 	h.emit(rec)
 	return nil
