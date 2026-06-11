@@ -285,13 +285,25 @@ func (p *Pool) respawnSlot(ctx context.Context, slot *Slot) error {
 	// method calls under the lock. WR-01: capture the NEW client's
 	// Done() channel under p.mu so the fresh watcher binds to the
 	// NEW client deterministically (no scheduler-timing dependency).
+	//
+	// WR-03 fix (phase 15 review): spawn the exit-watcher UNDER p.mu so
+	// a death between the slot.Client swap and watcher install is
+	// observable. Previously a death in this window flipped slot.dead
+	// only on the NEXT NewSession (via the dead-slot detection path),
+	// but a NewSession arriving INSIDE the gap saw slot.dead=false and
+	// handed out a slot whose Client.NewSession would return
+	// ErrClientClosed. startExitWatcher's `go func() { ... }` is a
+	// non-blocking goroutine spawn; the spawned goroutine takes p.mu
+	// itself before flipping slot.dead, so calling it under our locked
+	// p.mu is safe — the spawned goroutine simply parks on the lock
+	// until we unlock.
 	p.mu.Lock()
 	slot.Client = newClient
 	slot.dead = false
 	newDone := newClient.Done()
-	p.mu.Unlock()
-	// Step 5: spawn a fresh exit-watcher for the NEW client.
+	// Step 5: spawn a fresh exit-watcher for the NEW client (under p.mu).
 	p.startExitWatcher(slot, newDone)
+	p.mu.Unlock()
 	return nil
 }
 
