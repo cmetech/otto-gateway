@@ -18,8 +18,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -28,16 +30,46 @@ import (
 	"otto-gateway/internal/pool"
 )
 
-// captureSlogForPool returns a JSON-handler-backed *slog.Logger and its buffer.
-// Used by regression tests that need to assert on the pool's own log output.
-func captureSlogForPool(_ *testing.T) (*slog.Logger, *bytes.Buffer) {
-	buf := &bytes.Buffer{}
+// syncBuffer wraps bytes.Buffer with a sync.Mutex so the test goroutine
+// reading via String() does not race the slog handler goroutine writing
+// via Write(). Without this, `go test -race` flags a write/read race on
+// bytes.Buffer's internal buf slice (the slog Warn fires from the parking
+// goroutine; the assertion reads from the main test goroutine).
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p) //nolint:wrapcheck // pure delegation
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
+}
+
+// Compile-time assertion: syncBuffer implements io.Writer.
+var _ io.Writer = (*syncBuffer)(nil)
+
+// captureSlogForPool returns a JSON-handler-backed *slog.Logger and its
+// mutex-protected buffer. Used by regression tests that need to assert
+// on the pool's own log output. The syncBuffer wrapper is required for
+// `go test -race` cleanliness: slog handlers Write from whichever
+// goroutine emitted the record, and the test asserts via String() from
+// the main goroutine — without sync these collide on bytes.Buffer's
+// internal slice.
+func captureSlogForPool(_ *testing.T) (*slog.Logger, *syncBuffer) {
+	buf := &syncBuffer{}
 	h := slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug})
 	return slog.New(h), buf
 }
 
 // decodePoolRecords splits the buffer into one JSON record per line.
-func decodePoolRecords(t *testing.T, buf *bytes.Buffer) []map[string]any {
+func decodePoolRecords(t *testing.T, buf *syncBuffer) []map[string]any {
 	t.Helper()
 	var out []map[string]any
 	for _, line := range strings.Split(buf.String(), "\n") {
@@ -66,8 +98,11 @@ func decodePoolRecords(t *testing.T, buf *bytes.Buffer) []map[string]any {
 // Post-fix (Phase 16): pool emits Warn("pool: waiting for free slot", ...)
 // when the immediate acquire fails.
 func TestRegression_REL_CFG_04_PoolExhaustionSilent(t *testing.T) {
-	t.Skip("REL-CFG-04 (O-1): regression test — unskip in Phase 16 fix commit")
-
+	// O-1 (REL-CFG-04) fix shipped in Phase 16-01:
+	//   internal/pool/pool.go — p.warnOnce sync.Once + non-blocking
+	//     try-then-park acquire pattern in NewSession; reset in Close.
+	//     Emits Warn("pool: waiting for free slot", "busy", ..., "size", ...)
+	//     AT MOST ONCE per saturation episode.
 	logger, buf := captureSlogForPool(t)
 
 	// Gate controls when the first Prompt returns. Close it at test end to

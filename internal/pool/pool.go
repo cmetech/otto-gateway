@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"otto-gateway/internal/acp"
@@ -96,6 +97,28 @@ type Pool struct {
 	// historical context (operators read lastSpawnErrAt for recency).
 	lastSpawnErr   string
 	lastSpawnErrAt time.Time
+
+	// warnOnce throttles the O-1 (REL-CFG-04) "pool: waiting for free
+	// slot" Warn so it fires AT MOST ONCE per saturation episode. The
+	// non-blocking try-then-park pattern in NewSession checks
+	// warnOnce.Do before parking; subsequent parks during the same
+	// saturation episode do NOT re-emit the Warn (avoids log spam
+	// during sustained load). Reset to a fresh sync.Once in Pool.Close
+	// so a post-restart saturation episode emits the Warn again.
+	warnOnce sync.Once
+
+	// lastProgressAt is the D-05a observability field — atomic.Int64
+	// holding time.Now().UnixNano() of the most recent forward-progress
+	// event. Advanced on: every stream chunk push (advanceProgress
+	// called from acp.Stream.push when used through the pool wrapper),
+	// every ping ack, and every slot release. NOT advanced on slot
+	// acquire — acquire alone does not prove forward progress.
+	//
+	// Read by Plan 16-02's healthHandler via LastProgressAt() to
+	// compute the D-05a degraded status: when Busy == Alive == Size
+	// AND now.Sub(LastProgressAt()) > 30s the pool is considered
+	// "degraded" (alive but stalled).
+	lastProgressAt atomic.Int64
 }
 
 // debugLog is the nil-safe DEBUG emitter for pool observability markers
@@ -182,6 +205,11 @@ func (p *Pool) Warmup(ctx context.Context) error {
 		// capacity equals cfg.Size and we have at most cfg.Size slots.
 		p.slots <- slot
 	}
+	// D-05a (REL-CFG-04): seed lastProgressAt at warmup completion so
+	// the post-Warmup steady state is "fresh" rather than the Unix
+	// epoch — without this, healthHandler would briefly classify the
+	// pool as degraded between Warmup and the first slot release.
+	p.advanceProgress()
 	return nil
 }
 
@@ -336,6 +364,42 @@ func (p *Pool) Models() []canonical.ModelInfo {
 	return out
 }
 
+// LastProgressAt returns the wall-clock timestamp of the most recent
+// forward-progress event (chunk pushed, ping acked, slot released).
+// D-05a (REL-CFG-04 — Plan 16-02 consumer): healthHandler computes
+// the "degraded" pool status from this — when Busy == Alive == Size
+// AND now.Sub(LastProgressAt()) > 30s the pool is alive but stalled.
+//
+// Returns the Unix epoch (1970-01-01 UTC) when no progress has been
+// recorded yet (atomic value zero); callers should compare via
+// time.Since() rather than checking IsZero, since Unix(0, 0) is NOT
+// time.Time{}.
+func (p *Pool) LastProgressAt() time.Time {
+	return time.Unix(0, p.lastProgressAt.Load())
+}
+
+// IsExhausted reports whether the pool has no slots available — i.e.
+// every spawned slot is currently checked out. D-05b (REL-CFG-04 —
+// Plan 16-02 consumer): healthHandler returns the "exhausted" status
+// when this is true.
+//
+// Held under p.mu for a short critical section (read-only); never
+// crosses a slot.Client method call.
+func (p *Pool) IsExhausted() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.slots) == 0
+}
+
+// advanceProgress is the internal helper that stamps the D-05a
+// lastProgressAt field. Called on every forward-progress event.
+// Wrapped as a method (rather than inline atomic.Store) so callers
+// document the intent at the call site and future refactors can
+// add instrumentation in one place.
+func (p *Pool) advanceProgress() {
+	p.lastProgressAt.Store(time.Now().UnixNano())
+}
+
 // Stats returns a point-in-time snapshot of pool occupancy. Size is
 // the configured pool size; Alive counts slots with a live client
 // (non-nil Client AND !dead — matches Detail's per-slot view, see
@@ -441,6 +505,12 @@ func (p *Pool) Close() error {
 	p.closeOnce.Do(func() {
 		close(p.closing)
 		firstErr = p.closeAll()
+		// O-1 fix (REL-CFG-04): reset warnOnce so a saturation episode
+		// after a pool restart re-emits the "pool: waiting for free
+		// slot" Warn. Safe to reassign here because closeOnce.Do
+		// serialises this body and the pool is no longer accepting
+		// NewSession callers (closeAll set p.closed=true).
+		p.warnOnce = sync.Once{}
 	})
 	return firstErr
 }
@@ -554,22 +624,52 @@ func (p *Pool) NewSession(ctx context.Context, cwd string) (string, error) {
 		timeoutC = timer.C
 	}
 
+	// O-1 fix (REL-CFG-04): non-blocking try first. If a slot is
+	// immediately available, take the fast path with no Warn. If all
+	// slots are busy, emit Warn("pool: waiting for free slot", ...)
+	// AT MOST ONCE per saturation episode via p.warnOnce, then fall
+	// through to the blocking select below.
 	var slot *Slot
 	select {
 	case slot = <-p.slots:
-		// acquired
-	case <-ctx.Done():
-		return "", fmt.Errorf("pool: acquire cancelled: %w", ctx.Err())
-	// Audit pool-newsession-blocks-on-closed-pool: post-Close NewSession
-	// used to race between caller-ctx and a slot-release that returned a
-	// closed client (wasted round-trip through respawn → ErrClientClosed
-	// during shutdown). Selecting on p.closing returns a clean
-	// "pool: closed" error so operators can distinguish shutdown-induced
-	// failures from real ones in slog.
-	case <-p.closing:
-		return "", errors.New("pool: closed")
-	case <-timeoutC:
-		return "", ErrPoolExhausted
+		// Fast path: slot was immediately available — no saturation,
+		// no Warn, no parking.
+	default:
+		// All slots busy — emit ONE Warn per saturation episode then
+		// park. The warnOnce is reset to a fresh sync.Once in Close()
+		// so a saturation episode after a restart re-emits the Warn.
+		p.warnOnce.Do(func() {
+			if p.cfg.Logger == nil {
+				return
+			}
+			p.mu.Lock()
+			busy := len(p.all) - len(p.slots)
+			if busy < 0 {
+				busy = 0
+			}
+			size := p.cfg.Size
+			p.mu.Unlock()
+			p.cfg.Logger.Warn("pool: waiting for free slot",
+				"busy", busy,
+				"size", size)
+		})
+		// Blocking acquire with the full set of arms.
+		select {
+		case slot = <-p.slots:
+			// acquired after parking
+		case <-ctx.Done():
+			return "", fmt.Errorf("pool: acquire cancelled: %w", ctx.Err())
+		// Audit pool-newsession-blocks-on-closed-pool: post-Close NewSession
+		// used to race between caller-ctx and a slot-release that returned a
+		// closed client (wasted round-trip through respawn → ErrClientClosed
+		// during shutdown). Selecting on p.closing returns a clean
+		// "pool: closed" error so operators can distinguish shutdown-induced
+		// failures from real ones in slog.
+		case <-p.closing:
+			return "", errors.New("pool: closed")
+		case <-timeoutC:
+			return "", ErrPoolExhausted
+		}
 	}
 	p.debugLog("pool.acquire", "slot", slot.Label)
 
@@ -718,6 +818,10 @@ func (p *Pool) Prompt(ctx context.Context, sid string, blocks []canonical.Block)
 		}
 		p.slots <- s
 		p.debugLog("pool.release", "slot", s.Label, "session_id", sid)
+		// D-05a (REL-CFG-04): slot release is one of the
+		// forward-progress signals consumed by Plan 16-02's
+		// healthHandler degraded-status rule.
+		p.advanceProgress()
 	}
 
 	// ctx-watcher goroutine — Codex M-3. If ctx cancels BEFORE Result()
@@ -794,6 +898,8 @@ func (p *Pool) releaseSlotForSession(sid string) {
 	if ok {
 		p.slots <- slot
 		p.debugLog("pool.release", "slot", slot.Label, "session_id", sid)
+		// D-05a (REL-CFG-04): forward-progress signal.
+		p.advanceProgress()
 	}
 }
 
