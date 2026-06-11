@@ -631,7 +631,15 @@ function Get-GatewayStatus {
         Write-Host ("  debug:      {0}" -f $dbg)
         Write-Host ("  chat-trace: {0}" -f $trace)
     } catch {
-        # Best-effort: admin snapshot unreachable — skip the flag lines silently.
+        # WR-07 fix (phase 15 review): previously this catch printed
+        # nothing, so operators running `otto-gw status` on a degraded
+        # gateway (admin endpoint unmounted, port closed, mid-restart)
+        # saw the health block above WITHOUT debug / chat-trace lines and
+        # could not tell whether the flags were off OR the probe failed.
+        # Now print explicit "(unknown — admin endpoint unreachable)" so
+        # the gap is visible.
+        Write-Host "  debug:      (unknown -- admin endpoint unreachable)" -ForegroundColor DarkYellow
+        Write-Host "  chat-trace: (unknown -- admin endpoint unreachable)" -ForegroundColor DarkYellow
     }
     return [pscustomobject]@{ Status = 'running'; Message = "otto-gateway: running (PID $storedPid)" }
 }
