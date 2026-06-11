@@ -143,6 +143,9 @@ func (s *trayState) makeProbe() probeFunc {
 	return func() (bool, bool, Snapshot) {
 		pid, _ := readPIDFile(pidPath)
 		alive := pid > 0 && processAlive(pid)
+		if alive {
+			alive = verifyGatewayIdentity(pid, "")
+		}
 		if !alive {
 			return false, false, Snapshot{}
 		}

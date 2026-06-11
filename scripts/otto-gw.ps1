@@ -561,6 +561,13 @@ function Stop-Gateway {
         $storedPid = [int](Get-Content $PidFile -Raw)
         $proc = Get-Process -Id $storedPid -ErrorAction SilentlyContinue
         if ($proc) {
+            $procPath = try { $proc.MainModule.FileName } catch { '' }
+            if ($procPath -and -not ($procPath -like '*otto-gateway*')) {
+                Write-Warning "stop: PID $storedPid is alive but path='$procPath' — treating as stale PID"
+                Remove-Item $PidFile -ErrorAction SilentlyContinue
+                if (Stop-GatewayByName 'stale recycled PID') { return }
+                return
+            }
             $proc.Kill()
             $proc.WaitForExit(10000) | Out-Null  # wait up to 10s for clean exit
             Remove-Item $PidFile -ErrorAction SilentlyContinue
