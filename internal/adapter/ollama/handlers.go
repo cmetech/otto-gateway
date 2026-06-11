@@ -14,7 +14,6 @@ import (
 	"otto-gateway/internal/engine"
 	"otto-gateway/internal/plugin"
 	"otto-gateway/internal/plugin/pii"
-	"otto-gateway/internal/pool"
 	"otto-gateway/internal/session"
 )
 
@@ -157,7 +156,7 @@ func (a *Adapter) handleChat(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			// D-07 REL-POOL-01: pool exhaustion maps to 503 with Ollama
 			// surface-native error body {"error":"pool_exhausted: ..."}.
-			if errors.Is(err, pool.ErrPoolExhausted) {
+			if errors.Is(err, canonical.ErrPoolExhausted) {
 				writePoolExhaustedOllama(w)
 				return
 			}
@@ -242,7 +241,7 @@ func (a *Adapter) handleChat(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// D-07 REL-POOL-01: pool exhaustion maps to 503 with an Ollama
 		// surface-native error body {"error":"pool_exhausted: ..."}.
-		if errors.Is(err, pool.ErrPoolExhausted) {
+		if errors.Is(err, canonical.ErrPoolExhausted) {
 			w.Header().Set("Retry-After", "5")
 			writeError(w, http.StatusServiceUnavailable,
 				"pool_exhausted: all workers busy; retry in 5s")
@@ -470,7 +469,7 @@ func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			// D-07 REL-POOL-01: pool exhaustion maps to 503 with Ollama
 			// surface-native error body {"error":"pool_exhausted: ..."}.
-			if errors.Is(err, pool.ErrPoolExhausted) {
+			if errors.Is(err, canonical.ErrPoolExhausted) {
 				writePoolExhaustedOllama(w)
 				return
 			}
@@ -519,7 +518,7 @@ func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// D-07 REL-POOL-01: pool exhaustion maps to 503 with an Ollama
 		// surface-native error body {"error":"pool_exhausted: ..."}.
-		if errors.Is(err, pool.ErrPoolExhausted) {
+		if errors.Is(err, canonical.ErrPoolExhausted) {
 			w.Header().Set("Retry-After", "5")
 			writeError(w, http.StatusServiceUnavailable,
 				"pool_exhausted: all workers busy; retry in 5s")

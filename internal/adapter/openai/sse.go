@@ -868,7 +868,7 @@ func runSyntheticSSEFromResponse(_ context.Context, w http.ResponseWriter, resp 
 // Body: {"error":{"type":"server_error","code":"pool_exhausted","message":"all workers busy; retry in 5s","param":null}}
 //
 // Called by handlers.go on the streaming and non-streaming paths when
-// errors.Is(err, pool.ErrPoolExhausted) is true.
+// errors.Is(err, canonical.ErrPoolExhausted) is true.
 func writePoolExhaustedOpenAI(w http.ResponseWriter) {
 	code := "pool_exhausted"
 	w.Header().Set("Content-Type", "application/json")

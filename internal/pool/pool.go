@@ -16,7 +16,9 @@ import (
 // ErrPoolExhausted is returned by NewSession when all slots are busy past
 // the AcquireTimeout deadline. Callers (adapters) should map this to HTTP 503
 // with a Retry-After: 5 header and a surface-native error body (D-07).
-var ErrPoolExhausted = errors.New("pool: all workers busy; retry in 5s")
+// Re-exported from canonical for TRST-04 compliance (per D-17-01); new code
+// should reference canonical.ErrPoolExhausted directly.
+var ErrPoolExhausted = canonical.ErrPoolExhausted
 
 // Slot is one warm kiro-cli connection owned by the pool. Client is
 // typed as the PoolClient interface (Codex M-2) so tests can inject

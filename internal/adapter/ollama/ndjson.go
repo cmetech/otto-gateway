@@ -843,7 +843,7 @@ func runSyntheticNDJSONFromResponse(_ context.Context, w http.ResponseWriter, re
 // Body: {"error":"pool_exhausted: all workers busy; retry in 5s"}
 //
 // Called by handlers.go on the streaming and non-streaming paths when
-// errors.Is(err, pool.ErrPoolExhausted) is true.
+// errors.Is(err, canonical.ErrPoolExhausted) is true.
 func writePoolExhaustedOllama(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Retry-After", "5")

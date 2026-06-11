@@ -1052,7 +1052,7 @@ func runSyntheticSSEFromResponse(_ context.Context, w http.ResponseWriter, resp 
 // Body: {"type":"error","error":{"type":"overloaded_error","message":"all workers busy; retry in 5s"}}
 //
 // Called by handlers.go on the streaming and non-streaming paths when
-// errors.Is(err, pool.ErrPoolExhausted) is true.
+// errors.Is(err, canonical.ErrPoolExhausted) is true.
 func writePoolExhaustedAnthropic(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Retry-After", "5")

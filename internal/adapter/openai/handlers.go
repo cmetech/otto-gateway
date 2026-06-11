@@ -12,7 +12,6 @@ import (
 	"otto-gateway/internal/engine"
 	"otto-gateway/internal/plugin"
 	"otto-gateway/internal/plugin/pii"
-	"otto-gateway/internal/pool"
 	"otto-gateway/internal/session"
 )
 
@@ -155,7 +154,7 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 			// respond with a normal JSON 500 envelope (T-02-33: log raw, generic message).
 			// D-07 REL-POOL-01: pool exhaustion maps to 503 + Retry-After:5 with
 			// a surface-native OpenAI error body instead of a generic 500.
-			if errors.Is(err, pool.ErrPoolExhausted) {
+			if errors.Is(err, canonical.ErrPoolExhausted) {
 				writePoolExhaustedOpenAI(w)
 				return
 			}
@@ -293,7 +292,7 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 	resp, err := eng.Collect(ctx, req)
 	if err != nil {
 		// D-07 REL-POOL-01: pool exhaustion maps to 503 + Retry-After:5.
-		if errors.Is(err, pool.ErrPoolExhausted) {
+		if errors.Is(err, canonical.ErrPoolExhausted) {
 			writePoolExhaustedOpenAI(w)
 			return
 		}

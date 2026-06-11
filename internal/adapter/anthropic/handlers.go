@@ -10,7 +10,6 @@ import (
 	"otto-gateway/internal/canonical"
 	"otto-gateway/internal/plugin"
 	"otto-gateway/internal/plugin/pii"
-	"otto-gateway/internal/pool"
 	"otto-gateway/internal/session"
 )
 
@@ -185,7 +184,7 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 			// echo err.Error() which may contain request fragments).
 			// D-07 REL-POOL-01: pool exhaustion maps to 503 with the
 			// Anthropic surface-native overloaded_error body.
-			if errors.Is(err, pool.ErrPoolExhausted) {
+			if errors.Is(err, canonical.ErrPoolExhausted) {
 				writePoolExhaustedAnthropic(w)
 				return
 			}
@@ -368,7 +367,7 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// D-07 REL-POOL-01: pool exhaustion maps to 503 with Anthropic
 		// overloaded_error body on the non-streaming path.
-		if errors.Is(err, pool.ErrPoolExhausted) {
+		if errors.Is(err, canonical.ErrPoolExhausted) {
 			w.Header().Set("Retry-After", "5")
 			writeError(w, http.StatusServiceUnavailable, errOverloaded,
 				"all workers busy; retry in 5s")
