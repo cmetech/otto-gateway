@@ -418,10 +418,14 @@ func (c *Client) readLoop(ctx context.Context) {
 	defer c.cancel()
 	defer func() {
 		// On any readLoop exit, close the active stream if one exists so callers
-		// waiting on Result() don't hang.
+		// waiting on Result() don't hang. Identity guard (REL-POOL-03 CAS fix):
+		// only clear and close the stream this readLoop instance owns; a stale
+		// readLoop goroutine must not clobber a stream owned by a newer Prompt call.
 		c.streamMu.Lock()
 		s := c.activeStream
-		c.activeStream = nil
+		if s != nil {
+			c.activeStream = nil
+		}
 		c.streamMu.Unlock()
 		if s != nil {
 			s.close(nil, ErrClientClosed)
@@ -866,7 +870,12 @@ func (c *Client) awaitPromptResult(
 	select {
 	case <-ctx.Done():
 		c.streamMu.Lock()
-		c.activeStream = nil
+		// REL-POOL-03 CAS identity guard: only clear activeStream when it still
+		// points to the stream this goroutine owns. A stale awaitPromptResult
+		// goroutine must not nil out a newer Prompt's activeStream reference.
+		if c.activeStream == stream {
+			c.activeStream = nil
+		}
 		c.streamMu.Unlock()
 		// Best-effort cancel notification (no id = notification).
 		// Two-owner pattern per CONTEXT.md D-01: engine.Run's
@@ -892,7 +901,11 @@ func (c *Client) awaitPromptResult(
 
 	case frame := <-respCh:
 		c.streamMu.Lock()
-		c.activeStream = nil
+		// REL-POOL-03 CAS identity guard: only clear activeStream when it still
+		// points to the stream this goroutine owns.
+		if c.activeStream == stream {
+			c.activeStream = nil
+		}
 		c.streamMu.Unlock()
 		if frame.Error != nil {
 			// WR-01: emit engine.prompt.completed on the RPC-error /
