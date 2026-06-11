@@ -64,7 +64,13 @@ param(
     [string]$Addr,
     # support subcommand flags:
     [string]$Out,
-    [int]$MaxMb = 50,
+    # REL-TRAY-07 (T-7) D-discretion defaults: 512MB cap covers a typical
+    # multi-GB log day after gzip + redaction; 180s timeout is generous
+    # enough for real-world bundle assembly and short enough that a runaway
+    # subprocess (hung kiro-cli, mounted-volume stall) does not park the
+    # operator's tray indefinitely.
+    [int]$MaxMb = 512,
+    [int]$Timeout = 180,
     [int]$LogDays = 7
 )
 
@@ -1434,6 +1440,25 @@ function Invoke-Support {
     $staging = Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetRandomFileName())
     $bundleRoot = Join-Path $staging $bundleName
 
+    # REL-TRAY-07 (T-7) fix: bound the entire bundle assembly with a
+    # stopwatch deadline. The try/finally below already removes the
+    # staging tree on any exit path (including the exception thrown by
+    # Test-Deadline on overrun), so cleanup is belt-and-suspenders.
+    $deadlineStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    $timeoutSec = $Timeout
+    $maxBytes = [int64]$MaxMb * 1MB
+    function Test-Deadline {
+        param([string]$Stage)
+        if ($deadlineStopwatch.Elapsed.TotalSeconds -gt $timeoutSec) {
+            throw "support bundle: timed out after $timeoutSec seconds at stage '$Stage'; staging will be cleaned"
+        }
+    }
+
+    # REL-TRAY-07 (T-7) progress to stderr — operators piping
+    # `otto-gw support | tee` should still see the archive path on
+    # stdout alone.
+    Write-Stderr ("support bundle: assembling under cap {0}MB, timeout {1}s" -f $MaxMb, $timeoutSec)
+
     # Set up cleanup: always remove the staging tree on exit (success or
     # failure). The output archive lives outside $staging.
     try {
@@ -1516,6 +1541,7 @@ function Invoke-Support {
         }
 
         # ---- logs/ -----------------------------------------------------
+        Test-Deadline 'logs-collect'
         $logsDir = Split-Path -Parent $LogFile
         $chatTrace = [System.IO.Path]::ChangeExtension($LogFile, '.chat-trace.log')
         $logPairs = @(
@@ -1524,8 +1550,40 @@ function Invoke-Support {
             @{ Src = $LogBootErr;    Dst = 'otto-gateway-boot-stderr.log' },
             @{ Src = $chatTrace;     Dst = 'otto-gateway-chat-trace.log' }
         )
+        # REL-TRAY-07 (T-7) fix: live logs are now cap-aware on copy.
+        # Pre-fix: live logs were copied unconditionally and only the
+        # rotated .log.gz files passed through the cap loop at the tail,
+        # so a 200MB current-day log blew past any --max-mb cap. Now: if
+        # the source is larger than $maxBytes, copy only the last
+        # $maxBytes (tail) — the operator gets the most recent behavior,
+        # not the oldest. Streamed through Invoke-RedactStream so the
+        # redaction surface is identical to the full-copy path.
         foreach ($p in $logPairs) {
-            if (Test-Path $p.Src) {
+            if (-not (Test-Path $p.Src)) { continue }
+            Test-Deadline ("logs-copy:" + $p.Dst)
+            $srcInfo = Get-Item $p.Src
+            if ($srcInfo.Length -gt $maxBytes) {
+                Write-Stderr ("support bundle: capping {0} ({1:N0} bytes) to last {2}MB" -f $p.Dst, $srcInfo.Length, $MaxMb)
+                $stream = [System.IO.File]::Open($p.Src, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+                try {
+                    $startOffset = $srcInfo.Length - $maxBytes
+                    if ($startOffset -lt 0) { $startOffset = 0 }
+                    $null = $stream.Seek($startOffset, [System.IO.SeekOrigin]::Begin)
+                    $reader = New-Object System.IO.StreamReader($stream)
+                    # Drop the first (likely partial) line so the cap is
+                    # newline-aligned — keeps logs readable.
+                    $null = $reader.ReadLine()
+                    $sink = Join-Path $bundleRoot "logs\$($p.Dst)"
+                    $lines = @()
+                    while (-not $reader.EndOfStream) {
+                        $lines += $reader.ReadLine()
+                    }
+                    $lines | Invoke-RedactStream | Set-Content -Path $sink -Encoding UTF8
+                    $reader.Close()
+                } finally {
+                    $stream.Close()
+                }
+            } else {
                 Get-Content -Path $p.Src | Invoke-RedactStream |
                     Set-Content -Path (Join-Path $bundleRoot "logs\$($p.Dst)") -Encoding UTF8
             }
@@ -1618,6 +1676,13 @@ function Invoke-Support {
         Set-Content -Path (Join-Path $bundleRoot 'tray\autostart.txt') -Value $autostart -Encoding UTF8
 
         # ---- size cap --------------------------------------------------
+        # REL-TRAY-07 (T-7) fix: cap loop drops rotated .log.gz first
+        # (oldest), then falls through to live logs if still over cap.
+        # Pre-fix only trimmed .log.gz, so a single huge live log could
+        # blow past the cap regardless. Live logs are already
+        # tail-trimmed at copy time above; this is the safety net for
+        # any pathological case (e.g. 5x boot-stdout logs all near cap).
+        Test-Deadline 'size-cap'
         $droppedFiles = New-Object System.Collections.Generic.List[string]
         $size = (Get-ChildItem -Path $bundleRoot -Recurse -File | Measure-Object -Property Length -Sum).Sum
         $sizeMb = [int]($size / 1MB)
@@ -1626,6 +1691,20 @@ function Invoke-Support {
                 Sort-Object LastWriteTime |
                 ForEach-Object {
                     if ($sizeMb -le $MaxMb) { return }
+                    $droppedFiles.Add($_.FullName) | Out-Null
+                    Remove-Item -Force $_.FullName
+                    $size = (Get-ChildItem -Path $bundleRoot -Recurse -File | Measure-Object -Property Length -Sum).Sum
+                    $sizeMb = [int]($size / 1MB)
+                }
+        }
+        if ($sizeMb -gt $MaxMb) {
+            # Still over cap after rotated drops — fall through to live
+            # logs. Drop oldest by LastWriteTime.
+            Get-ChildItem -Path (Join-Path $bundleRoot 'logs') -File -ErrorAction SilentlyContinue |
+                Sort-Object LastWriteTime |
+                ForEach-Object {
+                    if ($sizeMb -le $MaxMb) { return }
+                    Write-Stderr ("support bundle: cap still exceeded -- dropping {0}" -f $_.FullName)
                     $droppedFiles.Add($_.FullName) | Out-Null
                     Remove-Item -Force $_.FullName
                     $size = (Get-ChildItem -Path $bundleRoot -Recurse -File | Measure-Object -Property Length -Sum).Sum
@@ -1673,14 +1752,21 @@ function Invoke-Support {
         Set-Content -Path (Join-Path $bundleRoot 'MANIFEST.txt') -Value $manifest -Encoding UTF8
 
         # ---- archive ---------------------------------------------------
+        Test-Deadline 'archive'
+        Write-Stderr ("support bundle: compressing to {0}" -f $bundleName)
         $outPath = Join-Path $outDir "$bundleName.zip"
         if (Test-Path $outPath) { Remove-Item -Force $outPath }
         Compress-Archive -Path $bundleRoot -DestinationPath $outPath -Force
         # latest.zip is a copy, NOT a link — Windows symlinks need admin.
         Copy-Item -Path $outPath -Destination (Join-Path $outDir 'latest.zip') -Force
 
+        # REL-TRAY-06 (T-6): archive path is the SOLE stdout line.
         Write-Output $outPath
     } finally {
+        # REL-TRAY-07 (T-7) cleanup-on-timeout: try/finally guarantees
+        # staging removal on any exit path including the Test-Deadline
+        # throw. -ErrorAction SilentlyContinue covers the rare case
+        # where antivirus has the dir handle open at exit.
         if (Test-Path $staging) {
             Remove-Item -Recurse -Force $staging -ErrorAction SilentlyContinue
         }
@@ -1715,7 +1801,8 @@ Commands:
   support             Produce a redacted diagnostic archive under
                       `$env:OTTO_INSTALL_ROOT\support\. Secrets are masked.
                       No raw values are ever written. Flags: -Out DIR,
-                      -MaxMb N (default 50), -LogDays D (default 7).
+                      -MaxMb N (default 512), -Timeout SEC (default 180),
+                      -LogDays D (default 7).
                       See docs/superpowers/specs/2026-06-08-support-bundle-design.md.
 
 Gateway config flags (for start | restart | run | env):
