@@ -128,6 +128,14 @@ func main() {
 
 	if err := app.srv.RunUntilSignal(bootCtx); err != nil {
 		logger.Error("server stopped with error", "err", err)
+		// REL-POOL-02 D-05: explicit cleanup() BEFORE os.Exit(1) so pool.Close
+		// runs and cancels all in-flight sessions. The deferred cleanup() above
+		// handles the normal (nil-error) return path; this explicit call covers
+		// the error path where os.Exit would otherwise skip the deferred call.
+		// cleanup() is idempotent (pool.Close uses sync.Once internally) so the
+		// deferred call that fires after os.Exit is harmless.
+		cleanup()
+		closeLogger()
 		os.Exit(1)
 	}
 }
@@ -647,6 +655,14 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 		logPaths["chat-trace"] = cfg.ChatTraceFile
 		logPathOrder = append(logPathOrder, "chat-trace")
 	}
+	// REL-HTTP-01: shared shutdown channel — created here before both the
+	// admin handler and the server so both consumers observe the same signal
+	// when http.Server.Shutdown fires RegisterOnShutdown callbacks.
+	// admin.Deps.ShutdownCh carries a <-chan struct{} (read-only view);
+	// server.Config.ShutdownCh carries the full chan struct{} so the server
+	// can close it (idempotent select guard in RegisterOnShutdown callback).
+	sharedShutdownCh := make(chan struct{})
+
 	adminHandler := admin.Handler(admin.Deps{
 		Logger:       logger,
 		Version:      version.Version,
@@ -657,6 +673,7 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 		LogPaths:     logPaths,
 		LogPathOrder: logPathOrder,
 		Debug:        cfg.Debug,
+		ShutdownCh:   sharedShutdownCh,
 		ChatTrace:    cfg.ChatTrace,
 
 		// Quick 260601-aix — chat-trace location + retention surfaced on /admin/docs.
@@ -723,6 +740,7 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 		Registry:             registryForServer,                                          // Plan 05-03 D-14/D-16
 		AdminHandler:         adminHandler,                                               // Phase 6.1 admin observability UI
 		Hooks:                hooksDescriptionAdapter{chain: chain, tracker: hookErrors}, // Phase 8 OBSV-04 — /health/hooks
+		ShutdownCh:           sharedShutdownCh,                                          // REL-HTTP-01 — shared with admin SSE handler
 	})
 
 	return a, cleanup, nil

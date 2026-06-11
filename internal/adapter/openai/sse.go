@@ -822,3 +822,24 @@ func runSyntheticSSEFromResponse(_ context.Context, w http.ResponseWriter, resp 
 	e.flusher.Flush()
 	return nil
 }
+
+// writePoolExhaustedOpenAI writes a 503 response with the D-07 OpenAI
+// surface-native pool-exhaustion body and a Retry-After: 5 header.
+//
+// Body: {"error":{"type":"server_error","code":"pool_exhausted","message":"all workers busy; retry in 5s","param":null}}
+//
+// Called by handlers.go on the streaming and non-streaming paths when
+// errors.Is(err, pool.ErrPoolExhausted) is true.
+func writePoolExhaustedOpenAI(w http.ResponseWriter) {
+	code := "pool_exhausted"
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Retry-After", "5")
+	w.WriteHeader(http.StatusServiceUnavailable)
+	_ = json.NewEncoder(w).Encode(errorEnvelope{
+		Error: errorInner{
+			Type:    "server_error",
+			Code:    &code,
+			Message: "all workers busy; retry in 5s",
+		},
+	})
+}

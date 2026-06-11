@@ -54,7 +54,6 @@ func (f *transientErrFactory) Spawn(_ context.Context, _ acp.Config) (pool.PoolC
 // (like the ctx-cancel path at pool.go:525-532 does) so Stats().Size stays at 1
 // and the pool can recover when the transient condition clears.
 func TestRegression_REL_POOL_01_PoolShrinksToZero(t *testing.T) {
-	t.Skip("REL-POOL-01 (P-1): regression test — unskip in Phase 15 fix commit")
 
 	defer goleak.VerifyNone(t)
 
@@ -109,14 +108,49 @@ func TestRegression_REL_POOL_01_PoolShrinksToZero(t *testing.T) {
 		t.Fatal("expected NewSession to return error on transient spawn failure, got nil")
 	}
 
-	// PRE-FIX ASSERTION — demonstrates the bug: the pool has shrunk to 0.
-	// After Phase 15's fix this line must be changed to:
-	//   if got := p.Stats().Size; got != 1 { t.Fatalf("post-fix: Size = %d; want 1", got) }
-	if got := p.Stats().Size; got != 0 {
+	// POST-FIX ASSERTION: the slot was re-queued so Stats().Size stays at 1.
+	// The pool can recover when the transient condition clears.
+	if got := p.Stats().Size; got < 1 {
 		t.Fatalf(
-			"pre-fix assertion: Stats().Size after genuine transient respawn failure = %d; "+
-				"want 0 (demonstrating the removeSlot shrink bug at pool.go:534)",
+			"post-fix: Stats().Size after transient respawn failure = %d; want >= 1 (slot re-queued, not removed)",
 			got,
 		)
 	}
+
+	// POST-FIX ASSERTION: ErrPoolExhausted is returned when the slot is busy
+	// and the acquire timeout fires. Build a separate size-1 pool that starts
+	// with a blocking client occupying the only slot, then set a tiny acquire
+	// timeout to trigger ErrPoolExhausted reliably.
+	//
+	// Use a pool with POOL_ACQUIRE_TIMEOUT_MS set explicitly via Config.
+	blockedClient := &fakeClient{}
+	busyPool := pool.New(pool.Config{
+		Logger:         testutil.Logger(t),
+		Size:           1,
+		AcquireTimeout: 10 * time.Millisecond,
+		Factory: &fakeClientFactory{
+			clients: []pool.PoolClient{blockedClient},
+		},
+	})
+	warmCtx2, warmCancel2 := context.WithTimeout(context.Background(), time.Second)
+	defer warmCancel2()
+	if err := busyPool.Warmup(warmCtx2); err != nil {
+		t.Fatalf("busyPool.Warmup: %v", err)
+	}
+	defer func() { _ = busyPool.Close() }()
+
+	// Occupy the only slot so the next NewSession must wait.
+	occupyCtx := context.Background()
+	sid, occupyErr := busyPool.NewSession(occupyCtx, "")
+	if occupyErr != nil {
+		t.Fatalf("occupy slot: %v", occupyErr)
+	}
+	// Now the slot is checked out; NewSession with background context should
+	// hit the 10ms AcquireTimeout and return ErrPoolExhausted.
+	_, exhaustErr := busyPool.NewSession(context.Background(), "")
+	if !errors.Is(exhaustErr, pool.ErrPoolExhausted) {
+		t.Fatalf("ErrPoolExhausted assertion: got %v; want pool.ErrPoolExhausted", exhaustErr)
+	}
+	// Clean up the occupied session.
+	busyPool.Cancel(sid)
 }

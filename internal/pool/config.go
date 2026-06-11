@@ -12,6 +12,8 @@ package pool
 import (
 	"context"
 	"log/slog"
+	"os"
+	"strconv"
 	"time"
 
 	"otto-gateway/internal/acp"
@@ -106,6 +108,9 @@ type Config struct {
 	KiroCWD string
 	// PingInterval is the heartbeat interval forwarded to acp.Config.
 	PingInterval time.Duration
+	// AcquireTimeout is the maximum time NewSession will block waiting for a
+	// free slot. Zero uses the default 30s. Env: POOL_ACQUIRE_TIMEOUT_MS.
+	AcquireTimeout time.Duration
 	// Factory is the ClientFactory used to construct each slot's
 	// PoolClient. Defaults to acpClientFactory{} which wraps acp.New.
 	// Tests inject a fake factory to drive pool behaviour without
@@ -116,12 +121,26 @@ type Config struct {
 // applyDefaults fills in zero-value Config fields. Size floors to 1
 // when zero or negative (D-07). Factory defaults to acpClientFactory{}
 // when nil. A nil Logger is left alone — the pool itself does not log.
+// AcquireTimeout defaults to 30s when zero; parsed from
+// POOL_ACQUIRE_TIMEOUT_MS (milliseconds) when set.
 func (c *Config) applyDefaults() {
 	if c.Size <= 0 {
 		c.Size = 1
 	}
 	if c.Factory == nil {
 		c.Factory = acpClientFactory{}
+	}
+	if c.AcquireTimeout == 0 {
+		const defaultAcquireTimeoutMs = 30_000
+		if raw := os.Getenv("POOL_ACQUIRE_TIMEOUT_MS"); raw != "" {
+			if ms, err := strconv.ParseInt(raw, 10, 64); err == nil && ms > 0 {
+				c.AcquireTimeout = time.Duration(ms) * time.Millisecond
+			} else {
+				c.AcquireTimeout = defaultAcquireTimeoutMs * time.Millisecond
+			}
+		} else {
+			c.AcquireTimeout = defaultAcquireTimeoutMs * time.Millisecond
+		}
 	}
 }
 

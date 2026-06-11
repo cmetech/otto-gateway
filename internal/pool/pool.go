@@ -12,6 +12,11 @@ import (
 	"otto-gateway/internal/engine"
 )
 
+// ErrPoolExhausted is returned by NewSession when all slots are busy past
+// the AcquireTimeout deadline. Callers (adapters) should map this to HTTP 503
+// with a Retry-After: 5 header and a surface-native error body (D-07).
+var ErrPoolExhausted = errors.New("pool: all workers busy; retry in 5s")
+
 // Slot is one warm kiro-cli connection owned by the pool. Client is
 // typed as the PoolClient interface (Codex M-2) so tests can inject
 // fake clients; production uses *acp.Client via the default factory.
@@ -445,7 +450,29 @@ func (p *Pool) closeAll() error {
 	slots := p.all
 	p.all = nil
 	p.closed = true
+	// Drain in-flight sessions: collect (sid, client) pairs to cancel
+	// BEFORE calling client.Close(). This ensures kiro-cli processes
+	// receive the cancel signal for any sessions that were mid-generation
+	// when Close was called (REL-POOL-02). best-effort — errors are
+	// intentionally swallowed; subprocess teardown via Close below is the
+	// hard kill.
+	type inflightEntry struct {
+		sid    string
+		client PoolClient
+	}
+	var inflight []inflightEntry
+	for sid, slot := range p.sessionSlots {
+		if slot != nil && slot.Client != nil {
+			inflight = append(inflight, inflightEntry{sid: sid, client: slot.Client})
+		}
+	}
 	p.mu.Unlock()
+
+	// Cancel in-flight sessions BEFORE hard-closing clients so kiro-cli
+	// has a chance to clean up any mid-generation state (REL-POOL-02).
+	for _, e := range inflight {
+		e.client.Cancel(e.sid)
+	}
 
 	var firstErr error
 	// Reverse allocation order so the most-recently-spawned (and
@@ -487,7 +514,22 @@ func (p *Pool) closeAll() error {
 // does not park forever on a fully-busy pool. On NewSession error the
 // slot is returned to p.slots before the error is surfaced (Codex M-3
 // error-path leak prevention).
+//
+// When AcquireTimeout is set and all slots are busy past the deadline,
+// NewSession returns ErrPoolExhausted instead of blocking indefinitely
+// (D-04 / REL-POOL-01). Adapters map this to HTTP 503 + Retry-After: 5.
 func (p *Pool) NewSession(ctx context.Context, cwd string) (string, error) {
+	// D-04: bounded acquire — timeoutC fires after AcquireTimeout and
+	// causes NewSession to return ErrPoolExhausted. A nil channel (when
+	// AcquireTimeout == 0) is never selected, preserving the pre-D-04
+	// infinite-wait behaviour for tests that explicitly set zero.
+	var timeoutC <-chan time.Time
+	if p.cfg.AcquireTimeout > 0 {
+		timer := time.NewTimer(p.cfg.AcquireTimeout)
+		defer timer.Stop()
+		timeoutC = timer.C
+	}
+
 	var slot *Slot
 	select {
 	case slot = <-p.slots:
@@ -502,6 +544,8 @@ func (p *Pool) NewSession(ctx context.Context, cwd string) (string, error) {
 	// failures from real ones in slog.
 	case <-p.closing:
 		return "", errors.New("pool: closed")
+	case <-timeoutC:
+		return "", ErrPoolExhausted
 	}
 	p.debugLog("pool.acquire", "slot", slot.Label)
 
@@ -531,7 +575,18 @@ func (p *Pool) NewSession(ctx context.Context, cwd string) (string, error) {
 				}
 				return "", fmt.Errorf("pool: respawn slot %s deferred: %w", slot.Label, err)
 			}
-			p.removeSlot(slot)
+			// WR-07 transient respawn failure: re-queue the slot instead of
+			// calling removeSlot. This preserves the pool's effective size so
+			// the next acquirer can retry the respawn (REL-POOL-01 D-08).
+			// A caller-disconnect (ctx-cancel) landed in the re-queue branch
+			// above; this arm is reached only for genuine (non-ctx) transient
+			// failures (disk full, fd exhaustion, etc.) — slot stays in p.all.
+			select {
+			case p.slots <- slot:
+				p.debugLog("pool.respawn.transient_requeue", "slot", slot.Label, "err", err.Error())
+			case <-p.closing:
+				// Pool shutting down — Close drains p.all itself.
+			}
 			return "", fmt.Errorf("pool: respawn slot %s: %w", slot.Label, err)
 		}
 	}

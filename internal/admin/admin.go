@@ -83,6 +83,14 @@ type Deps struct {
 	Debug        bool
 	ChatTrace    bool
 
+	// ShutdownCh is closed by the HTTP server's RegisterOnShutdown callback when
+	// graceful shutdown begins. sseLoop selects on this channel and exits within
+	// one poll interval, preventing the admin SSE connection from blocking the
+	// full 30s shutdown grace (REL-HTTP-01). When nil, a nil channel is passed
+	// to sseLoop — a nil channel select arm is never selected, preserving the
+	// pre-H-1 behaviour (loops until ctx cancel or subscriber close).
+	ShutdownCh <-chan struct{}
+
 	// Runtime cfg surfacing (quick 260601-a3z, step 3 of admin UI redesign).
 	// These twelve fields mirror cfg.* values that the operator can otherwise
 	// only inspect by grepping environment variables. They are rendered on the

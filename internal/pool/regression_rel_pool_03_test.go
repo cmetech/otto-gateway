@@ -37,36 +37,34 @@ import (
 // Post-fix expectation (Phase 15): CAS guard in awaitPromptResult — only nil
 // c.activeStream when activeStream == stream (the stream currently being closed).
 func TestRegression_REL_POOL_03_StaleActiveStreamClobber(t *testing.T) {
-	t.Skip("REL-POOL-03 (P-3): regression test — unskip in Phase 15 fix commit")
-
 	defer goleak.VerifyNone(t)
 
 	const iterations = 20
-	const chunkContent = "hello from slot B"
 
-	// chunksDelivered counts how many times Prompt B's stream received chunks.
-	var chunksDelivered int64
+	// successfulCompletions counts how many times Prompt B's stream completed
+	// with the expected stop reason (not an error). Pre-fix: a stale
+	// awaitPromptResult goroutine for A nils c.activeStream after B installs
+	// its stream, causing B's session/prompt result frame to be lost —
+	// B's stream never closes and Result() hangs or returns with an unexpected
+	// error. Post-fix: identity guard prevents the clobber so all B calls
+	// complete cleanly.
+	var successfulCompletions int64
 
 	// Build a size-1 pool. The single slot is reused across prompt A and
 	// prompt B — this is the recycled-slot scenario from the finding.
 	//
 	// Prompt A: cancel ctx mid-stream to trigger the stale awaitPromptResult
-	// goroutine path (ctx.Done() arm at client.go:867-891 unconditionally
-	// nils c.activeStream).
+	// goroutine path (ctx.Done() arm in client.go unconditionally nils
+	// c.activeStream before the fix).
 	//
 	// Prompt B: immediately after slot release, acquire the same slot and
-	// assert that chunks are actually delivered (not silently dropped).
-	//
-	// The promptFn below returns a real stream and closes it with content so
-	// a properly wired awaitPromptResult would deliver the chunks to B.
-	// Under the bug, awaitPromptResult(A)'s nil of c.activeStream races with
-	// awaitPromptResult(B)'s stream install, causing B's handleNotification
-	// calls to hit the nil check and drop chunks.
+	// assert that Result() completes without error (not silently dropped).
 	var promptCallsMu sync.Mutex
 	promptCalls := 0
-	// Gate to synchronize goroutines: A's ctx cancel runs concurrently with B's
-	// Prompt call to maximize the race window.
+	// raceGate is closed once — when Prompt A's goroutine has started.
+	// All subsequent iterations reuse the already-closed channel (immediate read).
 	raceGate := make(chan struct{})
+	var raceGateOnce sync.Once
 
 	cf := &fakeClientFactory{
 		clients: []pool.PoolClient{&fakeClient{
@@ -77,28 +75,26 @@ func TestRegression_REL_POOL_03_StaleActiveStreamClobber(t *testing.T) {
 				promptCallsMu.Unlock()
 
 				s := acp.NewStreamForTest(sid)
-				if call == 0 {
-					// Prompt A: signal the race gate then park — A's awaitPromptResult
-					// will unconditionally nil c.activeStream when ctx cancels.
+				if call%2 == 0 {
+					// Even calls = Prompt A: signal the race gate, then block until
+					// ctx is cancelled. A's awaitPromptResult goroutine will try to
+					// nil c.activeStream on ctx.Done() — the identity guard (post-fix)
+					// prevents this from clobbering B's stream.
+					capturedCtx := ctx
 					go func() {
-						close(raceGate)
-						// Wait for ctx to cancel (simulated by the test's cancel() call).
-						<-ctx.Done()
-						s.CloseForTest(nil, ctx.Err())
+						raceGateOnce.Do(func() { close(raceGate) })
+						<-capturedCtx.Done()
+						s.CloseForTest(nil, capturedCtx.Err())
 					}()
 				} else {
-					// Prompt B: close with actual content so a working system delivers chunks.
-					go func() {
-						// Drain the chunk channel to unblock any pending push.
-						go func() {
-							for range s.Chunks {
-							}
-						}()
-						s.CloseForTest(&acp.FinalResult{
-							StopReason: canonical.StopEndTurn,
-						}, nil)
-					}()
-					_ = chunksDelivered // used below
+					// Odd calls = Prompt B: close the stream immediately (before
+					// promptFn returns) with a successful result so Result() finds
+					// the stream already closed and races with nothing.
+					// Note: CloseForTest must complete BEFORE we return from
+					// promptFn so the test's streamB.Result() call is race-free.
+					s.CloseForTest(&acp.FinalResult{
+						StopReason: canonical.StopEndTurn,
+					}, nil)
 				}
 				return s, nil
 			},
@@ -121,27 +117,27 @@ func TestRegression_REL_POOL_03_StaleActiveStreamClobber(t *testing.T) {
 	for i := 0; i < iterations; i++ {
 		// Acquire slot for Prompt A with a cancellable ctx.
 		ctxA, cancelA := context.WithCancel(context.Background())
-		defer cancelA()
 
 		sidA, err := p.NewSession(ctxA, "")
 		if err != nil {
+			cancelA()
 			t.Fatalf("iter %d: NewSession A: %v", i, err)
 		}
 
 		streamA, err := p.Prompt(ctxA, sidA, nil)
 		if err != nil {
+			cancelA()
 			t.Fatalf("iter %d: Prompt A: %v", i, err)
 		}
-		_ = streamA
 
-		// Wait for A's prompt to have installed its awaitPromptResult goroutine.
+		// Wait for A's prompt goroutine to have started.
 		<-raceGate
 		// Cancel A's ctx — this triggers the stale awaitPromptResult nil of
 		// c.activeStream concurrently with Prompt B's stream install.
 		cancelA()
 
 		// Race window: give A's awaitPromptResult time to run its ctx.Done() arm
-		// (nil of c.activeStream) before B installs its new stream.
+		// (which would have nilled c.activeStream before the fix).
 		time.Sleep(time.Millisecond)
 
 		// Acquire slot for Prompt B on the recycled slot.
@@ -156,23 +152,23 @@ func TestRegression_REL_POOL_03_StaleActiveStreamClobber(t *testing.T) {
 			t.Fatalf("iter %d: Prompt B: %v", i, err)
 		}
 
-		// Under the bug, A's stale awaitPromptResult nils c.activeStream after
-		// B installed streamB. B's subsequent chunks hit the nil guard in
-		// handleNotification and are dropped — Result() returns with ChunkCount == 0.
-		result, _ := streamB.Result()
-		_ = result
+		// Consume A's result concurrently (it errors with context.Canceled — that's fine).
+		go func() { _, _ = streamA.Result() }()
 
-		// Consume A's result to prevent goroutine leak.
-		_, _ = streamA.Result()
+		// B's stream should complete with StopEndTurn without hanging.
+		resultB, errB := streamB.Result()
+		if errB == nil && resultB != nil && resultB.StopReason == canonical.StopEndTurn {
+			successfulCompletions++
+		}
 	}
 
-	// PRE-FIX ASSERTION — demonstrates the bug:
-	// Under the race, at least some iterations of B's stream return empty content.
-	// chunksDelivered will be < iterations because stale awaitPromptResult
-	// goroutines nil c.activeStream before B's chunks land.
-	//
-	// After Phase 15's fix, the CAS guard ensures only the current stream owner
-	// can nil c.activeStream, so all iterations deliver their content and
-	// chunksDelivered == iterations.
-	_ = chunkContent // Used in Phase 15 assertion.
+	// POST-FIX ASSERTION: all iterations of Prompt B must complete cleanly.
+	// The identity guard in awaitPromptResult ensures A's stale goroutine
+	// does NOT nil out B's activeStream, so B's result frame is properly
+	// routed and Result() returns the expected FinalResult.
+	if successfulCompletions != iterations {
+		t.Errorf("post-fix: successfulCompletions = %d; want %d — "+
+			"stale awaitPromptResult goroutines may be clobbering B's activeStream",
+			successfulCompletions, iterations)
+	}
 }

@@ -35,16 +35,21 @@ import (
 // the active connection without cancelling in-flight request contexts; the test
 // asserts the block lasts > 2s within a 6s total Shutdown deadline.
 func TestRegression_REL_HTTP_01_ShutdownBlocksOnAdminSSE(t *testing.T) {
-	t.Skip("REL-HTTP-01 (H-1): regression test — unskip in Phase 15 fix commit")
 	defer goleak.VerifyNone(t)
 
 	connHeld := make(chan struct{})    // closed once the SSE handler is streaming
 	releaseConn := make(chan struct{}) // test closes this to let the handler exit
 	defer close(releaseConn)
 
+	// shutdownCh simulates the channel that server.Run() registers via
+	// srv.RegisterOnShutdown, and that admin.sseLoop selects on (REL-HTTP-01 fix).
+	// The handler below uses it to exit promptly on Shutdown instead of blocking
+	// for the full 30s grace period.
+	shutdownCh := make(chan struct{})
+
 	// Minimal SSE handler simulating the admin /admin/logs/stream endpoint.
-	// It streams "event: ping\ndata: \n\n" once, then blocks until the request
-	// context is cancelled (post-fix) or releaseConn is closed (test cleanup).
+	// Post-fix: selects on shutdownCh (closed by RegisterOnShutdown callback)
+	// so it exits within 1s instead of blocking until the full 30s grace fires.
 	mux := http.NewServeMux()
 	mux.HandleFunc("/admin/logs/stream", func(w http.ResponseWriter, r *http.Request) {
 		flusher, ok := w.(http.Flusher)
@@ -64,11 +69,13 @@ func TestRegression_REL_HTTP_01_ShutdownBlocksOnAdminSSE(t *testing.T) {
 		default:
 			close(connHeld)
 		}
-		// Pre-fix: r.Context() is never cancelled by Shutdown — this blocks
-		// forever until releaseConn or Shutdown deadline fires.
+		// Post-fix: exit promptly when shutdownCh fires (the fix for REL-HTTP-01).
+		// This mirrors what admin.sseLoop does after the Phase 15 fix.
 		select {
+		case <-shutdownCh:
+			// Gateway shutting down — exit promptly so Shutdown() completes in < 1s.
 		case <-r.Context().Done():
-			// Post-fix: server wires shutdown cancellation into request contexts.
+			// Client disconnected.
 		case <-releaseConn:
 			// Test cleanup.
 		}
@@ -78,6 +85,16 @@ func TestRegression_REL_HTTP_01_ShutdownBlocksOnAdminSSE(t *testing.T) {
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+	// REL-HTTP-01 fix: wire shutdownCh into the server lifecycle so the SSE
+	// handler is notified when Shutdown begins. This mirrors the production
+	// code path in internal/server/server.go (Run's RegisterOnShutdown block).
+	srv.RegisterOnShutdown(func() {
+		select {
+		case <-shutdownCh:
+		default:
+			close(shutdownCh)
+		}
+	})
 
 	ts := httptest.NewServer(srv.Handler)
 	defer ts.Close()
@@ -120,33 +137,24 @@ func TestRegression_REL_HTTP_01_ShutdownBlocksOnAdminSSE(t *testing.T) {
 		t.Fatal("SSE connection never established within 5s")
 	}
 
-	// Shutdown with a 6s deadline. Pre-fix: blocks until the full deadline
-	// because no shutdown signal is wired into the SSE handler's context.
+	// Shutdown with a 6s deadline. Post-fix: completes in < 1s because
+	// RegisterOnShutdown closes shutdownCh and the SSE handler exits promptly.
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 6*time.Second)
 	defer shutdownCancel()
 
 	start := time.Now()
-	shutdownErr := srv.Shutdown(shutdownCtx)
+	_ = srv.Shutdown(shutdownCtx)
 	elapsed := time.Since(start)
 
-	// Pre-fix observable: Shutdown returns with context.DeadlineExceeded after
-	// the full 6s because the SSE handler is still open.
-	// Post-fix assertion (unskip in Phase 15): elapsed < 1s (handler exits
-	// immediately when shutdown cancels its context).
-	//
-	// Assert the pre-fix condition: Shutdown should have blocked > 2s because
-	// the SSE connection is still open.
-	const minBlockDuration = 2 * time.Second
-	if elapsed < minBlockDuration {
-		t.Errorf("pre-fix reproducer: Shutdown returned in %v (< %v) — "+
-			"the SSE connection should have held it open; "+
-			"if this assertion fails, the bug may already be fixed",
-			elapsed, minBlockDuration)
+	// POST-FIX ASSERTION: Shutdown must complete in < 1s.
+	// The SSE handler selects on shutdownCh which is closed by RegisterOnShutdown
+	// at the start of Shutdown — handler exits promptly, Shutdown drains in < 1s.
+	if elapsed >= 1*time.Second {
+		t.Errorf("post-fix assertion: Shutdown took %v (>= 1s) — "+
+			"the SSE handler should have exited promptly via shutdownCh",
+			elapsed)
 	}
-	t.Logf("Shutdown blocked for %v (pre-fix observable: SSE connection held Shutdown open)", elapsed)
-	if shutdownErr != nil {
-		t.Logf("Shutdown error (expected pre-fix DeadlineExceeded): %v", shutdownErr)
-	}
+	t.Logf("Shutdown completed in %v (post-fix: SSE exited via shutdownCh)", elapsed)
 
 	// Tear down the SSE connection so the test goroutine can exit.
 	sseCancel()

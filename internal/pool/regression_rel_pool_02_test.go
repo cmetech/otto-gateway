@@ -59,7 +59,6 @@ func newBlockingPromptClient() *blockingPromptClient {
 // (deferred cleanup is unconditional, or main.go:131's os.Exit is replaced
 // with cleanup(); closeLogger(); os.Exit(1)).
 func TestRegression_REL_POOL_02_CtrlCOrphansChildren(t *testing.T) {
-	t.Skip("REL-POOL-02 (P-2): regression test — unskip in Phase 15 fix commit")
 
 	defer goleak.VerifyNone(t)
 
@@ -121,26 +120,33 @@ func TestRegression_REL_POOL_02_CtrlCOrphansChildren(t *testing.T) {
 	// are both empty (no Cancel was issued to either client).
 	cancelsBefore := len(bc0.cancelCallList()) + len(bc1.cancelCallList())
 
-	// PRE-FIX ASSERTION — demonstrates the bug:
-	// Without pool.Close() (the os.Exit path), Cancel is never called.
-	// After Phase 15's fix, pool.Close() MUST be called unconditionally so
-	// this assertion must be INVERTED: cancels > 0 after the shutdown path.
-	if cancelsBefore != 0 {
+	// The pre-fix path (os.Exit skips cleanup) would leave cancelsBefore == 0.
+	// We record it for diagnostic output but do NOT assert on it here —
+	// the post-fix assertion (cancelsAfter >= 2) is the load-bearing check.
+	t.Logf("cancels before pool.Close(): %d (expected 0 on both pre- and post-fix paths)", cancelsBefore)
+
+	// Simulate the shutdown path: call pool.Close() explicitly (as the
+	// post-fix main.go does before os.Exit(1) via explicit cleanup()).
+	// Close cancels all in-flight sessions by calling Cancel on each
+	// slot's client via closeAll.
+	_ = p.Close()
+
+	// Give sessions a moment to receive the Cancel signal.
+	time.Sleep(50 * time.Millisecond)
+
+	// POST-FIX ASSERTION: pool.Close() must have issued Cancel to both clients.
+	cancelsAfter := len(bc0.cancelCallList()) + len(bc1.cancelCallList())
+	if cancelsAfter < 2 {
 		t.Fatalf(
-			"pre-fix assertion: cancels issued before pool.Close() = %d; "+
-				"want 0 (demonstrating orphaned children when os.Exit skips cleanup)",
-			cancelsBefore,
+			"post-fix: cancels after pool.Close() = %d; want >= 2 "+
+				"(pool.Close must cancel all in-flight sessions)",
+			cancelsAfter,
 		)
 	}
+	t.Logf("cancels after pool.Close(): %d (expected >= 2)", cancelsAfter)
 
-	// Unblock the blocking clients and close the pool to clean up goroutines.
+	// Unblock the blocking clients so goroutines can exit cleanly.
 	close(bc0.gate)
 	close(bc1.gate)
-	_ = p.Close()
 	wg.Wait()
-
-	// Post-fix: after pool.Close() runs, all sessions should have been cancelled.
-	// Verify this holds even in the post-fix world (regression guard for Phase 15).
-	cancelsAfter := len(bc0.cancelCallList()) + len(bc1.cancelCallList())
-	_ = cancelsAfter // In Phase 15, assert cancelsAfter >= 2.
 }

@@ -138,7 +138,9 @@ func (h *handler) sseHandler(w http.ResponseWriter, r *http.Request) {
 	defer ticker.Stop()
 
 	// Run the SSE loop (factored for ticker injection in tests).
-	if err := sseLoop(r.Context(), w, flusher, sub, ticker.C, snapshot); err != nil {
+	// Pass h.deps.ShutdownCh so the loop exits promptly on gateway shutdown
+	// (REL-HTTP-01). A nil channel is safe — nil select arms are never selected.
+	if err := sseLoop(r.Context(), w, flusher, sub, ticker.C, snapshot, h.deps.ShutdownCh); err != nil {
 		// ctx.Canceled is the expected normal exit — don't log it as an error.
 		if !errors.Is(err, context.Canceled) {
 			h.deps.Logger.Debug("admin: sse loop exit", "err", err)
@@ -161,9 +163,12 @@ func (h *handler) sseHandler(w http.ResponseWriter, r *http.Request) {
 //   - sub: the Tailer subscriber; sub.C receives live log lines.
 //   - tickerC: receives ticks for keepalive ping frames.
 //   - snapshot: backfill lines sent before entering the live loop.
+//   - shutdownCh: closed when the gateway initiates graceful shutdown (REL-HTTP-01).
+//     sseLoop exits within one poll interval instead of blocking the full 30s grace.
 //
 // Returns the exit error (ctx.Err() on normal client disconnect,
-// errors.New("...") if the subscriber channel was closed by Unsubscribe).
+// errors.New("...") if the subscriber channel was closed by Unsubscribe,
+// or errors.New("admin: gateway shutting down") on shutdownCh close).
 func sseLoop(
 	ctx context.Context,
 	w io.Writer,
@@ -171,6 +176,7 @@ func sseLoop(
 	sub *subscriber,
 	tickerC <-chan time.Time,
 	snapshot []string,
+	shutdownCh <-chan struct{},
 ) error {
 	// Send backfill: the current ring buffer contents (oldest first).
 	for _, line := range snapshot {
@@ -185,6 +191,11 @@ func sseLoop(
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("admin.sse: ctx done: %w", ctx.Err())
+
+		case <-shutdownCh:
+			// Gateway is shutting down — exit promptly so Shutdown() can
+			// complete without blocking for the full 30s grace (REL-HTTP-01).
+			return errors.New("admin: gateway shutting down")
 
 		case <-tickerC:
 			// Keepalive ping — prevents idle TCP connections from timing out.

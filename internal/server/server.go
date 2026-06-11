@@ -123,6 +123,14 @@ type Config struct {
 	// returns the canonical {"pool": {"size":0,...,"healthy":true}}
 	// envelope (no pool wired = degraded by design = healthy).
 	PoolHealth PoolHealthSource
+
+	// ShutdownCh is an optional pre-allocated channel shared between the
+	// server and the admin handler. When non-nil, NewFromConfig uses it
+	// instead of creating a new one — this lets the caller (cmd/otto-gateway
+	// newApp) create the channel once, pass it to admin.Deps, and also pass
+	// it here so both consumers select on the same signal (REL-HTTP-01).
+	// When nil, NewFromConfig allocates its own channel (tests + New path).
+	ShutdownCh chan struct{}
 }
 
 // Server wraps the chi router and HTTP server with structured logging.
@@ -139,6 +147,12 @@ type Server struct {
 	registry   RegistryStatsSource
 	hooks      HooksDescriptionSource // Phase 8 OBSV-04 — GET /health/hooks introspection
 	addr       string
+
+	// shutdownCh is closed by RegisterOnShutdown (called inside http.Server.Shutdown
+	// on graceful shutdown). Long-lived in-process connections (admin SSE log tail)
+	// select on this channel to exit within one poll interval rather than blocking
+	// Shutdown for the full 30s grace (REL-HTTP-01).
+	shutdownCh chan struct{}
 }
 
 // New is the Phase 1 compatibility constructor — used when only the
@@ -152,12 +166,13 @@ func New(cfg config.Config, logger *slog.Logger, version string) *Server {
 // NewWithCommit is like New but also accepts a commit hash for the version endpoint.
 func NewWithCommit(cfg config.Config, logger *slog.Logger, version, commit string) *Server {
 	s := &Server{
-		cfg:     cfg,
-		logger:  logger,
-		version: version,
-		commit:  commit,
-		start:   time.Now(),
-		addr:    cfg.HTTPAddr,
+		cfg:        cfg,
+		logger:     logger,
+		version:    version,
+		commit:     commit,
+		start:      time.Now(),
+		addr:       cfg.HTTPAddr,
+		shutdownCh: make(chan struct{}),
 	}
 	s.router = chi.NewRouter()
 
@@ -208,6 +223,10 @@ func NewFromConfig(cfg Config) *Server {
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(serverDiscardWriter{}, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	}
+	shutdownCh := cfg.ShutdownCh
+	if shutdownCh == nil {
+		shutdownCh = make(chan struct{})
+	}
 	s := &Server{
 		logger:     logger,
 		version:    cfg.Version,
@@ -219,6 +238,7 @@ func NewFromConfig(cfg Config) *Server {
 		registry:   cfg.Registry,
 		hooks:      cfg.Hooks, // Phase 8 OBSV-04
 		addr:       cfg.HTTPAddr,
+		shutdownCh: shutdownCh,
 	}
 	s.router = chi.NewRouter()
 	s.router.Use(middleware.RequestID)
@@ -343,6 +363,10 @@ func (s *Server) rootHandler(w http.ResponseWriter, _ *http.Request) {
 // Run starts the HTTP server and blocks until ctx is cancelled.
 // When ctx is done, it calls http.Server.Shutdown with a 30-second deadline (D-16).
 // This is the testable lifecycle method — tests cancel the context to verify shutdown.
+//
+// REL-HTTP-01: srv.RegisterOnShutdown closes s.shutdownCh so long-lived in-process
+// connections (admin SSE log tail) can exit promptly instead of blocking the full
+// 30s grace period.
 func (s *Server) Run(ctx context.Context) error {
 	srv := &http.Server{
 		Addr:              s.addr,
@@ -358,6 +382,19 @@ func (s *Server) Run(ctx context.Context) error {
 		// streams.
 		IdleTimeout: 120 * time.Second,
 	}
+
+	// REL-HTTP-01: wire shutdownCh into the server so admin SSE connections
+	// can unwind immediately on gateway shutdown instead of blocking for the
+	// full 30s grace period. RegisterOnShutdown callbacks run before
+	// Shutdown drains active connections.
+	srv.RegisterOnShutdown(func() {
+		select {
+		case <-s.shutdownCh:
+			// Already closed — idempotent.
+		default:
+			close(s.shutdownCh)
+		}
+	})
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -385,6 +422,11 @@ func (s *Server) Run(ctx context.Context) error {
 // RunUntilSignal starts the HTTP server and blocks until SIGINT, SIGTERM, or ctx cancellation.
 // It is a thin wrapper around Run that wires OS signal handling.
 // D-22: the binary stays foreground-only — no start/stop subcommands.
+//
+// REL-POOL-02: two-stage signal handler — first SIGINT cancels the derived context
+// and initiates graceful shutdown; a second SIGINT (before graceful shutdown completes)
+// triggers an immediate force-exit via a forceExitCh send so Run returns immediately,
+// allowing main.go's explicit cleanup() + os.Exit(1) path to run.
 func (s *Server) RunUntilSignal(ctx context.Context) error {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -393,16 +435,47 @@ func (s *Server) RunUntilSignal(ctx context.Context) error {
 	derivedCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	// forceExitCh receives a value when a second Ctrl-C arrives during graceful
+	// shutdown. Run() selects on forceErrCh to short-circuit Shutdown.
+	forceErrCh := make(chan error, 1)
+
 	go func() {
 		select {
-		case <-sigCh:
-			s.logger.Info("shutdown signal received")
-			cancel()
+		case sig := <-sigCh:
+			s.logger.Info("shutdown signal received", "signal", sig.String())
+			cancel() // initiate graceful shutdown
+			// Wait for a second signal — if it arrives, force-exit immediately.
+			select {
+			case sig2 := <-sigCh:
+				s.logger.Info("second shutdown signal received; forcing exit", "signal", sig2.String())
+				forceErrCh <- errors.New("force-exit: second signal")
+			case <-derivedCtx.Done():
+				// Graceful shutdown completed normally — no force needed.
+			}
 		case <-derivedCtx.Done():
+			// ctx cancelled upstream (e.g. by main bootCtx).
 		}
 	}()
 
-	return s.Run(derivedCtx)
+	// Run the server; also observe forceErrCh so a second Ctrl-C terminates
+	// the blocking srv.Shutdown call immediately.
+	runErrCh := make(chan error, 1)
+	go func() {
+		runErrCh <- s.Run(derivedCtx)
+	}()
+
+	select {
+	case err := <-runErrCh:
+		return err
+	case err := <-forceErrCh:
+		// Force-exit requested — close shutdownCh so SSE connections exit now.
+		select {
+		case <-s.shutdownCh:
+		default:
+			close(s.shutdownCh)
+		}
+		return err
+	}
 }
 
 // serverDiscardWriter is a no-op io.Writer used by NewFromConfig when

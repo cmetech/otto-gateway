@@ -928,10 +928,14 @@ func TestPool_DeadSlot_LazyRespawn(t *testing.T) {
 	}
 }
 
-// TestPool_DeadSlot_RespawnFailure_PoolShrinks — D-03.
-// After client0 dies, the replacement spawn fails; the slot is dropped
-// from p.all and the caller receives a wrapped error.
-func TestPool_DeadSlot_RespawnFailure_PoolShrinks(t *testing.T) {
+// TestPool_DeadSlot_RespawnFailure_SlotRequeued — REL-POOL-01 D-08.
+// After client0 dies, the replacement spawn fails with a transient error;
+// the slot is re-queued into p.slots (not removed from p.all) so the pool
+// effective size is preserved. The caller receives a wrapped error and can
+// retry. This replaces the old D-03 "shrink on failure" test which was
+// updated in Phase 15 when the re-queue strategy was adopted to prevent
+// permanent pool size reduction on transient respawn failures.
+func TestPool_DeadSlot_RespawnFailure_SlotRequeued(t *testing.T) {
 	var c0count int32
 	fc0 := &fakeClient{
 		newSessionFn: func(_ context.Context, _ string) (string, error) {
@@ -974,8 +978,9 @@ func TestPool_DeadSlot_RespawnFailure_PoolShrinks(t *testing.T) {
 		t.Errorf("error chain does not contain respawnErr: %v", err)
 	}
 
-	if got := len(p.AllSlotsSnapshot()); got != 0 {
-		t.Errorf("post-failure AllSlots size = %d; want 0 (D-03 shrink)", got)
+	// REL-POOL-01 D-08: slot is re-queued, NOT removed — p.all retains size 1.
+	if got := len(p.AllSlotsSnapshot()); got != 1 {
+		t.Errorf("post-failure AllSlots size = %d; want 1 (re-queue preserves pool size)", got)
 	}
 }
 
@@ -1372,10 +1377,12 @@ func TestPool_Detail_OneBusyOneDead(t *testing.T) {
 	}
 }
 
-// TestPool_Detail_AfterShrinkOnRespawnFailure — D-15 + D-03 interaction.
-// After a respawn failure removes a slot from p.all, Detail() returns
-// N-1 rows (the removed slot is gone, not just marked dead).
-func TestPool_Detail_AfterShrinkOnRespawnFailure(t *testing.T) {
+// TestPool_Detail_AfterRespawnFailureRequeues — D-15 + REL-POOL-01 D-08 interaction.
+// After a transient respawn failure re-queues the slot, Detail() still returns
+// 1 row (slot is still in p.all, just re-queued for retry by the next caller).
+// This test was updated in Phase 15 from the old D-03 shrink assertion to
+// reflect the re-queue strategy adopted by REL-POOL-01.
+func TestPool_Detail_AfterRespawnFailureRequeues(t *testing.T) {
 	var c0count int32
 	fc0 := &fakeClient{
 		newSessionFn: func(_ context.Context, _ string) (string, error) {
@@ -1402,9 +1409,9 @@ func TestPool_Detail_AfterShrinkOnRespawnFailure(t *testing.T) {
 		t.Fatalf("Warmup: %v", err)
 	}
 
-	// Pre-shrink: Detail returns one row.
+	// Pre-failure: Detail returns one row.
 	if got := len(p.Detail()); got != 1 {
-		t.Fatalf("pre-shrink Detail len = %d; want 1", got)
+		t.Fatalf("pre-failure Detail len = %d; want 1", got)
 	}
 
 	fc0.fireDone()
@@ -1417,10 +1424,11 @@ func TestPool_Detail_AfterShrinkOnRespawnFailure(t *testing.T) {
 		t.Fatal("NewSession: want respawn-fail error, got nil")
 	}
 
-	// Post-shrink: Detail returns zero rows.
+	// Post-failure: Detail still returns 1 row — slot was re-queued, not removed.
+	// REL-POOL-01 D-08: re-queue preserves pool effective size.
 	rows := p.Detail()
-	if len(rows) != 0 {
-		t.Errorf("post-shrink Detail len = %d; want 0 (D-03 shrink)", len(rows))
+	if len(rows) != 1 {
+		t.Errorf("post-failure Detail len = %d; want 1 (re-queue preserves slot in p.all)", len(rows))
 	}
 }
 
