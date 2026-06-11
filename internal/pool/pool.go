@@ -450,7 +450,29 @@ func (p *Pool) closeAll() error {
 	slots := p.all
 	p.all = nil
 	p.closed = true
+	// Drain in-flight sessions: collect (sid, client) pairs to cancel
+	// BEFORE calling client.Close(). This ensures kiro-cli processes
+	// receive the cancel signal for any sessions that were mid-generation
+	// when Close was called (REL-POOL-02). best-effort — errors are
+	// intentionally swallowed; subprocess teardown via Close below is the
+	// hard kill.
+	type inflightEntry struct {
+		sid    string
+		client PoolClient
+	}
+	var inflight []inflightEntry
+	for sid, slot := range p.sessionSlots {
+		if slot != nil && slot.Client != nil {
+			inflight = append(inflight, inflightEntry{sid: sid, client: slot.Client})
+		}
+	}
 	p.mu.Unlock()
+
+	// Cancel in-flight sessions BEFORE hard-closing clients so kiro-cli
+	// has a chance to clean up any mid-generation state (REL-POOL-02).
+	for _, e := range inflight {
+		e.client.Cancel(e.sid)
+	}
 
 	var firstErr error
 	// Reverse allocation order so the most-recently-spawned (and

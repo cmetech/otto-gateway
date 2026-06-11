@@ -166,7 +166,7 @@ func TestAdmin_SSEPingViaInjectedTicker(t *testing.T) {
 	// Run sseLoop in a goroutine so the test can inject a tick.
 	done := make(chan error, 1)
 	go func() {
-		done <- sseLoop(ctx, rec, rec, sub, tickerC, nil)
+		done <- sseLoop(ctx, rec, rec, sub, tickerC, nil, nil)
 	}()
 
 	// Inject one ticker tick.
@@ -553,7 +553,7 @@ func TestAdmin_SSELoop_BackfillOrdering(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- sseLoop(ctx, rec, rec, sub, tickerC, snapshot)
+		done <- sseLoop(ctx, rec, rec, sub, tickerC, snapshot, nil)
 	}()
 
 	// Give the loop time to send backfill.
