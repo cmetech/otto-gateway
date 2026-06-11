@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -457,9 +458,15 @@ func runSSEEmitter(ctx context.Context, w http.ResponseWriter, run RunHandle, re
 			// the canonical marker, and return wrapped
 			// canonical.ErrStreamIdleTimeout for handler errors.Is
 			// detection. Frame shape matches errorInner in errors.go.
-			if stop := run.StopWatchdog(); stop != nil {
-				stop()
-			}
+			//
+			// H-2 fix (REL-HTTP-02): do NOT call StopWatchdog here.
+			// The watchdog's AfterFunc carries the ACP Cancel mechanism.
+			// Calling StopWatchdog() suppresses Cancel — leaving the
+			// kiro-cli worker generating into a freed slot. Let the
+			// deferred cancelFn (set by the handler on handler return)
+			// trigger the watchdog AfterFunc naturally so Cancel fires.
+			// Mirrors the Ollama NDJSON idle-timeout path which already
+			// omits StopWatchdog() on the idleC arm.
 			e.logger.Warn(
 				"stream.idle_timeout",
 				"surface", "openai",
@@ -479,9 +486,10 @@ func runSSEEmitter(ctx context.Context, w http.ResponseWriter, run RunHandle, re
 				return finalizeSSE(e, run)
 			}
 			if err := e.applyChunk(c); err != nil {
-				if stop := run.StopWatchdog(); stop != nil {
-					stop()
-				}
+				// H-2 fix (REL-HTTP-02): do NOT call StopWatchdog on
+				// write-error path. Same rationale as the idleC arm: let
+				// the deferred cancelFn trigger the watchdog AfterFunc so
+				// ACP Cancel fires naturally rather than being suppressed.
 				return e.aggregatedResponse(canonical.StopUnknown, nil), err
 			}
 			if idleTimer != nil {
@@ -543,17 +551,42 @@ func (e *sseEmitter) aggregatedResponse(stop canonical.StopReason, syntheticTool
 func finalizeSSE(e *sseEmitter, run RunHandle) (*canonical.ChatResponse, error) {
 	final, rerr := run.Stream().Result()
 	if rerr != nil {
-		// Mid-stream / terminal engine error after headers: cannot send JSON 500.
-		// Log at debug (not error — the stream just cut off; the client-side
-		// will see a truncated stream, which is acceptable per A5).
-		// Quick 260530-df2: return the partial aggregation for forensics.
-		// Audit openai-watchdog-stop-leaked-on-error-paths: stop the
-		// watchdog (Cancel already had its chance; this just suppresses
-		// the redundant audit-event when ctx subsequently cancels).
+		// H-3 fix (REL-HTTP-03): mid-stream worker death — emit surface-native
+		// terminal error frame so the OpenAI client gets an explicit signal
+		// instead of a silent truncated stream. WARN log with all D-09/D-10
+		// required fields for operator visibility.
+		//
+		// Audit openai-watchdog-stop-leaked-on-error-paths: still stop the
+		// watchdog (Cancel already had its chance; this just suppresses the
+		// redundant audit-event when ctx subsequently cancels).
 		if stop := run.StopWatchdog(); stop != nil {
 			stop()
 		}
-		e.logger.Debug("openai: sse stream result error", "err", rerr)
+
+		// D-09/D-10 WARN log: session_id, worker_pid, kiro_exit_code, bytes_streamed.
+		// worker_pid: RunHandle interface does not expose a PID accessor; log 0
+		// as a placeholder until the interface is extended.
+		// kiro_exit_code: extract via errors.As if rerr chain contains *exec.ExitError.
+		// bytes_streamed: sseEmitter does not yet wire a bytes counter; log 0.
+		logArgs := []any{
+			"session_id", run.SessionID(),
+			"worker_pid", 0, // worker_pid: counter not yet wired in RunHandle interface
+			"bytes_streamed", 0, // bytes_streamed: counter not yet wired in sseEmitter
+			"err", rerr,
+		}
+		var exitErr *exec.ExitError
+		if errors.As(rerr, &exitErr) {
+			logArgs = append(logArgs, "kiro_exit_code", exitErr.ExitCode())
+		}
+		// kiro_exit_code omitted when rerr chain has no *exec.ExitError
+		e.logger.Warn("openai: sse worker terminated mid-stream", logArgs...)
+
+		// Emit D-09 OpenAI surface-native terminal error frame + [DONE].
+		// Frame shape: error chunk with upstream_disconnect code followed by [DONE].
+		_, _ = fmt.Fprintf(e.w, "data: {\"error\":{\"type\":\"server_error\",\"code\":\"upstream_disconnect\",\"message\":\"worker terminated mid-stream\"}}\n\n")
+		_, _ = fmt.Fprintf(e.w, "data: [DONE]\n\n")
+		e.flusher.Flush()
+
 		return e.aggregatedResponse(canonical.StopUnknown, nil), fmt.Errorf("openai: sse stream result: %w", rerr)
 	}
 

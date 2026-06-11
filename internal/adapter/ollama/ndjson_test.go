@@ -300,8 +300,9 @@ func TestNDJSON_WriteError_CancelsCtx(t *testing.T) {
 }
 
 // TestNDJSON_StreamResultError: when run.Stream().Result() returns an error,
-// finalizeNDJSON must not emit a done:true line and must return the error.
-// This exercises the non-nil err path in newFakeRunHandle.
+// finalizeNDJSON must emit a done:true + done_reason:error terminal line (H-3
+// fix, REL-HTTP-03) and must return the error. This exercises the non-nil err
+// path in newFakeRunHandle.
 func TestNDJSON_StreamResultError(t *testing.T) {
 	// No content chunks; channel closes immediately so finalizeNDJSON is called.
 	streamErr := errors.New("kiro: stream terminated")
@@ -317,19 +318,14 @@ func TestNDJSON_StreamResultError(t *testing.T) {
 	if !strings.Contains(err.Error(), "stream result") {
 		t.Errorf("error: %q, want to contain 'stream result'", err.Error())
 	}
-	// No done:true line must have been written.
-	lines := scanNDJSON(t, w.Body.Bytes())
-	// The body may be empty (headers already written, but no NDJSON lines).
-	for _, line := range lines {
-		var frame struct {
-			Done bool `json:"done"`
-		}
-		if err2 := json.Unmarshal(line, &frame); err2 != nil {
-			continue
-		}
-		if frame.Done {
-			t.Errorf("stream error path: emitted done:true line, want none; body=%s", w.Body.String())
-		}
+	// H-3 fix: a done:true + done_reason:error terminal line MUST be written
+	// so LangFlow's NDJSON aggregator gets an explicit end-of-stream marker.
+	body := w.Body.String()
+	if !strings.Contains(body, `"done":true`) {
+		t.Errorf("stream error path: expected done:true in body; body=%s", body)
+	}
+	if !strings.Contains(body, `"done_reason":"error"`) {
+		t.Errorf("stream error path: expected done_reason:error in body; body=%s", body)
 	}
 }
 
