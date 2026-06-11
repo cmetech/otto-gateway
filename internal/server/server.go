@@ -153,6 +153,13 @@ type Server struct {
 	// select on this channel to exit within one poll interval rather than blocking
 	// Shutdown for the full 30s grace (REL-HTTP-01).
 	shutdownCh chan struct{}
+
+	// forceCloseCh is closed by RunUntilSignal on second-signal force-exit.
+	// Run() selects on this channel while waiting for srv.Shutdown to return;
+	// when closed it calls srv.Close() which immediately tears down in-flight
+	// requests so Run unblocks promptly instead of leaking a goroutine
+	// parked inside the 30s graceful Shutdown (WR-08).
+	forceCloseCh chan struct{}
 }
 
 // New is the Phase 1 compatibility constructor — used when only the
@@ -171,8 +178,9 @@ func NewWithCommit(cfg config.Config, logger *slog.Logger, version, commit strin
 		version:    version,
 		commit:     commit,
 		start:      time.Now(),
-		addr:       cfg.HTTPAddr,
-		shutdownCh: make(chan struct{}),
+		addr:         cfg.HTTPAddr,
+		shutdownCh:   make(chan struct{}),
+		forceCloseCh: make(chan struct{}),
 	}
 	s.router = chi.NewRouter()
 
@@ -228,17 +236,18 @@ func NewFromConfig(cfg Config) *Server {
 		shutdownCh = make(chan struct{})
 	}
 	s := &Server{
-		logger:     logger,
-		version:    cfg.Version,
-		commit:     cfg.Commit,
-		start:      time.Now(),
-		pool:       cfg.Pool,
-		poolDetail: cfg.PoolDetail,
-		poolHealth: cfg.PoolHealth,
-		registry:   cfg.Registry,
-		hooks:      cfg.Hooks, // Phase 8 OBSV-04
-		addr:       cfg.HTTPAddr,
-		shutdownCh: shutdownCh,
+		logger:       logger,
+		version:      cfg.Version,
+		commit:       cfg.Commit,
+		start:        time.Now(),
+		pool:         cfg.Pool,
+		poolDetail:   cfg.PoolDetail,
+		poolHealth:   cfg.PoolHealth,
+		registry:     cfg.Registry,
+		hooks:        cfg.Hooks, // Phase 8 OBSV-04
+		addr:         cfg.HTTPAddr,
+		shutdownCh:   shutdownCh,
+		forceCloseCh: make(chan struct{}),
 	}
 	s.router = chi.NewRouter()
 	s.router.Use(middleware.RequestID)
@@ -413,10 +422,31 @@ func (s *Server) Run(ctx context.Context) error {
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		return fmt.Errorf("server: shutdown: %w", err)
+	// WR-08 fix (phase 15 review): run srv.Shutdown in a goroutine and
+	// select on forceCloseCh so a second-signal force-exit can call
+	// srv.Close() to terminate in-flight requests immediately. Without
+	// this, RunUntilSignal's force-exit arm returned to main while
+	// s.Run remained blocked inside srv.Shutdown for up to 30s — a
+	// goroutine leak masked only by main.go's os.Exit(1).
+	shutdownErrCh := make(chan error, 1)
+	go func() {
+		shutdownErrCh <- srv.Shutdown(shutdownCtx)
+	}()
+	select {
+	case err := <-shutdownErrCh:
+		if err != nil {
+			return fmt.Errorf("server: shutdown: %w", err)
+		}
+		return nil
+	case <-s.forceCloseCh:
+		// Force-close: tear down in-flight requests immediately so the
+		// goroutine that called srv.Shutdown unblocks. srv.Close returns
+		// quickly; we still drain shutdownErrCh so the goroutine exits.
+		s.logger.Info("force-close: closing server immediately")
+		_ = srv.Close()
+		<-shutdownErrCh // wait for the Shutdown goroutine to return
+		return errors.New("server: force-closed")
 	}
-	return nil
 }
 
 // RunUntilSignal starts the HTTP server and blocks until SIGINT, SIGTERM, or ctx cancellation.
@@ -474,6 +504,20 @@ func (s *Server) RunUntilSignal(ctx context.Context) error {
 		default:
 			close(s.shutdownCh)
 		}
+		// WR-08 fix (phase 15 review): also close forceCloseCh so the
+		// in-flight srv.Shutdown call inside s.Run unblocks via srv.Close
+		// instead of leaving the Run() goroutine parked for up to 30s.
+		select {
+		case <-s.forceCloseCh:
+		default:
+			close(s.forceCloseCh)
+		}
+		// Wait for Run() to actually return after force-close so the
+		// goroutine does not leak past RunUntilSignal's exit. We
+		// deliberately do NOT bind a deadline here: srv.Close() returns
+		// immediately and Run() drains shutdownErrCh in a bounded
+		// fashion, so a deadline would only mask a real bug.
+		<-runErrCh
 		return err
 	}
 }
