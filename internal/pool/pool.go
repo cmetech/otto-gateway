@@ -505,12 +505,19 @@ func (p *Pool) Close() error {
 	p.closeOnce.Do(func() {
 		close(p.closing)
 		firstErr = p.closeAll()
-		// O-1 fix (REL-CFG-04): reset warnOnce so a saturation episode
-		// after a pool restart re-emits the "pool: waiting for free
-		// slot" Warn. Safe to reassign here because closeOnce.Do
-		// serialises this body and the pool is no longer accepting
-		// NewSession callers (closeAll set p.closed=true).
-		p.warnOnce = sync.Once{}
+		// WR-01 (phase 16 review): the prior `p.warnOnce = sync.Once{}`
+		// reassignment was a data race against in-flight NewSession
+		// callers that had passed the non-blocking `<-p.slots` try and
+		// were mid-`p.warnOnce.Do(...)`. Overwriting a sync.Once while
+		// another goroutine is calling Do on it violates the sync.Once
+		// contract (its internal `done atomic.Uint32` and `m sync.Mutex`
+		// are not safe to overwrite under concurrent access). The reset
+		// existed to re-emit the "pool: waiting for free slot" Warn after
+		// a hypothetical post-Close restart — but the pool is not
+		// restartable in place: closeAll nils p.all and sets p.closed,
+		// so callers must construct a fresh *Pool, which gets a fresh
+		// sync.Once already. The reset was dead-code prevention against
+		// a use case that does not exist. Deleted.
 	})
 	return firstErr
 }
