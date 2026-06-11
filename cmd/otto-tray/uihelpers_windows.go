@@ -12,9 +12,34 @@ import (
 	"time"
 
 	"github.com/energye/systray"
+
+	"otto-gateway/cmd/otto-tray/icon"
 )
 
 func setIcon(b []byte) { systray.SetIcon(b) }
+
+// setIconForState updates the system-tray icon to reflect the current FSM state.
+// Windows does not use template images so all states use SetIcon with .ico assets.
+// Icon assets: cmd/otto-tray/icon/{Running,Warning,Error}.ico (embedded).
+func setIconForState(state State) {
+	switch state {
+	case StateRunning:
+		systray.SetIcon(icon.Running)
+	case StateStarting, StateDegraded:
+		systray.SetIcon(icon.Warning)
+	default: // StateError, StateStopped, StateUnknown
+		systray.SetIcon(icon.Error)
+	}
+}
+
+// tooltipForState returns the tray tooltip string for a given FSM state.
+func tooltipForState(state State, detail string) string {
+	s := fmt.Sprintf("OTTO Gateway · %s", state)
+	if detail != "" {
+		s += " (" + detail + ")"
+	}
+	return s
+}
 
 func openURL(url string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

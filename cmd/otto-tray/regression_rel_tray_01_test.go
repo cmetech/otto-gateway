@@ -20,7 +20,9 @@ import (
 // Post-fix: the identity check should return false for a PID whose cmdline
 // does not contain the gateway binary name.
 func TestRegression_REL_TRAY_01_PIDIdentityUnchecked(t *testing.T) {
-	t.Skip("REL-TRAY-01 (T-1): regression test — unskip in Phase 15 fix commit")
+	// REL-TRAY-01 (T-1): verifyGatewayIdentity must reject any live PID
+	// whose process name is not "otto-gateway". The test binary's own PID
+	// passes processAlive but must be rejected by verifyGatewayIdentity.
 
 	// Write pidfile containing this test binary's own PID.
 	tmp := t.TempDir()
@@ -38,20 +40,15 @@ func TestRegression_REL_TRAY_01_PIDIdentityUnchecked(t *testing.T) {
 		t.Fatalf("readPIDFile: want %d, got %d", os.Getpid(), pid)
 	}
 
-	// Pre-fix: processAlive returns true (the test binary is alive).
-	// There is no identity check — the tray would treat this test binary
-	// as "the gateway", potentially killing it on Stop/Restart.
+	// processAlive returns true (the test binary is alive).
 	alive := processAlive(pid)
 	if !alive {
 		t.Fatalf("processAlive(%d): expected true (test binary is alive), got false", pid)
 	}
 
-	// Demonstrate the missing identity guard:
-	// After Phase 15, calling verifyGatewayIdentity(pid, wrapperBinPath) should
-	// return false here (because our cmdline is "go test", not the gateway).
-	// Pre-fix: no such function exists — this comment is the reproducer.
-	// The assertion below documents the EXPECTED post-fix behavior:
-	//   if ok := verifyGatewayIdentity(pid, "/path/to/otto-gateway"); ok {
-	//       t.Fatal("identity check should have rejected the test binary as gateway")
-	//   }
+	// Post-fix: verifyGatewayIdentity must return false because the
+	// test binary's process name is "go test" / the test runner, not "otto-gateway".
+	if ok := verifyGatewayIdentity(pid, "/any/path/otto-gateway"); ok {
+		t.Fatal("verifyGatewayIdentity: identity check should have rejected the test binary as gateway (process name is not otto-gateway)")
+	}
 }

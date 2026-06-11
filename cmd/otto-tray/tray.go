@@ -143,6 +143,9 @@ func (s *trayState) makeProbe() probeFunc {
 	return func() (bool, bool, Snapshot) {
 		pid, _ := readPIDFile(pidPath)
 		alive := pid > 0 && processAlive(pid)
+		if alive {
+			alive = verifyGatewayIdentity(pid, "")
+		}
 		if !alive {
 			return false, false, Snapshot{}
 		}
@@ -177,6 +180,11 @@ func (s *trayState) applyState(out stateOutput) {
 	prev := s.current
 	s.current = out.State
 	s.mu.Unlock()
+
+	// T-3 fix (REL-TRAY-03): always-visible state signal on every FSM transition (D-11).
+	// Icon and tooltip are the primary gateway-death signal; notify() is secondary.
+	setIconForState(out.State)
+	systray.SetTooltip(tooltipForState(out.State, out.Detail))
 
 	header := fmt.Sprintf("OTTO Gateway · %s", out.State)
 	if out.Detail != "" {

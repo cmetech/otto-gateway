@@ -19,3 +19,18 @@ import _ "embed"
 //
 //go:embed template.ico
 var Template []byte
+
+// Running is the raw ICO bytes for the "gateway running" state icon.
+//
+//go:embed running.ico
+var Running []byte
+
+// Warning is the raw ICO bytes for the "gateway starting/degraded" state icon.
+//
+//go:embed warning.ico
+var Warning []byte
+
+// Error is the raw ICO bytes for the "gateway stopped/error" state icon.
+//
+//go:embed error.ico
+var Error []byte

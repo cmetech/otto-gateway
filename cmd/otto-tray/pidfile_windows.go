@@ -2,7 +2,12 @@
 
 package main
 
-import "golang.org/x/sys/windows"
+import (
+	"path/filepath"
+	"strings"
+
+	"golang.org/x/sys/windows"
+)
 
 // processAlive on Windows uses OpenProcess + GetExitCodeProcess.
 // os.Process.Signal on Windows returns ErrUnsupported for every
@@ -30,4 +35,22 @@ func processAlive(pid int) bool {
 		return true
 	}
 	return exitCode == stillActive
+}
+
+// verifyGatewayIdentity returns true if the process at pid has an
+// executable name ending in "otto-gateway.exe". Uses the same
+// PROCESS_QUERY_LIMITED_INFORMATION handle already used by processAlive.
+func verifyGatewayIdentity(pid int, _ string) bool {
+	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
+	if err != nil {
+		return false
+	}
+	defer func() { _ = windows.CloseHandle(h) }()
+	buf := make([]uint16, windows.MAX_PATH)
+	n := uint32(len(buf))
+	if err := windows.QueryFullProcessImageName(h, 0, &buf[0], &n); err != nil {
+		return false
+	}
+	fullPath := windows.UTF16ToString(buf[:n])
+	return strings.EqualFold(filepath.Base(fullPath), "otto-gateway.exe")
 }

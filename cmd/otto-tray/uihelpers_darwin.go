@@ -12,11 +12,38 @@ import (
 	"time"
 
 	"github.com/energye/systray"
+
+	"otto-gateway/cmd/otto-tray/icon"
 )
 
 // setIcon uses a template image so the menu-bar icon auto-adapts to
 // dark/light bar themes on macOS.
 func setIcon(b []byte) { systray.SetTemplateIcon(b, b) }
+
+// setIconForState updates the menu-bar icon to reflect the current FSM state.
+// Running uses SetTemplateIcon (adapts to dark/light bar); Starting/Degraded
+// use SetIcon with the warning PNG; Error/Stopped/Unknown use SetIcon with the
+// error PNG because SetTemplateIcon strips color, which is the primary signal.
+// Icon assets: cmd/otto-tray/icon/{Running,Warning,Error}.png (embedded).
+func setIconForState(state State) {
+	switch state {
+	case StateRunning:
+		systray.SetTemplateIcon(icon.Running, icon.Running)
+	case StateStarting, StateDegraded:
+		systray.SetIcon(icon.Warning)
+	default: // StateError, StateStopped, StateUnknown
+		systray.SetIcon(icon.Error)
+	}
+}
+
+// tooltipForState returns the tray tooltip string for a given FSM state.
+func tooltipForState(state State, detail string) string {
+	s := fmt.Sprintf("OTTO Gateway · %s", state)
+	if detail != "" {
+		s += " (" + detail + ")"
+	}
+	return s
+}
 
 func openURL(url string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -40,6 +67,9 @@ func copyToClipboard(s string) {
 	_ = cmd.Wait()
 }
 
+// As of v1.9, icon/tooltip via setIconForState is the primary state signal;
+// notification banners are a secondary best-effort signal (LSUIElement agents
+// may not receive notification permission — see REL-TRAY-03 / D-12).
 func notify(title, body string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

@@ -12,5 +12,5 @@ import "testing"
 // Manual reproducer: tests/reliability/manual/REL-TRAY-02-repro.ps1
 // Run on Windows with the gateway stopped to observe pre-fix behavior.
 func TestRegression_REL_TRAY_02_WindowsBundleExitOne(t *testing.T) {
-	t.Skip("REL-TRAY-02 (T-2): manual reproducer — see tests/reliability/manual/REL-TRAY-02-repro.ps1 for Windows-only reproducer")
+	t.Skip("REL-TRAY-02 (T-2): manual validation required — run tests/reliability/manual/REL-TRAY-02-repro.ps1 on Windows with gateway stopped; REL-TRAY-02 fix shipped in this commit")
 }

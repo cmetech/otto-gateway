@@ -15,3 +15,18 @@ import _ "embed"
 //
 //go:embed template.png
 var Template []byte
+
+// Running is the raw PNG bytes for the "gateway running" state icon.
+//
+//go:embed template_running.png
+var Running []byte
+
+// Warning is the raw PNG bytes for the "gateway starting/degraded" state icon.
+//
+//go:embed template_warning.png
+var Warning []byte
+
+// Error is the raw PNG bytes for the "gateway stopped/error" state icon.
+//
+//go:embed template_error.png
+var Error []byte

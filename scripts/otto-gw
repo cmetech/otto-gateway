@@ -777,6 +777,13 @@ stop() {
         local pid
         pid=$(cat "$OTTO_PID")
         if kill -0 "$pid" 2>/dev/null; then
+            actual_comm=$(ps -p "$pid" -o comm= 2>/dev/null || true)
+            if [[ "$actual_comm" != *otto-gateway* ]]; then
+                echo "otto-gw: stop: PID $pid is alive but comm='$actual_comm' — stale PID file" >&2
+                rm -f "$OTTO_PID"
+                stop_by_name "stale recycled PID" && return 0
+                return 0
+            fi
             kill "$pid"
             _wait_for_exit "$pid"
             rm -f "$OTTO_PID"
