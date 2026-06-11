@@ -25,8 +25,22 @@ type blockingPromptClient struct {
 	gate chan struct{} // close to unblock Prompt
 }
 
-func newBlockingPromptClient() *blockingPromptClient {
+// newBlockingPromptClient builds a blockingPromptClient whose NewSession
+// returns a per-instance unique session ID — the shared default fakeClient
+// behaviour returns "fake-sess" for every call, which causes both clients
+// in this test to register the SAME sid in pool.sessionSlots; the second
+// NewSession overwrites the first entry and both subsequent Prompt calls
+// route to whichever client won the overwrite race (deviation Rule 1 fix,
+// Plan 17-02 — exposed by iter1 resultWg.Wait() draining surfacing the
+// pre-existing degenerate sessionSlots collapse via the WR-04 assertion).
+// idTag is appended to "fake-sess-" so each instance produces a stable,
+// distinguishable session ID across the test's two concurrent Prompts.
+func newBlockingPromptClient(idTag string) *blockingPromptClient {
 	c := &blockingPromptClient{gate: make(chan struct{})}
+	sid := "fake-sess-" + idTag
+	c.newSessionFn = func(_ context.Context, _ string) (string, error) {
+		return sid, nil
+	}
 	c.promptFn = func(ctx context.Context, sid string, blocks []canonical.Block) (*acp.Stream, error) {
 		s := acp.NewStreamForTest(sid)
 		go func() {
@@ -63,8 +77,8 @@ func TestRegression_REL_POOL_02_CtrlCOrphansChildren(t *testing.T) {
 
 	// Build a size-2 pool with two blocking clients to simulate two
 	// concurrent in-flight long generations.
-	bc0 := newBlockingPromptClient()
-	bc1 := newBlockingPromptClient()
+	bc0 := newBlockingPromptClient("bc0")
+	bc1 := newBlockingPromptClient("bc1")
 	cf := &fakeClientFactory{
 		clients: []pool.PoolClient{bc0, bc1},
 	}
@@ -84,6 +98,14 @@ func TestRegression_REL_POOL_02_CtrlCOrphansChildren(t *testing.T) {
 	// Start two concurrent in-flight Prompt calls that block (simulating
 	// long LLM generations running when Ctrl-C arrives).
 	var wg sync.WaitGroup
+	// resultWg tracks the orphan stream.Result() goroutines spawned per
+	// session below. Without this WaitGroup, those goroutines block in
+	// acp.(*Stream).Result on the stream's done channel; under -race the
+	// outer wg.Wait() can complete while these goroutines are still pending
+	// stream-close, causing the deferred goleak.VerifyNone(t) at line 62 to
+	// fail with a "chan receive" leak (~17/17 iterations under -count=20).
+	// Plan 17-02 / D-17-04 iter 1.
+	var resultWg sync.WaitGroup
 	sessions := make([]string, 0, 2)
 	var sessionsMu sync.Mutex
 
@@ -105,7 +127,31 @@ func TestRegression_REL_POOL_02_CtrlCOrphansChildren(t *testing.T) {
 				t.Errorf("Prompt: %v", err)
 				return
 			}
-			go func() { _, _ = stream.Result() }()
+			// Drain Chunks first, THEN call Result. The drain blocks until
+			// acp.Stream.close's `close(s.chunks)` runs at stream.go:186 —
+			// which is AFTER the StopReason write at stream.go:182 and
+			// after s.mu.Unlock() at stream.go:185. Once Chunks observes
+			// channel close, the close() body has fully executed (write
+			// barrier on chan-close). Calling Result after the drain
+			// avoids the close-vs-read race that triggered when Result
+			// was called with only <-s.done synchronization (s.done is
+			// closed BEFORE s.mu, so Result waiters can return the
+			// FinalResult pointer before close writes StopReason —
+			// poolStreamWrapper.Result then reads StopReason at pool.go:959
+			// while close is still mutating it; `go test -race` flags this).
+			// Result still fires the wrapper's releaseOnce → cancelWatch
+			// → close(doneCh) so the ctx-watcher goroutine spawned at
+			// pool.go:859 exits cleanly. Plan 17-02 / D-17-04 iter 1.
+			resultWg.Add(1)
+			go func() {
+				defer resultWg.Done()
+				for range stream.Chunks() {
+					// drain; producer closes on stream close. The for-range
+					// exit is the synchronization edge with close()'s body
+					// completion — StopReason is now safely readable.
+				}
+				_, _ = stream.Result()
+			}()
 		}()
 	}
 
@@ -160,7 +206,13 @@ func TestRegression_REL_POOL_02_CtrlCOrphansChildren(t *testing.T) {
 		cancelsAfter, len(bc0Cancels), len(bc1Cancels))
 
 	// Unblock the blocking clients so goroutines can exit cleanly.
+	// Order matters for goleak: gates → wg.Wait drains the outer session
+	// loop, then resultWg.Wait drains the orphan stream.Result() goroutines
+	// AFTER each stream has fully closed (either via gate-path FinalResult
+	// or via ctx.Done from p.Close above). Only then does the deferred
+	// goleak.VerifyNone(t) fire on a clean goroutine set. Plan 17-02 / D-17-04.
 	close(bc0.gate)
 	close(bc1.gate)
 	wg.Wait()
+	resultWg.Wait()
 }
