@@ -60,8 +60,6 @@ func decodeLogRecords(t *testing.T, buf *bytes.Buffer) []map[string]any {
 // setting EMBEDDING_MODEL_DEFAULT produces a startup Warn log record mentioning
 // the variable name (post-fix), rather than being silently ignored (pre-fix).
 func TestRegression_REL_CFG_03_EmbeddingModelDefaultUnimplemented(t *testing.T) {
-	t.Skip("REL-CFG-03 (C-3): regression test — unskip in Phase 16 fix commit")
-
 	buf := captureSlogDefault(t)
 	t.Setenv("EMBEDDING_MODEL_DEFAULT", "qwen3-embed")
 

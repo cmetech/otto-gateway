@@ -562,6 +562,24 @@ func Load() (Config, error) {
 		}
 	}
 
+	// C-3 (REL-CFG-03) embedding stub Warn: EMBEDDING_MODEL_DEFAULT is
+	// documented in CLAUDE.md's backward-compat env list but is not read
+	// anywhere in the binary — the embedding surface (/v1/embeddings,
+	// /api/embed, /api/embeddings) is deferred to v1.10+ per
+	// docs/briefs/go_port_brief.md §3.4. Emit a single Warn to slog.Default()
+	// so operators who set this env var see that their config is silently
+	// dropped. Emitted from config.Load() (not main.go) so the regression
+	// test in TestRegression_REL_CFG_03_EmbeddingModelDefaultUnimplemented —
+	// which captures slog.Default() and calls only config.Load() — observes
+	// the Warn record without a full main() spin-up. Not a boot error
+	// (D-03): the variable is reserved, not invalid.
+	if embeddingModelDefault := strings.TrimSpace(os.Getenv("EMBEDDING_MODEL_DEFAULT")); embeddingModelDefault != "" {
+		slog.Default().Warn(
+			"embedding surface is not implemented; EMBEDDING_MODEL_DEFAULT will be ignored",
+			"value", embeddingModelDefault,
+		)
+	}
+
 	if len(errs) > 0 {
 		return Config{}, fmt.Errorf("config: invalid env vars: %w", errors.Join(errs...))
 	}

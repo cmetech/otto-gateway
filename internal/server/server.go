@@ -131,6 +131,16 @@ type Config struct {
 	// it here so both consumers select on the same signal (REL-HTTP-01).
 	// When nil, NewFromConfig allocates its own channel (tests + New path).
 	ShutdownCh chan struct{}
+
+	// BodyReadTimeout is the per-request body-read deadline applied to
+	// chat-body POST handlers (REL-HTTP-04 / Plan 16-02). Plan 16-05 owns
+	// the config-side parsing of HTTP_BODY_READ_TIMEOUT_SEC and populates
+	// this field; Plan 16-02 applies the time.AfterFunc-based deadline
+	// wrapper that calls r.Body.Close() on expiry so SSE response writes
+	// remain unaffected (D-04b). Zero means "use the default" (Plan 16-02
+	// will define the default); negative values do not reach here because
+	// config.Load() rejects them at boot.
+	BodyReadTimeout time.Duration
 }
 
 // Server wraps the chi router and HTTP server with structured logging.

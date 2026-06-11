@@ -740,7 +740,8 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 		Registry:             registryForServer,                                          // Plan 05-03 D-14/D-16
 		AdminHandler:         adminHandler,                                               // Phase 6.1 admin observability UI
 		Hooks:                hooksDescriptionAdapter{chain: chain, tracker: hookErrors}, // Phase 8 OBSV-04 — /health/hooks
-		ShutdownCh:           sharedShutdownCh,                                          // REL-HTTP-01 — shared with admin SSE handler
+		ShutdownCh:           sharedShutdownCh,                                           // REL-HTTP-01 — shared with admin SSE handler
+		BodyReadTimeout:      cfg.BodyReadTimeout,                                        // REL-HTTP-04 — Plan 16-02 consumes this for the body-read deadline wrapper
 	})
 
 	return a, cleanup, nil
