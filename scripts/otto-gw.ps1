@@ -589,15 +589,18 @@ function Stop-Gateway {
 }
 
 function Get-GatewayStatus {
+    # REL-TRAY-02 fix: return [pscustomobject] on all paths instead of exit 1
+    # so callers (Invoke-Support) can capture status without aborting.
+    # The CLI 'status' dispatch arm re-introduces exit 1 for user-facing behavior.
     if (-not (Test-Path $PidFile)) {
         Write-Host "otto-gateway: stopped"
-        exit 1
+        return [pscustomobject]@{ Status = 'stopped'; Message = 'otto-gateway: stopped (no PID file)' }
     }
     $storedPid = [int](Get-Content $PidFile -Raw)
     $proc = Get-Process -Id $storedPid -ErrorAction SilentlyContinue
     if (-not $proc) {
         Write-Host "otto-gateway: stopped (stale PID)"
-        exit 1
+        return [pscustomobject]@{ Status = 'stopped'; Message = 'otto-gateway: stopped (stale PID)' }
     }
     Write-Host "otto-gateway: running (PID $storedPid)"
     try {
@@ -630,6 +633,7 @@ function Get-GatewayStatus {
     } catch {
         # Best-effort: admin snapshot unreachable — skip the flag lines silently.
     }
+    return [pscustomobject]@{ Status = 'running'; Message = "otto-gateway: running (PID $storedPid)" }
 }
 
 function Restart-Gateway {
@@ -1468,8 +1472,14 @@ function Invoke-Support {
         Set-Content -Path (Join-Path $bundleRoot 'env\shell-env.txt') -Value $shellLines -Encoding UTF8
 
         # ---- health/ ---------------------------------------------------
-        $statusOut = try { Get-GatewayStatus 2>&1 | Out-String } catch { "(status failed: $($_.Exception.Message))" }
+        # REL-TRAY-02 fix: Get-GatewayStatus returns [pscustomobject] on all
+        # paths — no longer calls exit 1 — so bundle collection always continues.
+        $gwStatus = Get-GatewayStatus
+        $statusOut = $gwStatus.Message
         Set-Content -Path (Join-Path $bundleRoot 'health\status.txt') -Value $statusOut -Encoding UTF8
+        if ($gwStatus.Status -ne 'running') {
+            Write-Host "Note: gateway not running at bundle-time — bundle may be incomplete"
+        }
 
         try {
             $body = (Invoke-WebRequest -Uri "$HealthUrl/health" -UseBasicParsing -TimeoutSec 5).Content
@@ -1762,7 +1772,7 @@ switch ($Command) {
     "init"             { Invoke-Init }
     "start"            { Start-Gateway }
     "stop"             { Stop-Gateway }
-    "status"           { Get-GatewayStatus }
+    "status"           { $gwStatus = Get-GatewayStatus; if ($gwStatus.Status -ne 'running') { exit 1 } }
     "restart"          { Restart-Gateway }
     "logs"             { Get-Logs }
     "run"              { Invoke-Run }
