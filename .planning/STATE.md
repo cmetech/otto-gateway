@@ -2,9 +2,9 @@
 gsd_state_version: 1.0
 milestone: v1.9
 milestone_name: Reliability Hardening
-status: planning
-last_updated: "2026-06-11T14:44:34.910Z"
-last_activity: 2026-06-11 -- Phase 14 verification complete
+status: executing
+last_updated: "2026-06-11T14:46:28.535Z"
+last_activity: 2026-06-11 -- Phase 15 execution started
 progress:
   total_phases: 3
   completed_phases: 1
@@ -20,14 +20,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-07)
 
 **Core value:** All three API surfaces (OpenAI for Pi SDK, Ollama for LangFlow, Anthropic for loop24-client/GSD Pi) serve their respective clients without those clients knowing kiro-cli exists, with one place to enforce policy.
-**Current focus:** Phase 15 — Fix Critical + High reliability findings (next)
+**Current focus:** Phase 15 — fix-critical-high
 
 ## Current Position
 
-Phase: 14 (verify-reliability-findings) — COMPLETE
-Plan: 4 of 4 plans complete; verification passed (8/8 must-haves)
-Status: Ready to plan Phase 15
-Last activity: 2026-06-11 -- Phase 14 verification complete
+Phase: 15 (fix-critical-high) — EXECUTING
+Plan: 1 of 3
+Status: Executing Phase 15
+Last activity: 2026-06-11 -- Phase 15 execution started
 
 ## Performance Metrics
 
