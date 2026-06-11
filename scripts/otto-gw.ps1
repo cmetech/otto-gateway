@@ -307,6 +307,16 @@ function Test-SingleFileModel {
     Write-Warning "otto-gw: legacy single-file .env model detected -- run ``otto-gw migrate-to-overrides`` to split secrets/overrides into .otto-gw.overrides.env. Single-file support will be removed in v1.7."
 }
 
+# Write-Stderr is the canonical "informational output, do NOT touch
+# stdout" primitive used by Invoke-Support and friends. REL-TRAY-06
+# (T-6) fix: support verb must keep stdout reserved for the archive
+# path as the SOLE line, but Initialize-Config and others legitimately
+# need to tell the operator what they loaded. Routing through
+# [Console]::Error.WriteLine is robust against -Command capture, Write-Host
+# host-redirect, and Out-Default chatter — Go's exec.Cmd separates the
+# real stderr stream from stdout regardless.
+function Write-Stderr { param([string]$Message) [Console]::Error.WriteLine($Message) }
+
 function Initialize-Config {
     # Two-file model (locked in 260531-tl1 CONTEXT.md Decision 1):
     #   1. .otto-gw.env (generated, byte-for-byte template copy, never edited).
@@ -317,7 +327,8 @@ function Initialize-Config {
     $envFilePath = Resolve-EnvFile
     if ($envFilePath) {
         Import-DotEnv -Path $envFilePath
-        Write-Host "loaded env file: $envFilePath" -ForegroundColor DarkGray
+        # REL-TRAY-06 (T-6): stderr so Invoke-Support's stdout stays clean.
+        Write-Stderr "loaded env file: $envFilePath"
         # Surface the resolved path to the gateway so it can log at INFO
         # which file the wrapper actually used. The binary reads this from
         # os.Getenv("OTTO_ENV_FILE_LOADED") at startup.
@@ -326,7 +337,8 @@ function Initialize-Config {
     $overridesPath = Resolve-OverridesFile
     if ($overridesPath -and (Test-Path $overridesPath)) {
         Import-DotEnv -Path $overridesPath
-        Write-Host "loaded overrides:  $overridesPath" -ForegroundColor DarkGray
+        # REL-TRAY-06 (T-6): stderr so Invoke-Support's stdout stays clean.
+        Write-Stderr "loaded overrides:  $overridesPath"
         $env:OTTO_OVERRIDES_FILE_LOADED = $overridesPath
     }
     # One-shot legacy-model deprecation WARN.
@@ -1486,7 +1498,8 @@ function Invoke-Support {
         $statusOut = $gwStatus.Message
         Set-Content -Path (Join-Path $bundleRoot 'health\status.txt') -Value $statusOut -Encoding UTF8
         if ($gwStatus.Status -ne 'running') {
-            Write-Host "Note: gateway not running at bundle-time — bundle may be incomplete"
+            # REL-TRAY-06 (T-6): stderr only — stdout is reserved for archive path.
+            Write-Stderr "Note: gateway not running at bundle-time — bundle may be incomplete"
         }
 
         try {

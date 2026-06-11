@@ -348,10 +348,21 @@ func (s *trayState) handleSupportBundle() {
 		return
 	}
 
-	// Wrapper prints the absolute archive path on stdout. Fall back to the
-	// `latest.<ext>` alias when stdout is empty (rare — happens if a shell
-	// rc file injected extra output that pushed our line off the tail).
-	path := strings.TrimSpace(res.Stdout)
+	// REL-TRAY-06 (T-6) fix: the wrapper prints the absolute archive
+	// path on stdout, but informational lines from Initialize-Config /
+	// env loaders can chatter on stdout too. Parse the LAST non-empty
+	// stdout line — the support verb always emits the archive path
+	// last. Companion fix in scripts/otto-gw.ps1 routes informational
+	// output through Write-Host stderr-redirected so stdout stays
+	// clean (operators on PS sessions with prompt customizations or
+	// profile.ps1 dumps would otherwise still hit this).
+	lastLine := ""
+	for _, line := range strings.Split(res.Stdout, "\n") {
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			lastLine = trimmed
+		}
+	}
+	path := lastLine
 	if path == "" {
 		path = filepath.Join(s.installRoot, "support", "latest"+bundleExt())
 	}
