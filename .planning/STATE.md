@@ -1,17 +1,17 @@
 ---
 gsd_state_version: 1.0
 milestone: v1.9
-milestone_name: Reliability Hardening
+milestone_name: milestone
 status: executing
-stopped_at: Completed 17-03-PLAN.md (mechanical trust-gate batch)
-last_updated: "2026-06-11T22:39:32Z"
-last_activity: 2026-06-11 -- Plan 17-03 complete; fmt + gosec + dead-code closed (b78fd09). 17-01 + 17-02 pending.
+stopped_at: Completed 17-01-PLAN.md (TRST-04 arch-lint restoration — f727b24)
+last_updated: "2026-06-11T22:51:42.823Z"
+last_activity: 2026-06-11 -- Plan 17-03 complete (b78fd09); fmt + gosec G301/G306 + Pool.removeSlot dead-code closed. make ci progresses past fmt/lint/test-race; arch-lint failure remains (17-01's scope).
 progress:
   total_phases: 23
   completed_phases: 21
   total_plans: 81
-  completed_plans: 79
-  percent: 92
+  completed_plans: 80
+  percent: 91
 ---
 
 # Project State
@@ -26,10 +26,10 @@ See: .planning/PROJECT.md (updated 2026-06-07)
 ## Current Position
 
 Phase: 17 (trust-gate-restoration) — EXECUTING
-Plan: 2 of 3 (17-03 complete; 17-01 + 17-02 pending)
+Plan: 3 of 3 (17-03 complete; 17-01 + 17-02 pending)
 Milestone: v1.9 Reliability Hardening — SHIPPED 2026-06-11
 Audit: 27/27 requirements, 8/8 seams WIRED, 26/26 threats CLOSED
-Status: Executing Phase 17
+Status: Ready to execute
 Last activity: 2026-06-11 -- Plan 17-03 complete (b78fd09); fmt + gosec G301/G306 + Pool.removeSlot dead-code closed. make ci progresses past fmt/lint/test-race; arch-lint failure remains (17-01's scope).
 
 ## Performance Metrics
@@ -70,6 +70,7 @@ Last activity: 2026-06-11 -- Plan 17-03 complete (b78fd09); fmt + gosec G301/G30
 | Phase 16 P02 | 25min | 3 tasks | 9 files |
 | Phase 16 P04 | 13min | 4 tasks | 10 files |
 | Phase 17 P03 | 12min | 5 tasks (batched 1 commit per D-17-02) | 5 files |
+| Phase 17 P01 | 6min | 2 tasks | 9 files |
 
 ## Accumulated Context
 
@@ -124,6 +125,8 @@ Recent decisions affecting current work:
 - [Phase 17]: Plan 17-03 executed as single atomic commit per D-17-02 (5 mechanical fixes in 1 commit; revert-as-unit guarantee). 14 ins / 28 del across 5 files; small bounded diff. Commit b78fd09.
 - [Phase 17]: Plan 17-03 D-17-05 single-user laptop posture rationale recorded inline in commit body for the 0o600 WriteFile tightening on tray.go last-error.log — no cross-user reader exists; support-bundle may contain kiro-cli stderr.
 - [Phase 17]: Plan 17-03 dead-code stale-comment policy: minimize the diff — kept "removed in Phase 17" annotations rather than full comment removal so future readers grepping for removeSlot find the historical context explaining the WR-07 / CR-01 / REL-POOL-01 D-08 design rationale.
+- [Phase ?]: [Phase 17]: Plan 17-01 executed atomically per D-17-01. Worktree spike (/tmp/otto-17-01-spike) confirmed go build + go vet + go-arch-lint (OK - No warnings found) + targeted go test -race clean before main-worktree commit. Single atomic commit f727b24 lands all 9 files: canonical.ErrPoolExhausted added, pool.ErrPoolExhausted aliased, 8 adapter errors.Is sites flipped, 3 pool imports dropped, 3 comment refs updated, sentinel-identity test added.
+- [Phase ?]: [Phase 17]: Plan 17-01 sentinel-identity test placed in canonical_test (blackbox) per testmain_test.go precedent — keeps the existing goleak.VerifyTestMain gate uniform with the rest of canonical's test suite. Three assertions: self-identity, byte-exact message ('pool: all workers busy; retry in 5s'), errors.Is wrap-traversal via fmt.Errorf %w.
 
 ### Pending Todos
 
@@ -183,8 +186,8 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-06-11T22:39:32Z
-Stopped at: Completed 17-03-PLAN.md (mechanical trust-gate batch — b78fd09)
+Last session: 2026-06-11T22:51:28.794Z
+Stopped at: Completed 17-01-PLAN.md (TRST-04 arch-lint restoration — f727b24)
 Resume file: None
 
 ## Operator Next Steps
