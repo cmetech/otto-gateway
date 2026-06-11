@@ -482,8 +482,20 @@ func (p *Pool) closeAll() error {
 
 	// Cancel in-flight sessions BEFORE hard-closing clients so kiro-cli
 	// has a chance to clean up any mid-generation state (REL-POOL-02).
+	//
+	// WR-01 fix (phase 15 review): emit an INFO log with the inflight
+	// count so operators can correlate "cancels attempted at shutdown" vs
+	// what the kiro-cli side actually received in audit logs. The
+	// best-effort nature of sendNotification means some cancels may be
+	// dropped (writeCh full, clientCtx already cancelled by a parallel
+	// path); the count below is the upper bound. The REL-POOL-02 test
+	// asserts the per-client cancel parity that this log helps diagnose.
 	for _, e := range inflight {
 		e.client.Cancel(e.sid)
+	}
+	if len(inflight) > 0 && p.cfg.Logger != nil {
+		p.cfg.Logger.Info("pool.close.cancel_inflight",
+			"inflight_count", len(inflight))
 	}
 
 	var firstErr error
