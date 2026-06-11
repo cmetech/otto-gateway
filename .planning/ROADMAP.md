@@ -119,11 +119,13 @@ v1.9 phase details archived to [milestones/v1.9-ROADMAP.md](milestones/v1.9-ROAD
 
 ### Phase 17: Trust-Gate Restoration
 
-**Goal:** [To be planned]
-**Requirements**: TBD
+**Goal:** Restore `make ci` to clean exit-0 end-to-end so the v1.9.1 release tag can ship from a build-green baseline. Close six trust-gate items surfaced at v1.9 milestone close: TRST-04 arch-lint boundary violation (adapters importing pool), REL-POOL-02 goleak flake (~1/8 fail rate), gofmt drift in server.go, gofumpt drift in two regression test files, gosec G301+G306 in tray.go support-bundle path, and dead-code removal of Pool.removeSlot.
+**Requirements**: TRST-04-RESTORE, REL-POOL-01-RELOCATE, REL-POOL-02-DEFLAKE, REL-FMT-GOFMT, REL-FMT-GOFUMPT, REL-LINT-G301, REL-LINT-G306, REL-LINT-UNUSED
 **Depends on:** Phase 16
-**Plans:** 0 plans
+**Plans:** 3 plans
 
 Plans:
 
-- [ ] TBD (run /gsd-plan-phase 17 to break down)
+- [ ] 17-01-PLAN.md — Move ErrPoolExhausted to canonical package, restore TRST-04 boundary (D-17-01)
+- [ ] 17-02-PLAN.md — Deflake TestRegression_REL_POOL_02_CtrlCOrphansChildren to 20/20 under -race (D-17-04)
+- [ ] 17-03-PLAN.md — Mechanical batch: gofmt + gofumpt + gosec G301/G306 + Pool.removeSlot dead-code removal (D-17-02)
