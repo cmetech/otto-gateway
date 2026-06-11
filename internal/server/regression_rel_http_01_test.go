@@ -146,15 +146,24 @@ func TestRegression_REL_HTTP_01_ShutdownBlocksOnAdminSSE(t *testing.T) {
 	_ = srv.Shutdown(shutdownCtx)
 	elapsed := time.Since(start)
 
-	// POST-FIX ASSERTION: Shutdown must complete in < 1s.
+	// POST-FIX ASSERTION: Shutdown must complete promptly.
 	// The SSE handler selects on shutdownCh which is closed by RegisterOnShutdown
-	// at the start of Shutdown — handler exits promptly, Shutdown drains in < 1s.
-	if elapsed >= 1*time.Second {
-		t.Errorf("post-fix assertion: Shutdown took %v (>= 1s) — "+
+	// at the start of Shutdown — handler exits promptly, Shutdown drains quickly.
+	//
+	// WR-05 fix (phase 15 review): tightened from >= 1s to >= 250ms. Pre-fix
+	// behaviour was 30s; post-fix realistic ms-level shutdown is sub-50ms in
+	// practice. The 1s tolerance was generous enough to silently accept a
+	// regression that introduced an 800ms blocking PostHook drain in the SSE
+	// path. 250ms preserves ample headroom for slow CI runners while catching
+	// partial regressions an order of magnitude smaller than before.
+	const shutdownBudget = 250 * time.Millisecond
+	if elapsed >= shutdownBudget {
+		t.Errorf("post-fix assertion: Shutdown took %v (>= %v) — "+
 			"the SSE handler should have exited promptly via shutdownCh",
-			elapsed)
+			elapsed, shutdownBudget)
 	}
-	t.Logf("Shutdown completed in %v (post-fix: SSE exited via shutdownCh)", elapsed)
+	t.Logf("Shutdown completed in %v (post-fix: SSE exited via shutdownCh, budget %v)",
+		elapsed, shutdownBudget)
 
 	// Tear down the SSE connection so the test goroutine can exit.
 	sseCancel()
