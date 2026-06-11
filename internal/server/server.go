@@ -23,11 +23,26 @@ import (
 )
 
 // PoolStatsSource is the consumer-defined interface healthHandler uses
-// to render the {pool: {size, alive, busy}} sub-tree without importing
-// internal/pool's Stats type into the server's public surface. *pool.Pool
-// satisfies it structurally; a nil source is handled by healthHandler.
+// to render the {pool: {size, alive, busy, status}} sub-tree without
+// importing internal/pool's Stats type into the server's public
+// surface. *pool.Pool satisfies it structurally; a nil source is
+// handled by healthHandler.
+//
+// IsExhausted and LastProgressAt feed the D-05 PoolStats.Status enum
+// (Plan 16-02 Task 3):
+//   - IsExhausted() returning true → Status = "exhausted" (D-05b).
+//   - Busy == Alive == Size AND time.Since(LastProgressAt()) >
+//     poolDegradedStallThreshold → Status = "degraded" (D-05a).
+//   - All other cases → Status = "ok".
+//
+// Plan 16-01 added both accessors to *pool.Pool (LastProgressAt as an
+// atomic.Int64 UnixNano + IsExhausted under p.mu); the
+// cmd/otto-gateway poolStatsAdapter forwards them so server stays
+// import-clean of internal/pool (TRST-04).
 type PoolStatsSource interface {
 	Stats() PoolStats
+	IsExhausted() bool
+	LastProgressAt() time.Time
 }
 
 // RegistryStatsSource is the consumer-defined interface healthHandler +

@@ -752,13 +752,29 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 // owns the JSON-tagged shape (/health surface), pool owns the runtime
 // type. This adapter is the one-line bridge between them; lives here in
 // main rather than in either package to keep the boundary clean.
+//
+// Plan 16-02 Task 3 / D-05: also forwards IsExhausted() and
+// LastProgressAt() from *pool.Pool so healthHandler can compute the
+// PoolStats.Status enum without importing internal/pool (TRST-04).
+// pool.IsExhausted and pool.LastProgressAt were added by Plan 16-01
+// Task 4.
 type poolStatsAdapter struct {
 	pool *pool.Pool
 }
 
 func (p poolStatsAdapter) Stats() server.PoolStats {
 	s := p.pool.Stats()
+	// Status is left empty here — healthHandler computes it from the
+	// IsExhausted/LastProgressAt accessors below.
 	return server.PoolStats{Size: s.Size, Alive: s.Alive, Busy: s.Busy}
+}
+
+func (p poolStatsAdapter) IsExhausted() bool {
+	return p.pool.IsExhausted()
+}
+
+func (p poolStatsAdapter) LastProgressAt() time.Time {
+	return p.pool.LastProgressAt()
 }
 
 // poolDetailAdapter wraps *pool.Pool to satisfy server.PoolDetailSource.

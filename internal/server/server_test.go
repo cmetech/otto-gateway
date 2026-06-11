@@ -433,12 +433,16 @@ func TestNewFromConfig_HealthPoolWiring(t *testing.T) {
 
 // fakePoolSource satisfies server.PoolStatsSource with a fixed Stats
 // value — lets the /health test exercise OBSV-01 without spinning up a
-// real pool.
+// real pool. The IsExhausted / LastProgressAt methods are zero-value
+// no-ops (always "not exhausted", Unix epoch); status-enum coverage
+// lives in health_status_test.go which provides a richer fake.
 type fakePoolSource struct {
 	stats server.PoolStats
 }
 
-func (f fakePoolSource) Stats() server.PoolStats { return f.stats }
+func (f fakePoolSource) Stats() server.PoolStats   { return f.stats }
+func (f fakePoolSource) IsExhausted() bool         { return false }
+func (f fakePoolSource) LastProgressAt() time.Time { return time.Now() }
 
 // ---------------------------------------------------------------------------
 // NewFromConfig — Phase 3.1 anthropic mount (D-17) — updated for D-01

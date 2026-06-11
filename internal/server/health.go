@@ -25,6 +25,14 @@ type HealthResponse struct {
 
 // PoolStats reports ACP worker subprocess pool state.
 // Populated by Phase 5; zero values correct for Phase 1.
+//
+// Status is the D-05 operational-status enum added by Plan 16-02 Task 3.
+// One of: "ok" | "degraded" | "exhausted". JSON-backwards-compatible:
+// new field; existing consumers ignore unknown keys. The empty string
+// is the zero value rendered when no PoolStatsSource is wired (Phase 1
+// pre-pool degraded-mode), so the field omitempty rule is intentionally
+// NOT applied — explicit "" signals "pool not wired" to consumers
+// that distinguish that case (Plan 16-04 tray probe).
 type PoolStats struct {
 	// Size is the configured pool size.
 	Size int `json:"size"`
@@ -32,7 +40,18 @@ type PoolStats struct {
 	Alive int `json:"alive"`
 	// Busy is the number of workers currently handling a request.
 	Busy int `json:"busy"`
+	// Status is the D-05 operational status: "ok", "degraded", or
+	// "exhausted". Empty when no pool source is wired (KIRO_CMD unset).
+	Status string `json:"status"`
 }
+
+// poolDegradedStallThreshold is the D-05a window after which a
+// fully-saturated pool (Busy == Alive == Size) with no forward
+// progress flips Status to "degraded". A compile-time constant — not
+// operator-tunable in v1.9 per the D-04 env-surface restraint
+// (16-CONTEXT.md "Noted for Later" reserves POOL_DEGRADED_STALL_SEC
+// for v1.10+ if operators report false-positives on slow networks).
+const poolDegradedStallThreshold = 30 * time.Second
 
 // SessionStats reports active ACP session state.
 // Populated by Phase 5; zero values correct for Phase 1.
@@ -62,6 +81,20 @@ func (s *Server) healthHandler(w http.ResponseWriter, r *http.Request) {
 	var ps PoolStats
 	if s.pool != nil {
 		ps = s.pool.Stats()
+		// D-05 Status enum (Plan 16-02 Task 3). Priority order:
+		//   1. exhausted — every spawned slot is checked out (D-05b).
+		//   2. degraded  — fully saturated AND no forward progress
+		//      in poolDegradedStallThreshold (D-05a).
+		//   3. ok        — default.
+		switch {
+		case s.pool.IsExhausted():
+			ps.Status = "exhausted"
+		case ps.Size > 0 && ps.Busy == ps.Alive && ps.Busy == ps.Size &&
+			time.Since(s.pool.LastProgressAt()) > poolDegradedStallThreshold:
+			ps.Status = "degraded"
+		default:
+			ps.Status = "ok"
+		}
 	}
 	var ss SessionStats
 	if s.registry != nil {
