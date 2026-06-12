@@ -736,7 +736,10 @@ func Load() (Config, error) {
 		JSONFormatSteeringEnabled: jsonFormatSteeringEnabled,
 		ChatTrace:                 chatTrace,
 		ChatTraceFile:             chatTraceFile,
-		ChatTraceMaxAgeDays:       chatTraceMaxAgeDays,
+		// D-18-08 REL-OBSV-04: AdminTailPath shares the same source as
+		// ChatTraceFile so the writer and tailer cannot diverge.
+		AdminTailPath:       chatTraceFile,
+		ChatTraceMaxAgeDays: chatTraceMaxAgeDays,
 	}, nil
 }
 

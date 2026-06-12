@@ -652,7 +652,14 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 	}
 	logPathOrder := []string{"main", "boot-err"}
 	if cfg.ChatTrace {
-		logPaths["chat-trace"] = cfg.ChatTraceFile
+		// D-18-08 REL-OBSV-04: the admin log-tail panel reads the
+		// chat-trace file from cfg.AdminTailPath — the single source
+		// populated in config.Load() via the SAME deriveChatTraceFile
+		// call the writer (chat-trace rotator at main.go:302) uses for
+		// cfg.ChatTraceFile. The two fields hold the same string by
+		// construction; the AdminTailPath read at this wiring site
+		// guarantees the tailer never diverges from the writer.
+		logPaths["chat-trace"] = cfg.AdminTailPath
 		logPathOrder = append(logPathOrder, "chat-trace")
 	}
 	// REL-HTTP-01: shared shutdown channel — created here before both the

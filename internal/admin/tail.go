@@ -362,10 +362,14 @@ func (t *Tailer) run(ctx context.Context) {
 		partialLine = ""
 		nf, err := os.Open(t.path)
 		if err != nil {
-			// File does not exist yet or path is wrong — log at DEBUG
-			// and retry on the next tick. This is the expected startup
-			// state when scripts/otto-gw hasn't written anything yet.
-			t.logger.Debug("admin: tailer cannot open log", "path", t.path, "err", err)
+			// D-18-08 REL-OBSV-04: promote from DEBUG to WARN so an
+			// operator who sees an empty Log Tail panel gets a visible
+			// diagnostic at the default INFO+ logger level. The retry
+			// loop runs on every tick; production noise is bounded by
+			// the early-return below (the tailer reopens once per tick,
+			// not per-line). Path is included so the operator sees
+			// exactly which path missed.
+			t.logger.Warn("admin: tailer cannot open log", "path", t.path, "err", err)
 			return
 		}
 		// Seek to EOF: D-10 invariant — NEVER backfill historical content.
