@@ -411,6 +411,12 @@ func (p *Pool) respawnSlot(ctx context.Context, slot *Slot) error {
 	// critical section stays narrow. Reason byte-exact "lazy-respawn-success"
 	// per CONTEXT.md §D-18-05; field key for slot label is "label" mirroring
 	// the death log at exit_watcher.go:42 (RESEARCH.md Pattern 3 / Pitfall 5).
+	//
+	// WR-07: previous_pid=0 indicates a non-spawned (NewWithConn / test
+	// fake) client whose Pid() returns 0. In production every slot is
+	// spawned via cfg.Factory.Spawn so previous_pid is always > 0 in
+	// real deployments; the field is emitted unconditionally to keep
+	// the log shape stable for downstream parsers.
 	if p.cfg.Logger != nil {
 		p.cfg.Logger.Info(
 			"pool: slot recovered",
