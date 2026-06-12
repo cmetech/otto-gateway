@@ -170,7 +170,6 @@ Plans:
 **Requirements**: QUAL-01, QUAL-02, QUAL-03, QUAL-04, QUAL-05, QUAL-06
 **Depends on:** Phase 19
 **Plans:** 1 plan
-
 Plans:
 
 - [ ] 20-01-PLAN.md — Close QUAL-01..06 as 6 atomic refactor commits (D-20-01..09)
