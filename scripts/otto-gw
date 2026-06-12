@@ -1983,15 +1983,13 @@ EOF
     find "$OTTO_INSTALL_ROOT" -maxdepth 2 -print 2>/dev/null | sort > "$bundle_root/system/installroot.txt"
 
     # ---- tray/ ---------------------------------------------------------
-    {
-        local tray_state="$OTTO_INSTALL_ROOT/.otto/tray/state"
-        if [[ -f "$tray_state" ]]; then
-            cat "$tray_state"
-        else
-            echo "(unavailable: $tray_state does not exist)"
-        fi
-    } > "$bundle_root/tray/tray-state.txt"
-
+    # tray/tray-state.txt row removed in v1.10.3 per REL-TRAY-09 (D-18-10):
+    # read $OTTO_INSTALL_ROOT/.otto/tray/state, a file the tray has never
+    # written. Every bundle showed "(unavailable: ... does not exist)".
+    # tray/autostart.txt row removed in v1.10.3 per REL-TRAY-09 (D-18-10):
+    # probed com.otto.tray.plist but the actual label is io.cmetech.otto-tray
+    # (cmd/otto-tray/autostart_darwin.go:15). The row always reported the
+    # LaunchAgent absent. Re-add when a real macOS LaunchAgent ships.
     {
         echo "pidfile: $OTTO_PID"
         if [[ -f "$OTTO_PID" ]]; then
@@ -2005,19 +2003,6 @@ EOF
             echo "pid:     (no pidfile)"
         fi
     } > "$bundle_root/tray/pidfile.txt"
-
-    {
-        local plist="$HOME/Library/LaunchAgents/com.otto.tray.plist"
-        if [[ "$(uname)" == "Darwin" ]]; then
-            if [[ -f "$plist" ]]; then
-                echo "LaunchAgent: present at $plist"
-            else
-                echo "LaunchAgent: absent (expected at $plist)"
-            fi
-        else
-            echo "autostart probe: only macOS LaunchAgent is checked from the wrapper; Windows Run-key is probed by the pwsh wrapper instead"
-        fi
-    } > "$bundle_root/tray/autostart.txt"
 
     # ---- Size cap enforcement -----------------------------------------
     # du -sm yields whole MB. If we're over cap, drop the oldest rotated

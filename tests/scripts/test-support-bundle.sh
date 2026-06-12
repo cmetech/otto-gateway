@@ -54,7 +54,7 @@ SECRET_ENCRYPT_LITERAL="realEncryptKey555"
 # enough that load_config + the support layout build successfully without
 # any real binary present.
 FAKE_ROOT=$(mktemp -d)
-mkdir -p "$FAKE_ROOT/logs" "$FAKE_ROOT/.otto/gw" "$FAKE_ROOT/.otto/tray"
+mkdir -p "$FAKE_ROOT/logs" "$FAKE_ROOT/.otto/gw"
 
 # Synthetic log with all four scrub-trigger patterns embedded.
 cat > "$FAKE_ROOT/logs/otto-gateway.log" <<EOF
@@ -72,8 +72,9 @@ EOF
 echo "boot ok" > "$FAKE_ROOT/logs/otto-gateway-boot.log"
 echo "trace ok" > "$FAKE_ROOT/logs/otto-gateway-chat-trace.log"
 
-# Tray state sentinel — best-effort path the bundle's tray/tray-state.txt reads.
-echo "running" > "$FAKE_ROOT/.otto/tray/state"
+# NOTE: $FAKE_ROOT/.otto/tray/state fixture was removed alongside the
+# tray/tray-state.txt bundle row in v1.10.3 (REL-TRAY-09 / D-18-10) —
+# the wrapper no longer reads it.
 
 # Output destination: a sibling temp dir so we can list the artifacts cleanly.
 EXTRACT_DIR=$(mktemp -d)
