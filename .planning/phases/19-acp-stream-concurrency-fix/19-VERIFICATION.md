@@ -1,18 +1,13 @@
 ---
 phase: 19-acp-stream-concurrency-fix
 verified: 2026-06-12T11:35:12Z
-status: gaps_found
-score: 7/8 must-haves verified
+status: passed
+score: 8/8 must-haves verified (1 deferred → tracked below)
 overrides_applied: 0
-gaps:
+gaps_resolved:
   - truth: "REQUIREMENTS.md Traceability table marks REL-ACP-01 as Closed"
-    status: partial
-    reason: "The REL-ACP-01 checkbox at REQUIREMENTS.md:31 is checked `[x]` (correct), but the Traceability table row at REQUIREMENTS.md:73 still reads `| REL-ACP-01 | 19 | Open |`. The SUMMARY claims `OPEN → CLOSED` but the docs are partially-inconsistent."
-    artifacts:
-      - path: ".planning/REQUIREMENTS.md"
-        issue: "Line 73 traceability table row says Open; should say Closed (or equivalent) to match the checked checkbox at line 31."
-    missing:
-      - "Update `.planning/REQUIREMENTS.md:73` traceability row for REL-ACP-01 to reflect Closed status (consistent with the `[x]` checkbox at line 31 and the SUMMARY's `OPEN → CLOSED` claim)."
+    resolved_in: "commit 014ce3e — docs(19): close REL-ACP-01 in requirements traceability table"
+    note: "REQUIREMENTS.md:73 row updated from `Open` to `Closed`, now consistent with the checked `[x]` checkbox at line 31."
 deferred:
   - truth: "`make ci` lint step exits 0 end-to-end (PLAN must_have #7)"
     addressed_in: "Phase 20 / v1.10.4"
