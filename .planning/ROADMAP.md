@@ -169,8 +169,8 @@ Plans:
 **Goal:** Close 6 Info-level findings deferred from Phase 16/17 code reviews as a single mechanical-refactor batch: QUAL-01 escapeApplescript escape-set expansion + unit tests; QUAL-02 tooltipForState dedup into a shared build-tag file; QUAL-03 forceCloseCh allocation relocated to RunUntilSignal (nil-channel select-never idiom); QUAL-04 tailLines O(n²) prepend replaced with collect-then-reverse; QUAL-05 dead sessions/sessionsMu vars removed from REL-POOL-02 test; QUAL-06 stale removeSlot comment fixed in respawn_ctx_cancel_test.
 **Requirements**: QUAL-01, QUAL-02, QUAL-03, QUAL-04, QUAL-05, QUAL-06
 **Depends on:** Phase 19
-**Plans:** 0 plans
+**Plans:** 1 plan
 
 Plans:
 
-- [ ] TBD (run /gsd-plan-phase 20 to break down)
+- [ ] 20-01-PLAN.md — Close QUAL-01..06 as 6 atomic refactor commits (D-20-01..09)
