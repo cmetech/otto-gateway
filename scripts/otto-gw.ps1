@@ -228,17 +228,34 @@ function Get-DefaultValue {
 # (D-18-09 / REL-TRAY-08). Mirrors bash config_error_sentinel_path.
 # Preference order: $env:HOME (cross-platform parity with bash) then
 # $env:USERPROFILE (Windows-native).
+#
+# WR-08: when BOTH $env:HOME and $env:USERPROFILE are unset (degraded /
+# sandboxed shell), refuse to fall back to $env:TEMP. The sentinel
+# content may contain a partial KEY=VALUE from the malformed dotenv
+# line — including, in the worst case, fragments of AUTH_TOKEN,
+# PII_HASH_KEY, or PII_ENCRYPT_KEY. Per-user $env:TEMP on Windows is
+# better than POSIX /tmp, but the symmetry contract WR-06 established
+# on the bash side ("no $HOME ⇒ no sentinel") must hold here too so
+# operators can rely on the cross-platform behavior. Returns $null;
+# callers short-circuit. Stderr WARN still fires, so the operator's
+# diagnostic path is preserved.
 function Get-ConfigErrorSentinelPath {
-    $home_ = if ($env:HOME) { $env:HOME } elseif ($env:USERPROFILE) { $env:USERPROFILE } else { $env:TEMP }
+    $home_ = if ($env:HOME) { $env:HOME } elseif ($env:USERPROFILE) { $env:USERPROFILE } else { $null }
+    if (-not $home_) {
+        [Console]::Error.WriteLine('WARN: $env:HOME and $env:USERPROFILE both unset; skipping config-error sentinel (refusing $env:TEMP fallback per WR-08)')
+        return $null
+    }
     return (Join-Path $home_ '.otto-gw\.config-error')
 }
 
 # Clear-ConfigErrorSentinel removes the sentinel. Called after every
 # successful Import-DotEnv so a one-shot parse failure does not stick
 # once the operator fixes it. Errors are swallowed — absence is the
-# happy path.
+# happy path. When the sentinel path is $null (WR-08: no HOME/USERPROFILE)
+# there is nothing to clear.
 function Clear-ConfigErrorSentinel {
     $sentinel = Get-ConfigErrorSentinelPath
+    if (-not $sentinel) { return }
     Remove-Item -Force -ErrorAction SilentlyContinue $sentinel | Out-Null
 }
 
@@ -246,10 +263,12 @@ function Clear-ConfigErrorSentinel {
 # line, capped at 200 bytes (D-18-09 PII minimization). Multi-line
 # input collapses to one line via -replace "`r?`n", ' '. Errors
 # swallowed — a missing parent directory or read-only home is
-# operator-visible already via the stderr WARN.
+# operator-visible already via the stderr WARN. WR-08: short-circuit
+# when Get-ConfigErrorSentinelPath returns $null (no HOME/USERPROFILE).
 function Write-ConfigErrorSentinel {
     param([string]$Msg)
     $sentinel = Get-ConfigErrorSentinelPath
+    if (-not $sentinel) { return }
     $sentinelDir = Split-Path -Parent $sentinel
     try {
         if (-not (Test-Path $sentinelDir)) {
