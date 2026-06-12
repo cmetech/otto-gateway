@@ -271,7 +271,16 @@ function Import-DotEnv {
     # REL-TRAY-08 (D-18-09): track first malformed line so the tray
     # surfaces a parse error via StateError instead of polling the
     # wrong port and showing "stopped".
-    $firstError = $null
+    #
+    # CR-02 / CR-03: $firstError MUST be a $script:-scoped variable —
+    # ForEach-Object runs in a child scope so writes from inside the
+    # pipeline cannot mutate a function-local. Earlier code wrote
+    # $script:firstError but READ $firstError (local, always $null),
+    # which inverted the "first malformed line wins" contract into
+    # "last wins". Reset at function entry so a second invocation
+    # (the .otto-gw.overrides.env call from Load-Config) does not
+    # inherit the prior file's error state.
+    $script:firstError = $null
     $lineno = 0
     Get-Content $Path | ForEach-Object {
         $lineno++
@@ -282,7 +291,7 @@ function Import-DotEnv {
             $line = $line -replace '^\s*export\s+', ''
         }
         if ($line -notmatch '=') {
-            if (-not $firstError) {
+            if (-not $script:firstError) {
                 $snippet = if ($line.Length -gt 80) { $line.Substring(0, 80) } else { $line }
                 $script:firstError = "$(Split-Path -Leaf $Path):${lineno}: missing '=' (got: $snippet)"
             }
