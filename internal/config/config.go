@@ -324,9 +324,34 @@ func Load() (Config, error) {
 	// `~` are recognized — no $HOME interpolation, no shell-style globbing.
 	// Empty KIRO_CWD remains the default and is treated as optional
 	// (acp.Client handles empty Cwd by inheriting the parent's wd).
+	//
+	// WR-02: reject `..` segments in the post-`~/` portion. filepath.Join
+	// cleans `..` segments, so `KIRO_CWD=~/../../etc` would resolve to
+	// `/etc` and silently pass the stat check (since /etc is a real
+	// directory). KIRO_CWD is operator-controlled boot-time env so this
+	// is "intentional misconfiguration" rather than a request-time
+	// vulnerability, but tilde expansion should not be a path-escape
+	// shortcut — operators who want a path outside $HOME can use an
+	// absolute path directly.
 	if strings.HasPrefix(kiroCWD, "~/") {
 		if home, herr := os.UserHomeDir(); herr == nil {
-			kiroCWD = filepath.Join(home, kiroCWD[2:])
+			rest := kiroCWD[2:]
+			// Block any `..` segment, whether bare (`..`), at a boundary
+			// (`foo/..`), or as a path prefix (`../bar`). strings.Contains
+			// would also match `foo..bar` (a legitimate dirname), so split
+			// on the OS separator and check each segment exactly.
+			containsDotDot := false
+			for _, seg := range strings.Split(filepath.ToSlash(rest), "/") {
+				if seg == ".." {
+					containsDotDot = true
+					break
+				}
+			}
+			if containsDotDot {
+				errs = append(errs, fmt.Errorf("config: KIRO_CWD (%q): '..' segments not permitted after '~/' (use an absolute path for locations outside $HOME)", kiroCWD))
+			} else {
+				kiroCWD = filepath.Join(home, rest)
+			}
 		}
 	} else if kiroCWD == "~" {
 		if home, herr := os.UserHomeDir(); herr == nil {

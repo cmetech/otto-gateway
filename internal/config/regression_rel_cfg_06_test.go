@@ -175,4 +175,72 @@ func TestRegression_REL_CFG_06(t *testing.T) {
 			t.Errorf("expected cfg.KiroCWD=%q after bare ~ expansion, got %q", home, cfg.KiroCWD)
 		}
 	})
+
+	// Case H (WR-02) — `~/..` style path escape is rejected with a
+	// named error. Pre-fix: filepath.Join cleans the `..` and resolves
+	// to the parent of HOME, which then passes the stat check (since
+	// the parent is a real directory). Post-fix: any `..` segment in
+	// the post-`~/` portion is refused.
+	t.Run("H_KIRO_CWD_tilde_dotdot_rejected", func(t *testing.T) {
+		silenceForCFG06(t)
+		t.Setenv("KIRO_CMD", "go")
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("KIRO_CWD", "~/..")
+
+		_, err := config.Load()
+		if err == nil {
+			t.Fatalf("expected KIRO_CWD ~/.. to be rejected, got nil")
+		}
+		msg := err.Error()
+		if !strings.Contains(msg, `config: KIRO_CWD ("~/..")`) {
+			t.Errorf("expected error to name KIRO_CWD and the offending value, got: %v", err)
+		}
+		if !strings.Contains(msg, "'..' segments not permitted") {
+			t.Errorf("expected error to explain '..' is not allowed, got: %v", err)
+		}
+	})
+
+	// Case I (WR-02) — embedded `..` segment also rejected. The
+	// segment-by-segment check must catch `..` even when it appears
+	// between legitimate path components, e.g. `~/foo/../bar`.
+	t.Run("I_KIRO_CWD_tilde_embedded_dotdot_rejected", func(t *testing.T) {
+		silenceForCFG06(t)
+		t.Setenv("KIRO_CMD", "go")
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("KIRO_CWD", "~/foo/../bar")
+
+		_, err := config.Load()
+		if err == nil {
+			t.Fatalf("expected KIRO_CWD ~/foo/../bar to be rejected, got nil")
+		}
+		if !strings.Contains(err.Error(), "'..' segments not permitted") {
+			t.Errorf("expected error to flag '..' segment, got: %v", err)
+		}
+	})
+
+	// Case J (WR-02 boundary) — paths with `..` as substring of a real
+	// segment (e.g. `~/foo..bar`) must NOT be rejected. The strict
+	// segment match (seg == "..") is what makes this safe.
+	t.Run("J_KIRO_CWD_dotdot_substring_in_segment_allowed", func(t *testing.T) {
+		silenceForCFG06(t)
+		t.Setenv("KIRO_CMD", "go")
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		legitName := "foo..bar"
+		legit := filepath.Join(home, legitName)
+		if err := os.MkdirAll(legit, 0o750); err != nil {
+			t.Fatalf("mkdir legit: %v", err)
+		}
+		t.Setenv("KIRO_CWD", "~/"+legitName)
+
+		cfg, err := config.Load()
+		if err != nil {
+			t.Fatalf("expected no error for legitimate '..' substring, got: %v", err)
+		}
+		if cfg.KiroCWD != legit {
+			t.Errorf("expected cfg.KiroCWD=%q, got %q", legit, cfg.KiroCWD)
+		}
+	})
 }
