@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v1.10.3
 milestone_name: Reliability Closeout
 status: completed
-stopped_at: Completed 17-02-PLAN.md (REL-POOL-02 goleak deflake — ca258f9). Phase 17 complete; make ci exit 0 end-to-end; v1.9.1 ready to ship.
-last_updated: "2026-06-12T01:40:30.691Z"
+stopped_at: Phase 19 context gathered — REL-ACP-01 race scoped, single-plan, 3 D-IDs locked
+last_updated: "2026-06-12T10:36:25.718Z"
 last_activity: 2026-06-12 -- Phase 18 marked complete
 progress:
   total_phases: 26
@@ -189,9 +189,9 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-06-11T23:03:45Z
-Stopped at: Completed 17-02-PLAN.md (REL-POOL-02 goleak deflake — ca258f9). Phase 17 complete; make ci exit 0 end-to-end; v1.9.1 ready to ship.
-Resume file: None
+Last session: 2026-06-12T10:36:25.713Z
+Stopped at: Phase 19 context gathered — REL-ACP-01 race scoped, single-plan, 3 D-IDs locked
+Resume file: .planning/phases/19-acp-stream-concurrency-fix/19-CONTEXT.md
 
 ## Operator Next Steps
 
