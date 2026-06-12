@@ -4,14 +4,14 @@ milestone: v1.10.3
 milestone_name: Reliability Closeout
 status: executing
 stopped_at: Phase 20 context gathered
-last_updated: "2026-06-12T12:43:43.556Z"
-last_activity: 2026-06-12 -- Phase 19 marked complete
+last_updated: "2026-06-12T13:10:34.707Z"
+last_activity: 2026-06-12
 progress:
   total_phases: 26
-  completed_phases: 24
-  total_plans: 85
-  completed_plans: 85
-  percent: 92
+  completed_phases: 25
+  total_plans: 86
+  completed_plans: 86
+  percent: 96
 ---
 
 # Project State
@@ -21,23 +21,23 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-07)
 
 **Core value:** All three API surfaces (OpenAI for Pi SDK, Ollama for LangFlow, Anthropic for loop24-client/GSD Pi) serve their respective clients without those clients knowing kiro-cli exists, with one place to enforce policy.
-**Current focus:** Phase 19 — acp-stream-concurrency-fix
+**Current focus:** Phase 20 — code-review-backlog-burn-down
 
 ## Current Position
 
-Phase: 19 — COMPLETE
-Plan: 1 of 1
+Phase: 20
+Plan: Not started
 Milestone: v1.10.3 Reliability Closeout — PLANNING
 Phases scaffolded: 18 (Reliability long-tail), 19 (acp.Stream concurrency fix), 20 (Code-review backlog burn-down)
 Requirements: 17 (REL-CFG-05/06/07 + REL-HTTP-06/07 + REL-OBSV-02/03/04 + REL-TRAY-08/09 + REL-ACP-01 + QUAL-01..06)
-Status: Ready to execute
-Last activity: 2026-06-12 -- Phase 19 marked complete
+Status: Executing Phase 20
+Last activity: 2026-06-12
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 52
+- Total plans completed: 53
 - Average duration: n/a
 - Total execution time: 0 hours
 
@@ -56,6 +56,7 @@ Last activity: 2026-06-12 -- Phase 19 marked complete
 | 08.4 | 1 | - | - |
 | 13 | 6 | - | - |
 | 14 | 4 | - | - |
+| 20 | 1 | - | - |
 
 **Recent Trend:**
 

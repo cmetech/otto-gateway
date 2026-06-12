@@ -107,7 +107,7 @@ Full details: [milestones/v1.9-ROADMAP.md](milestones/v1.9-ROADMAP.md)
 
 - [ ] **Phase 18: Reliability long-tail** — Close 10 of the 11 deferred Low-severity reliability findings as a single phase with 3 parallel plans. Config hardening (REL-CFG-05/06/07): degenerate ALLOWED_IPS/AUTH_TOKEN env values rejected loudly, KIRO_CMD/KIRO_CWD errors named, port-in-use discovered pre-warmup. Observability symmetry (REL-OBSV-02/03/04, REL-HTTP-06/07): worker recovery logged, kiro-cli stderr routed to structured log file, admin log-tail path single-sourced, Ollama streaming error WARN-logged, panic recovery on tailer/watchdog/ctx-watcher goroutines. Tray honesty (REL-TRAY-08/09): dotenv read errors loud, macOS tray diagnostics either correct or removed.
 - [x] **Phase 19: acp.Stream concurrency fix** — REL-ACP-01: `acp.Stream.Result` copies `*s.result` under `s.mu` instead of racing close(s.done) against the StopReason write. Single-plan phase. After landing, the Phase 17 test-side drain-Chunks-then-Result workaround in `regression_rel_pool_02_test.go` can be reverted (verified by 60/60 race-clean iterations).
-- [ ] **Phase 20: Code-review backlog burn-down** — Single-plan mechanical batch closing 6 Info-level findings deferred from Phase 16/17 reviews: escapeApplescript newline/control-char escape (QUAL-01), tooltipForState shared build-tag dedup (QUAL-02), forceCloseCh contract documented or relocated (QUAL-03), tailLines O(n²) prepend replaced with collect-then-reverse (QUAL-04), dead sessions/sessionsMu vars removed from REL-POOL-02 test (QUAL-05), stale removeSlot comment fixed in respawn_ctx_cancel_test (QUAL-06). Refactor-only; no behavior change.
+- [x] **Phase 20: Code-review backlog burn-down** — Single-plan mechanical batch closing 6 Info-level findings deferred from Phase 16/17 reviews: escapeApplescript newline/control-char escape (QUAL-01), tooltipForState shared build-tag dedup (QUAL-02), forceCloseCh contract documented or relocated (QUAL-03), tailLines O(n²) prepend replaced with collect-then-reverse (QUAL-04), dead sessions/sessionsMu vars removed from REL-POOL-02 test (QUAL-05), stale removeSlot comment fixed in respawn_ctx_cancel_test (QUAL-06). Refactor-only; no behavior change. (completed 2026-06-12)
 
 </details>
 
@@ -169,7 +169,7 @@ Plans:
 **Goal:** Close 6 Info-level findings deferred from Phase 16/17 code reviews as a single mechanical-refactor batch: QUAL-01 escapeApplescript escape-set expansion + unit tests; QUAL-02 tooltipForState dedup into a shared build-tag file; QUAL-03 forceCloseCh allocation relocated to RunUntilSignal (nil-channel select-never idiom); QUAL-04 tailLines O(n²) prepend replaced with collect-then-reverse; QUAL-05 dead sessions/sessionsMu vars removed from REL-POOL-02 test; QUAL-06 stale removeSlot comment fixed in respawn_ctx_cancel_test.
 **Requirements**: QUAL-01, QUAL-02, QUAL-03, QUAL-04, QUAL-05, QUAL-06
 **Depends on:** Phase 19
-**Plans:** 1 plan
+**Plans:** 1/1 plans complete
 Plans:
 
-- [ ] 20-01-PLAN.md — Close QUAL-01..06 as 6 atomic refactor commits (D-20-01..09)
+- [x] 20-01-PLAN.md — Close QUAL-01..06 as 6 atomic refactor commits (D-20-01..09)
