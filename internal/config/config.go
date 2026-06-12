@@ -314,12 +314,41 @@ func Load() (Config, error) {
 		errs = append(errs, fmt.Errorf("PING_INTERVAL: must be > 0, got %v", pingInterval))
 	}
 
+	// D-18-01 REL-CFG-05: detect degenerate AUTH_TOKEN — set but consisting
+	// only of whitespace or CSV delimiters so the parsed slice is empty.
+	// Emit a Warn naming the variable AND treat as unset (no fail-fast)
+	// per CLAUDE.md's "no auth if env unset" posture. Mirrors REL-CFG-03's
+	// slog.Default() emission shape at the EMBEDDING_MODEL_DEFAULT site so
+	// the regression test (which captures slog.Default() and calls only
+	// config.Load) observes the Warn without a full main() spin-up.
+	//
+	// Use os.Getenv directly (no TrimSpace) for the "is set" predicate so
+	// whitespace-only values like "   " still trip the Warn — the operator
+	// clearly intended a value and got silently disabled.
+	rawAuth := os.Getenv("AUTH_TOKEN")
 	authTokens := getEnvStrSliceComma("AUTH_TOKEN", nil)
+	if rawAuth != "" && len(authTokens) == 0 {
+		slog.Default().Warn(
+			"AUTH_TOKEN looks degenerate (no entries after trim+CSV split); treating as unset",
+			"raw", rawAuth,
+		)
+	}
 
+	// D-18-01 REL-CFG-05: same pattern for ALLOWED_IPS. The `err == nil`
+	// guard prevents the Warn from firing when parseCIDRs has already
+	// surfaced a real CIDR-parse error — that path is non-degenerate and
+	// belongs in errs/errors.Join, not Warn.
+	rawAllowed := os.Getenv("ALLOWED_IPS")
 	allowedIPEntries := getEnvStrSliceComma("ALLOWED_IPS", nil)
 	allowedIPs, err := parseCIDRs(allowedIPEntries)
 	if err != nil {
 		errs = append(errs, fmt.Errorf("ALLOWED_IPS: %w", err))
+	}
+	if rawAllowed != "" && len(allowedIPs) == 0 && err == nil {
+		slog.Default().Warn(
+			"ALLOWED_IPS looks degenerate (no entries after trim+CSV split); treating as unset",
+			"raw", rawAllowed,
+		)
 	}
 
 	// Phase 5 POOL-01: env default flips from 1 to 4 for Node parity (see
