@@ -106,8 +106,6 @@ func TestRegression_REL_POOL_02_CtrlCOrphansChildren(t *testing.T) {
 	// fail with a "chan receive" leak (~17/17 iterations under -count=20).
 	// Plan 17-02 / D-17-04 iter 1.
 	var resultWg sync.WaitGroup
-	sessions := make([]string, 0, 2)
-	var sessionsMu sync.Mutex
 
 	for range []*blockingPromptClient{bc0, bc1} {
 		wg.Add(1)
@@ -119,9 +117,6 @@ func TestRegression_REL_POOL_02_CtrlCOrphansChildren(t *testing.T) {
 				t.Errorf("NewSession: %v", err)
 				return
 			}
-			sessionsMu.Lock()
-			sessions = append(sessions, sid)
-			sessionsMu.Unlock()
 			stream, err := p.Prompt(ctx, sid, nil)
 			if err != nil {
 				t.Errorf("Prompt: %v", err)
