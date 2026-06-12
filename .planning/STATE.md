@@ -2,9 +2,10 @@
 gsd_state_version: 1.0
 milestone: v1.10.3
 milestone_name: Reliability Closeout
-status: planning
-last_updated: "2026-06-11T23:47:54.756Z"
-last_activity: 2026-06-11
+status: Milestone scaffold written. Ready for /gsd-discuss-phase 18 (or /gsd-plan-phase 18 directly — scope is well-bounded from REQUIREMENTS.md).
+stopped_at: Completed 17-02-PLAN.md (REL-POOL-02 goleak deflake — ca258f9). Phase 17 complete; make ci exit 0 end-to-end; v1.9.1 ready to ship.
+last_updated: "2026-06-12T00:28:05.804Z"
+last_activity: 2026-06-11 — Milestone v1.10.3 scaffold written; 3 phases added to ROADMAP
 progress:
   total_phases: 0
   completed_phases: 0

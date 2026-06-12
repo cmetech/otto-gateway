@@ -144,14 +144,15 @@ Plans:
 
 ### Phase 18: Reliability long-tail
 
-**Goal:** [To be planned]
-**Requirements**: TBD
+**Goal:** Close 10 of the 11 deferred Low-severity reliability findings from the 2026-06-11 audit (the 11th, REL-ACP-01, is Phase 19) as three loosely-coupled fix areas with zero file overlap: config hardening (loud Warn on degenerate ALLOWED_IPS/AUTH_TOKEN, named KIRO_CMD/KIRO_CWD errors with `~` expansion, bind-then-close port probe pre-warmup), observability symmetry (kiro-cli stderr → structured slog, worker recovery INFO mirroring death log, Ollama eng.Run failure WARN, panic-recover at 4 goroutine/callback sites, single Config.AdminTailPath source for writer + tailer), and tray honesty (sentinel-driven StateError for dotenv parse failures, remove two broken macOS support-bundle rows).
+**Requirements**: REL-CFG-05, REL-CFG-06, REL-CFG-07, REL-HTTP-06, REL-HTTP-07, REL-OBSV-02, REL-OBSV-03, REL-OBSV-04, REL-TRAY-08, REL-TRAY-09
 **Depends on:** Phase 17
-**Plans:** 0 plans
-
+**Plans:** 3 plans
 Plans:
 
-- [ ] TBD (run /gsd-plan-phase 18 to break down)
+- [ ] 18-01-PLAN.md — Config hardening (REL-CFG-05/06/07; D-18-01/02/03)
+- [ ] 18-02-PLAN.md — Observability symmetry + HTTP error logging (REL-HTTP-06/07, REL-OBSV-02/03/04; D-18-04/05/06/07/08)
+- [ ] 18-03-PLAN.md — Tray honesty (REL-TRAY-08/09; D-18-09/10)
 
 ### Phase 19: acp.Stream concurrency fix
 
