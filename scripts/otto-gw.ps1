@@ -259,9 +259,21 @@ function Write-ConfigErrorSentinel {
         if ($flat.Length -gt 200) {
             $flat = $flat.Substring(0, 200)
         }
-        Set-Content -Path $sentinel -Value $flat -Encoding UTF8 -NoNewline -ErrorAction Stop
+        # WR-05: write to a tmp sibling then atomically rename so the
+        # tray poller never observes a zero-byte intermediate. Set-Content
+        # truncates-then-writes which has a window in which the poller
+        # reads the file as empty and falls through to the normal FSM
+        # state, surfacing "stopped"/"running" instead of the parse
+        # error for one 3-6s tick. Move-Item on NTFS is atomic when
+        # source and destination share a filesystem.
+        $tmp = "$sentinel.tmp"
+        Set-Content -Path $tmp -Value $flat -Encoding UTF8 -NoNewline -ErrorAction Stop
+        Move-Item -Force -Path $tmp -Destination $sentinel -ErrorAction Stop
     } catch {
         # Best-effort: a sentinel write failure should not abort load_config.
+        # If the tmp file was created but the rename failed, leave it for
+        # the next successful write to overwrite — explicit cleanup here
+        # would mask the original error.
     }
 }
 

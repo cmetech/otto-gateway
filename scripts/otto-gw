@@ -218,6 +218,13 @@ clear_config_error_sentinel() {
 # line. Truncated to 200 bytes (head -c). Mode 0600 — sentinel may
 # contain a partial KEY=VALUE from the malformed line (D-18-09 threat
 # T-18-03-I). MkdirAll-equivalent for parent dir at 0750.
+#
+# WR-05: write via tmp + mv so the tray poller never observes a
+# zero-byte intermediate. `printf > "$sentinel"` is open-then-truncate-
+# then-write which has a window in which a poller tick reads the file
+# as empty and falls through to the normal FSM state. Rename within the
+# same filesystem is atomic on POSIX so the tray sees either the old
+# content or the new content, never a torn read.
 write_config_error_sentinel() {
     local msg="$1"
     local sentinel
@@ -228,8 +235,11 @@ write_config_error_sentinel() {
     chmod 0750 "$sentinel_dir" 2>/dev/null || true
     # First line only + 200-byte cap. tr replaces any \n with space
     # before head -c, so multi-line errors collapse to one line.
-    printf '%s' "$msg" | tr '\n' ' ' | head -c 200 > "$sentinel" 2>/dev/null || return 0
-    chmod 0600 "$sentinel" 2>/dev/null || true
+    # Write to a tmp sibling, chmod, then atomically rename into place.
+    local tmp="${sentinel}.tmp.$$"
+    printf '%s' "$msg" | tr '\n' ' ' | head -c 200 > "$tmp" 2>/dev/null || return 0
+    chmod 0600 "$tmp" 2>/dev/null || true
+    mv -f "$tmp" "$sentinel" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 0; }
 }
 
 # load_env_file sources KEY=value lines from $1. Tolerates blank lines
