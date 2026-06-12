@@ -17,13 +17,35 @@ import (
 	"encoding/json"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
+// syncBuf is a goroutine-safe wrapper around bytes.Buffer for slog
+// handlers — slog writes from background goroutines while the test
+// goroutine reads buf.String(), which trips the race detector without
+// this guard.
+type syncBuf struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (s *syncBuf) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+func (s *syncBuf) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
+}
+
 // findPanicRecord returns the first decoded slog record with
 // msg="goroutine panic recovered" and the matching site, or nil.
-func findPanicRecord(t *testing.T, buf *bytes.Buffer, site string) map[string]any {
+func findPanicRecord(t *testing.T, buf *syncBuf, site string) map[string]any {
 	t.Helper()
 	for _, line := range strings.Split(buf.String(), "\n") {
 		if strings.TrimSpace(line) == "" {
@@ -47,13 +69,12 @@ func findPanicRecord(t *testing.T, buf *bytes.Buffer, site string) map[string]an
 // seam and asserts the structured Error record is emitted with site
 // byte-exact "admin-tailer".
 func TestRegression_REL_HTTP_07_AdminTailer(t *testing.T) {
-	buf := &bytes.Buffer{}
+	buf := &syncBuf{}
 	logger := slog.New(slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	// Install the probe; restore on test exit.
-	prev := adminTailerPanicProbe
-	t.Cleanup(func() { adminTailerPanicProbe = prev })
-	adminTailerPanicProbe = func() { panic("test-18-02-admin-tailer") }
+	restore := SetAdminTailerPanicProbeForTest(func() { panic("test-18-02-admin-tailer") })
+	t.Cleanup(restore)
 
 	tail := NewTailer("/nonexistent/path/never-opens", logger)
 

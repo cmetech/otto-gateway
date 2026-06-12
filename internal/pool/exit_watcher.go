@@ -1,5 +1,10 @@
 package pool
 
+import (
+	"fmt"
+	"runtime/debug"
+)
+
 // startExitWatcher spawns a per-slot goroutine that observes the
 // provided `done` channel (captured by the caller from the OLD or NEW
 // slot.Client at spawn time) and marks the slot dead when it fires.
@@ -32,14 +37,26 @@ func (p *Pool) startExitWatcher(slot *Slot, done <-chan struct{}) {
 	// D-18-07 REL-HTTP-07: capture logger BEFORE goroutine launch.
 	exitWatcherLogger := p.cfg.Logger
 	go func() {
-		// D-18-07 REL-HTTP-07: bare-recover stub installed in the RED
-		// commit. GREEN replaces this with the proper structured log.
-		defer func() { _ = recover(); _ = exitWatcherLogger }()
-		// Test-only seam: tests set exitWatcherPanicProbe to func() { panic(...) }
-		// to drive the defer-recover branch. Default nil → no-op in production.
-		if exitWatcherPanicProbe != nil {
-			exitWatcherPanicProbe()
-		}
+		// D-18-07 REL-HTTP-07: defense-in-depth panic recovery. Site
+		// name "pool-exit-watcher" is byte-exact per CONTEXT.md
+		// §D-18-07. Recover, log once, exit cleanly — no auto-restart.
+		// If this fires in production the slot.dead flip below will
+		// not run; the slot will be retried via the lazy-respawn path
+		// on the next NewSession.
+		defer func() {
+			if r := recover(); r != nil && exitWatcherLogger != nil {
+				exitWatcherLogger.Error("goroutine panic recovered",
+					"site", "pool-exit-watcher",
+					"panic", fmt.Sprintf("%v", r),
+					"stack", string(debug.Stack()),
+				)
+			}
+		}()
+		// Test-only seam: tests install via SetExitWatcherPanicProbeForTest
+		// to drive the defer-recover branch. Default nil → no-op in
+		// production. Goes through firePanicProbe so the race detector
+		// sees the happens-before relationship.
+		firePanicProbe(&exitWatcherPanicProbe)
 		select {
 		case <-done:
 			// acp.Client tore down its subprocess (Close, ping failure,

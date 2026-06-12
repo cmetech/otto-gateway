@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime/debug"
+	"sync"
 	"time"
 
 	"otto-gateway/internal/canonical"
@@ -253,17 +254,27 @@ func (e *Engine) Run(ctx context.Context, req *canonical.ChatRequest) (*Run, err
 	// here is stored on Run so adapters/Collect can prevent the goroutine on
 	// normal completion.
 	stopWatchdog := context.AfterFunc(ctx, func() {
-		// D-18-07 REL-HTTP-07: bare-recover stub installed in the RED
-		// commit. GREEN replaces this with the proper structured log.
-		// Wraps the CALLBACK body — context.AfterFunc runs this on a
-		// runtime-managed goroutine; an unrecovered panic propagates
-		// out of the runtime and crashes the gateway.
-		defer func() { _ = recover() }()
-		// Test-only seam: tests set afterFuncPanicProbe to func() { panic(...) }
-		// to drive the defer-recover branch. Default nil → no-op in production.
-		if afterFuncPanicProbe != nil {
-			afterFuncPanicProbe()
-		}
+		// D-18-07 REL-HTTP-07: defense-in-depth panic recovery. The
+		// context.AfterFunc callback runs on a runtime-managed goroutine;
+		// an unrecovered panic propagates out of the runtime and crashes
+		// the gateway. Site name "engine-after-func" is byte-exact per
+		// CONTEXT.md §D-18-07. Recovers, logs once, exits cleanly — the
+		// e.cfg.ACP.Cancel(sid) call below will NOT run, but the next
+		// stream-result error path picks up the slot release.
+		defer func() {
+			if r := recover(); r != nil && e.cfg.Logger != nil {
+				e.cfg.Logger.Error("goroutine panic recovered",
+					"site", "engine-after-func",
+					"panic", fmt.Sprintf("%v", r),
+					"stack", string(debug.Stack()),
+				)
+			}
+		}()
+		// Test-only seam: tests install via SetAfterFuncPanicProbeForTest
+		// to drive the defer-recover branch. Default nil → no-op in
+		// production. Goes through fireAfterFuncPanicProbe so the race
+		// detector sees the happens-before relationship.
+		fireAfterFuncPanicProbe()
 		switch {
 		case errors.Is(ctx.Err(), context.Canceled):
 			e.cfg.Logger.Debug("engine: watchdog: client disconnect — canceling session", "session_id", sid)
@@ -397,8 +408,39 @@ type emptyStream struct {
 // top of its body; tests install `func() { panic(...) }` to drive the
 // defer-recover branch. Default nil → no-op in production.
 //
+// Reads + writes go through afterFuncPanicProbeMu so the race detector
+// observes the happens-before relationship between a test installing a
+// probe and the AfterFunc callback reading it.
+//
 //nolint:gochecknoglobals // package-private test seam, leave nil in production
-var afterFuncPanicProbe func()
+var (
+	afterFuncPanicProbeMu sync.Mutex
+	afterFuncPanicProbe   func()
+)
+
+// fireAfterFuncPanicProbe atomically reads and invokes the probe.
+func fireAfterFuncPanicProbe() {
+	afterFuncPanicProbeMu.Lock()
+	probe := afterFuncPanicProbe
+	afterFuncPanicProbeMu.Unlock()
+	if probe != nil {
+		probe()
+	}
+}
+
+// SetAfterFuncPanicProbeForTest installs the probe and returns a
+// restore function (use with t.Cleanup). Test-only.
+func SetAfterFuncPanicProbeForTest(v func()) func() {
+	afterFuncPanicProbeMu.Lock()
+	prev := afterFuncPanicProbe
+	afterFuncPanicProbe = v
+	afterFuncPanicProbeMu.Unlock()
+	return func() {
+		afterFuncPanicProbeMu.Lock()
+		afterFuncPanicProbe = prev
+		afterFuncPanicProbeMu.Unlock()
+	}
+}
 
 // closedChunkChan is a package-level already-closed receive-only channel
 // reused by every emptyStream. Allocating in Chunks() per call would be

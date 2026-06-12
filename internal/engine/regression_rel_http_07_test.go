@@ -18,11 +18,32 @@ import (
 	"encoding/json"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"otto-gateway/internal/canonical"
 )
+
+// syncBuf is a goroutine-safe slog destination; required because the
+// AfterFunc callback panics on a runtime-managed goroutine while the
+// test reads buf.String().
+type syncBuf struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (s *syncBuf) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+func (s *syncBuf) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
+}
 
 // TestRegression_REL_HTTP_07_EngineAfterFunc installs the
 // afterFuncPanicProbe, builds an Engine + fakeACP harness, calls Run to
@@ -30,12 +51,11 @@ import (
 // callback. The probe panics inside the callback; the defer-recover
 // emits the structured Error log.
 func TestRegression_REL_HTTP_07_EngineAfterFunc(t *testing.T) {
-	buf := &bytes.Buffer{}
+	buf := &syncBuf{}
 	logger := slog.New(slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	prev := afterFuncPanicProbe
-	t.Cleanup(func() { afterFuncPanicProbe = prev })
-	afterFuncPanicProbe = func() { panic("test-18-02-engine-after-func") }
+	restore := SetAfterFuncPanicProbeForTest(func() { panic("test-18-02-engine-after-func") })
+	t.Cleanup(restore)
 
 	ack := &fakeACP{}
 	e := New(Config{

@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -28,9 +29,29 @@ import (
 	"otto-gateway/internal/canonical"
 )
 
+// syncBuf is a goroutine-safe slog destination — slog handlers may
+// write from a panicking goroutine while the test goroutine reads
+// .String(), which trips the race detector without this guard.
+type syncBuf struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (s *syncBuf) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+func (s *syncBuf) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
+}
+
 // findRecord_REL_HTTP_07 returns the first slog record with
 // msg="goroutine panic recovered" and matching site, or nil.
-func findRecord_REL_HTTP_07(t *testing.T, buf *bytes.Buffer, site string) map[string]any { //nolint:revive // underscore matches REL-HTTP-07 id
+func findRecord_REL_HTTP_07(t *testing.T, buf *syncBuf, site string) map[string]any { //nolint:revive // underscore matches REL-HTTP-07 id
 	t.Helper()
 	for _, line := range strings.Split(buf.String(), "\n") {
 		if strings.TrimSpace(line) == "" {
@@ -52,7 +73,7 @@ func findRecord_REL_HTTP_07(t *testing.T, buf *bytes.Buffer, site string) map[st
 
 // awaitPanicRecord polls buf until a matching panic-recovered record
 // appears or 2s elapses.
-func awaitPanicRecord(t *testing.T, buf *bytes.Buffer, site string) map[string]any {
+func awaitPanicRecord(t *testing.T, buf *syncBuf, site string) map[string]any {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
@@ -88,12 +109,11 @@ func assertPanicShape(t *testing.T, rec map[string]any, wantSubstr string) {
 //
 // Whitebox so it can both set the probe and call internal Prompt/Warmup.
 func TestRegression_REL_HTTP_07_PoolCtxWatcher(t *testing.T) {
-	buf := &bytes.Buffer{}
+	buf := &syncBuf{}
 	logger := slog.New(slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	prev := ctxWatcherPanicProbe
-	t.Cleanup(func() { ctxWatcherPanicProbe = prev })
-	ctxWatcherPanicProbe = func() { panic("test-18-02-pool-ctx-watcher") }
+	restore := SetCtxWatcherPanicProbeForTest(func() { panic("test-18-02-pool-ctx-watcher") })
+	t.Cleanup(restore)
 
 	// Build a minimal PoolClient whose Prompt returns a closed stream.
 	wc := newPanicTestClient()
@@ -128,12 +148,11 @@ func TestRegression_REL_HTTP_07_PoolCtxWatcher(t *testing.T) {
 // TestRegression_REL_HTTP_07_PoolExitWatcher drives the exit-watcher
 // goroutine directly (no Pool plumbing needed beyond startExitWatcher).
 func TestRegression_REL_HTTP_07_PoolExitWatcher(t *testing.T) {
-	buf := &bytes.Buffer{}
+	buf := &syncBuf{}
 	logger := slog.New(slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	prev := exitWatcherPanicProbe
-	t.Cleanup(func() { exitWatcherPanicProbe = prev })
-	exitWatcherPanicProbe = func() { panic("test-18-02-pool-exit-watcher") }
+	restore := SetExitWatcherPanicProbeForTest(func() { panic("test-18-02-pool-exit-watcher") })
+	t.Cleanup(restore)
 
 	p := New(Config{
 		Logger:  logger,

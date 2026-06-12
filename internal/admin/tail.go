@@ -28,6 +28,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -258,8 +259,39 @@ func (t *Tailer) Snapshot() []string {
 // `func() { panic(...) }` to drive the defer-recover branch. Default
 // nil → no-op in production.
 //
+// Reads + writes go through adminTailerPanicProbeMu so the race
+// detector observes the happens-before relationship between a test
+// installing a probe and the goroutine reading it.
+//
 //nolint:gochecknoglobals // package-private test seam, leave nil in production
-var adminTailerPanicProbe func()
+var (
+	adminTailerPanicProbeMu sync.Mutex
+	adminTailerPanicProbe   func()
+)
+
+// fireAdminTailerPanicProbe atomically reads and invokes the probe.
+func fireAdminTailerPanicProbe() {
+	adminTailerPanicProbeMu.Lock()
+	probe := adminTailerPanicProbe
+	adminTailerPanicProbeMu.Unlock()
+	if probe != nil {
+		probe()
+	}
+}
+
+// SetAdminTailerPanicProbeForTest installs the probe and returns a
+// restore function (use with t.Cleanup). Test-only.
+func SetAdminTailerPanicProbeForTest(v func()) func() {
+	adminTailerPanicProbeMu.Lock()
+	prev := adminTailerPanicProbe
+	adminTailerPanicProbe = v
+	adminTailerPanicProbeMu.Unlock()
+	return func() {
+		adminTailerPanicProbeMu.Lock()
+		adminTailerPanicProbe = prev
+		adminTailerPanicProbeMu.Unlock()
+	}
+}
 
 // ---------------------------------------------------------------------------
 // run — the single tailer goroutine
@@ -285,15 +317,31 @@ var adminTailerPanicProbe func()
 // On missing file or read error, the goroutine logs once per tick at
 // DEBUG level and retries on the next tick — it never crashes.
 func (t *Tailer) run(ctx context.Context) {
-	// D-18-07 REL-HTTP-07: bare-recover stub installed in the RED
-	// commit so the test goroutine does not crash the test process.
-	// GREEN replaces this with the proper structured log.
-	defer func() { _ = recover() }()
-	// Test-only seam: tests set adminTailerPanicProbe to func() { panic(...) }
-	// to drive the defer-recover branch. Default nil → no-op in production.
-	if adminTailerPanicProbe != nil {
-		adminTailerPanicProbe()
-	}
+	// D-18-07 REL-HTTP-07: defense-in-depth panic recovery. The tailer
+	// goroutine runs in the background; an unrecovered panic (e.g., a
+	// future bug in broadcast or in subscriber-list iteration) would
+	// take down the gateway because net/http's per-handler recover does
+	// NOT cover background goroutines. The recover logs the panic and
+	// returns; a subsequent Subscribe will lazy-start a fresh tailer
+	// goroutine. No restart / spin loop.
+	//
+	// Mirrors the engine.callPreHookSafe template at engine.go:317-329.
+	// Site name "admin-tailer" is byte-exact per CONTEXT.md §D-18-07.
+	defer func() {
+		if r := recover(); r != nil && t.logger != nil {
+			t.logger.Error("goroutine panic recovered",
+				"site", "admin-tailer",
+				"panic", fmt.Sprintf("%v", r),
+				"stack", string(debug.Stack()),
+			)
+		}
+	}()
+	// Test-only seam: tests install via SetAdminTailerPanicProbeForTest
+	// to drive the defer-recover branch. Default nil → no-op in
+	// production. Goes through fireAdminTailerPanicProbe so the race
+	// detector sees the happens-before relationship between cross-test
+	// probe writes and goroutine reads.
+	fireAdminTailerPanicProbe()
 	var (
 		f           *os.File
 		reader      *bufio.Reader

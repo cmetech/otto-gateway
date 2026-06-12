@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -25,11 +26,56 @@ var ErrPoolExhausted = canonical.ErrPoolExhausted
 // install `func() { panic(...) }` to drive the defer-recover branch.
 // Default nil → no-op in production.
 //
+// Reads + writes go through panicProbeMu so the race detector observes
+// the happens-before relationship between a test installing a probe and
+// the goroutine reading it (the goroutine started in a prior subtest
+// might still be in scheduler limbo when the next subtest installs a
+// new probe).
+//
 //nolint:gochecknoglobals // package-private test seams, leave nil in production
 var (
+	panicProbeMu          sync.Mutex
 	ctxWatcherPanicProbe  func()
 	exitWatcherPanicProbe func()
 )
+
+// firePanicProbe atomically reads and invokes a probe. Used by the
+// goroutines in pool.go and exit_watcher.go.
+func firePanicProbe(p *func()) {
+	panicProbeMu.Lock()
+	probe := *p
+	panicProbeMu.Unlock()
+	if probe != nil {
+		probe()
+	}
+}
+
+// setPanicProbe atomically installs a probe. Used by tests via package-
+// public helper SetPanicProbeForTest. Returns the previous value so
+// callers can restore on cleanup.
+func setPanicProbe(p *func(), v func()) func() {
+	panicProbeMu.Lock()
+	prev := *p
+	*p = v
+	panicProbeMu.Unlock()
+	return prev
+}
+
+// SetCtxWatcherPanicProbeForTest installs the ctx-watcher panic probe.
+// Returns a function that restores the previous value (use with
+// t.Cleanup). Test-only.
+func SetCtxWatcherPanicProbeForTest(v func()) func() {
+	prev := setPanicProbe(&ctxWatcherPanicProbe, v)
+	return func() { setPanicProbe(&ctxWatcherPanicProbe, prev) }
+}
+
+// SetExitWatcherPanicProbeForTest installs the exit-watcher panic probe.
+// Returns a function that restores the previous value (use with
+// t.Cleanup). Test-only.
+func SetExitWatcherPanicProbeForTest(v func()) func() {
+	prev := setPanicProbe(&exitWatcherPanicProbe, v)
+	return func() { setPanicProbe(&exitWatcherPanicProbe, prev) }
+}
 
 // Slot is one warm kiro-cli connection owned by the pool. Client is
 // typed as the PoolClient interface (Codex M-2) so tests can inject
@@ -895,18 +941,34 @@ func (p *Pool) Prompt(ctx context.Context, sid string, blocks []canonical.Block)
 		cancelWatch: cancelWatch,
 	}
 	// D-18-07 REL-HTTP-07: capture logger BEFORE goroutine launch so
-	// closure captures a stable reference (p.cfg.Logger may not be
-	// addressable through goroutine-shared state safely otherwise).
+	// the closure binds to a stable reference (and to avoid a
+	// data-race between the running goroutine reading p.cfg.Logger and
+	// any later Config mutation — defense in depth, the Config is
+	// immutable today).
 	ctxWatcherLogger := p.cfg.Logger
 	go func() {
-		// D-18-07 REL-HTTP-07: bare-recover stub installed in the RED
-		// commit. GREEN replaces this with the proper structured log.
-		defer func() { _ = recover(); _ = ctxWatcherLogger }()
-		// Test-only seam: tests set ctxWatcherPanicProbe to func() { panic(...) }
-		// to drive the defer-recover branch. Default nil → no-op in production.
-		if ctxWatcherPanicProbe != nil {
-			ctxWatcherPanicProbe()
-		}
+		// D-18-07 REL-HTTP-07: defense-in-depth panic recovery. An
+		// unrecovered panic in this background goroutine would crash
+		// the gateway. Site name "pool-ctx-watcher" is byte-exact per
+		// CONTEXT.md §D-18-07. Recovers, logs once, exits cleanly —
+		// the slot release path is owned by w.releaseOnce so a panic
+		// before that runs results in a leaked slot (caught by goleak
+		// in tests; operator sees the panic-recovered log in prod).
+		defer func() {
+			if r := recover(); r != nil && ctxWatcherLogger != nil {
+				ctxWatcherLogger.Error("goroutine panic recovered",
+					"site", "pool-ctx-watcher",
+					"panic", fmt.Sprintf("%v", r),
+					"stack", string(debug.Stack()),
+				)
+			}
+		}()
+		// Test-only seam: tests install via SetCtxWatcherPanicProbeForTest
+		// to drive the defer-recover branch. Default nil → no-op in
+		// production. Goes through firePanicProbe so the race detector
+		// sees the happens-before relationship between cross-test
+		// probe writes and goroutine reads.
+		firePanicProbe(&ctxWatcherPanicProbe)
 		select {
 		case <-watchCtx.Done():
 			// ctx cancelled (or Result-driven releaseOnce called
