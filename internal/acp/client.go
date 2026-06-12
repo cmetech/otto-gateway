@@ -1204,6 +1204,21 @@ func (c *Client) Done() <-chan struct{} {
 	return c.clientCtx.Done()
 }
 
+// Pid returns the kiro-cli subprocess OS process id, or 0 when the
+// subprocess is not spawned (e.g. *Client constructed via NewWithConn
+// for in-memory tests) or has already exited. Used by pool.respawnSlot
+// for the D-18-05 lazy-respawn-success INFO log so an operator can
+// correlate the recovered slot's NEW pid against the previous death log.
+//
+// Never panics: nil-guard on cmd and cmd.Process so test fakes and
+// post-Wait clients return 0 safely.
+func (c *Client) Pid() int {
+	if c.cmd == nil || c.cmd.Process == nil {
+		return 0
+	}
+	return c.cmd.Process.Pid
+}
+
 // Close shuts down the client cleanly.
 // D-07: idempotent via sync.Once. Shutdown order is documented below and is mandatory.
 // T-02-02: goroutine leak gate covered by goleak.VerifyTestMain.

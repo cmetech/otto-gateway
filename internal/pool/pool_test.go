@@ -67,7 +67,15 @@ type fakeClient struct {
 	// subprocess death; Done() returns the channel.
 	doneMu sync.Mutex
 	doneCh chan struct{}
+
+	// pid is the fake subprocess pid returned by Pid(). Tests assign
+	// distinct values (e.g. 1001 OLD, 1002 NEW) to assert the D-18-05
+	// previous_pid / worker_pid pair in the lazy-respawn-success log.
+	pid int
 }
+
+// Pid implements pool.PoolClient. Returns the test-assigned pid (default 0).
+func (f *fakeClient) Pid() int { return f.pid }
 
 // Done implements pool.PoolClient. The channel is lazily allocated under
 // doneMu so multiple Done() calls return the same channel and tests can

@@ -54,6 +54,11 @@ type PoolClient interface {
 	// the client's subprocess has exited (Close() or readLoop EOF). The
 	// per-slot exit-watcher in exit_watcher.go selects on this channel.
 	Done() <-chan struct{}
+	// Pid returns the kiro-cli subprocess OS process id, or 0 when the
+	// subprocess is not spawned or has already exited. Added in v1.10.3
+	// (D-18-05) so respawnSlot can log the previous-vs-new pid pair on
+	// the lazy-respawn-success path.
+	Pid() int
 }
 
 // ClientFactory constructs a PoolClient per slot. The default

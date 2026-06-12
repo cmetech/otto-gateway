@@ -37,6 +37,7 @@ func (w *watcherTestClient) Cancel(_ string)                        {}
 func (w *watcherTestClient) Close() error                           { return nil }
 func (w *watcherTestClient) AvailableModels() []canonical.ModelInfo { return nil }
 func (w *watcherTestClient) Done() <-chan struct{}                  { return w.doneCh }
+func (w *watcherTestClient) Pid() int                               { return 0 }
 
 // TestExitWatcher_FiresOnClientDone — D-01: closing the slot's client
 // Done() channel must flip slot.dead to true within 100ms.
