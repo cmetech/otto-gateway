@@ -199,19 +199,34 @@ extract_default_value() {
 
 # config_error_sentinel_path returns the canonical sentinel path the
 # tray polls each tick to surface dotenv parse failures as StateError
-# (D-18-09 / REL-TRAY-08). $HOME is always set in the wrapper's
-# execution context; if it isn't (degraded shell), the function still
-# returns a deterministic path so callers can rm -f without erroring.
+# (D-18-09 / REL-TRAY-08).
+#
+# WR-06: when $HOME is unset (degraded / sandboxed shell), refuse to
+# fall back to /tmp. /tmp is world-writable and the sentinel content
+# may contain a partial KEY=VALUE from the malformed dotenv line —
+# including, in the worst case, fragments of AUTH_TOKEN or
+# PII_HASH_KEY. Returning non-zero lets callers treat "no $HOME" as
+# "no sentinel possible" and skip the write entirely; the WARN line
+# on stderr is still emitted, so the operator's diagnostic path is
+# preserved. A degraded shell missing $HOME is already unable to
+# load .otto-gw.env from a sensible location, so the sentinel-skip
+# is the safer of two bad options.
 config_error_sentinel_path() {
-    printf '%s/.otto-gw/.config-error' "${HOME:-/tmp}"
+    if [[ -z "${HOME:-}" ]]; then
+        return 1
+    fi
+    printf '%s/.otto-gw/.config-error' "$HOME"
 }
 
 # clear_config_error_sentinel removes the sentinel file. Called after
 # every successful load_env_file so a one-shot parse failure does not
 # stick once the operator fixes it. rm -f is idempotent — missing file
-# is the happy path.
+# is the happy path. When $HOME is unset, config_error_sentinel_path
+# returns non-zero and there is nothing to clear.
 clear_config_error_sentinel() {
-    rm -f "$(config_error_sentinel_path)" 2>/dev/null || true
+    local sentinel
+    sentinel="$(config_error_sentinel_path)" || return 0
+    rm -f "$sentinel" 2>/dev/null || true
 }
 
 # write_config_error_sentinel writes $1 to the sentinel as a single
@@ -228,7 +243,10 @@ clear_config_error_sentinel() {
 write_config_error_sentinel() {
     local msg="$1"
     local sentinel
-    sentinel="$(config_error_sentinel_path)"
+    # WR-06: skip the sentinel entirely when $HOME is unset rather than
+    # falling back to /tmp (world-writable; sentinel may carry partial
+    # secret fragments). Caller stderr WARN still fires.
+    sentinel="$(config_error_sentinel_path)" || return 0
     local sentinel_dir
     sentinel_dir="$(dirname "$sentinel")"
     mkdir -p "$sentinel_dir" 2>/dev/null || return 0
