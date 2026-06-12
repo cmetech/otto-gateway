@@ -29,7 +29,17 @@ package pool
 // slot.dead = false under p.mu and spawns a FRESH watcher with the
 // NEW client's done channel.
 func (p *Pool) startExitWatcher(slot *Slot, done <-chan struct{}) {
+	// D-18-07 REL-HTTP-07: capture logger BEFORE goroutine launch.
+	exitWatcherLogger := p.cfg.Logger
 	go func() {
+		// D-18-07 REL-HTTP-07: bare-recover stub installed in the RED
+		// commit. GREEN replaces this with the proper structured log.
+		defer func() { _ = recover(); _ = exitWatcherLogger }()
+		// Test-only seam: tests set exitWatcherPanicProbe to func() { panic(...) }
+		// to drive the defer-recover branch. Default nil → no-op in production.
+		if exitWatcherPanicProbe != nil {
+			exitWatcherPanicProbe()
+		}
 		select {
 		case <-done:
 			// acp.Client tore down its subprocess (Close, ping failure,

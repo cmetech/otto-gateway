@@ -253,6 +253,17 @@ func (e *Engine) Run(ctx context.Context, req *canonical.ChatRequest) (*Run, err
 	// here is stored on Run so adapters/Collect can prevent the goroutine on
 	// normal completion.
 	stopWatchdog := context.AfterFunc(ctx, func() {
+		// D-18-07 REL-HTTP-07: bare-recover stub installed in the RED
+		// commit. GREEN replaces this with the proper structured log.
+		// Wraps the CALLBACK body — context.AfterFunc runs this on a
+		// runtime-managed goroutine; an unrecovered panic propagates
+		// out of the runtime and crashes the gateway.
+		defer func() { _ = recover() }()
+		// Test-only seam: tests set afterFuncPanicProbe to func() { panic(...) }
+		// to drive the defer-recover branch. Default nil → no-op in production.
+		if afterFuncPanicProbe != nil {
+			afterFuncPanicProbe()
+		}
 		switch {
 		case errors.Is(ctx.Err(), context.Canceled):
 			e.cfg.Logger.Debug("engine: watchdog: client disconnect — canceling session", "session_id", sid)
@@ -380,6 +391,14 @@ func newCompletedRun(e *Engine, req *canonical.ChatRequest, resp *canonical.Chat
 type emptyStream struct {
 	resp *canonical.ChatResponse
 }
+
+// afterFuncPanicProbe is a test-only seam (D-18-07 REL-HTTP-07). The
+// context.AfterFunc callback at engine.go:255 invokes it once near the
+// top of its body; tests install `func() { panic(...) }` to drive the
+// defer-recover branch. Default nil → no-op in production.
+//
+//nolint:gochecknoglobals // package-private test seam, leave nil in production
+var afterFuncPanicProbe func()
 
 // closedChunkChan is a package-level already-closed receive-only channel
 // reused by every emptyStream. Allocating in Chunks() per call would be

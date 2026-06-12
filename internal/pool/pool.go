@@ -20,6 +20,17 @@ import (
 // should reference canonical.ErrPoolExhausted directly.
 var ErrPoolExhausted = canonical.ErrPoolExhausted
 
+// D-18-07 REL-HTTP-07 test-only panic-injection seams. The relevant
+// goroutine invokes its probe once near the top of its body; tests
+// install `func() { panic(...) }` to drive the defer-recover branch.
+// Default nil → no-op in production.
+//
+//nolint:gochecknoglobals // package-private test seams, leave nil in production
+var (
+	ctxWatcherPanicProbe  func()
+	exitWatcherPanicProbe func()
+)
+
 // Slot is one warm kiro-cli connection owned by the pool. Client is
 // typed as the PoolClient interface (Codex M-2) so tests can inject
 // fake clients; production uses *acp.Client via the default factory.
@@ -883,7 +894,19 @@ func (p *Pool) Prompt(ctx context.Context, sid string, blocks []canonical.Block)
 		doneCh:      make(chan struct{}),
 		cancelWatch: cancelWatch,
 	}
+	// D-18-07 REL-HTTP-07: capture logger BEFORE goroutine launch so
+	// closure captures a stable reference (p.cfg.Logger may not be
+	// addressable through goroutine-shared state safely otherwise).
+	ctxWatcherLogger := p.cfg.Logger
 	go func() {
+		// D-18-07 REL-HTTP-07: bare-recover stub installed in the RED
+		// commit. GREEN replaces this with the proper structured log.
+		defer func() { _ = recover(); _ = ctxWatcherLogger }()
+		// Test-only seam: tests set ctxWatcherPanicProbe to func() { panic(...) }
+		// to drive the defer-recover branch. Default nil → no-op in production.
+		if ctxWatcherPanicProbe != nil {
+			ctxWatcherPanicProbe()
+		}
 		select {
 		case <-watchCtx.Done():
 			// ctx cancelled (or Result-driven releaseOnce called

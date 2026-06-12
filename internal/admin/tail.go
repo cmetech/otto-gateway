@@ -253,6 +253,14 @@ func (t *Tailer) Snapshot() []string {
 	return t.ring.Copy()
 }
 
+// adminTailerPanicProbe is a test-only seam (D-18-07 REL-HTTP-07). The
+// run() goroutine invokes it once at the top of its body; tests install
+// `func() { panic(...) }` to drive the defer-recover branch. Default
+// nil → no-op in production.
+//
+//nolint:gochecknoglobals // package-private test seam, leave nil in production
+var adminTailerPanicProbe func()
+
 // ---------------------------------------------------------------------------
 // run — the single tailer goroutine
 // ---------------------------------------------------------------------------
@@ -277,6 +285,15 @@ func (t *Tailer) Snapshot() []string {
 // On missing file or read error, the goroutine logs once per tick at
 // DEBUG level and retries on the next tick — it never crashes.
 func (t *Tailer) run(ctx context.Context) {
+	// D-18-07 REL-HTTP-07: bare-recover stub installed in the RED
+	// commit so the test goroutine does not crash the test process.
+	// GREEN replaces this with the proper structured log.
+	defer func() { _ = recover() }()
+	// Test-only seam: tests set adminTailerPanicProbe to func() { panic(...) }
+	// to drive the defer-recover branch. Default nil → no-op in production.
+	if adminTailerPanicProbe != nil {
+		adminTailerPanicProbe()
+	}
 	var (
 		f           *os.File
 		reader      *bufio.Reader
