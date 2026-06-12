@@ -272,6 +272,16 @@ type Config struct {
 	// mitigation). Loaded from CHAT_TRACE_FILE.
 	ChatTraceFile string
 
+	// AdminTailPath is the on-disk path the admin log-tail panel reads
+	// from. D-18-08: populated in Load via the SAME deriveChatTraceFile
+	// call that produces ChatTraceFile, so the writer (chat-trace rotator
+	// at main.go:302 — reads cfg.ChatTraceFile) and the tailer
+	// (admin.NewTailer constructed in main.go — reads cfg.AdminTailPath)
+	// cannot diverge. Both fields hold the same string by construction;
+	// AdminTailPath exists as a separate field so the tailer-wiring site
+	// reads the semantically-named field, not the writer-named one.
+	AdminTailPath string
+
 	// ChatTraceMaxAgeDays is the timberjack MaxAge in days for chat-
 	// trace.log rotation pruning (quick 260529-ll2). Default 3. Rolling
 	// over daily at 00:00 with 3-day retention bounds the sensitive
