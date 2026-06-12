@@ -71,3 +71,32 @@ func TestServer_NewWithCommit_NilForceClose(t *testing.T) {
 		t.Fatalf("forceCloseCh must be nil after NewWithCommit; got non-nil — D-20-04 violation")
 	}
 }
+
+// TestServer_EnsureForceCloseCh_Idempotent is the Phase 20 WR-01 guard: it
+// asserts that ensureForceCloseCh is safe to call more than once on the same
+// *Server and that the second call returns the SAME channel rather than
+// leaking the first. This makes the sync.Once contract observable in tests
+// rather than only in the field comment. A supervisor that restarts the
+// inner loop (calls RunUntilSignal twice on the same instance) must not
+// orphan goroutines parked on the original channel.
+func TestServer_EnsureForceCloseCh_Idempotent(t *testing.T) {
+	cfg := config.Config{HTTPAddr: "127.0.0.1:0"}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	s := New(cfg, logger, "test")
+
+	if s.forceCloseCh != nil {
+		t.Fatalf("precondition: forceCloseCh must be nil after New(); got non-nil")
+	}
+
+	s.ensureForceCloseCh()
+	first := s.forceCloseCh
+	if first == nil {
+		t.Fatal("ensureForceCloseCh did not allocate a channel on first call")
+	}
+
+	s.ensureForceCloseCh()
+	second := s.forceCloseCh
+	if second != first {
+		t.Fatal("ensureForceCloseCh allocated a new channel on the second call; sync.Once contract violated — first channel and any goroutine parked on it would be leaked")
+	}
+}

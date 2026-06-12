@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"sort"
+	"sync"
 	"syscall"
 	"time"
 
@@ -190,7 +191,26 @@ type Server struct {
 	// channel, which causes Run to call srv.Close() and tear down in-flight
 	// requests immediately instead of leaking a goroutine parked inside the
 	// 30s graceful Shutdown (QUAL-03 / D-20-04 / D-20-05).
-	forceCloseCh chan struct{}
+	//
+	// Phase 20 WR-01: allocation is guarded by forceCloseOnce so that a
+	// supervisor pattern that calls RunUntilSignal twice on the same *Server
+	// does not leak the first channel (or race a concurrent direct Run on
+	// the same instance). Single-call remains the documented contract; the
+	// sync.Once is a defensive guard that makes the contract observable in
+	// code rather than only in comments.
+	forceCloseOnce sync.Once
+	forceCloseCh   chan struct{}
+}
+
+// ensureForceCloseCh lazily allocates the force-close channel exactly once
+// per Server lifetime. RunUntilSignal calls this before spawning the Run
+// goroutine so the select arm in Run() observes a non-nil channel; direct
+// Run callers never call this and the nil-channel select arm in Run() never
+// fires (D-20-04 / Phase 20 WR-01).
+func (s *Server) ensureForceCloseCh() {
+	s.forceCloseOnce.Do(func() {
+		s.forceCloseCh = make(chan struct{})
+	})
 }
 
 // New is the Phase 1 compatibility constructor — used when only the
@@ -533,8 +553,11 @@ func (s *Server) RunUntilSignal(ctx context.Context) error {
 	// observes a non-nil channel on its select arm. Direct Run callers (no
 	// signal handling) leave this nil — the nil-channel select arm never
 	// fires, which is exactly the contract documented on the field
-	// declaration (QUAL-03 / D-20-04).
-	s.forceCloseCh = make(chan struct{})
+	// declaration (QUAL-03 / D-20-04). Phase 20 WR-01: guard with sync.Once
+	// so a supervisor that calls RunUntilSignal more than once on the same
+	// *Server does not leak the first channel or race with any concurrent
+	// observer.
+	s.ensureForceCloseCh()
 
 	// Run the server; also observe forceErrCh so a second Ctrl-C terminates
 	// the blocking srv.Shutdown call immediately.
