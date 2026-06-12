@@ -114,9 +114,12 @@ func TestPool_RespawnCtxCancel_DoesNotShrinkPool(t *testing.T) {
 		t.Fatal("NewSession did not return within 1s of cancel")
 	}
 
-	// CRITICAL ASSERTION — pool size must be unchanged. Before the fix,
-	// Size would now be 0 because NewSession's error branch unconditionally
-	// called removeSlot.
+	// CRITICAL ASSERTION — pool size must be unchanged after a cancelled
+	// NewSession. The error branch must re-queue the slot rather than
+	// dropping it, so a later NewSession can pick the same dead slot up
+	// and drive its respawn to completion. (Phase 17-03 removed the
+	// unconditional removeSlot call that previously dropped the slot in
+	// this path; this assertion is the regression guard for that fix.)
 	if got := p.Stats().Size; got != 1 {
 		t.Fatalf("Stats().Size after disconnect-mid-respawn = %d; want 1 (slot must be re-queued)", got)
 	}
