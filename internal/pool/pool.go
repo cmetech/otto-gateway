@@ -276,6 +276,18 @@ func (p *Pool) slotAlive(slot *Slot) bool {
 // to re-queue the slot via the same release path as the ctx-cancel
 // branch (D-03; the removeSlot path was removed as dead code in Phase 17).
 func (p *Pool) respawnSlot(ctx context.Context, slot *Slot) error {
+	// D-18-05 REL-OBSV-02: capture OLD pid BEFORE Close so the
+	// lazy-respawn-success INFO log (emitted after step 4) can report
+	// the previous-pid → new-pid pair for operator correlation against
+	// the prior "pool: slot died" record (exit_watcher.go:42). After
+	// Close + Wait the OS reaps the pid so reading c.cmd.Process.Pid
+	// post-Close would still work today (the field is set at Start),
+	// but capturing here is robust against future Close() refactors
+	// that null the field.
+	var previousPid int
+	if slot.Client != nil {
+		previousPid = slot.Client.Pid()
+	}
 	// Step 1: close OLD client first so OLD exit-watcher exits cleanly
 	// via its <-slot.Client.Done() branch (Pitfall 2).
 	if slot.Client != nil {
@@ -334,7 +346,22 @@ func (p *Pool) respawnSlot(ctx context.Context, slot *Slot) error {
 	newDone := newClient.Done()
 	// Step 5: spawn a fresh exit-watcher for the NEW client (under p.mu).
 	p.startExitWatcher(slot, newDone)
+	newPid := newClient.Pid()
+	label := slot.Label
 	p.mu.Unlock()
+
+	// D-18-05 REL-OBSV-02: log the lazy-respawn-success AFTER unlock so the
+	// critical section stays narrow. Reason byte-exact "lazy-respawn-success"
+	// per CONTEXT.md §D-18-05; field key for slot label is "label" mirroring
+	// the death log at exit_watcher.go:42 (RESEARCH.md Pattern 3 / Pitfall 5).
+	if p.cfg.Logger != nil {
+		p.cfg.Logger.Info("pool: slot recovered",
+			"label", label,
+			"worker_pid", newPid,
+			"previous_pid", previousPid,
+			"reason", "lazy-respawn-success",
+		)
+	}
 	return nil
 }
 
