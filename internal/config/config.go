@@ -663,7 +663,8 @@ func Load() (Config, error) {
 	// probe is best-effort: a TOCTOU window between Close() and the real
 	// bind exists and is accepted (microseconds wide, same process,
 	// CONTEXT.md §D-18-03).
-	if ln, lerr := net.Listen("tcp", httpAddr); lerr != nil {
+	// noctx: synchronous startup probe; context would never be cancelled.
+	if ln, lerr := net.Listen("tcp", httpAddr); lerr != nil { //nolint:noctx
 		errs = append(errs, fmt.Errorf("config: HTTP_ADDR (%q): bind probe failed: %w", httpAddr, lerr))
 	} else {
 		_ = ln.Close()

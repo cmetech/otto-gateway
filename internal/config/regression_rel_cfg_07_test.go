@@ -50,7 +50,7 @@ func TestRegression_REL_CFG_07(t *testing.T) {
 		// Pre-bind a listener on a kernel-assigned port; the address we
 		// hand to config.Load() is the address THIS listener owns, so
 		// the probe MUST fail with EADDRINUSE.
-		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		ln, err := net.Listen("tcp", "127.0.0.1:0") //nolint:noctx // pre-bind helper for bind-probe regression
 		if err != nil {
 			t.Fatalf("pre-bind listener: %v", err)
 		}
