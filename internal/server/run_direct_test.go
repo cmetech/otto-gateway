@@ -41,11 +41,16 @@ func TestServer_Run_DirectShutdown(t *testing.T) {
 		done <- s.Run(ctx)
 	}()
 
-	// Give the server a moment to bind and enter the serve loop, then trigger
-	// graceful shutdown via context cancellation. This exercises Run's select
-	// arm — both the shutdownErrCh arm AND (implicitly) the nil forceCloseCh
-	// arm which must never fire.
-	time.Sleep(50 * time.Millisecond)
+	// Phase 20 WR-02: drop the previous 50ms time.Sleep "readiness" pause.
+	// Run's outer select fires on ctx.Done() regardless of whether
+	// ListenAndServe has reached its blocking call, so the test is really
+	// asserting "Run unblocks on ctx.Done()" — no timing dependency is
+	// required, and the prior sleep was the classic time.Sleep-as-
+	// synchronization anti-pattern with a misleading "gives the server a
+	// moment to bind" comment that did not reflect what was actually
+	// being exercised. The 5s deadline on the done channel below remains
+	// the actual liveness assertion (and would catch a regression that
+	// caused Run to ignore ctx.Done() while waiting on ListenAndServe).
 	cancel()
 
 	select {
