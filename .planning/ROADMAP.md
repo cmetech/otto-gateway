@@ -159,10 +159,10 @@ Plans:
 **Goal:** Close REL-ACP-01 — the production race in `acp.Stream.Result` flagged by Phase 17 (17-02-SUMMARY Threat Flags). `Result()` copies `*s.result` into a stack-local under `s.mu` and returns the snapshot pointer; signature `(*FinalResult, error)` unchanged. New 60-iteration race-loop regression test at `internal/acp/regression_rel_acp_01_test.go`. Phase 17 test-side drain-Chunks-then-Result workaround in `internal/pool/regression_rel_pool_02_test.go` surgically reverted (workaround was load-bearing only for the race this phase closes).
 **Requirements**: REL-ACP-01
 **Depends on:** Phase 18
-**Plans:** 1 plan
+**Plans:** 1/1 plans complete
 Plans:
 
-- [ ] 19-01-PLAN.md — Result() copy-under-lock + RED race-loop test + surgical revert of Phase 17 workaround (D-19-01 + D-19-02 + D-19-03)
+- [x] 19-01-PLAN.md — Result() copy-under-lock + RED race-loop test + surgical revert of Phase 17 workaround (D-19-01 + D-19-02 + D-19-03)
 
 ### Phase 20: Code-review backlog burn-down
 

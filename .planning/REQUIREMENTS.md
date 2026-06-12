@@ -28,7 +28,7 @@ This milestone closes the long-tail of issues the v1.9 + Phase 17 work explicitl
 
 ### Concurrency fix (Phase 19-01)
 
-- [ ] **REL-ACP-01** (production race surfaced by Phase 17 17-02-SUMMARY.md): `acp.Stream.Result` copies `*s.result` into a local value under `s.mu` instead of returning a pointer-deref that races `close(s.done)` against the StopReason write. After this fix, the Phase 17 test-side workaround (drain `stream.Chunks()` before calling `stream.Result()`) becomes optional and can be reverted in `regression_rel_pool_02_test.go`.
+- [x] **REL-ACP-01** (production race surfaced by Phase 17 17-02-SUMMARY.md): `acp.Stream.Result` copies `*s.result` into a local value under `s.mu` instead of returning a pointer-deref that races `close(s.done)` against the StopReason write. After this fix, the Phase 17 test-side workaround (drain `stream.Chunks()` before calling `stream.Result()`) becomes optional and can be reverted in `regression_rel_pool_02_test.go`.
 
 ### Code-review backlog burn-down (Phase 20-01)
 

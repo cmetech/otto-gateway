@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.10.3
 milestone_name: Reliability Closeout
-status: executing
-stopped_at: Phase 19 context gathered — REL-ACP-01 race scoped, single-plan, 3 D-IDs locked
-last_updated: "2026-06-12T10:59:14.636Z"
-last_activity: 2026-06-12 -- Phase 18 marked complete
+status: verifying
+stopped_at: Completed 19-01-PLAN.md (Phase 19 complete; ready_for_verification)
+last_updated: "2026-06-12T11:25:45.746Z"
+last_activity: 2026-06-12 -- Phase 19 execution started
 progress:
   total_phases: 26
-  completed_phases: 23
-  total_plans: 84
-  completed_plans: 84
-  percent: 88
+  completed_phases: 24
+  total_plans: 85
+  completed_plans: 85
+  percent: 92
 ---
 
 # Project State
@@ -21,15 +21,17 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-07)
 
 **Core value:** All three API surfaces (OpenAI for Pi SDK, Ollama for LangFlow, Anthropic for loop24-client/GSD Pi) serve their respective clients without those clients knowing kiro-cli exists, with one place to enforce policy.
-**Current focus:** v1.10.3 Reliability Closeout — Phase 18 (Reliability long-tail) opens execution
+**Current focus:** Phase 19 — acp-stream-concurrency-fix
 
 ## Current Position
 
+Phase: 19 (acp-stream-concurrency-fix) — EXECUTING
+Plan: 1 of 1
 Milestone: v1.10.3 Reliability Closeout — PLANNING
 Phases scaffolded: 18 (Reliability long-tail), 19 (acp.Stream concurrency fix), 20 (Code-review backlog burn-down)
 Requirements: 17 (REL-CFG-05/06/07 + REL-HTTP-06/07 + REL-OBSV-02/03/04 + REL-TRAY-08/09 + REL-ACP-01 + QUAL-01..06)
-Status: Ready to execute
-Last activity: 2026-06-12 -- Phase 18 marked complete
+Status: Phase complete — ready for verification
+Last activity: 2026-06-12 -- Phase 19 execution started
 
 ## Performance Metrics
 
@@ -71,6 +73,7 @@ Last activity: 2026-06-12 -- Phase 18 marked complete
 | Phase 17 P03 | 12min | 5 tasks (batched 1 commit per D-17-02) | 5 files |
 | Phase 17 P01 | 6min | 2 tasks | 9 files |
 | Phase 17 P02 | 17min | 2 tasks (T1 RED baseline + T2 GREEN iter 1; iter 2-3 skipped) | 1 file |
+| Phase 19 P01 | ~75min | 4 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -130,6 +133,9 @@ Recent decisions affecting current work:
 - [Phase 17]: Plan 17-02 closed REL-POOL-02 goleak flake at iter 1 (planned 3-iter budget; iters 2 + 3 not needed). Three test-scaffolding edits in regression_rel_pool_02_test.go: (1) resultWg tracks the orphan stream-drain goroutines and is waited on after both gate-closes + the outer wg; (2) per-instance unique sids (fake-sess-bc0 / fake-sess-bc1) override the shared fakeClient default — pre-existing sessionSlots overwrite bug surfaced by iter 1 reliable draining (deviation Rule 1 fix); (3) drain stream.Chunks() to channel close BEFORE calling Result() — uses chan-close write barrier as synchronization edge with acp.Stream close's StopReason mutation, routing around a real production race (close(s.done) BEFORE acquiring s.mu, exposed by `go test -race`) without production code changes per D-17-05. 20/20 PASS final + 60/60 PASS across three independent rounds. Commit ca258f9.
 - [Phase 17]: acp.Stream close-vs-read race flagged for v1.10 hardening (out of scope per D-17-05). close() closes s.done before acquiring s.mu, so Result waiters can return the *FinalResult pointer before close writes StopReason; downstream pointer dereferences in poolStreamWrapper.Result race the write. Test workaround inherits chan-close-on-s.chunks as the synchronization edge. Recommended fix: copy *s.result into a local value inside Result's s.mu critical section so downstream reads see a snapshot.
 - [Phase 17]: make ci exit 0 end-to-end at HEAD ca258f9 — fmt-check (gofmt + gofumpt), vet, build, lint (golangci-lint 0 issues), test-race (all packages green incl. REL-POOL-02 deflaked), arch-lint (OK - No warnings), examples, govulncheck (No vulnerabilities). v1.9.1 release tag (D-17-03) is unblocked.
+- [Phase ?]: Phase 19 D-19-01 applied byte-precisely: Result() now snapshots *s.result under s.mu via cp := *s.result; returns &cp. Signature unchanged. REL-ACP-01 race report closed.
+- [Phase ?]: Phase 19 D-19-03 test assertion adapted (Rule 1 deviation): from PATTERNS strict StopReason==StopEndTurn to dual invariant (no race report AND value in StopUnknown/StopEndTurn).
+- [Phase ?]: Pre-existing Phase 18 unparam warning at internal/acp/regression_rel_obsv_03_test.go:72 deferred to v1.10.4 per Phase 18-02 SUMMARY's same-class noctx deferral precedent.
 
 ### Pending Todos
 
@@ -189,9 +195,9 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-06-12T10:36:25.713Z
-Stopped at: Phase 19 context gathered — REL-ACP-01 race scoped, single-plan, 3 D-IDs locked
-Resume file: .planning/phases/19-acp-stream-concurrency-fix/19-CONTEXT.md
+Last session: 2026-06-12T11:25:45.740Z
+Stopped at: Completed 19-01-PLAN.md (Phase 19 complete; ready_for_verification)
+Resume file: 
 
 ## Operator Next Steps
 
