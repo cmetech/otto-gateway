@@ -403,6 +403,7 @@ func (c *Client) stderrDrainLoop(pipe io.ReadCloser, pid int) {
 			trimmed := strings.TrimRight(line, "\n")
 			trimmed = strings.TrimRight(trimmed, "\r")
 			if trimmed != "" {
+				droppedBytes := 0
 				if len(trimmed) > maxLineBytes {
 					// WR-04: slice on a UTF-8 rune boundary. A naive
 					// trimmed[:maxLineBytes] can split a multi-byte
@@ -415,18 +416,45 @@ func (c *Client) stderrDrainLoop(pipe io.ReadCloser, pid int) {
 					// is at most utf8.UTFMax-1 (3) byte-walks. The
 					// resulting trim is "≤ maxLineBytes on UTF-8-safe
 					// boundary", not a strict byte-cap.
+					originalLen := len(trimmed)
 					n := maxLineBytes
 					for n > 0 && !utf8.RuneStart(trimmed[n]) {
 						n--
 					}
 					trimmed = trimmed[:n]
+					// WR-09: record bytes dropped so the operator has
+					// telemetry on the truncation. The pathological
+					// "all continuation bytes" case (n==0) drops up to
+					// maxLineBytes bytes and would otherwise surface as
+					// a silent empty `line` WARN with no diagnostic.
+					// The "well-formed UTF-8 just past 1MB" case drops
+					// only `originalLen - maxLineBytes` bytes (plus up
+					// to 3 walk-back bytes). Either way, including
+					// dropped_bytes lets operators distinguish an
+					// actual empty stderr line from a corrupted-encoding
+					// payload eaten by the cap.
+					droppedBytes = originalLen - n
 				}
 				if c.cfg.Logger != nil {
-					c.cfg.Logger.Warn(
-						"kiro-cli stderr",
-						"worker_pid", pid,
-						"line", trimmed,
-					)
+					// WR-09: include dropped_bytes (and truncated: true)
+					// only when the cap fired. The base field set
+					// (worker_pid, line) is preserved byte-exact per
+					// D-18-04 contract; new fields are additive.
+					if droppedBytes > 0 {
+						c.cfg.Logger.Warn(
+							"kiro-cli stderr",
+							"worker_pid", pid,
+							"line", trimmed,
+							"truncated", true,
+							"dropped_bytes", droppedBytes,
+						)
+					} else {
+						c.cfg.Logger.Warn(
+							"kiro-cli stderr",
+							"worker_pid", pid,
+							"line", trimmed,
+						)
+					}
 				}
 			}
 		}

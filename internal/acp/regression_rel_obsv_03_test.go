@@ -176,6 +176,74 @@ func TestRegression_REL_OBSV_03(t *testing.T) {
 			t.Errorf("last line = %q, want %q", last, "tail-line")
 		}
 	})
+
+	// A5 regression for WR-09: when the WR-04 UTF-8 walk-back fires
+	// (any time the 1MB cap truncates a stderr line), the slog record
+	// MUST include `truncated: true` and a positive `dropped_bytes`
+	// field so the operator has telemetry on the silent truncation.
+	// The pre-fix WR-04 path dropped bytes invisibly — in the
+	// pathological "all continuation bytes" case (invalid UTF-8), the
+	// walk-back can land on n==0 and surface a "line": "" record with
+	// no signal at all. The base D-18-04 field set (worker_pid, line)
+	// MUST remain present alongside the new fields.
+	t.Run("A5_truncation_telemetry_wr_09", func(t *testing.T) {
+		defer goleak.VerifyNone(t)
+		// Emit ~2 MB of 'X' (no newline) then a newline. The cap fires;
+		// `dropped_bytes` should be ~1 MB; `truncated` should be true.
+		script := `awk 'BEGIN{
+			for (i = 0; i < 2*1024*1024; i++) printf "X";
+			printf "\n";
+		}' 1>&2`
+		cmd, args := fakeKiroCmd(script)
+		recs := startAndDrain(t, cmd, args, slog.LevelWarn)
+		if len(recs) < 1 {
+			t.Fatalf("got %d records, want >= 1; recs=%+v", len(recs), summarizeRecords(recs))
+		}
+		rec := recs[0]
+		// Base D-18-04 fields preserved.
+		if _, ok := rec["worker_pid"]; !ok {
+			t.Errorf("worker_pid field missing — D-18-04 contract regressed: rec=%+v", summarizeRecords([]map[string]any{rec}))
+		}
+		if _, ok := rec["line"]; !ok {
+			t.Errorf("line field missing — D-18-04 contract regressed: rec=%+v", summarizeRecords([]map[string]any{rec}))
+		}
+		// WR-09: telemetry fields present and meaningful.
+		truncated, ok := rec["truncated"].(bool)
+		if !ok || !truncated {
+			t.Errorf("truncated field = %v (%T), want true; rec=%+v", rec["truncated"], rec["truncated"], summarizeRecords([]map[string]any{rec}))
+		}
+		dropped, ok := rec["dropped_bytes"].(float64)
+		if !ok || dropped <= 0 {
+			t.Errorf("dropped_bytes field = %v (%T), want positive number; rec=%+v", rec["dropped_bytes"], rec["dropped_bytes"], summarizeRecords([]map[string]any{rec}))
+		}
+		// The producer emitted ~2 MB; the cap is 1 MB; so dropped ≈ 1 MB.
+		// Allow some slack for the walk-back (≤ 3 bytes) and producer
+		// counter-vs-actual-bytes drift.
+		if dropped < 1000*1000 {
+			t.Errorf("dropped_bytes = %v, want >= 1_000_000 (producer emitted 2MB, cap is 1MB)", dropped)
+		}
+	})
+
+	// A6 regression for WR-09: when the line is short enough that no
+	// truncation fires, the new telemetry fields MUST NOT be present.
+	// The D-18-04 base field set is the steady-state contract; adding
+	// `truncated`/`dropped_bytes` to every record would bloat logs and
+	// break operators who pattern-match on field cardinality.
+	t.Run("A6_no_truncation_no_telemetry_fields", func(t *testing.T) {
+		defer goleak.VerifyNone(t)
+		cmd, args := fakeKiroCmd("printf 'short-line\\n' 1>&2")
+		recs := startAndDrain(t, cmd, args, slog.LevelWarn)
+		if len(recs) != 1 {
+			t.Fatalf("got %d records, want 1; recs=%+v", len(recs), recs)
+		}
+		rec := recs[0]
+		if _, ok := rec["truncated"]; ok {
+			t.Errorf("truncated field present on non-truncated line — should be absent; rec=%+v", rec)
+		}
+		if _, ok := rec["dropped_bytes"]; ok {
+			t.Errorf("dropped_bytes field present on non-truncated line — should be absent; rec=%+v", rec)
+		}
+	})
 }
 
 // summarizeRecords produces a compact view of records that does not
