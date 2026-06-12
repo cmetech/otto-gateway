@@ -36,15 +36,6 @@ func setIconForState(state State) {
 	}
 }
 
-// tooltipForState returns the tray tooltip string for a given FSM state.
-func tooltipForState(state State, detail string) string {
-	s := fmt.Sprintf("OTTO Gateway · %s", state)
-	if detail != "" {
-		s += " (" + detail + ")"
-	}
-	return s
-}
-
 func openURL(url string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
