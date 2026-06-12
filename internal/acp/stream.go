@@ -188,13 +188,26 @@ func (s *Stream) close(result *FinalResult, err error) {
 	})
 }
 
-// Result blocks until the stream is closed and then returns the FinalResult
-// and any terminal error. Safe to call from any goroutine.
+// Result blocks until the stream is closed and then returns a snapshot of the
+// FinalResult and any terminal error. Safe to call from any goroutine.
+//
+// REL-ACP-01 (Phase 19 D-19-01): the returned pointer references a freshly
+// allocated copy made under s.mu, NOT s.result directly. close() can mutate
+// s.result fields (e.g. StopReason at the line below the s.mu.Lock() inside
+// close()) AFTER Result has returned its pointer, because close() acquires
+// s.mu separately. Copying under the lock means the caller's downstream
+// `fr.StopReason` / `fr.SessionID` / `fr.ChunkCount` reads see a frozen
+// snapshot immune to close()'s in-flight writes. Signature stays
+// (*FinalResult, error) so every existing caller is byte-identical.
 func (s *Stream) Result() (*FinalResult, error) {
 	<-s.done
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.result, s.err
+	if s.result == nil {
+		return nil, s.err
+	}
+	cp := *s.result
+	return &cp, s.err
 }
 
 // SessionID returns the ACP session id captured at newStream time. Safe
