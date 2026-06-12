@@ -24,6 +24,13 @@ type stateInput struct {
 	HealthFailures int      // consecutive failures while PID is alive
 	StartingBudget bool     // true if we're inside the 30s post-start window
 	Snapshot       Snapshot // populated only when HealthOK
+	// ConfigError is the first line (≤200 bytes) of the wrapper-written
+	// sentinel file at $HOME/.otto-gw/.config-error. Non-empty means
+	// the wrapper's dotenv parser hit a malformed line; the FSM
+	// short-circuits to StateError so the tray surfaces the parse
+	// error instead of polling the wrong port and showing "stopped".
+	// Populated by the poller (D-18-09 / REL-TRAY-08).
+	ConfigError string
 }
 
 // stateOutput pairs the resolved state with a short human-readable
@@ -33,10 +40,18 @@ type stateOutput struct {
 	Detail string
 }
 
-// computeState applies the 6-state mapping. Order matters: stopped
-// short-circuits everything else; degraded only fires when a pool
-// is configured (PoolSize > 0) and has zero ready slots.
+// computeState applies the 6-state mapping. Order matters: a non-empty
+// ConfigError (sentinel from the wrapper) short-circuits BEFORE
+// anything else — operator's .env is broken, so PID/health probes are
+// meaningless until they fix it. Then stopped short-circuits the rest;
+// degraded only fires when a pool is configured (PoolSize > 0) and has
+// zero ready slots.
 func computeState(in stateInput) stateOutput {
+	// REL-TRAY-08 (D-18-09): wrapper sentinel wins over every other
+	// signal. Reuses StateError — no new FSM state per CONTEXT.md.
+	if in.ConfigError != "" {
+		return stateOutput{State: StateError, Detail: "config error: " + in.ConfigError}
+	}
 	if !in.PIDAlive {
 		return stateOutput{State: StateStopped}
 	}

@@ -223,17 +223,71 @@ function Get-DefaultValue {
     return $null
 }
 
+# Get-ConfigErrorSentinelPath returns the canonical sentinel path the
+# tray polls each tick to surface dotenv parse failures as StateError
+# (D-18-09 / REL-TRAY-08). Mirrors bash config_error_sentinel_path.
+# Preference order: $env:HOME (cross-platform parity with bash) then
+# $env:USERPROFILE (Windows-native).
+function Get-ConfigErrorSentinelPath {
+    $home_ = if ($env:HOME) { $env:HOME } elseif ($env:USERPROFILE) { $env:USERPROFILE } else { $env:TEMP }
+    return (Join-Path $home_ '.otto-gw\.config-error')
+}
+
+# Clear-ConfigErrorSentinel removes the sentinel. Called after every
+# successful Import-DotEnv so a one-shot parse failure does not stick
+# once the operator fixes it. Errors are swallowed — absence is the
+# happy path.
+function Clear-ConfigErrorSentinel {
+    $sentinel = Get-ConfigErrorSentinelPath
+    Remove-Item -Force -ErrorAction SilentlyContinue $sentinel | Out-Null
+}
+
+# Write-ConfigErrorSentinel writes $Msg to the sentinel as a single
+# line, capped at 200 bytes (D-18-09 PII minimization). Multi-line
+# input collapses to one line via -replace "`r?`n", ' '. Errors
+# swallowed — a missing parent directory or read-only home is
+# operator-visible already via the stderr WARN.
+function Write-ConfigErrorSentinel {
+    param([string]$Msg)
+    $sentinel = Get-ConfigErrorSentinelPath
+    $sentinelDir = Split-Path -Parent $sentinel
+    try {
+        if (-not (Test-Path $sentinelDir)) {
+            New-Item -ItemType Directory -Force -Path $sentinelDir | Out-Null
+        }
+        $flat = ($Msg -replace "`r?`n", ' ')
+        if ($flat.Length -gt 200) {
+            $flat = $flat.Substring(0, 200)
+        }
+        Set-Content -Path $sentinel -Value $flat -Encoding UTF8 -NoNewline -ErrorAction Stop
+    } catch {
+        # Best-effort: a sentinel write failure should not abort load_config.
+    }
+}
+
 function Import-DotEnv {
     param([string]$Path)
     if (-not (Test-Path $Path)) { return }
+    # REL-TRAY-08 (D-18-09): track first malformed line so the tray
+    # surfaces a parse error via StateError instead of polling the
+    # wrong port and showing "stopped".
+    $firstError = $null
+    $lineno = 0
     Get-Content $Path | ForEach-Object {
+        $lineno++
         $line = $_.TrimStart()
         if (-not $line)            { return }
         if ($line.StartsWith('#')) { return }
         if ($line -match '^\s*export\s+') {
             $line = $line -replace '^\s*export\s+', ''
         }
-        if ($line -notmatch '=') { return }
+        if ($line -notmatch '=') {
+            if (-not $firstError) {
+                $snippet = if ($line.Length -gt 80) { $line.Substring(0, 80) } else { $line }
+                $script:firstError = "$(Split-Path -Leaf $Path):${lineno}: missing '=' (got: $snippet)"
+            }
+            return
+        }
         $key, $val = $line -split '=', 2
         $val = $val.Trim()
         # Strip one layer of surrounding single or double quotes.
@@ -242,6 +296,13 @@ function Import-DotEnv {
             $val = $val.Substring(1, $val.Length - 2)
         }
         Set-Item -Path "env:$($key.Trim())" -Value $val
+    }
+    if ($script:firstError) {
+        Write-Warning "config parse error: $($script:firstError)"
+        Write-ConfigErrorSentinel -Msg $script:firstError
+        $script:firstError = $null
+    } else {
+        Clear-ConfigErrorSentinel
     }
 }
 

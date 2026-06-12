@@ -197,23 +197,75 @@ extract_default_value() {
     extract_env_any "$1" "$2"
 }
 
+# config_error_sentinel_path returns the canonical sentinel path the
+# tray polls each tick to surface dotenv parse failures as StateError
+# (D-18-09 / REL-TRAY-08). $HOME is always set in the wrapper's
+# execution context; if it isn't (degraded shell), the function still
+# returns a deterministic path so callers can rm -f without erroring.
+config_error_sentinel_path() {
+    printf '%s/.otto-gw/.config-error' "${HOME:-/tmp}"
+}
+
+# clear_config_error_sentinel removes the sentinel file. Called after
+# every successful load_env_file so a one-shot parse failure does not
+# stick once the operator fixes it. rm -f is idempotent — missing file
+# is the happy path.
+clear_config_error_sentinel() {
+    rm -f "$(config_error_sentinel_path)" 2>/dev/null || true
+}
+
+# write_config_error_sentinel writes $1 to the sentinel as a single
+# line. Truncated to 200 bytes (head -c). Mode 0600 — sentinel may
+# contain a partial KEY=VALUE from the malformed line (D-18-09 threat
+# T-18-03-I). MkdirAll-equivalent for parent dir at 0750.
+write_config_error_sentinel() {
+    local msg="$1"
+    local sentinel
+    sentinel="$(config_error_sentinel_path)"
+    local sentinel_dir
+    sentinel_dir="$(dirname "$sentinel")"
+    mkdir -p "$sentinel_dir" 2>/dev/null || return 0
+    chmod 0750 "$sentinel_dir" 2>/dev/null || true
+    # First line only + 200-byte cap. tr replaces any \n with space
+    # before head -c, so multi-line errors collapse to one line.
+    printf '%s' "$msg" | tr '\n' ' ' | head -c 200 > "$sentinel" 2>/dev/null || return 0
+    chmod 0600 "$sentinel" 2>/dev/null || true
+}
+
 # load_env_file sources KEY=value lines from $1. Tolerates blank lines
 # and # comments. Quoted values are honored. Does NOT execute arbitrary
 # shell — we parse line-by-line and `export` each key explicitly so the
 # .env file behaves as data, not code (no `$(...)` or backticks).
+#
+# REL-TRAY-08 (D-18-09): tracks malformed lines (no '=' after export
+# strip) and writes the first failure to the sentinel at
+# $HOME/.otto-gw/.config-error so the tray surfaces it as StateError.
+# On a clean parse the sentinel is removed — failures should not stick
+# across edits.
 load_env_file() {
     local file="$1"
     [[ -f "$file" ]] || return 0
-    local line key val
+    local line key val lineno=0 first_error=""
+    # SC2094 false positive: $(basename "$file") inside the body is read-only;
+    # the < "$file" redirect is the read side only.
+    # shellcheck disable=SC2094
     while IFS= read -r line || [[ -n "$line" ]]; do
+        lineno=$((lineno + 1))
         # Strip leading whitespace.
         line="${line#"${line%%[![:space:]]*}"}"
         # Skip blanks and comments.
         [[ -z "$line" || "$line" == \#* ]] && continue
         # Strip optional leading "export ".
         line="${line#export }"
-        # Must contain '='.
-        [[ "$line" == *=* ]] || continue
+        # Must contain '='. Malformed lines that survive comment/blank
+        # filtering are surfaced via the sentinel so the operator sees
+        # them in the tray instead of getting a silent skip.
+        if [[ "$line" != *=* ]]; then
+            if [[ -z "$first_error" ]]; then
+                first_error="$(basename "$file"):${lineno}: missing '=' (got: ${line:0:80})"
+            fi
+            continue
+        fi
         key="${line%%=*}"
         val="${line#*=}"
         # Strip surrounding single or double quotes (one layer only).
@@ -222,6 +274,12 @@ load_env_file() {
         fi
         export "$key=$val"
     done < "$file"
+    if [[ -n "$first_error" ]]; then
+        echo "config parse error: $first_error" >&2
+        write_config_error_sentinel "$first_error"
+    else
+        clear_config_error_sentinel
+    fi
 }
 
 # extract_env_any reads $1, finds the first KEY=value line for $2 (matching

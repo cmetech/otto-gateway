@@ -18,11 +18,11 @@ import (
 //
 // Five cases enumerated in 18-03-PLAN.md Task 1 <behavior>:
 //
-//   A1 — sentinel content present       → StateError + "config error: " prefix
-//   A2 — sentinel absent (empty field)  → not StateError (normal FSM path)
-//   A3 — sentinel content > 200 bytes   → Detail capped to ≤ 200 bytes (after the prefix)
-//   A4 — sentinel content multi-line    → only first line surfaces
-//   A5 — sentinel + pidAlive + healthOK → sentinel wins (StateError, not Running)
+//	A1 — sentinel content present       → StateError + "config error: " prefix
+//	A2 — sentinel absent (empty field)  → not StateError (normal FSM path)
+//	A3 — sentinel content > 200 bytes   → Detail capped to ≤ 200 bytes (after the prefix)
+//	A4 — sentinel content multi-line    → only first line surfaces
+//	A5 — sentinel + pidAlive + healthOK → sentinel wins (StateError, not Running)
 //
 // Cases A3 and A4 model what the poller does before assigning to
 // stateInput.ConfigError (first-line trim + 200-byte cap per D-18-09 /
