@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os/exec"
 	"runtime/debug"
 	"time"
 
@@ -246,6 +247,28 @@ func (a *Adapter) handleChat(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusServiceUnavailable,
 				"pool_exhausted: all workers busy; retry in 5s")
 			return
+		}
+		// D-18-06 REL-HTTP-06: emit a WARN that mirrors the REL-HTTP-03
+		// field set (ndjson.go finalizeNDJSON's mid-stream worker-death
+		// log). worker_pid:0 and bytes_streamed:0 are placeholders — the
+		// RunHandle interface does not expose a Pid accessor (CONTEXT.md
+		// §D-18-06) and Run failed before any chunk was streamed. The
+		// WARN fires BEFORE writeError so operator log timestamps align
+		// with the 500 response. kiro_exit_code is appended only when
+		// errors.As reveals an *exec.ExitError in the chain.
+		if a.cfg.Logger != nil {
+			logArgs := []any{
+				"session_id", "",
+				"worker_pid", 0, // placeholder: RunHandle exposes no Pid (D-18-06)
+				"bytes_streamed", 0, // placeholder: Run failed before any chunk
+				"request_id", plugin.RequestIDFromContext(ctx),
+				"err", err,
+			}
+			var exitErr *exec.ExitError
+			if errors.As(err, &exitErr) {
+				logArgs = append(logArgs, "kiro_exit_code", exitErr.ExitCode())
+			}
+			a.cfg.Logger.Warn("ollama: streaming eng.Run failed", logArgs...)
 		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -523,6 +546,28 @@ func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusServiceUnavailable,
 				"pool_exhausted: all workers busy; retry in 5s")
 			return
+		}
+		// D-18-06 REL-HTTP-06: emit a WARN that mirrors the REL-HTTP-03
+		// field set (ndjson.go finalizeNDJSON's mid-stream worker-death
+		// log). worker_pid:0 and bytes_streamed:0 are placeholders — the
+		// RunHandle interface does not expose a Pid accessor (CONTEXT.md
+		// §D-18-06) and Run failed before any chunk was streamed. The
+		// WARN fires BEFORE writeError so operator log timestamps align
+		// with the 500 response. kiro_exit_code is appended only when
+		// errors.As reveals an *exec.ExitError in the chain.
+		if a.cfg.Logger != nil {
+			logArgs := []any{
+				"session_id", "",
+				"worker_pid", 0, // placeholder: RunHandle exposes no Pid (D-18-06)
+				"bytes_streamed", 0, // placeholder: Run failed before any chunk
+				"request_id", plugin.RequestIDFromContext(ctx),
+				"err", err,
+			}
+			var exitErr *exec.ExitError
+			if errors.As(err, &exitErr) {
+				logArgs = append(logArgs, "kiro_exit_code", exitErr.ExitCode())
+			}
+			a.cfg.Logger.Warn("ollama: streaming eng.Run failed", logArgs...)
 		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
