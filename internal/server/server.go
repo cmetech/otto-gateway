@@ -179,11 +179,17 @@ type Server struct {
 	// Shutdown for the full 30s grace (REL-HTTP-01).
 	shutdownCh chan struct{}
 
-	// forceCloseCh is closed by RunUntilSignal on second-signal force-exit.
-	// Run() selects on this channel while waiting for srv.Shutdown to return;
-	// when closed it calls srv.Close() which immediately tears down in-flight
-	// requests so Run unblocks promptly instead of leaking a goroutine
-	// parked inside the 30s graceful Shutdown (WR-08).
+	// forceCloseCh is the second-signal force-exit channel (WR-08). Allocated
+	// by RunUntilSignal before invoking Run; nil when Run is called directly.
+	// The nil-channel select arm in Run() is intentional — direct Run callers
+	// (tests, embedded usage) have no signal path and therefore cannot force-
+	// close. A receive on a nil channel never proceeds, so the select arm
+	// simply never fires for direct callers, and Shutdown runs to completion
+	// (or returns its own error) without the force-close branch ever being
+	// taken. When RunUntilSignal handles a second SIGINT it closes this
+	// channel, which causes Run to call srv.Close() and tear down in-flight
+	// requests immediately instead of leaking a goroutine parked inside the
+	// 30s graceful Shutdown (QUAL-03 / D-20-04 / D-20-05).
 	forceCloseCh chan struct{}
 }
 
@@ -198,14 +204,16 @@ func New(cfg config.Config, logger *slog.Logger, version string) *Server {
 // NewWithCommit is like New but also accepts a commit hash for the version endpoint.
 func NewWithCommit(cfg config.Config, logger *slog.Logger, version, commit string) *Server {
 	s := &Server{
-		cfg:          cfg,
-		logger:       logger,
-		version:      version,
-		commit:       commit,
-		start:        time.Now(),
-		addr:         cfg.HTTPAddr,
-		shutdownCh:   make(chan struct{}),
-		forceCloseCh: make(chan struct{}),
+		cfg:        cfg,
+		logger:     logger,
+		version:    version,
+		commit:     commit,
+		start:      time.Now(),
+		addr:       cfg.HTTPAddr,
+		shutdownCh: make(chan struct{}),
+		// forceCloseCh intentionally left nil — allocated by RunUntilSignal
+		// before invoking Run; direct Run callers observe nil and the
+		// force-close select arm never fires (D-20-04).
 	}
 	s.router = chi.NewRouter()
 
@@ -261,18 +269,20 @@ func NewFromConfig(cfg Config) *Server {
 		shutdownCh = make(chan struct{})
 	}
 	s := &Server{
-		logger:       logger,
-		version:      cfg.Version,
-		commit:       cfg.Commit,
-		start:        time.Now(),
-		pool:         cfg.Pool,
-		poolDetail:   cfg.PoolDetail,
-		poolHealth:   cfg.PoolHealth,
-		registry:     cfg.Registry,
-		hooks:        cfg.Hooks, // Phase 8 OBSV-04
-		addr:         cfg.HTTPAddr,
-		shutdownCh:   shutdownCh,
-		forceCloseCh: make(chan struct{}),
+		logger:     logger,
+		version:    cfg.Version,
+		commit:     cfg.Commit,
+		start:      time.Now(),
+		pool:       cfg.Pool,
+		poolDetail: cfg.PoolDetail,
+		poolHealth: cfg.PoolHealth,
+		registry:   cfg.Registry,
+		hooks:      cfg.Hooks, // Phase 8 OBSV-04
+		addr:       cfg.HTTPAddr,
+		shutdownCh: shutdownCh,
+		// forceCloseCh intentionally left nil — allocated by RunUntilSignal
+		// before invoking Run; direct Run callers observe nil and the
+		// force-close select arm never fires (D-20-04).
 	}
 	s.router = chi.NewRouter()
 	s.router.Use(middleware.RequestID)
@@ -518,6 +528,13 @@ func (s *Server) RunUntilSignal(ctx context.Context) error {
 			// ctx cancelled upstream (e.g. by main bootCtx).
 		}
 	}()
+
+	// Allocate the force-close channel before spawning Run so the goroutine
+	// observes a non-nil channel on its select arm. Direct Run callers (no
+	// signal handling) leave this nil — the nil-channel select arm never
+	// fires, which is exactly the contract documented on the field
+	// declaration (QUAL-03 / D-20-04).
+	s.forceCloseCh = make(chan struct{})
 
 	// Run the server; also observe forceErrCh so a second Ctrl-C terminates
 	// the blocking srv.Shutdown call immediately.
