@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.10.3
 milestone_name: Reliability Closeout
-status: Milestone scaffold written. Ready for /gsd-discuss-phase 18 (or /gsd-plan-phase 18 directly — scope is well-bounded from REQUIREMENTS.md).
+status: completed
 stopped_at: Completed 17-02-PLAN.md (REL-POOL-02 goleak deflake — ca258f9). Phase 17 complete; make ci exit 0 end-to-end; v1.9.1 ready to ship.
-last_updated: "2026-06-12T00:28:05.804Z"
-last_activity: 2026-06-11 — Milestone v1.10.3 scaffold written; 3 phases added to ROADMAP
+last_updated: "2026-06-12T01:40:30.691Z"
+last_activity: 2026-06-12 -- Phase 18 marked complete
 progress:
-  total_phases: 0
-  completed_phases: 0
-  total_plans: 0
-  completed_plans: 0
-  percent: 0
+  total_phases: 26
+  completed_phases: 23
+  total_plans: 84
+  completed_plans: 84
+  percent: 88
 ---
 
 # Project State
@@ -28,8 +28,8 @@ See: .planning/PROJECT.md (updated 2026-06-07)
 Milestone: v1.10.3 Reliability Closeout — PLANNING
 Phases scaffolded: 18 (Reliability long-tail), 19 (acp.Stream concurrency fix), 20 (Code-review backlog burn-down)
 Requirements: 17 (REL-CFG-05/06/07 + REL-HTTP-06/07 + REL-OBSV-02/03/04 + REL-TRAY-08/09 + REL-ACP-01 + QUAL-01..06)
-Status: Milestone scaffold written. Ready for /gsd-discuss-phase 18 (or /gsd-plan-phase 18 directly — scope is well-bounded from REQUIREMENTS.md).
-Last activity: 2026-06-11 — Milestone v1.10.3 scaffold written; 3 phases added to ROADMAP
+Status: Phase 18 complete
+Last activity: 2026-06-12 -- Phase 18 marked complete
 
 ## Performance Metrics
 
