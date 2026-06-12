@@ -1,5 +1,48 @@
 # Milestones
 
+## v1.10.3 Reliability Closeout (Shipped: 2026-06-12)
+
+**Phases completed:** 3 phases (18, 19, 20), 5 plans
+**Requirements:** 17/17 satisfied (REL-CFG-05/06/07, REL-HTTP-06/07, REL-OBSV-02/03/04, REL-TRAY-08/09, REL-ACP-01, QUAL-01..06)
+**Audit:** [milestones/v1.10.3-MILESTONE-AUDIT.md](milestones/v1.10.3-MILESTONE-AUDIT.md) · **Archive:** [milestones/v1.10.3-ROADMAP.md](milestones/v1.10.3-ROADMAP.md)
+
+**Delivered:** Closed the long-tail surfaced at v1.10.2 release: 8 deferred Low-severity findings from the 2026-06-11 reliability review (Phase 18), the production `acp.Stream.Result` race flagged by Phase 17's threat scan (Phase 19), and 6 Info-level Phase 16/17 code-review cleanups (Phase 20). 17/17 requirements closed; `make ci` exits 0 end-to-end at milestone tip.
+
+**Key accomplishments:**
+
+- **Phase 18 — Reliability long-tail (10 REQ-IDs, 3 parallel plans).** Config hardening: degenerate `AUTH_TOKEN` / `ALLOWED_IPS` now WARN + treat-as-unset (REL-CFG-05); `KIRO_CMD` / `KIRO_CWD` errors name the variable + `~` expansion for `KIRO_CWD` (REL-CFG-06); HTTP_ADDR bind-then-close port probe surfaces port-in-use pre-warmup (REL-CFG-07). Observability symmetry: Ollama streaming `eng.Run` failures emit mirrored REL-HTTP-03 WARN (REL-HTTP-06); defense-in-depth `defer recover()` on 4 background goroutine sites (REL-HTTP-07); worker death + recovery emit paired causal-chain log (REL-OBSV-02); kiro-cli stderr captured into structured slog file with `worker_pid` / `slot_id` tags (REL-OBSV-03); single `Config.AdminTailPath` source-of-truth for log-tail (REL-OBSV-04). Tray honesty: sentinel-driven `StateError` for wrapper dotenv parse failures (REL-TRAY-08); macOS support-bundle tray rows either correct or removed (REL-TRAY-09).
+- **Phase 19 — acp.Stream concurrency fix (1 REQ-ID, 1 plan).** REL-ACP-01: `acp.Stream.Result` now snapshots `*s.result` under `s.mu` (`cp := *s.result; return &cp`) instead of returning a pointer that races `close(s.done)` vs the StopReason write. Signature unchanged. New 60-iteration race-loop whitebox regression test (`internal/acp/regression_rel_acp_01_test.go`) — 6,000 race trials zero data-race reports. Phase 17 test-side drain-Chunks-then-Result workaround in `regression_rel_pool_02_test.go` surgically reverted (-20 / +0).
+- **Phase 20 — Code-review backlog burn-down (6 REQ-IDs, 1 plan, 6 atomic refactor commits).** QUAL-01: `escapeApplescript` escape-set expanded to cover newlines + control chars with table-driven darwin-build-tag unit tests. QUAL-02: `tooltipForState` deduplicated into shared `cmd/otto-tray/tooltip.go` under `//go:build darwin || windows`. QUAL-03: `forceCloseCh` allocation relocated to `RunUntilSignal` (nil-channel select-never idiom); new `internal/server/run_direct_test.go` regression guard. QUAL-04: `tailLines` O(n²) prepend replaced with collect-then-reverse. QUAL-05: dead `sessions`/`sessionsMu` vars removed from REL-POOL-02 test. QUAL-06: stale `removeSlot` comment refreshed.
+- **Trust gates green end-to-end.** `make ci` at tip (`0871a38`): `go fmt` + `go vet` + `go build` + `golangci-lint run` (0 issues) + `go test -race ./...` + `go-arch-lint` + `govulncheck` all clean. TRST-04 adapter-over-canonical boundary preserved across all 3 phases. Zero touches to OpenAI / Anthropic adapters; Ollama adapter touched only for REL-HTTP-06's server-side WARN log (no wire change). All 3 v1 client integrations (LangFlow → Ollama, Pi-SDK → OpenAI, loop24-client → Anthropic) byte-identical at the wire.
+- **Phase 20 self-review closed 2 Warnings inline** via `/gsd-code-review 20 --fix`: WR-01 guarded `forceCloseCh` allocation with `sync.Once` (commit `275def8`); WR-02 dropped `time.Sleep(100ms)` readiness anti-pattern from new Run-direct test (commit `cdb2fe5`).
+- **Phase 18 mid-milestone CI repair.** Commit `af850a2` retroactively dropped an unused `level` param from `startAndDrain` that broke baseline CI between Phase 19's completion and Phase 20's execution (`unparam` lint regression). Recorded for retrospective.
+
+**Tech debt deferred (non-blocking, documented in audit):**
+
+- **WR-03:** `time.Sleep(100ms)` readiness pattern in `internal/pool/regression_rel_pool_02_test.go:134` predates v1.10.3 (introduced Plan 17-02 / D-17-04); deferred to a future phase that owns pool-test readiness signalling.
+- **IN-01..IN-05** (5 Info findings from Phase 20 self-review): half-done `tooltipForState` dedup leaving `cmd/otto-tray/tray.go` open-coding the header format; missing CRLF / strip / strip-only cases in `escapeApplescript` table tests; allocating 2-element slice for `for range []*blockingPromptClient{bc0,bc1}`; `RunUntilSignal`'s defensive select-then-close(forceCloseCh) is dead code under the new `sync.Once` writer; new `cmd/otto-tray/tooltip.go` has no companion test file.
+- **Lint hygiene:** stale `golangci-lint` cache pointing at deleted `/tmp/sv-20-reviewfix-*` worktrees can surface phantom `gosec G703` on cold runs (`golangci-lint cache clean` resolves). Candidate for a future hygiene phase: bake into `make lint` pre-step.
+
+**Human verification deferred (4 operator gates, out-of-band):**
+
+- REL-TRAY-02 (v1.9 carry) — Windows tray operator gate; code wired + statically verified.
+- REL-TRAY-03 (v1.9 carry) — macOS GUI-session tray operator gate; code wired + statically verified.
+- REL-TRAY-08 (new) — dotenv error → tray "config error" state; awaits visual confirmation on darwin/windows.
+- REL-TRAY-09 (new) — macOS support bundle tray diagnostics output; awaits human run.
+
+**Nyquist:** No `VALIDATION.md` for Phases 18/19/20 — milestone scope was reliability bug-fix + refactor cleanup, not feature coverage. Same posture as v1.9 audit.
+
+**Acknowledged carry-forward at close (no new v1.10.3 blockers):**
+
+- 21 stale `quick_tasks` tracking entries (all substantively shipped during v1.5–v1.8; tracking metadata never backfilled).
+- 4 UAT-gap + 3 verification-gap inherited operator-deferred items from v1.5 / v1.8 / v1.9 (Phase 02 / 06 / 06.1 / 08 / 15).
+- 2 new v1.10.4 todos: `bounded-bufio-reader-readstring-stderrdrainloop` (WR-01 ADR follow-up) + `perf-baseline-vs-node` (pre-existing).
+- SEED-001 Authenticode (dormant; awaits cert procurement).
+
+**Git stats:** Phases 18+19+20 spanned 2026-06-11 → 2026-06-12 (~24h elapsed). 84 commits on `main` since milestone open (`b2c0d8a`). All work on `main` (branching strategy `none`).
+
+---
+
 ## v1.9 Reliability Hardening (Shipped: 2026-06-11)
 
 **Phases completed:** 3 phases (14, 15, 16), 12 plans

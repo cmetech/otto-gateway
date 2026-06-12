@@ -2,10 +2,10 @@
 gsd_state_version: 1.0
 milestone: v1.10.3
 milestone_name: Reliability Closeout
-status: executing
+status: Awaiting next milestone
 stopped_at: Phase 20 context gathered
-last_updated: "2026-06-12T13:10:34.707Z"
-last_activity: 2026-06-12
+last_updated: "2026-06-12T17:32:29.113Z"
+last_activity: 2026-06-12 — Milestone v1.10.3 completed and archived
 progress:
   total_phases: 26
   completed_phases: 25
@@ -18,20 +18,17 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-06-07)
+See: .planning/PROJECT.md (updated 2026-06-12)
 
 **Core value:** All three API surfaces (OpenAI for Pi SDK, Ollama for LangFlow, Anthropic for loop24-client/GSD Pi) serve their respective clients without those clients knowing kiro-cli exists, with one place to enforce policy.
-**Current focus:** Phase 20 — code-review-backlog-burn-down
+**Current focus:** Planning next milestone (v1.10.4 or next). v1.10.3 Reliability Closeout SHIPPED 2026-06-12.
 
 ## Current Position
 
-Phase: 20
-Plan: Not started
-Milestone: v1.10.3 Reliability Closeout — PLANNING
-Phases scaffolded: 18 (Reliability long-tail), 19 (acp.Stream concurrency fix), 20 (Code-review backlog burn-down)
-Requirements: 17 (REL-CFG-05/06/07 + REL-HTTP-06/07 + REL-OBSV-02/03/04 + REL-TRAY-08/09 + REL-ACP-01 + QUAL-01..06)
-Status: Executing Phase 20
-Last activity: 2026-06-12
+Phase: Milestone v1.10.3 complete
+Plan: —
+Status: Awaiting next milestone
+Last activity: 2026-06-12 — Milestone v1.10.3 completed and archived
 
 ## Performance Metrics
 
@@ -184,25 +181,34 @@ None yet.
 
 ## Deferred Items
 
-Items acknowledged and carried forward from previous milestone close:
+Items acknowledged and carried forward at each milestone close:
 
 | Category | Item | Status | Deferred At |
 |----------|------|--------|-------------|
-| Concurrency | Phase 08.3.1 ACP Per-Session Stream Demux | Re-deferred to v1.9+ (awaits multi-tenant deployment driver) | 2026-06-07 (v1.8 narrow-scope decision) |
-| Distribution | Windows Authenticode code-signing | Re-deferred to v1.9+ (awaits code-signing cert procurement) | 2026-06-07 (v1.8 narrow-scope decision) |
-| Tracking | 30 quick_tasks marked `missing` (stale tracking entries — substantive work shipped 2026-05-23..2026-06-03, see Quick Tasks Completed table) | Acknowledged at v1.8 close | 2026-06-07 (v1.8 close) |
-| Tracking | 1 todo + 1 seed (Authenticode dormant) | Acknowledged at v1.8 close | 2026-06-07 (v1.8 close) |
-| Verification | 8 UAT gaps + 3 verification_gaps in `human_needed` state (includes Phase 13 HUMAN-UAT — 3 inherited operator-deferred smoke tests from Phase 06/08.4) | Acknowledged at v1.8 close — none are new v1.8 blockers | 2026-06-07 (v1.8 close) |
+| Concurrency | Phase 08.3.1 ACP Per-Session Stream Demux | Re-deferred (awaits multi-tenant deployment driver) | 2026-06-12 (v1.10.3 close — carry-forward from v1.8) |
+| Distribution | Windows Authenticode code-signing (SEED-001 dormant) | Re-deferred (awaits code-signing cert procurement) | 2026-06-12 (v1.10.3 close — carry-forward from v1.8) |
+| Reliability | WR-03 — `time.Sleep(100ms)` readiness pattern in `internal/pool/regression_rel_pool_02_test.go:134` (predates v1.10.3) | Deferred to a future phase that owns pool-test readiness signalling | 2026-06-12 (v1.10.3 close, audit-recorded) |
+| Quality | Phase 20 self-review IN-01..IN-05 (half-done tooltipForState dedup, missing escapeApplescript test cases, 2-elem range alloc, dead RunUntilSignal select arm, missing tooltip.go test file) | Deferred to v1.10.4 | 2026-06-12 (v1.10.3 close) |
+| Reliability | WR-01 ADR — bounded `bufio.Reader.ReadString` in `stderrDrainLoop` (todo captured 2026-06-12) | Deferred to v1.10.4 | 2026-06-12 (v1.10.3 close) |
+| Lint hygiene | `golangci-lint cache clean` pre-step in `make lint` (phantom G703 from stale worktree cache) | Candidate for future hygiene phase | 2026-06-12 (v1.10.3 close, audit-recorded) |
+| Tracking | 21 stale `quick_tasks` (substantive work shipped v1.5–v1.8; tracking metadata never backfilled) | Acknowledged (re-carry from v1.8) | 2026-06-12 (v1.10.3 close) |
+| Verification | 4 UAT-gap + 3 verification-gap inherited operator-deferred items (Phase 02, 06, 06.1, 08, 15 — Windows/macOS GUI gates from v1.5/v1.8/v1.9; no platform access change) | Acknowledged — none are new v1.10.3 blockers | 2026-06-12 (v1.10.3 close) |
+| Verification | REL-TRAY-02/03/08/09 — 4 tray operator gates awaiting hand-eyes-on confirmation on Windows + macOS GUI session | Code wired + statically verified; human verification out-of-band | 2026-06-12 (v1.10.3 close, audit-recorded) |
+| Performance | `perf-baseline-vs-node` todo (pre-existing) | Deferred to v1.10.4+ | 2026-06-12 (v1.10.3 close, todo carried) |
 
 ## Session Continuity
 
-Last session: 2026-06-12T12:31:26.317Z
-Stopped at: Phase 20 context gathered
-Resume file: 
+Last session: 2026-06-12 — Milestone v1.10.3 completed and archived
+Stopped at: Awaiting next milestone (v1.10.4 or next)
+Resume file: —
 
-.planning/phases/20-code-review-backlog-burn-down/20-CONTEXT.md
+**Next steps:**
 
-- Tag v1.9.1 per D-17-03: `git tag -a v1.9.1 -m "v1.9.1 — Trust-Gate Restoration: make ci clean baseline restored"` at HEAD ca258f9 (or the metadata commit that follows).
-- Push v1.9.1 to GitHub: `git push origin v1.9.1` (origin URL = github.com:cmetech/otto-gateway.git).
-- Create GitHub release: `gh release create v1.9.1` with body referencing the v1.9 milestone audit + Phase 17 trust-gate closeout (17-01 f727b24 + 17-02 ca258f9 + 17-03 b78fd09).
-- Open v1.10 with /gsd-new-milestone — first backlog item should be the acp.Stream close-vs-read race hardening (see Phase 17 Plan 02 SUMMARY Threat Flags).
+- Tag `v1.10.3` at the milestone-close commit: `git tag -a v1.10.3 -m "v1.10.3 — Reliability Closeout: 17/17 reqs (10 Lows + REL-ACP-01 + 6 QUAL cleanups); make ci green end-to-end"`.
+- Push tag: `git push origin v1.10.3` (origin: github.com:cmetech/otto-gateway.git).
+- Optional: `gh release create v1.10.3` referencing v1.10.3 milestone audit + Phase 18/19/20 SUMMARYs.
+- Open next milestone with `/gsd-new-milestone v1.10.4` — first candidate phase: WR-01 bounded `bufio.Reader.ReadString` ADR + Phase 20 IN-01..IN-05 tail. See PROJECT.md "Next Milestone Goals" for full candidate list.
+
+## Operator Next Steps
+
+- Start the next milestone with /gsd-new-milestone

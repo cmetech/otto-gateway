@@ -32,22 +32,31 @@ and the single governance surface are the load-bearing properties.
 
 ## Current State
 
-**Shipped:** v1.10.2 — Reliability Hardening + Trust-Gate Restoration (2026-06-11)
-- GSD milestone "v1.9 Reliability Hardening" + Phase 17 "Trust-Gate Restoration" folded into product release tag `v1.10.2`.
-- 23 reliability findings closed (1 Critical + 8 High + 14 Medium) + 6 trust-gate items. `-race` trust gate restored; `make ci` exit 0 end-to-end; arch-lint TRST-04 boundary preserved via `canonical.ErrPoolExhausted`.
-- Release: https://github.com/cmetech/otto-gateway/releases/tag/v1.10.2
-- Audit: [milestones/v1.9-MILESTONE-AUDIT.md](milestones/v1.9-MILESTONE-AUDIT.md) — 27/27 requirements, 8/8 cross-phase seams WIRED, 26/26 + 13/13 threats CLOSED.
+**Shipped:** v1.10.3 — Reliability Closeout (2026-06-12)
+- 17/17 requirements closed across 3 phases (18, 19, 20) and 5 plans.
+- Phase 18: 10 Low-severity reliability long-tail findings (config hardening REL-CFG-05/06/07, observability symmetry REL-HTTP-06/07 + REL-OBSV-02/03/04, tray honesty REL-TRAY-08/09).
+- Phase 19: REL-ACP-01 — `acp.Stream.Result` snapshot-under-lock closes the production race flagged by Phase 17's threat scan; Phase 17 test-side workaround surgically reverted.
+- Phase 20: 6 Info-level Phase 16/17 code-review cleanups (QUAL-01..06) as 6 atomic refactor commits.
+- `make ci` exits 0 end-to-end at milestone tip (`0871a38`); no API surface change; all 3 v1 client integrations byte-identical at the wire.
+- Audit: [milestones/v1.10.3-MILESTONE-AUDIT.md](milestones/v1.10.3-MILESTONE-AUDIT.md) — 17/17 requirements, 6/6 cross-phase seams WIRED, 3/3 client flows preserved.
+- Tag pending: `v1.10.3`. Earlier release: [v1.10.2](https://github.com/cmetech/otto-gateway/releases/tag/v1.10.2).
 
-## Current Milestone: v1.10.3 Reliability Closeout
+## Next Milestone Goals
 
-**Goal:** Close the deferred long-tail from the 2026-06-11 reliability review + Phase 16/17 code reviews — small, well-scoped fixes that each remove a specific way the gateway lies to its operator or its CI signal.
+**Open via `/gsd-new-milestone v1.10.4` (or next semver).** Candidate themes surfaced by v1.10.3 close:
 
-**Target features:**
-- **Reliability tail** (8 deferred Low-severity findings from the 2026-06-11 audit): config hardening (C-4/5/6), observability symmetry (O-2/3/4), HTTP error logging (H-6/7), tray honesty (T-8/9).
-- **Concurrency fix** (1 production race): `acp.Stream.Result` copies `*s.result` under `s.mu` to remove the Phase 17 test-side workaround.
-- **Code-review backlog burn-down** (6 Info findings deferred from Phase 16/17 close): escapeApplescript hardening, tooltipForState dedup, forceCloseCh contract doc, tailLines O(n²) cleanup, dead-test-var removal, stale-comment fix.
+- **v1.10.4 reliability micro-batch (proposed driver: 1 ADR + Phase 20 IN-01..IN-05 tail):**
+  - Bounded `bufio.Reader.ReadString` in `stderrDrainLoop` (WR-01 ADR, captured in `.planning/todos/`).
+  - Phase 20 self-review IN-01..IN-05: complete `tooltipForState` dedup (move `applyState` header off the open-coded format), CRLF/strip/strip-only cases in `escapeApplescript` table tests, drop allocated 2-elem slice in `for range []*blockingPromptClient{bc0,bc1}`, remove dead `select`-then-`close(forceCloseCh)` arm in `RunUntilSignal`, add companion test for `cmd/otto-tray/tooltip.go`.
+  - WR-03 pool-test readiness signalling (replace `time.Sleep(100ms)` in `regression_rel_pool_02_test.go:134` with `started` channel or `Pool.Stats().Busy` poll).
+- **Lint hygiene phase:** bake `golangci-lint cache clean` into `make lint` pre-step to make cold runs after worktree GC reproducible.
+- **Performance baseline vs Node reference** (pre-existing todo `perf-baseline-vs-node.md`).
 
-**Out of scope:** SEED-001 Authenticode (no cert yet), Phase 08.3.1 ACP demux (still no multi-tenant driver), new features, performance work.
+**Carry-forward (still deferred, not blockers):**
+- SEED-001 Authenticode (awaits cert procurement).
+- Phase 08.3.1 ACP Per-Session Stream Demux (awaits multi-tenant deployment driver).
+- 4 operator-deferred tray HUMAN-UAT gates (REL-TRAY-02/03 from v1.9; REL-TRAY-08/09 from v1.10.3).
+- 4 UAT + 3 verification inherited operator-deferred items (Phase 02, 06, 06.1, 08, 15).
 
 <details>
 <summary>v1.9 Reliability Hardening — full scope (collapsed)</summary>
@@ -133,6 +142,17 @@ and the single governance surface are the load-bearing properties.
 - ✓ **Distribution + trust gates** (REQ-BUILD-01, REQ-TRST-01..08, REQ-CI-01..06) — Single static binary cross-compiled to darwin-arm64/amd64, linux-amd64, windows-amd64 from macOS; trust-gate suite (gofumpt → vet → build → golangci-lint → govulncheck → `go test -race ./...`) runs on every PR + nightly.
 - ✓ **Observability** (REQ-OBSERV-01..04) — `/health` + `/health/agents` per-slot; structured slog logging; admin observability UI at `/admin`.
 
+**v1.9 + v1.10.3 reliability bundle** — 23 Critical/High/Medium + 11 Low reliability findings + 1 acp.Stream race + 6 trust-gate + 6 Info-level code-review cleanups all closed (44 REQ-IDs total).
+
+- ✓ **REL-POOL-\*** — bounded acquire + cleanup + CAS-guarded activeStream + per-request stream ctx + atomic LastUsed + taskkill /T /F + Ctrl-C orphan-tree kill (v1.9 + v1.9.1).
+- ✓ **REL-HTTP-\*** — shutdownCh + StopWatchdog removal + surface-native terminal frames + body-read deadline + tailer line cap + Ollama streaming WARN + goroutine panic recovery (v1.9 + v1.10.3).
+- ✓ **REL-HOOKS-\*** — PostHook on non-streaming error paths (v1.9).
+- ✓ **REL-TRAY-\*** — PID identity + Windows support-bundle + macOS icon/tooltip + non-blocking notify + status enum consumer + bundle bounds + dotenv-error sentinel + macOS support-bundle row honesty (v1.9 + v1.10.3). REL-TRAY-02/03/08/09 await operator-deferred human runs on target hardware.
+- ✓ **REL-CFG-\*** — fail-fast on negative/zero pool/session knobs + degenerate AUTH_TOKEN/ALLOWED_IPS WARN + KIRO_CMD/KIRO_CWD named errors + HTTP_ADDR port probe pre-warmup (v1.9 + v1.10.3).
+- ✓ **REL-OBSV-\*** — pool exhaustion WARN + worker death/recovery causal pair + kiro-cli stderr → structured slog + single AdminTailPath source (v1.9 + v1.10.3).
+- ✓ **REL-ACP-01** — `acp.Stream.Result` snapshot-under-lock (v1.10.3); Phase 17 test-side workaround reverted.
+- ✓ **TRST-04 restored + make ci green** — `canonical.ErrPoolExhausted` (v1.9.1, folded into v1.10.2 tag); v1.10.3 closes 6 Info-level QUAL-01..06 cleanups.
+
 **Outstanding operator-deferred smoke items (not blocking — code paths verified by automated + integration tests):**
 
 - `02-HUMAN-UAT.md`: 3 items (real-kiro round-trip with operator auth, LangFlow zero-reconfig, auth posture smoke) — implicitly exercised by Phases 8.2 + 8.4 in production
@@ -140,16 +160,18 @@ and the single governance surface are the load-bearing properties.
 
 ### Active
 
-<!-- Current scope for v1.9 Reliability Hardening. -->
+<!-- Open for next milestone (v1.10.4+). v1.9 + v1.10.3 reliability work shipped; remaining items are the long-tail surfaced by Phase 20 self-review + WR-01 ADR + pre-existing perf todo. -->
 
-v1.9 ("Reliability Hardening") milestone scope — opened 2026-06-11 via `/gsd-new-milestone v1.9`. Detailed REQ-ID list in `.planning/REQUIREMENTS.md`. High-level categories:
-
-- [ ] **REL-VERIFY-\***: Phase 14 — confirm each of the 23 review findings is real against current source before any fix work
-- [ ] **REL-POOL-\***: Subprocess pool / ACP lifecycle reliability (no permanent pool shrink; no orphaned process trees; no silent stream-clobber on slot reuse; correct Windows process-tree kill; data-race-free session metadata)
-- [ ] **REL-HTTP-\***: HTTP surface reliability (graceful shutdown that doesn't hang on long-lived SSE; idle-timeout that cancels the hung worker; mid-stream worker death surfaces as an explicit error frame on all three surfaces; bounded request-body read; admin tailer line cap enforced)
-- [ ] **REL-HOOKS-\***: PostHook discipline on non-streaming error paths (no `sync.Map` leaks, no missing chat-trace records on failed requests)
-- [ ] **REL-TRAY-\***: Tray + wrapper reliability (PID-identity check before stop/restart; macOS gateway-death surfacing; non-modal Windows notify; tray probe uses `/health/pool`; bundle-path parsing tolerant of stdout chatter; bounded bundle size/time)
-- [ ] **REL-CFG-\***: Config + observability (fail-fast on negative/zero pool/session/ping knobs; pool-wait diagnostic visible at default log level; degenerate `EMBEDDING_MODEL_DEFAULT` documented or removed)
+- [ ] **v1.10.4-bounded-bufio-reader-readstring-stderrdrainloop** (WR-01 ADR) — bound the `bufio.Reader.ReadString` call in `stderrDrainLoop` so a pathological pegged-no-newline producer can't OOM the gateway.
+- [ ] **Phase 20 IN-01..IN-05 tail:**
+  - IN-01: complete `tooltipForState` dedup — `cmd/otto-tray/tray.go` `applyState` still open-codes the `OTTO Gateway · {state}` header format.
+  - IN-02: `escapeApplescript` table tests missing CRLF (`\r\n`), leading/trailing strip, and strip-only cases.
+  - IN-03: drop allocated 2-elem slice in `for range []*blockingPromptClient{bc0,bc1}` (iterate twice without alloc).
+  - IN-04: remove dead `select`-then-`close(forceCloseCh)` arm in `RunUntilSignal` (asymmetric vs load-bearing `shutdownCh` close).
+  - IN-05: add companion test file for new `cmd/otto-tray/tooltip.go`.
+- [ ] **WR-03 pool-test readiness signalling** — replace `time.Sleep(100ms)` in `internal/pool/regression_rel_pool_02_test.go:134` (introduced Plan 17-02 / D-17-04) with `started` channel on `blockingPromptClient` or `Pool.Stats().Busy` poll.
+- [ ] **Lint hygiene phase** — bake `golangci-lint cache clean` into `make lint` pre-step so cold runs after worktree GC are reproducible (phantom `gosec G703` from stale `/tmp/sv-*` worktree cache).
+- [ ] **Performance baseline vs Node reference implementation** (`perf-baseline-vs-node` todo).
 
 Source of truth for the underlying findings: [`docs/reviews/2026-06-11-reliability-review.md`](../docs/reviews/2026-06-11-reliability-review.md).
 
@@ -238,4 +260,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-06-11 — Milestone v1.9 "Reliability Hardening" OPENED. Driver: `docs/reviews/2026-06-11-reliability-review.md` (35 findings; 23 in scope as Critical/High/Medium, 12 Lows deferred to v1.10). Phase shape: 14 (Verify) → 15 (Critical+High fixes, 9) → 16 (Medium fixes, 14). Phase 16 includes P-5 (`Entry.LastUsed` data race) so trust-gate `-race` posture is restored. Earlier: Milestone v1.8 "Nyquist Coverage Uplift" SHIPPED. 1 phase (Phase 13), 6 plans, 7/7 REQ-IDs (NYQ-02/03/06/06.1/08/08.4/ALL) satisfied, zero carve-outs. Single-day milestone. 36 commits, 32 files changed, +3113/-239 LOC. Compliance ratio flipped 7/13 → 13/13 with zero production source edits. 3 inherited operator-deferred UAT items tracked in `13-HUMAN-UAT.md` (Phase 08.4 PII smoke, loop24-client tool-call UAT, Phase 06 `TestE2E_Tools_Cancel`). Milestone audit verdict: passed, zero blockers. Carryover to next milestone: Phase 08.3.1 ACP demux + Windows Authenticode (both await external triggers). Earlier: Milestone v1.7 "Go Stdlib CVE Cleanup" SHIPPED. 1 phase (Phase 12), 1 plan, 4/4 REQ-IDs (CVE-01/02/03 + CI-02) satisfied, zero carve-outs. Single-day milestone. 8 commits, 9 files changed, +892/-34 LOC (production diff: `go.mod | 2 +-`). `go.mod` bumped 1.25.0 → 1.26.4 (two-step per D-12-01: 1.26.3 surfaced 2 reachable residuals in net/http and x509, tightened to 1.26.4 — minimum patch level that closes all 23 baseline stdlib CVEs from GO-2026-5039 through GO-2025-4007). `govulncheck ./...` clean. `make ci` exits 0 end-to-end for the first time since v1.5 shipped — closes v1.6 Phase 11 D-11-01 carve-out. CI run 27081876026 confirms all 3 jobs green (lint+test-race+arch-lint+govulncheck, publish-dry-run, cross-compile). Audit verdict: passed, zero warnings. v1.8 backlog: Phase 08.3.1 ACP demux (re-re-deferred) + Nyquist coverage uplift (6 of 13 v1.5 phases non-compliant) + Windows Authenticode signing (cert procurement). Milestone artifacts archived at `.planning/milestones/v1.7-{ROADMAP,REQUIREMENTS,MILESTONE-AUDIT}.md`. Full per-phase history in `.planning/MILESTONES.md`.*
+*Last updated: 2026-06-12 — Milestone v1.10.3 "Reliability Closeout" SHIPPED. 3 phases (18, 19, 20), 5 plans, 17/17 REQ-IDs, zero carve-outs. Phase 18 closed 10 Low-severity reliability long-tail items (REL-CFG-05/06/07, REL-HTTP-06/07, REL-OBSV-02/03/04, REL-TRAY-08/09) across 3 parallel plans with zero file overlap. Phase 19 closed REL-ACP-01 (the `acp.Stream.Result` production race surfaced by Phase 17's threat scan) via copy-under-lock + surgical revert of the Phase 17 test-side workaround + 60-iter race-loop whitebox regression (6,000 trials zero data-race reports). Phase 20 closed QUAL-01..06 as 6 atomic refactor commits + 2 Warning-level inline fixes from self-review (WR-01 sync.Once guard for forceCloseCh, WR-02 drop time.Sleep readiness pattern). `make ci` exits 0 end-to-end at milestone tip; no API surface change (LangFlow/Pi-SDK/loop24-client byte-identical at the wire). Tech debt deferred to v1.10.4: WR-03 pool-test readiness signalling + Phase 20 self-review IN-01..IN-05 + WR-01 bounded bufio.ReadString ADR + lint cache hygiene + perf-baseline-vs-node. Audit verdict: passed, 17/17 reqs, 6/6 seams WIRED, 3/3 client flows preserved. Tag pending: `v1.10.3`. Earlier: Milestone v1.9 "Reliability Hardening" SHIPPED 2026-06-11. Driver: `docs/reviews/2026-06-11-reliability-review.md` (35 findings; 23 in scope as Critical/High/Medium, 12 Lows deferred to v1.10). Phase shape: 14 (Verify) → 15 (Critical+High fixes, 9) → 16 (Medium fixes, 14). Phase 16 includes P-5 (`Entry.LastUsed` data race) so trust-gate `-race` posture is restored. Earlier: Milestone v1.8 "Nyquist Coverage Uplift" SHIPPED. 1 phase (Phase 13), 6 plans, 7/7 REQ-IDs (NYQ-02/03/06/06.1/08/08.4/ALL) satisfied, zero carve-outs. Single-day milestone. 36 commits, 32 files changed, +3113/-239 LOC. Compliance ratio flipped 7/13 → 13/13 with zero production source edits. 3 inherited operator-deferred UAT items tracked in `13-HUMAN-UAT.md` (Phase 08.4 PII smoke, loop24-client tool-call UAT, Phase 06 `TestE2E_Tools_Cancel`). Milestone audit verdict: passed, zero blockers. Carryover to next milestone: Phase 08.3.1 ACP demux + Windows Authenticode (both await external triggers). Earlier: Milestone v1.7 "Go Stdlib CVE Cleanup" SHIPPED. 1 phase (Phase 12), 1 plan, 4/4 REQ-IDs (CVE-01/02/03 + CI-02) satisfied, zero carve-outs. Single-day milestone. 8 commits, 9 files changed, +892/-34 LOC (production diff: `go.mod | 2 +-`). `go.mod` bumped 1.25.0 → 1.26.4 (two-step per D-12-01: 1.26.3 surfaced 2 reachable residuals in net/http and x509, tightened to 1.26.4 — minimum patch level that closes all 23 baseline stdlib CVEs from GO-2026-5039 through GO-2025-4007). `govulncheck ./...` clean. `make ci` exits 0 end-to-end for the first time since v1.5 shipped — closes v1.6 Phase 11 D-11-01 carve-out. CI run 27081876026 confirms all 3 jobs green (lint+test-race+arch-lint+govulncheck, publish-dry-run, cross-compile). Audit verdict: passed, zero warnings. v1.8 backlog: Phase 08.3.1 ACP demux (re-re-deferred) + Nyquist coverage uplift (6 of 13 v1.5 phases non-compliant) + Windows Authenticode signing (cert procurement). Milestone artifacts archived at `.planning/milestones/v1.7-{ROADMAP,REQUIREMENTS,MILESTONE-AUDIT}.md`. Full per-phase history in `.planning/MILESTONES.md`.*
