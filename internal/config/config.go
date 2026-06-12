@@ -692,7 +692,17 @@ func Load() (Config, error) {
 	if ln, lerr := net.Listen("tcp", httpAddr); lerr != nil { //nolint:noctx
 		errs = append(errs, fmt.Errorf("config: HTTP_ADDR (%q): bind probe failed: %w", httpAddr, lerr))
 	} else {
-		_ = ln.Close()
+		// WR-03: surface a Close error instead of swallowing it. A failed
+		// Close means the probe listener is still holding the port and
+		// the real ListenAndServe will deterministically fail with
+		// EADDRINUSE 5–10s later — defeating the point of the probe.
+		// Close failure is rare (EBADF / EINTR under kernel pressure)
+		// but when it happens it is precisely the case the probe is
+		// supposed to prevent. Better to fail-fast with a named error
+		// than to defer to a confusing EADDRINUSE during ListenAndServe.
+		if cerr := ln.Close(); cerr != nil {
+			errs = append(errs, fmt.Errorf("config: HTTP_ADDR (%q): bind probe close failed: %w", httpAddr, cerr))
+		}
 	}
 
 	if len(errs) > 0 {
