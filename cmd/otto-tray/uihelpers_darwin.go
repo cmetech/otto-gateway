@@ -128,13 +128,44 @@ func confirmDialog(title, body, yesLabel, noLabel string) bool {
 	return strings.Contains(string(out), "button returned:"+yesLabel)
 }
 
+// escapeApplescript sanitizes operator-derived strings before they are
+// interpolated into an AppleScript string literal passed to `osascript -e`.
+//
+// Per D-20-01 (QUAL-01) the contract is:
+//   - `"` and `\` are prefixed with a backslash (AS string-literal escaping).
+//   - Raw 0x0A / 0x0D / 0x09 are translated into the two-byte AppleScript
+//     escape sequences `\n`, `\r`, `\t` so multi-line content remains
+//     readable inside the emitted AS string literal instead of prematurely
+//     terminating it.
+//   - All other C0 control bytes (0x00..0x1F, excluding 0x09/0x0A/0x0D) and
+//     DEL (0x7F) are stripped entirely — they have no business in a tray
+//     notification/dialog body and dropping them is defense in depth.
+//   - All other bytes (including >= 0x80) pass through unchanged. The function
+//     operates byte-wise; multi-byte UTF-8 sequences survive intact because
+//     none of their continuation bytes fall into the stripped ranges.
+//
+// This function backs `//nolint:gosec G204` annotations at three call sites
+// (notifyImpl, infoDialog, confirmDialog); the contract is unit-tested in
+// escapeApplescript_darwin_test.go.
 func escapeApplescript(s string) string {
 	out := make([]byte, 0, len(s))
 	for i := 0; i < len(s); i++ {
-		if s[i] == '"' || s[i] == '\\' {
-			out = append(out, '\\')
+		c := s[i]
+		switch {
+		case c == '"' || c == '\\':
+			out = append(out, '\\', c)
+		case c == '\n':
+			out = append(out, '\\', 'n')
+		case c == '\r':
+			out = append(out, '\\', 'r')
+		case c == '\t':
+			out = append(out, '\\', 't')
+		case c < 0x20 || c == 0x7F:
+			// Strip: other C0 controls + DEL.
+			continue
+		default:
+			out = append(out, c)
 		}
-		out = append(out, s[i])
 	}
 	return string(out)
 }
