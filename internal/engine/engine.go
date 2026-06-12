@@ -263,7 +263,8 @@ func (e *Engine) Run(ctx context.Context, req *canonical.ChatRequest) (*Run, err
 		// stream-result error path picks up the slot release.
 		defer func() {
 			if r := recover(); r != nil && e.cfg.Logger != nil {
-				e.cfg.Logger.Error("goroutine panic recovered",
+				e.cfg.Logger.Error(
+					"goroutine panic recovered",
 					"site", "engine-after-func",
 					"panic", fmt.Sprintf("%v", r),
 					"stack", string(debug.Stack()),

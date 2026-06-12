@@ -329,7 +329,8 @@ func (t *Tailer) run(ctx context.Context) {
 	// Site name "admin-tailer" is byte-exact per CONTEXT.md §D-18-07.
 	defer func() {
 		if r := recover(); r != nil && t.logger != nil {
-			t.logger.Error("goroutine panic recovered",
+			t.logger.Error(
+				"goroutine panic recovered",
 				"site", "admin-tailer",
 				"panic", fmt.Sprintf("%v", r),
 				"stack", string(debug.Stack()),

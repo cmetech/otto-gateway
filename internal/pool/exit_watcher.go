@@ -45,7 +45,8 @@ func (p *Pool) startExitWatcher(slot *Slot, done <-chan struct{}) {
 		// on the next NewSession.
 		defer func() {
 			if r := recover(); r != nil && exitWatcherLogger != nil {
-				exitWatcherLogger.Error("goroutine panic recovered",
+				exitWatcherLogger.Error(
+					"goroutine panic recovered",
 					"site", "pool-exit-watcher",
 					"panic", fmt.Sprintf("%v", r),
 					"stack", string(debug.Stack()),

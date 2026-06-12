@@ -65,7 +65,7 @@ func decodeRecordsByMsg(t *testing.T, buf *bytes.Buffer, want string) []map[stri
 // images.
 func realExitError(t *testing.T) error {
 	t.Helper()
-	cmd := exec.Command("/bin/sh", "-c", "exit 1")
+	cmd := exec.CommandContext(t.Context(), "/bin/sh", "-c", "exit 1")
 	err := cmd.Run()
 	if err == nil {
 		t.Fatal("`sh -c 'exit 1'` unexpectedly succeeded; cannot build a real *exec.ExitError")
@@ -173,7 +173,7 @@ func TestRegression_REL_HTTP_06(t *testing.T) {
 // postToProtected posts JSON to the adapter's protected router.
 func postToProtected(t *testing.T, a *Adapter, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, path, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	a.ProtectedRouter().ServeHTTP(rec, req)

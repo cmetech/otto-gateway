@@ -406,7 +406,8 @@ func (c *Client) stderrDrainLoop(pipe io.ReadCloser, pid int) {
 					trimmed = trimmed[:maxLineBytes]
 				}
 				if c.cfg.Logger != nil {
-					c.cfg.Logger.Warn("kiro-cli stderr",
+					c.cfg.Logger.Warn(
+						"kiro-cli stderr",
 						"worker_pid", pid,
 						"line", trimmed,
 					)

@@ -412,7 +412,8 @@ func (p *Pool) respawnSlot(ctx context.Context, slot *Slot) error {
 	// per CONTEXT.md §D-18-05; field key for slot label is "label" mirroring
 	// the death log at exit_watcher.go:42 (RESEARCH.md Pattern 3 / Pitfall 5).
 	if p.cfg.Logger != nil {
-		p.cfg.Logger.Info("pool: slot recovered",
+		p.cfg.Logger.Info(
+			"pool: slot recovered",
 			"label", label,
 			"worker_pid", newPid,
 			"previous_pid", previousPid,
@@ -956,7 +957,8 @@ func (p *Pool) Prompt(ctx context.Context, sid string, blocks []canonical.Block)
 		// in tests; operator sees the panic-recovered log in prod).
 		defer func() {
 			if r := recover(); r != nil && ctxWatcherLogger != nil {
-				ctxWatcherLogger.Error("goroutine panic recovered",
+				ctxWatcherLogger.Error(
+					"goroutine panic recovered",
 					"site", "pool-ctx-watcher",
 					"panic", fmt.Sprintf("%v", r),
 					"stack", string(debug.Stack()),
