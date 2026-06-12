@@ -70,7 +70,7 @@ This milestone closes the long-tail of issues the v1.9 + Phase 17 work explicitl
 | REL-OBSV-04 | 18 | Open |
 | REL-TRAY-08 | 18 | Open |
 | REL-TRAY-09 | 18 | Open |
-| REL-ACP-01 | 19 | Open |
+| REL-ACP-01 | 19 | Closed |
 | QUAL-01 | 20 | Open |
 | QUAL-02 | 20 | Open |
 | QUAL-03 | 20 | Open |
