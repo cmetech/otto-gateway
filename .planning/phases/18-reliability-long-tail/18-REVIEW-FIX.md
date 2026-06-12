@@ -1,245 +1,97 @@
 ---
 phase: 18-reliability-long-tail
-fixed_at: 2026-06-11T22:35:00Z
+fixed_at: 2026-06-12T00:00:00Z
 review_path: .planning/phases/18-reliability-long-tail/18-REVIEW.md
-iteration: 1
-findings_in_scope: 10
-fixed: 9
-skipped: 1
-status: partial
+iteration: 2
+findings_in_scope: 2
+fixed: 2
+skipped: 0
+status: all_fixed
 ---
 
-# Phase 18: Code Review Fix Report
+# Phase 18: Code Review Fix Report (Iteration 2)
 
-**Fixed at:** 2026-06-11T22:35:00Z
+**Fixed at:** 2026-06-12T00:00:00Z
 **Source review:** `.planning/phases/18-reliability-long-tail/18-REVIEW.md`
-**Iteration:** 1
+**Iteration:** 2
 
 **Summary:**
-- Findings in scope (Critical + Warning): 10
-- Fixed: 9
-- Skipped: 1 (WR-01 design-conflict with D-18-04)
-- Out-of-scope (INFO): 4 (IN-01 through IN-04 — not addressed per fix_scope=critical_warning)
-
-All commits below were made on `gsd-reviewfix/18-54753` and verified by:
-- `go test -race ./...` clean across the full tree (every commit).
-- `gofmt -l .` clean.
-- `go vet ./...` clean.
-- `shellcheck scripts/otto-gw` clean (only the pre-existing SC1091 info
-  for the `lib/redact.sh` source statement remains, unrelated to this work).
-- Byte-exact site names preserved (`admin-tailer`, `pool-ctx-watcher`,
-  `pool-exit-watcher`, `engine-after-func`).
-- Boot-time `auth mode` log at `cmd/otto-gateway/main.go:115-120`
-  unchanged.
+- Findings in scope: 2 (WR-08, WR-09)
+- Fixed: 2
+- Skipped: 0
+- Out of scope (INFO, severity-skipped): IN-01, IN-02, IN-03
+- Deferred (severity-skipped: deferred-per-d-18-04): WR-01
 
 ## Fixed Issues
 
-### CR-01: Tailer panic-recovery breaks lazy-restart contract
-
-**Files modified:** `internal/admin/tail.go`, `internal/admin/regression_rel_http_07_test.go`
-**Commit:** `2f55cb1`
-**Applied fix:** Reset `t.running = false` and `t.cancelRun = nil` under
-`t.mu` inside the deferred recover at `Tailer.run`. This restores the
-docstring contract ("a subsequent Subscribe will lazy-start a fresh
-tailer goroutine"). Added regression test
-`TestRegression_REL_HTTP_07_AdminTailer_LazyRestartAfterPanic` that
-keeps the first subscriber attached after the panic (so `Unsubscribe`
-cannot mask the bug by resetting `running` on subscriber-count drop)
-and asserts a second `Subscribe` spawns a fresh goroutine by observing
-the probe fire a second time. The test fails without the fix and
-passes with it (verified by stash-pop cycle).
-
-### CR-02 + CR-03: PowerShell Import-DotEnv firstError scope mismatch
+### WR-08: PowerShell sentinel write silently falls back to `$env:TEMP` when both `$HOME` and `$USERPROFILE` are unset
 
 **Files modified:** `scripts/otto-gw.ps1`
-**Commit:** `f0248e2`
-**Applied fix:** Both findings share the same root cause — a PowerShell
-ForEach-Object child-scope bug — and the same call site, so they were
-landed in a single commit. Replaced the local `$firstError` with
-`$script:firstError` everywhere it is read inside the pipeline block.
-Added `$script:firstError = $null` at function entry to reset between
-the two `Import-DotEnv` calls in a single `Load-Config` (one for
-`.otto-gw.env`, one for `.otto-gw.overrides.env`). The "first
-malformed line wins" contract now matches the bash counterpart at
-`scripts/otto-gw:264`.
+**Commit:** `50c18e5`
+**Applied fix:** Removed the `$env:TEMP` fallback from `Get-ConfigErrorSentinelPath`. Now returns `$null` when both `$env:HOME` and `$env:USERPROFILE` are unset, mirroring the bash sibling's WR-06 refusal (`config_error_sentinel_path` non-zero exit). Emits a stderr WARN via `[Console]::Error.WriteLine` so the operator's diagnostic path is preserved (parity with bash's existing stderr WARN). `Clear-ConfigErrorSentinel` and `Write-ConfigErrorSentinel` both short-circuit on `$null`. Comments updated to cite WR-08 and explain the cross-platform symmetry contract.
 
-**Test coverage gap:** `pwsh` is not available on the macOS dev host
-(`which pwsh` → not found). The fix was verified via static inspection:
-`grep -n 'firstError' scripts/otto-gw.ps1` now shows all references
-qualified `$script:` and a single `$script:firstError = $null` reset
-at function entry (line 283). A platform-runner regression — Pester
-fixture with three malformed lines asserting the sentinel matches the
-FIRST one, plus a clean-second-file case asserting the sentinel is
-cleared — is `skipped: needs-platform-runner` and should be added in
-the Phase 18 follow-up that runs on a Windows / pwsh-Linux CI lane.
+**Verification:**
+- Tier 1 (re-read): confirmed fix text present, surrounding code intact. The `$env:TEMP` fallback is gone from the actual code path (only mentioned in explanatory comments and the WARN string).
+- Tier 2 (syntax check): pwsh not installed on macOS dev box — regression-test gap documented as `skipped: needs-platform-runner`. Source-level pattern check (`grep -n 'env:TEMP'`) confirmed no remaining fallback code path. The symmetry assertion holds: `Get-ConfigErrorSentinelPath` returns `$null` in exactly the conditions where bash's `config_error_sentinel_path` returns 1, and both callers (clear/write) short-circuit equivalently.
 
-### WR-02: KIRO_CWD `~/..` path escape
+### WR-09: WR-04 rune-boundary truncation may discard up to maxLineBytes-1 bytes silently
 
-**Files modified:** `internal/config/config.go`, `internal/config/regression_rel_cfg_06_test.go`
-**Commit:** `1a6cc9d`
-**Applied fix:** After splitting on `/` (via `filepath.ToSlash`),
-reject any path segment exactly equal to `..` in the post-`~/` portion.
-Strict segment match (not `strings.Contains`) so legitimate names like
-`foo..bar` are not flagged. Added three regression sub-tests:
-- `H_KIRO_CWD_tilde_dotdot_rejected` (`~/..`)
-- `I_KIRO_CWD_tilde_embedded_dotdot_rejected` (`~/foo/../bar`)
-- `J_KIRO_CWD_dotdot_substring_in_segment_allowed` (`~/foo..bar`)
-All pass.
+**Files modified:** `internal/acp/client.go`, `internal/acp/regression_rel_obsv_03_test.go`
+**Commit:** `61aa985`
+**Applied fix:** Compute `droppedBytes = originalLen - n` after the UTF-8 walk-back. When `droppedBytes > 0` (always true when the cap fires), emit the slog.Warn with two new fields: `truncated: true` and `dropped_bytes: <N>`. The base D-18-04 field set (`worker_pid`, `line`) is preserved byte-exact; the new fields are additive. Non-truncated lines keep the original 2-field shape so operators pattern-matching on field cardinality are unaffected.
 
-### WR-03: HTTP_ADDR bind probe Close() error discarded
+**Test coverage added:**
+- `A5_truncation_telemetry_wr_09`: pipes ~2MB of `X` (no newline) then a newline through the drain loop, asserts the resulting WARN has `truncated == true`, `dropped_bytes >= 1_000_000`, AND that the base `worker_pid`/`line` fields remain present (so D-18-04 contract is not regressed).
+- `A6_no_truncation_no_telemetry_fields`: pipes a short line and asserts neither `truncated` nor `dropped_bytes` appear on the record.
 
-**Files modified:** `internal/config/config.go`
-**Commit:** `bca4aa3`
-**Applied fix:** Replaced `_ = ln.Close()` with `if cerr := ln.Close();
-cerr != nil { errs = append(...) }`. A failed Close leaves the probe
-listener holding the port and the real `ListenAndServe` would
-deterministically fail 5–10s later with EADDRINUSE — defeating the
-probe's purpose. The error message follows the existing config-error
-naming convention (`config: HTTP_ADDR (%q): bind probe close failed:
-%w`).
+**Verification:**
+- Tier 1 (re-read): confirmed fix text present, walk-back loop intact, field set additive.
+- Tier 2 (Go syntax/vet/test): `gofmt -l .` clean; `go vet ./...` clean; `go test -race -run TestRegression_REL_OBSV_03 ./internal/acp/` passes (2.0s); full `go test -race ./internal/acp/` passes (8.5s). No regression in A1..A4 (pre-existing sub-tests for D-18-04).
 
-**Test coverage gap:** No new test. Triggering this branch requires
-EBADF / EINTR at `net.Listener.Close()` which is hard to simulate
-without an injection seam (the listener is bound by `net.Listen`, not
-a test fake). The fix is one branch with clear semantics; documenting
-this gap as `skipped: requires-test-seam` is the pragmatic call.
+## Severity-Skipped Issues
 
-### WR-04: stderrDrainLoop UTF-8 mid-rune slicing
+### WR-01: bufio.Reader.ReadString unbounded accumulation in stderrDrainLoop
 
-**Files modified:** `internal/acp/client.go`
-**Commit:** `49f6d64`
-**Applied fix:** Added `unicode/utf8` import. Replaced the naive
-`trimmed[:maxLineBytes]` with a walk-back-to-rune-start loop. Cost is
-at most 3 byte-walks. The trim is now "≤ maxLineBytes on UTF-8-safe
-boundary", documented in the code comment. The existing REL-OBSV-03
-byte-cap test continues to pass because its payload is all-ASCII (`X`)
-so the cap byte is always a rune start and the trimmed length is
-unchanged from the pre-fix.
+**File:** `internal/acp/client.go:392-439`
+**Reason:** `severity-skipped: deferred-per-d-18-04`
+**Original issue:** `ReadString('\n')` accumulates an unbounded internal buffer when stderr has no `\n` terminator. The 1MB cap and the WR-04/WR-09 UTF-8 truncation fire AFTER the ReadString returns — by which point the buffer has already grown to whatever the producer pushed.
+**Disposition:** CONTEXT.md D-18-04 locks the `bufio.Reader.ReadString('\n')` pattern as the Wave 0 decision. Switching to a bounded reader (`io.LimitReader` wrapper or custom bounded-buffer reader) is a design change requiring an ADR, not a fix-pass mechanical change. Per re-review (and the iteration-1 disposition that surfaces this under `open_followups`), the deferral is preserved. The threat surface — a compromised kiro-cli flooding stderr to RAM-exhaust the gateway — is unchanged vs. pre-fix; this is not a regression introduced by iteration 1 or 2. Recommend a v1.10.4 dedicated phase + ADR.
 
-**Test coverage gap:** No new test for mid-rune payload. The existing
-test asserts strict 1 MB length; a multi-byte-rune test would assert
-length ≤ 1 MB and that `utf8.Valid(line)` is true. Worth adding in a
-follow-up but the fix is mechanically simple enough that the gap is
-acceptable for this iteration.
+### IN-01: `clear_config_error_sentinel` race window unchanged by WR-05
 
-### WR-05: Atomic sentinel write (bash + pwsh)
+**File:** `scripts/otto-gw:226-230`
+**Reason:** `severity-skipped: out-of-scope-fix_scope=critical_warning`
+**Original issue:** Informational note that `rm -f` in `clear_config_error_sentinel` is already atomic on POSIX; flagged only to prevent later confusion about WR-05 asymmetry. No fix needed.
 
-**Files modified:** `scripts/otto-gw`, `scripts/otto-gw.ps1`
-**Commit:** `cadd254`
-**Applied fix:** Replaced both `printf > "$sentinel"` (bash) and
-`Set-Content -Path $sentinel` (pwsh) with the standard tmp-sibling +
-atomic-rename pattern:
-- bash: `printf > "${sentinel}.tmp.$$"` then `mv -f ... "$sentinel"`,
-  with `rm -f` on rename failure.
-- pwsh: `Set-Content -Path "$sentinel.tmp"` then `Move-Item -Force`,
-  leaving the tmp on rename failure (throwing inside the catch would
-  mask the original Set-Content error).
-POSIX rename and NTFS MoveFile on the same filesystem are atomic, so
-the tray sees either old or new content but never a zero-byte
-intermediate.
+### IN-02: PowerShell Import-DotEnv successful parse of overrides file masks a parse error from a prior .env file
 
-**Test coverage gap:** No sentinel-specific test script exists on the
-bash side. The behavior change is mechanical (same content, same
-modes, same cap) and verified by `bash -n` + `shellcheck`. A
-follow-up phase could add a Bats test fixture exercising the
-mid-write race window if the operational signal demands it.
+**File:** `scripts/otto-gw.ps1:321-327`
+**Reason:** `severity-skipped: out-of-scope-fix_scope=critical_warning`
+**Original issue:** When `.otto-gw.env` parse fails but `.otto-gw.overrides.env` parses cleanly, the sentinel from step 1 is cleared by step 2. Same shape on the bash side. May be intentional (overrides is the final word) but undocumented. Recommend docstring clarification OR cumulative-state tracking — both are design-change conversations, not fix-pass items.
 
-### WR-06: bash sentinel refuses /tmp fallback when $HOME unset
+### IN-03: WR-04 panics not gated by `cap`-aware guard if `len(trimmed) == maxLineBytes`
 
-**Files modified:** `scripts/otto-gw`
-**Commit:** `a9e8f42`
-**Applied fix:** `config_error_sentinel_path` now returns non-zero
-when `$HOME` is unset / empty, instead of falling back to
-`/tmp/.otto-gw/.config-error`. Callers (`clear_config_error_sentinel`,
-`write_config_error_sentinel`) short-circuit via
-`sentinel="$(config_error_sentinel_path)" || return 0`. The stderr
-WARN is still emitted, preserving the operator diagnostic path.
+**File:** `internal/acp/client.go:406-422`
+**Reason:** `severity-skipped: out-of-scope-fix_scope=critical_warning`
+**Original issue:** Defense-in-depth recommendation to add `if n >= len(trimmed) { n = len(trimmed) - 1 }` before the walk-back loop. Current code is correct (gate is `> maxLineBytes` strictly greater); the invariant is only brittle to a future `>=` refactor. Not a present-day defect.
 
-Verified via an in-script test exercising three cases (HOME set,
-HOME unset, HOME explicitly empty string) — all behave correctly.
+## Iteration 2 Verification Summary
 
-The Go tray-side reader at `cmd/otto-tray/poller.go:31-34` was
-already correctly returning `""` when `$HOME` is empty; this fix
-closes the wrapper-write side.
-
-### WR-07: previous_pid=0 ambiguity in lazy-respawn-success log
-
-**Files modified:** `internal/pool/pool.go`
-**Commit:** `4342da3`
-**Applied fix:** Added a code comment documenting that `previous_pid=0`
-indicates a non-spawned (NewWithConn / test-fake) client. In production
-every slot is spawned via `cfg.Factory.Spawn` so `previous_pid > 0`
-always — the field is emitted unconditionally to keep the structured
-log shape stable for downstream parsers.
-
-**Why not elide:** The reviewer offered two fixes (elide vs. comment).
-Eliding the field conditionally would change the structured-log
-contract for downstream consumers (Splunk / ELK pipelines may have
-schemas keyed on the presence of `previous_pid`). Per the prompt skip
-rule ("Any fix that would require new behavior the operator hasn't
-agreed to … changing public API"), the log shape was preserved.
-
-## Skipped Issues
-
-### WR-01: stderrDrainLoop ReadString unbounded accumulation
-
-**File:** `internal/acp/client.go:391-422`
-**Status:** `skipped: design-conflict with D-18-04`
-**Reason:**
-
-The reviewer's primary fix swaps `bufio.Reader.ReadString('\n')` for
-a `reader.ReadByte()` manual loop with per-line cap + drain-to-newline
-semantics. This directly conflicts with the prompt's D-18-04
-constraint: "**D-18-04 must continue to use `bufio.Reader.ReadString('\n')`
-(NOT `bufio.Scanner`)**". The reviewer's alternate suggestion
-("accept the design and document the bound") is documentation-only
-and provides no behavioral protection against the memory-DoS surface
-described in the finding (50 MB of stderr without a newline still
-forces the bufio internal buffer to grow to 50 MB before the per-line
-cap fires).
-
-Apparent options under the D-18-04 constraint:
-1. Wrap the pipe in `io.LimitReader` — but this puts a budget on
-   TOTAL bytes drained ever, silently stopping drainage after N bytes
-   (worse failure mode than the current one).
-2. Use `bufio.NewReaderSize` with a bounded internal buffer — but
-   `ReadString` calls `ReadBytes` which appends to a growing
-   application-side `[]byte`, so the unbounded thing is the output
-   slice, not the bufio internal buffer.
-3. Replace `ReadString` with `ReadSlice` in a manual loop (returns
-   `bufio.ErrBufferFull` on overflow) — this preserves "line-by-line
-   from bufio.Reader" semantics but isn't strictly `ReadString('\n')`
-   either.
-
-Because the design fix conflicts with the locked invariant and the
-documentation-only fix provides no behavioral value, this finding
-needs operator-level reconciliation. Recommended path: revisit D-18-04
-in a follow-up phase to clarify whether "ReadString('\n')" is a
-hard binding or a stand-in for "line-by-line, not Scanner". If the
-former, document the memory-DoS bound; if the latter, apply the
-ReadByte-loop fix the reviewer described.
-
-**Original issue:** `stderrDrainLoop` `ReadString` accumulates
-unbounded internal buffer before the 1 MB per-line cap is applied;
-worst-case transient memory under attack is N × incoming-stderr-volume
-per slot.
+- `gofmt -l .` — clean (no diffs)
+- `go vet ./...` — clean (no warnings)
+- `go test -race ./internal/acp/` — pass (8.5s, all sub-tests including A5/A6 telemetry coverage)
+- Iteration-1 invariants spot-checked against the worktree:
+  - CR-01 `t.running=false` + `t.cancelRun=nil` under `t.mu` in `internal/admin/tail.go` defer-recover — untouched
+  - CR-02/CR-03 `$script:firstError` scoping in `scripts/otto-gw.ps1` — untouched
+  - WR-02 `..` segment check in `internal/config/config.go` — untouched
+  - WR-03 bind-probe `Close()` error surface in `internal/config/config.go` — untouched
+  - WR-04 UTF-8 walk-back EXTENDED (not replaced) in `internal/acp/client.go` — new telemetry fields are additive; rune-boundary slice logic preserved
+  - WR-05 atomic sentinel writes in both `scripts/otto-gw` and `scripts/otto-gw.ps1` — untouched
+  - WR-06 bash `$HOME unset` refusal in `scripts/otto-gw` — untouched (WR-08 mirrors this on the PowerShell side)
+  - WR-07 `previous_pid=0` doc-block in `internal/pool/pool.go` — untouched
 
 ---
 
-## Notes on out-of-scope (Info) findings
-
-Per `fix_scope=critical_warning`, the four Info findings (IN-01
-through IN-04) were not addressed:
-
-- IN-01: documented benign double-close (no fix required).
-- IN-02: documented ordering note (no fix required).
-- IN-03: documented one-time-cache behavior (no fix required).
-- IN-04: cosmetic separator-literal preference (no fix required).
-
-None of these affect correctness or the Phase 18 invariants.
-
----
-
-_Fixed: 2026-06-11T22:35:00Z_
+_Fixed: 2026-06-12_
 _Fixer: Claude (gsd-code-fixer)_
-_Iteration: 1_
+_Iteration: 2_
