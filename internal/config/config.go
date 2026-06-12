@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/netip"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -296,6 +297,40 @@ func Load() (Config, error) {
 	kiroCmd := getEnvStr("KIRO_CMD", "kiro-cli")
 	kiroArgs := getEnvStrSlice("KIRO_ARGS", []string{"acp"})
 	kiroCWD := getEnvStr("KIRO_CWD", "")
+
+	// D-18-02 REL-CFG-06: KIRO_CMD validation — exec.LookPath checks the
+	// PATH for bare names AND verifies executability for absolute/relative
+	// paths. The error is config-named so operators see the offending env
+	// var in the boot log rather than a 5-10s-deferred raw exec.ErrNotFound
+	// from inside the kiro-cli spawn path.
+	if _, lookErr := exec.LookPath(kiroCmd); lookErr != nil {
+		errs = append(errs, fmt.Errorf("config: KIRO_CMD (%q): not found in PATH or unreadable", kiroCmd))
+	}
+
+	// D-18-02 REL-CFG-06: KIRO_CWD tilde expansion happens FIRST so the
+	// stat check operates on the resolved path AND the resolved path is
+	// what gets stored in Config.KiroCWD. Only the `~/` prefix and bare
+	// `~` are recognized — no $HOME interpolation, no shell-style globbing.
+	// Empty KIRO_CWD remains the default and is treated as optional
+	// (acp.Client handles empty Cwd by inheriting the parent's wd).
+	if strings.HasPrefix(kiroCWD, "~/") {
+		if home, herr := os.UserHomeDir(); herr == nil {
+			kiroCWD = filepath.Join(home, kiroCWD[2:])
+		}
+	} else if kiroCWD == "~" {
+		if home, herr := os.UserHomeDir(); herr == nil {
+			kiroCWD = home
+		}
+	}
+	if kiroCWD != "" {
+		stat, sErr := os.Stat(kiroCWD)
+		switch {
+		case sErr != nil:
+			errs = append(errs, fmt.Errorf("config: KIRO_CWD (%q): directory does not exist", kiroCWD))
+		case !stat.IsDir():
+			errs = append(errs, fmt.Errorf("config: KIRO_CWD (%q): not a directory", kiroCWD))
+		}
+	}
 
 	debug, err := getEnvBool("DEBUG", false)
 	if err != nil {

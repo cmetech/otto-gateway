@@ -31,6 +31,13 @@ func TestMain(m *testing.M) {
 	if os.Getenv("PII_ENCRYPT_KEY") == "" {
 		_ = os.Setenv("PII_ENCRYPT_KEY", "test-suite-default-encrypt-key")
 	}
+	// Phase 18-01 D-18-02: KIRO_CMD now passes through exec.LookPath in
+	// config.Load(). Stamp it to "go" — guaranteed in PATH on any Go CI
+	// runner — so default-load paths don't boot-fail. Tests that
+	// exercise the KIRO_CMD-not-found path can still override via t.Setenv.
+	if os.Getenv("KIRO_CMD") == "" {
+		_ = os.Setenv("KIRO_CMD", "go")
+	}
 	goleak.VerifyTestMain(
 		m,
 		goleak.IgnoreTopFunction("github.com/DeRuina/timberjack.(*Logger).millRun"),

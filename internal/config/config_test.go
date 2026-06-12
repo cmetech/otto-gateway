@@ -22,8 +22,13 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.HTTPAddr != "127.0.0.1:18080" {
 		t.Errorf("HTTPAddr: got %q, want %q", cfg.HTTPAddr, "127.0.0.1:18080")
 	}
-	if cfg.KiroCmd != "kiro-cli" {
-		t.Errorf("KiroCmd: got %q, want %q", cfg.KiroCmd, "kiro-cli")
+	// Phase 18-01 D-18-02: KIRO_CMD now passes through exec.LookPath
+	// validation. TestMain (testmain_test.go) stamps KIRO_CMD="go" for
+	// the package-wide default so the default-load path remains valid on
+	// CI runners without kiro-cli installed. Assertion follows the
+	// stamped value rather than the production default "kiro-cli".
+	if cfg.KiroCmd != "go" {
+		t.Errorf("KiroCmd: got %q, want %q (TestMain stamped)", cfg.KiroCmd, "go")
 	}
 	if len(cfg.KiroArgs) != 1 || cfg.KiroArgs[0] != "acp" {
 		t.Errorf("KiroArgs: got %v, want [acp]", cfg.KiroArgs)
@@ -42,10 +47,15 @@ func TestLoadDefaults(t *testing.T) {
 func TestLoadEnvOverrides(t *testing.T) {
 	// t.Setenv: cannot use t.Parallel().
 
+	// Phase 18-01 D-18-02: KIRO_CMD now passes through exec.LookPath
+	// validation and KIRO_CWD is os.Stat-checked. Use real, present
+	// values so the override-takes-effect assertion remains the focus
+	// of this test (test what we're testing, not env validation).
+	tmpDir := t.TempDir()
 	t.Setenv("HTTP_ADDR", ":8080")
-	t.Setenv("KIRO_CMD", "/usr/local/bin/kiro-cli")
+	t.Setenv("KIRO_CMD", "go") // present in PATH on dev + CI
 	t.Setenv("KIRO_ARGS", "acp --verbose")
-	t.Setenv("KIRO_CWD", "/tmp/test")
+	t.Setenv("KIRO_CWD", tmpDir)
 	t.Setenv("DEBUG", "true")
 	t.Setenv("PING_INTERVAL", "30s")
 
@@ -56,14 +66,14 @@ func TestLoadEnvOverrides(t *testing.T) {
 	if cfg.HTTPAddr != ":8080" {
 		t.Errorf("HTTPAddr: got %q, want %q", cfg.HTTPAddr, ":8080")
 	}
-	if cfg.KiroCmd != "/usr/local/bin/kiro-cli" {
-		t.Errorf("KiroCmd: got %q, want %q", cfg.KiroCmd, "/usr/local/bin/kiro-cli")
+	if cfg.KiroCmd != "go" {
+		t.Errorf("KiroCmd: got %q, want %q", cfg.KiroCmd, "go")
 	}
 	if len(cfg.KiroArgs) != 2 || cfg.KiroArgs[0] != "acp" || cfg.KiroArgs[1] != "--verbose" {
 		t.Errorf("KiroArgs: got %v, want [acp --verbose]", cfg.KiroArgs)
 	}
-	if cfg.KiroCWD != "/tmp/test" {
-		t.Errorf("KiroCWD: got %q, want %q", cfg.KiroCWD, "/tmp/test")
+	if cfg.KiroCWD != tmpDir {
+		t.Errorf("KiroCWD: got %q, want %q", cfg.KiroCWD, tmpDir)
 	}
 	if !cfg.Debug {
 		t.Error("Debug: got false, want true")
