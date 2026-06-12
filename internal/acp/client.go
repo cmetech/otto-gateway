@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"otto-gateway/internal/canonical"
 	"otto-gateway/internal/version"
@@ -403,7 +404,22 @@ func (c *Client) stderrDrainLoop(pipe io.ReadCloser, pid int) {
 			trimmed = strings.TrimRight(trimmed, "\r")
 			if trimmed != "" {
 				if len(trimmed) > maxLineBytes {
-					trimmed = trimmed[:maxLineBytes]
+					// WR-04: slice on a UTF-8 rune boundary. A naive
+					// trimmed[:maxLineBytes] can split a multi-byte
+					// rune (kiro-cli stderr is UTF-8 by default in Go),
+					// producing invalid UTF-8 in the slog "line" field.
+					// Downstream JSON encoders / Splunk / ELK pipelines
+					// reject or garble such records — precisely on the
+					// most-important diagnostic line. Walk back from
+					// the cap until we land on a rune-start byte; cost
+					// is at most utf8.UTFMax-1 (3) byte-walks. The
+					// resulting trim is "≤ maxLineBytes on UTF-8-safe
+					// boundary", not a strict byte-cap.
+					n := maxLineBytes
+					for n > 0 && !utf8.RuneStart(trimmed[n]) {
+						n--
+					}
+					trimmed = trimmed[:n]
 				}
 				if c.cfg.Logger != nil {
 					c.cfg.Logger.Warn(
