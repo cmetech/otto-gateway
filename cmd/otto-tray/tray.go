@@ -403,6 +403,12 @@ func (s *trayState) handleSupportBundle() {
 // tailLines returns the last n non-empty lines of s, joined with "\n".
 // Used to bound how much stderr the failure dialog shows — full stderr
 // can easily exceed what fits in a modal.
+//
+// Implementation note (QUAL-04 / D-20-06): collect-then-reverse. The earlier
+// implementation prepended each kept line via `append([]string{t}, kept...)`
+// which copies the entire slice on every iteration (O(n²) over the kept set).
+// We instead walk lines back-to-front, appending into kept (most-recent-first)
+// until we have n lines, then reverse in place before joining. Same I/O.
 func tailLines(s string, n int) string {
 	if n <= 0 {
 		return ""
@@ -414,10 +420,15 @@ func tailLines(s string, n int) string {
 		if t == "" {
 			continue
 		}
-		kept = append([]string{t}, kept...)
+		kept = append(kept, t)
 		if len(kept) >= n {
 			break
 		}
+	}
+	// kept is in reverse order (most recent first); reverse in place so the
+	// returned string preserves the source's chronological order.
+	for i, j := 0, len(kept)-1; i < j; i, j = i+1, j-1 {
+		kept[i], kept[j] = kept[j], kept[i]
 	}
 	return strings.Join(kept, "\n")
 }
