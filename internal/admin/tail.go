@@ -328,13 +328,24 @@ func (t *Tailer) run(ctx context.Context) {
 	// Mirrors the engine.callPreHookSafe template at engine.go:317-329.
 	// Site name "admin-tailer" is byte-exact per CONTEXT.md §D-18-07.
 	defer func() {
-		if r := recover(); r != nil && t.logger != nil {
-			t.logger.Error(
-				"goroutine panic recovered",
-				"site", "admin-tailer",
-				"panic", fmt.Sprintf("%v", r),
-				"stack", string(debug.Stack()),
-			)
+		if r := recover(); r != nil {
+			if t.logger != nil {
+				t.logger.Error(
+					"goroutine panic recovered",
+					"site", "admin-tailer",
+					"panic", fmt.Sprintf("%v", r),
+					"stack", string(debug.Stack()),
+				)
+			}
+			// CR-01: Reset running flag so the next Subscribe lazy-restarts the
+			// goroutine. Without this, t.running stays true forever and
+			// Subscribe never respawns the broadcaster — violating the
+			// docstring contract above ("a subsequent Subscribe will lazy-start
+			// a fresh tailer goroutine. No restart / spin loop.").
+			t.mu.Lock()
+			t.running = false
+			t.cancelRun = nil
+			t.mu.Unlock()
 		}
 	}()
 	// Test-only seam: tests install via SetAdminTailerPanicProbeForTest
