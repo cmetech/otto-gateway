@@ -1,6 +1,7 @@
 package acp
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -286,7 +288,6 @@ func New(cfg Config) (*Client, error) {
 	cmd := exec.CommandContext(clientCtx, cfg.Command, cfg.Args...) //nolint:gosec // G204
 	cmd.Dir = cfg.Cwd
 	cmd.Env = append(os.Environ(), cfg.Env...)
-	cmd.Stderr = os.Stderr
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -297,6 +298,18 @@ func New(cfg Config) (*Client, error) {
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("acp: stdout pipe: %w", err)
+	}
+	// D-18-04 REL-OBSV-03: capture kiro-cli stderr into the gateway's
+	// structured logger instead of routing it to os.Stderr (the pre-Phase
+	// 18 behavior that bypassed slog and left operators blind when
+	// kiro-cli printed warnings or errors). StderrPipe MUST be called
+	// BEFORE cmd.Start; the goroutine that drains it is launched AFTER
+	// Start so it has a valid cmd.Process.Pid to log. Goroutine exit on
+	// pipe close (subprocess exit) is gated by goleak.VerifyTestMain.
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("acp: stderr pipe: %w", err)
 	}
 	// 260531-ra6 RA6-02: place the kiro-cli child in its own process
 	// group on darwin/linux so exec.CommandContext's SIGKILL-on-ctx-cancel
@@ -352,7 +365,60 @@ func New(cfg Config) (*Client, error) {
 	go c.writerLoop(clientCtx)
 	go c.pingLoop(clientCtx)
 
+	// D-18-04 REL-OBSV-03: drain kiro-cli stderr line-by-line into slog.Warn.
+	// Tracked in c.wg so Close() waits for it to exit (goleak gate).
+	c.wg.Add(1)
+	go c.stderrDrainLoop(stderrPipe, cmd.Process.Pid)
+
 	return c, nil
+}
+
+// stderrDrainLoop reads kiro-cli stderr until EOF (subprocess exit / pipe
+// close) and emits each non-empty line as a slog.Warn record. Implements
+// D-18-04 REL-OBSV-03.
+//
+// Uses bufio.Reader.ReadString('\n') — NOT bufio.Scanner — because Scanner
+// silently stops on bufio.ErrTooLong, dropping every line after the
+// oversized one (including the one we still want to see). ReadString
+// keeps going; the per-line byte cap is applied here after read.
+//
+// Goroutine exit contract:
+//   - Loop exits when ReadString returns a non-nil error (io.EOF on
+//     normal subprocess exit, *os.PathError on premature pipe close).
+//   - Deferred pipe.Close belt-and-braces in case ReadString returns
+//     a wrapped error before EOF.
+//   - c.wg.Done at the tail so Close()'s wg.Wait() observes the exit.
+func (c *Client) stderrDrainLoop(pipe io.ReadCloser, pid int) {
+	defer c.wg.Done()
+	defer func() { _ = pipe.Close() }()
+
+	const maxLineBytes = 1024 * 1024 // 1 MB hard cap per logged line
+	reader := bufio.NewReader(pipe)
+	for {
+		line, rerr := reader.ReadString('\n')
+		if len(line) > 0 {
+			// Trim trailing \n (and a preceding \r from CRLF-terminated
+			// shells). Empty after trimming → skip (blank stderr line).
+			trimmed := strings.TrimRight(line, "\n")
+			trimmed = strings.TrimRight(trimmed, "\r")
+			if trimmed != "" {
+				if len(trimmed) > maxLineBytes {
+					trimmed = trimmed[:maxLineBytes]
+				}
+				if c.cfg.Logger != nil {
+					c.cfg.Logger.Warn("kiro-cli stderr",
+						"worker_pid", pid,
+						"line", trimmed,
+					)
+				}
+			}
+		}
+		if rerr != nil {
+			// io.EOF on subprocess exit; other errors on pipe close races.
+			// Either way the goroutine has nothing left to do.
+			return
+		}
+	}
 }
 
 // NewWithConn accepts a pre-built io.ReadWriteCloser (e.g., io.Pipe for tests, or a pool
