@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -642,6 +643,20 @@ func Load() (Config, error) {
 			"embedding surface is not implemented; EMBEDDING_MODEL_DEFAULT will be ignored",
 			"value", embeddingModelDefault,
 		)
+	}
+
+	// D-18-03 REL-CFG-07: bind-then-close TCP probe of HTTP_ADDR. The real
+	// bind happens later in server.ListenAndServe (after 5–10s of kiro-cli
+	// pool warmup). Doing this probe at the END of validation surfaces
+	// port-in-use to the operator BEFORE the warmup cost is paid AND keeps
+	// every other config error in the same errors.Join surface. The
+	// probe is best-effort: a TOCTOU window between Close() and the real
+	// bind exists and is accepted (microseconds wide, same process,
+	// CONTEXT.md §D-18-03).
+	if ln, lerr := net.Listen("tcp", httpAddr); lerr != nil {
+		errs = append(errs, fmt.Errorf("config: HTTP_ADDR (%q): bind probe failed: %w", httpAddr, lerr))
+	} else {
+		_ = ln.Close()
 	}
 
 	if len(errs) > 0 {

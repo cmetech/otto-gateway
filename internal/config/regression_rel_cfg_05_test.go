@@ -60,12 +60,13 @@ func findRecordWithMsg(recs []map[string]any, want string) map[string]any {
 }
 
 // TestRegression_REL_CFG_05 covers six cases per the plan:
-//   A: AUTH_TOKEN=" , "  → Warn emitted; auth disabled
-//   B: ALLOWED_IPS=",,  ," → Warn emitted; allowlist disabled
-//   C: AUTH_TOKEN="real-token" → no degenerate Warn; auth enabled
-//   D: ALLOWED_IPS="127.0.0.1/32" → no degenerate Warn; allowlist populated
-//   E: AUTH_TOKEN and ALLOWED_IPS both unset → no degenerate Warns
-//   F: AUTH_TOKEN="   " (whitespace only) → Warn emitted; auth disabled
+//
+//	A: AUTH_TOKEN=" , "  → Warn emitted; auth disabled
+//	B: ALLOWED_IPS=",,  ," → Warn emitted; allowlist disabled
+//	C: AUTH_TOKEN="real-token" → no degenerate Warn; auth enabled
+//	D: ALLOWED_IPS="127.0.0.1/32" → no degenerate Warn; allowlist populated
+//	E: AUTH_TOKEN and ALLOWED_IPS both unset → no degenerate Warns
+//	F: AUTH_TOKEN="   " (whitespace only) → Warn emitted; auth disabled
 func TestRegression_REL_CFG_05(t *testing.T) {
 	cases := []struct {
 		name                  string
