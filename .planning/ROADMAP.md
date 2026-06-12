@@ -160,7 +160,6 @@ Plans:
 **Requirements**: REL-ACP-01
 **Depends on:** Phase 18
 **Plans:** 1 plan
-
 Plans:
 
 - [ ] 19-01-PLAN.md — Result() copy-under-lock + RED race-loop test + surgical revert of Phase 17 workaround (D-19-01 + D-19-02 + D-19-03)
