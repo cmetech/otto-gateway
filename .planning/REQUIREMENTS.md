@@ -9,22 +9,22 @@ This milestone closes the long-tail of issues the v1.9 + Phase 17 work explicitl
 
 ### Config hardening (Phase 18-01)
 
-- [ ] **REL-CFG-05** (C-4, Low): Degenerate `ALLOWED_IPS=","`, `ALLOWED_IPS="  "`, `ALLOWED_IPS=" , "`, or `AUTH_TOKEN=" , "` values no longer silently disable security. Treat as unset with a loud boot Warn that names the variable, matching the existing fail-fast posture on numeric config vars from Phase 16-05 REL-CFG-01.
-- [ ] **REL-CFG-06** (C-5, Low): Boot errors for `KIRO_CMD` (binary not found) and `KIRO_CWD` (directory missing) name the offending variable in the error string instead of leaking a low-level OS error (`exec: "x": executable file not found in $PATH`). Tilde expansion for `KIRO_CWD` so `~/work/kiro` resolves cleanly.
-- [ ] **REL-CFG-07** (C-6, Low): Port-in-use is discovered during boot validation (pre-warmup), not after a 5–10s pool warmup completes. Operator does not pay the warmup cost only to hit a bind error on the listener.
+- [x] **REL-CFG-05** (C-4, Low): Degenerate `ALLOWED_IPS=","`, `ALLOWED_IPS="  "`, `ALLOWED_IPS=" , "`, or `AUTH_TOKEN=" , "` values no longer silently disable security. Treat as unset with a loud boot Warn that names the variable, matching the existing fail-fast posture on numeric config vars from Phase 16-05 REL-CFG-01.
+- [x] **REL-CFG-06** (C-5, Low): Boot errors for `KIRO_CMD` (binary not found) and `KIRO_CWD` (directory missing) name the offending variable in the error string instead of leaking a low-level OS error (`exec: "x": executable file not found in $PATH`). Tilde expansion for `KIRO_CWD` so `~/work/kiro` resolves cleanly.
+- [x] **REL-CFG-07** (C-6, Low): Port-in-use is discovered during boot validation (pre-warmup), not after a 5–10s pool warmup completes. Operator does not pay the warmup cost only to hit a bind error on the listener.
 
 ### Observability symmetry (Phase 18-02)
 
-- [ ] **REL-HTTP-06** (H-6, Low): Ollama streaming `eng.Run` failures emit a server-side WARN log (with `request_id`, `model`, `err`) before the error frame is written to the client. Mirrors REL-HTTP-03 (Phase 15) for the non-streaming path that was already symmetric.
-- [ ] **REL-HTTP-07** (H-7, Low): Three goroutines (admin tailer, engine watchdog, pool ctx-watcher) have a deferred `recover()` that logs and exits the goroutine cleanly instead of crashing the process. Defense in depth — no known panic source exists today, but the contract that a goroutine failure does not take down the gateway is now enforced.
-- [ ] **REL-OBSV-02** (O-2, Low): Worker recovery is logged symmetrically with worker death. When the pool's exit-watcher detects a kiro-cli death and the lazy-respawn path produces a new client, the success path emits an INFO log line ("pool: slot recovered"). Operator can verify self-healing from logs alone.
-- [ ] **REL-OBSV-03** (O-3, Low): kiro-cli stderr is captured into the structured log file, not the process's bare stderr. New entries are tagged with `worker_pid` + `slot_id` so an operator tailing the log sees kiro-cli warnings inline with gateway events.
-- [ ] **REL-OBSV-04** (O-4, Low): Admin log-tail path resolution can no longer diverge from the actual log sink. Single source of truth (the configured `CHAT_TRACE_FILE` / log path) reused by both the tailer and the writer. Open failures log at WARN (not Debug) so the operator sees them.
+- [x] **REL-HTTP-06** (H-6, Low): Ollama streaming `eng.Run` failures emit a server-side WARN log (with `request_id`, `model`, `err`) before the error frame is written to the client. Mirrors REL-HTTP-03 (Phase 15) for the non-streaming path that was already symmetric.
+- [x] **REL-HTTP-07** (H-7, Low): Three goroutines (admin tailer, engine watchdog, pool ctx-watcher) have a deferred `recover()` that logs and exits the goroutine cleanly instead of crashing the process. Defense in depth — no known panic source exists today, but the contract that a goroutine failure does not take down the gateway is now enforced.
+- [x] **REL-OBSV-02** (O-2, Low): Worker recovery is logged symmetrically with worker death. When the pool's exit-watcher detects a kiro-cli death and the lazy-respawn path produces a new client, the success path emits an INFO log line ("pool: slot recovered"). Operator can verify self-healing from logs alone.
+- [x] **REL-OBSV-03** (O-3, Low): kiro-cli stderr is captured into the structured log file, not the process's bare stderr. New entries are tagged with `worker_pid` + `slot_id` so an operator tailing the log sees kiro-cli warnings inline with gateway events.
+- [x] **REL-OBSV-04** (O-4, Low): Admin log-tail path resolution can no longer diverge from the actual log sink. Single source of truth (the configured `CHAT_TRACE_FILE` / log path) reused by both the tailer and the writer. Open failures log at WARN (not Debug) so the operator sees them.
 
 ### Tray honesty (Phase 18-03)
 
-- [ ] **REL-TRAY-08** (T-8, Low): dotenv read errors are loud. When the wrapper fails to parse `.otto-gw.env` / `.otto-gw.overrides.env`, the wrapper logs the parse error to stderr, and the tray reflects a distinct "config error" state instead of polling the wrong port and showing "stopped".
-- [ ] **REL-TRAY-09** (T-9, Low): Support bundle's macOS-tray diagnostics either report correct data or are removed. The autostart probe checks the actual launch agent plist name we ship (or skips the check on macOS where we don't ship one). `tray-state.txt` either reads a file the tray writes, or the row is removed from the bundle's tray section.
+- [x] **REL-TRAY-08** (T-8, Low): dotenv read errors are loud. When the wrapper fails to parse `.otto-gw.env` / `.otto-gw.overrides.env`, the wrapper logs the parse error to stderr, and the tray reflects a distinct "config error" state instead of polling the wrong port and showing "stopped".
+- [x] **REL-TRAY-09** (T-9, Low): Support bundle's macOS-tray diagnostics either report correct data or are removed. The autostart probe checks the actual launch agent plist name we ship (or skips the check on macOS where we don't ship one). `tray-state.txt` either reads a file the tray writes, or the row is removed from the bundle's tray section.
 
 ### Concurrency fix (Phase 19-01)
 
@@ -32,12 +32,12 @@ This milestone closes the long-tail of issues the v1.9 + Phase 17 work explicitl
 
 ### Code-review backlog burn-down (Phase 20-01)
 
-- [ ] **QUAL-01** (16-REVIEW IN-01): `escapeApplescript` in `cmd/otto-tray/uihelpers_darwin.go` escapes newlines + control chars in addition to `"` and `\`. Defense-in-depth for future operator-controlled strings reaching the AppleScript dialog body.
-- [ ] **QUAL-02** (16-REVIEW IN-02): `tooltipForState` is no longer duplicated across `uihelpers_windows.go` + `uihelpers_darwin.go`. Move into a shared build-tag file (e.g., `cmd/otto-tray/tooltip.go` with `//go:build darwin || windows`).
-- [ ] **QUAL-03** (16-REVIEW IN-04): `forceCloseCh` channel contract is visible at the type level. Either document the field as "only signaled by `RunUntilSignal`" or move allocation into that method so the `Run`-only path doesn't carry a dead select arm.
-- [ ] **QUAL-04** (16-REVIEW IN-05): `tailLines` in `cmd/otto-tray/tray.go` switches from the O(n²) prepend pattern (`kept = append([]string{t}, kept...)`) to a collect-then-reverse pattern. Performance is irrelevant at n=20; this is a readability fix.
-- [ ] **QUAL-05** (17-REVIEW IN-01): Dead `sessions` / `sessionsMu` variables removed from `internal/pool/regression_rel_pool_02_test.go:109-110, 122-124`.
-- [ ] **QUAL-06** (17-REVIEW IN-02): Stale comment ref to `removeSlot` in `internal/pool/respawn_ctx_cancel_test.go:119` updated to reflect the function's removal in Phase 17-03.
+- [x] **QUAL-01** (16-REVIEW IN-01): `escapeApplescript` in `cmd/otto-tray/uihelpers_darwin.go` escapes newlines + control chars in addition to `"` and `\`. Defense-in-depth for future operator-controlled strings reaching the AppleScript dialog body.
+- [x] **QUAL-02** (16-REVIEW IN-02): `tooltipForState` is no longer duplicated across `uihelpers_windows.go` + `uihelpers_darwin.go`. Move into a shared build-tag file (e.g., `cmd/otto-tray/tooltip.go` with `//go:build darwin || windows`).
+- [x] **QUAL-03** (16-REVIEW IN-04): `forceCloseCh` channel contract is visible at the type level. Either document the field as "only signaled by `RunUntilSignal`" or move allocation into that method so the `Run`-only path doesn't carry a dead select arm.
+- [x] **QUAL-04** (16-REVIEW IN-05): `tailLines` in `cmd/otto-tray/tray.go` switches from the O(n²) prepend pattern (`kept = append([]string{t}, kept...)`) to a collect-then-reverse pattern. Performance is irrelevant at n=20; this is a readability fix.
+- [x] **QUAL-05** (17-REVIEW IN-01): Dead `sessions` / `sessionsMu` variables removed from `internal/pool/regression_rel_pool_02_test.go:109-110, 122-124`.
+- [x] **QUAL-06** (17-REVIEW IN-02): Stale comment ref to `removeSlot` in `internal/pool/respawn_ctx_cancel_test.go:119` updated to reflect the function's removal in Phase 17-03.
 
 ## Cross-cutting constraints
 
@@ -60,20 +60,20 @@ This milestone closes the long-tail of issues the v1.9 + Phase 17 work explicitl
 
 | REQ-ID | Phase | Status |
 |--------|-------|--------|
-| REL-CFG-05 | 18 | Open |
-| REL-CFG-06 | 18 | Open |
-| REL-CFG-07 | 18 | Open |
-| REL-HTTP-06 | 18 | Open |
-| REL-HTTP-07 | 18 | Open |
-| REL-OBSV-02 | 18 | Open |
-| REL-OBSV-03 | 18 | Open |
-| REL-OBSV-04 | 18 | Open |
-| REL-TRAY-08 | 18 | Open |
-| REL-TRAY-09 | 18 | Open |
+| REL-CFG-05 | 18 | Closed |
+| REL-CFG-06 | 18 | Closed |
+| REL-CFG-07 | 18 | Closed |
+| REL-HTTP-06 | 18 | Closed |
+| REL-HTTP-07 | 18 | Closed |
+| REL-OBSV-02 | 18 | Closed |
+| REL-OBSV-03 | 18 | Closed |
+| REL-OBSV-04 | 18 | Closed |
+| REL-TRAY-08 | 18 | Closed |
+| REL-TRAY-09 | 18 | Closed |
 | REL-ACP-01 | 19 | Closed |
-| QUAL-01 | 20 | Open |
-| QUAL-02 | 20 | Open |
-| QUAL-03 | 20 | Open |
-| QUAL-04 | 20 | Open |
-| QUAL-05 | 20 | Open |
-| QUAL-06 | 20 | Open |
+| QUAL-01 | 20 | Closed |
+| QUAL-02 | 20 | Closed |
+| QUAL-03 | 20 | Closed |
+| QUAL-04 | 20 | Closed |
+| QUAL-05 | 20 | Closed |
+| QUAL-06 | 20 | Closed |
