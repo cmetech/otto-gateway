@@ -69,11 +69,11 @@ func decodeStderrRecords(t *testing.T, buf *bytes.Buffer) []map[string]any {
 // closes the client and returns the captured stderr records. The fake
 // commands here never speak ACP — Initialize will not complete — but
 // the stderr goroutine wiring is independent of the JSON-RPC dance.
-func startAndDrain(t *testing.T, cmd string, args []string, level slog.Level) []map[string]any {
+func startAndDrain(t *testing.T, cmd string, args []string) []map[string]any {
 	t.Helper()
 	buf := &bytes.Buffer{}
 	cfg := Config{
-		Logger:       newBufferLogger(buf, level),
+		Logger:       newBufferLogger(buf, slog.LevelWarn),
 		Command:      cmd,
 		Args:         args,
 		PingInterval: time.Hour, // suppress ping noise; test exits before tick.
@@ -121,7 +121,7 @@ func TestRegression_REL_OBSV_03(t *testing.T) {
 	t.Run("A1_single_line", func(t *testing.T) {
 		defer goleak.VerifyNone(t)
 		cmd, args := fakeKiroCmd("printf 'test-stderr-line-18-02\\n' 1>&2")
-		recs := startAndDrain(t, cmd, args, slog.LevelWarn)
+		recs := startAndDrain(t, cmd, args)
 		if len(recs) != 1 {
 			t.Fatalf("got %d kiro-cli stderr records, want exactly 1; recs=%+v", len(recs), recs)
 		}
@@ -139,7 +139,7 @@ func TestRegression_REL_OBSV_03(t *testing.T) {
 	t.Run("A2_three_lines", func(t *testing.T) {
 		defer goleak.VerifyNone(t)
 		cmd, args := fakeKiroCmd("printf 'l1\\nl2\\nl3\\n' 1>&2")
-		recs := startAndDrain(t, cmd, args, slog.LevelWarn)
+		recs := startAndDrain(t, cmd, args)
 		if len(recs) != 3 {
 			t.Fatalf("got %d records, want 3; recs=%+v", len(recs), recs)
 		}
@@ -161,7 +161,7 @@ func TestRegression_REL_OBSV_03(t *testing.T) {
 			printf "\ntail-line\n";
 		}' 1>&2`
 		cmd, args := fakeKiroCmd(script)
-		recs := startAndDrain(t, cmd, args, slog.LevelWarn)
+		recs := startAndDrain(t, cmd, args)
 		if len(recs) < 2 {
 			t.Fatalf("got %d records, want >= 2; recs (truncated)=%+v", len(recs), summarizeRecords(recs))
 		}
@@ -195,7 +195,7 @@ func TestRegression_REL_OBSV_03(t *testing.T) {
 			printf "\n";
 		}' 1>&2`
 		cmd, args := fakeKiroCmd(script)
-		recs := startAndDrain(t, cmd, args, slog.LevelWarn)
+		recs := startAndDrain(t, cmd, args)
 		if len(recs) < 1 {
 			t.Fatalf("got %d records, want >= 1; recs=%+v", len(recs), summarizeRecords(recs))
 		}
@@ -232,7 +232,7 @@ func TestRegression_REL_OBSV_03(t *testing.T) {
 	t.Run("A6_no_truncation_no_telemetry_fields", func(t *testing.T) {
 		defer goleak.VerifyNone(t)
 		cmd, args := fakeKiroCmd("printf 'short-line\\n' 1>&2")
-		recs := startAndDrain(t, cmd, args, slog.LevelWarn)
+		recs := startAndDrain(t, cmd, args)
 		if len(recs) != 1 {
 			t.Fatalf("got %d records, want 1; recs=%+v", len(recs), recs)
 		}
