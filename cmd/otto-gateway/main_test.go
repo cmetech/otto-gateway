@@ -89,7 +89,13 @@ func TestNewApp_SurfaceGating(t *testing.T) {
 	for _, tc := range subtests {
 		t.Run(tc.name, func(t *testing.T) {
 			// Degraded mode: pool + engine stay nil. Warmup is skipped.
-			t.Setenv("KIRO_CMD", "")
+			// KIRO_CMD must resolve to a real executable so config.Load's
+			// REL-CFG-06 exec.LookPath check passes on hosts without
+			// kiro-cli on PATH (e.g. CI runners). The value is otherwise
+			// irrelevant here — cfg.KiroCmd is zeroed after Load (below)
+			// to force degraded mode. /usr/bin/true matches the
+			// resolvable-binary convention used by TestApp_WarmupBeforeListen.
+			t.Setenv("KIRO_CMD", "/usr/bin/true")
 			// Defensive — ephemeral port; the test never actually listens.
 			t.Setenv("HTTP_ADDR", ":0")
 			// No-auth so route probes are not blocked by 401 before
@@ -103,11 +109,12 @@ func TestNewApp_SurfaceGating(t *testing.T) {
 			if err != nil {
 				t.Fatalf("config.Load: %v", err)
 			}
-			// Force degraded mode AFTER config.Load: getEnvStr("KIRO_CMD",
-			// "kiro-cli") falls back to the default when the env value
-			// is empty, so we cannot disable pool construction via env
-			// alone. Overriding the resolved Config field is the
-			// supported degraded-mode entrypoint (mirrors how
+			// Force degraded mode AFTER config.Load: an empty KIRO_CMD
+			// falls back to the "kiro-cli" default (which config.Load's
+			// REL-CFG-06 PATH validation now rejects on hosts lacking it),
+			// so we cannot disable pool construction via env alone.
+			// Overriding the resolved Config field is the supported
+			// degraded-mode entrypoint (mirrors how
 			// TestApp_NoKiroCmd_StartsHealthOnly builds its cfg literal).
 			cfg.KiroCmd = ""
 			logger := testutil.Logger(t)
