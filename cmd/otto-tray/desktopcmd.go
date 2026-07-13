@@ -70,6 +70,7 @@ func runCmd(timeout time.Duration, dir, name string, args ...string) runResult {
 	if dir != "" {
 		cmd.Dir = dir
 	}
+	hideConsole(cmd) // Windows: no console-window flash when spawning taskkill/powershell
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()

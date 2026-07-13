@@ -14,7 +14,9 @@ func init() { desktopRunningFn = platformDesktopRunning }
 func platformDesktopRunning(id brandIdentity) bool {
 	// #nosec G204 -- id.WinExeName derives from a validateDisplayName-checked
 	// display name; the filter value is quoted and bounded.
-	out, err := exec.Command("tasklist", "/FI", "IMAGENAME eq "+id.WinExeName, "/NH").Output()
+	cmd := exec.Command("tasklist", "/FI", "IMAGENAME eq "+id.WinExeName, "/NH")
+	hideConsole(cmd) // no console-window flash on this per-tick liveness probe
+	out, err := cmd.Output()
 	if err != nil {
 		return false
 	}
