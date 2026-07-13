@@ -50,3 +50,15 @@ func detachProcessGroup(cmd *exec.Cmd) {
 		HideWindow:    true,
 	}
 }
+
+// detachGUIProcess detaches a *GUI* child (the desktop app) into its own process
+// group so it outlives the tray, WITHOUT HideWindow. HideWindow sets SW_HIDE,
+// which Electron/GUI apps honor by starting with no visible window — correct for
+// the headless gateway wrapper (detachProcessGroup) but wrong for a user-facing
+// app. No CREATE_NO_WINDOW either: that is for console children; a GUI exe needs
+// normal window creation. See quick task 260713-qw7.
+func detachGUIProcess(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		CreationFlags: createNewProcessGroup,
+	}
+}

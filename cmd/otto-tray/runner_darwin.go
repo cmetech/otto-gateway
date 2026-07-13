@@ -18,3 +18,10 @@ func wrapperCommand(installRoot, verb string) (string, []string) {
 func detachProcessGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 }
+
+// detachGUIProcess mirrors detachProcessGroup on darwin (Setpgid) — the desktop
+// app is launched via `open`, so there is no window-hiding concern here; this
+// exists so the shared darwin||windows spawnDetached compiles on both OSes.
+func detachGUIProcess(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+}

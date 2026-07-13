@@ -91,7 +91,7 @@ func spawnDetached(dir, name string, args ...string) error {
 	if dir != "" {
 		cmd.Dir = dir
 	}
-	detachProcessGroup(cmd) // existing helper (darwin: Setpgid; windows: DETACHED_PROCESS)
+	detachGUIProcess(cmd) // GUI app: detach without HideWindow so its window is visible (win)
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("spawn %s: %w", name, err)
 	}
