@@ -5,6 +5,7 @@ package main
 import (
 	"os"
 	"runtime"
+	"time"
 )
 
 // makeDesktopProbe returns a per-tick evidence gatherer: resolve the installed
@@ -66,7 +67,66 @@ func (s *trayState) applyDesktopState(st DesktopState) {
 	}
 }
 
-// Handlers — filled in Task 4. Declared here so wireCallbacks compiles.
-func (s *trayState) handleDesktopInstall() {}
-func (s *trayState) handleDesktopStart()   {}
-func (s *trayState) handleDesktopStop()    {}
+func (s *trayState) handleDesktopInstall() {
+	if !confirmDialog("Install OTTO Desktop",
+		"Download and run the official OTTO desktop installer now?", "Install", "Cancel") {
+		return
+	}
+	s.desktopInstalling.Store(true)
+	defer s.desktopInstalling.Store(false)
+	name, args := desktopInstallCommand(runtime.GOOS)
+	res := runCmd(10*time.Minute, "", name, args...) // installs are slow (download+unpack+bootstrap)
+	if res.ExitCode != 0 || res.Err != nil {
+		notify("OTTO Desktop", "Install failed: "+firstLine(res.Stderr))
+		return
+	}
+	notify("OTTO Desktop", "OTTO desktop installed.")
+	// next poll re-detects → state flips to stopped/running
+}
+
+func (s *trayState) handleDesktopStart() {
+	p := s.desktopAppPath.Load()
+	appPath := ""
+	if p != nil {
+		appPath = *p
+	}
+	// Stale-path guard: the cached path may point at an app that was moved
+	// or uninstalled since the last poll. Re-resolve before launching so we
+	// never spawn a dead path.
+	if appPath == "" || !statExists(appPath) {
+		_, fresh := resolveDesktopIdentity(runtime.GOOS, os.Getenv, homeDir(), statExists, os.ReadFile)
+		appPath = fresh
+	}
+	if appPath == "" {
+		notify("OTTO Desktop", "Desktop app not found. Install it first.")
+		return
+	}
+	name, args := desktopStartCommand(runtime.GOOS, appPath)
+	if err := spawnDetached("", name, args...); err != nil {
+		notify("OTTO Desktop", "Failed to start: "+err.Error())
+	}
+}
+
+func (s *trayState) handleDesktopStop() {
+	if !confirmDialog("Stop OTTO Desktop",
+		"Stop the OTTO desktop app? Any unsaved work in it may be lost.", "Stop", "Cancel") {
+		return
+	}
+	id, _ := resolveDesktopIdentity(runtime.GOOS, os.Getenv, homeDir(), statExists, os.ReadFile)
+	// graceful first
+	name, args := desktopStopCommand(runtime.GOOS, id, false)
+	res := runCmd(15*time.Second, "", name, args...)
+	// forced fallback if still alive shortly after
+	time.Sleep(1500 * time.Millisecond)
+	if isDesktopRunning(id) {
+		fname, fargs := desktopStopCommand(runtime.GOOS, id, true)
+		res = runCmd(15*time.Second, "", fname, fargs...)
+	}
+	if res.Err != nil && isDesktopRunning(id) {
+		notify("OTTO Desktop", "Failed to stop: "+firstLine(res.Stderr))
+	}
+}
+
+// small helpers reused by handlers
+func homeDir() string          { h, _ := os.UserHomeDir(); return h }
+func statExists(p string) bool { _, err := os.Stat(p); return err == nil }
