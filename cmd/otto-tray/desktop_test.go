@@ -40,6 +40,30 @@ func TestInstalledAppPath(t *testing.T) {
 	}
 }
 
+func TestResolveDesktopIdentity(t *testing.T) {
+	const present = "/Applications/OTTO.app"
+	exists := func(p string) bool { return p == present }
+	readFile := func(p string) ([]byte, error) {
+		if p == brandJSONPathForApp("darwin", present) {
+			return []byte(`{"displayName":"OTTO"}`), nil
+		}
+		return nil, errMissing
+	}
+	id, appPath := resolveDesktopIdentity("darwin", func(string) string { return "" }, "/Users/me", exists, readFile)
+	if id.DisplayName != "OTTO" {
+		t.Fatalf("expected DisplayName OTTO, got %q", id.DisplayName)
+	}
+	if appPath != present {
+		t.Fatalf("expected appPath %q, got %q", present, appPath)
+	}
+
+	notFound := func(string) bool { return false }
+	_, appPath = resolveDesktopIdentity("darwin", func(string) string { return "" }, "/Users/me", notFound, readFile)
+	if appPath != "" {
+		t.Fatalf("expected empty appPath when not installed, got %q", appPath)
+	}
+}
+
 func TestBrandJSONPathForApp(t *testing.T) {
 	if p := brandJSONPathForApp("darwin", "/Applications/OTTO.app"); p != "/Applications/OTTO.app/Contents/Resources/brand.json" {
 		t.Fatalf("darwin brand.json path: %q", p)

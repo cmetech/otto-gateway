@@ -59,6 +59,13 @@ func TestRefineBrandIdentity_DefaultsWhenMissingOrBad(t *testing.T) {
 	if got.DisplayName != "LOOP24" || got.WinExeName != "LOOP24.exe" || got.InstallRepo != "cmetech/loop24" {
 		t.Fatalf("valid override failed: %+v", got)
 	}
+	// malformed releasesRepo → InstallRepo stays the default, no injection
+	got = refineBrandIdentity(base, "x", func(string) ([]byte, error) {
+		return []byte(`{"displayName":"OTTO","releasesRepo":"not a repo; rm -rf"}`), nil
+	})
+	if got.InstallRepo != "cmetech/otto" {
+		t.Fatalf("malformed releasesRepo should keep default InstallRepo, got %q", got.InstallRepo)
+	}
 }
 
 var errMissing = &fsErr{}

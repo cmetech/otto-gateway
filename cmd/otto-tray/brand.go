@@ -22,6 +22,11 @@ type brandIdentity struct {
 // used to build a process name / kill target passed to exec (gosec G204).
 var displayNameRe = regexp.MustCompile(`^[A-Za-z0-9 ._-]{1,64}$`)
 
+// releasesRepoRe bounds releasesRepo to a plain "owner/repo" GitHub slug
+// BEFORE it is adopted into InstallRepo (fail-safe: no unvalidated string
+// reaches an install-target field).
+var releasesRepoRe = regexp.MustCompile(`^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$`)
+
 func validateDisplayName(name string) bool { return displayNameRe.MatchString(name) }
 
 func identityFromDisplayName(name string) brandIdentity {
@@ -57,7 +62,7 @@ func refineBrandIdentity(base brandIdentity, brandJSONPath string, readFile func
 	if validateDisplayName(doc.DisplayName) {
 		out = identityFromDisplayName(doc.DisplayName)
 	}
-	if doc.ReleasesRepo != "" {
+	if releasesRepoRe.MatchString(doc.ReleasesRepo) {
 		out.InstallRepo = doc.ReleasesRepo // used for display only in v1; install URL is constant
 	}
 	return out
