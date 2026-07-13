@@ -51,6 +51,7 @@ func brandJSONPathForApp(goos, appPath string) string {
 // resolveDesktopIdentity finds the installed app (with OTTO defaults) and, if
 // found, refines the identity from its bundled brand.json. Returns the
 // (possibly refined) identity and the app path ("" if not installed).
+//
 //nolint:unparam // goos is runtime.GOOS in production (varies darwin/windows across builds) and is parameterized so both OS branches are unit-tested on one box
 func resolveDesktopIdentity(goos string, env func(string) string, home string, exists func(string) bool, readFile func(string) ([]byte, error)) (brandIdentity, string) {
 	id := defaultBrandIdentity()
