@@ -2,7 +2,11 @@
 
 package main
 
-import "os/exec"
+import (
+	"context"
+	"os/exec"
+	"time"
+)
 
 func init() { desktopRunningFn = platformDesktopRunning }
 
@@ -12,8 +16,9 @@ func init() { desktopRunningFn = platformDesktopRunning }
 // validated brand identity value (see validateDisplayName), so it is safe to
 // pass to pgrep.
 func platformDesktopRunning(id brandIdentity) bool {
-	// #nosec G204 -- id.MacProcMatch derives from a validateDisplayName-checked
-	// display name; no unsanitized input reaches exec.
-	err := exec.Command("pgrep", "-f", id.MacProcMatch).Run()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	// #nosec G204 -- id.MacProcMatch derives from a validateDisplayName-checked display name; no unsanitized input reaches exec.
+	err := exec.CommandContext(ctx, "pgrep", "-f", id.MacProcMatch).Run()
 	return err == nil // pgrep exits 0 iff ≥1 match
 }

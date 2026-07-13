@@ -82,10 +82,13 @@ func runCmd(timeout time.Duration, dir, name string, args ...string) runResult {
 // spawnDetached starts a process in its own group and returns immediately
 // (used to launch the desktop app so quitting the tray never signals it).
 func spawnDetached(dir, name string, args ...string) error {
-	cmd := exec.Command(name, args...) //nolint:gosec // name is an allowlisted app path / "open"; args validated
+	cmd := exec.CommandContext(context.Background(), name, args...) //nolint:gosec // name is an allowlisted app path / "open"; args validated
 	if dir != "" {
 		cmd.Dir = dir
 	}
 	detachProcessGroup(cmd) // existing helper (darwin: Setpgid; windows: DETACHED_PROCESS)
-	return cmd.Start()
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("spawn %s: %w", name, err)
+	}
+	return nil
 }

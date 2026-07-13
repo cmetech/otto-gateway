@@ -35,7 +35,7 @@ func TestDesktopStopCommand(t *testing.T) {
 	if n != "taskkill" || strings.Join(a, " ") != "/IM OTTO.exe /T" {
 		t.Fatalf("win stop graceful: %s %v", n, a)
 	}
-	n, a = desktopStopCommand("windows", id, true)
+	_, a = desktopStopCommand("windows", id, true)
 	if strings.Join(a, " ") != "/IM OTTO.exe /T /F" {
 		t.Fatalf("win stop force: %v", a)
 	}
