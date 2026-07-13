@@ -5,8 +5,9 @@ otto-gateway
 otto-gateway.exe
 otto-tray
 otto-tray.exe
-# Do not ignore the Go source directory that shares the binary name.
+# Do not ignore the Go source directories that share a binary name.
 !/cmd/otto-gateway/
+!/cmd/otto-tray/
 
 # Build / test output
 *.test

@@ -126,6 +126,18 @@ See [Optional: launch the menu-bar / system-tray app](docs/operator-quickstart.m
 in the operator quickstart for what it does and how to remove its login-item
 registration.
 
+The tray also has an **OTTO Desktop** section for managing the OTTO desktop
+coworker app (separate from the gateway):
+
+- **Install OTTO Desktop…** — shown when the app isn't installed; runs the
+  published OTTO desktop installer (`irm …/cmetech/otto/main/install.ps1 | iex`
+  on Windows, `curl …/install.sh | sh` on macOS).
+- **Start / Stop OTTO Desktop** — launch the installed app, or stop it (Stop
+  asks for confirmation first). The header shows whether it's running.
+
+v1 notes: it assumes the **OTTO** brand (identity is refined from the installed
+app's `brand.json` when present) and detects "running" by process name.
+
 ---
 
 ### From source (developers)
