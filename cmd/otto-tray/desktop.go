@@ -12,7 +12,8 @@ func desktopAppCandidates(goos string, id brandIdentity, env func(string) string
 		var out []string
 		for _, k := range []string{"LOCALAPPDATA", "PROGRAMFILES", "PROGRAMFILES(X86)"} {
 			if root := env(k); root != "" {
-				out = append(out,
+				out = append(
+					out,
 					filepath.Join(root, "Programs", id.DisplayName, id.WinExeName),
 					filepath.Join(root, id.DisplayName, id.WinExeName),
 				)

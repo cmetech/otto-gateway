@@ -16,11 +16,15 @@ import (
 // input reaches exec (gosec G204).
 func desktopInstallCommand(goos string) (string, []string) {
 	if goos == "windows" {
-		return "powershell", []string{"-NoProfile", "-Command",
-			"irm https://raw.githubusercontent.com/cmetech/otto/main/install.ps1 | iex"}
+		return "powershell", []string{
+			"-NoProfile", "-Command",
+			"irm https://raw.githubusercontent.com/cmetech/otto/main/install.ps1 | iex",
+		}
 	}
-	return "/bin/sh", []string{"-c",
-		"curl -fsSL https://raw.githubusercontent.com/cmetech/otto/main/install.sh | sh"}
+	return "/bin/sh", []string{
+		"-c",
+		"curl -fsSL https://raw.githubusercontent.com/cmetech/otto/main/install.sh | sh",
+	}
 }
 
 // desktopStartCommand launches the installed app. appPath comes from the
