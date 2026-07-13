@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -44,7 +45,16 @@ func desktopStopCommand(goos string, id brandIdentity, force bool) (string, []st
 	if force {
 		return "pkill", []string{"-f", id.MacProcMatch}
 	}
-	return "osascript", []string{"-e", `quit app "` + id.DisplayName + `"`}
+	return "osascript", []string{"-e", `quit app "` + escapeAppleScriptArg(id.DisplayName) + `"`}
+}
+
+// escapeAppleScriptArg escapes a string for embedding inside an AppleScript
+// double-quoted literal. Defense-in-depth: display names are already bounded by
+// validateDisplayName (no " or \), so this is a backstop if that ever loosens.
+func escapeAppleScriptArg(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `"`, `\"`)
+	return s
 }
 
 // runCmd runs a command to completion with a timeout and captures output.
