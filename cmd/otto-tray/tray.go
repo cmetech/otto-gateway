@@ -57,6 +57,15 @@ type trayState struct {
 	miPrefsStart *systray.MenuItem
 	miAbout      *systray.MenuItem
 	miQuit       *systray.MenuItem
+
+	// desktop-app management (parallel to the gateway controls)
+	desktopCh         chan DesktopState
+	desktopInstalling atomic.Bool
+	desktopAppPath    atomic.Pointer[string]
+	miDesktopHeader   *systray.MenuItem
+	miDesktopInstall  *systray.MenuItem
+	miDesktopStart    *systray.MenuItem
+	miDesktopStop     *systray.MenuItem
 }
 
 func newTrayState(installRoot string, cfg TrayConfig) *trayState {
@@ -66,6 +75,7 @@ func newTrayState(installRoot string, cfg TrayConfig) *trayState {
 		dashboardURL: resolveDashboardURL(installRoot),
 		current:      StateUnknown,
 		stateCh:      make(chan stateOutput, 4),
+		desktopCh:    make(chan DesktopState, 4),
 	}
 }
 
@@ -87,6 +97,12 @@ func (s *trayState) onReady(isFirstRun bool) func() {
 		s.miDashboard = systray.AddMenuItem("Open dashboard", s.dashboardURL)
 		s.miCopyHealth = systray.AddMenuItem("Copy health URL", "")
 		systray.AddSeparator()
+		s.miDesktopHeader = systray.AddMenuItem("OTTO Desktop · …", "")
+		s.miDesktopHeader.Disable()
+		s.miDesktopInstall = systray.AddMenuItem("Install OTTO Desktop…", "Download and run the OTTO desktop installer")
+		s.miDesktopStart = systray.AddMenuItem("Start OTTO Desktop", "")
+		s.miDesktopStop = systray.AddMenuItem("Stop OTTO Desktop", "")
+		systray.AddSeparator()
 		s.miSupport = systray.AddMenuItem("Create Support Bundle…", "Produce a redacted diagnostic archive")
 		systray.AddSeparator()
 		prefs := systray.AddMenuItem("Preferences", "")
@@ -104,6 +120,10 @@ func (s *trayState) onReady(isFirstRun bool) func() {
 		tick := time.NewTicker(3 * time.Second).C
 		go runPoller(ctx, probe, tick, s.stateCh, s.getStartedAt)
 		go s.uiLoop()
+
+		dtick := time.NewTicker(3 * time.Second).C
+		go runDesktopPoller(ctx, s.makeDesktopProbe(), dtick, s.desktopCh)
+		go s.desktopUILoop()
 
 		go func() {
 			time.Sleep(500 * time.Millisecond)
@@ -135,6 +155,10 @@ func (s *trayState) wireCallbacks() {
 	s.miPrefsStart.Click(func() { go s.toggleStartGatewayOnLaunch() })
 	s.miAbout.Click(func() { go s.showAbout() })
 	s.miQuit.Click(func() { systray.Quit() })
+
+	s.miDesktopInstall.Click(func() { go s.handleDesktopInstall() })
+	s.miDesktopStart.Click(func() { go s.handleDesktopStart() })
+	s.miDesktopStop.Click(func() { go s.handleDesktopStop() })
 }
 
 func (s *trayState) makeProbe() probeFunc {
