@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"math"
 	"net"
 	"net/netip"
 	"os"
@@ -518,8 +519,13 @@ func Load() (Config, error) {
 	if err != nil {
 		errs = append(errs, err)
 	}
-	if recyclePct < 0 {
-		errs = append(errs, fmt.Errorf("CTX_RECYCLE_PCT: must be >= 0, got %v", recyclePct))
+	// Domain is the percent range [0,100]. ParseFloat accepts NaN/Inf and there
+	// is no natural upper bound, so guard all three: a NaN/Inf/>100 threshold
+	// boots "successfully" but can never be tripped by a real 0–100 context
+	// value, silently disabling recycle. 0 disables (valid); 100 is valid
+	// (recycle only at a full window).
+	if math.IsNaN(recyclePct) || math.IsInf(recyclePct, 0) || recyclePct < 0 || recyclePct > 100 {
+		errs = append(errs, fmt.Errorf("CTX_RECYCLE_PCT: must be in [0,100], got %v", recyclePct))
 	}
 
 	// Quick 260531-ruv — STREAM_IDLE_TIMEOUT_SEC. Default 30 (seconds).
