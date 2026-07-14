@@ -59,6 +59,24 @@ type Config struct {
 	// aggregate the gw_acp_ping_* metrics (Track 4b). nil = no-op.
 	OnPingEscalate    func()
 	OnPingSuspendSkip func()
+
+	// OnTurnMeter / OnContextPct / OnMCPInit are optional kiro-usage hooks
+	// fired by handleNotification when kiro emits its `_kiro.dev/metadata` /
+	// `_kiro.dev/mcp/*` notifications (kiro usage-metrics parity build). The
+	// pool + session registry wire these to a shared metrics recorder (and the
+	// registry additionally uses OnContextPct to drive proactive context
+	// recycle). Same optional-hook pattern as OnPing* above; nil = no-op.
+	//
+	//   - OnTurnMeter(credits, turnMs) fires once per completed turn — a
+	//     metadata frame carrying `meteringUsage`. credits is the sum of the
+	//     credit-unit metering entries; turnMs is `turnDurationMs` (0 if absent).
+	//   - OnContextPct(pct) fires on any `contextUsagePercentage` frame. pct is
+	//     on a 0–100 PERCENT scale (kiro's native scale — NOT 0..1).
+	//   - OnMCPInit(server, ok) fires on the two MCP init methods; ok=false for
+	//     server_init_failure.
+	OnTurnMeter  func(credits float64, turnMs int64)
+	OnContextPct func(pct float64)
+	OnMCPInit    func(server string, ok bool)
 }
 
 // applyDefaults fills in zero-value Config fields with documented defaults.
@@ -1273,9 +1291,50 @@ func (c *Client) handleNotification(frame rpcFrame) {
 			}
 		}
 
+	case "_kiro.dev/metadata":
+		// kiro usage-metrics parity: per-turn utilization stream. Fire
+		// OnContextPct on any contextUsagePercentage (0–100 percent) and
+		// OnTurnMeter only when meteringUsage is present (turn complete).
+		var meta metadataParams
+		if err := json.Unmarshal(frame.Params, &meta); err != nil {
+			c.cfg.Logger.Warn("acp: malformed kiro metadata", "err", err)
+			return
+		}
+		if meta.ContextUsagePercentage != nil && c.cfg.OnContextPct != nil {
+			c.cfg.OnContextPct(*meta.ContextUsagePercentage)
+		}
+		if len(meta.MeteringUsage) > 0 && c.cfg.OnTurnMeter != nil {
+			var turnMs int64
+			if meta.TurnDurationMs != nil {
+				turnMs = *meta.TurnDurationMs
+			}
+			c.cfg.OnTurnMeter(sumCredits(meta.MeteringUsage), turnMs)
+		}
+
+	case "_kiro.dev/mcp/server_initialized":
+		c.handleMCPInit(frame, true)
+	case "_kiro.dev/mcp/server_init_failure":
+		c.handleMCPInit(frame, false)
+
 	default:
 		c.cfg.Logger.Debug("acp: unhandled notification", "method", frame.Method)
 	}
+}
+
+// handleMCPInit fires the OnMCPInit hook for the two `_kiro.dev/mcp/*`
+// notifications (kiro usage-metrics parity). ok=true for server_initialized,
+// false for server_init_failure. A malformed frame is logged and dropped —
+// never fatal (mirrors the metadata + session/update tolerant-parse policy).
+func (c *Client) handleMCPInit(frame rpcFrame, ok bool) {
+	if c.cfg.OnMCPInit == nil {
+		return
+	}
+	var p mcpServerParams
+	if err := json.Unmarshal(frame.Params, &p); err != nil {
+		c.cfg.Logger.Warn("acp: malformed kiro mcp init", "method", frame.Method, "err", err)
+		return
+	}
+	c.cfg.OnMCPInit(p.ServerName, ok)
 }
 
 // Done returns a channel that is closed when the client's subprocess has

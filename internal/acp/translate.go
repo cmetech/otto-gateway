@@ -93,6 +93,57 @@ type planEntry struct {
 	Content string `json:"content,omitempty"`
 }
 
+// metadataParams is the params payload for the `_kiro.dev/metadata`
+// notification — kiro's per-turn utilization stream (kiro usage-metrics
+// parity build). Confirmed live wire shape (2026-07-14):
+//
+//	{"sessionId":"…","contextUsagePercentage":4.897}                    // mid-turn
+//	{"sessionId":"…","contextUsagePercentage":1.567,
+//	 "meteringUsage":[{"value":0.0287,"unit":"credit","unitPlural":"credits"}],
+//	 "turnDurationMs":2012}                                             // turn complete
+//
+// ContextUsagePercentage / TurnDurationMs are pointers so the decoder
+// distinguishes "absent" from a genuine zero: a mid-turn frame carries only
+// contextUsagePercentage, while the turn-completion frame also carries
+// meteringUsage + turnDurationMs. handleNotification fires OnContextPct on any
+// non-nil ContextUsagePercentage and OnTurnMeter only when MeteringUsage is
+// present.
+type metadataParams struct {
+	SessionID              string          `json:"sessionId"`
+	ContextUsagePercentage *float64        `json:"contextUsagePercentage"`
+	MeteringUsage          []meteringEntry `json:"meteringUsage"`
+	TurnDurationMs         *int64          `json:"turnDurationMs"`
+}
+
+// meteringEntry is one element of metadataParams.MeteringUsage. Only entries
+// denominated in credits (unit=="credit" / unitPlural=="credits") count toward
+// the turn's real cost; other units (tokens, etc.) are ignored by sumCredits.
+type meteringEntry struct {
+	Value      float64 `json:"value"`
+	Unit       string  `json:"unit"`
+	UnitPlural string  `json:"unitPlural"`
+}
+
+// sumCredits totals the credit-denominated metering entries for a turn.
+// Non-credit units are excluded so gw_kiro_credits_total reflects real spend.
+func sumCredits(entries []meteringEntry) float64 {
+	var sum float64
+	for _, e := range entries {
+		if e.Unit == "credit" || e.UnitPlural == "credits" {
+			sum += e.Value
+		}
+	}
+	return sum
+}
+
+// mcpServerParams is the params payload for the `_kiro.dev/mcp/server_initialized`
+// and `_kiro.dev/mcp/server_init_failure` notifications (field name confirmed
+// from the Node acp-server-ollama.js reference). handleNotification fires
+// OnMCPInit(ServerName, ok) with ok=false for the failure method.
+type mcpServerParams struct {
+	ServerName string `json:"serverName"`
+}
+
 // permissionParams holds the deserialized fields from a session/request_permission
 // notification. Phase 1.1 D-20: the gateway responds on the original frame id —
 // the request body itself is no longer load-bearing for the response, but the
