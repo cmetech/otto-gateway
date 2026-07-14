@@ -90,6 +90,57 @@ func TestRegistry_Get_RecyclesAtThreshold(t *testing.T) {
 	}
 }
 
+// TestRegistry_Get_DoesNotRecycleWhileEntryBusy: an entry above the threshold
+// that is actively serving a request (its Mu is held, as it is for the lifetime
+// of a stream) must NOT be recycled — closing its client would truncate the live
+// stream. Get must skip recycle (TryLock fails), serve the entry, and recycle
+// only once the entry is idle again.
+func TestRegistry_Get_DoesNotRecycleWhileEntryBusy(t *testing.T) {
+	fc1, fc2 := newFake("kiro-1"), newFake("kiro-2")
+	r, ff := recycleRegistry(t, 80, fc1, fc2)
+
+	ctx := context.Background()
+	e1, err := r.Get(ctx, "sid", "/tmp")
+	if err != nil {
+		t.Fatalf("Get #1: %v", err)
+	}
+	e1.SetCtxPctForTest(85) // above threshold
+
+	// Simulate an in-flight request: a handler holds e.Mu for the whole stream.
+	e1.Mu.Lock()
+
+	e2, err := r.Get(ctx, "sid", "/tmp")
+	if err != nil {
+		e1.Mu.Unlock()
+		t.Fatalf("Get #2 (busy): %v", err)
+	}
+	if e2 != e1 {
+		e1.Mu.Unlock()
+		t.Fatal("Get recycled a busy entry — would truncate the live stream")
+	}
+	if r.Recycled() != 0 {
+		e1.Mu.Unlock()
+		t.Errorf("Recycled = %d while entry busy; want 0", r.Recycled())
+	}
+	if fc1.closeCallCount() != 0 {
+		e1.Mu.Unlock()
+		t.Errorf("busy entry's client was Closed (%d) — stream would be truncated", fc1.closeCallCount())
+	}
+
+	// Stream finishes → entry idle → next Get recycles cleanly.
+	e1.Mu.Unlock()
+	e3, err := r.Get(ctx, "sid", "/tmp")
+	if err != nil {
+		t.Fatalf("Get #3 (idle): %v", err)
+	}
+	if e3 == e1 {
+		t.Fatal("Get did not recycle once the entry was idle")
+	}
+	if r.Recycled() != 1 || fc1.closeCallCount() != 1 || ff.spawnCount() != 2 {
+		t.Errorf("idle recycle wrong: recycled=%d close=%d spawn=%d", r.Recycled(), fc1.closeCallCount(), ff.spawnCount())
+	}
+}
+
 // TestRegistry_Get_NoRecycleBelowThreshold: below the threshold the cached
 // entry is returned unchanged.
 func TestRegistry_Get_NoRecycleBelowThreshold(t *testing.T) {

@@ -244,16 +244,27 @@ func (r *Registry) Get(ctx context.Context, sid, cwd string) (*Entry, error) {
 				case <-r.closing:
 					return nil, ErrRegistryClosed
 				}
-			} else if r.cfg.RecyclePct > 0 && e.ctxPct() >= r.cfg.RecyclePct {
+			} else if r.cfg.RecyclePct > 0 && e.ctxPct() >= r.cfg.RecyclePct && e.Mu.TryLock() {
 				// Track 2 proactive recycle: this session crossed
 				// CTX_RECYCLE_PCT, so drop it and lazy-recreate on this
 				// same Get (the client re-sends the full transcript, so the
 				// fresh session loses nothing — see the context-recycle
-				// design). Delete under r.mu so a concurrent same-sid Get
-				// sees "not present"; tear the old client down OUTSIDE the
-				// lock (never hold r.mu across a slow Close), then re-loop
-				// to hit the lazy-create path. The fresh entry starts at
-				// ctxPct 0, so the guard is naturally one-shot.
+				// design).
+				//
+				// Recycle is guarded by e.Mu.TryLock (mirroring the reaper's
+				// D-12 TryLock): we recycle ONLY when we can take the entry's
+				// Mu, i.e. no request is streaming on it. If TryLock fails the
+				// entry is mid-request — closing its client would truncate the
+				// live stream — so we fall through to serve it normally and
+				// recycle on a later idle Get. A continuously-busy session
+				// therefore recycles at its first gap, exactly as a
+				// continuously-streaming session is never reaped.
+				//
+				// Holding e.Mu across the delete + Close makes the teardown
+				// safe: no stream is active, and once deleted from the map a
+				// concurrent Get lazy-creates a fresh entry. Delete under r.mu;
+				// Close OUTSIDE r.mu (never hold r.mu across a slow Close). The
+				// fresh entry starts at ctxPct 0, so the guard is one-shot.
 				trippingPct := e.ctxPct()
 				old := e
 				delete(r.entries, sid)
@@ -268,6 +279,7 @@ func (r *Registry) Get(ctx context.Context, sid, cwd string) (*Entry, error) {
 					old.Client.Cancel(old.SessionID)
 					_ = old.Client.Close()
 				}
+				old.Mu.Unlock()
 				continue // re-loop → lazy-create a replacement entry
 			} else {
 				// Alive + ready: refresh LastUsed under r.mu before
