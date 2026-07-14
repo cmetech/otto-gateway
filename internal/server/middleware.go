@@ -40,13 +40,22 @@ func accessLog(logger *slog.Logger) func(http.Handler) http.Handler {
 
 			next.ServeHTTP(ww, r.WithContext(ctx))
 
-			reqLogger.Info(
-				"request",
+			// Track 4: audit client-supplied call metadata (skill/client) when
+			// present. Optional X-GW-* request headers are API-compliant (extra
+			// headers don't affect the Ollama/OpenAI/Anthropic contract).
+			args := []any{
 				"method", r.Method,
 				"path", r.URL.Path,
 				"status", ww.Status(),
 				"duration_ms", time.Since(start).Milliseconds(),
-			)
+			}
+			if skill := r.Header.Get("X-GW-Skill"); skill != "" {
+				args = append(args, "skill", skill)
+			}
+			if client := r.Header.Get("X-GW-Client"); client != "" {
+				args = append(args, "client", client)
+			}
+			reqLogger.Info("request", args...)
 		})
 	}
 }

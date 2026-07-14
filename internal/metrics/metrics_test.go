@@ -117,6 +117,89 @@ func TestMetrics_Middleware_RecordsRequestWithRoutePattern(t *testing.T) {
 	}
 }
 
+// TestMetrics_LLMRequestsBySkill: chat routes record gw_llm_requests_total
+// labeled by surface (derived from the route) and skill (from X-GW-Skill,
+// sanitized).
+func TestMetrics_LLMRequestsBySkill(t *testing.T) {
+	m := testMetrics(metrics.PoolStats{}, metrics.SessionStats{})
+	r := chi.NewRouter()
+	r.Use(m.Middleware)
+	r.Post("/v1/messages", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/messages", nil)
+	req.Header.Set("X-GW-Skill", "Jira-Triage")
+	r.ServeHTTP(httptest.NewRecorder(), req)
+
+	body := scrape(t, m)
+	if !strings.Contains(body, `gw_llm_requests_total{gateway_id="gw-test-123",skill="jira-triage",surface="anthropic"} 1`) {
+		t.Errorf("gw_llm_requests_total not recorded with surface+skill\n%s", body)
+	}
+}
+
+// TestMetrics_LLMRequests_MissingSkillIsNone: an LLM call with no X-GW-Skill
+// header is still counted, bucketed as skill="none".
+func TestMetrics_LLMRequests_MissingSkillIsNone(t *testing.T) {
+	m := testMetrics(metrics.PoolStats{}, metrics.SessionStats{})
+	r := chi.NewRouter()
+	r.Use(m.Middleware)
+	r.Post("/api/chat", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+
+	r.ServeHTTP(httptest.NewRecorder(),
+		httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/chat", nil))
+
+	if !strings.Contains(scrape(t, m), `gw_llm_requests_total{gateway_id="gw-test-123",skill="none",surface="ollama"} 1`) {
+		t.Error("missing-skill LLM call should be counted with skill=none, surface=ollama")
+	}
+}
+
+// TestMetrics_LLMRequests_NonChatRouteNotCounted: non-LLM routes do not emit
+// gw_llm_requests_total.
+func TestMetrics_LLMRequests_NonChatRouteNotCounted(t *testing.T) {
+	m := testMetrics(metrics.PoolStats{}, metrics.SessionStats{})
+	r := chi.NewRouter()
+	r.Use(m.Middleware)
+	r.Get("/health", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+
+	r.ServeHTTP(httptest.NewRecorder(),
+		httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/health", nil))
+
+	if strings.Contains(scrape(t, m), "gw_llm_requests_total") {
+		t.Error("non-chat route must not emit gw_llm_requests_total")
+	}
+}
+
+// TestMetrics_LLMRequests_CardinalityCap: once the distinct-skill cap is
+// exceeded, further skills collapse to "other" (bounds TSDB series).
+func TestMetrics_LLMRequests_CardinalityCap(t *testing.T) {
+	m := testMetrics(metrics.PoolStats{}, metrics.SessionStats{})
+	r := chi.NewRouter()
+	r.Use(m.Middleware)
+	r.Post("/v1/messages", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+
+	// Send more distinct skills than the cap (metrics.MaxSkillCardinality).
+	for i := 0; i < metrics.MaxSkillCardinality+5; i++ {
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/messages", nil)
+		req.Header.Set("X-GW-Skill", "skill-"+itoa(i))
+		r.ServeHTTP(httptest.NewRecorder(), req)
+	}
+	body := scrape(t, m)
+	if !strings.Contains(body, `skill="other"`) {
+		t.Errorf("skills past the cap must bucket to 'other'\n%s", body)
+	}
+}
+
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var b []byte
+	for n > 0 {
+		b = append([]byte{byte('0' + n%10)}, b...)
+		n /= 10
+	}
+	return string(b)
+}
+
 // TestMetrics_Middleware_SkipsMetricsPath: scraping /metrics is not counted.
 func TestMetrics_Middleware_SkipsMetricsPath(t *testing.T) {
 	m := testMetrics(metrics.PoolStats{}, metrics.SessionStats{})

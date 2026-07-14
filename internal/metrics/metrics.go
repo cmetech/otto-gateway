@@ -10,6 +10,8 @@ package metrics
 
 import (
 	"net/http"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -22,6 +24,17 @@ import (
 // metricsPath is excluded from request metrics + (in server wiring) the access
 // log so high-frequency scrapes neither self-measure nor spam logs.
 const metricsPath = "/metrics"
+
+// SkillHeader is the request header Co-Worker (or any client) sets to tag an
+// LLM call with the invoking skill. Adding this header is fully compatible with
+// the Ollama/OpenAI/Anthropic contracts (extra request headers are ignored by
+// the API shape). Read into the gw_llm_requests_total{surface,skill} metric.
+const SkillHeader = "X-GW-Skill"
+
+// MaxSkillCardinality bounds the distinct skill label values (per gateway) so a
+// misbehaving or unknown client cannot blow up TSDB series — the (cap+1)th
+// distinct skill collapses to "other".
+const MaxSkillCardinality = 64
 
 // BuildInfo identifies this gateway instance. GatewayID becomes a constant
 // label on every series so a fleet of laptops can be grouped by gateway;
@@ -62,6 +75,79 @@ type Metrics struct {
 	reqTotal *prometheus.CounterVec
 	reqDur   *prometheus.HistogramVec
 	inFlight prometheus.Gauge
+	llmTotal *prometheus.CounterVec
+	skills   *skillLimiter
+}
+
+// skillLimiter sanitizes + cardinality-caps the X-GW-Skill label value.
+type skillLimiter struct {
+	mu    sync.Mutex
+	seen  map[string]struct{}
+	limit int
+}
+
+func newSkillLimiter(limit int) *skillLimiter {
+	return &skillLimiter{seen: make(map[string]struct{}), limit: limit}
+}
+
+// bucket returns a bounded, sanitized skill label: "none" for an empty header,
+// the sanitized value while under the cardinality cap, else "other".
+func (s *skillLimiter) bucket(raw string) string {
+	v := sanitizeSkill(raw)
+	if v == "none" {
+		return v
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.seen[v]; ok {
+		return v
+	}
+	if len(s.seen) >= s.limit {
+		return "other"
+	}
+	s.seen[v] = struct{}{}
+	return v
+}
+
+// sanitizeSkill lowercases, restricts to [a-z0-9_.-], truncates to 64, and maps
+// empty → "none". Keeps the label value safe and low-noise.
+func sanitizeSkill(raw string) string {
+	raw = strings.TrimSpace(strings.ToLower(raw))
+	if raw == "" {
+		return "none"
+	}
+	var b strings.Builder
+	for _, r := range raw {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '_', r == '.', r == '-':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('-')
+		}
+		if b.Len() >= 64 {
+			break
+		}
+	}
+	out := b.String()
+	if out == "" {
+		return "none"
+	}
+	return out
+}
+
+// surfaceForRoute maps a matched chat route to its API surface, or ("", false)
+// for non-LLM routes. Suffix-matched so a configured path prefix still resolves.
+func surfaceForRoute(route string) (string, bool) {
+	switch {
+	case strings.HasSuffix(route, "/messages"):
+		return "anthropic", true
+	case strings.HasSuffix(route, "/chat/completions"):
+		return "openai", true
+	case strings.HasSuffix(route, "/api/chat"), strings.HasSuffix(route, "/api/generate"):
+		return "ollama", true
+	default:
+		return "", false
+	}
 }
 
 // New builds the registry: the free Go-runtime + process collectors, the HTTP
@@ -105,8 +191,13 @@ func New(info BuildInfo, pool func() PoolStats, sessions func() SessionStats) *M
 			Name: "gw_http_in_flight_requests",
 			Help: "In-flight HTTP requests currently being served.",
 		}),
+		llmTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "gw_llm_requests_total",
+			Help: "Total LLM chat requests, by API surface and invoking skill (X-GW-Skill).",
+		}, []string{"surface", "skill"}),
+		skills: newSkillLimiter(MaxSkillCardinality),
 	}
-	reggw.MustRegister(buildInfo, m.reqTotal, m.reqDur, m.inFlight, newPoolCollector(pool, sessions))
+	reggw.MustRegister(buildInfo, m.reqTotal, m.reqDur, m.inFlight, m.llmTotal, newPoolCollector(pool, sessions))
 	return m
 }
 
@@ -143,6 +234,12 @@ func (m *Metrics) Middleware(next http.Handler) http.Handler {
 		status := statusText(ww.Status())
 		m.reqTotal.WithLabelValues(r.Method, route, status).Inc()
 		m.reqDur.WithLabelValues(r.Method, route, status).Observe(time.Since(start).Seconds())
+
+		// LLM-call attribution: only for chat routes, tagged by the invoking
+		// skill (X-GW-Skill, bounded). Non-LLM routes are not counted here.
+		if surface, ok := surfaceForRoute(route); ok {
+			m.llmTotal.WithLabelValues(surface, m.skills.bucket(r.Header.Get(SkillHeader))).Inc()
+		}
 	})
 }
 
