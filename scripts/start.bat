@@ -1,1 +1,1 @@
-@call "%~dp0otto-gw.bat" start %*
+@call "%~dp0gw.bat" start %*

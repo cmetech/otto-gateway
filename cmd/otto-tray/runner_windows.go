@@ -12,7 +12,7 @@ const (
 	createNewProcessGroup = 0x00000200
 )
 
-// wrapperCommand returns the executable and args to run the otto-gw
+// wrapperCommand returns the executable and args to run the gw
 // PowerShell wrapper on windows.
 //
 // PowerShell selection: prefer pwsh.exe (PowerShell 7+, which the
@@ -29,7 +29,7 @@ const (
 // guards (env-driven AUTH_TOKEN) — the script itself is not the
 // trust boundary; the user already trusted the install.
 func wrapperCommand(installDir, verb string) (string, []string) {
-	script := filepath.Join(installDir, "scripts", "otto-gw.ps1")
+	script := filepath.Join(installDir, "scripts", "gw.ps1")
 	shell := "powershell"
 	if _, err := exec.LookPath("pwsh"); err == nil {
 		shell = "pwsh"
@@ -42,7 +42,7 @@ func wrapperCommand(installDir, verb string) (string, []string) {
 // We deliberately do NOT pass DETACHED_PROCESS — that flag strips all
 // console handles from the child, and the wrapper script's internal
 // Start-Process -NoNewWindow then has no console to inherit, so
-// launching otto-gateway.exe from inside the wrapper silently misfires.
+// launching gateway.exe from inside the wrapper silently misfires.
 // CREATE_NEW_PROCESS_GROUP alone is enough to outlive the tray.
 func detachProcessGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{

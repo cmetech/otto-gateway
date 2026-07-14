@@ -1,12 +1,13 @@
 ﻿#Requires -Version 5.1
-# scripts/otto-gw.ps1 - PowerShell lifecycle manager for otto-gateway on Windows.
+# scripts/gw.ps1 - PowerShell lifecycle manager for the gateway on Windows.
 # Renamed from scripts/otto.ps1 to avoid collision with the otto CLI binary.
 #
 # Subcommands:
 #   start | stop | status | restart | logs | run | env
 #
 # Wrapper env overrides (where logs/pids/binary live):
-#   $env:OTTO_BIN, $env:OTTO_PID, $env:OTTO_LOG, $env:OTTO_STATE_DIR, $env:OTTO_ADDR
+#   $env:GW_BIN, $env:GW_PID, $env:GW_LOG, $env:GW_STATE_DIR, $env:GW_ADDR,
+#   $env:GW_HOME
 #
 # Gateway config flags (for start | restart | run | env):
 #   -Pii MODE          off | replace | mask | hash | drop | encrypt
@@ -24,11 +25,11 @@
 #   -ShowSecrets       (env subcommand only) print unmasked secrets
 #
 # .env loader (laptop-friendly persistence):
-#   Loads the first match of:  .\.env.otto-gw  →  $HOME\.otto-gw.env
+#   Loads the first match of:  .\.env  →  $GwHome\.env
 #   Then chains the first match of:
-#     .\.otto-gw.overrides.env  →  $HOME\.otto-gw.overrides.env
+#     .\overrides.env  →  $GwHome\overrides.env
 #   Override either with -EnvFile PATH / -OverridesFile PATH, or with
-#   $env:OTTO_ENV_FILE / $env:OTTO_OVERRIDES_FILE.
+#   $env:GW_ENV_FILE / $env:GW_OVERRIDES_FILE.
 #   The overrides file is loaded SECOND; same-key values win (two-file model).
 #   CLI flags WIN over overrides; overrides WIN over .env.
 
@@ -84,76 +85,85 @@ $ErrorActionPreference = 'Stop'
 $DebugRequested = $PSBoundParameters.ContainsKey('Debug')
 $DebugPreference = 'SilentlyContinue'
 
-# Resolve this script's own install root. The one-liner installer exposes
-# otto-gw via $OTTO_HOME\scripts on PATH (otto-gw.bat -> this .ps1), so the
-# wrapper may run from any cwd. Default paths anchor to the install root (the
-# dir above scripts\), NOT the caller's cwd — env overrides below still win.
-# This also matches the legacy "cd into the extracted folder, run it" flow,
-# where install root == cwd. $PSScriptRoot is the dir containing this .ps1.
-$InstallRoot = Split-Path -Parent $PSScriptRoot
+# Resolve this script's own code directory ($PSScriptRoot is the dir
+# containing this .ps1). The one-liner installer exposes `gw` via a PATH
+# shim (gw.bat calling this .ps1), so the wrapper may run from any cwd.
+# Two anchors, resolved independently:
+#   $InstallDir (code, replaceable on upgrade) — anchors bin\ + scripts\.
+#   $GwHome     (config, precious)              — anchors .env, logs,
+#               state, pid, sentinel. Default $env:USERPROFILE\.gw.
+# NOT the caller's cwd — env overrides below still win. This also matches
+# the legacy "cd into the extracted folder, run it" flow, where
+# $InstallDir == cwd.
+$InstallDir = Split-Path -Parent $PSScriptRoot
 
-$BinPath    = if ($env:OTTO_BIN)    { $env:OTTO_BIN }    else { Join-Path $InstallRoot 'bin\otto-gateway.exe' }
-# PID file lives under .otto\gw\ (install-root-local) rather than %TEMP%. Some
-# locked-down Windows environments (Group Policy, AppLocker, mapped
-# network temp) make %TEMP% unreliable. The .otto\ namespace is shared
-# with the OTTER client; we nest under gw\ to avoid collisions.
-$StateDir   = if ($env:OTTO_STATE_DIR) { $env:OTTO_STATE_DIR } else { Join-Path $InstallRoot '.otto\gw' }
-$PidFile    = if ($env:OTTO_PID)    { $env:OTTO_PID }    else { "$StateDir\otto-gateway.pid" }
+# $GwHome anchors everything the operator's install actually owns. Separate
+# from $InstallDir so binaries/scripts can be replaced on upgrade without
+# touching .env / logs / state / pid.
+$GwHome = if ($env:GW_HOME) { $env:GW_HOME } else { Join-Path $env:USERPROFILE '.gw' }
+
+$BinPath    = if ($env:GW_BIN)    { $env:GW_BIN }    else { Join-Path $InstallDir 'bin\gateway.exe' }
+# $StateDir / $PidFile live under $GwHome (config home) rather than %TEMP% —
+# some locked-down Windows environments (Group Policy, AppLocker, mapped
+# network temp) make %TEMP% unreliable. The tray polls this same path for
+# the gateway's running state, so wrapper and tray MUST agree.
+$StateDir   = if ($env:GW_STATE_DIR) { $env:GW_STATE_DIR } else { Join-Path $GwHome 'state' }
+$PidFile    = if ($env:GW_PID)    { $env:GW_PID }    else { "$StateDir\gateway.pid" }
 # $LogFile = structured rotated log the gateway owns via timberjack
 # (LOG_FILE env, daily rotation, 7-day retention).
-$LogFile    = if ($env:OTTO_LOG)    { $env:OTTO_LOG }    else { Join-Path $InstallRoot 'logs\otto-gateway.log' }
+$LogFile    = if ($env:GW_LOG)    { $env:GW_LOG }    else { Join-Path $GwHome 'logs\gateway.log' }
 # Start-Process requires separate files for stdout / stderr redirection
 # AND cannot share a single file across the two streams. Both sidecars
 # here capture only pre-logger / kiro-cli / crash output; stdout sidecar
 # stays essentially empty in normal operation since LOG_FILE routes all
 # structured slog output to $LogFile.
-$LogBootOut = if ($env:OTTO_LOGOUT) { $env:OTTO_LOGOUT } else { [System.IO.Path]::ChangeExtension($LogFile, '.boot-out.log') }
-$LogBootErr = if ($env:OTTO_LOGERR) { $env:OTTO_LOGERR } else { [System.IO.Path]::ChangeExtension($LogFile, '.boot-err.log') }
+$LogBootOut = if ($env:GW_LOGOUT) { $env:GW_LOGOUT } else { [System.IO.Path]::ChangeExtension($LogFile, '.boot-out.log') }
+$LogBootErr = if ($env:GW_LOGERR) { $env:GW_LOGERR } else { [System.IO.Path]::ChangeExtension($LogFile, '.boot-err.log') }
 # Health-check base URL (scheme + host:port). Distinct from the -Addr init
 # param (a bare host:port for HTTP_ADDR) — they MUST NOT share a name, or this
 # line clobbers the param and init writes HTTP_ADDR with an http:// scheme,
 # which Go's net.Listen rejects ("too many colons in address").
-$HealthUrl  = if ($env:OTTO_ADDR)   { $env:OTTO_ADDR }   else { "http://127.0.0.1:18080" }
+$HealthUrl  = if ($env:GW_ADDR)   { $env:GW_ADDR }   else { "http://127.0.0.1:18080" }
 
-$DefaultEnvPaths = @(".\.env.otto-gw", "$env:USERPROFILE\.otto-gw.env")
+$DefaultEnvPaths = @(".\.env", "$GwHome\.env")
 # Two-file model (locked in 260531-tl1 CONTEXT.md Decision 1): the overrides
 # file is loaded SECOND so its keys win for any shared key. The .env-file and
 # overrides-file flags are DECOUPLED — setting -EnvFile does NOT auto-resolve
 # a sibling overrides file. Resolution always walks the explicit chain.
-$DefaultOverridesPaths = @(".\.otto-gw.overrides.env", "$env:USERPROFILE\.otto-gw.overrides.env")
+$DefaultOverridesPaths = @(".\overrides.env", "$GwHome\overrides.env")
 
 function Resolve-EnvFile {
     if ($EnvFile)              { return $EnvFile }
-    if ($env:OTTO_ENV_FILE)    { return $env:OTTO_ENV_FILE }
+    if ($env:GW_ENV_FILE)    { return $env:GW_ENV_FILE }
     foreach ($p in $DefaultEnvPaths) {
         if (Test-Path $p) { return $p }
     }
     return $null
 }
 
-# Resolve-OverridesFile mirrors Resolve-EnvFile's shape for the .otto-gw.overrides.env
-# layer. Precedence: -OverridesFile > $env:OTTO_OVERRIDES_FILE > project-local
+# Resolve-OverridesFile mirrors Resolve-EnvFile's shape for the overrides.env
+# layer. Precedence: -OverridesFile > $env:GW_OVERRIDES_FILE > project-local
 # > per-user. Returns $null on miss (Initialize-Config gates on that).
 function Resolve-OverridesFile {
     if ($OverridesFile)             { return $OverridesFile }
-    if ($env:OTTO_OVERRIDES_FILE)   { return $env:OTTO_OVERRIDES_FILE }
+    if ($env:GW_OVERRIDES_FILE)   { return $env:GW_OVERRIDES_FILE }
     foreach ($p in $DefaultOverridesPaths) {
         if (Test-Path $p) { return $p }
     }
     return $null
 }
 
-# Resolve-TemplateFile returns the path of .env.otto-gw.example (single source
-# of truth for keys + defaults + docs). Precedence: -Template > $env:OTTO_TEMPLATE_FILE
+# Resolve-TemplateFile returns the path of .env.example (single source
+# of truth for keys + defaults + docs). Precedence: -Template > $env:GW_TEMPLATE_FILE
 # > sibling to this script. Returns $null when the resolved path doesn't exist.
 function Resolve-TemplateFile {
     $candidate = $null
     if ($Template) {
         $candidate = $Template
-    } elseif ($env:OTTO_TEMPLATE_FILE) {
-        $candidate = $env:OTTO_TEMPLATE_FILE
+    } elseif ($env:GW_TEMPLATE_FILE) {
+        $candidate = $env:GW_TEMPLATE_FILE
     } else {
-        $candidate = Join-Path $PSScriptRoot '.env.otto-gw.example'
+        $candidate = Join-Path $PSScriptRoot '.env.example'
     }
     if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { return $null }
     return $candidate
@@ -225,33 +235,32 @@ function Get-DefaultValue {
 
 # Get-ConfigErrorSentinelPath returns the canonical sentinel path the
 # tray polls each tick to surface dotenv parse failures as StateError
-# (D-18-09 / REL-TRAY-08). Mirrors bash config_error_sentinel_path.
-# Preference order: $env:HOME (cross-platform parity with bash) then
-# $env:USERPROFILE (Windows-native).
+# (D-18-09 / REL-TRAY-08). Mirrors bash config_error_sentinel_path:
+# honors $GwHome directly (the same config-home anchor .env / logs /
+# state / pid all live under) rather than re-deriving a separate
+# $env:HOME / $env:USERPROFILE chain — the tray reads
+# <GW_HOME>\.config-error, so the wrapper and tray MUST agree.
 #
-# WR-08: when BOTH $env:HOME and $env:USERPROFILE are unset (degraded /
-# sandboxed shell), refuse to fall back to $env:TEMP. The sentinel
-# content may contain a partial KEY=VALUE from the malformed dotenv
-# line — including, in the worst case, fragments of AUTH_TOKEN,
-# PII_HASH_KEY, or PII_ENCRYPT_KEY. Per-user $env:TEMP on Windows is
-# better than POSIX /tmp, but the symmetry contract WR-06 established
-# on the bash side ("no $HOME ⇒ no sentinel") must hold here too so
-# operators can rely on the cross-platform behavior. Returns $null;
+# WR-08: when $GwHome is somehow empty (degraded / sandboxed shell),
+# refuse to fall back to $env:TEMP. The sentinel content may contain a
+# partial KEY=VALUE from the malformed dotenv line — including, in the
+# worst case, fragments of AUTH_TOKEN, PII_HASH_KEY, or
+# PII_ENCRYPT_KEY. The symmetry contract WR-06 established on the bash
+# side ("no GW_HOME ⇒ no sentinel") holds here too. Returns $null;
 # callers short-circuit. Stderr WARN still fires, so the operator's
 # diagnostic path is preserved.
 function Get-ConfigErrorSentinelPath {
-    $home_ = if ($env:HOME) { $env:HOME } elseif ($env:USERPROFILE) { $env:USERPROFILE } else { $null }
-    if (-not $home_) {
-        [Console]::Error.WriteLine('WARN: $env:HOME and $env:USERPROFILE both unset; skipping config-error sentinel (refusing $env:TEMP fallback per WR-08)')
+    if (-not $GwHome) {
+        [Console]::Error.WriteLine('WARN: $GwHome is unset; skipping config-error sentinel (refusing $env:TEMP fallback per WR-08)')
         return $null
     }
-    return (Join-Path $home_ '.otto-gw\.config-error')
+    return (Join-Path $GwHome '.config-error')
 }
 
 # Clear-ConfigErrorSentinel removes the sentinel. Called after every
 # successful Import-DotEnv so a one-shot parse failure does not stick
 # once the operator fixes it. Errors are swallowed — absence is the
-# happy path. When the sentinel path is $null (WR-08: no HOME/USERPROFILE)
+# happy path. When the sentinel path is $null (WR-08: no $GwHome)
 # there is nothing to clear.
 function Clear-ConfigErrorSentinel {
     $sentinel = Get-ConfigErrorSentinelPath
@@ -264,7 +273,7 @@ function Clear-ConfigErrorSentinel {
 # input collapses to one line via -replace "`r?`n", ' '. Errors
 # swallowed — a missing parent directory or read-only home is
 # operator-visible already via the stderr WARN. WR-08: short-circuit
-# when Get-ConfigErrorSentinelPath returns $null (no HOME/USERPROFILE).
+# when Get-ConfigErrorSentinelPath returns $null (no $GwHome).
 function Write-ConfigErrorSentinel {
     param([string]$Msg)
     $sentinel = Get-ConfigErrorSentinelPath
@@ -309,7 +318,7 @@ function Import-DotEnv {
     # $script:firstError but READ $firstError (local, always $null),
     # which inverted the "first malformed line wins" contract into
     # "last wins". Reset at function entry so a second invocation
-    # (the .otto-gw.overrides.env call from Load-Config) does not
+    # (the overrides.env call from Load-Config) does not
     # inherit the prior file's error state.
     $script:firstError = $null
     $lineno = 0
@@ -374,14 +383,14 @@ $script:DeprecationWarnEmitted = $false
 
 # Test-SingleFileModel — mirror of bash detect_single_file_model. Emits a
 # one-line deprecation WARN when the operator is running on the legacy
-# single-file install model (no .otto-gw.overrides.env, .otto-gw.env carries
+# single-file install model (no overrides.env, .env carries
 # uncommented operator values). The WARN is written via Write-Warning so it
 # goes to the warning stream (functionally stderr) and stays out of normal
 # stdout capture.
 #
 # Detection mirrors the bash heuristic:
 #   1. No overrides file resolved.
-#   2. .otto-gw.env (or resolved env file) exists.
+#   2. .env (or resolved env file) exists.
 #   3. At least one of AUTH_TOKEN / PII_HASH_KEY / HTTP_ADDR is uncommented
 #      with a non-placeholder value, OR KIRO_CMD is uncommented and
 #      non-empty.
@@ -411,7 +420,7 @@ function Test-SingleFileModel {
     if (-not $hasOperatorValue) { return }
 
     $script:DeprecationWarnEmitted = $true
-    Write-Warning "otto-gw: legacy single-file .env model detected -- run ``otto-gw migrate-to-overrides`` to split secrets/overrides into .otto-gw.overrides.env. Single-file support will be removed in v1.7."
+    Write-Warning "gw: legacy single-file .env model detected -- run ``gw migrate-to-overrides`` to split secrets/overrides into overrides.env. Single-file support will be removed in v1.7."
 }
 
 # Write-Stderr is the canonical "informational output, do NOT touch
@@ -426,8 +435,8 @@ function Write-Stderr { param([string]$Message) [Console]::Error.WriteLine($Mess
 
 function Initialize-Config {
     # Two-file model (locked in 260531-tl1 CONTEXT.md Decision 1):
-    #   1. .otto-gw.env (generated, byte-for-byte template copy, never edited).
-    #   2. .otto-gw.overrides.env (operator-owned, loaded SECOND).
+    #   1. .env (generated, byte-for-byte template copy, never edited).
+    #   2. overrides.env (operator-owned, loaded SECOND).
     # Set-Item env:KEY is last-write-wins for environment variables (same
     # semantics as bash export), so loading overrides second is the override
     # mechanism.
@@ -438,15 +447,15 @@ function Initialize-Config {
         Write-Stderr "loaded env file: $envFilePath"
         # Surface the resolved path to the gateway so it can log at INFO
         # which file the wrapper actually used. The binary reads this from
-        # os.Getenv("OTTO_ENV_FILE_LOADED") at startup.
-        $env:OTTO_ENV_FILE_LOADED = $envFilePath
+        # os.Getenv("GW_ENV_FILE_LOADED") at startup.
+        $env:GW_ENV_FILE_LOADED = $envFilePath
     }
     $overridesPath = Resolve-OverridesFile
     if ($overridesPath -and (Test-Path $overridesPath)) {
         Import-DotEnv -Path $overridesPath
         # REL-TRAY-06 (T-6): stderr so Invoke-Support's stdout stays clean.
         Write-Stderr "loaded overrides:  $overridesPath"
-        $env:OTTO_OVERRIDES_FILE_LOADED = $overridesPath
+        $env:GW_OVERRIDES_FILE_LOADED = $overridesPath
     }
     # One-shot legacy-model deprecation WARN.
     Test-SingleFileModel
@@ -507,7 +516,7 @@ function Start-Gateway {
     if (Test-Path $PidFile) {
         $existingPid = [int](Get-Content $PidFile -Raw)
         if (Get-Process -Id $existingPid -ErrorAction SilentlyContinue) {
-            Write-Error "otto-gateway is already running (PID $existingPid)"
+            Write-Error "gateway is already running (PID $existingPid)"
             exit 1
         }
         Remove-Item $PidFile
@@ -549,7 +558,7 @@ function Start-Gateway {
         -NoNewWindow `
         -PassThru
     $proc.Id | Set-Content $PidFile
-    Write-Host "otto-gateway starting (PID $($proc.Id))…"
+    Write-Host "gateway starting (PID $($proc.Id))…"
     Write-Host "  log:      $LogFile (rotated daily, 7d retention)"
     Write-Host "  boot/err: $LogBootErr"
     if (Wait-UntilReady 10) {
@@ -576,8 +585,8 @@ function Start-Gateway {
 
 # Stop-GatewayByName — fallback when the PID file can't drive the stop (older
 # wrapper wrote it elsewhere, or the gateway was launched in the foreground via
-# 'run'). Matches the binary name (otto-gateway), which never collides with this
-# wrapper (otto-gw). Get-Process is native, so no pgrep/grep dependency here.
+# 'run'). Matches the binary name (gateway), which never collides with this
+# wrapper (gw). Get-Process is native, so no pgrep/grep dependency here.
 # Returns $true if it killed at least one process, $false if none were found.
 # Repair-KiroOrphans — 260531-ra6 RA6-03 (Windows mirror of bash
 # reap_kiro_orphans). Belt-and-suspenders cleanup for hard-crash paths
@@ -641,7 +650,7 @@ function Repair-KiroOrphans {
     if ($procs.Count -eq 0) { return }
 
     $pidList = ($procs | ForEach-Object { $_.ProcessId }) -join ' '
-    Write-Host "otto-gw: reaping stray kiro-cli orphans: $pidList"
+    Write-Host "gw: reaping stray kiro-cli orphans: $pidList"
 
     # SIGTERM-equivalent: Stop-Process without -Force (cooperative).
     foreach ($p in $procs) {
@@ -658,7 +667,7 @@ function Repair-KiroOrphans {
     foreach ($s in $survivors) {
         try { Stop-Process -Id ([int]$s.ProcessId) -Force -ErrorAction SilentlyContinue } catch { }
     }
-    Write-Host "otto-gw: kiro-cli orphans reaped"
+    Write-Host "gw: kiro-cli orphans reaped"
 }
 
 function Stop-GatewayByName {
@@ -666,11 +675,11 @@ function Stop-GatewayByName {
     $name = [System.IO.Path]::GetFileNameWithoutExtension($BinPath)
     $procs = @(Get-Process -Name $name -ErrorAction SilentlyContinue)
     if ($procs.Count -eq 0) { return $false }
-    Write-Host "otto-gateway: $Reason; stopping running process(es) by name"
+    Write-Host "gateway: $Reason; stopping running process(es) by name"
     foreach ($p in $procs) {
         try { $p.Kill(); $p.WaitForExit(10000) | Out-Null } catch { }
     }
-    Write-Host "otto-gateway stopped"
+    Write-Host "gateway stopped"
     Repair-KiroOrphans
     return $true
 }
@@ -681,7 +690,7 @@ function Stop-Gateway {
         $proc = Get-Process -Id $storedPid -ErrorAction SilentlyContinue
         if ($proc) {
             $procPath = try { $proc.MainModule.FileName } catch { '' }
-            if ($procPath -and -not ($procPath -like '*otto-gateway*')) {
+            if ($procPath -and -not ($procPath -like '*gateway*')) {
                 Write-Warning "stop: PID $storedPid is alive but path='$procPath' — treating as stale PID"
                 Remove-Item $PidFile -ErrorAction SilentlyContinue
                 if (Stop-GatewayByName 'stale recycled PID') { return }
@@ -690,20 +699,20 @@ function Stop-Gateway {
             $proc.Kill()
             $proc.WaitForExit(10000) | Out-Null  # wait up to 10s for clean exit
             Remove-Item $PidFile -ErrorAction SilentlyContinue
-            Write-Host "otto-gateway stopped"
+            Write-Host "gateway stopped"
             Repair-KiroOrphans
             return
         }
         # Stale file: a live instance may still be running without it.
         Remove-Item $PidFile -ErrorAction SilentlyContinue
         if (Stop-GatewayByName 'stale PID') { return }
-        Write-Host "otto-gateway: stopped (stale PID)"
+        Write-Host "gateway: stopped (stale PID)"
         Repair-KiroOrphans
         return
     }
     # No PID file at all — try to match the running binary by name.
     if (Stop-GatewayByName 'no PID file') { return }
-    Write-Error "otto-gateway is not running (no PID file)"
+    Write-Error "gateway is not running (no PID file)"
     exit 1
 }
 
@@ -712,16 +721,16 @@ function Get-GatewayStatus {
     # so callers (Invoke-Support) can capture status without aborting.
     # The CLI 'status' dispatch arm re-introduces exit 1 for user-facing behavior.
     if (-not (Test-Path $PidFile)) {
-        Write-Host "otto-gateway: stopped"
-        return [pscustomobject]@{ Status = 'stopped'; Message = 'otto-gateway: stopped (no PID file)' }
+        Write-Host "gateway: stopped"
+        return [pscustomobject]@{ Status = 'stopped'; Message = 'gateway: stopped (no PID file)' }
     }
     $storedPid = [int](Get-Content $PidFile -Raw)
     $proc = Get-Process -Id $storedPid -ErrorAction SilentlyContinue
     if (-not $proc) {
-        Write-Host "otto-gateway: stopped (stale PID)"
-        return [pscustomobject]@{ Status = 'stopped'; Message = 'otto-gateway: stopped (stale PID)' }
+        Write-Host "gateway: stopped (stale PID)"
+        return [pscustomobject]@{ Status = 'stopped'; Message = 'gateway: stopped (stale PID)' }
     }
-    Write-Host "otto-gateway: running (PID $storedPid)"
+    Write-Host "gateway: running (PID $storedPid)"
     try {
         # Invoke-RestMethod returns an already-parsed object (native, no jq).
         # Format a compact listing; embeddings intentionally omitted.
@@ -751,7 +760,7 @@ function Get-GatewayStatus {
         Write-Host ("  chat-trace: {0}" -f $trace)
     } catch {
         # WR-07 fix (phase 15 review): previously this catch printed
-        # nothing, so operators running `otto-gw status` on a degraded
+        # nothing, so operators running `gw status` on a degraded
         # gateway (admin endpoint unmounted, port closed, mid-restart)
         # saw the health block above WITHOUT debug / chat-trace lines and
         # could not tell whether the flags were off OR the probe failed.
@@ -760,7 +769,7 @@ function Get-GatewayStatus {
         Write-Host "  debug:      (unknown -- admin endpoint unreachable)" -ForegroundColor DarkYellow
         Write-Host "  chat-trace: (unknown -- admin endpoint unreachable)" -ForegroundColor DarkYellow
     }
-    return [pscustomobject]@{ Status = 'running'; Message = "otto-gateway: running (PID $storedPid)" }
+    return [pscustomobject]@{ Status = 'running'; Message = "gateway: running (PID $storedPid)" }
 }
 
 function Restart-Gateway {
@@ -848,7 +857,7 @@ function Test-EnvKeyUncommented {
 
 function Set-OverridesLine {
     # Mirror of bash set_overrides_line. Writes or updates KEY=Value in the
-    # .otto-gw.overrides.env file. Contract:
+    # overrides.env file. Contract:
     #   - Always writes UNCOMMENTED (absence == "not customized").
     #   - If FilePath does not exist, creates it with a header explaining
     #     the load order and the never-overwritten contract.
@@ -864,9 +873,9 @@ function Set-OverridesLine {
     if (-not (Test-Path -LiteralPath $FilePath)) {
         $ts = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
         $header = @(
-            "# Generated by 'otto-gw init' / 'otto-gw migrate-to-overrides' on $ts",
-            "# Operator customizations + secrets. Loaded AFTER .otto-gw.env, so values here WIN.",
-            "# Safe to hand-edit. Will NEVER be overwritten by 'otto-gw upgrade-env'.",
+            "# Generated by 'gw init' / 'gw migrate-to-overrides' on $ts",
+            "# Operator customizations + secrets. Loaded AFTER .env, so values here WIN.",
+            "# Safe to hand-edit. Will NEVER be overwritten by 'gw upgrade-env'.",
             ""
         )
         Set-Content -LiteralPath $FilePath -Value $header -Encoding UTF8
@@ -917,10 +926,10 @@ function Set-EnvLine {
 }
 
 function Invoke-Init {
-    # Default dest = $HOME\.otto-gw.env unless -Here or -Dest overrides.
+    # Default dest = $GwHome\.env unless -Here or -Dest overrides.
     $destPath = $Dest
-    if ($Here) { $destPath = ".\.env.otto-gw" }
-    if (-not $destPath) { $destPath = Join-Path $env:USERPROFILE ".otto-gw.env" }
+    if ($Here) { $destPath = ".\.env" }
+    if (-not $destPath) { $destPath = Join-Path $GwHome ".env" }
 
     if ((Test-Path $destPath) -and (-not $Force)) {
         Write-Error "ERROR: $destPath already exists. Re-run with -Force to overwrite."
@@ -932,10 +941,10 @@ function Invoke-Init {
     $templateFile = Resolve-TemplateFile
     if (-not $templateFile) {
         $sought = if ($Template) { $Template } `
-                  elseif ($env:OTTO_TEMPLATE_FILE) { $env:OTTO_TEMPLATE_FILE } `
-                  else { Join-Path $PSScriptRoot '.env.otto-gw.example' }
+                  elseif ($env:GW_TEMPLATE_FILE) { $env:GW_TEMPLATE_FILE } `
+                  else { Join-Path $PSScriptRoot '.env.example' }
         Write-Error "ERROR: init template not found: $sought"
-        Write-Error "       The file scripts\.env.otto-gw.example must ship alongside otto-gw.ps1."
+        Write-Error "       The file scripts\.env.example must ship alongside gw.ps1."
         exit 1
     }
 
@@ -944,7 +953,7 @@ function Invoke-Init {
     $overridesDestPath = $OverridesDest
     if (-not $overridesDestPath) {
         $destDir0 = Split-Path -Parent $destPath
-        $overridesDestPath = Join-Path $destDir0 '.otto-gw.overrides.env'
+        $overridesDestPath = Join-Path $destDir0 'overrides.env'
     }
 
     # Re-init detection: -Force on an existing dest. Parse existing values so
@@ -1180,9 +1189,9 @@ function Invoke-Init {
     }
 
     # Two-file model contract (260531-tl1 CONTEXT.md Decisions 1 + 5):
-    #   - .otto-gw.env is ALWAYS a byte-for-byte template copy. No
+    #   - .env is ALWAYS a byte-for-byte template copy. No
     #     Set-EnvLine writes happen against it.
-    #   - .otto-gw.overrides.env carries every operator customization
+    #   - overrides.env carries every operator customization
     #     (uncommented). Secrets always; other knobs only when set.
 
     # Pre-flight migration: re-init on a legacy single-file install. If
@@ -1266,7 +1275,7 @@ function Invoke-Init {
             Write-Host "  AUTH:          enabled (AUTH_TOKEN=$($authTokenValue.Substring(0,8))… in overrides)"
         }
     } else {
-        Write-Host "  AUTH:          disabled (no AUTH_TOKEN in overrides; commented placeholder in .otto-gw.env)"
+        Write-Host "  AUTH:          disabled (no AUTH_TOKEN in overrides; commented placeholder in .env)"
     }
     if ($hashKeyPreserved) {
         Write-Host "  PII_HASH_KEY:  preserved (existing key reused)"
@@ -1293,24 +1302,24 @@ function Invoke-Init {
         Write-Host "  CHAT_TRACE:    disabled"
     }
     Write-Host ""
-    Write-Host "Next: .\scripts\otto-gw.ps1 start"
+    Write-Host "Next: .\scripts\gw.ps1 start"
 }
 
 function Invoke-UpgradeEnv {
-    # Mirror of upgrade_env_cmd in scripts/otto-gw. Regenerates the
-    # generated .otto-gw.env from the latest .env.otto-gw.example template,
+    # Mirror of upgrade_env_cmd in scripts/gw. Regenerates the
+    # generated .env from the latest .env.example template,
     # reporting which keys would be added / orphaned / left unchanged.
-    # Operator customizations live in .otto-gw.overrides.env (loaded last by
+    # Operator customizations live in overrides.env (loaded last by
     # Initialize-Config) and are NEVER touched here.
     $templatePath = Resolve-TemplateFile
     if (-not $templatePath) {
         $sought = if ($Template) { $Template } `
-                  elseif ($env:OTTO_TEMPLATE_FILE) { $env:OTTO_TEMPLATE_FILE } `
-                  else { Join-Path $PSScriptRoot '.env.otto-gw.example' }
+                  elseif ($env:GW_TEMPLATE_FILE) { $env:GW_TEMPLATE_FILE } `
+                  else { Join-Path $PSScriptRoot '.env.example' }
         Write-Error "upgrade-env template not found. Looked at: $sought"
         exit 1
     }
-    # -Dest overrides the resolved .otto-gw.env path; cold-init fallback
+    # -Dest overrides the resolved .env path; cold-init fallback
     # is project-local (first entry in $DefaultEnvPaths).
     $destPath = $Dest
     if (-not $destPath) { $destPath = Resolve-EnvFile }
@@ -1338,7 +1347,7 @@ function Invoke-UpgradeEnv {
         }
     }
 
-    Write-Host "otto-gw upgrade-env:"
+    Write-Host "gw upgrade-env:"
     Write-Host "  template: $templatePath"
     Write-Host "  dest:     $destPath"
     if ($added.Count -gt 0) {
@@ -1364,16 +1373,16 @@ function Invoke-UpgradeEnv {
         }
     }
 
-    # Orphan log default is per-user; $env:OTTO_UPGRADE_LOG overrides for
-    # CI installs without USERPROFILE. Never silently swallow the log —
+    # Orphan log default lives under $GwHome; $env:GW_UPGRADE_LOG overrides
+    # for CI installs without USERPROFILE. Never silently swallow the log —
     # fall back to project-local on miss.
     $upgradeLog = $null
-    if ($env:OTTO_UPGRADE_LOG) {
-        $upgradeLog = $env:OTTO_UPGRADE_LOG
-    } elseif ($env:USERPROFILE) {
-        $upgradeLog = Join-Path $env:USERPROFILE '.otto-gw.upgrade.log'
+    if ($env:GW_UPGRADE_LOG) {
+        $upgradeLog = $env:GW_UPGRADE_LOG
+    } elseif ($GwHome) {
+        $upgradeLog = Join-Path $GwHome 'upgrade.log'
     } else {
-        $upgradeLog = '.\.otto-gw.upgrade.log'
+        $upgradeLog = '.\upgrade.log'
     }
     if ($orphaned.Count -gt 0) {
         $ts = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
@@ -1398,9 +1407,9 @@ function Invoke-UpgradeEnv {
 
 function Invoke-MigrateToOverrides {
     # Mirror of bash migrate_to_overrides_cmd. One-time migration from the
-    # legacy single-file model: extract every uncommented key in .otto-gw.env
+    # legacy single-file model: extract every uncommented key in .env
     # whose value differs from the template default, write those keys to
-    # .otto-gw.overrides.env, back up the original dest, regenerate dest from
+    # overrides.env, back up the original dest, regenerate dest from
     # the template (pure copy under the new contract).
     #
     # Idempotency (locked in 260531-tl1 CONTEXT.md Decision 4): re-running on
@@ -1409,21 +1418,21 @@ function Invoke-MigrateToOverrides {
     $templatePath = Resolve-TemplateFile
     if (-not $templatePath) {
         $sought = if ($Template) { $Template } `
-                  elseif ($env:OTTO_TEMPLATE_FILE) { $env:OTTO_TEMPLATE_FILE } `
-                  else { Join-Path $PSScriptRoot '.env.otto-gw.example' }
+                  elseif ($env:GW_TEMPLATE_FILE) { $env:GW_TEMPLATE_FILE } `
+                  else { Join-Path $PSScriptRoot '.env.example' }
         Write-Error "migrate-to-overrides template not found. Looked at: $sought"
         exit 1
     }
     $destPath = $Dest
     if (-not $destPath) { $destPath = Resolve-EnvFile }
     if (-not $destPath -or -not (Test-Path -LiteralPath $destPath)) {
-        Write-Error "migrate-to-overrides: no .otto-gw.env found at '$destPath'. Run 'otto-gw.ps1 init' first, or pass -Dest PATH explicitly."
+        Write-Error "migrate-to-overrides: no .env found at '$destPath'. Run 'gw.ps1 init' first, or pass -Dest PATH explicitly."
         exit 1
     }
     $overridesDestPath = $OverridesDest
     if (-not $overridesDestPath) {
         $destDir = Split-Path -Parent $destPath
-        $overridesDestPath = Join-Path $destDir '.otto-gw.overrides.env'
+        $overridesDestPath = Join-Path $destDir 'overrides.env'
     }
 
     # Idempotency: overrides exists AND dest matches template byte-for-byte.
@@ -1466,7 +1475,7 @@ function Invoke-MigrateToOverrides {
         return
     }
 
-    Write-Host "otto-gw migrate-to-overrides:"
+    Write-Host "gw migrate-to-overrides:"
     Write-Host "  dest:      $destPath"
     Write-Host "  overrides: $overridesDestPath"
     Write-Host ("  would migrate: {0}" -f ($migrations -join ' '))
@@ -1536,7 +1545,7 @@ function Invoke-Support {
 
     $ts = (Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss')
     $hostname = [System.Net.Dns]::GetHostName()
-    $outDir = if ($Out) { $Out } else { Join-Path $InstallRoot 'support' }
+    $outDir = if ($Out) { $Out } else { Join-Path $InstallDir 'support' }
     $bundleName = "otto-support-$hostname-$ts"
     $staging = Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetRandomFileName())
     $bundleRoot = Join-Path $staging $bundleName
@@ -1556,7 +1565,7 @@ function Invoke-Support {
     }
 
     # REL-TRAY-07 (T-7) progress to stderr — operators piping
-    # `otto-gw support | tee` should still see the archive path on
+    # `gw support | tee` should still see the archive path on
     # stdout alone.
     Write-Stderr ("support bundle: assembling under cap {0}MB, timeout {1}s" -f $MaxMb, $timeoutSec)
 
@@ -1578,7 +1587,7 @@ function Invoke-Support {
             'PII_ENCRYPT_KEY','AUTH_TOKEN','ALLOWED_IPS',
             'AUTH_TRUST_XFF','HTTP_ADDR','KIRO_CMD','KIRO_ARGS','KIRO_CWD',
             'POOL_SIZE','STREAM_IDLE_TIMEOUT_SEC','DEBUG','CHAT_TRACE',
-            'OTTO_ENV_FILE_LOADED','OTTO_OVERRIDES_FILE_LOADED'
+            'GW_ENV_FILE_LOADED','GW_OVERRIDES_FILE_LOADED'
         )
         $effLines = New-Object System.Collections.Generic.List[string]
         foreach ($k in $keys) {
@@ -1607,7 +1616,7 @@ function Invoke-Support {
         Get-ChildItem env: | Sort-Object Name | ForEach-Object {
             $name = $_.Name
             $val  = $_.Value
-            if ($name -match '^(OTTO_|KIRO_|PII_|AUTH_|ALLOWED_)' -or $name -in @('HTTP_ADDR','DEBUG','CHAT_TRACE')) {
+            if ($name -match '^(GW_|KIRO_|PII_|AUTH_|ALLOWED_)' -or $name -in @('HTTP_ADDR','DEBUG','CHAT_TRACE')) {
                 if (Test-IsSecretKey $name) {
                     $shellLines.Add("$name=$(Mask-EnvValue $val)") | Out-Null
                 } else {
@@ -1646,10 +1655,10 @@ function Invoke-Support {
         $logsDir = Split-Path -Parent $LogFile
         $chatTrace = [System.IO.Path]::ChangeExtension($LogFile, '.chat-trace.log')
         $logPairs = @(
-            @{ Src = $LogFile;       Dst = 'otto-gateway.log' },
-            @{ Src = $LogBootOut;    Dst = 'otto-gateway-boot-stdout.log' },
-            @{ Src = $LogBootErr;    Dst = 'otto-gateway-boot-stderr.log' },
-            @{ Src = $chatTrace;     Dst = 'otto-gateway-chat-trace.log' }
+            @{ Src = $LogFile;       Dst = 'gateway.log' },
+            @{ Src = $LogBootOut;    Dst = 'gateway-boot-stdout.log' },
+            @{ Src = $LogBootErr;    Dst = 'gateway-boot-stderr.log' },
+            @{ Src = $chatTrace;     Dst = 'gateway-chat-trace.log' }
         )
         # REL-TRAY-07 (T-7) fix: live logs are now cap-aware on copy.
         # Pre-fix: live logs were copied unconditionally and only the
@@ -1691,7 +1700,7 @@ function Invoke-Support {
         }
         if (Test-Path $logsDir) {
             $cutoff = (Get-Date).AddDays(-$LogDays)
-            Get-ChildItem -Path $logsDir -Filter 'otto-gateway-*.log.gz' -File -ErrorAction SilentlyContinue |
+            Get-ChildItem -Path $logsDir -Filter 'gateway-*.log.gz' -File -ErrorAction SilentlyContinue |
                 Where-Object { $_.LastWriteTime -ge $cutoff } |
                 ForEach-Object {
                     Copy-Item -Path $_.FullName -Destination (Join-Path $bundleRoot 'logs') -Force
@@ -1708,7 +1717,7 @@ function Invoke-Support {
             "psver:    $($PSVersionTable.PSVersion)"
         )
         try {
-            $drive = (Get-Item $InstallRoot).PSDrive
+            $drive = (Get-Item $InstallDir).PSDrive
             if ($drive) {
                 $sys += "free MB on $($drive.Name): $([int]($drive.Free / 1MB))"
             }
@@ -1716,7 +1725,7 @@ function Invoke-Support {
         Set-Content -Path (Join-Path $bundleRoot 'system\system.txt') -Value $sys -Encoding UTF8
 
         $versions = New-Object System.Collections.Generic.List[string]
-        $versions.Add("otto-gateway:") | Out-Null
+        $versions.Add("gateway:") | Out-Null
         if (Test-Path $BinPath) {
             try { $versions.Add((& $BinPath --version 2>&1 | Out-String).Trim()) | Out-Null }
             catch { $versions.Add("(--version failed: $($_.Exception.Message))") | Out-Null }
@@ -1737,13 +1746,13 @@ function Invoke-Support {
         $versions.Add("otto-tray: n/a -- query via tray menu") | Out-Null
         Set-Content -Path (Join-Path $bundleRoot 'system\versions.txt') -Value $versions -Encoding UTF8
 
-        Get-ChildItem -Path $InstallRoot -Recurse -Depth 1 -ErrorAction SilentlyContinue |
+        Get-ChildItem -Path $InstallDir -Recurse -Depth 1 -ErrorAction SilentlyContinue |
             Sort-Object FullName |
             ForEach-Object { $_.FullName } |
             Set-Content -Path (Join-Path $bundleRoot 'system\installroot.txt') -Encoding UTF8
 
         # ---- tray/ -----------------------------------------------------
-        $trayState = Join-Path $InstallRoot '.otto\tray\state'
+        $trayState = Join-Path $InstallDir '.otto\tray\state'
         if (Test-Path $trayState) {
             Get-Content -Raw $trayState | Set-Content -Path (Join-Path $bundleRoot 'tray\tray-state.txt') -Encoding UTF8
         } else {
@@ -1764,12 +1773,12 @@ function Invoke-Support {
         $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
         $autostart = New-Object System.Collections.Generic.List[string]
         try {
-            $entry = Get-ItemProperty -Path $runKey -Name 'OttoTray' -ErrorAction SilentlyContinue
-            if ($entry -and $entry.OttoTray) {
-                $autostart.Add("Run-key OttoTray: present") | Out-Null
-                $autostart.Add("value: $($entry.OttoTray)") | Out-Null
+            $entry = Get-ItemProperty -Path $runKey -Name 'GatewayTray' -ErrorAction SilentlyContinue
+            if ($entry -and $entry.GatewayTray) {
+                $autostart.Add("Run-key GatewayTray: present") | Out-Null
+                $autostart.Add("value: $($entry.GatewayTray)") | Out-Null
             } else {
-                $autostart.Add("Run-key OttoTray: absent (expected at $runKey\OttoTray)") | Out-Null
+                $autostart.Add("Run-key GatewayTray: absent (expected at $runKey\GatewayTray)") | Out-Null
             }
         } catch {
             $autostart.Add("Run-key probe failed: $($_.Exception.Message)") | Out-Null
@@ -1788,7 +1797,7 @@ function Invoke-Support {
         $size = (Get-ChildItem -Path $bundleRoot -Recurse -File | Measure-Object -Property Length -Sum).Sum
         $sizeMb = [int]($size / 1MB)
         if ($sizeMb -gt $MaxMb) {
-            Get-ChildItem -Path (Join-Path $bundleRoot 'logs') -Filter 'otto-gateway-*.log.gz' -File -ErrorAction SilentlyContinue |
+            Get-ChildItem -Path (Join-Path $bundleRoot 'logs') -Filter 'gateway-*.log.gz' -File -ErrorAction SilentlyContinue |
                 Sort-Object LastWriteTime |
                 ForEach-Object {
                     if ($sizeMb -le $MaxMb) { return }
@@ -1815,12 +1824,12 @@ function Invoke-Support {
 
         # ---- MANIFEST.txt (last so contents listing is accurate) -------
         $manifest = New-Object System.Collections.Generic.List[string]
-        $manifest.Add("otto-gw support bundle") | Out-Null
+        $manifest.Add("gw support bundle") | Out-Null
         $manifest.Add("======================") | Out-Null
         $manifest.Add("timestamp:  $ts UTC") | Out-Null
         $manifest.Add("host:       $hostname") | Out-Null
         $manifest.Add("os:         $([System.Runtime.InteropServices.RuntimeInformation]::OSDescription)") | Out-Null
-        $manifest.Add("wrapper:    scripts/otto-gw.ps1 (PowerShell)") | Out-Null
+        $manifest.Add("wrapper:    scripts/gw.ps1 (PowerShell)") | Out-Null
         $manifest.Add("spec:       docs/superpowers/specs/2026-06-08-support-bundle-design.md") | Out-Null
         $manifest.Add("") | Out-Null
         $manifest.Add("Redaction notice") | Out-Null
@@ -1877,7 +1886,7 @@ function Invoke-Support {
 function Show-Usage {
     param([int]$ExitCode = 1)
     @"
-Usage: .\scripts\otto-gw.ps1 <command> [flags]
+Usage: .\scripts\gw.ps1 <command> [flags]
 
 Commands:
   init [flags]        First-run setup -- generates AUTH_TOKEN + PII_HASH_KEY,
@@ -1889,19 +1898,19 @@ Commands:
   logs                Tail both stdout and stderr log files
   run [flags]         Run gateway in foreground
   env [-ShowSecrets]  Print the resolved gateway env that would be passed
-  upgrade-env         Regenerate .otto-gw.env from the latest .env.otto-gw.example
-                      template. Operator customizations in .otto-gw.overrides.env
+  upgrade-env         Regenerate .env from the latest .env.example
+                      template. Operator customizations in overrides.env
                       are NEVER touched. -DryRun shows the added / orphaned /
                       unchanged keys without writing.
   migrate-to-overrides
                       One-time migration from the legacy single-file model:
-                      extract non-default values from .otto-gw.env into
-                      .otto-gw.overrides.env, back up the original, then
-                      regenerate .otto-gw.env from the template. Idempotent.
-  version             Print the gateway binary version (delegates to bin\otto-gateway --version)
-  support             Produce a redacted diagnostic archive under
-                      `$env:OTTO_INSTALL_ROOT\support\. Secrets are masked.
-                      No raw values are ever written. Flags: -Out DIR,
+                      extract non-default values from .env into
+                      overrides.env, back up the original, then
+                      regenerate .env from the template. Idempotent.
+  version             Print the gateway binary version (delegates to bin\gateway --version)
+  support             Produce a redacted diagnostic archive under the
+                      install directory's support\ folder. Secrets are
+                      masked. No raw values are ever written. Flags: -Out DIR,
                       -MaxMb N (default 512), -Timeout SEC (default 180),
                       -LogDays D (default 7).
                       See docs/superpowers/specs/2026-06-08-support-bundle-design.md.
@@ -1919,19 +1928,19 @@ Gateway config flags (for start | restart | run | env):
   -Debug              DEBUG=true (debug-level logging) for start | restart | run
   -Trace              DEBUG=true + CHAT_TRACE=true (debug + chat-trace NDJSON) for start | restart | run
   -EnvFile PATH       Override the default .env search
-  -OverridesFile PATH Override the default .otto-gw.overrides.env search
+  -OverridesFile PATH Override the default overrides.env search
 
 upgrade-env / migrate-to-overrides flags:
-  -Template PATH      Override the .env.otto-gw.example resolution
-  -Dest PATH          Override the resolved .otto-gw.env target
+  -Template PATH      Override the .env.example resolution
+  -Dest PATH          Override the resolved .env target
   -OverridesDest PATH (migrate-to-overrides) override the resolved overrides
                       target (default: sibling of -Dest)
   -DryRun             Print added / orphaned / unchanged keys; write nothing
   -Yes                Skip the overwrite confirmation prompt (CI-friendly)
 
 init flags (for the 'init' subcommand):
-  -Dest PATH          where to write the .env (default `$env:USERPROFILE\.otto-gw.env)
-  -Here               shortcut for -Dest .\.env.otto-gw
+  -Dest PATH          where to write the .env (default `$GwHome\.env)
+  -Here               shortcut for -Dest .\.env
   -Force              overwrite if dest exists (on re-init: existing values
                       preserved as defaults; secrets reused unchanged unless
                       -RegenerateSecrets)
@@ -1954,20 +1963,20 @@ init flags (for the 'init' subcommand):
 
 .env auto-load search (loaded FIRST):
   1. -EnvFile PATH                    (CLI override)
-  2. `$env:OTTO_ENV_FILE              (env override)
-  3. .\.env.otto-gw                   (project-local)
-  4. `$env:USERPROFILE\.otto-gw.env   (per-user)
+  2. `$env:GW_ENV_FILE              (env override)
+  3. .\.env                   (project-local)
+  4. `$GwHome\.env             (per-user; default $env:USERPROFILE\.gw)
 
-.otto-gw.overrides.env auto-load search (loaded SECOND; values win on conflict):
+overrides.env auto-load search (loaded SECOND; values win on conflict):
   1. -OverridesFile PATH              (CLI override)
-  2. `$env:OTTO_OVERRIDES_FILE        (env override)
-  3. .\.otto-gw.overrides.env         (project-local)
-  4. `$env:USERPROFILE\.otto-gw.overrides.env (per-user)
+  2. `$env:GW_OVERRIDES_FILE        (env override)
+  3. .\overrides.env         (project-local)
+  4. `$GwHome\overrides.env   (per-user; default $env:USERPROFILE\.gw)
 
 Precedence (highest first):
-  CLI flag → .otto-gw.overrides.env → .otto-gw.env → inherited shell env.
+  CLI flag → overrides.env → .env → inherited shell env.
 
-See scripts\.env.otto-gw.example for a starter template.
+See scripts\.env.example for a starter template.
 "@ | Write-Host
     exit $ExitCode
 }

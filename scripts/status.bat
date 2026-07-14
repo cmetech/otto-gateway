@@ -1,1 +1,1 @@
-@call "%~dp0otto-gw.bat" status %*
+@call "%~dp0gw.bat" status %*
