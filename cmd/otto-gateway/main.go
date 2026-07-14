@@ -47,6 +47,7 @@ import (
 	"otto-gateway/internal/canonical"
 	"otto-gateway/internal/config"
 	"otto-gateway/internal/engine"
+	"otto-gateway/internal/metrics"
 	"otto-gateway/internal/plugin"
 	"otto-gateway/internal/plugin/jsonformat"
 	"otto-gateway/internal/plugin/pii"
@@ -735,6 +736,37 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 		"openai_mounted", openaiAdapter != nil,
 	)
 
+	// Track 4: Prometheus metrics. Pool/session gauges pull from a.pool /
+	// a.registry at scrape time (nil-safe for degraded / no-KIRO_CMD mode).
+	gwMetrics := metrics.New(
+		func() metrics.PoolStats {
+			if a.pool == nil {
+				return metrics.PoolStats{Healthy: true} // no pool = degraded-by-design healthy
+			}
+			h := a.pool.HealthSummary()
+			ps := metrics.PoolStats{
+				Size:         h.Size,
+				Alive:        h.Alive,
+				Busy:         h.Busy,
+				Healthy:      h.Healthy,
+				SpawnFailing: h.SpawnFailing,
+			}
+			if !h.LastSpawnErrAt.IsZero() {
+				ps.LastSpawnErrUnixSec = float64(h.LastSpawnErrAt.Unix())
+			}
+			if lp := a.pool.LastProgressAt(); !lp.IsZero() {
+				ps.LastProgressUnixSec = float64(lp.UnixNano()) / 1e9
+			}
+			return ps
+		},
+		func() int {
+			if a.registry == nil {
+				return 0
+			}
+			return a.registry.Stats().Active
+		},
+	)
+
 	a.srv = server.NewFromConfig(server.Config{
 		Logger:               logger,
 		Version:              version.Version,
@@ -754,6 +786,8 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 		Hooks:                hooksDescriptionAdapter{chain: chain, tracker: hookErrors}, // Phase 8 OBSV-04 — /health/hooks
 		ShutdownCh:           sharedShutdownCh,                                           // REL-HTTP-01 — shared with admin SSE handler
 		BodyReadTimeout:      cfg.BodyReadTimeout,                                        // REL-HTTP-04 — Plan 16-02 consumes this for the body-read deadline wrapper
+		MetricsHandler:       gwMetrics.Handler(),                                        // Track 4 — GET /metrics (behind IPAllowlist)
+		MetricsMiddleware:    gwMetrics.Middleware,                                       // Track 4 — request instrumentation
 	})
 
 	return a, cleanup, nil

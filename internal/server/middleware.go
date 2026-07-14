@@ -22,6 +22,12 @@ type loggerKey struct{}
 func accessLog(logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Track 4: don't access-log the Prometheus scrape — high-frequency
+			// polls would drown the request log.
+			if r.URL.Path == "/metrics" {
+				next.ServeHTTP(w, r)
+				return
+			}
 			reqID := middleware.GetReqID(r.Context())
 			reqLogger := logger.With("request_id", reqID)
 

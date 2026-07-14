@@ -148,6 +148,17 @@ type Config struct {
 	// When nil, NewFromConfig allocates its own channel (tests + New path).
 	ShutdownCh chan struct{}
 
+	// MetricsHandler is the Prometheus exposition handler (internal/metrics).
+	// When non-nil, GET /metrics is registered on the OUTER router but wrapped
+	// in auth.IPAllowlist (NOT fully-exempt like /health, since /metrics leaks
+	// usage shape). When nil, /metrics is unrouted (opt-in, like AdminHandler).
+	MetricsHandler http.Handler
+	// MetricsMiddleware is the request-instrumentation middleware
+	// (internal/metrics *Metrics.Middleware). When non-nil it is added to the
+	// global chain so every route is counted/timed. When nil, no request
+	// metrics are recorded.
+	MetricsMiddleware func(http.Handler) http.Handler
+
 	// BodyReadTimeout is the per-request body-read deadline applied to
 	// chat-body POST handlers (REL-HTTP-04 / Plan 16-02). Plan 16-05 owns
 	// the config-side parsing of HTTP_BODY_READ_TIMEOUT_SEC and populates
@@ -308,6 +319,11 @@ func NewFromConfig(cfg Config) *Server {
 	s.router.Use(middleware.RequestID)
 	s.router.Use(middleware.Recoverer)
 	s.router.Use(accessLog(logger))
+	// Track 4: request instrumentation (count/duration/in-flight). Placed
+	// after accessLog; it self-skips the /metrics scrape path.
+	if cfg.MetricsMiddleware != nil {
+		s.router.Use(cfg.MetricsMiddleware)
+	}
 
 	// Exempt outer routes — auth + IP allowlist NOT applied here.
 	s.router.Get("/", s.rootHandler)
@@ -350,6 +366,21 @@ func NewFromConfig(cfg Config) *Server {
 	// documentation. When nil, /admin is unrouted (no-op).
 	if cfg.AdminHandler != nil {
 		s.router.Mount("/admin", cfg.AdminHandler)
+	}
+
+	// Track 4: GET /metrics on the OUTER router, but wrapped in IPAllowlist
+	// (unlike /health it is NOT fully-exempt — /metrics leaks usage shape).
+	// Passthrough when ALLOWED_IPS is unset, so localhost/default just works.
+	// Opt-in: only registered when a MetricsHandler is wired.
+	if cfg.MetricsHandler != nil {
+		s.router.Group(func(r chi.Router) {
+			r.Use(auth.IPAllowlist(auth.Config{
+				Logger:             logger,
+				AllowedPrefixes:    cfg.AllowedPrefixes,
+				TrustXForwardedFor: cfg.AuthTrustXFF,
+			}))
+			r.Handle("/metrics", cfg.MetricsHandler)
+		})
 	}
 
 	// D-01: group Surfaces by prefix and open ONE auth-wrapped Route
