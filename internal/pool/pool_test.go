@@ -1568,6 +1568,39 @@ func TestPool_HealthSummary_CapturesSpawnError(t *testing.T) {
 	}
 }
 
+// TestPool_HealthSummary_SpawnFailingRecency verifies SpawnFailing is a CURRENT
+// signal, not the sticky historical LastSpawnError. It is true only when a
+// genuine spawn error was recorded within the recency window (2x PingInterval),
+// so a single old failure cannot pin the dashboard slot red forever.
+func TestPool_HealthSummary_SpawnFailingRecency(t *testing.T) {
+	const pingInterval = 60 * time.Second // recency window = 2x = 120s
+	p := pool.New(pool.Config{Logger: testutil.Logger(t), Size: 1, PingInterval: pingInterval})
+	defer func() { _ = p.Close() }()
+
+	// No error recorded yet → not failing.
+	if p.HealthSummary().SpawnFailing {
+		t.Errorf("SpawnFailing: got true with no recorded error, want false")
+	}
+
+	// A genuine error recorded just now → failing (within the window).
+	p.SetSpawnErrForTesting("fork/exec /usr/local/bin/kiro: no such file or directory", time.Now().UTC())
+	if !p.HealthSummary().SpawnFailing {
+		t.Errorf("SpawnFailing: got false for a fresh spawn error, want true")
+	}
+
+	// The SAME sticky error, but older than the recency window → NOT failing.
+	// (LastSpawnError is still populated — that must not drive red on its own.)
+	p.SetSpawnErrForTesting("fork/exec /usr/local/bin/kiro: no such file or directory",
+		time.Now().UTC().Add(-3*pingInterval))
+	h := p.HealthSummary()
+	if h.SpawnFailing {
+		t.Errorf("SpawnFailing: got true for a stale spawn error (%v old), want false", 3*pingInterval)
+	}
+	if h.LastSpawnError == "" {
+		t.Errorf("LastSpawnError must remain populated (sticky forensic field) even when SpawnFailing is false")
+	}
+}
+
 // TestPool_Cancel_ReleasesSlot_WithoutResultDrain — 260531-ra6 RA6-01.
 //
 // Regression for the watchdog-cancel slot-leak path. The existing

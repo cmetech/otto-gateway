@@ -16,10 +16,12 @@ import (
 
 // stubPool satisfies PoolDetailSource for tests.
 type stubPool struct {
-	slots []SnapshotSlot
+	slots        []SnapshotSlot
+	spawnFailing bool
 }
 
 func (s *stubPool) Detail() []SnapshotSlot { return s.slots }
+func (s *stubPool) SpawnFailing() bool     { return s.spawnFailing }
 
 // stubRegistry satisfies RegistryStatsSource for tests.
 type stubRegistry struct {

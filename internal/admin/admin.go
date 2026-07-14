@@ -35,6 +35,11 @@ import (
 // or internal/server to get slot data (TRST-04 invariant).
 type PoolDetailSource interface {
 	Detail() []SnapshotSlot
+	// SpawnFailing reports whether the pool is currently failing to (re)spawn a
+	// worker — a recency-bounded signal (NOT the sticky historical error). The
+	// dashboard uses it to reserve the red "Failed" slot tier for a genuine
+	// current fault; a merely recycling slot renders yellow "Recovering…".
+	SpawnFailing() bool
 }
 
 // RegistryStatsSource is the consumer-defined interface the admin handler uses

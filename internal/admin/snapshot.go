@@ -31,11 +31,18 @@ type Snapshot struct {
 }
 
 // SnapshotPool is the pool sub-object of Snapshot.
+//
+// SpawnFailing is an additive current-health flag (recency-bounded in the pool,
+// NOT the sticky historical error). The dashboard reads it alongside Status to
+// choose a not-alive slot's tier: yellow "Recovering…" while the pool is still
+// serving with no current spawn failure, red "Failed" when status=="down" or
+// spawn_failing is true.
 type SnapshotPool struct {
-	Size  int            `json:"size"`
-	Alive int            `json:"alive"`
-	Busy  int            `json:"busy"`
-	Slots []SnapshotSlot `json:"slots"`
+	Size         int            `json:"size"`
+	Alive        int            `json:"alive"`
+	Busy         int            `json:"busy"`
+	SpawnFailing bool           `json:"spawn_failing"`
+	Slots        []SnapshotSlot `json:"slots"`
 }
 
 // SnapshotSlot is the per-slot detail row in the admin snapshot.
@@ -97,6 +104,7 @@ func (h *handler) snapshotHandler(w http.ResponseWriter, r *http.Request) {
 		slots := h.deps.PoolDetail.Detail()
 		snap.Pool.Slots = slots
 		snap.Pool.Size = len(slots)
+		snap.Pool.SpawnFailing = h.deps.PoolDetail.SpawnFailing()
 		for _, sl := range slots {
 			if sl.Alive {
 				snap.Pool.Alive++

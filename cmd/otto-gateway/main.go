@@ -631,7 +631,7 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 	// streaming across timberjack's daily rotation without UI interruption.
 	var adminPoolDetail admin.PoolDetailSource
 	if poolDetailForServer != nil {
-		adminPoolDetail = adminPoolDetailAdapter{src: poolDetailForServer}
+		adminPoolDetail = adminPoolDetailAdapter{src: poolDetailForServer, pool: a.pool}
 	}
 	var adminRegistry admin.RegistryStatsSource
 	if registryForServer != nil {
@@ -850,7 +850,8 @@ func (r registryStatsAdapter) Detail() []server.AgentSession {
 // so this adapter does the per-row field copy at the cmd boundary. Cost is
 // O(POOL_SIZE) per snapshot poll — negligible vs JSON marshalling overhead.
 type adminPoolDetailAdapter struct {
-	src server.PoolDetailSource
+	src  server.PoolDetailSource
+	pool *pool.Pool
 }
 
 func (a adminPoolDetailAdapter) Detail() []admin.SnapshotSlot {
@@ -865,6 +866,16 @@ func (a adminPoolDetailAdapter) Detail() []admin.SnapshotSlot {
 		}
 	}
 	return out
+}
+
+// SpawnFailing forwards the pool's recency-bounded current-health flag to the
+// admin snapshot so the dashboard can reserve the red "Failed" slot tier for a
+// genuine current spawn failure (nil-safe: false when no pool is wired).
+func (a adminPoolDetailAdapter) SpawnFailing() bool {
+	if a.pool == nil {
+		return false
+	}
+	return a.pool.HealthSummary().SpawnFailing
 }
 
 // adminRegistryAdapter bridges from server.RegistryStatsSource (returning

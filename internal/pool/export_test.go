@@ -83,3 +83,14 @@ func (p *Pool) ClosingChan() <-chan struct{} {
 func (p *Pool) RecordSpawnErrForTesting(err error) {
 	p.recordSpawnErr(err)
 }
+
+// SetSpawnErrForTesting places the recorded spawn-error fields at a
+// controlled wall-clock instant so SpawnFailing recency tests can exercise
+// both the recent (red) and stale (not-red) branches without waiting real
+// time. Mirrors recordSpawnErr's critical section.
+func (p *Pool) SetSpawnErrForTesting(msg string, at time.Time) {
+	p.mu.Lock()
+	p.lastSpawnErr = msg
+	p.lastSpawnErrAt = at
+	p.mu.Unlock()
+}

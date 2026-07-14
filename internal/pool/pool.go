@@ -523,6 +523,12 @@ type HealthSummary struct {
 	Healthy        bool      // Size == 0 (degraded by design) OR Alive > 0
 	LastSpawnError string    // most recent genuine respawn failure; empty if none
 	LastSpawnErrAt time.Time // when the error above was recorded; zero if none
+	// SpawnFailing is a CURRENT-health signal: true only when a genuine spawn
+	// error was recorded within the recency window (2x PingInterval). Unlike
+	// the sticky LastSpawnError (never cleared on success), it self-clears once
+	// the failure ages out, so the dashboard can reserve red for a real current
+	// fault instead of pinning a slot red forever after one historical failure.
+	SpawnFailing bool
 }
 
 // HealthSummary returns the pool snapshot used by GET /health/pool.
@@ -543,6 +549,13 @@ func (p *Pool) HealthSummary() HealthSummary {
 	if busy < 0 {
 		busy = 0
 	}
+	// SpawnFailing is recency-bounded: a genuine spawn error within roughly the
+	// last liveness cycle (2x PingInterval). Computed here under p.mu alongside
+	// the fields it reads so the flag is consistent with the error it derives
+	// from. The sticky LastSpawnError is deliberately NOT used on its own.
+	spawnFailing := p.lastSpawnErr != "" &&
+		!p.lastSpawnErrAt.IsZero() &&
+		time.Since(p.lastSpawnErrAt) < 2*p.cfg.PingInterval
 	return HealthSummary{
 		Size:           p.cfg.Size,
 		Alive:          alive,
@@ -550,6 +563,7 @@ func (p *Pool) HealthSummary() HealthSummary {
 		Healthy:        p.cfg.Size == 0 || alive > 0,
 		LastSpawnError: p.lastSpawnErr,
 		LastSpawnErrAt: p.lastSpawnErrAt,
+		SpawnFailing:   spawnFailing,
 	}
 }
 

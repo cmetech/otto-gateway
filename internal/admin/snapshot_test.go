@@ -218,6 +218,95 @@ func TestAdmin_ComputeStatus(t *testing.T) {
 	}
 }
 
+// TestAdmin_Snapshot_SpawnFailingClassification verifies the pool-level signals
+// the dashboard uses to choose a not-alive slot's tier: a dead slot renders
+// yellow "Recovering…" while the pool is still serving with no current spawn
+// failure, and red "Failed — check logs" only when the pool is down (all slots
+// dead) or a genuine spawn failure is current. The renderer's predicate is
+// `failed = status === "down" || pool.spawn_failing`; this test asserts the Go
+// snapshot forwards status + spawn_failing so that predicate resolves correctly.
+func TestAdmin_Snapshot_SpawnFailingClassification(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	sid := "sess-1"
+	cases := []struct {
+		name         string
+		slots        []SnapshotSlot
+		spawnFailing bool
+		wantStatus   string
+		wantFailing  bool
+		wantFailed   bool // derived: status=="down" || spawn_failing → red, else yellow
+	}{
+		{
+			name: "serving_with_dead_slot_is_recovering",
+			slots: []SnapshotSlot{
+				{Label: "slot-0", Alive: true, Busy: true, CurrentSessionID: &sid},
+				{Label: "slot-1", Alive: false},
+			},
+			spawnFailing: false,
+			wantStatus:   "degraded",
+			wantFailing:  false,
+			wantFailed:   false,
+		},
+		{
+			name: "all_dead_is_failed",
+			slots: []SnapshotSlot{
+				{Label: "slot-0", Alive: false},
+				{Label: "slot-1", Alive: false},
+			},
+			spawnFailing: false,
+			wantStatus:   "down",
+			wantFailing:  false,
+			wantFailed:   true,
+		},
+		{
+			name: "serving_but_spawn_failing_is_failed",
+			slots: []SnapshotSlot{
+				{Label: "slot-0", Alive: true, Busy: false},
+				{Label: "slot-1", Alive: false},
+			},
+			spawnFailing: true,
+			wantStatus:   "degraded",
+			wantFailing:  true,
+			wantFailed:   true,
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			deps := Deps{
+				Logger:     testutil.Logger(t),
+				Version:    "1.0.0",
+				Commit:     "deadbee",
+				PoolDetail: &stubPool{slots: c.slots, spawnFailing: c.spawnFailing},
+			}
+			h := Handler(deps)
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/snapshot", nil)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("GET /api/snapshot: want 200, got %d (body: %s)", rec.Code, rec.Body.String())
+			}
+			var snap Snapshot
+			if err := json.NewDecoder(rec.Body).Decode(&snap); err != nil {
+				t.Fatalf("decode Snapshot: %v", err)
+			}
+			if snap.Status != c.wantStatus {
+				t.Errorf("status: want %q, got %q", c.wantStatus, snap.Status)
+			}
+			if snap.Pool.SpawnFailing != c.wantFailing {
+				t.Errorf("pool.spawn_failing: want %v, got %v", c.wantFailing, snap.Pool.SpawnFailing)
+			}
+			gotFailed := snap.Status == "down" || snap.Pool.SpawnFailing
+			if gotFailed != c.wantFailed {
+				t.Errorf("derived failed-tier: want %v, got %v (status=%q spawn_failing=%v)",
+					c.wantFailed, gotFailed, snap.Status, snap.Pool.SpawnFailing)
+			}
+		})
+	}
+}
+
 // TestSnapshot_LogSources_PresentAndOrdered asserts the quick-260529-ll2
 // log_sources field reflects Deps.LogPathOrder verbatim and renders as []
 // (not null) when no sources are configured.
