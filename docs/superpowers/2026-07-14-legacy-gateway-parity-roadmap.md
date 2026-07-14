@@ -29,15 +29,21 @@ insight.
 
 ## Tracks
 
-### Track 0 — Validation harness (Co-Worker skill) — *parallel, not blocking*
-Build a **Co-Worker skill** that drives real tool round-trips through the Go
-gateway and captures kiro's wire behavior:
-- Claude Code → `/v1/messages` with a tool; a LangFlow-style tool → `/api/chat`.
-- Capture: native ACP `tool_call` notifications vs free-text `{"tool_call":…}`
-  JSON; whether tool **names** match the client's declared tools or kiro's
-  built-ins; whether `session/update` carries `contextUsagePercentage`.
-- **Output:** findings that scope Track 3 and confirm the Track 2 signal.
-- Lives in the Co-Worker desktop app as a reusable skill (not throwaway).
+### Track 0 — Tool-call wire capture — 📝 **SPEC'D** — *scopes Track 3*
+Capture kiro's tool-call wire behavior *through the real gateway path* so Track 3
+is scoped to what kiro actually does. **Narrowed:** the context-signal half of the
+original Track 0 is **done** (2026-07-14 live capture → Track 2 shipped), so this
+is now tool-calls only.
+
+**Spec:** `docs/superpowers/specs/2026-07-14-track0-toolcall-capture-design.md`.
+Decisions: gateway raw-frame capture via a bounded, `ACP_CAPTURE`-gated admin
+ring-buffer endpoint (`GET /admin/acp-capture`, reachable over HTTP so a remote
+desktop skill can read it); a repo-local real-kiro harness drives a tool
+round-trip on each surface and classifies transport (native ACP `tool_call` vs
+free-text `{"tool_call":…}`), tool-name fidelity, and JSON robustness → the Track
+3 scoping report. The Co-Worker desktop skill later wraps the same procedure.
+- Claude Code → `/v1/messages` with a tool; LangFlow-style → `/api/chat`; OpenAI too.
+- **Output:** `docs/reviews/2026-07-14-track0-toolcall-findings.md` — scopes Track 3.
 
 ### Track 1 — Resilient model discovery — ✅ **DONE** (`393f043`) — mirrors JS `6bbd0c2`
 Model catalog is captured **one-shot** from slot-0's `NewSession` during
@@ -52,29 +58,34 @@ that snapshot. A cold/slow kiro that returns an empty `availableModels` leaves
   degraded + self-heal (Node chose degraded).
 - **Spec:** `docs/superpowers/specs/2026-07-14-model-discovery-resilience-design.md`
 
-### Track 2 — Context-utilization capture + proactive recycle — 📝 **SPEC'D, UNBLOCKED** — folded into kiro-usage-parity — mirrors JS `b72d6db`
-Wire confirmed (2026-07-14 live capture): kiro emits `contextUsagePercentage`
-(0–100 percent), `meteringUsage[]` credits, and `turnDurationMs` on the
-`_kiro.dev/metadata` notification (Go drops it today). Now part of the
-**kiro usage metrics parity** build — see
+### Track 2 — Context-utilization capture + proactive recycle — ✅ **DONE** (`0b5ff33` recycle + `af376f7` capture; wired `0de5b2f`) — folded into kiro-usage-parity — mirrors JS `b72d6db`
+Wire confirmed (2026-07-14 live capture) **and now implemented**: kiro emits
+`contextUsagePercentage` (0–100 percent), `meteringUsage[]` credits, and
+`turnDurationMs` on the `_kiro.dev/metadata` notification — Go previously dropped
+it. Delivered as part of the **kiro usage metrics parity** build — see
 `docs/superpowers/specs/2026-07-14-kiro-usage-metrics-parity-design.md`.
 
 **Spec:** `docs/superpowers/specs/2026-07-14-context-recycle-design.md`.
-Decision: `CTX_RECYCLE_PCT` env (default 0.8); wire-field for `contextUsagePercentage`
-confirmed by Track 0 before the parse is implemented. Stateful sessions reuse a
-persistent kiro session, and `buildBlocks` resends the full transcript each request,
-so recycling is safe. Recycle choke point = `session.Registry.Get`.
 
-Go reads **no** context/utilization signal (`contextUsagePercentage` /
-`meteringUsage` / `turnDurationMs` appear nowhere in `internal/`); recycling is
-idle-TTL only (`internal/session/reaper.go`). Long stateful conversations let
-kiro's internal compaction degrade instruction-following with no intervention.
-- Parse `contextUsagePercentage` (+ optionally metering/turn) from
-  `session/update` in `internal/acp/translate.go`; track per-session `lastCtxPct`.
-- Proactive recycle of the kiro session at `CTX_RECYCLE_PCT` (new env, default
-  `0.8`) before the next request; confirm Go's transcript-resend model matches
-  the Node assumption in the spec.
-- Feeds Track 4 metrics (`ctx_pct`, `sessions_recycled`, credits, turn ms).
+**Delivered:**
+- `internal/acp/client.go` + `translate.go` — new `_kiro.dev/metadata` case
+  parses `contextUsagePercentage` / `meteringUsage` / `turnDurationMs` into the
+  `OnContextPct` / `OnTurnMeter` Config hooks.
+- `internal/session` — per-session `Entry.lastCtxPct` (atomic), and proactive
+  recycle in `Registry.Get`'s alive+ready branch: Cancel/Close + delete + lazy
+  re-create via the existing Dead-path when `lastCtxPct >= CTX_RECYCLE_PCT`.
+  Verified live (recycle fired at `ctx_pct=1.566` with threshold 1; the fresh
+  session re-primed from the resent transcript and answered coherently).
+- `internal/config` — `CTX_RECYCLE_PCT` env (Node-parity **name**).
+
+> **⚠️ Default-value divergence (decided).** kiro's `contextUsagePercentage` is
+> a **0–100 percent**, so `CTX_RECYCLE_PCT` uses **percent** semantics with
+> default **80** — NOT the Node `0.8` (0..1-scaled) default, which mis-fires
+> against current kiro (it would recycle at 0.8% on almost every turn). Env name
+> stays Node-parity; the default value intentionally diverges. `0` disables.
+
+- Feeds Track 4 metrics: `gw_kiro_context_usage_percent`, `gw_sessions_recycled_total`,
+  `gw_kiro_credits_total`, `gw_kiro_turn_duration_seconds`.
 
 ### Track 3 — Tool-call robustness — *scope set by Track 0* — mirrors JS `519c066` + `14bc655`
 Go's free-text fallback (`internal/engine/coerce.go`) is strictly narrower than
