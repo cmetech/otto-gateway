@@ -52,7 +52,13 @@ that snapshot. A cold/slow kiro that returns an empty `availableModels` leaves
   degraded + self-heal (Node chose degraded).
 - **Spec:** `docs/superpowers/specs/2026-07-14-model-discovery-resilience-design.md`
 
-### Track 2 — Context-utilization capture + proactive recycle — mirrors JS `b72d6db`
+### Track 2 — Context-utilization capture + proactive recycle — 📝 **SPEC'D** (blocked on Track 0) — mirrors JS `b72d6db`
+**Spec:** `docs/superpowers/specs/2026-07-14-context-recycle-design.md`.
+Decision: `CTX_RECYCLE_PCT` env (default 0.8); wire-field for `contextUsagePercentage`
+confirmed by Track 0 before the parse is implemented. Stateful sessions reuse a
+persistent kiro session, and `buildBlocks` resends the full transcript each request,
+so recycling is safe. Recycle choke point = `session.Registry.Get`.
+
 Go reads **no** context/utilization signal (`contextUsagePercentage` /
 `meteringUsage` / `turnDurationMs` appear nowhere in `internal/`); recycling is
 idle-TTL only (`internal/session/reaper.go`). Long stateful conversations let
@@ -79,7 +85,13 @@ arg-object, scored by key-overlap. Gaps vs Node:
   add a kiro→client tool-name reconciliation layer, and surface native calls as
   structured `tool_calls` when the client supplied tools.
 
-### Track 4 — Prometheus metrics endpoint — **new** — usage & ops insight
+### Track 4 — Prometheus metrics endpoint — 📝 **SPEC'D** — new — usage & ops insight
+**Spec:** `docs/superpowers/specs/2026-07-14-prometheus-metrics-design.md`.
+Decisions: `prometheus/client_golang` (pure-Go, cgo-free preserved); `GET /metrics`
+behind `auth.IPAllowlist` (passthrough when `ALLOWED_IPS` unset); `gw_` metric
+prefix. Phased 4a (endpoint + request middleware + pool/session pull-collector +
+free go_/process_ metrics) → 4b (event counters at today's log-only sites).
+
 Expose a `/metrics` endpoint (Prometheus text format) so metrics can be scraped
 into a timeseries DB for usage insight.
 - Library: `prometheus/client_golang` (pure Go — no cgo; compatible with the
