@@ -58,8 +58,8 @@ func TestAdmin_PageHandler(t *testing.T) {
 	body := rec.Body.String()
 
 	// Page title check per behavior contract.
-	if !strings.Contains(body, "OTTO Gateway") {
-		t.Errorf("body missing expected page title containing 'OTTO Gateway'")
+	if !strings.Contains(body, "Gateway") {
+		t.Errorf("body missing expected page title containing 'Gateway'")
 	}
 
 	// Feature-flag visibility (quick 260531-ebi): the summary strip must show
@@ -88,8 +88,8 @@ func TestAdmin_PageHandler(t *testing.T) {
 	}
 
 	// Config island check per behavior contract.
-	if !strings.Contains(body, "OTTO_ADMIN_CONFIG") {
-		t.Errorf("body missing OTTO_ADMIN_CONFIG config island")
+	if !strings.Contains(body, "GW_ADMIN_CONFIG") {
+		t.Errorf("body missing GW_ADMIN_CONFIG config island")
 	}
 	if !strings.Contains(body, "pollMs") {
 		t.Errorf("body missing pollMs in config island")
@@ -125,13 +125,13 @@ func TestAdmin_StaticServes(t *testing.T) {
 	if len(body) == 0 {
 		t.Error("body: want non-empty CSS file")
 	}
-	if !strings.Contains(body, "--otto-bg") {
-		t.Errorf("CSS body missing --otto-bg custom property")
+	if !strings.Contains(body, "--gw-bg") {
+		t.Errorf("CSS body missing --gw-bg custom property")
 	}
 }
 
 // TestAdmin_StaticServes_JS verifies GET /static/js/admin.js returns 200
-// with JavaScript content type and expected OTTO_ADMIN_CONFIG reference.
+// with JavaScript content type and expected GW_ADMIN_CONFIG reference.
 func TestAdmin_StaticServes_JS(t *testing.T) {
 	defer goleak.VerifyNone(t)
 
@@ -156,8 +156,8 @@ func TestAdmin_StaticServes_JS(t *testing.T) {
 	}
 
 	body := rec.Body.String()
-	if !strings.Contains(body, "OTTO_ADMIN_CONFIG") {
-		t.Errorf("JS body missing OTTO_ADMIN_CONFIG reference")
+	if !strings.Contains(body, "GW_ADMIN_CONFIG") {
+		t.Errorf("JS body missing GW_ADMIN_CONFIG reference")
 	}
 }
 
@@ -165,7 +165,7 @@ func TestAdmin_StaticServes_JS(t *testing.T) {
 // contains the pool-slot grid markup required by Plan 02:
 // - data-slot-grid attribute (JS hydration target)
 // - data-slot-grid-empty attribute (empty-state placeholder)
-// - otto-slot-grid class (CSS target rendered before JS runs)
+// - gw-slot-grid class (CSS target rendered before JS runs)
 func TestAdmin_PageHandler_PoolGridScaffold(t *testing.T) {
 	defer goleak.VerifyNone(t)
 
@@ -188,7 +188,7 @@ func TestAdmin_PageHandler_PoolGridScaffold(t *testing.T) {
 	for _, want := range []string{
 		"data-slot-grid",
 		"data-slot-grid-empty",
-		`class="otto-slot-grid"`,
+		`class="gw-slot-grid"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("page HTML missing required pool-grid markup %q", want)
