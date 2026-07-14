@@ -108,11 +108,15 @@ type planEntry struct {
 // meteringUsage + turnDurationMs. handleNotification fires OnContextPct on any
 // non-nil ContextUsagePercentage and OnTurnMeter only when MeteringUsage is
 // present.
+// MeteringUsage is a POINTER to the slice so the decoder distinguishes an
+// absent field (nil → mid-turn frame) from an explicit empty array
+// (`[]` → a completed zero-cost turn). A plain []meteringEntry collapses both to
+// nil, silently dropping a real turn (and its duration) that reported no credits.
 type metadataParams struct {
-	SessionID              string          `json:"sessionId"`
-	ContextUsagePercentage *float64        `json:"contextUsagePercentage"`
-	MeteringUsage          []meteringEntry `json:"meteringUsage"`
-	TurnDurationMs         *int64          `json:"turnDurationMs"`
+	SessionID              string           `json:"sessionId"`
+	ContextUsagePercentage *float64         `json:"contextUsagePercentage"`
+	MeteringUsage          *[]meteringEntry `json:"meteringUsage"`
+	TurnDurationMs         *int64           `json:"turnDurationMs"`
 }
 
 // meteringEntry is one element of metadataParams.MeteringUsage. Only entries

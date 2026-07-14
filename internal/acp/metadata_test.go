@@ -87,6 +87,51 @@ func TestHandleNotification_MetadataTurnComplete(t *testing.T) {
 	}
 }
 
+// TestHandleNotification_MetadataEmptyMeteringStillCompletesTurn: a completed
+// zero-cost turn carries meteringUsage as an explicit empty array (present, not
+// absent). It must still fire OnTurnMeter — credits 0, turn + duration recorded —
+// not be silently dropped like a mid-turn frame.
+func TestHandleNotification_MetadataEmptyMeteringStillCompletesTurn(t *testing.T) {
+	var gotCredits float64
+	var gotTurnMs int64
+	var turnFired bool
+	c := newMetadataTestClient(t, Config{
+		OnTurnMeter: func(credits float64, turnMs int64) { gotCredits = credits; gotTurnMs = turnMs; turnFired = true },
+	})
+
+	c.handleNotification(rpcFrame{
+		Method: "_kiro.dev/metadata",
+		Params: json.RawMessage(`{"sessionId":"s1","meteringUsage":[],"turnDurationMs":1200}`),
+	})
+
+	if !turnFired {
+		t.Fatal("OnTurnMeter must fire for a completed turn with an explicit empty meteringUsage array")
+	}
+	if gotCredits != 0 {
+		t.Errorf("credits = %v, want 0 for a zero-cost turn", gotCredits)
+	}
+	if gotTurnMs != 1200 {
+		t.Errorf("turnMs = %d, want 1200", gotTurnMs)
+	}
+}
+
+// TestHandleNotification_MetadataNoMeteringDoesNotCompleteTurn: a mid-turn frame
+// with meteringUsage ABSENT (nil) must NOT fire OnTurnMeter — only a present
+// array (even empty) signals turn completion.
+func TestHandleNotification_MetadataNoMeteringDoesNotCompleteTurn(t *testing.T) {
+	turnFired := false
+	c := newMetadataTestClient(t, Config{
+		OnTurnMeter: func(_ float64, _ int64) { turnFired = true },
+	})
+	c.handleNotification(rpcFrame{
+		Method: "_kiro.dev/metadata",
+		Params: json.RawMessage(`{"sessionId":"s1","contextUsagePercentage":3.2}`),
+	})
+	if turnFired {
+		t.Error("OnTurnMeter must not fire when meteringUsage is absent (mid-turn frame)")
+	}
+}
+
 // TestHandleNotification_MCPInit: the two MCP methods fire OnMCPInit with the
 // serverName and ok/fail result.
 func TestHandleNotification_MCPInit(t *testing.T) {

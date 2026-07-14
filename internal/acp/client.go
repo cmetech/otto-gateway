@@ -1303,12 +1303,15 @@ func (c *Client) handleNotification(frame rpcFrame) {
 		if meta.ContextUsagePercentage != nil && c.cfg.OnContextPct != nil {
 			c.cfg.OnContextPct(*meta.ContextUsagePercentage)
 		}
-		if len(meta.MeteringUsage) > 0 && c.cfg.OnTurnMeter != nil {
+		// Presence of meteringUsage (even an empty array) signals turn
+		// completion; nil means a mid-turn frame. Do NOT gate on len > 0 — a
+		// completed zero-cost turn still reports its turn + duration.
+		if meta.MeteringUsage != nil && c.cfg.OnTurnMeter != nil {
 			var turnMs int64
 			if meta.TurnDurationMs != nil {
 				turnMs = *meta.TurnDurationMs
 			}
-			c.cfg.OnTurnMeter(sumCredits(meta.MeteringUsage), turnMs)
+			c.cfg.OnTurnMeter(sumCredits(*meta.MeteringUsage), turnMs)
 		}
 
 	case "_kiro.dev/mcp/server_initialized":
