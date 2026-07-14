@@ -18,7 +18,7 @@ import "testing"
 //
 //  2. scripts/otto-gw emitted tray/autostart.txt by probing
 //     $HOME/Library/LaunchAgents/com.otto.tray.plist, but the actual
-//     plist label is io.cmetech.otto-tray (see
+//     plist label is io.cmetech.gateway-tray (see
 //     cmd/otto-tray/autostart_darwin.go:15). The row always reported
 //     the LaunchAgent absent.
 //

@@ -5,6 +5,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"testing"
 )
@@ -55,6 +56,58 @@ func TestProcessAlive_SelfIsAlive(t *testing.T) {
 func TestProcessAlive_ImplausiblePIDIsDead(t *testing.T) {
 	if processAlive(1 << 30) {
 		t.Fatalf("implausible pid should report dead")
+	}
+}
+
+// TestIsGatewayProcessName_MatchesRenamedBinary is the RED/GREEN test
+// for Task B3: the gateway binary is being renamed otto-gateway ->
+// gateway, so the tray's pidfile-identity matcher must match the new
+// name (and no longer match the old one) or a real running gateway
+// will be rejected as "not the gateway".
+func TestIsGatewayProcessName_MatchesRenamedBinary(t *testing.T) {
+	switch runtime.GOOS {
+	case "darwin":
+		cases := []struct {
+			name string
+			in   string
+			want bool
+		}{
+			{"bare basename matches", "gateway", true},
+			{"path-suffixed basename matches", "/usr/local/bin/gateway", true},
+			{"old otto-gateway name no longer matches", "otto-gateway", false},
+			{"old otto-gateway path no longer matches", "/usr/local/bin/otto-gateway", false},
+			{"suffix-only match rejected", "fake-gateway", false},
+			{"prefix-only match rejected", "gateway-old", false},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				if got := isGatewayProcessName(tc.in); got != tc.want {
+					t.Fatalf("isGatewayProcessName(%q): got %v, want %v", tc.in, got, tc.want)
+				}
+			})
+		}
+	case "windows":
+		cases := []struct {
+			name string
+			in   string
+			want bool
+		}{
+			{"bare exe name matches", "gateway.exe", true},
+			{"full path matches", `C:\opt\otto\bin\gateway.exe`, true},
+			{"case-insensitive match", `C:\opt\otto\bin\GATEWAY.EXE`, true},
+			{"old otto-gateway.exe name no longer matches", "otto-gateway.exe", false},
+			{"old otto-gateway.exe path no longer matches", `C:\opt\otto\bin\otto-gateway.exe`, false},
+			{"unrelated exe rejected", "notgateway.exe", false},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				if got := isGatewayProcessName(tc.in); got != tc.want {
+					t.Fatalf("isGatewayProcessName(%q): got %v, want %v", tc.in, got, tc.want)
+				}
+			})
+		}
+	default:
+		t.Skip("darwin/windows only")
 	}
 }
 

@@ -17,7 +17,7 @@ func TestLaunchAgentPlist_ContainsExecPath(t *testing.T) {
 	if !strings.Contains(body, "<key>RunAtLoad</key>") {
 		t.Fatalf("plist missing RunAtLoad key")
 	}
-	if !strings.Contains(body, "io.cmetech.otto-tray") {
+	if !strings.Contains(body, "io.cmetech.gateway-tray") {
 		t.Fatalf("plist missing bundle id")
 	}
 }
@@ -29,7 +29,7 @@ func TestLaunchAgentInstall_WritesAndRemoves(t *testing.T) {
 	if err := installLaunchAgent("/opt/otto/bin/otto-tray", true /* skipLaunchctl */); err != nil {
 		t.Fatalf("install: %v", err)
 	}
-	plistPath := filepath.Join(tmpHome, "Library", "LaunchAgents", "io.cmetech.otto-tray.plist")
+	plistPath := filepath.Join(tmpHome, "Library", "LaunchAgents", "io.cmetech.gateway-tray.plist")
 	if _, err := os.Stat(plistPath); err != nil {
 		t.Fatalf("plist not written: %v", err)
 	}

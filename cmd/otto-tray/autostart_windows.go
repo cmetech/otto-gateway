@@ -10,8 +10,10 @@ import (
 )
 
 const (
-	runKeyPath      = `Software\Microsoft\Windows\CurrentVersion\Run`
-	runKeyValueName = "OttoTray"
+	runKeyPath = `Software\Microsoft\Windows\CurrentVersion\Run`
+	// Task B3 (de-brand): value name renamed OttoTray -> GatewayTray;
+	// the installer (Task E) removes the old Run key on migration.
+	runKeyValueName = "GatewayTray"
 )
 
 func installRunKey(execPath string) error { //nolint:unused // wired in by Task 12 tray UI

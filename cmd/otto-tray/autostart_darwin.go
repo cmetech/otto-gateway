@@ -12,10 +12,13 @@ import (
 	"time"
 )
 
-const launchAgentLabel = "io.cmetech.otto-tray"
+// Task B3 (de-brand): label renamed io.cmetech.otto-tray ->
+// io.cmetech.gateway-tray; the installer (Task E) removes the old
+// LaunchAgent label on migration.
+const launchAgentLabel = "io.cmetech.gateway-tray"
 
 // launchAgentPlist returns the plist body for a per-user LaunchAgent
-// that runs otto-tray at login. KeepAlive is intentionally false so
+// that runs gateway-tray at login. KeepAlive is intentionally false so
 // that if the user quits the tray, launchd does not respawn it.
 func launchAgentPlist(execPath string) string {
 	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>

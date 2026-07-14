@@ -25,19 +25,23 @@ func processAlive(pid int) bool {
 }
 
 // verifyGatewayIdentity returns true if the process at pid has a
-// command name that is exactly "otto-gateway" or ends in
-// "/otto-gateway" (i.e. the basename is exactly "otto-gateway").
+// command name that is exactly "gateway" or ends in
+// "/gateway" (i.e. the basename is exactly "gateway").
 // Conservative: returns false on any error so a non-verifiable PID
 // is never killed.
 //
 // WR-06 fix (phase 15 review): the previous form
-// `HasSuffix(comm, "otto-gateway")` accepted basenames like
-// `fake-otto-gateway` or `not-otto-gateway`. ps -o comm= on darwin
+// `HasSuffix(comm, "gateway")` accepted basenames like
+// `fake-gateway` or `not-gateway`. ps -o comm= on darwin
 // returns either the bare executable name or its path basename, so
-// we accept exact match against "otto-gateway" or the path-suffixed
-// variant "/otto-gateway". The expectedPath parameter remains
+// we accept exact match against "gateway" or the path-suffixed
+// variant "/gateway". The expectedPath parameter remains
 // reserved for a future full-path comparison (IN-03); the current
 // caller passes "" and we ignore it.
+//
+// Task B3 (de-brand): the gateway binary is renamed otto-gateway ->
+// gateway, so the match target below moved from "otto-gateway" to
+// "gateway" in lockstep.
 // gosec G204: args are static strings + strconv.Itoa(int); no tainted input.
 func verifyGatewayIdentity(pid int, _ string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -47,10 +51,20 @@ func verifyGatewayIdentity(pid int, _ string) bool {
 		return false
 	}
 	comm := strings.TrimSpace(string(out))
-	if comm == "otto-gateway" {
+	return isGatewayProcessName(comm)
+}
+
+// isGatewayProcessName reports whether comm (a `ps -o comm=` value)
+// identifies the gateway binary: either the bare basename "gateway"
+// or a path ending in "/gateway" (NOT just any suffix that ends with
+// it, e.g. "fake-gateway" must not match). Extracted as a pure
+// function so the match logic is unit-testable without spawning a
+// real process.
+func isGatewayProcessName(comm string) bool {
+	if comm == "gateway" {
 		return true
 	}
 	// Path-suffixed form: comm may be a full path; basename must be
-	// exactly "otto-gateway" (NOT just a suffix that ends with it).
-	return strings.HasSuffix(comm, "/otto-gateway")
+	// exactly "gateway" (NOT just a suffix that ends with it).
+	return strings.HasSuffix(comm, "/gateway")
 }

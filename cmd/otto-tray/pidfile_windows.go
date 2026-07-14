@@ -38,8 +38,11 @@ func processAlive(pid int) bool {
 }
 
 // verifyGatewayIdentity returns true if the process at pid has an
-// executable name ending in "otto-gateway.exe". Uses the same
+// executable name ending in "gateway.exe". Uses the same
 // PROCESS_QUERY_LIMITED_INFORMATION handle already used by processAlive.
+//
+// Task B3 (de-brand): the gateway binary is renamed otto-gateway.exe
+// -> gateway.exe, so the match target below moved in lockstep.
 func verifyGatewayIdentity(pid int, _ string) bool {
 	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
 	if err != nil {
@@ -52,5 +55,13 @@ func verifyGatewayIdentity(pid int, _ string) bool {
 		return false
 	}
 	fullPath := windows.UTF16ToString(buf[:n])
-	return strings.EqualFold(filepath.Base(fullPath), "otto-gateway.exe")
+	return isGatewayProcessName(fullPath)
+}
+
+// isGatewayProcessName reports whether path's basename is
+// "gateway.exe" (case-insensitive, per Windows filesystem
+// semantics). Extracted as a pure function so the match logic is
+// unit-testable without spawning a real process.
+func isGatewayProcessName(path string) bool {
+	return strings.EqualFold(filepath.Base(path), "gateway.exe")
 }

@@ -21,7 +21,7 @@ import (
 // does not contain the gateway binary name.
 func TestRegression_REL_TRAY_01_PIDIdentityUnchecked(t *testing.T) {
 	// REL-TRAY-01 (T-1): verifyGatewayIdentity must reject any live PID
-	// whose process name is not "otto-gateway". The test binary's own PID
+	// whose process name is not "gateway". The test binary's own PID
 	// passes processAlive but must be rejected by verifyGatewayIdentity.
 
 	// Write pidfile containing this test binary's own PID.
@@ -47,8 +47,8 @@ func TestRegression_REL_TRAY_01_PIDIdentityUnchecked(t *testing.T) {
 	}
 
 	// Post-fix: verifyGatewayIdentity must return false because the
-	// test binary's process name is "go test" / the test runner, not "otto-gateway".
-	if ok := verifyGatewayIdentity(pid, "/any/path/otto-gateway"); ok {
-		t.Fatal("verifyGatewayIdentity: identity check should have rejected the test binary as gateway (process name is not otto-gateway)")
+	// test binary's process name is "go test" / the test runner, not "gateway".
+	if ok := verifyGatewayIdentity(pid, "/any/path/gateway"); ok {
+		t.Fatal("verifyGatewayIdentity: identity check should have rejected the test binary as gateway (process name is not gateway)")
 	}
 }
