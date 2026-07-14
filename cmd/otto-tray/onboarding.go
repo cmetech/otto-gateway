@@ -13,8 +13,8 @@ import "log/slog"
 // blocking the tray from starting.
 func offerFirstRunAutostart(s *trayState) {
 	const (
-		title    = "OTTO Gateway"
-		body     = "Launch OTTO Tray automatically every time you log in?\n\nYou can change this later from Preferences."
+		title    = "Gateway"
+		body     = "Launch Gateway Tray automatically every time you log in?\n\nYou can change this later from Preferences."
 		yesLabel = "Yes"
 		noLabel  = "Not now"
 	)

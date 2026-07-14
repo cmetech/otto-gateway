@@ -14,6 +14,6 @@ import (
 )
 
 func main() {
-	fmt.Fprintln(os.Stderr, "otto-tray: not supported on this platform")
+	fmt.Fprintln(os.Stderr, "gateway-tray: not supported on this platform")
 	os.Exit(2)
 }

@@ -14,12 +14,12 @@ func main() {
 
 	exe, err := os.Executable()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "otto-tray:", err)
+		fmt.Fprintln(os.Stderr, "gateway-tray:", err)
 		os.Exit(1)
 	}
 	installDir, err := resolveInstallDirFrom(exe)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "otto-tray:", err)
+		fmt.Fprintln(os.Stderr, "gateway-tray:", err)
 		os.Exit(1)
 	}
 	home, _ := os.UserHomeDir()
@@ -27,10 +27,10 @@ func main() {
 
 	if *uninstall {
 		if err := runUninstall(installDir); err != nil {
-			fmt.Fprintln(os.Stderr, "otto-tray --uninstall:", err)
+			fmt.Fprintln(os.Stderr, "gateway-tray --uninstall:", err)
 			os.Exit(1)
 		}
-		fmt.Println("otto-tray: login-item removed (binary not deleted)")
+		fmt.Println("gateway-tray: login-item removed (binary not deleted)")
 		return
 	}
 

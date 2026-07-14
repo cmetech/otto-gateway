@@ -94,10 +94,10 @@ func (s *trayState) onReady(isFirstRun bool) func() {
 	return func() {
 		s.brandLoop24.Store(brandUsesLoop24(runtime.GOOS, os.Getenv, homeDir(), statExists, os.ReadFile))
 		setBaseIcon(s.brandLoop24.Load())
-		systray.SetTooltip("OTTO Gateway")
+		systray.SetTooltip("Gateway")
 		platformOnReady()
 
-		s.miHeader = systray.AddMenuItem("OTTO Gateway · starting…", "")
+		s.miHeader = systray.AddMenuItem("Gateway · starting…", "")
 		s.miHeader.Disable()
 		s.miSubheader = systray.AddMenuItem("", "")
 		s.miSubheader.Disable()
@@ -126,9 +126,9 @@ func (s *trayState) onReady(isFirstRun bool) func() {
 		prefs := systray.AddMenuItem("Preferences", "")
 		s.miPrefsLogin = prefs.AddSubMenuItemCheckbox("Launch tray at login", "", s.cfg.LaunchAtLogin)
 		s.miPrefsStart = prefs.AddSubMenuItemCheckbox("Start gateway when tray launches", "", s.cfg.StartGatewayOnLaunch)
-		s.miAbout = systray.AddMenuItem("About OTTO Gateway…", "")
+		s.miAbout = systray.AddMenuItem("About Gateway…", "")
 		systray.AddSeparator()
-		s.miQuit = systray.AddMenuItem("Quit OTTO Tray", "")
+		s.miQuit = systray.AddMenuItem("Quit Gateway Tray", "")
 
 		s.wireCallbacks()
 
@@ -241,7 +241,7 @@ func (s *trayState) applyState(out stateOutput) {
 	setIconForState(out.State, s.brandLoop24.Load())
 	systray.SetTooltip(tooltipForState(out.State, out.Detail))
 
-	header := fmt.Sprintf("OTTO Gateway · %s", out.State)
+	header := fmt.Sprintf("Gateway · %s", out.State)
 	if out.Detail != "" {
 		header += " (" + out.Detail + ")"
 	}
@@ -297,7 +297,7 @@ func (s *trayState) notifyTransition(prev, next State) {
 	if prev != StateRunning || (next != StateError && next != StateStopped) {
 		return
 	}
-	title := "OTTO Gateway"
+	title := "Gateway"
 	body := fmt.Sprintf("Gateway is %s", next)
 	// Snapshot notifyFn before goroutine launch. Production code never
 	// swaps notifyFn at runtime — but the regression test does (defer
@@ -350,14 +350,14 @@ func (s *trayState) handleStart() {
 	s.setStartedNow()
 	res := runWrapper(s.installDir, s.gwHome, "start")
 	if res.ExitCode != 0 || res.Err != nil {
-		notify("OTTO Gateway", "Failed to start: "+firstLine(res.Stderr))
+		notify("Gateway", "Failed to start: "+firstLine(res.Stderr))
 	}
 }
 
 func (s *trayState) handleStop() {
 	res := runWrapper(s.installDir, s.gwHome, "stop")
 	if res.ExitCode != 0 || res.Err != nil {
-		notify("OTTO Gateway", "Failed to stop: "+firstLine(res.Stderr))
+		notify("Gateway", "Failed to stop: "+firstLine(res.Stderr))
 	}
 }
 
@@ -365,7 +365,7 @@ func (s *trayState) handleRestart() {
 	s.setStartedNow()
 	res := runWrapper(s.installDir, s.gwHome, "restart")
 	if res.ExitCode != 0 || res.Err != nil {
-		notify("OTTO Gateway", "Failed to restart: "+firstLine(res.Stderr))
+		notify("Gateway", "Failed to restart: "+firstLine(res.Stderr))
 	}
 }
 
@@ -438,7 +438,7 @@ func (s *trayState) handleSupportBundle() {
 		path = filepath.Join(s.installDir, "support", "latest"+bundleExt())
 	}
 
-	notify("OTTO Gateway", "Support bundle saved:\n"+path)
+	notify("Gateway", "Support bundle saved:\n"+path)
 	revealBundle(path)
 }
 
@@ -491,7 +491,7 @@ func (s *trayState) toggleLaunchAtLogin() {
 	}
 	if err != nil {
 		slog.Error("autostart toggle failed", "err", err)
-		notify("OTTO Gateway", "Could not change login setting: "+err.Error())
+		notify("Gateway", "Could not change login setting: "+err.Error())
 		return
 	}
 	if err := saveTrayConfig(gwTrayConfigPath(s.gwHome), cfg); err != nil {
@@ -517,5 +517,5 @@ func (s *trayState) toggleStartGatewayOnLaunch() {
 func (s *trayState) showAbout() {
 	body := fmt.Sprintf("Version: %s\nCommit: %s\nInstall: %s\nGo: %s",
 		version.Version, version.Commit(), s.installDir, runtime.Version())
-	infoDialog("About OTTO Gateway", body)
+	infoDialog("About Gateway", body)
 }
