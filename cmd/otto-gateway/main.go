@@ -348,6 +348,54 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 	// as "disabled"). All five chunk-loop sites read this value.
 	streamIdle := time.Duration(cfg.StreamIdleTimeoutSec) * time.Second
 
+	// Track 4 + kiro usage-metrics parity: construct the Prometheus metrics
+	// BEFORE the pool/session so the shared recorder (gwMetrics) can be wired
+	// into pool.Config, session.Config, and each engine's OnModelRequest hook.
+	// The pull closures read a.pool / a.registry lazily at scrape time (nil-safe
+	// for degraded / no-KIRO_CMD mode), so early construction is safe.
+	// gateway_id is a constant label on every series so a fleet groups by it.
+	gwMetrics := metrics.New(
+		metrics.BuildInfo{
+			GatewayID: resolveGatewayID(logger),
+			Version:   version.Version,
+			Commit:    version.Commit(),
+		},
+		func() metrics.PoolStats {
+			if a.pool == nil {
+				return metrics.PoolStats{Healthy: true} // no pool = degraded-by-design healthy
+			}
+			h := a.pool.HealthSummary()
+			ps := metrics.PoolStats{
+				Size:             h.Size,
+				Alive:            h.Alive,
+				Busy:             h.Busy,
+				Healthy:          h.Healthy,
+				SpawnFailing:     h.SpawnFailing,
+				SlotRespawns:     a.pool.Respawns(),
+				PingEscalations:  a.pool.PingEscalations(),
+				PingSuspendSkips: a.pool.PingSuspendSkips(),
+			}
+			if !h.LastSpawnErrAt.IsZero() {
+				ps.LastSpawnErrUnixSec = float64(h.LastSpawnErrAt.Unix())
+			}
+			if lp := a.pool.LastProgressAt(); !lp.IsZero() {
+				ps.LastProgressUnixSec = float64(lp.UnixNano()) / 1e9
+			}
+			return ps
+		},
+		func() metrics.SessionStats {
+			if a.registry == nil {
+				return metrics.SessionStats{}
+			}
+			return metrics.SessionStats{
+				Active:   a.registry.Stats().Active,
+				Reaped:   a.registry.Reaped(),
+				Created:  a.registry.Created(),
+				Recycled: a.registry.Recycled(),
+			}
+		},
+	)
+
 	if cfg.KiroCmd != "" {
 		a.pool = pool.New(pool.Config{
 			Logger:       logger,
@@ -356,6 +404,7 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 			KiroArgs:     cfg.KiroArgs,
 			KiroCWD:      cfg.KiroCWD,
 			PingInterval: cfg.PingInterval,
+			Metrics:      gwMetrics, // kiro usage-metrics parity: forward slot usage events
 		})
 
 		// POOL-02: warmup BEFORE the HTTP listener accepts traffic.
@@ -376,6 +425,7 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 			PostHooks:         chain.Post,
 			StreamIdleTimeout: streamIdle,
 			HookErrorReporter: hookErrors.Record,
+			OnModelRequest:    gwMetrics.RecordModelRequest, // kiro usage-metrics parity: gw_model_requests_total
 		})
 
 		// Plan 05-03: construct the dedicated-session registry alongside
@@ -394,6 +444,8 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 			KiroArgs:     cfg.KiroArgs,
 			KiroCWD:      cfg.KiroCWD,
 			PingInterval: cfg.PingInterval,
+			RecyclePct:   cfg.RecyclePct, // Track 2: proactive context recycle at CTX_RECYCLE_PCT
+			Metrics:      gwMetrics,      // kiro usage-metrics parity: forward per-session usage events
 		})
 		a.registry.Start(context.Background())
 	}
@@ -434,10 +486,11 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 				Logger:            logger,
 				ACP:               entry,
 				DefaultCWD:        cfg.KiroCWD,
-				PreHooks:          chain.Pre,         // Phase 8 — per-session chain
-				PostHooks:         chain.Post,        // Phase 8 — per-session chain
-				StreamIdleTimeout: streamIdle,        // quick 260531-ruv
-				HookErrorReporter: hookErrors.Record, // /health/hooks LastError surface
+				PreHooks:          chain.Pre,                    // Phase 8 — per-session chain
+				PostHooks:         chain.Post,                   // Phase 8 — per-session chain
+				StreamIdleTimeout: streamIdle,                   // quick 260531-ruv
+				HookErrorReporter: hookErrors.Record,            // /health/hooks LastError surface
+				OnModelRequest:    gwMetrics.RecordModelRequest, // kiro usage-metrics parity: gw_model_requests_total
 			})}
 		}
 		openaiEngineForSession = func(entry *session.Entry) openai.Engine {
@@ -445,10 +498,11 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 				Logger:            logger,
 				ACP:               entry,
 				DefaultCWD:        cfg.KiroCWD,
-				PreHooks:          chain.Pre,         // Phase 8
-				PostHooks:         chain.Post,        // Phase 8
-				StreamIdleTimeout: streamIdle,        // quick 260531-ruv
-				HookErrorReporter: hookErrors.Record, // /health/hooks LastError surface
+				PreHooks:          chain.Pre,                    // Phase 8
+				PostHooks:         chain.Post,                   // Phase 8
+				StreamIdleTimeout: streamIdle,                   // quick 260531-ruv
+				HookErrorReporter: hookErrors.Record,            // /health/hooks LastError surface
+				OnModelRequest:    gwMetrics.RecordModelRequest, // kiro usage-metrics parity: gw_model_requests_total
 			})}
 		}
 		anthropicEngineForSession = func(entry *session.Entry) anthropic.Engine {
@@ -456,10 +510,11 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 				Logger:            logger,
 				ACP:               entry,
 				DefaultCWD:        cfg.KiroCWD,
-				PreHooks:          chain.Pre,         // Phase 8
-				PostHooks:         chain.Post,        // Phase 8
-				StreamIdleTimeout: streamIdle,        // quick 260531-ruv
-				HookErrorReporter: hookErrors.Record, // /health/hooks LastError surface
+				PreHooks:          chain.Pre,                    // Phase 8
+				PostHooks:         chain.Post,                   // Phase 8
+				StreamIdleTimeout: streamIdle,                   // quick 260531-ruv
+				HookErrorReporter: hookErrors.Record,            // /health/hooks LastError surface
+				OnModelRequest:    gwMetrics.RecordModelRequest, // kiro usage-metrics parity: gw_model_requests_total
 			})}
 		}
 	}
@@ -737,49 +792,11 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 		"openai_mounted", openaiAdapter != nil,
 	)
 
-	// Track 4: Prometheus metrics. Pool/session gauges + Track 4b counters pull
-	// from a.pool / a.registry at scrape time (nil-safe for degraded /
-	// no-KIRO_CMD mode). gateway_id is a constant label on every series so a
-	// fleet can be grouped by gateway.
-	gwMetrics := metrics.New(
-		metrics.BuildInfo{
-			GatewayID: resolveGatewayID(logger),
-			Version:   version.Version,
-			Commit:    version.Commit(),
-		},
-		func() metrics.PoolStats {
-			if a.pool == nil {
-				return metrics.PoolStats{Healthy: true} // no pool = degraded-by-design healthy
-			}
-			h := a.pool.HealthSummary()
-			ps := metrics.PoolStats{
-				Size:             h.Size,
-				Alive:            h.Alive,
-				Busy:             h.Busy,
-				Healthy:          h.Healthy,
-				SpawnFailing:     h.SpawnFailing,
-				SlotRespawns:     a.pool.Respawns(),
-				PingEscalations:  a.pool.PingEscalations(),
-				PingSuspendSkips: a.pool.PingSuspendSkips(),
-			}
-			if !h.LastSpawnErrAt.IsZero() {
-				ps.LastSpawnErrUnixSec = float64(h.LastSpawnErrAt.Unix())
-			}
-			if lp := a.pool.LastProgressAt(); !lp.IsZero() {
-				ps.LastProgressUnixSec = float64(lp.UnixNano()) / 1e9
-			}
-			return ps
-		},
-		func() metrics.SessionStats {
-			if a.registry == nil {
-				return metrics.SessionStats{}
-			}
-			return metrics.SessionStats{
-				Active: a.registry.Stats().Active,
-				Reaped: a.registry.Reaped(),
-			}
-		},
-	)
+	// Track 4 Prometheus metrics (gwMetrics) are constructed earlier — before
+	// the pool/session are built — so the shared recorder can be wired into
+	// pool.Config + session.Config + each engine's OnModelRequest hook (kiro
+	// usage-metrics parity). Its pull closures read a.pool / a.registry lazily
+	// at scrape time, so early construction is safe.
 
 	a.srv = server.NewFromConfig(server.Config{
 		Logger:               logger,

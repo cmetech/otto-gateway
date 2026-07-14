@@ -10,16 +10,14 @@ import (
 	"otto-gateway/internal/canonical"
 )
 
-func modelReqTestEngine(t *testing.T, onModel func(string)) (*Engine, *fakeACP) {
+func modelReqTestEngine(t *testing.T, onModel func(string)) *Engine {
 	t.Helper()
-	ack := &fakeACP{}
-	e := New(Config{
+	return New(Config{
 		Logger:         slog.Default(),
-		ACP:            ack,
+		ACP:            &fakeACP{},
 		DefaultCWD:     "/test/cwd",
 		OnModelRequest: onModel,
 	})
-	return e, ack
 }
 
 func userReq(model string) *canonical.ChatRequest {
@@ -34,7 +32,7 @@ func userReq(model string) *canonical.ChatRequest {
 // TestRun_FiresOnModelRequest: Run reports the requested model exactly once.
 func TestRun_FiresOnModelRequest(t *testing.T) {
 	var got []string
-	e, _ := modelReqTestEngine(t, func(m string) { got = append(got, m) })
+	e := modelReqTestEngine(t, func(m string) { got = append(got, m) })
 
 	run, err := e.Run(context.Background(), userReq("claude-sonnet-4-7"))
 	if err != nil {
@@ -53,7 +51,7 @@ func TestRun_FiresOnModelRequest(t *testing.T) {
 // (the recorder buckets it as "auto"); the engine passes the raw value through.
 func TestRun_OnModelRequest_EmptyModel(t *testing.T) {
 	var got []string
-	e, _ := modelReqTestEngine(t, func(m string) { got = append(got, m) })
+	e := modelReqTestEngine(t, func(m string) { got = append(got, m) })
 
 	run, err := e.Run(context.Background(), userReq(""))
 	if err != nil {
@@ -70,7 +68,7 @@ func TestRun_OnModelRequest_EmptyModel(t *testing.T) {
 
 // TestRun_NilOnModelRequest_NoPanic: a nil hook is a no-op.
 func TestRun_NilOnModelRequest_NoPanic(t *testing.T) {
-	e, _ := modelReqTestEngine(t, nil)
+	e := modelReqTestEngine(t, nil)
 	run, err := e.Run(context.Background(), userReq("auto"))
 	if err != nil {
 		t.Fatalf("Run: %v", err)
