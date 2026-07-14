@@ -19,7 +19,7 @@ type runResult struct {
 	Err      error
 }
 
-// runWrapper invokes the otto-gw wrapper with the given verb
+// runWrapper invokes the gw wrapper with the given verb
 // ("start" / "stop" / "restart"). installDir locates the wrapper
 // script (under $GW_INSTALL_DIR/scripts); gwHome becomes the
 // subprocess's working directory so any relative logs/state paths

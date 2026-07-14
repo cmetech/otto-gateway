@@ -6,24 +6,24 @@ import "testing"
 
 // TestRegression_REL_TRAY_09_BundleRowRemoval is the discoverability
 // stub for REL-TRAY-09. The bundle row emission lives in
-// scripts/otto-gw (bash) — not in any Go code on the macOS path — so
+// scripts/gw (bash) — not in any Go code on the macOS path — so
 // the regression assertion is shell-side.
 //
 // Pre-fix observable (D-18-10):
 //
-//  1. scripts/otto-gw emitted tray/tray-state.txt by cat-ing
-//     $OTTO_INSTALL_ROOT/.otto/tray/state, a file the tray has never
+//  1. scripts/gw emitted tray/tray-state.txt by cat-ing
+//     $GW_INSTALL_DIR/.otto/tray/state, a file the tray has never
 //     written. Every bundle ever produced showed "(unavailable: ...
 //     does not exist)" for this row.
 //
-//  2. scripts/otto-gw emitted tray/autostart.txt by probing
+//  2. scripts/gw emitted tray/autostart.txt by probing
 //     $HOME/Library/LaunchAgents/com.otto.tray.plist, but the actual
 //     plist label is io.cmetech.gateway-tray (see
 //     cmd/otto-tray/autostart_darwin.go:15). The row always reported
 //     the LaunchAgent absent.
 //
 // Phase 18-03 fix removes both row-emitting blocks from
-// scripts/otto-gw. The Windows bundle path in scripts/otto-gw.ps1 is
+// scripts/gw. The Windows bundle path in scripts/gw.ps1 is
 // untouched (Run-key probe is correct).
 //
 // Test classification: permanent-skip stub. Following the same

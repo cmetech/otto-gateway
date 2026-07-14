@@ -9,7 +9,7 @@ import (
 
 // TestRegression_REL_TRAY_08_ConfigErrorShortCircuit is the REL-TRAY-08
 // regression test (D-18-09). The wrapper script writes a sentinel file
-// at $HOME/.otto-gw/.config-error when dotenv parse fails; the tray
+// at $HOME/.gw/.config-error when dotenv parse fails; the tray
 // poller reads it each tick and populates stateInput.ConfigError. The
 // FSM must short-circuit at the top of computeState — sentinel content
 // wins over PID/health probes — surfacing StateError + a "config error:"

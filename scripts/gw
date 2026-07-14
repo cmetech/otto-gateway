@@ -1800,7 +1800,7 @@ print_env() {
 # support [--out DIR] [--max-mb N] [--log-days D]
 #
 # Produce a redacted diagnostic archive at
-# $GW_HOME/support/otto-support-<host>-<ts>.tar.gz plus a
+# $GW_HOME/support/gateway-support-<host>-<ts>.tar.gz plus a
 # `support/latest.tar.gz` alias (a copy, NOT a symlink — Windows parity).
 #
 # Layout (locked by docs/superpowers/specs/2026-06-08-support-bundle-design.md
@@ -1858,7 +1858,7 @@ EOF
     ts=$(date -u +%Y%m%d-%H%M%S)
     host=$(hostname -s 2>/dev/null || hostname)
     out_dir="${FLAG_OUT:-$GW_HOME/support}"
-    bundle_name="otto-support-${host}-${ts}"
+    bundle_name="gateway-support-${host}-${ts}"
     staging=$(mktemp -d)
     bundle_root="$staging/$bundle_name"
 
@@ -2012,7 +2012,7 @@ EOF
             echo "(kiro not on PATH)"
         fi
         echo
-        echo "otto-tray: n/a — query via tray menu (wrapper does not embed tray version)"
+        echo "gateway-tray: n/a — query via tray menu (wrapper does not embed tray version)"
     } > "$bundle_root/system/versions.txt"
 
     # 2-level listing of the install root (per spec). Sorted so triage can
@@ -2024,7 +2024,7 @@ EOF
     # read $GW_INSTALL_DIR/.otto/tray/state, a file the tray has never
     # written. Every bundle showed "(unavailable: ... does not exist)".
     # tray/autostart.txt row removed in v1.10.3 per REL-TRAY-09 (D-18-10):
-    # probed com.otto.tray.plist but the actual label is io.cmetech.otto-tray
+    # probed com.otto.tray.plist but the actual label is io.cmetech.gateway-tray
     # (cmd/otto-tray/autostart_darwin.go:15). The row always reported the
     # LaunchAgent absent. Re-add when a real macOS LaunchAgent ships.
     {

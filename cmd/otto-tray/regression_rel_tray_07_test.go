@@ -10,7 +10,7 @@ import "testing"
 //
 // Pre-fix observable (three failure modes — see 14-FINDING-T-7.md):
 //
-//  1. Size cap exemption: live current-day logs (otto-gateway.log,
+//  1. Size cap exemption: live current-day logs (gateway.log,
 //     chat-trace.log, boot stdout/stderr) were copied unconditionally;
 //     only rotated .log.gz files passed through the --max-mb cap loop.
 //     A 200MB log day blew past any cap.
@@ -21,7 +21,7 @@ import "testing"
 //
 //  3. Progress lines on stdout polluted the archive-path channel.
 //
-// Phase 16 fix shipped in scripts/otto-gw.ps1 Invoke-Support:
+// Phase 16 fix shipped in scripts/gw.ps1 Invoke-Support:
 //
 //   - $MaxMb default 50 -> 512; new $Timeout param default 180s.
 //   - Live logs tail-trimmed to the cap on copy (newline-aligned), so
@@ -42,5 +42,5 @@ import "testing"
 //
 // Manual reproducer: tests/reliability/manual/REL-TRAY-07-repro.ps1
 func TestRegression_REL_TRAY_07_SupportBundleBounds(t *testing.T) {
-	t.Skip("REL-TRAY-07 (T-7): manual validation required — run tests/reliability/manual/REL-TRAY-07-repro.ps1 on Windows; fix shipped in scripts/otto-gw.ps1 Invoke-Support ($MaxMb=512, $Timeout=180s, live-log cap on copy, try/finally staging cleanup, Write-Stderr progress)")
+	t.Skip("REL-TRAY-07 (T-7): manual validation required — run tests/reliability/manual/REL-TRAY-07-repro.ps1 on Windows; fix shipped in scripts/gw.ps1 Invoke-Support ($MaxMb=512, $Timeout=180s, live-log cap on copy, try/finally staging cleanup, Write-Stderr progress)")
 }

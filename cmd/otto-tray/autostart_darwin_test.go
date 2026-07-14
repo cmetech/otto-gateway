@@ -10,8 +10,8 @@ import (
 )
 
 func TestLaunchAgentPlist_ContainsExecPath(t *testing.T) {
-	body := launchAgentPlist("/opt/otto/bin/otto-tray")
-	if !strings.Contains(body, "<string>/opt/otto/bin/otto-tray</string>") {
+	body := launchAgentPlist("/opt/gateway/bin/gateway-tray")
+	if !strings.Contains(body, "<string>/opt/gateway/bin/gateway-tray</string>") {
 		t.Fatalf("plist missing exec path:\n%s", body)
 	}
 	if !strings.Contains(body, "<key>RunAtLoad</key>") {
@@ -26,7 +26,7 @@ func TestLaunchAgentInstall_WritesAndRemoves(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 
-	if err := installLaunchAgent("/opt/otto/bin/otto-tray", true /* skipLaunchctl */); err != nil {
+	if err := installLaunchAgent("/opt/gateway/bin/gateway-tray", true /* skipLaunchctl */); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 	plistPath := filepath.Join(tmpHome, "Library", "LaunchAgents", "io.cmetech.gateway-tray.plist")

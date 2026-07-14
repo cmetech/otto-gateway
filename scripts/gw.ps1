@@ -1546,7 +1546,7 @@ function Invoke-Support {
     $ts = (Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss')
     $hostname = [System.Net.Dns]::GetHostName()
     $outDir = if ($Out) { $Out } else { Join-Path $InstallDir 'support' }
-    $bundleName = "otto-support-$hostname-$ts"
+    $bundleName = "gateway-support-$hostname-$ts"
     $staging = Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetRandomFileName())
     $bundleRoot = Join-Path $staging $bundleName
 
@@ -1743,7 +1743,7 @@ function Invoke-Support {
             $versions.Add("(kiro not on PATH)") | Out-Null
         }
         $versions.Add("") | Out-Null
-        $versions.Add("otto-tray: n/a -- query via tray menu") | Out-Null
+        $versions.Add("gateway-tray: n/a -- query via tray menu") | Out-Null
         Set-Content -Path (Join-Path $bundleRoot 'system\versions.txt') -Value $versions -Encoding UTF8
 
         Get-ChildItem -Path $InstallDir -Recurse -Depth 1 -ErrorAction SilentlyContinue |
@@ -1752,12 +1752,14 @@ function Invoke-Support {
             Set-Content -Path (Join-Path $bundleRoot 'system\installroot.txt') -Encoding UTF8
 
         # ---- tray/ -----------------------------------------------------
-        $trayState = Join-Path $InstallDir '.otto\tray\state'
-        if (Test-Path $trayState) {
-            Get-Content -Raw $trayState | Set-Content -Path (Join-Path $bundleRoot 'tray\tray-state.txt') -Encoding UTF8
-        } else {
-            Set-Content -Path (Join-Path $bundleRoot 'tray\tray-state.txt') -Value "(unavailable: $trayState does not exist)" -Encoding UTF8
-        }
+        # tray/tray-state.txt row removed per REL-TRAY-09 (D-18-10) parity
+        # with the bash wrapper's v1.10.3 fix: it read
+        # $InstallDir\.otto\tray\state, a file the tray has never written
+        # (no Go code under cmd/otto-tray ever writes a state file) — every
+        # bundle ever produced showed "(unavailable: ... does not exist)"
+        # for this row. De-brand sweep (Task G1) found the bash side had
+        # already dropped this dead probe but the PowerShell port had not;
+        # removed here to keep gw and gw.ps1 identical in meaning.
 
         $pidLines = New-Object System.Collections.Generic.List[string]
         $pidLines.Add("pidfile: $PidFile") | Out-Null

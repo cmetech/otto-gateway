@@ -25,7 +25,7 @@ type stateInput struct {
 	StartingBudget bool     // true if we're inside the 30s post-start window
 	Snapshot       Snapshot // populated only when HealthOK
 	// ConfigError is the first line (≤200 bytes) of the wrapper-written
-	// sentinel file at $HOME/.otto-gw/.config-error. Non-empty means
+	// sentinel file at $HOME/.gw/.config-error. Non-empty means
 	// the wrapper's dotenv parser hit a malformed line; the FSM
 	// short-circuits to StateError so the tray surfaces the parse
 	// error instead of polling the wrong port and showing "stopped".

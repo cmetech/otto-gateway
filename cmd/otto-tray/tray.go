@@ -119,7 +119,7 @@ func (s *trayState) onReady(isFirstRun bool) func() {
 		s.miAdvanced = systray.AddMenuItem("Advanced", "")
 		s.miOpenAppFolder = s.miAdvanced.AddSubMenuItem("Open App Folder", "Reveal the installed desktop app folder")
 		s.miOpenDataFolder = s.miAdvanced.AddSubMenuItem("Open Data Folder (."+brandSlug(did)+")", "Open the "+did.DisplayName+" data folder")
-		s.miOpenGatewayFolder = s.miAdvanced.AddSubMenuItem("Open Gateway Folder (~/.otto-gw)", "Open the OTTO Gateway data folder")
+		s.miOpenGatewayFolder = s.miAdvanced.AddSubMenuItem("Open Gateway Folder (~/.gw)", "Open the Gateway data folder")
 		systray.AddSeparator()
 		s.miSupport = systray.AddMenuItem("Create Support Bundle…", "Produce a redacted diagnostic archive")
 		systray.AddSeparator()
@@ -423,7 +423,7 @@ func (s *trayState) handleSupportBundle() {
 	// path on stdout, but informational lines from Initialize-Config /
 	// env loaders can chatter on stdout too. Parse the LAST non-empty
 	// stdout line — the support verb always emits the archive path
-	// last. Companion fix in scripts/otto-gw.ps1 routes informational
+	// last. Companion fix in scripts/gw.ps1 routes informational
 	// output through Write-Host stderr-redirected so stdout stays
 	// clean (operators on PS sessions with prompt customizations or
 	// profile.ps1 dumps would otherwise still hit this).
