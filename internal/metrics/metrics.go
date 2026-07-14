@@ -28,12 +28,19 @@ const metricsPath = "/metrics"
 // SkillHeader is the request header Co-Worker (or any client) sets to tag an
 // LLM call with the invoking skill. Adding this header is fully compatible with
 // the Ollama/OpenAI/Anthropic contracts (extra request headers are ignored by
-// the API shape). Read into the gw_llm_requests_total{surface,skill} metric.
-const SkillHeader = "X-GW-Skill"
+// the API shape). Read into the gw_llm_requests_total{surface,skill,client}
+// metric. FlowHeader (X-Flow-Name) is a fallback skill alias for LangFlow
+// flows, which set the flow name rather than X-GW-Skill.
+const (
+	SkillHeader  = "X-GW-Skill"
+	FlowHeader   = "X-Flow-Name"
+	ClientHeader = "X-GW-Client"
+)
 
 // MaxSkillCardinality bounds the distinct skill label values (per gateway) so a
 // misbehaving or unknown client cannot blow up TSDB series — the (cap+1)th
-// distinct skill collapses to "other".
+// distinct skill collapses to "other". The same cap is reused for the client,
+// model, and MCP-server labels via independent limiters.
 const MaxSkillCardinality = 64
 
 // BuildInfo identifies this gateway instance. GatewayID becomes a constant
@@ -63,8 +70,10 @@ type PoolStats struct {
 
 // SessionStats is the metrics-friendly projection of the session registry.
 type SessionStats struct {
-	Active int
-	Reaped uint64 // Track 4b monotonic counter
+	Active   int
+	Reaped   uint64 // Track 4b monotonic counter
+	Created  uint64 // total stateful sessions created (kiro usage-metrics parity)
+	Recycled uint64 // total sessions recycled at the context threshold (Track 2)
 }
 
 // Metrics owns the Prometheus registry and the request-instrumentation
@@ -77,6 +86,71 @@ type Metrics struct {
 	inFlight prometheus.Gauge
 	llmTotal *prometheus.CounterVec
 	skills   *skillLimiter
+	clients  *skillLimiter
+
+	// Kiro usage (fed by the acp OnTurnMeter/OnContextPct/OnMCPInit hooks via
+	// the RecordX methods — kiro usage-metrics parity build).
+	kiroCredits prometheus.Counter
+	kiroTurns   prometheus.Counter
+	kiroTurnDur prometheus.Histogram
+	kiroCtxPct  prometheus.Histogram
+	mcpInit     *prometheus.CounterVec
+	mcpServers  *skillLimiter
+
+	// Attribution: model requested per canonical request (fed by the engine
+	// OnModelRequest hook).
+	modelReqs *prometheus.CounterVec
+	models    *skillLimiter
+}
+
+// RecordTurnMeter records one completed kiro turn: increments the turn counter,
+// adds the turn's credits (when > 0), and observes the turn duration. Fed by
+// the acp OnTurnMeter hook. Safe for concurrent use.
+func (m *Metrics) RecordTurnMeter(credits float64, turnMs int64) {
+	m.kiroTurns.Inc()
+	if credits > 0 {
+		m.kiroCredits.Add(credits)
+	}
+	m.kiroTurnDur.Observe(float64(turnMs) / 1000)
+}
+
+// RecordContextPct observes a kiro context-usage sample (0–100 percent). Fed by
+// the acp OnContextPct hook, which fires on every contextUsagePercentage frame;
+// Grafana derives avg/max/p95 over the resulting histogram (covers the Node
+// last + peak_context_pct stats).
+func (m *Metrics) RecordContextPct(pct float64) {
+	m.kiroCtxPct.Observe(pct)
+}
+
+// RecordMCPInit counts an MCP-server init outcome. Fed by the acp OnMCPInit
+// hook; result is "ok" (server_initialized) or "fail" (server_init_failure).
+// The server label is cardinality-capped.
+func (m *Metrics) RecordMCPInit(server string, ok bool) {
+	result := "fail"
+	if ok {
+		result = "ok"
+	}
+	m.mcpInit.WithLabelValues(m.mcpServers.bucket(server), result).Inc()
+}
+
+// RecordModelRequest counts one LLM request by requested model. Fed by the
+// engine OnModelRequest hook; an empty/"auto" model buckets as "auto". The
+// model label is cardinality-capped.
+func (m *Metrics) RecordModelRequest(model string) {
+	m.modelReqs.WithLabelValues(modelBucket(m.models, model)).Inc()
+}
+
+// modelBucket normalizes + cardinality-caps the model label. Empty or "auto"
+// collapses to "auto" so a do-not-set-model request is still attributable.
+func modelBucket(lim *skillLimiter, raw string) string {
+	if strings.TrimSpace(raw) == "" || strings.EqualFold(strings.TrimSpace(raw), "auto") {
+		return "auto"
+	}
+	b := lim.bucket(raw)
+	if b == "none" {
+		return "auto"
+	}
+	return b
 }
 
 // skillLimiter sanitizes + cardinality-caps the X-GW-Skill label value.
@@ -193,11 +267,47 @@ func New(info BuildInfo, pool func() PoolStats, sessions func() SessionStats) *M
 		}),
 		llmTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "gw_llm_requests_total",
-			Help: "Total LLM chat requests, by API surface and invoking skill (X-GW-Skill).",
-		}, []string{"surface", "skill"}),
-		skills: newSkillLimiter(MaxSkillCardinality),
+			Help: "Total LLM chat requests, by API surface, invoking skill " +
+				"(X-GW-Skill, or X-Flow-Name alias), and client (X-GW-Client).",
+		}, []string{"surface", "skill", "client"}),
+		skills:  newSkillLimiter(MaxSkillCardinality),
+		clients: newSkillLimiter(MaxSkillCardinality),
+
+		kiroCredits: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "gw_kiro_credits_total",
+			Help: "Total kiro credits consumed (sum of credit-unit meteringUsage across turns).",
+		}),
+		kiroTurns: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "gw_kiro_turns_total",
+			Help: "Total kiro turns that reported metering (turn-completion metadata frames).",
+		}),
+		kiroTurnDur: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "gw_kiro_turn_duration_seconds",
+			Help:    "Kiro turn wall-time in seconds (turnDurationMs/1000).",
+			Buckets: []float64{0.5, 1, 2, 5, 10, 20, 30, 60, 120, 300},
+		}),
+		kiroCtxPct: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "gw_kiro_context_usage_percent",
+			Help:    "Kiro context-window utilization as a percent (0–100); Grafana derives avg/max/p95.",
+			Buckets: []float64{5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 95, 100},
+		}),
+		mcpInit: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "gw_kiro_mcp_server_init_total",
+			Help: "Total kiro MCP-server init outcomes, by server and result (ok|fail).",
+		}, []string{"server", "result"}),
+		mcpServers: newSkillLimiter(MaxSkillCardinality),
+
+		modelReqs: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "gw_model_requests_total",
+			Help: "Total LLM requests by requested model (canonical request Model; empty/auto → auto).",
+		}, []string{"model"}),
+		models: newSkillLimiter(MaxSkillCardinality),
 	}
-	reggw.MustRegister(buildInfo, m.reqTotal, m.reqDur, m.inFlight, m.llmTotal, newPoolCollector(pool, sessions))
+	reggw.MustRegister(
+		buildInfo, m.reqTotal, m.reqDur, m.inFlight, m.llmTotal,
+		m.kiroCredits, m.kiroTurns, m.kiroTurnDur, m.kiroCtxPct, m.mcpInit, m.modelReqs,
+		newPoolCollector(pool, sessions),
+	)
 	return m
 }
 
@@ -236,9 +346,19 @@ func (m *Metrics) Middleware(next http.Handler) http.Handler {
 		m.reqDur.WithLabelValues(r.Method, route, status).Observe(time.Since(start).Seconds())
 
 		// LLM-call attribution: only for chat routes, tagged by the invoking
-		// skill (X-GW-Skill, bounded). Non-LLM routes are not counted here.
+		// skill (X-GW-Skill, or the X-Flow-Name LangFlow alias when the former
+		// is absent) and the client (X-GW-Client). Both labels are bounded.
+		// Non-LLM routes are not counted here.
 		if surface, ok := surfaceForRoute(route); ok {
-			m.llmTotal.WithLabelValues(surface, m.skills.bucket(r.Header.Get(SkillHeader))).Inc()
+			skill := r.Header.Get(SkillHeader)
+			if strings.TrimSpace(skill) == "" {
+				skill = r.Header.Get(FlowHeader)
+			}
+			m.llmTotal.WithLabelValues(
+				surface,
+				m.skills.bucket(skill),
+				m.clients.bucket(r.Header.Get(ClientHeader)),
+			).Inc()
 		}
 	})
 }

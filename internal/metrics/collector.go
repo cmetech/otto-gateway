@@ -23,6 +23,10 @@ type poolCollector struct {
 	pingEscalations  *prometheus.Desc
 	pingSuspendSkips *prometheus.Desc
 	sessionsReaped   *prometheus.Desc
+
+	// Kiro usage-metrics parity: session lifecycle counters.
+	sessionsCreated  *prometheus.Desc
+	sessionsRecycled *prometheus.Desc
 }
 
 func newPoolCollector(pool func() PoolStats, sessions func() SessionStats) *poolCollector {
@@ -48,6 +52,10 @@ func newPoolCollector(pool func() PoolStats, sessions func() SessionStats) *pool
 			"Total liveness-ping cycles skipped after a detected suspend/resume.", nil, nil),
 		sessionsReaped: prometheus.NewDesc("gw_sessions_reaped_total",
 			"Total stateful sessions reaped for idleness.", nil, nil),
+		sessionsCreated: prometheus.NewDesc("gw_sessions_created_total",
+			"Total stateful sessions created since start.", nil, nil),
+		sessionsRecycled: prometheus.NewDesc("gw_sessions_recycled_total",
+			"Total stateful sessions recycled at the context-usage threshold.", nil, nil),
 	}
 }
 
@@ -55,7 +63,7 @@ func (c *poolCollector) Describe(ch chan<- *prometheus.Desc) {
 	for _, d := range []*prometheus.Desc{
 		c.size, c.alive, c.busy, c.healthy, c.spawnFailing, c.lastSpawnErrTS,
 		c.lastProgressTS, c.sessionsActive, c.slotRespawns, c.pingEscalations,
-		c.pingSuspendSkips, c.sessionsReaped,
+		c.pingSuspendSkips, c.sessionsReaped, c.sessionsCreated, c.sessionsRecycled,
 	} {
 		ch <- d
 	}
@@ -82,6 +90,8 @@ func (c *poolCollector) Collect(ch chan<- prometheus.Metric) {
 	counter(c.pingEscalations, float64(s.PingEscalations))
 	counter(c.pingSuspendSkips, float64(s.PingSuspendSkips))
 	counter(c.sessionsReaped, float64(sess.Reaped))
+	counter(c.sessionsCreated, float64(sess.Created))
+	counter(c.sessionsRecycled, float64(sess.Recycled))
 }
 
 func b2f(b bool) float64 {

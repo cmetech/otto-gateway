@@ -131,7 +131,7 @@ func TestMetrics_LLMRequestsBySkill(t *testing.T) {
 	r.ServeHTTP(httptest.NewRecorder(), req)
 
 	body := scrape(t, m)
-	if !strings.Contains(body, `gw_llm_requests_total{gateway_id="gw-test-123",skill="jira-triage",surface="anthropic"} 1`) {
+	if !strings.Contains(body, `gw_llm_requests_total{client="none",gateway_id="gw-test-123",skill="jira-triage",surface="anthropic"} 1`) {
 		t.Errorf("gw_llm_requests_total not recorded with surface+skill\n%s", body)
 	}
 }
@@ -147,7 +147,7 @@ func TestMetrics_LLMRequests_MissingSkillIsNone(t *testing.T) {
 	r.ServeHTTP(httptest.NewRecorder(),
 		httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/chat", nil))
 
-	if !strings.Contains(scrape(t, m), `gw_llm_requests_total{gateway_id="gw-test-123",skill="none",surface="ollama"} 1`) {
+	if !strings.Contains(scrape(t, m), `gw_llm_requests_total{client="none",gateway_id="gw-test-123",skill="none",surface="ollama"} 1`) {
 		t.Error("missing-skill LLM call should be counted with skill=none, surface=ollama")
 	}
 }
