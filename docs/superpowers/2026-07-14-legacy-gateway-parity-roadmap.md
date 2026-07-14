@@ -85,7 +85,14 @@ arg-object, scored by key-overlap. Gaps vs Node:
   add a kiro→client tool-name reconciliation layer, and surface native calls as
   structured `tool_calls` when the client supplied tools.
 
-### Track 4 — Prometheus metrics endpoint — ✅ **4a DONE** (`347a2b7`), 4b pending — new — usage & ops insight
+### Track 4 — Prometheus metrics endpoint — ✅ **DONE** (4a `347a2b7`, 4b + identity `c4fd2a6`, skill attribution `4faab1c`) — usage & ops insight
+Added beyond the original spec: **gateway_id** constant label on every series
+(GW_ID env → persisted ULID) + `gw_build_info` for fleet grouping; **4b event
+counters** (respawns, ping escalations/suspend-skips, session reaps); and
+**per-skill LLM attribution** via the API-compliant `X-GW-Skill` header →
+`gw_llm_requests_total{surface,skill}` (sanitized + cardinality-capped) plus
+skill/client audit-log fields.
+
 **Spec:** `docs/superpowers/specs/2026-07-14-prometheus-metrics-design.md`.
 Decisions: `prometheus/client_golang` (pure-Go, cgo-free preserved); `GET /metrics`
 behind `auth.IPAllowlist` (passthrough when `ALLOWED_IPS` unset); `gw_` metric
