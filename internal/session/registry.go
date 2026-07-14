@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -62,6 +63,13 @@ type Entry struct {
 	// `e.LastUsed()`. The unexported lowercase field name prevents
 	// callers from accidentally reverting to direct field access.
 	lastUsedNs atomic.Int64
+	// lastCtxPct holds the most-recent kiro context-usage percent (0–100)
+	// observed for this session via the acp OnContextPct hook (kiro
+	// usage-metrics parity Track 2). Stored as float64 bits in an
+	// atomic.Uint64 so the continuously-streaming OnContextPct writes race
+	// safely against Registry.Get's recycle read under -race. Accessed via
+	// setCtxPct/ctxPct.
+	lastCtxPct atomic.Uint64
 	// LastModel caches the most-recently-set model id for the D-09
 	// diff-skip path: SetModel returns early when modelID == LastModel.
 	LastModel string
@@ -90,6 +98,19 @@ type Entry struct {
 	// default-close, another goroutine could close the channel and
 	// the second close panicked the process.
 	readyOnce sync.Once
+}
+
+// setCtxPct stores the latest context-usage percent (0–100) for this session.
+// Called from the acp OnContextPct hook wired in createEntry, which fires on
+// every kiro contextUsagePercentage frame.
+func (e *Entry) setCtxPct(pct float64) {
+	e.lastCtxPct.Store(math.Float64bits(pct))
+}
+
+// ctxPct returns the latest context-usage percent observed for this session,
+// or 0 if none has been reported yet. Read by Registry.Get's recycle guard.
+func (e *Entry) ctxPct() float64 {
+	return math.Float64frombits(e.lastCtxPct.Load())
 }
 
 // closeReady idempotently closes e.ready. Safe to call from any
@@ -135,10 +156,23 @@ type Registry struct {
 	// reaped is the Track 4b monotonic counter of sessions reaped for
 	// idleness, surfaced via the Prometheus pull-collector (gw_sessions_reaped_total).
 	reaped atomic.Uint64
+	// created / recycled are the kiro usage-metrics parity monotonic counters,
+	// surfaced via the pull-collector (gw_sessions_created_total /
+	// gw_sessions_recycled_total). created bumps on each successful
+	// createEntry publish; recycled bumps when Get recycles an entry that
+	// crossed CTX_RECYCLE_PCT.
+	created  atomic.Uint64
+	recycled atomic.Uint64
 }
 
 // Reaped returns the total stateful sessions reaped for idleness since start.
 func (r *Registry) Reaped() uint64 { return r.reaped.Load() }
+
+// Created returns the total stateful sessions created since start.
+func (r *Registry) Created() uint64 { return r.created.Load() }
+
+// Recycled returns the total sessions recycled at the context-usage threshold.
+func (r *Registry) Recycled() uint64 { return r.recycled.Load() }
 
 // New constructs a Registry with the given Config. The reaper is NOT
 // started until Start is called — this lets callers (cmd/otto-gateway
@@ -210,6 +244,31 @@ func (r *Registry) Get(ctx context.Context, sid, cwd string) (*Entry, error) {
 				case <-r.closing:
 					return nil, ErrRegistryClosed
 				}
+			} else if r.cfg.RecyclePct > 0 && e.ctxPct() >= r.cfg.RecyclePct {
+				// Track 2 proactive recycle: this session crossed
+				// CTX_RECYCLE_PCT, so drop it and lazy-recreate on this
+				// same Get (the client re-sends the full transcript, so the
+				// fresh session loses nothing — see the context-recycle
+				// design). Delete under r.mu so a concurrent same-sid Get
+				// sees "not present"; tear the old client down OUTSIDE the
+				// lock (never hold r.mu across a slow Close), then re-loop
+				// to hit the lazy-create path. The fresh entry starts at
+				// ctxPct 0, so the guard is naturally one-shot.
+				trippingPct := e.ctxPct()
+				old := e
+				delete(r.entries, sid)
+				r.recycled.Add(1)
+				r.mu.Unlock()
+				if r.cfg.Logger != nil {
+					r.cfg.Logger.Info("session.recycled",
+						"sid", shortSid(sid), "ctx_pct", trippingPct,
+						"threshold", r.cfg.RecyclePct)
+				}
+				if old.Client != nil {
+					old.Client.Cancel(old.SessionID)
+					_ = old.Client.Close()
+				}
+				continue // re-loop → lazy-create a replacement entry
 			} else {
 				// Alive + ready: refresh LastUsed under r.mu before
 				// returning so the reaper's snapshot-then-iterate cannot
@@ -244,6 +303,35 @@ func (r *Registry) Get(ctx context.Context, sid, cwd string) (*Entry, error) {
 		r.mu.Unlock()
 		return r.createEntry(ctx, sid, cwd, placeholder)
 	}
+}
+
+// recorderTurnMeter / recorderMCPInit return the acp hook forwarders for the
+// shared metrics recorder, or nil when no recorder is wired (so
+// handleNotification no-ops). OnContextPct is handled inline in createEntry
+// because it also drives per-session recycle (independent of the recorder).
+func (r *Registry) recorderTurnMeter() func(float64, int64) {
+	rec := r.cfg.Metrics
+	if rec == nil {
+		return nil
+	}
+	return rec.RecordTurnMeter
+}
+
+func (r *Registry) recorderMCPInit() func(string, bool) {
+	rec := r.cfg.Metrics
+	if rec == nil {
+		return nil
+	}
+	return rec.RecordMCPInit
+}
+
+// shortSid truncates a client-supplied X-Session-Id to its first 8 bytes for
+// low-noise log correlation (the recycle INFO line). Empty stays empty.
+func shortSid(sid string) string {
+	if len(sid) <= 8 {
+		return sid
+	}
+	return sid[:8]
 }
 
 // createEntry runs the slow Spawn + Initialize + NewSession sequence
@@ -299,6 +387,18 @@ func (r *Registry) createEntry(ctx context.Context, sid, cwd string, e *Entry) (
 		Args:         r.cfg.KiroArgs,
 		Cwd:          cwd,
 		PingInterval: r.cfg.PingInterval,
+		// Kiro usage-metrics parity: OnContextPct drives BOTH the per-session
+		// recycle signal (e.lastCtxPct) and the metrics histogram; OnTurnMeter
+		// / OnMCPInit forward straight to the shared recorder. Wired per-entry
+		// because OnContextPct closes over this specific *Entry.
+		OnContextPct: func(pct float64) {
+			e.setCtxPct(pct)
+			if rec := r.cfg.Metrics; rec != nil {
+				rec.RecordContextPct(pct)
+			}
+		},
+		OnTurnMeter: r.recorderTurnMeter(),
+		OnMCPInit:   r.recorderMCPInit(),
 	})
 	if err != nil {
 		return publishError(nil, fmt.Errorf("session: spawn %q: %w", sid, err))
@@ -331,6 +431,10 @@ func (r *Registry) createEntry(ctx context.Context, sid, cwd string, e *Entry) (
 	e.creating = false
 	r.mu.Unlock()
 	e.closeReady()
+	// Kiro usage-metrics parity: count each successful session creation
+	// (gw_sessions_created_total). Incremented after publish so a failed
+	// create (publishError path) is not counted.
+	r.created.Add(1)
 
 	// Spawn a per-Entry watcher that observes client.Done() and flips
 	// the entry to Dead on unexpected subprocess exit (OOM, segfault,

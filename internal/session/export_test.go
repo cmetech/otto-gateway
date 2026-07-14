@@ -45,3 +45,11 @@ func (r *Registry) IsClosed() bool {
 	defer r.mu.RUnlock()
 	return r.closed
 }
+
+// SetCtxPctForTest overwrites the entry's last-observed context-usage percent.
+// Test seam for the Track 2 recycle tests (kiro usage-metrics parity), which
+// inject a threshold-crossing value without driving a real acp OnContextPct.
+func (e *Entry) SetCtxPctForTest(pct float64) { e.setCtxPct(pct) }
+
+// CtxPctForTest returns the entry's last-observed context-usage percent.
+func (e *Entry) CtxPctForTest() float64 { return e.ctxPct() }

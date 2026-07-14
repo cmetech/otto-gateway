@@ -55,6 +55,17 @@ func (acpClientFactory) Spawn(_ context.Context, cfg acp.Config) (PoolClient, er
 	return c, nil
 }
 
+// MetricsRecorder receives kiro per-turn usage events from each session's acp
+// client (kiro usage-metrics parity build). Duplicated from internal/pool
+// (rather than shared) so the two packages stay disjoint at the type level —
+// same rationale as the duplicated PoolClient interface. *metrics.Metrics
+// satisfies it structurally; a nil recorder leaves the turn/mcp hooks unset.
+type MetricsRecorder interface {
+	RecordTurnMeter(credits float64, turnMs int64)
+	RecordContextPct(pct float64)
+	RecordMCPInit(server string, ok bool)
+}
+
 // Config bundles all registry dependencies.
 //
 // TTL/TickInterval/MaxSessions are the per-test injection seams: production
@@ -89,6 +100,16 @@ type Config struct {
 	KiroCWD string
 	// PingInterval is the heartbeat interval forwarded to acp.Config.
 	PingInterval time.Duration
+	// RecyclePct is the context-utilization threshold (PERCENT, 0–100) at
+	// which Registry.Get proactively recycles a session on its next request
+	// (kiro usage-metrics parity Track 2). 0 disables (the default when
+	// zero-valued). Loaded from CTX_RECYCLE_PCT via internal/config.
+	RecyclePct float64
+	// Metrics receives kiro per-turn usage events from each session's acp
+	// client. Optional; nil leaves the turn/mcp hooks unset (OnContextPct is
+	// still wired for recycle). Wired in cmd/otto-gateway/main.go to the
+	// shared *metrics.Metrics recorder.
+	Metrics MetricsRecorder
 }
 
 // applyDefaults fills in zero-value Config fields. TTL/TickInterval/
