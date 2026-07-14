@@ -39,7 +39,7 @@ gateway and captures kiro's wire behavior:
 - **Output:** findings that scope Track 3 and confirm the Track 2 signal.
 - Lives in the Co-Worker desktop app as a reusable skill (not throwaway).
 
-### Track 1 — Resilient model discovery — **STARTING FIRST** — mirrors JS `6bbd0c2`
+### Track 1 — Resilient model discovery — ✅ **DONE** (`393f043`) — mirrors JS `6bbd0c2`
 Model catalog is captured **one-shot** from slot-0's `NewSession` during
 `pool.Warmup` (`internal/pool/pool.go:242-252`); `Models()` only ever returns
 that snapshot. A cold/slow kiro that returns an empty `availableModels` leaves
