@@ -16,19 +16,30 @@ import (
 	"otto-gateway/cmd/otto-tray/icon"
 )
 
-// setIcon uses a template image so the menu-bar icon auto-adapts to
-// dark/light bar themes on macOS.
-func setIcon(b []byte) { systray.SetTemplateIcon(b, b) }
+// setBaseIcon sets the idle/startup brand glyph. OTTO uses a template image
+// (monochrome, adapts to the bar theme); loop24 uses SetIcon with the colored
+// blue mark (deliberately does NOT adapt — it stays brand-blue).
+func setBaseIcon(loop24 bool) {
+	if loop24 {
+		systray.SetIcon(icon.Loop24)
+		return
+	}
+	systray.SetTemplateIcon(icon.Template, icon.Template)
+}
 
 // setIconForState updates the menu-bar icon to reflect the current FSM state.
-// Running uses SetTemplateIcon (adapts to dark/light bar); Starting/Degraded
-// use SetIcon with the warning PNG; Error/Stopped/Unknown use SetIcon with the
-// error PNG because SetTemplateIcon strips color, which is the primary signal.
-// Icon assets: cmd/otto-tray/icon/{Running,Warning,Error}.png (embedded).
-func setIconForState(state State) {
+// The Running/idle icon carries the brand glyph (OTTO template vs loop24 colored
+// mark); Starting/Degraded and Error/Stopped/Unknown keep the colored status PNGs
+// (health beats brand — SetTemplateIcon would strip the color that is the signal).
+// Icon assets: cmd/otto-tray/icon/{Running,Warning,Error,loop24}.* (embedded).
+func setIconForState(state State, loop24 bool) {
 	switch state {
 	case StateRunning:
-		systray.SetTemplateIcon(icon.Running, icon.Running)
+		if loop24 {
+			systray.SetIcon(icon.Loop24)
+		} else {
+			systray.SetTemplateIcon(icon.Running, icon.Running)
+		}
 	case StateStarting, StateDegraded:
 		systray.SetIcon(icon.Warning)
 	default: // StateError, StateStopped, StateUnknown

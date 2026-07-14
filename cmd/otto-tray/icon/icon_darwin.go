@@ -30,3 +30,9 @@ var Warning []byte
 //
 //go:embed template_error.png
 var Error []byte
+
+// Loop24 is the raw PNG bytes of the loop24 brand mark (colored, non-template).
+// Used via SetIcon (not SetTemplateIcon) so the blue mark shows on the menu bar.
+//
+//go:embed loop24.png
+var Loop24 []byte

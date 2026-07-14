@@ -34,3 +34,8 @@ var Warning []byte
 //
 //go:embed error.ico
 var Error []byte
+
+// Loop24 is the raw ICO bytes of the loop24 brand mark (colored, multi-size).
+//
+//go:embed loop24.ico
+var Loop24 []byte

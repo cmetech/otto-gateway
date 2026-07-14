@@ -17,7 +17,6 @@ import (
 
 	"github.com/energye/systray"
 
-	"otto-gateway/cmd/otto-tray/icon"
 	"otto-gateway/internal/version"
 )
 
@@ -72,6 +71,10 @@ type trayState struct {
 	miOpenAppFolder     *systray.MenuItem
 	miOpenDataFolder    *systray.MenuItem
 	miOpenGatewayFolder *systray.MenuItem
+
+	// brandLoop24 selects the tray icon: true → loop24 mark (default when the
+	// desktop brand.json is absent), false → OTTO. Updated by the desktop poller.
+	brandLoop24 atomic.Bool
 }
 
 func newTrayState(installRoot string, cfg TrayConfig) *trayState {
@@ -87,7 +90,8 @@ func newTrayState(installRoot string, cfg TrayConfig) *trayState {
 
 func (s *trayState) onReady(isFirstRun bool) func() {
 	return func() {
-		setIcon(icon.Template)
+		s.brandLoop24.Store(brandUsesLoop24(runtime.GOOS, os.Getenv, homeDir(), statExists, os.ReadFile))
+		setBaseIcon(s.brandLoop24.Load())
 		systray.SetTooltip("OTTO Gateway")
 		platformOnReady()
 
@@ -236,7 +240,7 @@ func (s *trayState) applyState(out stateOutput) {
 
 	// T-3 fix (REL-TRAY-03): always-visible state signal on every FSM transition (D-11).
 	// Icon and tooltip are the primary gateway-death signal; notify() is secondary.
-	setIconForState(out.State)
+	setIconForState(out.State, s.brandLoop24.Load())
 	systray.SetTooltip(tooltipForState(out.State, out.Detail))
 
 	header := fmt.Sprintf("OTTO Gateway · %s", out.State)
