@@ -180,6 +180,14 @@ type Config struct {
 	// OR Go duration string).
 	SessionTickInterval time.Duration
 
+	// RecyclePct is the context-utilization threshold (PERCENT, 0–100) at
+	// which the session registry proactively recycles a stateful kiro session
+	// on its next request (kiro usage-metrics parity Track 2). Default 80;
+	// 0 disables. Loaded from CTX_RECYCLE_PCT (Node-parity env NAME; the
+	// default VALUE diverges from Node's mis-scaled 0.8). Consumed by
+	// session.Config.RecyclePct.
+	RecyclePct float64
+
 	// EnabledHooks is the comma-split allowlist of hook type names enabled
 	// at boot (Phase 8 D-02). Default empty = all hooks in the chain
 	// enabled (matches AUTH_TOKEN semantics — permissive default). A name
@@ -500,6 +508,20 @@ func Load() (Config, error) {
 		errs = append(errs, fmt.Errorf("SESSION_TICK_INTERVAL_MS: must be >= 0, got %v", sessionTickInterval))
 	}
 
+	// Kiro usage-metrics parity (Track 2 context recycle): CTX_RECYCLE_PCT
+	// is the context-utilization threshold (PERCENT, 0–100) at which the
+	// registry proactively recycles a stateful kiro session on its next
+	// request. Default 80. 0 disables. Node-parity env NAME, but the default
+	// VALUE diverges: the Node 0.8 default is 0..1-scaled and mis-fires
+	// against kiro's 0–100 contextUsagePercentage (it would recycle at 0.8%).
+	recyclePct, err := getEnvFloat("CTX_RECYCLE_PCT", 80)
+	if err != nil {
+		errs = append(errs, err)
+	}
+	if recyclePct < 0 {
+		errs = append(errs, fmt.Errorf("CTX_RECYCLE_PCT: must be >= 0, got %v", recyclePct))
+	}
+
 	// Quick 260531-ruv — STREAM_IDLE_TIMEOUT_SEC. Default 30 (seconds).
 	// Zero is VALID (explicit disable). Negative values are a boot error.
 	// Non-integer values bubble up from getEnvInt as a wrapped error
@@ -761,6 +783,7 @@ func Load() (Config, error) {
 		SessionTTL:                sessionTTL,
 		SessionMax:                sessionMax,
 		SessionTickInterval:       sessionTickInterval,
+		RecyclePct:                recyclePct,
 		EnabledHooks:              enabledHooks,
 		PIIRedactionEnabled:       piiEnabled,
 		PIIEnabledEntities:        piiEntities,
@@ -1197,6 +1220,21 @@ func getEnvInt(key string, def int) (int, error) {
 		return 0, fmt.Errorf("%s: cannot parse %q as int", key, v)
 	}
 	return n, nil
+}
+
+// getEnvFloat parses key as a float64, returning def when unset. A non-numeric
+// value is a boot error (matches getEnvInt's fail-fast shape). Used for
+// CTX_RECYCLE_PCT (percent, 0–100).
+func getEnvFloat(key string, def float64) (float64, error) {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def, nil
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s: cannot parse %q as float", key, v)
+	}
+	return f, nil
 }
 
 // parseCIDRs converts a slice of CIDR / bare-IP strings into netip.Prefix
