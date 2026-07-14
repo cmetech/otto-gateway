@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scripts/lib/redact.sh — shared bash redaction primitives for the support
 # bundle subcommand. Sourced (not executed); requires bash 4+ (same baseline
-# as scripts/otto-gw).
+# as scripts/gw).
 #
 # Surface (per docs/superpowers/specs/2026-06-08-support-bundle-design.md):
 #   - redact_stream            stdin -> stdout filter applying log-scrub rules
@@ -33,9 +33,9 @@
 # subsequent rules can't fire on a header that's already been collapsed.
 #
 # Rule (4) is implemented via an explicit character-class pattern instead of
-# the GNU-only `I` (case-insensitive) sed flag, because scripts/otto-gw is
+# the GNU-only `I` (case-insensitive) sed flag, because scripts/gw is
 # expected to remain BSD-sed-compatible (macOS ships BSD sed). See line ~841
-# of scripts/otto-gw for the prior precedent.
+# of scripts/gw for the prior precedent.
 #
 # `sed -E` (POSIX ERE) is supported by both BSD and GNU sed.
 
@@ -73,7 +73,7 @@ is_secret_key() {
     local k="${1:-}"
     [[ -z "$k" ]] && return 1
     # Use `tr` instead of ${k^^} to stay bash-3-compatible (the macOS
-    # /bin/bash is still 3.2 even on Apple Silicon). scripts/otto-gw uses
+    # /bin/bash is still 3.2 even on Apple Silicon). scripts/gw uses
     # #!/usr/bin/env bash so it picks up Homebrew bash 5+, but this lib
     # should be neutral to either bash major.
     local up

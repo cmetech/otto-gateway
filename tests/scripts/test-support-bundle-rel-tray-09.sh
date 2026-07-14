@@ -3,16 +3,16 @@
 # (D-18-10) regression: the macOS support bundle MUST NOT emit two
 # rows that have always lied:
 #
-#   - tray/tray-state.txt — reads $OTTO_INSTALL_ROOT/.otto/tray/state,
+#   - tray/tray-state.txt — reads $GW_INSTALL_DIR/.otto/tray/state,
 #     a file the tray has never written. Pre-fix the row showed
 #     "(unavailable: ... does not exist)" on every bundle ever produced.
 #
 #   - tray/autostart.txt — checks $HOME/Library/LaunchAgents/com.otto.tray.plist,
-#     but the actual plist label is io.cmetech.otto-tray (cmd/otto-tray/
+#     but the actual plist label is io.cmetech.gateway-tray (cmd/otto-tray/
 #     autostart_darwin.go:15). Pre-fix the row always reported the
 #     LaunchAgent absent, even when autostart was correctly installed.
 #
-# This test runs `scripts/otto-gw support` against a fake install root,
+# This test runs `scripts/gw support` against a fake install root,
 # extracts the archive, and asserts:
 #
 #   - tray/tray-state.txt is absent (negative assertion)
@@ -31,7 +31,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd -P "$(dirname "$0")/../.." >/dev/null 2>&1 && pwd)"
-WRAPPER="$REPO_ROOT/scripts/otto-gw"
+WRAPPER="$REPO_ROOT/scripts/gw"
 if [[ ! -x "$WRAPPER" ]]; then
     echo "FATAL: $WRAPPER not executable" >&2
     exit 1
@@ -60,28 +60,29 @@ ok() {
 }
 
 FAKE_ROOT=$(mktemp -d)
-mkdir -p "$FAKE_ROOT/logs" "$FAKE_ROOT/.otto/gw"
+mkdir -p "$FAKE_ROOT/logs" "$FAKE_ROOT/.gw/state"
 # NOTE: intentionally NOT writing $FAKE_ROOT/.otto/tray/state — the row
 # is being removed precisely because that file has never existed.
 
 # Minimal log fixture so the support flow's log-copy doesn't error on
 # missing input.
-echo "boot ok" > "$FAKE_ROOT/logs/otto-gateway.log"
+echo "boot ok" > "$FAKE_ROOT/logs/gateway.log"
 
 EXTRACT_DIR=$(mktemp -d)
 OUT_DIR="$EXTRACT_DIR/out"
 mkdir -p "$OUT_DIR"
 
-echo "== running otto-gw support =="
+echo "== running gw support =="
 STDOUT_FILE=$(mktemp)
 STDERR_FILE=$(mktemp)
 set +e
-OTTO_INSTALL_ROOT="$FAKE_ROOT" \
-    OTTO_BIN=/bin/true \
-    OTTO_STATE_DIR="$FAKE_ROOT/.otto/gw" \
-    OTTO_PID="$FAKE_ROOT/.otto/gw/otto-gateway.pid" \
-    OTTO_LOG="$FAKE_ROOT/logs/otto-gateway.log" \
-    OTTO_ADDR=http://127.0.0.1:1 \
+GW_INSTALL_DIR="$FAKE_ROOT" \
+    GW_HOME="$FAKE_ROOT/.gw" \
+    GW_BIN=/bin/true \
+    GW_STATE_DIR="$FAKE_ROOT/.gw/state" \
+    GW_PID="$FAKE_ROOT/.gw/state/gateway.pid" \
+    GW_LOG="$FAKE_ROOT/logs/gateway.log" \
+    GW_ADDR=http://127.0.0.1:1 \
     HTTP_ADDR="127.0.0.1:18080" \
     bash "$WRAPPER" support --out "$OUT_DIR" >"$STDOUT_FILE" 2>"$STDERR_FILE"
 RC=$?
@@ -107,8 +108,8 @@ EX_TREE="$EXTRACT_DIR/extracted"
 mkdir -p "$EX_TREE"
 tar -xzf "$BUNDLE_PATH" -C "$EX_TREE"
 
-# Locate the otto-support-* dir inside the extracted tree.
-BUNDLE_ROOTS=( "$EX_TREE"/otto-support-* )
+# Locate the gateway-support-* dir inside the extracted tree.
+BUNDLE_ROOTS=( "$EX_TREE"/gateway-support-* )
 BUNDLE_ROOT="${BUNDLE_ROOTS[0]}"
 if [[ ! -d "$BUNDLE_ROOT" ]]; then
     fail_with "extracted bundle root not found under $EX_TREE"

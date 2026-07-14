@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # tests/scripts/test-support-bundle.sh — integration smoke for
-# `scripts/otto-gw support`. Builds a fake install root, drops a synthetic
+# `scripts/gw support`. Builds a fake install root, drops a synthetic
 # log file containing known secret literals, runs the subcommand, then
 # extracts the resulting archive and asserts:
 #   - exit 0
@@ -15,7 +15,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd -P "$(dirname "$0")/../.." >/dev/null 2>&1 && pwd)"
-WRAPPER="$REPO_ROOT/scripts/otto-gw"
+WRAPPER="$REPO_ROOT/scripts/gw"
 if [[ ! -x "$WRAPPER" ]]; then
     echo "FATAL: $WRAPPER not executable" >&2
     exit 1
@@ -50,14 +50,14 @@ SECRET_BEARER_LITERAL="realtoken1234deadbeef"
 SECRET_HASH_LITERAL="realHashKeyABC987"
 SECRET_ENCRYPT_LITERAL="realEncryptKey555"
 
-# Fake install root layout — mirrors the real scripts/otto-gw expectations
+# Fake install root layout — mirrors the real scripts/gw expectations
 # enough that load_config + the support layout build successfully without
 # any real binary present.
 FAKE_ROOT=$(mktemp -d)
-mkdir -p "$FAKE_ROOT/logs" "$FAKE_ROOT/.otto/gw"
+mkdir -p "$FAKE_ROOT/logs" "$FAKE_ROOT/.gw/state"
 
 # Synthetic log with all four scrub-trigger patterns embedded.
-cat > "$FAKE_ROOT/logs/otto-gateway.log" <<EOF
+cat > "$FAKE_ROOT/logs/gateway.log" <<EOF
 2026-06-08T00:00:00Z info gateway boot ok
 2026-06-08T00:00:01Z info AUTH_TOKEN=$SECRET_TOKEN_LITERAL was loaded from env
 2026-06-08T00:00:02Z info Authorization: Bearer $SECRET_BEARER_LITERAL on inbound /v1/messages
@@ -68,9 +68,9 @@ cat > "$FAKE_ROOT/logs/otto-gateway.log" <<EOF
 EOF
 
 # Boot log + chat-trace log so the support function exercises all three
-# log-copy paths (and chat-trace's `-` prefix detection from OTTO_LOG).
-echo "boot ok" > "$FAKE_ROOT/logs/otto-gateway-boot.log"
-echo "trace ok" > "$FAKE_ROOT/logs/otto-gateway-chat-trace.log"
+# log-copy paths (and chat-trace's `-` prefix detection from GW_LOG).
+echo "boot ok" > "$FAKE_ROOT/logs/gateway-boot.log"
+echo "trace ok" > "$FAKE_ROOT/logs/gateway-chat-trace.log"
 
 # NOTE: $FAKE_ROOT/.otto/tray/state fixture was removed alongside the
 # tray/tray-state.txt bundle row in v1.10.3 (REL-TRAY-09 / D-18-10) —
@@ -82,22 +82,26 @@ OUT_DIR="$EXTRACT_DIR/out"
 mkdir -p "$OUT_DIR"
 
 # Run the support subcommand. Point every wrapper-resolved path at the
-# fake install root. AUTH_TOKEN / PII_HASH_KEY / PII_ENCRYPT_KEY are set in
-# the env so the env/effective.env dump exercises the mask path. OTTO_BIN
-# points to /bin/true so the `--version` probe in system/versions.txt runs
-# without spawning the real binary. OTTO_ADDR is set to an unreachable port
-# so health/health.json captures the "unreachable:" sentinel path.
-echo "== running otto-gw support =="
+# fake install root (both anchors — GW_INSTALL_DIR for code, GW_HOME for
+# config/state — since the two-anchor layout means a bare GW_INSTALL_DIR
+# override no longer isolates .env discovery from the real $HOME/.gw).
+# AUTH_TOKEN / PII_HASH_KEY / PII_ENCRYPT_KEY are set in the env so the
+# env/effective.env dump exercises the mask path. GW_BIN points to
+# /bin/true so the `--version` probe in system/versions.txt runs without
+# spawning the real binary. GW_ADDR is set to an unreachable port so
+# health/health.json captures the "unreachable:" sentinel path.
+echo "== running gw support =="
 STDOUT_FILE=$(mktemp)
 STDERR_FILE=$(mktemp)
 set +e
-OTTO_INSTALL_ROOT="$FAKE_ROOT" \
-    OTTO_BIN=/bin/true \
-    OTTO_STATE_DIR="$FAKE_ROOT/.otto/gw" \
-    OTTO_PID="$FAKE_ROOT/.otto/gw/otto-gateway.pid" \
-    OTTO_LOG="$FAKE_ROOT/logs/otto-gateway.log" \
-    OTTO_LOG_BOOT="$FAKE_ROOT/logs/otto-gateway-boot.log" \
-    OTTO_ADDR=http://127.0.0.1:1 \
+GW_INSTALL_DIR="$FAKE_ROOT" \
+    GW_HOME="$FAKE_ROOT/.gw" \
+    GW_BIN=/bin/true \
+    GW_STATE_DIR="$FAKE_ROOT/.gw/state" \
+    GW_PID="$FAKE_ROOT/.gw/state/gateway.pid" \
+    GW_LOG="$FAKE_ROOT/logs/gateway.log" \
+    GW_LOG_BOOT="$FAKE_ROOT/logs/gateway-boot.log" \
+    GW_ADDR=http://127.0.0.1:1 \
     AUTH_TOKEN="$SECRET_TOKEN_LITERAL" \
     PII_HASH_KEY="$SECRET_HASH_LITERAL" \
     PII_ENCRYPT_KEY="$SECRET_ENCRYPT_LITERAL" \
@@ -164,9 +168,9 @@ for needle in "$SECRET_TOKEN_LITERAL" "$SECRET_BEARER_LITERAL" "$SECRET_HASH_LIT
 done
 
 # Find the exact bundle root inside the extracted tree (only one entry
-# matches otto-support-*). Using a globbing assignment shellcheck-warns;
+# matches gateway-support-*). Using a globbing assignment shellcheck-warns;
 # resolve it with a single-element array to keep the path quoted everywhere.
-BUNDLE_ROOTS=( "$EX_TREE"/otto-support-* )
+BUNDLE_ROOTS=( "$EX_TREE"/gateway-support-* )
 BUNDLE_ROOT="${BUNDLE_ROOTS[0]}"
 if [[ ! -d "$BUNDLE_ROOT" ]]; then
     fail_with "extracted bundle root not found under $EX_TREE"

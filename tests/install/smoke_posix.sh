@@ -1,7 +1,7 @@
 #!/bin/sh
 # tests/install/smoke_posix.sh — end-to-end smoke for scripts/install.sh.
 # Serves the real dist/ archives over a local HTTP server and runs the
-# installer against a throwaway HOME + OTTO_HOME. Never touches real config.
+# installer against a throwaway HOME + GW_HOME. Never touches real config.
 #
 # Usage: sh tests/install/smoke_posix.sh [VERSION]
 #   VERSION defaults to the host arch's newest dist archive tag.
@@ -63,27 +63,30 @@ done
 curl -sf "http://127.0.0.1:${port}/" >/dev/null 2>&1 || { echo "server did not start on port $port"; cat "$stage/serve.log"; exit 1; }
 base="http://127.0.0.1:$port"
 
-# Run the installer fully isolated.
+# Run the installer fully isolated. Two-anchor layout: GW_INSTALL_DIR
+# (code) and GW_HOME (config) are both pinned under the fake HOME so the
+# smoke test never touches the real user's install or config.
 env HOME="$fakehome" \
-    OTTO_HOME="$fakehome/.otto-gw" \
-    OTTO_BASE_URL="$base" \
-    OTTO_API_URL="$base/latest.json" \
+    GW_INSTALL_DIR="$fakehome/.gw" \
+    GW_HOME="$fakehome/.gw" \
+    GW_BASE_URL="$base" \
+    GW_API_URL="$base/latest.json" \
     sh scripts/install.sh
 
 # Assertions.
-wrapper="$fakehome/.otto-gw/scripts/otto-gw"
+wrapper="$fakehome/.gw/scripts/gw"
 [ -x "$wrapper" ] || { echo "FAIL: wrapper not installed at $wrapper"; exit 1; }
-[ -L "$fakehome/.local/bin/otto-gw" ] || { echo "FAIL: symlink not created"; exit 1; }
-[ -f "$fakehome/.otto-gw.env" ] || { echo "FAIL: init did not write .otto-gw.env"; exit 1; }
+[ -L "$fakehome/.local/bin/gw" ] || { echo "FAIL: symlink not created"; exit 1; }
+[ -f "$fakehome/.gw/.env" ] || { echo "FAIL: init did not write .gw/.env"; exit 1; }
 ver_out=$("$wrapper" version 2>/dev/null || true)
 echo "installed wrapper version reports: $ver_out"
 
 # Re-run = upgrade path: must NOT clobber the existing env.
-cp "$fakehome/.otto-gw.env" "$stage/env.before"
-env HOME="$fakehome" OTTO_HOME="$fakehome/.otto-gw" \
-    OTTO_BASE_URL="$base" OTTO_API_URL="$base/latest.json" \
+cp "$fakehome/.gw/.env" "$stage/env.before"
+env HOME="$fakehome" GW_INSTALL_DIR="$fakehome/.gw" GW_HOME="$fakehome/.gw" \
+    GW_BASE_URL="$base" GW_API_URL="$base/latest.json" \
     sh scripts/install.sh
-cmp -s "$stage/env.before" "$fakehome/.otto-gw.env" \
-    || { echo "FAIL: upgrade re-ran init and changed .otto-gw.env"; exit 1; }
+cmp -s "$stage/env.before" "$fakehome/.gw/.env" \
+    || { echo "FAIL: upgrade re-ran init and changed .gw/.env"; exit 1; }
 
 echo "PASS: install + upgrade smoke"

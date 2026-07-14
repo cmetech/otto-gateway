@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# OTTO Gateway — macOS dev environment bootstrap.
+# Gateway — macOS dev environment bootstrap.
 # Idempotent: safe to re-run. Skips already-installed tools.
 # See DEVELOPERS.md for the manual equivalent and gotchas.
 
 set -euo pipefail
 
-echo "OTTO Gateway — macOS dev environment bootstrap"
+echo "Gateway — macOS dev environment bootstrap"
 echo "(idempotent — safe to re-run)"
 echo
 

@@ -1,5 +1,5 @@
 # tests/scripts/test-support-bundle.ps1 — integration smoke for
-# `otto-gw.ps1 support`. Mirrors tests/scripts/test-support-bundle.sh:
+# `gw.ps1 support`. Mirrors tests/scripts/test-support-bundle.sh:
 # builds a fake install root with a synthetic log file containing known
 # secret literals, runs the subcommand, then asserts:
 #   - exit 0
@@ -14,7 +14,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $RepoRoot = Resolve-Path (Join-Path $PSScriptRoot '..\..')
-$Wrapper = Join-Path $RepoRoot 'scripts\otto-gw.ps1'
+$Wrapper = Join-Path $RepoRoot 'scripts\gw.ps1'
 if (-not (Test-Path $Wrapper)) {
     Write-Error "FATAL: $Wrapper not found"
     exit 1
@@ -52,8 +52,9 @@ try {
 
     $script:FakeRoot = Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetRandomFileName())
     $null = New-Item -ItemType Directory -Path (Join-Path $script:FakeRoot 'logs') -Force
-    $null = New-Item -ItemType Directory -Path (Join-Path $script:FakeRoot '.otto\gw') -Force
-    $null = New-Item -ItemType Directory -Path (Join-Path $script:FakeRoot '.otto\tray') -Force
+    $null = New-Item -ItemType Directory -Path (Join-Path $script:FakeRoot '.gw\state') -Force
+    # NOTE: no .otto\tray\state fixture — that row was removed from both
+    # wrappers per REL-TRAY-09 (D-18-10); the tray has never written it.
 
     @(
         '2026-06-08T00:00:00Z info gateway boot ok',
@@ -63,31 +64,34 @@ try {
         "2026-06-08T00:00:04Z info PII_HASH_KEY=$SecretHash active",
         "2026-06-08T00:00:05Z info PII_ENCRYPT_KEY=$SecretEncrypt active",
         '2026-06-08T00:00:06Z info routine traffic'
-    ) | Set-Content -Path (Join-Path $script:FakeRoot 'logs\otto-gateway.log') -Encoding UTF8
+    ) | Set-Content -Path (Join-Path $script:FakeRoot 'logs\gateway.log') -Encoding UTF8
 
-    'boot ok'  | Set-Content -Path (Join-Path $script:FakeRoot 'logs\otto-gateway.boot-out.log')
-    'boot err' | Set-Content -Path (Join-Path $script:FakeRoot 'logs\otto-gateway.boot-err.log')
-    'running'  | Set-Content -Path (Join-Path $script:FakeRoot '.otto\tray\state')
+    'boot ok'  | Set-Content -Path (Join-Path $script:FakeRoot 'logs\gateway.boot-out.log')
+    'boot err' | Set-Content -Path (Join-Path $script:FakeRoot 'logs\gateway.boot-err.log')
 
     $script:ExtractDir = Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetRandomFileName())
     $OutDir = Join-Path $script:ExtractDir 'out'
     $null = New-Item -ItemType Directory -Path $OutDir -Force
 
-    # Set env overrides so all wrapper-resolved paths point at the fake root.
-    $env:OTTO_INSTALL_ROOT = $script:FakeRoot
-    $env:OTTO_BIN          = 'cmd.exe'  # exists on PATH but --version will fail -- exercises the error path
-    $env:OTTO_STATE_DIR    = Join-Path $script:FakeRoot '.otto\gw'
-    $env:OTTO_PID          = Join-Path $script:FakeRoot '.otto\gw\otto-gateway.pid'
-    $env:OTTO_LOG          = Join-Path $script:FakeRoot 'logs\otto-gateway.log'
-    $env:OTTO_ADDR         = 'http://127.0.0.1:1'  # unreachable on purpose
+    # Set env overrides so all wrapper-resolved paths point at the fake root
+    # (both anchors — GW_INSTALL_DIR for code, GW_HOME for config/state —
+    # since the two-anchor layout means a bare GW_INSTALL_DIR override no
+    # longer isolates .env discovery from the real $env:USERPROFILE\.gw).
+    $env:GW_INSTALL_DIR    = $script:FakeRoot
+    $env:GW_HOME           = Join-Path $script:FakeRoot '.gw'
+    $env:GW_BIN            = 'cmd.exe'  # exists on PATH but --version will fail -- exercises the error path
+    $env:GW_STATE_DIR      = Join-Path $script:FakeRoot '.gw\state'
+    $env:GW_PID            = Join-Path $script:FakeRoot '.gw\state\gateway.pid'
+    $env:GW_LOG            = Join-Path $script:FakeRoot 'logs\gateway.log'
+    $env:GW_ADDR           = 'http://127.0.0.1:1'  # unreachable on purpose
     $env:AUTH_TOKEN        = $SecretToken
     $env:PII_HASH_KEY      = $SecretHash
     $env:PII_ENCRYPT_KEY   = $SecretEncrypt
     $env:HTTP_ADDR         = '127.0.0.1:18080'
-    $env:OTTO_ENV_FILE     = 'NUL'      # neutralize project-local .env discovery
-    $env:OTTO_OVERRIDES_FILE = 'NUL'
+    $env:GW_ENV_FILE       = 'NUL'      # neutralize project-local .env discovery
+    $env:GW_OVERRIDES_FILE = 'NUL'
 
-    Write-Host "== running otto-gw.ps1 support =="
+    Write-Host "== running gw.ps1 support =="
     $stdoutFile = [System.IO.Path]::GetTempFileName()
     $stderrFile = [System.IO.Path]::GetTempFileName()
     $proc = Start-Process -FilePath (Get-Command pwsh -ErrorAction SilentlyContinue).Source `
@@ -121,7 +125,7 @@ try {
     Expand-Archive -Path $bundlePath -DestinationPath $ExTree -Force
 
     Write-Host "== zip contents =="
-    $bundleDirs = Get-ChildItem -Directory -Path $ExTree | Where-Object { $_.Name -like 'otto-support-*' }
+    $bundleDirs = Get-ChildItem -Directory -Path $ExTree | Where-Object { $_.Name -like 'gateway-support-*' }
     if (-not $bundleDirs) {
         FailWith "extracted bundle root not found under $ExTree"
         Write-Host "passed: $script:Pass, failed: $script:Fail"

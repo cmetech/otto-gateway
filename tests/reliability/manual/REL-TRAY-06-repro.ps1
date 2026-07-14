@@ -4,7 +4,7 @@
 # Target OS: Windows
 # Expected pre-fix behavior: tray's revealBundle opens the wrapper's first stdout line (e.g. 'loaded env file: ...') instead of the .zip archive path
 # Expected post-fix behavior: tray opens the actual .zip archive at the last non-empty stdout line
-# Run instructions: 1) Set OTTO_ENV_FILE to a real .env file path (or ensure OTTO_HOME points to a real install). 2) Run 'scripts/otto-gw.ps1 support' and capture stdout. 3) Inspect the first vs last non-empty lines to see the path discrepancy.
+# Run instructions: 1) Set GW_ENV_FILE to a real .env file path (or ensure GW_HOME points to a real install). 2) Run 'scripts/gw.ps1 support' and capture stdout. 3) Inspect the first vs last non-empty lines to see the path discrepancy.
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Continue'
@@ -12,7 +12,7 @@ $ErrorActionPreference = 'Continue'
 # Resolve paths
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot = Resolve-Path (Join-Path $ScriptDir '..\..\..') -ErrorAction Stop
-$Wrapper = Join-Path $RepoRoot 'scripts\otto-gw.ps1'
+$Wrapper = Join-Path $RepoRoot 'scripts\gw.ps1'
 
 if (-not (Test-Path $Wrapper)) {
     Write-Error "FATAL: wrapper not found at $Wrapper"

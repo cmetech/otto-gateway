@@ -102,7 +102,7 @@ Write-Host "== Test-IsSecretKey =="
 foreach ($k in @('AUTH_TOKEN','PII_HASH_KEY','PII_ENCRYPT_KEY','MY_PASSWORD','WEBHOOK_SECRET','API_KEY','MY_TOKEN','PASSPHRASE_FOO','auth_token')) {
     Assert-True (Test-IsSecretKey $k) "Test-IsSecretKey($k) -> true"
 }
-foreach ($k in @('HTTP_ADDR','POOL_SIZE','OTTO_ADDR','DEBUG','ENABLED_HOOKS','PII_REDACTION_MODE')) {
+foreach ($k in @('HTTP_ADDR','POOL_SIZE','GW_ADDR','DEBUG','ENABLED_HOOKS','PII_REDACTION_MODE')) {
     Assert-True (-not (Test-IsSecretKey $k)) "Test-IsSecretKey($k) -> false"
 }
 Assert-True (-not (Test-IsSecretKey '')) 'Test-IsSecretKey(empty) -> false'

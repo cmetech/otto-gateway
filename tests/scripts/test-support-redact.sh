@@ -107,7 +107,7 @@ assert_eq "abcd…(4 chars)" "$(mask_env_value abcd)" "4-char value (exact prefi
 # The literal raw value MUST NEVER round-trip through mask_env_value.
 masked_full=$(mask_env_value "supersecretvalue")
 assert_not_contains "$masked_full" "supersecretvalue" "full secret literal absent from mask"
-assert_contains "$masked_full" "supe…(16 chars)" "mask format matches scripts/otto-gw print_env shape"
+assert_contains "$masked_full" "supe…(16 chars)" "mask format matches scripts/gw print_env shape"
 
 echo "== is_secret_key =="
 
@@ -119,7 +119,7 @@ for k in AUTH_TOKEN PII_HASH_KEY PII_ENCRYPT_KEY MY_PASSWORD WEBHOOK_SECRET API_
     fi
 done
 
-for k in HTTP_ADDR POOL_SIZE OTTO_ADDR DEBUG ENABLED_HOOKS PII_REDACTION_MODE; do
+for k in HTTP_ADDR POOL_SIZE GW_ADDR DEBUG ENABLED_HOOKS PII_REDACTION_MODE; do
     if is_secret_key "$k"; then
         fail_with "is_secret_key($k) should NOT be secret but returned 0"
     else

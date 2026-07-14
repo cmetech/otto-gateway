@@ -2,9 +2,9 @@
 # REL-* ID: REL-TRAY-02
 # Target phase: 14 (verify) / 15 (fix)
 # Target OS: Windows
-# Expected pre-fix behavior: scripts/otto-gw.ps1 support with gateway stopped exits 1 before creating bundle
+# Expected pre-fix behavior: scripts/gw.ps1 support with gateway stopped exits 1 before creating bundle
 # Expected post-fix behavior: bundle is created on disk with health/health.json containing unreachable: sentinel
-# Run instructions: 1) Ensure gateway is stopped (scripts/otto-gw.ps1 stop). 2) Run this script from repo root or any directory. 3) Inspect $LASTEXITCODE and whether a bundle path was printed on stdout.
+# Run instructions: 1) Ensure gateway is stopped (scripts/gw.ps1 stop). 2) Run this script from repo root or any directory. 3) Inspect $LASTEXITCODE and whether a bundle path was printed on stdout.
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Continue'
@@ -12,7 +12,7 @@ $ErrorActionPreference = 'Continue'
 # Resolve the wrapper relative to this script's location (tests/reliability/manual/)
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot = Resolve-Path (Join-Path $ScriptDir '..\..\..') -ErrorAction Stop
-$Wrapper = Join-Path $RepoRoot 'scripts\otto-gw.ps1'
+$Wrapper = Join-Path $RepoRoot 'scripts\gw.ps1'
 
 if (-not (Test-Path $Wrapper)) {
     Write-Error "FATAL: wrapper not found at $Wrapper — run from repo root"

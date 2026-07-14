@@ -5,16 +5,16 @@
 # Target OS: macOS
 # Expected pre-fix behavior: killing gateway out from under running tray produces no visible signal in menu bar
 # Expected post-fix behavior: icon and/or tooltip change to a death-indicating state user can observe at a glance
-# Run instructions: 1) Start tray app via scripts/otto-gw start. 2) In a second terminal, run this script. 3) Watch the menu bar icon and tooltip for 30 seconds. 4) Report whether any visible signal appeared.
+# Run instructions: 1) Start tray app via scripts/gw start. 2) In a second terminal, run this script. 3) Watch the menu bar icon and tooltip for 30 seconds. 4) Report whether any visible signal appeared.
 
 set -euo pipefail
 
 REPO_ROOT="$(cd -P "$(dirname "$0")/../../.." >/dev/null 2>&1 && pwd)"
 
 # Resolve the pidfile location — mirrors installRootPIDFile in cmd/otto-tray/tray.go
-# Default install root is ~/.otto-gw; check OTTO_HOME override.
-INSTALL_ROOT="${OTTO_HOME:-${HOME}/.otto-gw}"
-PIDFILE="${INSTALL_ROOT}/.otto/gw/otto-gateway.pid"
+# Default install root is ~/.gw; check GW_HOME override.
+INSTALL_ROOT="${GW_HOME:-${HOME}/.gw}"
+PIDFILE="${INSTALL_ROOT}/state/gateway.pid"
 
 echo ""
 echo "REL-TRAY-03 reproducer — pre-fix: silent gateway death on macOS"
@@ -24,11 +24,11 @@ echo "Install root: $INSTALL_ROOT"
 echo "PID file:     $PIDFILE"
 echo ""
 
-# Verify the tray is running (look for OTTO Tray process)
-if ! pgrep -qf "OTTO Tray" 2>/dev/null && ! pgrep -qf "otto-tray" 2>/dev/null; then
-    echo "ERROR: OTTO Tray process not found. Start the tray first:"
-    echo "  scripts/otto-gw start"
-    echo "  open -a 'OTTO Tray'  (or however you launch the tray app)"
+# Verify the tray is running (look for Gateway Tray process)
+if ! pgrep -qf "Gateway Tray" 2>/dev/null && ! pgrep -qf "gateway-tray" 2>/dev/null; then
+    echo "ERROR: Gateway Tray process not found. Start the tray first:"
+    echo "  scripts/gw start"
+    echo "  open -a 'Gateway Tray'  (or however you launch the tray app)"
     exit 1
 fi
 echo "Tray process detected."
@@ -37,7 +37,7 @@ echo "Tray process detected."
 if [[ ! -f "$PIDFILE" ]]; then
     echo "ERROR: PID file not found at $PIDFILE"
     echo "  Verify the gateway is running and INSTALL_ROOT is correct."
-    echo "  Try: OTTO_HOME=/path/to/install bash $0"
+    echo "  Try: GW_HOME=/path/to/install bash $0"
     exit 1
 fi
 
@@ -84,4 +84,4 @@ echo "RESULT: Did the menu bar icon or tooltip change to reflect gateway death?"
 echo "  - YES → POST-FIX behavior (or finding was already mitigated)"
 echo "  - NO  → PRE-FIX CONFIRMED (T-3 still present)"
 echo ""
-echo "Gateway PID $GW_PID is now dead. Restart with: scripts/otto-gw start"
+echo "Gateway PID $GW_PID is now dead. Restart with: scripts/gw start"

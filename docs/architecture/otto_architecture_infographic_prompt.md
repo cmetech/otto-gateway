@@ -1,11 +1,11 @@
-"OTTO Architecture — Unified LLM Gateway"
+"Gateway Architecture — Unified LLM Gateway"
 Subtitle: "Anthropic-, OpenAI-, and Ollama-compatible APIs, governed by configurable guardrails, routed to pooled kiro-cli ACP workers"
 
 Audience: Enterprise executives, platform leadership, AI governance stakeholders. Readable in under 10 seconds. Non-technical-executive friendly.
 
 Style: Premium executive dark-mode infographic, polished enterprise aesthetic, clean and spacious, high contrast, minimal text.
 Palette: background #1E1E2E, text #FAFAFA, secondary gray #A0A0A0, panel gray #3A3A4A.
-Blue #1174E6 = OTTO components (dominant accent).
+Blue #1174E6 = Gateway components (dominant accent).
 Yellow #FAD22D = client applications.
 Orange #FF8C0A = guardrails / policy layer (focal point).
 Green #0FC373 = kiro-cli ACP workers + approved paths.
@@ -13,7 +13,7 @@ Red #FF3232 = rejected requests (blocked at guardrails, never reach kiro-cli).
 
 Main message: "One server. Three API standards. Configurable guardrails. Pooled kiro-cli ACP workers."
 
-LAYOUT: Left-to-right, three zones — CLIENTS → OTTO GATEWAY → KIRO-CLI WORKERS. Thin reverse arrow along the bottom for streamed responses.
+LAYOUT: Left-to-right, three zones — CLIENTS → GATEWAY → KIRO-CLI WORKERS. Thin reverse arrow along the bottom for streamed responses.
 
 LEFT — CLIENT APPLICATIONS (yellow), three stacked panels:
 Top "Anthropic-compatible clients": OTTO CLI (first-party chat client on the GSD Anthropic fork, label "POST /v1/messages") + "Future Anthropic clients" (Claude Code, MCP hosts, anthropic-sdk consumers). Terminal/chat-bubble icons.
@@ -21,7 +21,7 @@ Middle "OpenAI-compatible clients": "Future OpenAI clients" (LangChain, Continue
 Bottom "Ollama-compatible clients": LangFlow server (low-code flows configured for Ollama) + "Other Ollama clients" (Open WebUI, llama-index). Flow-diagram icons.
 Caption beneath: "Existing client code keeps working — no SDK changes required."
 
-CENTER — OTTO GATEWAY (blue dominant), three vertical bands:
+CENTER — GATEWAY (blue dominant), three vertical bands:
 
 Top band "API surfaces" (blue): three side-by-side adapter blocks — "Anthropic adapter" (/v1/messages), "OpenAI adapter" (/v1/chat/completions, /v1/embeddings, /v1/models), and "Ollama adapter" (/api/chat, /api/generate, /api/embed, /api/tags). Inbound arrows from LEFT zone land on the correct adapter. Note: "All three adapters translate to a single canonical request format."
 
@@ -44,7 +44,7 @@ Below grid: "Stateless requests pull from the warm pool. Stateful sessions (X-Se
 BOTTOM STRIP — response path: thin RIGHT-to-LEFT arrow. Label: "Streamed responses — SSE for Anthropic and OpenAI clients, NDJSON for Ollama. Same canonical chunks, surface-specific encoding."
 
 LEGEND (full-width bottom strip):
-Blue = OTTO Gateway (Go server) · Yellow = Client applications (no changes) · Orange = Guardrails (configurable) · Green = kiro-cli ACP workers + approved paths · Red = Rejected requests · Solid arrow = request flow · Thin arrow = response stream.
+Blue = Gateway (Go server) · Yellow = Client applications (no changes) · Orange = Guardrails (configurable) · Green = kiro-cli ACP workers + approved paths · Red = Rejected requests · Solid arrow = request flow · Thin arrow = response stream.
 
 TOP-RIGHT CALLOUTS (muted gray):
 • One binary. Cross-compiled for Linux + Windows.

@@ -11,7 +11,7 @@
 # per docs/operator-quickstart.md.
 #
 # bash 3.2+ compatible (stock macOS). No associative arrays, no mapfile,
-# no ${var,,} lowercasing. [[ ... ]] is fine (matches scripts/otto-gw style).
+# no ${var,,} lowercasing. [[ ... ]] is fine (matches scripts/gw style).
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
