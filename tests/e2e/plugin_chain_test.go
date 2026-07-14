@@ -14,7 +14,7 @@
 //     error refusal naming PII_HASH_KEY.
 //   - OBSV-03: X-Request-Id round-trip echo via /health/hooks.
 //
-// The OTTO_E2E=1 gate + the kiro-cli resolution gate inherit from
+// The GW_E2E=1 gate + the kiro-cli resolution gate inherit from
 // tests/e2e/e2e_test.go.
 
 package e2e_test

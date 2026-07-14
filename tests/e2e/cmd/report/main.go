@@ -137,7 +137,7 @@ func render(results map[string]*result, version string) string {
 	total := len(results)
 
 	var b strings.Builder
-	b.WriteString("# OTTO Gateway E2E Report\n\n")
+	b.WriteString("# Gateway E2E Report\n\n")
 	fmt.Fprintf(&b, "Generated: %s  |  Version: %s\n\n", time.Now().UTC().Format(time.RFC3339), version)
 	fmt.Fprintf(&b, "Summary: %d pass / %d fail / %d skip / %d total\n\n", pass, fail, skip, total)
 

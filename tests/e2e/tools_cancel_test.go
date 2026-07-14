@@ -10,7 +10,7 @@
 //  2. Build notifications with a TRAILING NotifText so the stream has time
 //     to disconnect mid-flight.
 //  3. FakeKiro(t, Script{Notifications: notifs, LogFrames: true}) — the
-//     LogFrames=true sets OTTO_FAKE_KIRO_RECEIVED_FRAMES_FILE so the fake
+//     LogFrames=true sets GW_FAKE_KIRO_RECEIVED_FRAMES_FILE so the fake
 //     logs every received frame for assertion.
 //  4. POST streaming request with context.WithCancel.
 //  5. Read a few response lines, then cancel the context.
@@ -47,7 +47,7 @@ func TestE2E_Tools_Cancel(t *testing.T) {
 	t.Run("Ollama_CancelDuringToolCall", func(t *testing.T) {
 		defer GoleakVerifyAtEnd(t)
 		cmd, env := FakeKiro(t, Script{Notifications: makeNotifs(), LogFrames: true, StopReason: "end_turn"})
-		framesPath := env["OTTO_FAKE_KIRO_RECEIVED_FRAMES_FILE"]
+		framesPath := env["GW_FAKE_KIRO_RECEIVED_FRAMES_FILE"]
 		baseURL, cleanup := bootGateway(t, mergeEnv(env, map[string]string{"KIRO_CMD": cmd}))
 		defer cleanup()
 
@@ -95,7 +95,7 @@ func TestE2E_Tools_Cancel(t *testing.T) {
 	t.Run("OpenAI_CancelDuringToolCall", func(t *testing.T) {
 		defer GoleakVerifyAtEnd(t)
 		cmd, env := FakeKiro(t, Script{Notifications: makeNotifs(), LogFrames: true, StopReason: "end_turn"})
-		framesPath := env["OTTO_FAKE_KIRO_RECEIVED_FRAMES_FILE"]
+		framesPath := env["GW_FAKE_KIRO_RECEIVED_FRAMES_FILE"]
 		baseURL, cleanup := bootGateway(t, mergeEnv(env, map[string]string{"KIRO_CMD": cmd}))
 		defer cleanup()
 
@@ -135,7 +135,7 @@ func TestE2E_Tools_Cancel(t *testing.T) {
 	t.Run("Anthropic_CancelDuringToolCall", func(t *testing.T) {
 		defer GoleakVerifyAtEnd(t)
 		cmd, env := FakeKiro(t, Script{Notifications: makeNotifs(), LogFrames: true, StopReason: "end_turn"})
-		framesPath := env["OTTO_FAKE_KIRO_RECEIVED_FRAMES_FILE"]
+		framesPath := env["GW_FAKE_KIRO_RECEIVED_FRAMES_FILE"]
 		baseURL, cleanup := bootGateway(t, mergeEnv(env, map[string]string{"KIRO_CMD": cmd}))
 		defer cleanup()
 

@@ -8,7 +8,7 @@
 // proving the official SDK accepts the gateway's responses proves the Pi bar.
 //
 // Invoked automatically by the Go TestE2E_OpenAI_SDK_RoundTrip subtest when
-// node + node_modules (or OTTO_E2E_SDK=1) are present; otherwise that subtest
+// node + node_modules (or GW_E2E_SDK=1) are present; otherwise that subtest
 // skips. Exit 0 on success, 1 on any failure (including SDK parse errors).
 
 import OpenAI from "openai";

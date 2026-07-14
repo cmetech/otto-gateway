@@ -302,7 +302,7 @@ func TestE2E_SurfaceGating_OpenAINotMounted(t *testing.T) {
 // TestE2E_OpenAI_SDK_RoundTrip is the opt-in Node `openai` SDK harness — the
 // automated form of the Pi-SDK HUMAN-UAT (Pi drives the official openai npm SDK
 // under the hood). It skips cleanly when node is absent OR the harness is not
-// installed (no tests/e2e/sdk/node_modules and OTTO_E2E_SDK unset). When ready
+// installed (no tests/e2e/sdk/node_modules and GW_E2E_SDK unset). When ready
 // it boots the gateway, points OPENAI_BASE_URL at it, and runs the .mjs
 // round-trip (non-stream + stream), asserting exit code 0.
 func TestE2E_OpenAI_SDK_RoundTrip(t *testing.T) {
@@ -312,8 +312,8 @@ func TestE2E_OpenAI_SDK_RoundTrip(t *testing.T) {
 		t.Skip("node not installed — run: make e2e-sdk-setup")
 	}
 	// CWD is tests/e2e/, so the relative node_modules path is "sdk/node_modules".
-	if _, statErr := os.Stat("sdk/node_modules"); statErr != nil && os.Getenv("OTTO_E2E_SDK") != "1" {
-		t.Skip("SDK harness not installed — run: make e2e-sdk-setup (or set OTTO_E2E_SDK=1)")
+	if _, statErr := os.Stat("sdk/node_modules"); statErr != nil && os.Getenv("GW_E2E_SDK") != "1" {
+		t.Skip("SDK harness not installed — run: make e2e-sdk-setup (or set GW_E2E_SDK=1)")
 	}
 
 	baseURL, cleanup := bootGateway(t, nil)

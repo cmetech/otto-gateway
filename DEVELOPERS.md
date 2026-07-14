@@ -213,16 +213,16 @@ The `tests/e2e/` suite boots the **real `otto-gateway` binary** against
 acceptance checks (health, dual-auth, streaming SSE framing, surface
 gating, and the `@anthropic-ai/sdk` round-trip) so you do not have to
 `curl` by hand. It is **opt-in**: behind a `//go:build e2e` tag + an
-`OTTO_E2E=1` gate, so `make test` / `make ci` never run it and never need
+`GW_E2E=1` gate, so `make test` / `make ci` never run it and never need
 `kiro-cli` or Node.
 
 ```bash
 # Steps 1-3 + 6 (real binary + kiro):
-make build && OTTO_E2E=1 make e2e
+make build && GW_E2E=1 make e2e
 
 # Add steps 4-5 (real @anthropic-ai/sdk parser):
 make e2e-sdk-setup      # one-time: installs the Node harness
-OTTO_E2E=1 make e2e
+GW_E2E=1 make e2e
 
 # Run a subset (scopes the run + report); discover groups with e2e-list:
 make e2e-list

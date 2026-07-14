@@ -71,21 +71,21 @@ func (h testRunHandleAdapter) ShortCircuitResponse() *canonical.ChatResponse {
 	return h.run.ShortCircuitResponse()
 }
 
-// resolveKiroCLI gates integration tests on (1) OTTO_INTEGRATION=1 in
-// the env AND (2) either OTTO_KIRO_BIN pointing at a kiro-cli binary
+// resolveKiroCLI gates integration tests on (1) GW_INTEGRATION=1 in
+// the env AND (2) either GW_KIRO_BIN pointing at a kiro-cli binary
 // or kiro-cli being discoverable on PATH. Mirrors the Phase 1
 // internal/acp/integration_test.go pattern verbatim.
 func resolveKiroCLI(t *testing.T) string {
 	t.Helper()
-	if bin := os.Getenv("OTTO_KIRO_BIN"); bin != "" {
+	if bin := os.Getenv("GW_KIRO_BIN"); bin != "" {
 		return bin
 	}
-	if os.Getenv("OTTO_INTEGRATION") != "1" {
-		t.Skip("set OTTO_INTEGRATION=1 to run integration tests")
+	if os.Getenv("GW_INTEGRATION") != "1" {
+		t.Skip("set GW_INTEGRATION=1 to run integration tests")
 	}
 	p, err := exec.LookPath("kiro-cli")
 	if err != nil {
-		t.Skip("kiro-cli not on PATH (set OTTO_KIRO_BIN to override)")
+		t.Skip("kiro-cli not on PATH (set GW_KIRO_BIN to override)")
 	}
 	return p
 }

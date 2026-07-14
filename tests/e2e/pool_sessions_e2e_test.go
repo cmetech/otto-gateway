@@ -693,7 +693,7 @@ func TestE2E_PoolSessions(t *testing.T) {
 		//
 		// We do NOT defer cleanup here because if bootGateway skips,
 		// cleanup is no-op anyway.
-		t.Setenv("OTTO_KIRO_BIN", stubPath)
+		t.Setenv("GW_KIRO_BIN", stubPath)
 		baseURL, cleanup := bootGateway(t, map[string]string{"POOL_SIZE": "4"})
 		// If we reach here, warmup unexpectedly succeeded — that would
 		// be a bug. Defer cleanup and assert the chat returns 503.

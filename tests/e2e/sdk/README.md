@@ -1,4 +1,4 @@
-# OTTO Gateway E2E — Node SDK harness
+# Gateway E2E — Node SDK harness
 
 This directory holds the opt-in Node `@anthropic-ai/sdk` round-trip harness
 that enables HUMAN-UAT steps 4-5: it proves the gateway's Anthropic surface
@@ -29,11 +29,11 @@ This installs `@anthropic-ai/sdk` into `tests/e2e/sdk/node_modules/`.
 ## How it runs
 
 The Go `TestE2E_SDK_RoundTrip` subtest (in `tests/e2e/e2e_test.go`, behind
-the `e2e` build tag + `OTTO_E2E=1`) invokes `sdk_roundtrip.mjs` automatically
+the `e2e` build tag + `GW_E2E=1`) invokes `sdk_roundtrip.mjs` automatically
 when BOTH of these hold:
 
 - `node` is on `PATH`, and
-- `tests/e2e/sdk/node_modules` exists (or `OTTO_E2E_SDK=1` is set).
+- `tests/e2e/sdk/node_modules` exists (or `GW_E2E_SDK=1` is set).
 
 When either is missing the subtest skips cleanly with a pointer back to
 `make e2e-sdk-setup`. When it runs, the gateway is booted by the Go test and

@@ -1,4 +1,4 @@
-# OTTO Gateway — End-to-End (E2E) tests
+# Gateway — End-to-End (E2E) tests
 
 This suite boots the **real compiled `otto-gateway` binary** as a subprocess
 against **real `kiro-cli`** and exercises it over HTTP — the highest-fidelity
@@ -6,13 +6,13 @@ check we have. It automates the Phase 3.1 HUMAN-UAT acceptance steps so they can
 be run on demand instead of by hand.
 
 It is **opt-in and excluded from the default build/test/CI path** (behind a
-`//go:build e2e` tag + an `OTTO_E2E=1` env gate), so `make test`, `make test-race`,
+`//go:build e2e` tag + an `GW_E2E=1` env gate), so `make test`, `make test-race`,
 `make ci`, and `make build` never run it and never need kiro-cli or Node.
 
 ## TL;DR
 
 ```bash
-make build && OTTO_E2E=1 make e2e
+make build && GW_E2E=1 make e2e
 # → writes tests/e2e/reports/REPORT-<timestamp>.md and tests/e2e/reports/LATEST.md
 ```
 
@@ -20,7 +20,7 @@ To also run the SDK round-trip steps (the real `@anthropic-ai/sdk` parser):
 
 ```bash
 make e2e-sdk-setup     # one-time: installs the Node harness (pnpm)
-OTTO_E2E=1 make e2e    # now runs all 6 UAT steps
+GW_E2E=1 make e2e    # now runs all 6 UAT steps
 ```
 
 ## Selecting which tests run
@@ -45,7 +45,7 @@ Groups available today: `TestE2E_SharedGateway` (Anthropic core),
 
 | What | Needed for | Notes |
 |------|------------|-------|
-| `kiro-cli` on `PATH`, authenticated | everything | Run `kiro-cli acp` once interactively if auth is stale. Override the binary with `OTTO_KIRO_BIN=/path/to/kiro-cli`. If warmup fails (stale auth), the affected tests **skip** with the reason rather than fail. |
+| `kiro-cli` on `PATH`, authenticated | everything | Run `kiro-cli acp` once interactively if auth is stale. Override the binary with `GW_KIRO_BIN=/path/to/kiro-cli`. If warmup fails (stale auth), the affected tests **skip** with the reason rather than fail. |
 | Go toolchain | everything | The suite builds a throwaway binary from `./cmd/otto-gateway` (it does not depend on `bin/otto-gateway` existing). |
 | Node ≥ 18 + the SDK harness | SDK round-trip (UAT steps 4-5) | Install via `make e2e-sdk-setup`. If absent, `TestE2E_SDK_RoundTrip` **skips**. |
 
@@ -80,9 +80,9 @@ share one boot for speed, surface-gating cases boot their own.
 
 | Var | Default | Purpose |
 |-----|---------|---------|
-| `OTTO_E2E` | unset | Must be `1` to run the suite at all (otherwise every test skips). |
-| `OTTO_KIRO_BIN` | — | Absolute path to `kiro-cli` if not on `PATH`. |
-| `OTTO_E2E_SDK` | unset | Force-enable the SDK round-trip even without `node_modules` present (it still needs `node` + the SDK installed). |
+| `GW_E2E` | unset | Must be `1` to run the suite at all (otherwise every test skips). |
+| `GW_KIRO_BIN` | — | Absolute path to `kiro-cli` if not on `PATH`. |
+| `GW_E2E_SDK` | unset | Force-enable the SDK round-trip even without `node_modules` present (it still needs `node` + the SDK installed). |
 
 The gateway under test is launched with `AUTH_TOKEN=e2e-token`,
 `KIRO_CMD=<resolved kiro>`, and `HTTP_ADDR=127.0.0.1:<free-port>`.
@@ -98,9 +98,9 @@ even on failure — and exits with the test's exit code.
 ## Running without `make`
 
 ```bash
-OTTO_E2E=1 go test -tags e2e -v ./tests/e2e/
+GW_E2E=1 go test -tags e2e -v ./tests/e2e/
 # render a report from the JSON event stream:
-OTTO_E2E=1 go test -tags e2e -json ./tests/e2e/ | go run ./tests/e2e/cmd/report
+GW_E2E=1 go test -tags e2e -json ./tests/e2e/ | go run ./tests/e2e/cmd/report
 ```
 
 ## Layout

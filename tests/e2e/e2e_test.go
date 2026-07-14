@@ -1,6 +1,6 @@
 //go:build e2e
 
-// Package e2e_test is the black-box end-to-end suite for OTTO Gateway.
+// Package e2e_test is the black-box end-to-end suite for the Gateway.
 //
 // It boots the REAL otto-gateway binary against REAL kiro-cli, drives it
 // over HTTP, and asserts on JSON / SSE shapes only — it never imports
@@ -13,11 +13,11 @@
 //
 //  1. The `e2e` build tag: this file only compiles under `-tags e2e`, so the
 //     default test run never sees it.
-//  2. The OTTO_E2E env gate: even compiled, every test skips unless
-//     OTTO_E2E=1, and TestMain skips the (expensive) temp-binary build.
+//  2. The GW_E2E env gate: even compiled, every test skips unless
+//     GW_E2E=1, and TestMain skips the (expensive) temp-binary build.
 //
 // kiro resolution mirrors internal/adapter/anthropic/integration_test.go:
-// OTTO_KIRO_BIN env wins, else kiro-cli on PATH, else skip. Warmup failure
+// GW_KIRO_BIN env wins, else kiro-cli on PATH, else skip. Warmup failure
 // (typically kiro-cli auth-not-refreshed in dev) is a skip, not a failure.
 //
 // All HTTP / subprocess calls thread a context.Context so the suite passes
@@ -42,7 +42,7 @@ import (
 )
 
 // builtBinary holds the absolute path to the otto-gateway binary TestMain
-// compiles once (only when OTTO_E2E=1). Empty when the gate is off.
+// compiles once (only when GW_E2E=1). Empty when the gate is off.
 var builtBinary string
 
 // moduleRoot is the path from the test process CWD (tests/e2e/) up to the
@@ -51,7 +51,7 @@ var builtBinary string
 const moduleRoot = "../.."
 
 // TestMain builds the real binary exactly once before running the suite,
-// but ONLY when OTTO_E2E=1. With the gate off it runs m.Run() immediately
+// but ONLY when GW_E2E=1. With the gate off it runs m.Run() immediately
 // (every test self-skips via gateOrSkip) so the gate-skip path is cheap and
 // never invokes the Go build toolchain.
 //
@@ -63,7 +63,7 @@ const moduleRoot = "../.."
 // bug where sync.Once + t.TempDir() left a cached path to a deleted binary
 // after the first subtest cleaned up its temp dir.
 func TestMain(m *testing.M) {
-	if os.Getenv("OTTO_E2E") != "1" {
+	if os.Getenv("GW_E2E") != "1" {
 		os.Exit(m.Run())
 	}
 	// CR-02 (Phase 6 review): delegate to runE2E so every cleanup path
@@ -138,27 +138,27 @@ func runE2E(m *testing.M) int {
 	return m.Run()
 }
 
-// gateOrSkip is the top gate every test func calls first. With OTTO_E2E
+// gateOrSkip is the top gate every test func calls first. With GW_E2E
 // unset all subtests skip uniformly (and cheaply — TestMain built nothing).
 func gateOrSkip(t *testing.T) {
 	t.Helper()
-	if os.Getenv("OTTO_E2E") != "1" {
-		t.Skip("set OTTO_E2E=1 to run the E2E suite")
+	if os.Getenv("GW_E2E") != "1" {
+		t.Skip("set GW_E2E=1 to run the E2E suite")
 	}
 }
 
 // resolveKiro mirrors resolveKiroCLI from the Anthropic integration test:
-// OTTO_KIRO_BIN env wins; else kiro-cli on PATH; else skip. The OTTO_E2E
+// GW_KIRO_BIN env wins; else kiro-cli on PATH; else skip. The GW_E2E
 // top gate is handled separately by gateOrSkip so the skip reasons stay
 // distinct (gate-off vs kiro-missing).
 func resolveKiro(t *testing.T) string {
 	t.Helper()
-	if bin := os.Getenv("OTTO_KIRO_BIN"); bin != "" {
+	if bin := os.Getenv("GW_KIRO_BIN"); bin != "" {
 		return bin
 	}
 	p, err := exec.LookPath("kiro-cli")
 	if err != nil {
-		t.Skip("kiro-cli not on PATH (set OTTO_KIRO_BIN to override)")
+		t.Skip("kiro-cli not on PATH (set GW_KIRO_BIN to override)")
 	}
 	return p
 }
@@ -634,7 +634,7 @@ func TestE2E_SurfaceGating_TypoFailFast(t *testing.T) {
 
 // TestE2E_SDK_RoundTrip is the opt-in Node @anthropic-ai/sdk harness for
 // HUMAN-UAT steps 4-5. It skips cleanly when node is absent OR the harness
-// is not installed (no tests/e2e/sdk/node_modules and OTTO_E2E_SDK unset).
+// is not installed (no tests/e2e/sdk/node_modules and GW_E2E_SDK unset).
 // When ready it boots the gateway, points ANTHROPIC_BASE_URL at it, and runs
 // the .mjs round-trip (non-stream + stream), asserting exit code 0.
 func TestE2E_SDK_RoundTrip(t *testing.T) {
@@ -645,8 +645,8 @@ func TestE2E_SDK_RoundTrip(t *testing.T) {
 	}
 	// CWD is tests/e2e/, so the relative node_modules path is "sdk/node_modules".
 	_, statErr := os.Stat("sdk/node_modules")
-	if statErr != nil && os.Getenv("OTTO_E2E_SDK") != "1" {
-		t.Skip("SDK harness not installed — run: make e2e-sdk-setup (or set OTTO_E2E_SDK=1)")
+	if statErr != nil && os.Getenv("GW_E2E_SDK") != "1" {
+		t.Skip("SDK harness not installed — run: make e2e-sdk-setup (or set GW_E2E_SDK=1)")
 	}
 
 	baseURL, cleanup := bootGateway(t, nil)

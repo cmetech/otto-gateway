@@ -27,15 +27,15 @@ import (
 )
 
 // resolveKiroCLI checks for a kiro-cli binary and skips the test if not found.
-// D-17: OTTO_KIRO_BIN env var overrides PATH detection.
+// D-17: GW_KIRO_BIN env var overrides PATH detection.
 func resolveKiroCLI(t *testing.T) string {
 	t.Helper()
-	if bin := os.Getenv("OTTO_KIRO_BIN"); bin != "" {
+	if bin := os.Getenv("GW_KIRO_BIN"); bin != "" {
 		return bin
 	}
 	path, err := exec.LookPath("kiro-cli")
 	if err != nil {
-		t.Skip("kiro-cli not found on PATH; set OTTO_KIRO_BIN to override (D-17)")
+		t.Skip("kiro-cli not found on PATH; set GW_KIRO_BIN to override (D-17)")
 	}
 	return path
 }
@@ -274,7 +274,7 @@ func TestIntegration_FakeACP_E2E_MixedVariants(t *testing.T) {
 // session/update notifications -> stream.Result() — against the real
 // kiro-cli 2.4.1 binary that the Phase 1.1 fake server was built to mimic.
 //
-// Skips cleanly when kiro-cli is not on PATH and OTTO_KIRO_BIN is unset
+// Skips cleanly when kiro-cli is not on PATH and GW_KIRO_BIN is unset
 // (D-17 pattern). When kiro-cli is present but exits before responding to
 // initialize (typically because auth has expired), the test soft-skips per
 // the SmokeTest convention.
@@ -455,7 +455,7 @@ func TestIntegration_RealKiroCLI_PromptRoundTrip(t *testing.T) {
 
 // TestIntegration_RealKiroCLI_SmokeTest skips cleanly when kiro-cli is not found.
 // When present, it exercises Initialize → NewSession → Ping → Close without goroutine leaks.
-// D-17: OTTO_KIRO_BIN env var override.
+// D-17: GW_KIRO_BIN env var override.
 //
 // Unchanged by Plan 04 — Plan 05 adds TestIntegration_RealKiroCLI_PromptRoundTrip
 // above this.

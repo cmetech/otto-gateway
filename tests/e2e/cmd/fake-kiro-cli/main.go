@@ -2,8 +2,8 @@
 // It speaks the same JSON-RPC dialect (initialize, session/new, session/set_model,
 // session/prompt, session/cancel, ping) but emits pre-scripted notifications during
 // session/prompt instead of actually invoking an LLM. The notification script is
-// supplied via env var OTTO_FAKE_KIRO_NOTIFICATIONS_FILE. Received frames are
-// optionally logged to OTTO_FAKE_KIRO_RECEIVED_FRAMES_FILE for cancel-path tests.
+// supplied via env var GW_FAKE_KIRO_NOTIFICATIONS_FILE. Received frames are
+// optionally logged to GW_FAKE_KIRO_RECEIVED_FRAMES_FILE for cancel-path tests.
 // Per CLAUDE.md: pure-Go, no cgo, cross-compile clean.
 //
 // The binary is compiled by tests/e2e/tools_testmain_test.go's TestMain at package
@@ -32,9 +32,9 @@ import (
 )
 
 const (
-	envNotificationsFile  = "OTTO_FAKE_KIRO_NOTIFICATIONS_FILE"
-	envReceivedFramesFile = "OTTO_FAKE_KIRO_RECEIVED_FRAMES_FILE"
-	envStopReason         = "OTTO_FAKE_KIRO_STOP_REASON"
+	envNotificationsFile  = "GW_FAKE_KIRO_NOTIFICATIONS_FILE"
+	envReceivedFramesFile = "GW_FAKE_KIRO_RECEIVED_FRAMES_FILE"
+	envStopReason         = "GW_FAKE_KIRO_STOP_REASON"
 )
 
 // stdoutMu guards stdout writes — notifications + responses can race when the
@@ -174,7 +174,7 @@ func respond(idRaw json.RawMessage, result map[string]any) {
 	writeFrame(resp)
 }
 
-// emitNotifications reads OTTO_FAKE_KIRO_NOTIFICATIONS_FILE (if set) and emits
+// emitNotifications reads GW_FAKE_KIRO_NOTIFICATIONS_FILE (if set) and emits
 // each line verbatim to stdout. The file is expected to contain pre-built
 // JSON-RPC notification frames separated by newlines.
 func emitNotifications() {

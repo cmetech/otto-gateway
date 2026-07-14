@@ -304,7 +304,7 @@ RUN ?=
 e2e: build ## Run E2E suite (real binary + kiro); RUN=<regex> selects a subset
 	@mkdir -p tests/e2e/reports
 	@TS=$$(date +%Y%m%d-%H%M%S); \
-		( OTTO_E2E=1 go test -tags e2e -json -v -run "$(RUN)" ./tests/e2e/ > tests/e2e/reports/raw.jsonl; echo $$? > tests/e2e/reports/rc ); \
+		( GW_E2E=1 go test -tags e2e -json -v -run "$(RUN)" ./tests/e2e/ > tests/e2e/reports/raw.jsonl; echo $$? > tests/e2e/reports/rc ); \
 		go run ./tests/e2e/cmd/report < tests/e2e/reports/raw.jsonl > tests/e2e/reports/REPORT-$$TS.md; \
 		cp tests/e2e/reports/REPORT-$$TS.md tests/e2e/reports/LATEST.md; \
 		echo "E2E report: tests/e2e/reports/REPORT-$$TS.md"; \

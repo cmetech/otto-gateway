@@ -25,20 +25,20 @@ import (
 	"otto-gateway/internal/testutil"
 )
 
-// resolveKiroCLI gates integration tests on OTTO_INTEGRATION=1 in the env
-// AND either OTTO_KIRO_BIN pointing at a kiro-cli binary or kiro-cli on PATH.
+// resolveKiroCLI gates integration tests on GW_INTEGRATION=1 in the env
+// AND either GW_KIRO_BIN pointing at a kiro-cli binary or kiro-cli on PATH.
 // CI default: skip with a clear reason. Mirrors anthropic/integration_test.go.
 func resolveKiroCLI(t *testing.T) string {
 	t.Helper()
-	if bin := os.Getenv("OTTO_KIRO_BIN"); bin != "" {
+	if bin := os.Getenv("GW_KIRO_BIN"); bin != "" {
 		return bin
 	}
-	if os.Getenv("OTTO_INTEGRATION") != "1" {
-		t.Skip("set OTTO_INTEGRATION=1 to run integration tests")
+	if os.Getenv("GW_INTEGRATION") != "1" {
+		t.Skip("set GW_INTEGRATION=1 to run integration tests")
 	}
 	p, err := exec.LookPath("kiro-cli")
 	if err != nil {
-		t.Skip("kiro-cli not on PATH (set OTTO_KIRO_BIN to override)")
+		t.Skip("kiro-cli not on PATH (set GW_KIRO_BIN to override)")
 	}
 	return p
 }
@@ -501,7 +501,7 @@ func TestIntegration_OversizeBody_413(t *testing.T) {
 }
 
 // ----------------------------------------------------------------------------
-// Real kiro-cli integration tests (optional, gated on OTTO_INTEGRATION=1)
+// Real kiro-cli integration tests (optional, gated on GW_INTEGRATION=1)
 // ----------------------------------------------------------------------------
 
 // TestIntegration_RealKiroCLI_NonStreaming exercises the full stream:false

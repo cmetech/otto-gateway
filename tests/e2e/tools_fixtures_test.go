@@ -29,8 +29,8 @@
 //	scripts. That was insufficient for the gateway's full ACP method set and
 //	leaked shell quoting concerns into tests. The new (cmd, env) shape moves
 //	all wiring into env vars the fake-kiro binary reads at startup —
-//	OTTO_FAKE_KIRO_NOTIFICATIONS_FILE / OTTO_FAKE_KIRO_RECEIVED_FRAMES_FILE /
-//	OTTO_FAKE_KIRO_STOP_REASON.
+//	GW_FAKE_KIRO_NOTIFICATIONS_FILE / GW_FAKE_KIRO_RECEIVED_FRAMES_FILE /
+//	GW_FAKE_KIRO_STOP_REASON.
 //
 // Iteration-3 fix to MEDIUM #6 — binary lifetime contract:
 //
@@ -126,7 +126,7 @@ type Script struct {
 	// to simulate Anthropic-shape kiro-cli replies that carry a tool_use
 	// terminal stop_reason.
 	StopReason string
-	// LogFrames, when true, sets OTTO_FAKE_KIRO_RECEIVED_FRAMES_FILE to a
+	// LogFrames, when true, sets GW_FAKE_KIRO_RECEIVED_FRAMES_FILE to a
 	// temp file under t.TempDir(). The path is returned in the env overlay
 	// (so callers can extract it and pass to ReadFakeKiroFrames after the
 	// stream completes).
@@ -146,20 +146,20 @@ type Script struct {
 // using mergeEnv before passing to bootGateway:
 //
 //	cmd, env := FakeKiro(t, Script{Notifications: notifs})
-//	bootGateway(t, mergeEnv(env, map[string]string{"KIRO_CMD": cmd, "OTTO_KIRO_BIN": cmd}))
+//	bootGateway(t, mergeEnv(env, map[string]string{"KIRO_CMD": cmd, "GW_KIRO_BIN": cmd}))
 //
-// The OTTO_KIRO_BIN entry is necessary because bootGateway's resolveKiro
-// helper looks up OTTO_KIRO_BIN FIRST (before consulting KIRO_CMD).
+// The GW_KIRO_BIN entry is necessary because bootGateway's resolveKiro
+// helper looks up GW_KIRO_BIN FIRST (before consulting KIRO_CMD).
 func FakeKiro(t *testing.T, script Script) (cmd string, env map[string]string) {
 	t.Helper()
 	if fakeKiroBinaryPath == "" {
-		t.Fatal("fakeKiroBinaryPath not initialized — TestMain (e2e_test.go) must run first; check OTTO_E2E=1 gate")
+		t.Fatal("fakeKiroBinaryPath not initialized — TestMain (e2e_test.go) must run first; check GW_E2E=1 gate")
 	}
 
-	// Set OTTO_KIRO_BIN so bootGateway's resolveKiro picks up the fake-kiro
+	// Set GW_KIRO_BIN so bootGateway's resolveKiro picks up the fake-kiro
 	// path even when the real kiro-cli is not on PATH (CI / dev box without
 	// kiro installed). t.Setenv restores the original value on test cleanup.
-	t.Setenv("OTTO_KIRO_BIN", fakeKiroBinaryPath)
+	t.Setenv("GW_KIRO_BIN", fakeKiroBinaryPath)
 
 	dir := t.TempDir()
 	env = map[string]string{}
@@ -169,11 +169,11 @@ func FakeKiro(t *testing.T, script Script) (cmd string, env map[string]string) {
 		if err := os.WriteFile(notifPath, script.Notifications, 0o644); err != nil { //nolint:gosec
 			t.Fatalf("FakeKiro: write notifications: %v", err)
 		}
-		env["OTTO_FAKE_KIRO_NOTIFICATIONS_FILE"] = notifPath
+		env["GW_FAKE_KIRO_NOTIFICATIONS_FILE"] = notifPath
 	}
 
 	if script.StopReason != "" {
-		env["OTTO_FAKE_KIRO_STOP_REASON"] = script.StopReason
+		env["GW_FAKE_KIRO_STOP_REASON"] = script.StopReason
 	}
 
 	if script.LogFrames {
@@ -182,7 +182,7 @@ func FakeKiro(t *testing.T, script Script) (cmd string, env map[string]string) {
 		if err := os.WriteFile(framesPath, nil, 0o644); err != nil { //nolint:gosec
 			t.Fatalf("FakeKiro: create frames-log file: %v", err)
 		}
-		env["OTTO_FAKE_KIRO_RECEIVED_FRAMES_FILE"] = framesPath
+		env["GW_FAKE_KIRO_RECEIVED_FRAMES_FILE"] = framesPath
 	}
 
 	return fakeKiroBinaryPath, env

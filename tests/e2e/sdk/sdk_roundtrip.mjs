@@ -7,7 +7,7 @@
 // the real SDK (Zod-validated response parsing) accepts the responses.
 //
 // Invoked automatically by the Go TestE2E_SDK_RoundTrip subtest when node +
-// node_modules (or OTTO_E2E_SDK=1) are present; otherwise that subtest skips.
+// node_modules (or GW_E2E_SDK=1) are present; otherwise that subtest skips.
 // Exit 0 on success, 1 on any failure (including SDK Zod parse errors).
 
 import Anthropic from "@anthropic-ai/sdk";
