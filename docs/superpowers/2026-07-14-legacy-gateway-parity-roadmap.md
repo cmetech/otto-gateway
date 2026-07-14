@@ -52,7 +52,13 @@ that snapshot. A cold/slow kiro that returns an empty `availableModels` leaves
   degraded + self-heal (Node chose degraded).
 - **Spec:** `docs/superpowers/specs/2026-07-14-model-discovery-resilience-design.md`
 
-### Track 2 — Context-utilization capture + proactive recycle — 📝 **SPEC'D** (blocked on Track 0) — mirrors JS `b72d6db`
+### Track 2 — Context-utilization capture + proactive recycle — 📝 **SPEC'D, UNBLOCKED** — folded into kiro-usage-parity — mirrors JS `b72d6db`
+Wire confirmed (2026-07-14 live capture): kiro emits `contextUsagePercentage`
+(0–100 percent), `meteringUsage[]` credits, and `turnDurationMs` on the
+`_kiro.dev/metadata` notification (Go drops it today). Now part of the
+**kiro usage metrics parity** build — see
+`docs/superpowers/specs/2026-07-14-kiro-usage-metrics-parity-design.md`.
+
 **Spec:** `docs/superpowers/specs/2026-07-14-context-recycle-design.md`.
 Decision: `CTX_RECYCLE_PCT` env (default 0.8); wire-field for `contextUsagePercentage`
 confirmed by Track 0 before the parse is implemented. Stateful sessions reuse a

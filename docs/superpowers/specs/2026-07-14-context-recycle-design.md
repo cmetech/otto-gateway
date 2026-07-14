@@ -1,9 +1,13 @@
 # Context-utilization capture + proactive session recycle — design
 
 **Date:** 2026-07-14
-**Status:** Proposed (design) — awaiting review. **Implementation BLOCKED on
-Track 0** (Co-Worker validation skill must confirm the ACP wire field for
-context %). Everything except the wire-parse seam is designable/testable now.
+**Status:** Approved — **UNBLOCKED** (2026-07-14 live capture confirmed the wire
+field). Now folded into the
+[kiro usage metrics parity](2026-07-14-kiro-usage-metrics-parity-design.md)
+build. Wire fact: kiro emits `contextUsagePercentage` on the `_kiro.dev/metadata`
+notification as a **0–100 percent** (NOT 0..1) — so `CTX_RECYCLE_PCT` uses
+percent semantics with default **80** (the Node `0.8` default is mis-scaled
+against current kiro). See the parity spec for the full metadata shape.
 **Scope:** One implementation plan. Track 2 of the
 [legacy-gateway parity roadmap](../2026-07-14-legacy-gateway-parity-roadmap.md).
 **Mirrors:** Node `b72d6db` — ctx-based session recycling.
