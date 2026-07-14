@@ -67,14 +67,20 @@ type Config struct {
 	// registry additionally uses OnContextPct to drive proactive context
 	// recycle). Same optional-hook pattern as OnPing* above; nil = no-op.
 	//
-	//   - OnTurnMeter(credits, turnMs) fires once per completed turn — a
-	//     metadata frame carrying `meteringUsage`. credits is the sum of the
-	//     credit-unit metering entries; turnMs is `turnDurationMs` (0 if absent).
-	//   - OnContextPct(pct) fires on any `contextUsagePercentage` frame. pct is
-	//     on a 0–100 PERCENT scale (kiro's native scale — NOT 0..1).
+	//   - OnTurnMeter(credits, turnMs, ctxPct, hasCtxPct) fires once per completed
+	//     turn — a metadata frame carrying `meteringUsage` (present, even if
+	//     empty). credits is the sum of the credit-unit metering entries; turnMs
+	//     is `turnDurationMs` (0 if absent); ctxPct/hasCtxPct carry the same
+	//     frame's `contextUsagePercentage` when present, so the consumer can
+	//     record the end-of-turn context utilization exactly once per turn.
+	//   - OnContextPct(pct) fires on any `contextUsagePercentage` frame
+	//     (including mid-turn). pct is on a 0–100 PERCENT scale (kiro's native
+	//     scale — NOT 0..1). Used to track the latest per-session context for
+	//     proactive recycle; it does NOT drive the metrics histogram (that is
+	//     observed once per turn via OnTurnMeter).
 	//   - OnMCPInit(server, ok) fires on the two MCP init methods; ok=false for
 	//     server_init_failure.
-	OnTurnMeter  func(credits float64, turnMs int64)
+	OnTurnMeter  func(credits float64, turnMs int64, ctxPct float64, hasCtxPct bool)
 	OnContextPct func(pct float64)
 	OnMCPInit    func(server string, ok bool)
 }
@@ -1305,13 +1311,20 @@ func (c *Client) handleNotification(frame rpcFrame) {
 		}
 		// Presence of meteringUsage (even an empty array) signals turn
 		// completion; nil means a mid-turn frame. Do NOT gate on len > 0 — a
-		// completed zero-cost turn still reports its turn + duration.
+		// completed zero-cost turn still reports its turn + duration. The same
+		// frame's contextUsagePercentage (if present) is the end-of-turn context,
+		// threaded through so the consumer observes the ctx histogram once per turn.
 		if meta.MeteringUsage != nil && c.cfg.OnTurnMeter != nil {
 			var turnMs int64
 			if meta.TurnDurationMs != nil {
 				turnMs = *meta.TurnDurationMs
 			}
-			c.cfg.OnTurnMeter(sumCredits(*meta.MeteringUsage), turnMs)
+			var ctxPct float64
+			hasCtxPct := meta.ContextUsagePercentage != nil
+			if hasCtxPct {
+				ctxPct = *meta.ContextUsagePercentage
+			}
+			c.cfg.OnTurnMeter(sumCredits(*meta.MeteringUsage), turnMs, ctxPct, hasCtxPct)
 		}
 
 	case "_kiro.dev/mcp/server_initialized":

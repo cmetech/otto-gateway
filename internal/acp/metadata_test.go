@@ -33,7 +33,7 @@ func TestHandleNotification_MetadataContextPctOnly(t *testing.T) {
 	var turnFired bool
 	c := newMetadataTestClient(t, Config{
 		OnContextPct: func(pct float64) { gotPct = pct; pctFired = true },
-		OnTurnMeter:  func(_ float64, _ int64) { turnFired = true },
+		OnTurnMeter:  func(_ float64, _ int64, _ float64, _ bool) { turnFired = true },
 	})
 
 	c.handleNotification(rpcFrame{
@@ -60,9 +60,17 @@ func TestHandleNotification_MetadataTurnComplete(t *testing.T) {
 	var gotTurnMs int64
 	var turnFired bool
 	var gotPct float64
+	var gotTurnCtx float64
+	var gotHasCtx bool
 	c := newMetadataTestClient(t, Config{
 		OnContextPct: func(pct float64) { gotPct = pct },
-		OnTurnMeter:  func(credits float64, turnMs int64) { gotCredits = credits; gotTurnMs = turnMs; turnFired = true },
+		OnTurnMeter: func(credits float64, turnMs int64, ctxPct float64, hasCtxPct bool) {
+			gotCredits = credits
+			gotTurnMs = turnMs
+			gotTurnCtx = ctxPct
+			gotHasCtx = hasCtxPct
+			turnFired = true
+		},
 	})
 
 	c.handleNotification(rpcFrame{
@@ -85,6 +93,11 @@ func TestHandleNotification_MetadataTurnComplete(t *testing.T) {
 	if gotPct != 1.567 {
 		t.Errorf("OnContextPct pct = %v, want 1.567 on the turn-completion frame", gotPct)
 	}
+	// The end-of-turn ctx is threaded through OnTurnMeter so the consumer can
+	// observe the ctx histogram once per turn.
+	if !gotHasCtx || gotTurnCtx != 1.567 {
+		t.Errorf("OnTurnMeter end-of-turn ctx = %v (has=%v), want 1.567/true", gotTurnCtx, gotHasCtx)
+	}
 }
 
 // TestHandleNotification_MetadataEmptyMeteringStillCompletesTurn: a completed
@@ -94,9 +107,15 @@ func TestHandleNotification_MetadataTurnComplete(t *testing.T) {
 func TestHandleNotification_MetadataEmptyMeteringStillCompletesTurn(t *testing.T) {
 	var gotCredits float64
 	var gotTurnMs int64
+	var gotHasCtx bool
 	var turnFired bool
 	c := newMetadataTestClient(t, Config{
-		OnTurnMeter: func(credits float64, turnMs int64) { gotCredits = credits; gotTurnMs = turnMs; turnFired = true },
+		OnTurnMeter: func(credits float64, turnMs int64, _ float64, hasCtxPct bool) {
+			gotCredits = credits
+			gotTurnMs = turnMs
+			gotHasCtx = hasCtxPct
+			turnFired = true
+		},
 	})
 
 	c.handleNotification(rpcFrame{
@@ -113,6 +132,10 @@ func TestHandleNotification_MetadataEmptyMeteringStillCompletesTurn(t *testing.T
 	if gotTurnMs != 1200 {
 		t.Errorf("turnMs = %d, want 1200", gotTurnMs)
 	}
+	// No contextUsagePercentage on this frame → hasCtxPct false (no ctx observed).
+	if gotHasCtx {
+		t.Error("hasCtxPct must be false when the frame has no contextUsagePercentage")
+	}
 }
 
 // TestHandleNotification_MetadataNoMeteringDoesNotCompleteTurn: a mid-turn frame
@@ -121,7 +144,7 @@ func TestHandleNotification_MetadataEmptyMeteringStillCompletesTurn(t *testing.T
 func TestHandleNotification_MetadataNoMeteringDoesNotCompleteTurn(t *testing.T) {
 	turnFired := false
 	c := newMetadataTestClient(t, Config{
-		OnTurnMeter: func(_ float64, _ int64) { turnFired = true },
+		OnTurnMeter: func(_ float64, _ int64, _ float64, _ bool) { turnFired = true },
 	})
 	c.handleNotification(rpcFrame{
 		Method: "_kiro.dev/metadata",
@@ -170,7 +193,7 @@ func TestHandleNotification_MetadataMalformedDropped(t *testing.T) {
 	fired := false
 	c := newMetadataTestClient(t, Config{
 		OnContextPct: func(_ float64) { fired = true },
-		OnTurnMeter:  func(_ float64, _ int64) { fired = true },
+		OnTurnMeter:  func(_ float64, _ int64, _ float64, _ bool) { fired = true },
 	})
 
 	c.handleNotification(rpcFrame{

@@ -309,7 +309,7 @@ func (r *Registry) Get(ctx context.Context, sid, cwd string) (*Entry, error) {
 // shared metrics recorder, or nil when no recorder is wired (so
 // handleNotification no-ops). OnContextPct is handled inline in createEntry
 // because it also drives per-session recycle (independent of the recorder).
-func (r *Registry) recorderTurnMeter() func(float64, int64) {
+func (r *Registry) recorderTurnMeter() func(float64, int64, float64, bool) {
 	rec := r.cfg.Metrics
 	if rec == nil {
 		return nil
@@ -387,18 +387,15 @@ func (r *Registry) createEntry(ctx context.Context, sid, cwd string, e *Entry) (
 		Args:         r.cfg.KiroArgs,
 		Cwd:          cwd,
 		PingInterval: r.cfg.PingInterval,
-		// Kiro usage-metrics parity: OnContextPct drives BOTH the per-session
-		// recycle signal (e.lastCtxPct) and the metrics histogram; OnTurnMeter
-		// / OnMCPInit forward straight to the shared recorder. Wired per-entry
-		// because OnContextPct closes over this specific *Entry.
-		OnContextPct: func(pct float64) {
-			e.setCtxPct(pct)
-			if rec := r.cfg.Metrics; rec != nil {
-				rec.RecordContextPct(pct)
-			}
-		},
-		OnTurnMeter: r.recorderTurnMeter(),
-		OnMCPInit:   r.recorderMCPInit(),
+		// Kiro usage-metrics parity: OnContextPct drives ONLY the per-session
+		// recycle signal (e.lastCtxPct) — it fires on every mid-turn frame, so
+		// it does no Prometheus work. The ctx histogram is observed once per turn
+		// from OnTurnMeter's end-of-turn ctx. OnTurnMeter / OnMCPInit forward to
+		// the shared recorder. Wired per-entry because OnContextPct closes over
+		// this specific *Entry.
+		OnContextPct: func(pct float64) { e.setCtxPct(pct) },
+		OnTurnMeter:  r.recorderTurnMeter(),
+		OnMCPInit:    r.recorderMCPInit(),
 	})
 	if err != nil {
 		return publishError(nil, fmt.Errorf("session: spawn %q: %w", sid, err))

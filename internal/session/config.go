@@ -61,8 +61,7 @@ func (acpClientFactory) Spawn(_ context.Context, cfg acp.Config) (PoolClient, er
 // same rationale as the duplicated PoolClient interface. *metrics.Metrics
 // satisfies it structurally; a nil recorder leaves the turn/mcp hooks unset.
 type MetricsRecorder interface {
-	RecordTurnMeter(credits float64, turnMs int64)
-	RecordContextPct(pct float64)
+	RecordTurnMeter(credits float64, turnMs int64, ctxPct float64, hasCtxPct bool)
 	RecordMCPInit(server string, ok bool)
 }
 

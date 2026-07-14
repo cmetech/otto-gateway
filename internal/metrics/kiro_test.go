@@ -14,13 +14,15 @@ import (
 
 // TestMetrics_KiroUsageSeries: the per-turn kiro recorder methods surface
 // gw_kiro_credits_total / turns_total / turn_duration_seconds /
-// context_usage_percent / mcp_server_init_total, all carrying gateway_id.
+// context_usage_percent / mcp_server_init_total, all carrying gateway_id. The
+// context histogram is observed ONCE PER COMPLETED TURN (via RecordTurnMeter's
+// end-of-turn ctx), not per streaming frame — so a turn with no ctx does not
+// observe it.
 func TestMetrics_KiroUsageSeries(t *testing.T) {
 	m := testMetrics(metrics.PoolStats{}, metrics.SessionStats{})
 
-	m.RecordTurnMeter(1.5, 2000)
-	m.RecordTurnMeter(0.5, 1000)
-	m.RecordContextPct(45.5)
+	m.RecordTurnMeter(1.5, 2000, 45.5, true) // turn WITH end-of-turn ctx
+	m.RecordTurnMeter(0.5, 1000, 0, false)   // turn with no ctx reported
 	m.RecordMCPInit("filesystem", true)
 	m.RecordMCPInit("broken", false)
 
@@ -30,7 +32,9 @@ func TestMetrics_KiroUsageSeries(t *testing.T) {
 		`gw_kiro_turns_total{gateway_id="gw-test-123"} 2`,
 		`gw_kiro_turn_duration_seconds_count{gateway_id="gw-test-123"} 2`,
 		`gw_kiro_turn_duration_seconds_sum{gateway_id="gw-test-123"} 3`,
+		// Only the first turn carried ctx → count 1, sum 45.5.
 		`gw_kiro_context_usage_percent_count{gateway_id="gw-test-123"} 1`,
+		`gw_kiro_context_usage_percent_sum{gateway_id="gw-test-123"} 45.5`,
 		`gw_kiro_mcp_server_init_total{gateway_id="gw-test-123",result="ok",server="filesystem"} 1`,
 		`gw_kiro_mcp_server_init_total{gateway_id="gw-test-123",result="fail",server="broken"} 1`,
 	} {

@@ -186,22 +186,26 @@ func TestRegistry_ContextHook_UpdatesEntryAndRecorder(t *testing.T) {
 		t.Fatal("createEntry did not wire OnContextPct on the acp.Config")
 	}
 
+	// OnContextPct updates the entry's recycle signal ONLY — it does no
+	// Prometheus work (the ctx histogram is observed once per turn via
+	// OnTurnMeter). So a mid-turn ctx frame updates lastCtxPct but records no metric.
 	capturedCfg.OnContextPct(77)
 	if e.CtxPctForTest() != 77 {
 		t.Errorf("entry ctxPct = %v; want 77 after OnContextPct", e.CtxPctForTest())
 	}
-	if rec.lastPct != 77 || rec.pctN != 1 {
-		t.Errorf("recorder RecordContextPct not forwarded: pct=%v n=%d", rec.lastPct, rec.pctN)
-	}
 
-	// OnTurnMeter / OnMCPInit forward straight to the recorder.
+	// OnTurnMeter / OnMCPInit forward straight to the recorder; the end-of-turn
+	// ctx rides OnTurnMeter for the once-per-turn histogram observation.
 	if capturedCfg.OnTurnMeter == nil || capturedCfg.OnMCPInit == nil {
 		t.Fatal("createEntry did not wire OnTurnMeter/OnMCPInit")
 	}
-	capturedCfg.OnTurnMeter(0.5, 900)
+	capturedCfg.OnTurnMeter(0.5, 900, 55.0, true)
 	capturedCfg.OnMCPInit("fs", true)
 	if rec.credits != 0.5 || rec.turns != 1 {
 		t.Errorf("RecordTurnMeter not forwarded: credits=%v turns=%d", rec.credits, rec.turns)
+	}
+	if !rec.hasCtx || rec.turnCtx != 55.0 {
+		t.Errorf("end-of-turn ctx not forwarded via OnTurnMeter: has=%v ctx=%v", rec.hasCtx, rec.turnCtx)
 	}
 	if len(rec.mcp) != 1 || rec.mcp[0].server != "fs" || !rec.mcp[0].ok {
 		t.Errorf("RecordMCPInit not forwarded: %+v", rec.mcp)
@@ -213,16 +217,21 @@ func TestRegistry_ContextHook_UpdatesEntryAndRecorder(t *testing.T) {
 type fakeSessRecorder struct {
 	credits float64
 	turns   int
-	lastPct float64
-	pctN    int
+	turnCtx float64
+	hasCtx  bool
 	mcp     []struct {
 		server string
 		ok     bool
 	}
 }
 
-func (r *fakeSessRecorder) RecordTurnMeter(credits float64, _ int64) { r.credits += credits; r.turns++ }
-func (r *fakeSessRecorder) RecordContextPct(pct float64)             { r.lastPct = pct; r.pctN++ }
+func (r *fakeSessRecorder) RecordTurnMeter(credits float64, _ int64, ctxPct float64, hasCtxPct bool) {
+	r.credits += credits
+	r.turnCtx = ctxPct
+	r.hasCtx = hasCtxPct
+	r.turns++
+}
+
 func (r *fakeSessRecorder) RecordMCPInit(server string, ok bool) {
 	r.mcp = append(r.mcp, struct {
 		server string

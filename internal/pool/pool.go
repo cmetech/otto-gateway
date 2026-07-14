@@ -545,13 +545,13 @@ func (p *Pool) acpSlotConfig() acp.Config {
 		OnPingEscalate:    func() { p.pingEscalations.Add(1) },
 		OnPingSuspendSkip: func() { p.pingSuspendSkips.Add(1) },
 	}
-	// Kiro usage-metrics parity: forward each slot's per-turn utilization to
-	// the shared recorder. Pool slots are stateless, so (unlike the session
-	// registry) there is no per-slot context-recycle — OnContextPct only feeds
-	// the histogram. Left unset when no recorder is wired.
+	// Kiro usage-metrics parity: forward each slot's per-turn usage to the
+	// shared recorder. Pool slots are stateless, so (unlike the session
+	// registry) there is no per-slot context-recycle and no OnContextPct — the
+	// ctx histogram is observed once per turn from OnTurnMeter's end-of-turn
+	// ctx. Left unset when no recorder is wired.
 	if rec := p.cfg.Metrics; rec != nil {
 		cfg.OnTurnMeter = rec.RecordTurnMeter
-		cfg.OnContextPct = rec.RecordContextPct
 		cfg.OnMCPInit = rec.RecordMCPInit
 	}
 	return cfg

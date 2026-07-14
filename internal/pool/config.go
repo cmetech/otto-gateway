@@ -102,8 +102,7 @@ func (acpClientFactory) Spawn(_ context.Context, cfg acp.Config) (PoolClient, er
 // The interface is intentionally duplicated in internal/session (rather than
 // shared) so the two packages remain disjoint — same rationale as PoolClient.
 type MetricsRecorder interface {
-	RecordTurnMeter(credits float64, turnMs int64)
-	RecordContextPct(pct float64)
+	RecordTurnMeter(credits float64, turnMs int64, ctxPct float64, hasCtxPct bool)
 	RecordMCPInit(server string, ok bool)
 }
 

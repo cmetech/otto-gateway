@@ -104,22 +104,22 @@ type Metrics struct {
 }
 
 // RecordTurnMeter records one completed kiro turn: increments the turn counter,
-// adds the turn's credits (when > 0), and observes the turn duration. Fed by
-// the acp OnTurnMeter hook. Safe for concurrent use.
-func (m *Metrics) RecordTurnMeter(credits float64, turnMs int64) {
+// adds the turn's credits (when > 0), observes the turn duration, and — when the
+// turn-completion frame reported a context percentage (hasCtxPct) — observes the
+// context-usage histogram ONCE for the turn. Observing ctx here (not on every
+// streaming frame) keeps the histogram at one sample per completed turn, so its
+// avg/p95 describe end-of-turn utilization rather than being dominated by
+// mid-turn samples, and keeps per-frame Prometheus work off the ACP read loop.
+// Fed by the acp OnTurnMeter hook. Safe for concurrent use.
+func (m *Metrics) RecordTurnMeter(credits float64, turnMs int64, ctxPct float64, hasCtxPct bool) {
 	m.kiroTurns.Inc()
 	if credits > 0 {
 		m.kiroCredits.Add(credits)
 	}
 	m.kiroTurnDur.Observe(float64(turnMs) / 1000)
-}
-
-// RecordContextPct observes a kiro context-usage sample (0–100 percent). Fed by
-// the acp OnContextPct hook, which fires on every contextUsagePercentage frame;
-// Grafana derives avg/max/p95 over the resulting histogram (covers the Node
-// last + peak_context_pct stats).
-func (m *Metrics) RecordContextPct(pct float64) {
-	m.kiroCtxPct.Observe(pct)
+	if hasCtxPct {
+		m.kiroCtxPct.Observe(ctxPct)
+	}
 }
 
 // RecordMCPInit counts an MCP-server init outcome. Fed by the acp OnMCPInit
