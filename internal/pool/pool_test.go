@@ -940,6 +940,11 @@ func TestPool_DeadSlot_LazyRespawn(t *testing.T) {
 	if !found || !alive {
 		t.Errorf("after respawn: alive=%v found=%v; want true,true", alive, found)
 	}
+	// Track 4b: a successful lazy respawn bumps the gw_pool_slot_respawns_total
+	// source counter.
+	if got := p.Respawns(); got != 1 {
+		t.Errorf("Respawns() = %d; want 1 after one lazy respawn", got)
+	}
 }
 
 // TestPool_DeadSlot_RespawnFailure_SlotRequeued — REL-POOL-01 D-08.

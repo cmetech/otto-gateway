@@ -23,15 +23,35 @@ import (
 // log so high-frequency scrapes neither self-measure nor spam logs.
 const metricsPath = "/metrics"
 
-// PoolStats is the metrics-friendly projection of pool.HealthSummary. The cmd
-// wiring adapts the pool's runtime type into this so this package never imports
-// internal/pool.
+// BuildInfo identifies this gateway instance. GatewayID becomes a constant
+// label on every series so a fleet of laptops can be grouped by gateway;
+// Version/Commit ride the gw_build_info metric.
+type BuildInfo struct {
+	GatewayID string
+	Version   string
+	Commit    string
+}
+
+// PoolStats is the metrics-friendly projection of pool.HealthSummary + the
+// Track 4b event counters. The cmd wiring adapts the pool's runtime type into
+// this so this package never imports internal/pool.
 type PoolStats struct {
 	Size, Alive, Busy   int
 	Healthy             bool
 	SpawnFailing        bool
 	LastSpawnErrUnixSec float64 // 0 when no spawn error recorded
 	LastProgressUnixSec float64 // 0 before first forward-progress event
+
+	// Track 4b monotonic event counters (pool-owned).
+	SlotRespawns     uint64
+	PingEscalations  uint64
+	PingSuspendSkips uint64
+}
+
+// SessionStats is the metrics-friendly projection of the session registry.
+type SessionStats struct {
+	Active int
+	Reaped uint64 // Track 4b monotonic counter
 }
 
 // Metrics owns the Prometheus registry and the request-instrumentation
@@ -45,14 +65,30 @@ type Metrics struct {
 }
 
 // New builds the registry: the free Go-runtime + process collectors, the HTTP
-// request instruments, and a pull-collector over the injected pool/session
-// sources (called at scrape time — no background goroutine).
-func New(pool func() PoolStats, sessions func() int) *Metrics {
+// request instruments, gw_build_info, and a pull-collector over the injected
+// pool/session sources (called at scrape time — no background goroutine).
+//
+// info.GatewayID is applied as a CONSTANT label on every series (via
+// WrapRegistererWith) so a fleet can group by gateway_id; empty collapses to
+// "unknown".
+func New(info BuildInfo, pool func() PoolStats, sessions func() SessionStats) *Metrics {
 	reg := prometheus.NewRegistry()
-	reg.MustRegister(
+	gwID := info.GatewayID
+	if gwID == "" {
+		gwID = "unknown"
+	}
+	// Every collector registered through reggw inherits the gateway_id label.
+	reggw := prometheus.WrapRegistererWith(prometheus.Labels{"gateway_id": gwID}, reg)
+	reggw.MustRegister(
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	)
+
+	buildInfo := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "gw_build_info",
+		Help: "Gateway build identity; value is always 1. gateway_id is a constant label on all series.",
+	}, []string{"version", "commit"})
+	buildInfo.WithLabelValues(info.Version, info.Commit).Set(1)
 
 	m := &Metrics{
 		reg: reg,
@@ -70,7 +106,7 @@ func New(pool func() PoolStats, sessions func() int) *Metrics {
 			Help: "In-flight HTTP requests currently being served.",
 		}),
 	}
-	reg.MustRegister(m.reqTotal, m.reqDur, m.inFlight, newPoolCollector(pool, sessions))
+	reggw.MustRegister(buildInfo, m.reqTotal, m.reqDur, m.inFlight, newPoolCollector(pool, sessions))
 	return m
 }
 

@@ -146,6 +146,49 @@ func TestPingTick_SuspendGapSkipsLivenessCheck(t *testing.T) {
 	}
 }
 
+// TestPingTick_FiresObservabilityHooks verifies the Track 4b metric hooks:
+// OnPingSuspendSkip fires on a suspend-skip cycle, OnPingEscalate on an
+// escalation. pingTick runs synchronously on the test goroutine, so plain
+// counters are race-free (the 10-minute real loop never ticks).
+func TestPingTick_FiresObservabilityHooks(t *testing.T) {
+	var escalations, skips int
+	logs := &syncBuffer{}
+	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
+	mock := newMockRWC()
+	cfg := Config{
+		Logger:            slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
+		Command:           "kiro-cli",
+		Args:              []string{"acp"},
+		PingInterval:      10 * time.Minute,
+		Now:               clk.now,
+		OnPingEscalate:    func() { escalations++ },
+		OnPingSuspendSkip: func() { skips++ },
+	}
+	c := NewWithConn(mock, cfg)
+
+	// Suspend gap → skip hook, no escalate.
+	lastTick := c.cfg.Now()
+	clk.advance(3 * c.cfg.PingInterval)
+	if _, stop := c.pingTick(context.Background(), lastTick); stop {
+		t.Fatal("suspend-skip cycle should not stop")
+	}
+	if skips != 1 || escalations != 0 {
+		t.Fatalf("after suspend skip: skips=%d escalations=%d; want 1,0", skips, escalations)
+	}
+
+	// Normal gap + failing ping → escalate hook.
+	if _, stop := c.pingTick(expiredCtx(t), c.cfg.Now()); !stop {
+		t.Fatal("failing normal-gap ping should escalate")
+	}
+	if escalations != 1 {
+		t.Fatalf("after escalation: escalations=%d; want 1", escalations)
+	}
+
+	mock.serverClose()
+	_ = c.Close()
+	goleak.VerifyNone(t)
+}
+
 // TestPingTick_SuspendGuardIsOneShot confirms the guard is one-shot, not sticky:
 // after a single skipped (suspend) cycle, the very next normal-gap tick with a
 // failing ping still escalates. A genuinely-hung worker is caught within one

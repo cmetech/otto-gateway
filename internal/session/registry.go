@@ -131,7 +131,14 @@ type Registry struct {
 	wg sync.WaitGroup
 	// closeOnce ensures the shutdown sequence runs exactly once.
 	closeOnce sync.Once
+
+	// reaped is the Track 4b monotonic counter of sessions reaped for
+	// idleness, surfaced via the Prometheus pull-collector (gw_sessions_reaped_total).
+	reaped atomic.Uint64
 }
+
+// Reaped returns the total stateful sessions reaped for idleness since start.
+func (r *Registry) Reaped() uint64 { return r.reaped.Load() }
 
 // New constructs a Registry with the given Config. The reaper is NOT
 // started until Start is called — this lets callers (cmd/otto-gateway

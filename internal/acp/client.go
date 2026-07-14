@@ -53,6 +53,12 @@ type Config struct {
 	// Test seam for the ping suspend-guard, which detects a laptop
 	// suspend/resume by the wall-clock gap between successive ticks.
 	Now func() time.Time
+	// OnPingEscalate / OnPingSuspendSkip are optional observability hooks fired
+	// by pingLoop when a liveness ping escalates to a worker teardown / is
+	// skipped after a detected suspend-resume. The pool wires these to
+	// aggregate the gw_acp_ping_* metrics (Track 4b). nil = no-op.
+	OnPingEscalate    func()
+	OnPingSuspendSkip func()
 }
 
 // applyDefaults fills in zero-value Config fields with documented defaults.
@@ -658,6 +664,9 @@ func (c *Client) pingTick(ctx context.Context, lastTick time.Time) (time.Time, b
 	if gap := now.Sub(lastTick); gap > 2*c.cfg.PingInterval {
 		c.cfg.Logger.Info("acp.ping.skipped_after_resume",
 			"gap", gap.String(), "interval", c.cfg.PingInterval.String())
+		if c.cfg.OnPingSuspendSkip != nil {
+			c.cfg.OnPingSuspendSkip()
+		}
 		return now, false
 	}
 
@@ -668,6 +677,9 @@ func (c *Client) pingTick(ctx context.Context, lastTick time.Time) (time.Time, b
 			return now, true // expected on Close()
 		}
 		c.cfg.Logger.Warn("acp.ping.escalated_to_close", "err", err)
+		if c.cfg.OnPingEscalate != nil {
+			c.cfg.OnPingEscalate()
+		}
 		c.cancel()
 		return now, true
 	}

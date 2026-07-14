@@ -7,7 +7,7 @@ import "github.com/prometheus/client_golang/prometheus"
 // state). This mirrors how /health/pool and /admin read the same signals.
 type poolCollector struct {
 	pool     func() PoolStats
-	sessions func() int
+	sessions func() SessionStats
 
 	size           *prometheus.Desc
 	alive          *prometheus.Desc
@@ -17,9 +17,15 @@ type poolCollector struct {
 	lastSpawnErrTS *prometheus.Desc
 	lastProgressTS *prometheus.Desc
 	sessionsActive *prometheus.Desc
+
+	// Track 4b monotonic counters.
+	slotRespawns     *prometheus.Desc
+	pingEscalations  *prometheus.Desc
+	pingSuspendSkips *prometheus.Desc
+	sessionsReaped   *prometheus.Desc
 }
 
-func newPoolCollector(pool func() PoolStats, sessions func() int) *poolCollector {
+func newPoolCollector(pool func() PoolStats, sessions func() SessionStats) *poolCollector {
 	return &poolCollector{
 		pool:     pool,
 		sessions: sessions,
@@ -34,33 +40,48 @@ func newPoolCollector(pool func() PoolStats, sessions func() int) *poolCollector
 		lastProgressTS: prometheus.NewDesc("gw_pool_last_progress_timestamp_seconds",
 			"Unix time of the most recent pool forward-progress event (chunk/ping/release).", nil, nil),
 		sessionsActive: prometheus.NewDesc("gw_sessions_active", "Active stateful sessions.", nil, nil),
+		slotRespawns: prometheus.NewDesc("gw_pool_slot_respawns_total",
+			"Total lazy slot respawns since start.", nil, nil),
+		pingEscalations: prometheus.NewDesc("gw_acp_ping_escalations_total",
+			"Total liveness-ping failures escalated to a worker teardown.", nil, nil),
+		pingSuspendSkips: prometheus.NewDesc("gw_acp_ping_suspend_skips_total",
+			"Total liveness-ping cycles skipped after a detected suspend/resume.", nil, nil),
+		sessionsReaped: prometheus.NewDesc("gw_sessions_reaped_total",
+			"Total stateful sessions reaped for idleness.", nil, nil),
 	}
 }
 
 func (c *poolCollector) Describe(ch chan<- *prometheus.Desc) {
-	ch <- c.size
-	ch <- c.alive
-	ch <- c.busy
-	ch <- c.healthy
-	ch <- c.spawnFailing
-	ch <- c.lastSpawnErrTS
-	ch <- c.lastProgressTS
-	ch <- c.sessionsActive
+	for _, d := range []*prometheus.Desc{
+		c.size, c.alive, c.busy, c.healthy, c.spawnFailing, c.lastSpawnErrTS,
+		c.lastProgressTS, c.sessionsActive, c.slotRespawns, c.pingEscalations,
+		c.pingSuspendSkips, c.sessionsReaped,
+	} {
+		ch <- d
+	}
 }
 
 func (c *poolCollector) Collect(ch chan<- prometheus.Metric) {
 	s := c.pool()
-	g := func(d *prometheus.Desc, v float64) {
+	sess := c.sessions()
+	gauge := func(d *prometheus.Desc, v float64) {
 		ch <- prometheus.MustNewConstMetric(d, prometheus.GaugeValue, v)
 	}
-	g(c.size, float64(s.Size))
-	g(c.alive, float64(s.Alive))
-	g(c.busy, float64(s.Busy))
-	g(c.healthy, b2f(s.Healthy))
-	g(c.spawnFailing, b2f(s.SpawnFailing))
-	g(c.lastSpawnErrTS, s.LastSpawnErrUnixSec)
-	g(c.lastProgressTS, s.LastProgressUnixSec)
-	g(c.sessionsActive, float64(c.sessions()))
+	counter := func(d *prometheus.Desc, v float64) {
+		ch <- prometheus.MustNewConstMetric(d, prometheus.CounterValue, v)
+	}
+	gauge(c.size, float64(s.Size))
+	gauge(c.alive, float64(s.Alive))
+	gauge(c.busy, float64(s.Busy))
+	gauge(c.healthy, b2f(s.Healthy))
+	gauge(c.spawnFailing, b2f(s.SpawnFailing))
+	gauge(c.lastSpawnErrTS, s.LastSpawnErrUnixSec)
+	gauge(c.lastProgressTS, s.LastProgressUnixSec)
+	gauge(c.sessionsActive, float64(sess.Active))
+	counter(c.slotRespawns, float64(s.SlotRespawns))
+	counter(c.pingEscalations, float64(s.PingEscalations))
+	counter(c.pingSuspendSkips, float64(s.PingSuspendSkips))
+	counter(c.sessionsReaped, float64(sess.Reaped))
 }
 
 func b2f(b bool) float64 {

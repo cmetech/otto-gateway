@@ -251,6 +251,10 @@ func TestReaper_HandlesMultipleEntries(t *testing.T) {
 	if got := r.SessionCount(); got != 2 {
 		t.Errorf("SessionCount after one reapOnce = %d; want 2 (3 expired, 2 fresh)", got)
 	}
+	// Track 4b: gw_sessions_reaped_total source counter reflects the 3 reaped.
+	if got := r.Reaped(); got != 3 {
+		t.Errorf("Reaped() = %d; want 3 after reaping 3 idle entries", got)
+	}
 }
 
 // sidName generates a deterministic session id from an index.

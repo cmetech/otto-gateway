@@ -191,7 +191,25 @@ type Pool struct {
 	// AND now.Sub(LastProgressAt()) > 30s the pool is considered
 	// "degraded" (alive but stalled).
 	lastProgressAt atomic.Int64
+
+	// Track 4b monotonic event counters, surfaced via the Prometheus
+	// pull-collector. respawns bumps on each successful lazy respawn;
+	// pingEscalations / pingSuspendSkips are incremented by the per-slot
+	// acp.Client via the OnPing* hooks wired in initSlot (aggregated here so
+	// the counts survive slot respawns).
+	respawns         atomic.Uint64
+	pingEscalations  atomic.Uint64
+	pingSuspendSkips atomic.Uint64
 }
+
+// Respawns returns the total successful lazy slot respawns since start.
+func (p *Pool) Respawns() uint64 { return p.respawns.Load() }
+
+// PingEscalations returns the total liveness-ping escalations (worker teardowns).
+func (p *Pool) PingEscalations() uint64 { return p.pingEscalations.Load() }
+
+// PingSuspendSkips returns the total ping cycles skipped after a suspend/resume.
+func (p *Pool) PingSuspendSkips() uint64 { return p.pingSuspendSkips.Load() }
 
 // debugLog is the nil-safe DEBUG emitter for pool observability markers
 // (pool.acquire / pool.release). cfg.Logger is documented as optional
@@ -377,13 +395,7 @@ func (p *Pool) selfHealCatalog() {
 // channel for the rest of the slot's life (until the slot is respawned
 // or the pool closes).
 func (p *Pool) initSlot(ctx context.Context, label string) (*Slot, error) {
-	client, err := p.cfg.Factory.Spawn(ctx, acp.Config{
-		Logger:       p.cfg.Logger,
-		Command:      p.cfg.KiroCmd,
-		Args:         p.cfg.KiroArgs,
-		Cwd:          p.cfg.KiroCWD,
-		PingInterval: p.cfg.PingInterval,
-	})
+	client, err := p.cfg.Factory.Spawn(ctx, p.acpSlotConfig())
 	if err != nil {
 		return nil, fmt.Errorf("pool: spawn %s: %w", label, err)
 	}
@@ -448,13 +460,7 @@ func (p *Pool) respawnSlot(ctx context.Context, slot *Slot) error {
 	}
 	// Step 2: spawn NEW client. ctx is honored — caller cancellation
 	// during a slow kiro-cli spawn aborts the respawn promptly (D-02).
-	newClient, err := p.cfg.Factory.Spawn(ctx, acp.Config{
-		Logger:       p.cfg.Logger,
-		Command:      p.cfg.KiroCmd,
-		Args:         p.cfg.KiroArgs,
-		Cwd:          p.cfg.KiroCWD,
-		PingInterval: p.cfg.PingInterval,
-	})
+	newClient, err := p.cfg.Factory.Spawn(ctx, p.acpSlotConfig())
 	if err != nil {
 		// WR-07: distinguish ctx-cancellation (caller disconnect, the
 		// normal D-02 abort path) from genuine spawn failures so
@@ -522,7 +528,23 @@ func (p *Pool) respawnSlot(ctx context.Context, slot *Slot) error {
 			"reason", "lazy-respawn-success",
 		)
 	}
+	p.respawns.Add(1) // Track 4b: successful lazy respawn
 	return nil
+}
+
+// acpSlotConfig builds the acp.Config shared by initSlot + respawnSlot,
+// including the Track 4b ping-event hooks that aggregate per-worker events into
+// pool-level counters (so counts survive slot respawns).
+func (p *Pool) acpSlotConfig() acp.Config {
+	return acp.Config{
+		Logger:            p.cfg.Logger,
+		Command:           p.cfg.KiroCmd,
+		Args:              p.cfg.KiroArgs,
+		Cwd:               p.cfg.KiroCWD,
+		PingInterval:      p.cfg.PingInterval,
+		OnPingEscalate:    func() { p.pingEscalations.Add(1) },
+		OnPingSuspendSkip: func() { p.pingSuspendSkips.Add(1) },
+	}
 }
 
 // Models returns a defensive copy of the captured model catalog.

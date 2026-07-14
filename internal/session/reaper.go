@@ -94,6 +94,7 @@ func (r *Registry) reapOnce() {
 			if cur, ok := r.entries[es.sid]; ok && cur == es.entry {
 				delete(r.entries, es.sid)
 				es.entry.Dead = true
+				r.reaped.Add(1) // Track 4b: gw_sessions_reaped_total
 			}
 			r.mu.Unlock()
 			if r.cfg.Logger != nil {

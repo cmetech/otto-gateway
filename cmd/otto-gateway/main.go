@@ -39,6 +39,7 @@ import (
 	"time"
 
 	"github.com/DeRuina/timberjack"
+	"github.com/oklog/ulid/v2"
 
 	"otto-gateway/internal/adapter/anthropic"
 	"otto-gateway/internal/adapter/ollama"
@@ -736,20 +737,30 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 		"openai_mounted", openaiAdapter != nil,
 	)
 
-	// Track 4: Prometheus metrics. Pool/session gauges pull from a.pool /
-	// a.registry at scrape time (nil-safe for degraded / no-KIRO_CMD mode).
+	// Track 4: Prometheus metrics. Pool/session gauges + Track 4b counters pull
+	// from a.pool / a.registry at scrape time (nil-safe for degraded /
+	// no-KIRO_CMD mode). gateway_id is a constant label on every series so a
+	// fleet can be grouped by gateway.
 	gwMetrics := metrics.New(
+		metrics.BuildInfo{
+			GatewayID: resolveGatewayID(logger),
+			Version:   version.Version,
+			Commit:    version.Commit(),
+		},
 		func() metrics.PoolStats {
 			if a.pool == nil {
 				return metrics.PoolStats{Healthy: true} // no pool = degraded-by-design healthy
 			}
 			h := a.pool.HealthSummary()
 			ps := metrics.PoolStats{
-				Size:         h.Size,
-				Alive:        h.Alive,
-				Busy:         h.Busy,
-				Healthy:      h.Healthy,
-				SpawnFailing: h.SpawnFailing,
+				Size:             h.Size,
+				Alive:            h.Alive,
+				Busy:             h.Busy,
+				Healthy:          h.Healthy,
+				SpawnFailing:     h.SpawnFailing,
+				SlotRespawns:     a.pool.Respawns(),
+				PingEscalations:  a.pool.PingEscalations(),
+				PingSuspendSkips: a.pool.PingSuspendSkips(),
 			}
 			if !h.LastSpawnErrAt.IsZero() {
 				ps.LastSpawnErrUnixSec = float64(h.LastSpawnErrAt.Unix())
@@ -759,11 +770,14 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 			}
 			return ps
 		},
-		func() int {
+		func() metrics.SessionStats {
 			if a.registry == nil {
-				return 0
+				return metrics.SessionStats{}
 			}
-			return a.registry.Stats().Active
+			return metrics.SessionStats{
+				Active: a.registry.Stats().Active,
+				Reaped: a.registry.Reaped(),
+			}
 		},
 	)
 
@@ -821,6 +835,45 @@ func (p poolStatsAdapter) IsExhausted() bool {
 
 func (p poolStatsAdapter) LastProgressAt() time.Time {
 	return p.pool.LastProgressAt()
+}
+
+// resolveGatewayID returns a stable per-install identifier used as the
+// gateway_id constant metric label (Track 4). Resolution order:
+//  1. GW_ID env (explicit override).
+//  2. A persisted file: $GW_HOME/gateway-id, else <UserConfigDir>/gateway/gateway-id.
+//     The file survives restarts + upgrades (GW_HOME / UserConfigDir are outside
+//     the replaceable install dir), so a laptop keeps one stable id.
+//  3. Otherwise a freshly-generated ULID (persisted best-effort; ephemeral if
+//     the filesystem is unwritable).
+func resolveGatewayID(logger *slog.Logger) string {
+	if v := strings.TrimSpace(os.Getenv("GW_ID")); v != "" {
+		return v
+	}
+	dir := ""
+	if h := strings.TrimSpace(os.Getenv("GW_HOME")); h != "" {
+		dir = h
+	} else if cd, err := os.UserConfigDir(); err == nil {
+		dir = filepath.Join(cd, "gateway")
+	}
+	if dir == "" {
+		return ulid.Make().String() // no writable location — ephemeral id
+	}
+	path := filepath.Join(dir, "gateway-id")
+	if b, err := os.ReadFile(path); err == nil {
+		if id := strings.TrimSpace(string(b)); id != "" {
+			return id
+		}
+	}
+	id := ulid.Make().String()
+	if mkErr := os.MkdirAll(dir, 0o755); mkErr == nil {
+		if wErr := os.WriteFile(path, []byte(id+"\n"), 0o644); wErr == nil {
+			return id
+		}
+	}
+	if logger != nil {
+		logger.Warn("gateway id: could not persist; using an ephemeral id for this run", "path", path)
+	}
+	return id
 }
 
 // poolDetailAdapter wraps *pool.Pool to satisfy server.PoolDetailSource.
