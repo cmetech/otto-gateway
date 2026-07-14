@@ -98,7 +98,7 @@ func (s *trayState) handleOpenDataFolder() {
 }
 
 func (s *trayState) handleOpenGatewayFolder() {
-	dir := filepath.Join(homeDir(), ".otto-gw")
+	dir := s.gwHome
 	if !statExists(dir) {
 		notify("Open Gateway Folder", "Not found: "+dir)
 		return

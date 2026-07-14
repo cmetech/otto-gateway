@@ -14,7 +14,7 @@ import (
 // and that is the correct interpretation of an unreadable PID. Hard
 // read failures (permission, IO) propagate as a non-nil error.
 func readPIDFile(path string) (int, error) {
-	body, err := os.ReadFile(path) //nolint:gosec // path is operator-configured under installRoot
+	body, err := os.ReadFile(path) //nolint:gosec // path is operator-configured under GW_HOME
 	if err != nil {
 		if os.IsNotExist(err) {
 			return 0, nil

@@ -22,7 +22,7 @@ type TrayConfig struct {
 // defaults + isFirstRun false (the user already answered the prompt;
 // we just lost their answer).
 func loadTrayConfig(path string) (TrayConfig, bool) {
-	body, err := os.ReadFile(path) //nolint:gosec // path is operator-configured tray.json under install root
+	body, err := os.ReadFile(path) //nolint:gosec // path is operator-configured tray.json under GW_HOME
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return TrayConfig{}, true
@@ -70,10 +70,4 @@ func writeFileAtomic(path string, body []byte) error {
 		return fmt.Errorf("rename temp: %w", err)
 	}
 	return nil
-}
-
-// trayConfigPath returns the canonical path of tray.json for the
-// install root.
-func trayConfigPath(installRoot string) string {
-	return filepath.Join(installRoot, "tray.json")
 }

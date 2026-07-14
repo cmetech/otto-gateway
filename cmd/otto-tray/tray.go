@@ -24,14 +24,15 @@ import (
 // invoked. UI work happens on systray's main thread via menu-item
 // callbacks; the poller runs on its own goroutine and forwards
 // state updates onto a channel that the uiLoop drains.
-func runTray(installRoot string, cfg TrayConfig, isFirstRun bool) {
-	state := newTrayState(installRoot, cfg)
+func runTray(installDir, gwHome string, cfg TrayConfig, isFirstRun bool) {
+	state := newTrayState(installDir, gwHome, cfg)
 	systray.Run(state.onReady(isFirstRun), state.onExit)
 }
 
 type trayState struct {
 	mu           sync.Mutex
-	installRoot  string
+	installDir   string
+	gwHome       string
 	cfg          TrayConfig
 	dashboardURL string
 	current      State
@@ -77,11 +78,12 @@ type trayState struct {
 	brandLoop24 atomic.Bool
 }
 
-func newTrayState(installRoot string, cfg TrayConfig) *trayState {
+func newTrayState(installDir, gwHome string, cfg TrayConfig) *trayState {
 	return &trayState{
-		installRoot:  installRoot,
+		installDir:   installDir,
+		gwHome:       gwHome,
 		cfg:          cfg,
-		dashboardURL: resolveDashboardURL(installRoot),
+		dashboardURL: resolveDashboardURL(gwHome),
 		current:      StateUnknown,
 		stateCh:      make(chan stateOutput, 4),
 		desktopCh:    make(chan DesktopState, 4),
@@ -134,7 +136,7 @@ func (s *trayState) onReady(isFirstRun bool) func() {
 		s.pollerCancel = cancel
 		probe := s.makeProbe()
 		tick := time.NewTicker(3 * time.Second).C
-		go runPoller(ctx, probe, tick, s.stateCh, s.getStartedAt)
+		go runPoller(ctx, probe, tick, s.stateCh, s.getStartedAt, s.gwHome)
 		go s.uiLoop()
 
 		dtick := time.NewTicker(3 * time.Second).C
@@ -182,7 +184,7 @@ func (s *trayState) wireCallbacks() {
 }
 
 func (s *trayState) makeProbe() probeFunc {
-	pidPath := installRootPIDFile(s.installRoot)
+	pidPath := gwPidFile(s.gwHome)
 	client := newStatusClient(s.dashboardURL, 1*time.Second)
 	return func() (bool, bool, Snapshot) {
 		pid, _ := readPIDFile(pidPath)
@@ -220,10 +222,6 @@ func (s *trayState) makeProbe() probeFunc {
 		}
 		return true, true, snap
 	}
-}
-
-func installRootPIDFile(installRoot string) string {
-	return filepath.Join(installRoot, ".otto", "gw", "otto-gateway.pid")
 }
 
 func (s *trayState) uiLoop() {
@@ -350,14 +348,14 @@ func (s *trayState) setStartedNow() {
 
 func (s *trayState) handleStart() {
 	s.setStartedNow()
-	res := runWrapper(s.installRoot, "start")
+	res := runWrapper(s.installDir, s.gwHome, "start")
 	if res.ExitCode != 0 || res.Err != nil {
 		notify("OTTO Gateway", "Failed to start: "+firstLine(res.Stderr))
 	}
 }
 
 func (s *trayState) handleStop() {
-	res := runWrapper(s.installRoot, "stop")
+	res := runWrapper(s.installDir, s.gwHome, "stop")
 	if res.ExitCode != 0 || res.Err != nil {
 		notify("OTTO Gateway", "Failed to stop: "+firstLine(res.Stderr))
 	}
@@ -365,7 +363,7 @@ func (s *trayState) handleStop() {
 
 func (s *trayState) handleRestart() {
 	s.setStartedNow()
-	res := runWrapper(s.installRoot, "restart")
+	res := runWrapper(s.installDir, s.gwHome, "restart")
 	if res.ExitCode != 0 || res.Err != nil {
 		notify("OTTO Gateway", "Failed to restart: "+firstLine(res.Stderr))
 	}
@@ -396,7 +394,7 @@ func (s *trayState) handleSupportBundle() {
 		return
 	}
 
-	res := runWrapper(s.installRoot, "support")
+	res := runWrapper(s.installDir, s.gwHome, "support")
 	if res.ExitCode != 0 || res.Err != nil {
 		body := "Failed to create support bundle."
 		tail := tailLines(res.Stderr, 20)
@@ -407,7 +405,7 @@ func (s *trayState) handleSupportBundle() {
 		// file even after dismissing this dialog. Best-effort: write
 		// failures are silent (any write error would itself be noise
 		// the user cannot act on).
-		logDir := filepath.Join(s.installRoot, "support")
+		logDir := filepath.Join(s.installDir, "support")
 		if mkErr := os.MkdirAll(logDir, 0o750); mkErr == nil {
 			logPath := filepath.Join(logDir, "last-error.log")
 			content := "exit=" + strconv.Itoa(res.ExitCode) + "\n\n" +
@@ -437,7 +435,7 @@ func (s *trayState) handleSupportBundle() {
 	}
 	path := lastLine
 	if path == "" {
-		path = filepath.Join(s.installRoot, "support", "latest"+bundleExt())
+		path = filepath.Join(s.installDir, "support", "latest"+bundleExt())
 	}
 
 	notify("OTTO Gateway", "Support bundle saved:\n"+path)
@@ -496,7 +494,7 @@ func (s *trayState) toggleLaunchAtLogin() {
 		notify("OTTO Gateway", "Could not change login setting: "+err.Error())
 		return
 	}
-	if err := saveTrayConfig(trayConfigPath(s.installRoot), cfg); err != nil {
+	if err := saveTrayConfig(gwTrayConfigPath(s.gwHome), cfg); err != nil {
 		slog.Error("save tray.json", "err", err)
 	}
 }
@@ -511,13 +509,13 @@ func (s *trayState) toggleStartGatewayOnLaunch() {
 	} else {
 		s.miPrefsStart.Uncheck()
 	}
-	if err := saveTrayConfig(trayConfigPath(s.installRoot), cfg); err != nil {
+	if err := saveTrayConfig(gwTrayConfigPath(s.gwHome), cfg); err != nil {
 		slog.Error("save tray.json", "err", err)
 	}
 }
 
 func (s *trayState) showAbout() {
 	body := fmt.Sprintf("Version: %s\nCommit: %s\nInstall: %s\nGo: %s",
-		version.Version, version.Commit(), s.installRoot, runtime.Version())
+		version.Version, version.Commit(), s.installDir, runtime.Version())
 	infoDialog("About OTTO Gateway", body)
 }

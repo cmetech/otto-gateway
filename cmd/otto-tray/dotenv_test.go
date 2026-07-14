@@ -4,7 +4,6 @@ package main
 
 import (
 	"os"
-	"path/filepath"
 	"testing"
 )
 
@@ -53,8 +52,8 @@ func TestResolveDashboardURL_DefaultWhenNothingSet(t *testing.T) {
 func TestResolveDashboardURL_OverridesEnvFileWins(t *testing.T) {
 	t.Setenv("HTTP_ADDR", "")
 	tmp := t.TempDir()
-	writeTestFile(t, filepath.Join(tmp, ".env.otto-gw"), "HTTP_ADDR=:19000\n")
-	writeTestFile(t, filepath.Join(tmp, ".otto-gw.overrides.env"), "HTTP_ADDR=:19999\n")
+	writeTestFile(t, gwEnvPath(tmp), "HTTP_ADDR=:19000\n")
+	writeTestFile(t, gwOverridesPath(tmp), "HTTP_ADDR=:19999\n")
 	url := resolveDashboardURL(tmp)
 	if url != "http://127.0.0.1:19999" {
 		t.Fatalf("overrides should win: got %q, want :19999", url)
@@ -64,7 +63,7 @@ func TestResolveDashboardURL_OverridesEnvFileWins(t *testing.T) {
 func TestResolveDashboardURL_ProcessEnvLowestPriority(t *testing.T) {
 	t.Setenv("HTTP_ADDR", ":20000")
 	tmp := t.TempDir()
-	writeTestFile(t, filepath.Join(tmp, ".env.otto-gw"), "HTTP_ADDR=:21000\n")
+	writeTestFile(t, gwEnvPath(tmp), "HTTP_ADDR=:21000\n")
 	url := resolveDashboardURL(tmp)
 	if url != "http://127.0.0.1:21000" {
 		t.Fatalf("env file should beat process env: got %q, want :21000", url)

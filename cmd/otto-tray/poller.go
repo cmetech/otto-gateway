@@ -5,7 +5,6 @@ package main
 import (
 	"context"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 )
@@ -17,23 +16,22 @@ import (
 const configErrorSentinelMaxBytes = 200
 
 // readConfigErrorSentinel reads the wrapper-written sentinel at
-// $HOME/.otto-gw/.config-error and returns its first line trimmed of
+// $GW_HOME/.config-error and returns its first line trimmed of
 // surrounding whitespace and capped at configErrorSentinelMaxBytes.
 // Returns "" when the file is absent (the happy path — wrapper
-// deletes the sentinel on parse success) OR when $HOME cannot be
-// resolved (degraded mode — safe default is no config error).
+// deletes the sentinel on parse success) OR when gwHome is empty
+// (degraded mode — safe default is no config error).
 //
 // The Wave 0 audit of $HOME / sentinel-file races (CONTEXT.md
 // "Risks" row D-18-09) accepts a ~3s flap window during config
 // reloads — the poll cadence is 3s; worst case the tray shows
 // StateError momentarily, then recovers on the next tick.
-func readConfigErrorSentinel() string {
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
+func readConfigErrorSentinel(gwHome string) string {
+	if gwHome == "" {
 		return ""
 	}
-	path := filepath.Join(home, ".otto-gw", ".config-error")
-	data, err := os.ReadFile(path) //nolint:gosec // fixed path under user home; sentinel is operator-written diagnostic content
+	path := gwSentinel(gwHome)
+	data, err := os.ReadFile(path) //nolint:gosec // fixed path under GW_HOME; sentinel is operator-written diagnostic content
 	if err != nil {
 		return ""
 	}
@@ -64,8 +62,9 @@ const startingBudgetWindow = 30 * time.Second
 // `tick` is a channel rather than a *time.Ticker so tests can inject
 // ticks deterministically. `startedAt` is a getter so the caller can
 // back it with atomic.Pointer / mutex / a literal — the poller does
-// not care.
-func runPoller(ctx context.Context, probe probeFunc, tick <-chan time.Time, out chan<- stateOutput, startedAt func() time.Time) {
+// not care. `gwHome` is the resolved $GW_HOME config home, threaded
+// through to readConfigErrorSentinel each tick.
+func runPoller(ctx context.Context, probe probeFunc, tick <-chan time.Time, out chan<- stateOutput, startedAt func() time.Time, gwHome string) {
 	consecutiveFailures := 0
 	for {
 		select {
@@ -93,7 +92,7 @@ func runPoller(ctx context.Context, probe probeFunc, tick <-chan time.Time, out 
 				// dotenv parse errors as StateError. Read each tick
 				// — wrapper writes on parse failure, deletes on
 				// success, so liveness tracks with config reloads.
-				ConfigError: readConfigErrorSentinel(),
+				ConfigError: readConfigErrorSentinel(gwHome),
 			}
 			s := computeState(in)
 			select {

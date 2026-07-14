@@ -28,8 +28,8 @@ const (
 // We rely on the wrapper script's own internal authentication
 // guards (env-driven AUTH_TOKEN) — the script itself is not the
 // trust boundary; the user already trusted the install.
-func wrapperCommand(installRoot, verb string) (string, []string) {
-	script := filepath.Join(installRoot, "scripts", "otto-gw.ps1")
+func wrapperCommand(installDir, verb string) (string, []string) {
+	script := filepath.Join(installDir, "scripts", "otto-gw.ps1")
 	shell := "powershell"
 	if _, err := exec.LookPath("pwsh"); err == nil {
 		shell = "pwsh"

@@ -12,14 +12,21 @@ func main() {
 	uninstall := flag.Bool("uninstall", false, "remove login-item registration (LaunchAgent on darwin, Run key on windows) and exit")
 	flag.Parse()
 
-	installRoot, err := resolveInstallRoot()
+	exe, err := os.Executable()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "otto-tray:", err)
 		os.Exit(1)
 	}
+	installDir, err := resolveInstallDirFrom(exe)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "otto-tray:", err)
+		os.Exit(1)
+	}
+	home, _ := os.UserHomeDir()
+	gwHome := resolveGWHome(os.Getenv, home)
 
 	if *uninstall {
-		if err := runUninstall(installRoot); err != nil {
+		if err := runUninstall(installDir); err != nil {
 			fmt.Fprintln(os.Stderr, "otto-tray --uninstall:", err)
 			os.Exit(1)
 		}
@@ -27,6 +34,6 @@ func main() {
 		return
 	}
 
-	cfg, isFirstRun := loadTrayConfig(trayConfigPath(installRoot))
-	runTray(installRoot, cfg, isFirstRun)
+	cfg, isFirstRun := loadTrayConfig(gwTrayConfigPath(gwHome))
+	runTray(installDir, gwHome, cfg, isFirstRun)
 }

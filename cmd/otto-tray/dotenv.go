@@ -7,7 +7,6 @@ import (
 	"bytes"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 )
 
@@ -47,7 +46,7 @@ func parseDotenv(body []byte) (map[string]string, error) {
 // readDotenvFile reads and parses a dotenv file. Missing file ⇒ nil
 // map, nil error (caller treats absence as "no overrides here").
 func readDotenvFile(path string) (map[string]string, error) {
-	body, err := os.ReadFile(path) //nolint:gosec // path is operator-configured under installRoot
+	body, err := os.ReadFile(path) //nolint:gosec // path is operator-configured under GW_HOME
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -59,16 +58,16 @@ func readDotenvFile(path string) (map[string]string, error) {
 
 // resolveDashboardURL returns the URL the tray's "Open dashboard"
 // action should open. HTTP_ADDR precedence:
-//  1. <installRoot>/.otto-gw.overrides.env
-//  2. <installRoot>/.env.otto-gw
+//  1. $GW_HOME/overrides.env
+//  2. $GW_HOME/.env
 //  3. $HTTP_ADDR
 //  4. ":18080" default
 //
 // The host portion is always normalized to 127.0.0.1 because a
 // bound 0.0.0.0 listener is still reachable on the loopback and
 // that's what the operator wants to click.
-func resolveDashboardURL(installRoot string) string {
-	addr := lookupHTTPAddr(installRoot)
+func resolveDashboardURL(gwHome string) string {
+	addr := lookupHTTPAddr(gwHome)
 	if addr == "" {
 		addr = ":18080"
 	}
@@ -79,9 +78,9 @@ func resolveDashboardURL(installRoot string) string {
 	return "http://127.0.0.1:" + port
 }
 
-func lookupHTTPAddr(installRoot string) string {
-	for _, name := range []string{".otto-gw.overrides.env", ".env.otto-gw"} {
-		m, _ := readDotenvFile(filepath.Join(installRoot, name))
+func lookupHTTPAddr(gwHome string) string {
+	for _, path := range []string{gwOverridesPath(gwHome), gwEnvPath(gwHome)} {
+		m, _ := readDotenvFile(path)
 		if v, ok := m["HTTP_ADDR"]; ok {
 			return v
 		}

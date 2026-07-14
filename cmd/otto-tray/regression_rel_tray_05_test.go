@@ -50,7 +50,7 @@ func TestRegression_REL_TRAY_05_DegradedWhenPoolWedged(t *testing.T) {
 	// startedAt one hour ago: the StartingBudget window has long expired
 	// so the FSM does not mask a degraded signal as "warming up".
 	startedAt := time.Now().Add(-1 * time.Hour)
-	go runPoller(ctx, probe.probe, tick, out, func() time.Time { return startedAt })
+	go runPoller(ctx, probe.probe, tick, out, func() time.Time { return startedAt }, "")
 
 	tick <- time.Now()
 
@@ -89,7 +89,7 @@ func TestRegression_REL_TRAY_05_DegradedWhenPoolExhausted(t *testing.T) {
 	out := make(chan stateOutput, 4)
 
 	startedAt := time.Now().Add(-1 * time.Hour)
-	go runPoller(ctx, probe.probe, tick, out, func() time.Time { return startedAt })
+	go runPoller(ctx, probe.probe, tick, out, func() time.Time { return startedAt }, "")
 
 	tick <- time.Now()
 
