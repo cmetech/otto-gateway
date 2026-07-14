@@ -14,8 +14,8 @@ func TestWrapperPath_DarwinUsesShellScript(t *testing.T) {
 		t.Skip("darwin-only path resolution")
 	}
 	cmd, args := wrapperCommand("/opt/otto", "start")
-	if !strings.HasSuffix(cmd, filepath.Join("scripts", "otto-gw")) {
-		t.Fatalf("darwin wrapper: got %q, want suffix scripts/otto-gw", cmd)
+	if !strings.HasSuffix(cmd, filepath.Join("scripts", "gw")) {
+		t.Fatalf("darwin wrapper: got %q, want suffix scripts/gw", cmd)
 	}
 	if len(args) != 1 || args[0] != "start" {
 		t.Fatalf("darwin args: got %v, want [start]", args)

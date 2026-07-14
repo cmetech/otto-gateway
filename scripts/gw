@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# scripts/otto-gw — POSIX lifecycle manager for otto-gateway on macOS/Linux.
+# scripts/gw — POSIX lifecycle manager for the gateway on macOS/Linux.
 # Renamed from scripts/otto to avoid collision with the otto CLI binary.
 #
 # Subcommands:
 #   start | stop | status | restart | logs [-f] | run | env
 #
 # Wrapper env overrides (where logs/pids/binary live):
-#   OTTO_BIN, OTTO_PID, OTTO_LOG, OTTO_LOG_BOOT, OTTO_STATE_DIR, OTTO_ADDR
+#   GW_BIN, GW_PID, GW_LOG, GW_LOG_BOOT, GW_STATE_DIR, GW_ADDR, GW_HOME,
+#   GW_INSTALL_DIR
 #
 # Gateway config flags (for start | restart | run):
 #   --pii MODE          off | replace | mask | hash | drop | encrypt
@@ -22,68 +23,76 @@
 #   --idle-timeout SEC  STREAM_IDLE_TIMEOUT_SEC=SEC (0 disables)
 #
 # .env loader (laptop-friendly persistence):
-#   Loads the first match of:  ./.env.otto-gw  →  $HOME/.otto-gw.env
+#   Loads the first match of:  ./.env  →  $GW_HOME/.env
 #   Then chains the first match of:
-#     ./.otto-gw.overrides.env  →  $HOME/.otto-gw.overrides.env
+#     ./overrides.env  →  $GW_HOME/overrides.env
 #   Override either with --env-file PATH / --overrides-file PATH, or with
-#   OTTO_ENV_FILE=PATH / OTTO_OVERRIDES_FILE=PATH.
+#   GW_ENV_FILE=PATH / GW_OVERRIDES_FILE=PATH.
 #   The overrides file is loaded SECOND; same-key values win (two-file model).
 #   CLI flags WIN over overrides; overrides WIN over .env; .env wins over
 #   inherited shell env only for keys the file actually sets.
 set -euo pipefail
 
-# Resolve this script's own install root, following symlinks. The one-liner
-# installer exposes `otto-gw` via a PATH symlink (e.g.
-# ~/.local/bin/otto-gw -> ~/.otto-gw/scripts/otto-gw), so the wrapper may run
-# from any cwd. Default paths anchor to the install root (the dir above
-# scripts/), NOT the caller's cwd — env overrides below still win. This also
-# matches the legacy "cd into the extracted folder, run ./scripts/otto-gw"
-# flow, where install root == cwd.
-_otto_source="${BASH_SOURCE[0]}"
-while [[ -h "$_otto_source" ]]; do
-    _otto_dir="$(cd -P "$(dirname "$_otto_source")" >/dev/null 2>&1 && pwd)"
-    _otto_source="$(readlink "$_otto_source")"
-    [[ "$_otto_source" != /* ]] && _otto_source="$_otto_dir/$_otto_source"
+# Resolve this script's own code dir, following symlinks. The one-liner
+# installer exposes `gw` via a PATH symlink (e.g.
+# ~/.local/bin/gw -> $GW_INSTALL_DIR/scripts/gw), so the wrapper may run
+# from any cwd. Two anchors, resolved independently:
+#   GW_INSTALL_DIR (code, replaceable on upgrade) — anchors bin/ + scripts/.
+#   GW_HOME        (config, precious)              — anchors .env, logs,
+#                   state, pid, sentinel. Default $HOME/.gw.
+# NOT the caller's cwd — env overrides below still win. This also matches
+# the legacy "cd into the extracted folder, run ./scripts/gw" flow, where
+# GW_INSTALL_DIR == cwd.
+_gw_source="${BASH_SOURCE[0]}"
+while [[ -h "$_gw_source" ]]; do
+    _gw_dir="$(cd -P "$(dirname "$_gw_source")" >/dev/null 2>&1 && pwd)"
+    _gw_source="$(readlink "$_gw_source")"
+    [[ "$_gw_source" != /* ]] && _gw_source="$_gw_dir/$_gw_source"
 done
-OTTO_SCRIPT_DIR="$(cd -P "$(dirname "$_otto_source")" >/dev/null 2>&1 && pwd)"
-OTTO_INSTALL_ROOT="$(cd -P "$OTTO_SCRIPT_DIR/.." >/dev/null 2>&1 && pwd)"
-unset _otto_source _otto_dir
+GW_SCRIPT_DIR="$(cd -P "$(dirname "$_gw_source")" >/dev/null 2>&1 && pwd)"
+GW_INSTALL_DIR="${GW_INSTALL_DIR:-$(cd -P "$GW_SCRIPT_DIR/.." >/dev/null 2>&1 && pwd)}"
+unset _gw_source _gw_dir
 
-OTTO_BIN="${OTTO_BIN:-$OTTO_INSTALL_ROOT/bin/otto-gateway}"
-# OTTO_PID lives under .otto/gw/ (anchored to the install root) rather than
+# GW_HOME anchors everything the operator's install actually owns. Separate
+# from GW_INSTALL_DIR so binaries/scripts can be replaced on upgrade without
+# touching .env / logs / state / pid.
+GW_HOME="${GW_HOME:-$HOME/.gw}"
+
+GW_BIN="${GW_BIN:-$GW_INSTALL_DIR/bin/gateway}"
+# GW_STATE_DIR / GW_PID live under $GW_HOME (config home) rather than
 # /tmp/ — some laptop setups (sandboxed shells, hardened tmp policies, network
-# drives mapped to /tmp) make /tmp non-writable. The .otto/ namespace is shared
-# with the OTTER client; we nest under gw/ to avoid name collisions.
-OTTO_STATE_DIR="${OTTO_STATE_DIR:-$OTTO_INSTALL_ROOT/.otto/gw}"
-OTTO_PID="${OTTO_PID:-${OTTO_STATE_DIR}/otto-gateway.pid}"
-# OTTO_LOG = the structured rotated log the gateway owns (via timberjack).
-# OTTO_LOG_BOOT = a small sidecar that captures crash output + kiro-cli
+# drives mapped to /tmp) make /tmp non-writable. The tray polls this same
+# path for the gateway's running state, so wrapper and tray MUST agree.
+GW_STATE_DIR="${GW_STATE_DIR:-$GW_HOME/state}"
+GW_PID="${GW_PID:-${GW_STATE_DIR}/gateway.pid}"
+# GW_LOG = the structured rotated log the gateway owns (via timberjack).
+# GW_LOG_BOOT = a small sidecar that captures crash output + kiro-cli
 # stderr + any pre-logger panic — rarely consulted, invaluable on incident.
-OTTO_LOG="${OTTO_LOG:-$OTTO_INSTALL_ROOT/logs/otto-gateway.log}"
-OTTO_LOG_BOOT="${OTTO_LOG_BOOT:-${OTTO_LOG%.log}-boot.log}"
-OTTO_ADDR="${OTTO_ADDR:-http://127.0.0.1:18080}"
+GW_LOG="${GW_LOG:-$GW_HOME/logs/gateway.log}"
+GW_LOG_BOOT="${GW_LOG_BOOT:-${GW_LOG%.log}-boot.log}"
+GW_ADDR="${GW_ADDR:-http://127.0.0.1:18080}"
 
-# Default .env search order. First hit wins; --env-file or OTTO_ENV_FILE overrides.
-DEFAULT_ENV_PATHS=("./.env.otto-gw" "$HOME/.otto-gw.env")
+# Default .env search order. First hit wins; --env-file or GW_ENV_FILE overrides.
+DEFAULT_ENV_PATHS=("./.env" "$GW_HOME/.env")
 
-# Default .otto-gw.overrides.env search order. Two-file model: .otto-gw.env is the
+# Default overrides.env search order. Two-file model: .env is the
 # template-copy (overwritten by upgrade-env); the overrides file is the operator's
 # customization layer and is loaded SECOND so its keys win for any shared key.
 # The .env-file and overrides-file flags are DECOUPLED: setting --env-file does
 # NOT auto-resolve a sibling overrides file. Overrides resolution always walks
 # the explicit precedence chain below.
-DEFAULT_OVERRIDES_PATHS=("./.otto-gw.overrides.env" "$HOME/.otto-gw.overrides.env")
+DEFAULT_OVERRIDES_PATHS=("./overrides.env" "$GW_HOME/overrides.env")
 
 # resolve_env_file returns the path of the .env file to source, or empty.
 # Honors --env-file override (already parsed into $ENV_FILE_OVERRIDE) and
-# OTTO_ENV_FILE before falling back to DEFAULT_ENV_PATHS.
+# GW_ENV_FILE before falling back to DEFAULT_ENV_PATHS.
 resolve_env_file() {
     if [[ -n "${ENV_FILE_OVERRIDE:-}" ]]; then
         echo "$ENV_FILE_OVERRIDE"
         return 0
     fi
-    if [[ -n "${OTTO_ENV_FILE:-}" ]]; then
-        echo "$OTTO_ENV_FILE"
+    if [[ -n "${GW_ENV_FILE:-}" ]]; then
+        echo "$GW_ENV_FILE"
         return 0
     fi
     for path in "${DEFAULT_ENV_PATHS[@]}"; do
@@ -96,15 +105,15 @@ resolve_env_file() {
     return 0
 }
 
-# resolve_overrides_file returns the path of the .otto-gw.overrides.env file
+# resolve_overrides_file returns the path of the overrides.env file
 # the wrapper should load (after the primary .env), or empty when no overrides
 # file is present anywhere on the precedence chain. Mirrors resolve_env_file's
 # shape so the loader chaining inside load_config is symmetric.
 #
 # Precedence (highest first):
 #   1. --overrides-file PATH   (parsed into OVERRIDES_FILE_OVERRIDE)
-#   2. $OTTO_OVERRIDES_FILE    (env override)
-#   3. DEFAULT_OVERRIDES_PATHS first hit (./, then $HOME)
+#   2. $GW_OVERRIDES_FILE    (env override)
+#   3. DEFAULT_OVERRIDES_PATHS first hit (./, then $GW_HOME)
 #
 # Returns 0 on hit; returns 0 with empty stdout on miss (callers gate on
 # `[[ -n "$overrides_file" ]]` so a clean miss is a no-op for load_config).
@@ -113,8 +122,8 @@ resolve_overrides_file() {
         echo "$OVERRIDES_FILE_OVERRIDE"
         return 0
     fi
-    if [[ -n "${OTTO_OVERRIDES_FILE:-}" ]]; then
-        echo "$OTTO_OVERRIDES_FILE"
+    if [[ -n "${GW_OVERRIDES_FILE:-}" ]]; then
+        echo "$GW_OVERRIDES_FILE"
         return 0
     fi
     for path in "${DEFAULT_OVERRIDES_PATHS[@]}"; do
@@ -126,19 +135,19 @@ resolve_overrides_file() {
     return 0
 }
 
-# resolve_template_file returns the path of the .env.otto-gw.example template
+# resolve_template_file returns the path of the .env.example template
 # (the single source of truth for keys + defaults + per-key documentation).
-# Precedence: --template PATH (TEMPLATE_FILE_OVERRIDE) > $OTTO_TEMPLATE_FILE >
-# $OTTO_SCRIPT_DIR/.env.otto-gw.example (sibling to the wrapper). Echoes the
+# Precedence: --template PATH (TEMPLATE_FILE_OVERRIDE) > $GW_TEMPLATE_FILE >
+# $GW_SCRIPT_DIR/.env.example (sibling to the wrapper). Echoes the
 # resolved path; returns 1 if the resolved candidate does not exist on disk.
 resolve_template_file() {
     local candidate=""
     if [[ -n "${TEMPLATE_FILE_OVERRIDE:-}" ]]; then
         candidate="$TEMPLATE_FILE_OVERRIDE"
-    elif [[ -n "${OTTO_TEMPLATE_FILE:-}" ]]; then
-        candidate="$OTTO_TEMPLATE_FILE"
+    elif [[ -n "${GW_TEMPLATE_FILE:-}" ]]; then
+        candidate="$GW_TEMPLATE_FILE"
     else
-        candidate="$OTTO_SCRIPT_DIR/.env.otto-gw.example"
+        candidate="$GW_SCRIPT_DIR/.env.example"
     fi
     if [[ ! -f "$candidate" ]]; then
         return 1
@@ -209,13 +218,13 @@ extract_default_value() {
 # "no sentinel possible" and skip the write entirely; the WARN line
 # on stderr is still emitted, so the operator's diagnostic path is
 # preserved. A degraded shell missing $HOME is already unable to
-# load .otto-gw.env from a sensible location, so the sentinel-skip
+# load .env from a sensible location, so the sentinel-skip
 # is the safer of two bad options.
 config_error_sentinel_path() {
     if [[ -z "${HOME:-}" ]]; then
         return 1
     fi
-    printf '%s/.otto-gw/.config-error' "$HOME"
+    printf '%s/.gw/.config-error' "$HOME"
 }
 
 # clear_config_error_sentinel removes the sentinel file. Called after
@@ -267,7 +276,7 @@ write_config_error_sentinel() {
 #
 # REL-TRAY-08 (D-18-09): tracks malformed lines (no '=' after export
 # strip) and writes the first failure to the sentinel at
-# $HOME/.otto-gw/.config-error so the tray surfaces it as StateError.
+# $HOME/.gw/.config-error so the tray surfaces it as StateError.
 # On a clean parse the sentinel is removed — failures should not stick
 # across edits.
 load_env_file() {
@@ -359,7 +368,7 @@ set_env_line() {
 }
 
 # set_overrides_line FILE KEY VALUE — write or update KEY=VALUE in the
-# .otto-gw.overrides.env file. Sibling to set_env_line, but with the
+# overrides.env file. Sibling to set_env_line, but with the
 # overrides-file contract:
 #   - Always writes UNCOMMENTED. The overrides file never carries commented
 #     operator values; absence == "not customized".
@@ -374,9 +383,9 @@ set_overrides_line() {
         local ts
         ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
         {
-            printf '# Generated by '"'"'otto-gw init'"'"' / '"'"'otto-gw migrate-to-overrides'"'"' on %s\n' "$ts"
-            printf '# Operator customizations + secrets. Loaded AFTER .otto-gw.env, so values here WIN.\n'
-            printf '# Safe to hand-edit. Will NEVER be overwritten by '"'"'otto-gw upgrade-env'"'"'.\n'
+            printf '# Generated by '"'"'gw init'"'"' / '"'"'gw migrate-to-overrides'"'"' on %s\n' "$ts"
+            printf '# Operator customizations + secrets. Loaded AFTER .env, so values here WIN.\n'
+            printf '# Safe to hand-edit. Will NEVER be overwritten by '"'"'gw upgrade-env'"'"'.\n'
             printf '\n'
         } > "$file"
         chmod 600 "$file"
@@ -482,12 +491,12 @@ _deprecation_warn_emitted=""
 
 # detect_single_file_model — emit a one-line deprecation WARN when the
 # operator is running on the legacy single-file install model (no
-# .otto-gw.overrides.env, .otto-gw.env carries uncommented operator
+# overrides.env, .env carries uncommented operator
 # values). The WARN goes to stderr to keep structured-log capture clean.
 #
 # Single-file model is detected when ALL of:
-#   1. No .otto-gw.overrides.env on any of the resolved overrides paths.
-#   2. A .otto-gw.env (the single-file form) exists.
+#   1. No overrides.env on any of the resolved overrides paths.
+#   2. A .env (the single-file form) exists.
 #   3. At least one of AUTH_TOKEN, PII_HASH_KEY, HTTP_ADDR is uncommented
 #      with a non-placeholder value, OR KIRO_CMD is uncommented and
 #      non-empty. These are the keys init writes uncommented and that
@@ -495,7 +504,7 @@ _deprecation_warn_emitted=""
 #      template copy).
 #
 # Explicitly NOT an error and NOT auto-migrating — operator decides when
-# to run `otto-gw migrate-to-overrides`. Single-file support is scheduled
+# to run `gw migrate-to-overrides`. Single-file support is scheduled
 # for removal in v1.7.
 detect_single_file_model() {
     [[ -n "$_deprecation_warn_emitted" ]] && return 0
@@ -530,7 +539,7 @@ detect_single_file_model() {
     [[ "$has_operator_value" -eq 1 ]] || return 0
 
     _deprecation_warn_emitted=1
-    echo "otto-gw: legacy single-file .env model detected — run \`otto-gw migrate-to-overrides\` to split secrets/overrides into .otto-gw.overrides.env. Single-file support will be removed in v1.7." >&2
+    echo "gw: legacy single-file .env model detected — run \`gw migrate-to-overrides\` to split secrets/overrides into overrides.env. Single-file support will be removed in v1.7." >&2
 }
 
 # load_config is the standard pre-launch hook: resolve .env → source it,
@@ -539,10 +548,10 @@ detect_single_file_model() {
 # restart / run / env.
 #
 # Two-file model (locked in 260531-tl1 CONTEXT.md Decision 1):
-#   1. .otto-gw.env (generated, byte-for-byte template copy, never edited by
+#   1. .env (generated, byte-for-byte template copy, never edited by
 #      operator). load_env_file's `export "$key=$val"` is intentionally
 #      last-write-wins, so any commented line in this file is a no-op.
-#   2. .otto-gw.overrides.env (operator-owned, contains only the keys the
+#   2. overrides.env (operator-owned, contains only the keys the
 #      operator wants to set). Loaded SECOND so its KEY= line clobbers the
 #      same KEY= from the generated file (the override mechanism).
 load_config() {
@@ -553,16 +562,16 @@ load_config() {
         echo "loaded env file: $env_file" >&2
         # Surface the resolved path to the gateway so it can log at INFO
         # which file the wrapper actually used. The binary reads this from
-        # os.Getenv("OTTO_ENV_FILE_LOADED") at startup.
-        export OTTO_ENV_FILE_LOADED="$env_file"
+        # os.Getenv("GW_ENV_FILE_LOADED") at startup.
+        export GW_ENV_FILE_LOADED="$env_file"
     fi
     overrides_file="$(resolve_overrides_file)"
     if [[ -n "$overrides_file" && -f "$overrides_file" ]]; then
         load_env_file "$overrides_file"
         echo "loaded overrides:  $overrides_file" >&2
-        # Sibling of OTTO_ENV_FILE_LOADED — gives the gateway both files for
+        # Sibling of GW_ENV_FILE_LOADED — gives the gateway both files for
         # /api/version + observability without re-walking the resolver chain.
-        export OTTO_OVERRIDES_FILE_LOADED="$overrides_file"
+        export GW_OVERRIDES_FILE_LOADED="$overrides_file"
     fi
     # One-shot deprecation warning when the legacy single-file model is in use.
     # The sentinel inside the function keeps the line from repeating across
@@ -609,7 +618,7 @@ preflight_kiro() {
     return 0
 }
 
-# wait_until_ready polls ${OTTO_ADDR}/health up to $1 seconds (default 5).
+# wait_until_ready polls ${GW_ADDR}/health up to $1 seconds (default 5).
 # Returns 0 on first 2xx; 1 on timeout or non-2xx after all retries.
 # Silent on success; on failure tails the last 20 lines of the boot
 # sidecar so the operator sees why the gateway never came up.
@@ -621,12 +630,12 @@ wait_until_ready() {
     fi
     local deadline=$(( $(date +%s) + timeout_s ))
     while (( $(date +%s) < deadline )); do
-        if curl -sf -m 1 "${OTTO_ADDR}/health" >/dev/null 2>&1; then
+        if curl -sf -m 1 "${GW_ADDR}/health" >/dev/null 2>&1; then
             return 0
         fi
         # Also bail early if the binary already exited (PID file's pid is dead).
-        if [[ -f "$OTTO_PID" ]]; then
-            local p; p=$(cat "$OTTO_PID")
+        if [[ -f "$GW_PID" ]]; then
+            local p; p=$(cat "$GW_PID")
             if ! kill -0 "$p" 2>/dev/null; then
                 break
             fi
@@ -637,25 +646,25 @@ wait_until_ready() {
 }
 
 start() {
-    if [[ -f "$OTTO_PID" ]]; then
+    if [[ -f "$GW_PID" ]]; then
         local pid
-        pid=$(cat "$OTTO_PID")
+        pid=$(cat "$GW_PID")
         if kill -0 "$pid" 2>/dev/null; then
-            echo "otto-gateway is already running (PID $pid)" >&2
+            echo "gateway is already running (PID $pid)" >&2
             exit 1
         fi
-        rm -f "$OTTO_PID"
+        rm -f "$GW_PID"
     fi
     load_config
     # Ensure the log + state directories exist before launch. Supports
-    # both the packaged otto_gateway/{logs,.otto/gw}/ layout and any
-    # custom OTTO_LOG / OTTO_PID paths the operator set.
+    # both the default $GW_HOME/{logs,state}/ config-home layout and any
+    # custom GW_LOG / GW_PID paths the operator set.
     local log_dir state_dir
-    log_dir="$(dirname "$OTTO_LOG")"
+    log_dir="$(dirname "$GW_LOG")"
     if [[ -n "$log_dir" && "$log_dir" != "." ]]; then
         mkdir -p "$log_dir"
     fi
-    state_dir="$(dirname "$OTTO_PID")"
+    state_dir="$(dirname "$GW_PID")"
     if [[ -n "$state_dir" && "$state_dir" != "." ]]; then
         mkdir -p "$state_dir"
     fi
@@ -674,13 +683,13 @@ start() {
     # LOG_FILE points the gateway's structured slog output at the rotated
     # log. nohup's redirect then captures only stderr / pre-logger output /
     # crash trails into the small boot sidecar.
-    export LOG_FILE="$OTTO_LOG"
+    export LOG_FILE="$GW_LOG"
     preflight_kiro
-    nohup "$OTTO_BIN" >> "$OTTO_LOG_BOOT" 2>&1 &
-    echo $! > "$OTTO_PID"
-    echo "otto-gateway starting (PID $(cat "$OTTO_PID"))…"
-    echo "  log:      $OTTO_LOG (rotated daily, 7d retention)"
-    echo "  boot/err: $OTTO_LOG_BOOT"
+    nohup "$GW_BIN" >> "$GW_LOG_BOOT" 2>&1 &
+    echo $! > "$GW_PID"
+    echo "gateway starting (PID $(cat "$GW_PID"))…"
+    echo "  log:      $GW_LOG (rotated daily, 7d retention)"
+    echo "  boot/err: $GW_LOG_BOOT"
     # Block briefly until /health returns 2xx so the operator sees the
     # actual ready/failed verdict instead of a phantom "running" PID
     # they only discover is dead on the next subcommand.
@@ -691,17 +700,17 @@ start() {
     # before that and surface the partial structured-log tail so the
     # operator sees what's wrong without waiting the full 30s.
     if wait_until_ready 10; then
-        echo "  ready:    ${OTTO_ADDR}/health"
+        echo "  ready:    ${GW_ADDR}/health"
     else
         echo "  ❌  gateway did NOT become ready within 10s." >&2
         # Prefer the structured log (where slog calls go when LOG_FILE
         # is set) and fall back to the boot sidecar (where pre-logger
         # / Go runtime / kiro-cli stderr lands).
         local source_log=""
-        if [[ -s "$OTTO_LOG" ]]; then
-            source_log="$OTTO_LOG"
-        elif [[ -s "$OTTO_LOG_BOOT" ]]; then
-            source_log="$OTTO_LOG_BOOT"
+        if [[ -s "$GW_LOG" ]]; then
+            source_log="$GW_LOG"
+        elif [[ -s "$GW_LOG_BOOT" ]]; then
+            source_log="$GW_LOG_BOOT"
         fi
         if [[ -n "$source_log" ]]; then
             echo "     Last 20 lines of $source_log:" >&2
@@ -723,29 +732,29 @@ _wait_for_exit() {
     done
 }
 
-# gateway_pids — print PIDs of the running otto-gateway *binary* (one per line).
+# gateway_pids — print PIDs of the running gateway *binary* (one per line).
 # Prefers pgrep; degrades to `ps | grep` where pgrep is absent. Matches the
-# full binary path (e.g. ~/.otto-gw/bin/otto-gateway), not the bare name, so it
-# can't accidentally match a log tail (logs/otto-gateway.log) or this wrapper
-# (otto-gw). The wrapper always execs the binary by absolute path, so a running
+# full binary path (e.g. $GW_INSTALL_DIR/bin/gateway), not the bare name, so
+# it can't accidentally match a log tail (logs/gateway.log) or this wrapper
+# (gw). The wrapper always execs the binary by absolute path, so a running
 # instance's argv carries it.
 gateway_pids() {
     if command -v pgrep >/dev/null 2>&1; then
-        pgrep -f "$OTTO_BIN" 2>/dev/null
+        pgrep -f "$GW_BIN" 2>/dev/null
     else
         # `grep -v grep` drops the matcher's own line; the ps header has no
         # match so it falls out naturally. -A/-o pid,args is BSD+GNU portable;
         # -F keeps the path a literal (its dots aren't treated as regex).
         # shellcheck disable=SC2009  # pgrep is the preferred path above; this is the fallback
         ps -A -o pid,args 2>/dev/null \
-            | grep -F "$OTTO_BIN" \
+            | grep -F "$GW_BIN" \
             | grep -v grep \
             | awk '{print $1}'
     fi
 }
 
 # _reap_kiro_done is the one-shot guard so reap_kiro_orphans() only runs
-# its env-load + ps-scan once per `otto-gw` invocation. stop() calls into
+# its env-load + ps-scan once per `gw` invocation. stop() calls into
 # stop_by_name() on stale-PID fallback, and both invoke reap_kiro_orphans
 # at their tail — without this guard the operator would see the scan
 # attempted twice on the same invocation.
@@ -817,7 +826,7 @@ reap_kiro_orphans() {
     pids="$filtered"
     [[ -n "$pids" ]] || return 0
 
-    echo "otto-gw: reaping stray kiro-cli orphans: $pids"
+    echo "gw: reaping stray kiro-cli orphans: $pids"
     for fp in $pids; do
         kill "$fp" 2>/dev/null || true
     done
@@ -836,7 +845,7 @@ reap_kiro_orphans() {
             kill -KILL "$sf" 2>/dev/null || true
         done
     fi
-    echo "otto-gw: kiro-cli orphans reaped"
+    echo "gw: kiro-cli orphans reaped"
 }
 
 # stop_by_name REASON — fallback when the PID file can't drive the stop (older
@@ -846,12 +855,12 @@ stop_by_name() {
     local pids fp
     pids="$(gateway_pids)"
     [[ -n "$pids" ]] || return 1
-    echo "otto-gateway: $1; stopping running process(es) by name"
+    echo "gateway: $1; stopping running process(es) by name"
     for fp in $pids; do
         kill "$fp" 2>/dev/null || true
         _wait_for_exit "$fp"
     done
-    echo "otto-gateway stopped"
+    echo "gateway stopped"
     reap_kiro_orphans
     return 0
 }
@@ -859,53 +868,53 @@ stop_by_name() {
 # stop returns 0 when the gateway is (now) stopped, 1 when nothing was running.
 # It uses `return` rather than `exit` so restart() can proceed to start().
 stop() {
-    if [[ -f "$OTTO_PID" ]]; then
+    if [[ -f "$GW_PID" ]]; then
         local pid
-        pid=$(cat "$OTTO_PID")
+        pid=$(cat "$GW_PID")
         if kill -0 "$pid" 2>/dev/null; then
             actual_comm=$(ps -p "$pid" -o comm= 2>/dev/null || true)
-            if [[ "$actual_comm" != *otto-gateway* ]]; then
-                echo "otto-gw: stop: PID $pid is alive but comm='$actual_comm' — stale PID file" >&2
-                rm -f "$OTTO_PID"
+            if [[ "$actual_comm" != *gateway* ]]; then
+                echo "gw: stop: PID $pid is alive but comm='$actual_comm' — stale PID file" >&2
+                rm -f "$GW_PID"
                 stop_by_name "stale recycled PID" && return 0
                 return 0
             fi
             kill "$pid"
             _wait_for_exit "$pid"
-            rm -f "$OTTO_PID"
-            echo "otto-gateway stopped"
+            rm -f "$GW_PID"
+            echo "gateway stopped"
             reap_kiro_orphans
             return 0
         fi
         # Stale file: a live instance may still be running without it.
-        rm -f "$OTTO_PID"
+        rm -f "$GW_PID"
         stop_by_name "stale PID" && return 0
-        echo "otto-gateway: stopped (stale PID)"
+        echo "gateway: stopped (stale PID)"
         reap_kiro_orphans
         return 0
     fi
     # No PID file at all — try to match the running binary by name.
     stop_by_name "no PID file" && return 0
-    echo "otto-gateway is not running (no PID file)" >&2
+    echo "gateway is not running (no PID file)" >&2
     return 1
 }
 
 status() {
-    if [[ ! -f "$OTTO_PID" ]]; then
-        echo "otto-gateway: stopped"
+    if [[ ! -f "$GW_PID" ]]; then
+        echo "gateway: stopped"
         exit 1
     fi
     local pid
-    pid=$(cat "$OTTO_PID")
+    pid=$(cat "$GW_PID")
     if ! kill -0 "$pid" 2>/dev/null; then
-        echo "otto-gateway: stopped (stale PID)"
+        echo "gateway: stopped (stale PID)"
         exit 1
     fi
-    echo "otto-gateway: running (PID $pid)"
+    echo "gateway: running (PID $pid)"
     command -v curl >/dev/null 2>&1 || return 0
     local body
-    body="$(curl -sf "${OTTO_ADDR}/health" 2>/dev/null || true)"
-    [[ -n "$body" ]] || { echo "  (health check unreachable at ${OTTO_ADDR}/health)"; return 0; }
+    body="$(curl -sf "${GW_ADDR}/health" 2>/dev/null || true)"
+    [[ -n "$body" ]] || { echo "  (health check unreachable at ${GW_ADDR}/health)"; return 0; }
     # Parse the flat /health JSON with sed — no jq/python dependency. Keys are
     # unique across the document (D-12 locked shape), so a greedy match finds
     # the single occurrence of each. Embeddings intentionally omitted.
@@ -928,7 +937,7 @@ status() {
     # so no token is needed. Best-effort like the health probe above: if it
     # is unreachable we skip the lines silently rather than failing status.
     local snap dbg trace
-    snap="$(curl -sf "${OTTO_ADDR}/admin/api/snapshot" 2>/dev/null || true)"
+    snap="$(curl -sf "${GW_ADDR}/admin/api/snapshot" 2>/dev/null || true)"
     [[ -n "$snap" ]] || return 0
     # JSON booleans have no surrounding quotes — capture the bare word. Use a
     # char class, NOT \(true\|false\): BSD sed (macOS) does not support \|
@@ -957,27 +966,27 @@ restart() {
 logs() {
     local follow="${1:-}"
     if [[ "$follow" == "-f" ]]; then
-        tail -f "$OTTO_LOG"
+        tail -f "$GW_LOG"
     else
-        tail -n 50 "$OTTO_LOG"
+        tail -n 50 "$GW_LOG"
     fi
 }
 
 run() {
     load_config
     # Foreground execution — inherits all env vars from the calling shell.
-    exec "$OTTO_BIN"
+    exec "$GW_BIN"
 }
 
 # show_version delegates to the binary's --version handler so the wrapper
 # and the binary cannot disagree. The version string is the same one
 # baked into the binary at build time via the Makefile's `-X` ldflag.
 show_version() {
-    if [[ ! -x "$OTTO_BIN" ]]; then
-        echo "Error: $OTTO_BIN not found or not executable." >&2
+    if [[ ! -x "$GW_BIN" ]]; then
+        echo "Error: $GW_BIN not found or not executable." >&2
         exit 1
     fi
-    "$OTTO_BIN" --version
+    "$GW_BIN" --version
 }
 
 # gen_random_hex N → 2*N hex characters from a CSPRNG. Prefers openssl
@@ -995,10 +1004,10 @@ gen_random_hex() {
     fi
 }
 
-# upgrade_env_cmd regenerates the generated `.otto-gw.env` from the
-# `.env.otto-gw.example` template, reporting which keys would be added /
+# upgrade_env_cmd regenerates the generated `.env` from the
+# `.env.example` template, reporting which keys would be added /
 # orphaned / left unchanged. Operator customizations live in the
-# `.otto-gw.overrides.env` file (loaded last by load_config) and are NEVER
+# `overrides.env` file (loaded last by load_config) and are NEVER
 # touched by this command — the whole point of the two-file model.
 #
 # Subcommand contract (locked in 260531-tl1 CONTEXT.md Decision 3):
@@ -1008,13 +1017,13 @@ gen_random_hex() {
 #                 dest file from the template and append the orphan log.
 #   - --yes       skip the confirmation prompt (CI-friendly).
 #   - --template  override template path (handy for unreleased templates).
-#   - --dest      override the resolved `.otto-gw.env` path.
+#   - --dest      override the resolved `.env` path.
 upgrade_env_cmd() {
     parse_flags "$@"
     local template dest
     if ! template="$(resolve_template_file)"; then
         echo "ERROR: upgrade-env template not found." >&2
-        echo "       Looked at: ${TEMPLATE_FILE_OVERRIDE:-${OTTO_TEMPLATE_FILE:-$OTTO_SCRIPT_DIR/.env.otto-gw.example}}" >&2
+        echo "       Looked at: ${TEMPLATE_FILE_OVERRIDE:-${GW_TEMPLATE_FILE:-$GW_SCRIPT_DIR/.env.example}}" >&2
         exit 1
     fi
     dest="${FLAG_DEST:-}"
@@ -1047,7 +1056,7 @@ upgrade_env_cmd() {
     n_orphaned="$(printf '%s\n' "$orphaned" | grep -c . || true)"
     n_unchanged="$(printf '%s\n' "$unchanged" | grep -c . || true)"
 
-    echo "otto-gw upgrade-env:"
+    echo "gw upgrade-env:"
     echo "  template: $template"
     echo "  dest:     $dest"
     if [[ "$n_added" -gt 0 ]]; then
@@ -1085,15 +1094,15 @@ upgrade_env_cmd() {
     # Write the orphan log BEFORE overwriting. If a SIGKILL lands between the
     # log write and the cp, the operator still has their old file AND a log
     # of what was about to be lost. The default location is per-user (~);
-    # OTTO_UPGRADE_LOG overrides for CI installs without $HOME.
+    # GW_UPGRADE_LOG overrides for CI installs without $HOME.
     local upgrade_log
-    if [[ -n "${OTTO_UPGRADE_LOG:-}" ]]; then
-        upgrade_log="$OTTO_UPGRADE_LOG"
+    if [[ -n "${GW_UPGRADE_LOG:-}" ]]; then
+        upgrade_log="$GW_UPGRADE_LOG"
     elif [[ -n "${HOME:-}" ]]; then
-        upgrade_log="$HOME/.otto-gw.upgrade.log"
+        upgrade_log="$GW_HOME/upgrade.log"
     else
         # Per Risk #8 in PLAN.md: never silently swallow the orphan log.
-        upgrade_log="./.otto-gw.upgrade.log"
+        upgrade_log="./upgrade.log"
     fi
     if [[ "$n_orphaned" -gt 0 ]]; then
         local ts k v
@@ -1111,7 +1120,7 @@ upgrade_env_cmd() {
 
     # Regenerate dest as a literal byte-for-byte copy of the template. The
     # generated file's contract under the new model is "pure template copy";
-    # the operator's customizations live in .otto-gw.overrides.env (which
+    # the operator's customizations live in overrides.env (which
     # we never touch here).
     cp "$template" "$dest"
     chmod 644 "$dest"
@@ -1120,14 +1129,14 @@ upgrade_env_cmd() {
 
 # migrate_to_overrides_cmd performs the one-time migration from the legacy
 # single-file model to the two-file (env + overrides) model. Extracts every
-# uncommented key from the current `.otto-gw.env` whose value differs from
-# the template default, writes those to `.otto-gw.overrides.env`, backs up
-# the original `.otto-gw.env`, and regenerates the env file from the
+# uncommented key from the current `.env` whose value differs from
+# the template default, writes those to `overrides.env`, backs up
+# the original `.env`, and regenerates the env file from the
 # template (pure copy under the new contract).
 #
 # Idempotency (locked in 260531-tl1 CONTEXT.md Decision 4): re-running on an
 # already-migrated install is a no-op. The check: overrides file exists AND
-# the current .otto-gw.env is byte-identical to the template (i.e. nothing
+# the current .env is byte-identical to the template (i.e. nothing
 # to migrate).
 #
 # Secrets (AUTH_TOKEN, PII_HASH_KEY) are ALWAYS carried across when
@@ -1139,7 +1148,7 @@ migrate_to_overrides_cmd() {
     local template dest overrides_dest
     if ! template="$(resolve_template_file)"; then
         echo "ERROR: migrate-to-overrides template not found." >&2
-        echo "       Looked at: ${TEMPLATE_FILE_OVERRIDE:-${OTTO_TEMPLATE_FILE:-$OTTO_SCRIPT_DIR/.env.otto-gw.example}}" >&2
+        echo "       Looked at: ${TEMPLATE_FILE_OVERRIDE:-${GW_TEMPLATE_FILE:-$GW_SCRIPT_DIR/.env.example}}" >&2
         exit 1
     fi
     dest="${FLAG_DEST:-}"
@@ -1147,8 +1156,8 @@ migrate_to_overrides_cmd() {
         dest="$(resolve_env_file)"
     fi
     if [[ -z "$dest" || ! -f "$dest" ]]; then
-        echo "ERROR: migrate-to-overrides: no .otto-gw.env found at ${dest:-<unresolved>}." >&2
-        echo "       Run 'otto-gw init' first, or pass --dest PATH explicitly." >&2
+        echo "ERROR: migrate-to-overrides: no .env found at ${dest:-<unresolved>}." >&2
+        echo "       Run 'gw init' first, or pass --dest PATH explicitly." >&2
         exit 1
     fi
     # Default overrides location: sibling of $dest with the canonical
@@ -1158,13 +1167,13 @@ migrate_to_overrides_cmd() {
     else
         local dest_dir; dest_dir="$(dirname "$dest")"
         # Map the dest filename back to the canonical overrides filename:
-        #   ~/.otto-gw.env       → ~/.otto-gw.overrides.env
-        #   ./.env.otto-gw       → ./.otto-gw.overrides.env
-        # Per-user installs use the dotted "$HOME/.otto-gw.overrides.env"
-        # form; project-local installs use "./.otto-gw.overrides.env". The
-        # default search list (DEFAULT_OVERRIDES_PATHS) honors both shapes,
-        # so the runtime loader picks this up automatically.
-        overrides_dest="$dest_dir/.otto-gw.overrides.env"
+        #   $GW_HOME/.env → $GW_HOME/overrides.env
+        #   ./.env        → ./overrides.env
+        # Per-user installs resolve to "$GW_HOME/overrides.env"; project-local
+        # installs use "./overrides.env". The default search list
+        # (DEFAULT_OVERRIDES_PATHS) honors both shapes, so the runtime loader
+        # picks this up automatically.
+        overrides_dest="$dest_dir/overrides.env"
     fi
 
     # Idempotency: if overrides exists AND dest is bit-identical to the
@@ -1212,7 +1221,7 @@ migrate_to_overrides_cmd() {
         return 0
     fi
 
-    echo "otto-gw migrate-to-overrides:"
+    echo "gw migrate-to-overrides:"
     echo "  dest:      $dest"
     echo "  overrides: $overrides_dest"
     echo "  would migrate: $migrations"
@@ -1267,8 +1276,8 @@ migrate_to_overrides_cmd() {
 #
 # Flags (all optional; unspecified values are prompted interactively
 # unless --non-interactive is passed):
-#   --dest PATH         where to write (default: $HOME/.otto-gw.env)
-#   --here              shortcut for --dest ./.env.otto-gw
+#   --dest PATH         where to write (default: $GW_HOME/.env)
+#   --here              shortcut for --dest ./.env
 #   --force             overwrite if dest exists
 #   --auth-token TOK    use TOK instead of generating
 #   --hash-key KEY      use KEY instead of generating
@@ -1288,7 +1297,7 @@ migrate_to_overrides_cmd() {
 #                       hash-mode correlation don't break.
 #   --non-interactive   don't prompt; use defaults for anything unset
 init_cmd() {
-    local dest="${HOME}/.otto-gw.env"
+    local dest="${GW_HOME}/.env"
     local force=0
     local non_interactive=0
     local arg_auth_token="" arg_hash_key="" arg_encrypt_key="" arg_kiro="" arg_addr="" arg_pii=""
@@ -1298,7 +1307,7 @@ init_cmd() {
         case "$1" in
             --dest)              dest="$2"; shift 2 ;;
             --dest=*)            dest="${1#*=}"; shift ;;
-            --here)              dest="./.env.otto-gw"; shift ;;
+            --here)              dest="./.env"; shift ;;
             --force)             force=1; shift ;;
             --non-interactive)   non_interactive=1; shift ;;
             --auth-enabled)      arg_auth_enabled=1; shift ;;
@@ -1348,7 +1357,7 @@ init_cmd() {
         _existing_overrides_dest="$FLAG_OVERRIDES_DEST"
     else
         local _existing_dest_dir; _existing_dest_dir="$(dirname "$dest")"
-        _existing_overrides_dest="$_existing_dest_dir/.otto-gw.overrides.env"
+        _existing_overrides_dest="$_existing_dest_dir/overrides.env"
     fi
 
     # Inline helper: read KEY from $dest first, then $_existing_overrides_dest
@@ -1453,7 +1462,7 @@ init_cmd() {
     fi
     # PII_ENCRYPT_KEY is auto-generated when missing — same precedence as
     # AUTH_TOKEN and PII_HASH_KEY. Generated even when the current mode
-    # isn't encrypt, so a later 'otto-gw start --pii encrypt' (or a
+    # isn't encrypt, so a later 'gw start --pii encrypt' (or a
     # PII_ENTITY_ACTIONS entry adding :encrypt) works without re-init.
     # --regenerate-secrets discards the existing value.
     local encrypt_key="$arg_encrypt_key"
@@ -1607,9 +1616,9 @@ init_cmd() {
     # Respect --template if the operator overrode it via parse_flags above.
     local template_file
     if ! template_file="$(resolve_template_file)"; then
-        local sought="${TEMPLATE_FILE_OVERRIDE:-${OTTO_TEMPLATE_FILE:-$OTTO_SCRIPT_DIR/.env.otto-gw.example}}"
+        local sought="${TEMPLATE_FILE_OVERRIDE:-${GW_TEMPLATE_FILE:-$GW_SCRIPT_DIR/.env.example}}"
         echo "ERROR: init template not found: $sought" >&2
-        echo "       The file scripts/.env.otto-gw.example must ship alongside otto-gw." >&2
+        echo "       The file scripts/.env.example must ship alongside gw." >&2
         exit 1
     fi
 
@@ -1618,9 +1627,9 @@ init_cmd() {
     [[ -n "$dest_dir" && "$dest_dir" != "." ]] && mkdir -p "$dest_dir"
 
     # Two-file model contract (260531-tl1 CONTEXT.md Decision 5 + Q3):
-    #   - `.otto-gw.env` is ALWAYS a byte-for-byte template copy. No
+    #   - `.env` is ALWAYS a byte-for-byte template copy. No
     #     set_env_line writes happen against it. mode 0644.
-    #   - `.otto-gw.overrides.env` carries every operator customization
+    #   - `overrides.env` carries every operator customization
     #     (uncommented) — secrets always, other knobs only when the
     #     operator explicitly set them or the install came in via re-init
     #     migration. mode 0600.
@@ -1631,7 +1640,7 @@ init_cmd() {
     if [[ -n "${FLAG_OVERRIDES_DEST:-}" ]]; then
         overrides_dest="$FLAG_OVERRIDES_DEST"
     else
-        overrides_dest="$dest_dir/.otto-gw.overrides.env"
+        overrides_dest="$dest_dir/overrides.env"
     fi
 
     # Pre-flight migration: re-init on a legacy single-file install. If
@@ -1730,7 +1739,7 @@ init_cmd() {
             echo "  AUTH:          enabled (AUTH_TOKEN=$(echo "$auth_token" | head -c 8)… in overrides)"
         fi
     else
-        echo "  AUTH:          disabled (no AUTH_TOKEN in overrides; commented placeholder in .otto-gw.env)"
+        echo "  AUTH:          disabled (no AUTH_TOKEN in overrides; commented placeholder in .env)"
     fi
     if [[ "$hash_key_preserved" -eq 1 ]]; then
         echo "  PII_HASH_KEY:  preserved (existing key reused)"
@@ -1760,7 +1769,7 @@ init_cmd() {
         echo "  CHAT_TRACE:    disabled"
     fi
     echo ""
-    echo "Next: ./scripts/otto-gw start"
+    echo "Next: ./scripts/gw start"
 }
 
 # env subcommand: print the resolved gateway-relevant env (KEY=value, one
@@ -1791,7 +1800,7 @@ print_env() {
 # support [--out DIR] [--max-mb N] [--log-days D]
 #
 # Produce a redacted diagnostic archive at
-# $OTTO_INSTALL_ROOT/support/otto-support-<host>-<ts>.tar.gz plus a
+# $GW_HOME/support/otto-support-<host>-<ts>.tar.gz plus a
 # `support/latest.tar.gz` alias (a copy, NOT a symlink — Windows parity).
 #
 # Layout (locked by docs/superpowers/specs/2026-06-08-support-bundle-design.md
@@ -1817,12 +1826,12 @@ support() {
             --log-days) FLAG_LOG_DAYS="$2"; shift 2 ;;
             -h|--help)
                 cat <<'EOF'
-Usage: otto-gw support [--out DIR] [--max-mb N] [--log-days D]
+Usage: gw support [--out DIR] [--max-mb N] [--log-days D]
 
-Produce a redacted diagnostic archive under $OTTO_INSTALL_ROOT/support/
+Produce a redacted diagnostic archive under $GW_HOME/support/
 (or --out DIR). Secrets are masked. No raw values are ever written.
 
-  --out DIR        override output directory (default: $OTTO_INSTALL_ROOT/support)
+  --out DIR        override output directory (default: $GW_HOME/support)
   --max-mb N       bundle size cap in MB (default 50; oldest rotated logs dropped)
   --log-days D     include rotated .log.gz files modified in last D days (default 7)
 EOF
@@ -1838,7 +1847,7 @@ EOF
     # Source the shared redaction primitives. Same resolution pattern as the
     # rest of the wrapper uses for sibling files.
     # shellcheck source=lib/redact.sh
-    source "$OTTO_SCRIPT_DIR/lib/redact.sh"
+    source "$GW_SCRIPT_DIR/lib/redact.sh"
 
     # Resolve config (this also writes "loaded env file:" / "loaded overrides:"
     # to stderr — captured in the bundle's MANIFEST/system area indirectly via
@@ -1848,7 +1857,7 @@ EOF
     local ts host out_dir bundle_name staging bundle_root
     ts=$(date -u +%Y%m%d-%H%M%S)
     host=$(hostname -s 2>/dev/null || hostname)
-    out_dir="${FLAG_OUT:-$OTTO_INSTALL_ROOT/support}"
+    out_dir="${FLAG_OUT:-$GW_HOME/support}"
     bundle_name="otto-support-${host}-${ts}"
     staging=$(mktemp -d)
     bundle_root="$staging/$bundle_name"
@@ -1873,7 +1882,7 @@ EOF
                  PII_ENCRYPT_KEY AUTH_TOKEN ALLOWED_IPS \
                  AUTH_TRUST_XFF HTTP_ADDR KIRO_CMD KIRO_ARGS KIRO_CWD \
                  POOL_SIZE STREAM_IDLE_TIMEOUT_SEC DEBUG CHAT_TRACE \
-                 OTTO_ENV_FILE_LOADED OTTO_OVERRIDES_FILE_LOADED; do
+                 GW_ENV_FILE_LOADED GW_OVERRIDES_FILE_LOADED; do
             v="${!k:-}"
             [[ -z "$v" ]] && continue
             if is_secret_key "$k"; then
@@ -1893,7 +1902,7 @@ EOF
         echo "overrides file: ${of:-(none)}"
     } > "$bundle_root/env/env-files.txt"
 
-    # env/shell-env.txt: ambient shell vars in the OTTO_/KIRO_/PII_/AUTH_/
+    # env/shell-env.txt: ambient shell vars in the GW_/KIRO_/PII_/AUTH_/
     # ALLOWED_/HTTP_ADDR/DEBUG/CHAT_TRACE namespaces, redacted. We can't
     # iterate `env` output verbatim because that dumps the FULL environment
     # (PATH, HOME, etc.); filtering by prefix keeps the surface bounded.
@@ -1904,10 +1913,10 @@ EOF
             # secret-test, but keep the original line around for output.
             key="${line%%=*}"
             if [[ -z "$key" || "$key" == "$line" ]]; then continue; fi
-            # Only keep keys in the OTTO/KIRO/PII/AUTH/ALLOWED namespace,
+            # Only keep keys in the GW/KIRO/PII/AUTH/ALLOWED namespace,
             # plus the explicit HTTP_ADDR / DEBUG / CHAT_TRACE singletons.
             case "$key" in
-                OTTO_*|KIRO_*|PII_*|AUTH_*|ALLOWED_*|HTTP_ADDR|DEBUG|CHAT_TRACE) ;;
+                GW_*|KIRO_*|PII_*|AUTH_*|ALLOWED_*|HTTP_ADDR|DEBUG|CHAT_TRACE) ;;
                 *) continue ;;
             esac
             val="${line#*=}"
@@ -1920,7 +1929,7 @@ EOF
     } > "$bundle_root/env/shell-env.txt"
 
     # ---- health/ -------------------------------------------------------
-    # status() exits non-zero when the gateway is stopped (so `otto-gw status`
+    # status() exits non-zero when the gateway is stopped (so `gw status`
     # in a shell pipeline returns a useful code). We don't want the support
     # subcommand to abort on a stopped gateway. With `set -e` active, a bare
     # `( status 2>&1 || true ) > file` still propagates the subshell exit
@@ -1935,15 +1944,15 @@ EOF
     # health.json / snapshot.json: best-effort live probe. On failure write
     # an "unreachable: <reason>" sentinel so triage can tell "no probe ran"
     # from "probe ran and got an empty body".
-    if curl -sf -m 5 "${OTTO_ADDR}/health" > "$bundle_root/health/health.json" 2>/dev/null; then
+    if curl -sf -m 5 "${GW_ADDR}/health" > "$bundle_root/health/health.json" 2>/dev/null; then
         :
     else
-        echo "unreachable: ${OTTO_ADDR}/health did not respond within 5s" > "$bundle_root/health/health.json"
+        echo "unreachable: ${GW_ADDR}/health did not respond within 5s" > "$bundle_root/health/health.json"
     fi
-    if curl -sf -m 5 "${OTTO_ADDR}/admin/api/snapshot" > "$bundle_root/health/snapshot.json" 2>/dev/null; then
+    if curl -sf -m 5 "${GW_ADDR}/admin/api/snapshot" > "$bundle_root/health/snapshot.json" 2>/dev/null; then
         :
     else
-        echo "unreachable: ${OTTO_ADDR}/admin/api/snapshot did not respond within 5s" > "$bundle_root/health/snapshot.json"
+        echo "unreachable: ${GW_ADDR}/admin/api/snapshot did not respond within 5s" > "$bundle_root/health/snapshot.json"
     fi
 
     # ---- logs/ ---------------------------------------------------------
@@ -1951,13 +1960,13 @@ EOF
     # source files on disk stay verbatim (operators sometimes need to grep
     # their own logs with the real values). Missing source files are silently
     # skipped — common during early-life installs.
-    local logs_dir; logs_dir="$(dirname "$OTTO_LOG")"
-    local chat_trace_log; chat_trace_log="${OTTO_LOG%.log}-chat-trace.log"
+    local logs_dir; logs_dir="$(dirname "$GW_LOG")"
+    local chat_trace_log; chat_trace_log="${GW_LOG%.log}-chat-trace.log"
     local src dst
     for pair in \
-        "$OTTO_LOG:otto-gateway.log" \
-        "$OTTO_LOG_BOOT:otto-gateway-boot.log" \
-        "$chat_trace_log:otto-gateway-chat-trace.log"; do
+        "$GW_LOG:gateway.log" \
+        "$GW_LOG_BOOT:gateway-boot.log" \
+        "$chat_trace_log:gateway-chat-trace.log"; do
         src="${pair%%:*}"
         dst="${pair##*:}"
         if [[ -f "$src" ]]; then
@@ -1970,7 +1979,7 @@ EOF
     # we don't gunzip/regzip here (would force gzip in the redaction path
     # and break BSD/GNU portability). MANIFEST notes the deferral.
     if [[ -d "$logs_dir" ]]; then
-        find "$logs_dir" -maxdepth 1 -name 'otto-gateway-*.log.gz' -mtime -"$FLAG_LOG_DAYS" -print 2>/dev/null | while IFS= read -r gz; do
+        find "$logs_dir" -maxdepth 1 -name 'gateway-*.log.gz' -mtime -"$FLAG_LOG_DAYS" -print 2>/dev/null | while IFS= read -r gz; do
             cp -p "$gz" "$bundle_root/logs/" 2>/dev/null || true
         done
     fi
@@ -1983,16 +1992,16 @@ EOF
         echo "date:     $(date)"
         echo "LANG:     ${LANG:-}"
         echo "LC_ALL:   ${LC_ALL:-}"
-        echo "df -h $OTTO_INSTALL_ROOT:"
-        df -h "$OTTO_INSTALL_ROOT" 2>/dev/null | tail -n 1 || echo "(unavailable)"
+        echo "df -h $GW_INSTALL_DIR:"
+        df -h "$GW_INSTALL_DIR" 2>/dev/null | tail -n 1 || echo "(unavailable)"
     } > "$bundle_root/system/system.txt"
 
     {
-        echo "otto-gateway:"
-        if [[ -x "$OTTO_BIN" ]]; then
-            "$OTTO_BIN" --version 2>&1 || echo "(--version failed)"
+        echo "gateway:"
+        if [[ -x "$GW_BIN" ]]; then
+            "$GW_BIN" --version 2>&1 || echo "(--version failed)"
         else
-            echo "(binary not found at $OTTO_BIN)"
+            echo "(binary not found at $GW_BIN)"
         fi
         echo
         echo "kiro-cli:"
@@ -2008,24 +2017,24 @@ EOF
 
     # 2-level listing of the install root (per spec). Sorted so triage can
     # diff bundles across captures.
-    find "$OTTO_INSTALL_ROOT" -maxdepth 2 -print 2>/dev/null | sort > "$bundle_root/system/installroot.txt"
+    find "$GW_INSTALL_DIR" -maxdepth 2 -print 2>/dev/null | sort > "$bundle_root/system/installroot.txt"
 
     # ---- tray/ ---------------------------------------------------------
     # tray/tray-state.txt row removed in v1.10.3 per REL-TRAY-09 (D-18-10):
-    # read $OTTO_INSTALL_ROOT/.otto/tray/state, a file the tray has never
+    # read $GW_INSTALL_DIR/.otto/tray/state, a file the tray has never
     # written. Every bundle showed "(unavailable: ... does not exist)".
     # tray/autostart.txt row removed in v1.10.3 per REL-TRAY-09 (D-18-10):
     # probed com.otto.tray.plist but the actual label is io.cmetech.otto-tray
     # (cmd/otto-tray/autostart_darwin.go:15). The row always reported the
     # LaunchAgent absent. Re-add when a real macOS LaunchAgent ships.
     {
-        echo "pidfile: $OTTO_PID"
-        if [[ -f "$OTTO_PID" ]]; then
-            echo "pid:     $(cat "$OTTO_PID")"
+        echo "pidfile: $GW_PID"
+        if [[ -f "$GW_PID" ]]; then
+            echo "pid:     $(cat "$GW_PID")"
             # GNU stat uses -c %y, BSD stat uses -f %Sm. Try GNU first; fall
             # back to BSD. Either flavor of failure is fine — best-effort.
             local mtime
-            mtime=$(stat -c %y "$OTTO_PID" 2>/dev/null || stat -f %Sm "$OTTO_PID" 2>/dev/null || echo "(unavailable)")
+            mtime=$(stat -c %y "$GW_PID" 2>/dev/null || stat -f %Sm "$GW_PID" 2>/dev/null || echo "(unavailable)")
             echo "mtime:   $mtime"
         else
             echo "pid:     (no pidfile)"
@@ -2046,7 +2055,7 @@ EOF
         # deterministic enough for the "we have to drop *something*" case.
         local gz_list gz_path epoch
         gz_list=""
-        for gz_path in "$bundle_root/logs/"otto-gateway-*.log.gz; do
+        for gz_path in "$bundle_root/logs/"gateway-*.log.gz; do
             [[ -e "$gz_path" ]] || continue
             epoch=$(stat -f %m "$gz_path" 2>/dev/null || stat -c %Y "$gz_path" 2>/dev/null || echo 0)
             gz_list+="${epoch}	${gz_path}"$'\n'
@@ -2068,12 +2077,12 @@ EOF
 
     # ---- MANIFEST.txt (written LAST so contents listing is accurate) ---
     {
-        echo "otto-gw support bundle"
+        echo "gw support bundle"
         echo "======================"
         echo "timestamp:  $ts UTC"
         echo "host:       $host"
         echo "os:         $(uname -a)"
-        echo "wrapper:    scripts/otto-gw (POSIX bash)"
+        echo "wrapper:    scripts/gw (POSIX bash)"
         echo "spec:       docs/superpowers/specs/2026-06-08-support-bundle-design.md"
         echo
         echo "Redaction notice"
@@ -2124,7 +2133,7 @@ usage() {
     local exit_code="${1:-1}"
     if [[ "$exit_code" -eq 0 ]]; then
         cat <<'EOF'
-Usage: otto-gw <command> [flags]
+Usage: gw <command> [flags]
 
 Commands:
   init [flags]        First-run setup — generates AUTH_TOKEN + PII_HASH_KEY,
@@ -2137,19 +2146,19 @@ Commands:
   run [flags]         Run gateway in foreground
   env [--show-secrets]
                       Print the resolved gateway env that would be passed
-  upgrade-env [flags] Regenerate .otto-gw.env from the latest .env.otto-gw.example
-                      template. Operator customizations in .otto-gw.overrides.env
+  upgrade-env [flags] Regenerate .env from the latest .env.example
+                      template. Operator customizations in overrides.env
                       are NEVER touched. --dry-run shows the added / orphaned /
                       unchanged keys without writing.
   migrate-to-overrides [flags]
                       One-time migration from the legacy single-file model:
-                      extract non-default values from .otto-gw.env into
-                      .otto-gw.overrides.env, back up the original, then
-                      regenerate .otto-gw.env from the template. Idempotent.
-  version             Print the gateway binary version (delegates to bin/otto-gateway --version)
+                      extract non-default values from .env into
+                      overrides.env, back up the original, then
+                      regenerate .env from the template. Idempotent.
+  version             Print the gateway binary version (delegates to bin/gateway --version)
   support [--out DIR] [--max-mb N] [--log-days D]
                       Produce a redacted diagnostic archive under
-                      $OTTO_INSTALL_ROOT/support/. Secrets are masked. No raw
+                      $GW_HOME/support/. Secrets are masked. No raw
                       values are ever written. See
                       docs/superpowers/specs/2026-06-08-support-bundle-design.md.
 
@@ -2166,11 +2175,11 @@ Gateway config flags (for start | restart | run | env):
   --debug             DEBUG=true (debug-level logging) for start | restart | run
   --trace             DEBUG=true + CHAT_TRACE=true (debug + chat-trace NDJSON) for start | restart | run
   --env-file PATH     Override the default .env search
-  --overrides-file PATH  Override the default .otto-gw.overrides.env search
+  --overrides-file PATH  Override the default overrides.env search
 
 upgrade-env / migrate-to-overrides flags:
-  --template PATH     Override the .env.otto-gw.example resolution
-  --dest PATH         Override the resolved .otto-gw.env target (default: the
+  --template PATH     Override the .env.example resolution
+  --dest PATH         Override the resolved .env target (default: the
                       same path resolve_env_file would pick)
   --overrides-dest PATH (migrate-to-overrides) override the resolved overrides
                       target (default: sibling of --dest)
@@ -2178,8 +2187,8 @@ upgrade-env / migrate-to-overrides flags:
   --yes               Skip the overwrite confirmation prompt (CI-friendly)
 
 init flags:
-  --dest PATH         where to write the .env (default $HOME/.otto-gw.env)
-  --here              shortcut for --dest ./.env.otto-gw
+  --dest PATH         where to write the .env (default $GW_HOME/.env)
+  --here              shortcut for --dest ./.env
   --force             overwrite if dest exists (on re-init: existing values
                       are preserved as defaults; secrets reused unchanged
                       unless --regenerate-secrets)
@@ -2207,25 +2216,25 @@ init flags:
   --non-interactive   don't prompt; use defaults for unspecified values
 
 .env auto-load search (loaded FIRST):
-  1. --env-file PATH                  (CLI override)
-  2. $OTTO_ENV_FILE                   (env override)
-  3. ./.env.otto-gw                   (project-local)
-  4. $HOME/.otto-gw.env               (per-user)
+  1. --env-file PATH           (CLI override)
+  2. $GW_ENV_FILE              (env override)
+  3. ./.env                    (project-local)
+  4. $GW_HOME/.env             (per-user)
 
-.otto-gw.overrides.env auto-load search (loaded SECOND; values win on conflict):
-  1. --overrides-file PATH            (CLI override)
-  2. $OTTO_OVERRIDES_FILE             (env override)
-  3. ./.otto-gw.overrides.env         (project-local)
-  4. $HOME/.otto-gw.overrides.env     (per-user)
+overrides.env auto-load search (loaded SECOND; values win on conflict):
+  1. --overrides-file PATH     (CLI override)
+  2. $GW_OVERRIDES_FILE        (env override)
+  3. ./overrides.env           (project-local)
+  4. $GW_HOME/overrides.env    (per-user)
 
 Precedence (highest first):
-  CLI flag → .otto-gw.overrides.env → .otto-gw.env → inherited shell env.
+  CLI flag → overrides.env → .env → inherited shell env.
 
-See scripts/.env.otto-gw.example for a starter template.
+See scripts/.env.example for a starter template.
 EOF
     else
         cat >&2 <<'EOF'
-Usage: otto-gw <command> [flags]
+Usage: gw <command> [flags]
 
 Commands:
   init [flags]        First-run setup — generates AUTH_TOKEN + PII_HASH_KEY,
@@ -2238,19 +2247,19 @@ Commands:
   run [flags]         Run gateway in foreground
   env [--show-secrets]
                       Print the resolved gateway env that would be passed
-  upgrade-env [flags] Regenerate .otto-gw.env from the latest .env.otto-gw.example
-                      template. Operator customizations in .otto-gw.overrides.env
+  upgrade-env [flags] Regenerate .env from the latest .env.example
+                      template. Operator customizations in overrides.env
                       are NEVER touched. --dry-run shows the added / orphaned /
                       unchanged keys without writing.
   migrate-to-overrides [flags]
                       One-time migration from the legacy single-file model:
-                      extract non-default values from .otto-gw.env into
-                      .otto-gw.overrides.env, back up the original, then
-                      regenerate .otto-gw.env from the template. Idempotent.
-  version             Print the gateway binary version (delegates to bin/otto-gateway --version)
+                      extract non-default values from .env into
+                      overrides.env, back up the original, then
+                      regenerate .env from the template. Idempotent.
+  version             Print the gateway binary version (delegates to bin/gateway --version)
   support [--out DIR] [--max-mb N] [--log-days D]
                       Produce a redacted diagnostic archive under
-                      $OTTO_INSTALL_ROOT/support/. Secrets are masked. No raw
+                      $GW_HOME/support/. Secrets are masked. No raw
                       values are ever written. See
                       docs/superpowers/specs/2026-06-08-support-bundle-design.md.
 
@@ -2267,11 +2276,11 @@ Gateway config flags (for start | restart | run | env):
   --debug             DEBUG=true (debug-level logging) for start | restart | run
   --trace             DEBUG=true + CHAT_TRACE=true (debug + chat-trace NDJSON) for start | restart | run
   --env-file PATH     Override the default .env search
-  --overrides-file PATH  Override the default .otto-gw.overrides.env search
+  --overrides-file PATH  Override the default overrides.env search
 
 upgrade-env / migrate-to-overrides flags:
-  --template PATH     Override the .env.otto-gw.example resolution
-  --dest PATH         Override the resolved .otto-gw.env target (default: the
+  --template PATH     Override the .env.example resolution
+  --dest PATH         Override the resolved .env target (default: the
                       same path resolve_env_file would pick)
   --overrides-dest PATH (migrate-to-overrides) override the resolved overrides
                       target (default: sibling of --dest)
@@ -2279,8 +2288,8 @@ upgrade-env / migrate-to-overrides flags:
   --yes               Skip the overwrite confirmation prompt (CI-friendly)
 
 init flags:
-  --dest PATH         where to write the .env (default $HOME/.otto-gw.env)
-  --here              shortcut for --dest ./.env.otto-gw
+  --dest PATH         where to write the .env (default $GW_HOME/.env)
+  --here              shortcut for --dest ./.env
   --force             overwrite if dest exists (on re-init: existing values
                       are preserved as defaults; secrets reused unchanged
                       unless --regenerate-secrets)
@@ -2308,21 +2317,21 @@ init flags:
   --non-interactive   don't prompt; use defaults for unspecified values
 
 .env auto-load search (loaded FIRST):
-  1. --env-file PATH                  (CLI override)
-  2. $OTTO_ENV_FILE                   (env override)
-  3. ./.env.otto-gw                   (project-local)
-  4. $HOME/.otto-gw.env               (per-user)
+  1. --env-file PATH           (CLI override)
+  2. $GW_ENV_FILE              (env override)
+  3. ./.env                    (project-local)
+  4. $GW_HOME/.env             (per-user)
 
-.otto-gw.overrides.env auto-load search (loaded SECOND; values win on conflict):
-  1. --overrides-file PATH            (CLI override)
-  2. $OTTO_OVERRIDES_FILE             (env override)
-  3. ./.otto-gw.overrides.env         (project-local)
-  4. $HOME/.otto-gw.overrides.env     (per-user)
+overrides.env auto-load search (loaded SECOND; values win on conflict):
+  1. --overrides-file PATH     (CLI override)
+  2. $GW_OVERRIDES_FILE        (env override)
+  3. ./overrides.env           (project-local)
+  4. $GW_HOME/overrides.env    (per-user)
 
 Precedence (highest first):
-  CLI flag → .otto-gw.overrides.env → .otto-gw.env → inherited shell env.
+  CLI flag → overrides.env → .env → inherited shell env.
 
-See scripts/.env.otto-gw.example for a starter template.
+See scripts/.env.example for a starter template.
 EOF
     fi
     exit "$exit_code"

@@ -8,11 +8,11 @@ import (
 	"syscall"
 )
 
-// wrapperCommand returns the executable and args to run the otto-gw
+// wrapperCommand returns the executable and args to run the gw
 // shell wrapper on darwin. The wrapper itself lives at
-// scripts/otto-gw under $GW_INSTALL_DIR.
+// scripts/gw under $GW_INSTALL_DIR.
 func wrapperCommand(installDir, verb string) (string, []string) {
-	return filepath.Join(installDir, "scripts", "otto-gw"), []string{verb}
+	return filepath.Join(installDir, "scripts", "gw"), []string{verb}
 }
 
 func detachProcessGroup(cmd *exec.Cmd) {
