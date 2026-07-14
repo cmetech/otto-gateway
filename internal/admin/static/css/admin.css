@@ -1,48 +1,48 @@
-/* OTTO Gateway Admin UI — Stylesheet
+/* Gateway Admin UI — Stylesheet
  * Phase 6.1 — CSS custom property contract (D-14 palette tokens).
  * All tokens are declared in :root so JS can read them via
  * getComputedStyle if needed. Names are the audit contract —
- * `grep --otto-bg admin.css` must succeed.
+ * `grep --gw-bg admin.css` must succeed.
  *
  * Quick 260601-9je — step 2 of admin UI redesign: dark palette
  * rewritten to a Liberty-inspired near-black + elevated card
- * surfaces; `--otto-muted` renamed to `--otto-fg-muted` (with
- * companion `--otto-fg-dim`); `--otto-card-hover`, `--otto-header`,
- * `--otto-accent-fg`, and typography size tokens added.
+ * surfaces; `--gw-muted` renamed to `--gw-fg-muted` (with
+ * companion `--gw-fg-dim`); `--gw-card-hover`, `--gw-header`,
+ * `--gw-accent-fg`, and typography size tokens added.
  */
 
 :root {
-  --otto-bg: #1A1D24;
-  --otto-card: #242832;
-  --otto-card-hover: #2C3140;
-  --otto-header: #1E2128;
-  --otto-border: #2D3340;
-  --otto-fg: #FAFAFA;
-  --otto-fg-muted: #9CA3AF;
-  --otto-fg-dim: #6B7280;
-  --otto-accent: #FAD22D;
-  --otto-accent-fg: #1A1D24;
-  --otto-link: #FAD22D;
-  --otto-healthy: #0FC373;
-  --otto-warning: #FF8C0A;
-  --otto-failed: #FF3232;
-  --otto-activity: #AF78D2;
-  --otto-space-xs: 4px;
-  --otto-space-sm: 8px;
-  --otto-space-md: 12px;
-  --otto-space-base: 16px;
-  --otto-space-lg: 24px;
-  --otto-space-xl: 32px;
-  --otto-radius-card: 6px;
-  --otto-radius-input: 4px;
-  --otto-radius-pill: 9999px;
-  --otto-text-xs: 11px;
-  --otto-text-sm: 13px;
-  --otto-text-base: 14px;
-  --otto-text-lg: 16px;
-  --otto-text-xl: 20px;
-  --otto-font-ui: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  --otto-font-mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --gw-bg: #1A1D24;
+  --gw-card: #242832;
+  --gw-card-hover: #2C3140;
+  --gw-header: #1E2128;
+  --gw-border: #2D3340;
+  --gw-fg: #FAFAFA;
+  --gw-fg-muted: #9CA3AF;
+  --gw-fg-dim: #6B7280;
+  --gw-accent: #FAD22D;
+  --gw-accent-fg: #1A1D24;
+  --gw-link: #FAD22D;
+  --gw-healthy: #0FC373;
+  --gw-warning: #FF8C0A;
+  --gw-failed: #FF3232;
+  --gw-activity: #AF78D2;
+  --gw-space-xs: 4px;
+  --gw-space-sm: 8px;
+  --gw-space-md: 12px;
+  --gw-space-base: 16px;
+  --gw-space-lg: 24px;
+  --gw-space-xl: 32px;
+  --gw-radius-card: 6px;
+  --gw-radius-input: 4px;
+  --gw-radius-pill: 9999px;
+  --gw-text-xs: 11px;
+  --gw-text-sm: 13px;
+  --gw-text-base: 14px;
+  --gw-text-lg: 16px;
+  --gw-text-xl: 20px;
+  --gw-font-ui: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --gw-font-mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
 }
 
 /* -----------------------------------------------------------------------
@@ -62,10 +62,10 @@ html {
 
 body {
   margin: 0;
-  background: var(--otto-bg);
-  color: var(--otto-fg);
-  font-family: var(--otto-font-ui);
-  font-size: var(--otto-text-base);
+  background: var(--gw-bg);
+  color: var(--gw-fg);
+  font-family: var(--gw-font-ui);
+  font-size: var(--gw-text-base);
   line-height: 1.5;
   transition: background-color 150ms, color 150ms, border-color 150ms;
 }
@@ -87,25 +87,25 @@ body {
  * Page layout
  * ----------------------------------------------------------------------- */
 
-.otto-page {
+.gw-page {
   max-width: 1280px;
   margin: 0 auto;
-  padding: var(--otto-space-xl) var(--otto-space-lg);
+  padding: var(--gw-space-xl) var(--gw-space-lg);
   display: flex;
   flex-direction: column;
-  gap: var(--otto-space-lg);
+  gap: var(--gw-space-lg);
 }
 
 /* -----------------------------------------------------------------------
  * Section headings — Liberty-style uppercase tracked
  * ----------------------------------------------------------------------- */
 
-.otto-h2 {
-  font-size: var(--otto-text-xl);
+.gw-h2 {
+  font-size: var(--gw-text-xl);
   font-weight: 600;
   line-height: 1.4;
-  color: var(--otto-fg);
-  margin: 0 0 var(--otto-space-base) 0;
+  color: var(--gw-fg);
+  margin: 0 0 var(--gw-space-base) 0;
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
@@ -114,11 +114,11 @@ body {
  * Card
  * ----------------------------------------------------------------------- */
 
-.otto-card {
-  background: var(--otto-card);
-  border: 1px solid var(--otto-border);
-  border-radius: var(--otto-radius-card);
-  padding: var(--otto-space-base);
+.gw-card {
+  background: var(--gw-card);
+  border: 1px solid var(--gw-border);
+  border-radius: var(--gw-radius-card);
+  padding: var(--gw-space-base);
   transition: background-color 150ms, color 150ms, border-color 150ms;
 }
 
@@ -126,115 +126,115 @@ body {
  * Summary strip
  * ----------------------------------------------------------------------- */
 
-.otto-summary-strip {
-  background: var(--otto-card);
-  border: 1px solid var(--otto-border);
-  border-radius: var(--otto-radius-card);
-  padding: var(--otto-space-base);
+.gw-summary-strip {
+  background: var(--gw-card);
+  border: 1px solid var(--gw-border);
+  border-radius: var(--gw-radius-card);
+  padding: var(--gw-space-base);
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--otto-space-lg);
+  gap: var(--gw-space-lg);
 }
 
-.otto-summary-item {
+.gw-summary-item {
   display: flex;
   flex-direction: column;
-  gap: var(--otto-space-xs);
+  gap: var(--gw-space-xs);
   min-width: 80px;
 }
 
-.otto-summary-label {
-  font-size: var(--otto-text-xs);
+.gw-summary-label {
+  font-size: var(--gw-text-xs);
   font-weight: 400;
-  color: var(--otto-fg-muted);
+  color: var(--gw-fg-muted);
   text-transform: uppercase;
   letter-spacing: 0.06em;
   line-height: 1.4;
 }
 
-.otto-summary-value {
-  font-size: var(--otto-text-xl);
+.gw-summary-value {
+  font-size: var(--gw-text-xl);
   font-weight: 600;
-  color: var(--otto-fg);
+  color: var(--gw-fg);
   line-height: 1.3;
 }
 
-.otto-summary-value.text-mono {
-  font-family: var(--otto-font-mono);
-  font-size: var(--otto-text-base);
+.gw-summary-value.text-mono {
+  font-family: var(--gw-font-mono);
+  font-size: var(--gw-text-base);
 }
 
 /* Live indicator zone — pushed to the right */
-.otto-live-zone {
+.gw-live-zone {
   margin-left: auto;
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  gap: var(--otto-space-xs);
+  gap: var(--gw-space-xs);
 }
 
-.otto-live-row {
+.gw-live-row {
   display: flex;
   align-items: center;
-  gap: var(--otto-space-sm);
+  gap: var(--gw-space-sm);
 }
 
 /* -----------------------------------------------------------------------
  * Status pill (filled, semantic color at 100%, accent-fg text)
  * ----------------------------------------------------------------------- */
 
-.otto-status-pill {
+.gw-status-pill {
   display: inline-block;
   padding: 4px 12px;
-  border-radius: var(--otto-radius-pill);
+  border-radius: var(--gw-radius-pill);
   font-size: 14px;
   font-weight: 600;
   line-height: 1;
-  color: var(--otto-accent-fg);
-  background: var(--otto-fg-muted);
+  color: var(--gw-accent-fg);
+  background: var(--gw-fg-muted);
   white-space: nowrap;
 }
 
-.otto-status-pill.is-healthy {
-  background: var(--otto-healthy);
+.gw-status-pill.is-healthy {
+  background: var(--gw-healthy);
 }
 
-.otto-status-pill.is-degraded {
-  background: var(--otto-warning);
+.gw-status-pill.is-degraded {
+  background: var(--gw-warning);
 }
 
-.otto-status-pill.is-down {
-  background: var(--otto-failed);
+.gw-status-pill.is-down {
+  background: var(--gw-failed);
 }
 
 /* -----------------------------------------------------------------------
  * Live dot (8px circle, semantic color background)
  * ----------------------------------------------------------------------- */
 
-.otto-live-dot {
+.gw-live-dot {
   display: inline-block;
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--otto-healthy);
+  background: var(--gw-healthy);
   flex-shrink: 0;
 }
 
-.otto-live-dot.is-yellow {
-  background: var(--otto-accent);
-  animation: otto-pulse 2s ease-in-out infinite;
+.gw-live-dot.is-yellow {
+  background: var(--gw-accent);
+  animation: gw-pulse 2s ease-in-out infinite;
 }
 
-.otto-live-dot.is-orange {
-  background: var(--otto-warning);
+.gw-live-dot.is-orange {
+  background: var(--gw-warning);
 }
 
-.otto-live-dot.is-red {
-  background: var(--otto-failed);
+.gw-live-dot.is-red {
+  background: var(--gw-failed);
 }
 
-@keyframes otto-pulse {
+@keyframes gw-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.6; }
 }
@@ -243,9 +243,9 @@ body {
  * Last-updated tag
  * ----------------------------------------------------------------------- */
 
-.otto-last-updated {
+.gw-last-updated {
   font-size: 12px;
-  color: var(--otto-fg-muted);
+  color: var(--gw-fg-muted);
   white-space: nowrap;
 }
 
@@ -254,112 +254,112 @@ body {
  * Semantic color at 12% opacity background, full color text, 12px/600
  * ----------------------------------------------------------------------- */
 
-.otto-badge {
+.gw-badge {
   display: inline-block;
   padding: 4px 8px;
-  border-radius: var(--otto-radius-input);
+  border-radius: var(--gw-radius-input);
   font-size: 12px;
   font-weight: 600;
   text-transform: uppercase;
   line-height: 1;
 }
 
-.otto-badge.is-healthy {
+.gw-badge.is-healthy {
   background: rgba(15, 195, 115, 0.12);
-  color: var(--otto-healthy);
+  color: var(--gw-healthy);
 }
 
-.otto-badge.is-busy {
+.gw-badge.is-busy {
   background: rgba(175, 120, 210, 0.12);
-  color: var(--otto-activity);
+  color: var(--gw-activity);
 }
 
-.otto-badge.is-failed {
+.gw-badge.is-failed {
   background: rgba(255, 50, 50, 0.12);
-  color: var(--otto-failed);
+  color: var(--gw-failed);
 }
 
-.otto-badge.is-warning {
+.gw-badge.is-warning {
   background: rgba(255, 140, 10, 0.12);
-  color: var(--otto-warning);
+  color: var(--gw-warning);
 }
 
 /* -----------------------------------------------------------------------
  * Pool slot grid (Plan 02 fills the cards; Plan 01 ships empty stub)
  * ----------------------------------------------------------------------- */
 
-.otto-slot-grid {
+.gw-slot-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  gap: var(--otto-space-base);
+  gap: var(--gw-space-base);
 }
 
-.otto-slot-grid-empty {
-  padding: var(--otto-space-xl) var(--otto-space-base);
+.gw-slot-grid-empty {
+  padding: var(--gw-space-xl) var(--gw-space-base);
   text-align: center;
-  color: var(--otto-fg-muted);
+  color: var(--gw-fg-muted);
   font-size: 14px;
 }
 
 /* Pool slot card */
-.otto-slot-card {
-  background: var(--otto-card);
-  border: 1px solid var(--otto-border);
-  border-radius: var(--otto-radius-card);
-  padding: var(--otto-space-base);
+.gw-slot-card {
+  background: var(--gw-card);
+  border: 1px solid var(--gw-border);
+  border-radius: var(--gw-radius-card);
+  padding: var(--gw-space-base);
   display: flex;
   flex-direction: column;
-  gap: var(--otto-space-sm);
+  gap: var(--gw-space-sm);
 }
 
-.otto-slot-card.is-dead {
-  border: 2px solid var(--otto-failed);
-  padding: calc(var(--otto-space-base) - 1px);
+.gw-slot-card.is-dead {
+  border: 2px solid var(--gw-failed);
+  padding: calc(var(--gw-space-base) - 1px);
 }
 
-.otto-slot-label {
-  font: 600 16px/1.4 var(--otto-font-ui);
-  color: var(--otto-fg);
+.gw-slot-label {
+  font: 600 16px/1.4 var(--gw-font-ui);
+  color: var(--gw-fg);
 }
 
-.otto-slot-status {
+.gw-slot-status {
   font-size: 14px;
-  color: var(--otto-fg-muted);
+  color: var(--gw-fg-muted);
 }
 
-.otto-slot-status.is-dead {
-  color: var(--otto-failed);
+.gw-slot-status.is-dead {
+  color: var(--gw-failed);
 }
 
 /* Slot meta text (Plan 02) */
-.otto-slot-meta {
-  font: 400 14px/1.5 var(--otto-font-ui);
-  color: var(--otto-fg-muted);
+.gw-slot-meta {
+  font: 400 14px/1.5 var(--gw-font-ui);
+  color: var(--gw-fg-muted);
 }
 
-.otto-slot-meta.is-busy {
-  color: var(--otto-fg);
+.gw-slot-meta.is-busy {
+  color: var(--gw-fg);
 }
 
-.otto-slot-meta.is-dead {
-  color: var(--otto-failed);
+.gw-slot-meta.is-dead {
+  color: var(--gw-failed);
 }
 
 /* Badge variants for alive/dead (Plan 02 — aliases to semantic colors) */
-.otto-badge.is-alive {
+.gw-badge.is-alive {
   background: rgba(15, 195, 115, 0.12);
-  color: var(--otto-healthy);
+  color: var(--gw-healthy);
 }
 
-.otto-badge.is-dead {
+.gw-badge.is-dead {
   background: rgba(255, 50, 50, 0.12);
-  color: var(--otto-failed);
+  color: var(--gw-failed);
 }
 
 /* Session ID short display */
-.otto-session-id-short {
-  font: 400 12px/1.4 var(--otto-font-mono);
-  color: var(--otto-fg-muted);
+.gw-session-id-short {
+  font: 400 12px/1.4 var(--gw-font-mono);
+  color: var(--gw-fg-muted);
 }
 
 /* -----------------------------------------------------------------------
@@ -367,328 +367,328 @@ body {
  * ----------------------------------------------------------------------- */
 
 /* Legacy table-card kept for backward compat with Plan 01 CSS */
-.otto-table-card {
-  background: var(--otto-card);
-  border: 1px solid var(--otto-border);
-  border-radius: var(--otto-radius-card);
+.gw-table-card {
+  background: var(--gw-card);
+  border: 1px solid var(--gw-border);
+  border-radius: var(--gw-radius-card);
   overflow: hidden;
 }
 
-.otto-table {
+.gw-table {
   width: 100%;
   border-collapse: collapse;
   font-size: 14px;
 }
 
-.otto-table th {
+.gw-table th {
   text-align: left;
-  padding: var(--otto-space-md);
+  padding: var(--gw-space-md);
   font-size: 12px;
   font-weight: 600;
-  color: var(--otto-fg-muted);
+  color: var(--gw-fg-muted);
   text-transform: uppercase;
   letter-spacing: 0.03em;
-  border-bottom: 1px solid var(--otto-border);
+  border-bottom: 1px solid var(--gw-border);
 }
 
-.otto-table td {
-  padding: var(--otto-space-md);
-  color: var(--otto-fg);
-  border-bottom: 1px solid var(--otto-border);
+.gw-table td {
+  padding: var(--gw-space-md);
+  color: var(--gw-fg);
+  border-bottom: 1px solid var(--gw-border);
 }
 
-.otto-table tr:last-child td {
+.gw-table tr:last-child td {
   border-bottom: none;
 }
 
-.otto-table-empty {
-  padding: var(--otto-space-xl) var(--otto-space-base);
+.gw-table-empty {
+  padding: var(--gw-space-xl) var(--gw-space-base);
   text-align: center;
 }
 
-.otto-table-empty-heading {
+.gw-table-empty-heading {
   font-size: 16px;
   font-weight: 600;
-  color: var(--otto-fg);
-  margin: 0 0 var(--otto-space-sm) 0;
+  color: var(--gw-fg);
+  margin: 0 0 var(--gw-space-sm) 0;
 }
 
-.otto-table-empty-body {
+.gw-table-empty-body {
   font-size: 14px;
-  color: var(--otto-fg-muted);
+  color: var(--gw-fg-muted);
   margin: 0;
 }
 
 /* Sessions card (Plan 02) */
-.otto-sessions-card {
-  background: var(--otto-card);
-  border: 1px solid var(--otto-border);
-  border-radius: var(--otto-radius-card);
-  padding: var(--otto-space-base);
+.gw-sessions-card {
+  background: var(--gw-card);
+  border: 1px solid var(--gw-border);
+  border-radius: var(--gw-radius-card);
+  padding: var(--gw-space-base);
   overflow-x: auto;
 }
 
 /* Sessions table (Plan 02) */
-.otto-sessions-table {
+.gw-sessions-table {
   width: 100%;
   border-collapse: collapse;
-  font: 400 14px/1.5 var(--otto-font-ui);
-  color: var(--otto-fg);
+  font: 400 14px/1.5 var(--gw-font-ui);
+  color: var(--gw-fg);
 }
 
-.otto-sessions-table thead th {
+.gw-sessions-table thead th {
   text-align: left;
-  padding: var(--otto-space-md);
-  border-bottom: 1px solid var(--otto-border);
-  font: 400 12px/1.4 var(--otto-font-ui);
-  color: var(--otto-fg-muted);
+  padding: var(--gw-space-md);
+  border-bottom: 1px solid var(--gw-border);
+  font: 400 12px/1.4 var(--gw-font-ui);
+  color: var(--gw-fg-muted);
   text-transform: uppercase;
 }
 
-.otto-sessions-table tbody td {
-  padding: var(--otto-space-md);
-  border-bottom: 1px solid var(--otto-border);
+.gw-sessions-table tbody td {
+  padding: var(--gw-space-md);
+  border-bottom: 1px solid var(--gw-border);
 }
 
-.otto-sessions-table tbody tr:last-child td {
+.gw-sessions-table tbody tr:last-child td {
   border-bottom: none;
 }
 
-.otto-sessions-table td.is-session-id {
-  font: 400 14px/1.5 var(--otto-font-mono);
-  color: var(--otto-fg);
+.gw-sessions-table td.is-session-id {
+  font: 400 14px/1.5 var(--gw-font-mono);
+  color: var(--gw-fg);
 }
 
-.otto-sessions-table td.is-model-null {
-  color: var(--otto-fg-muted);
+.gw-sessions-table td.is-model-null {
+  color: var(--gw-fg-muted);
 }
 
 /* Empty state (Plan 02) */
-.otto-empty-state {
+.gw-empty-state {
   text-align: center;
-  padding: var(--otto-space-xl);
-  color: var(--otto-fg-muted);
+  padding: var(--gw-space-xl);
+  color: var(--gw-fg-muted);
 }
 
-.otto-empty-state strong {
-  color: var(--otto-fg);
+.gw-empty-state strong {
+  color: var(--gw-fg);
   display: block;
-  margin-bottom: var(--otto-space-sm);
-  font: 600 16px/1.4 var(--otto-font-ui);
+  margin-bottom: var(--gw-space-sm);
+  font: 600 16px/1.4 var(--gw-font-ui);
 }
 
 /* -----------------------------------------------------------------------
  * Log tail panel (Plan 03 — SSE live tail)
  * ----------------------------------------------------------------------- */
 
-.otto-log-panel {
-  background: var(--otto-card);
-  border: 1px solid var(--otto-border);
-  border-radius: var(--otto-radius-card);
+.gw-log-panel {
+  background: var(--gw-card);
+  border: 1px solid var(--gw-border);
+  border-radius: var(--gw-radius-card);
   overflow: hidden;
 }
 
 /* Activity header row (Plan 03) */
-.otto-log-header {
+.gw-log-header {
   display: flex;
   align-items: center;
-  gap: var(--otto-space-sm);
-  padding: var(--otto-space-sm) var(--otto-space-base);
-  border-bottom: 1px solid var(--otto-border);
+  gap: var(--gw-space-sm);
+  padding: var(--gw-space-sm) var(--gw-space-base);
+  border-bottom: 1px solid var(--gw-border);
 }
 
-/* Log activity dot — uses otto-live-dot base + activity color override.
+/* Log activity dot — uses gw-live-dot base + activity color override.
  * When SSE is disconnected, add class is-disconnected for warning color. */
-.otto-log-activity-dot {
-  background: var(--otto-activity);
-  animation: otto-pulse 2s ease-in-out infinite;
+.gw-log-activity-dot {
+  background: var(--gw-activity);
+  animation: gw-pulse 2s ease-in-out infinite;
 }
 
-.otto-log-activity-dot.is-disconnected {
-  background: var(--otto-warning);
+.gw-log-activity-dot.is-disconnected {
+  background: var(--gw-warning);
   animation: none;
 }
 
 /* Connection status text (Plan 03) */
-.otto-log-status {
-  color: var(--otto-fg-muted);
-  font: 400 12px/1.4 var(--otto-font-ui);
+.gw-log-status {
+  color: var(--gw-fg-muted);
+  font: 400 12px/1.4 var(--gw-font-ui);
 }
 
-.otto-log-controls {
-  padding: var(--otto-space-sm) var(--otto-space-base);
+.gw-log-controls {
+  padding: var(--gw-space-sm) var(--gw-space-base);
   display: flex;
   align-items: center;
-  gap: var(--otto-space-sm);
-  border-bottom: 1px solid var(--otto-border);
+  gap: var(--gw-space-sm);
+  border-bottom: 1px solid var(--gw-border);
   flex-wrap: wrap;
 }
 
 /* Log viewport: 4-column CSS grid (Time | Level | Source | Message),
  * fixed height, overflow scroll. The viewport is the grid CONTAINER;
- * the in-template header row and JS-appended .otto-log-row / .otto-log-row-fallback
+ * the in-template header row and JS-appended .gw-log-row / .gw-log-row-fallback
  * use `display: contents` so their cells participate directly in this grid. */
-.otto-log-viewport {
+.gw-log-viewport {
   height: 480px;
   overflow-y: auto;
   display: grid;
   grid-template-columns: minmax(0, max-content) minmax(0, max-content) minmax(0, max-content) 1fr;
   align-content: start;
-  font: 400 12px/1.5 var(--otto-font-mono);
-  color: var(--otto-fg);
-  background: var(--otto-bg);
+  font: 400 12px/1.5 var(--gw-font-mono);
+  color: var(--gw-fg);
+  background: var(--gw-bg);
 }
 
 /* Sticky header row — children participate in the parent grid via display: contents.
- * Each header cell must individually set position: sticky + matching --otto-bg
+ * Each header cell must individually set position: sticky + matching --gw-bg
  * background so scrolling rows are visually clipped behind it. */
-.otto-log-header-row { display: contents; }
+.gw-log-header-row { display: contents; }
 
-.otto-log-header-row .otto-log-cell {
+.gw-log-header-row .gw-log-cell {
   position: sticky;
   top: 0;
-  background: var(--otto-bg);
+  background: var(--gw-bg);
   z-index: 1;
-  padding: 4px var(--otto-space-sm);
-  font: 600 11px/1.4 var(--otto-font-ui);
-  color: var(--otto-fg-muted);
-  border-bottom: 1px solid var(--otto-border);
+  padding: 4px var(--gw-space-sm);
+  font: 600 11px/1.4 var(--gw-font-ui);
+  color: var(--gw-fg-muted);
+  border-bottom: 1px solid var(--gw-border);
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
 
 /* JS-appended log row — display: contents pushes its 4 cells into the grid. */
-.otto-log-row { display: contents; }
+.gw-log-row { display: contents; }
 
 /* Default cell styling: tight padding, nowrap so time/level/source stay on one line. */
-.otto-log-cell {
-  padding: 2px var(--otto-space-sm);
+.gw-log-cell {
+  padding: 2px var(--gw-space-sm);
   white-space: nowrap;
 }
 
 /* Message cell wraps long content inside its column (no horizontal scroll). */
-.otto-log-cell-message {
+.gw-log-cell-message {
   white-space: pre-wrap;
   word-break: break-word;
 }
 
 /* Fallback row for unparseable raw lines: one full-width cell spanning all 4 cols. */
-.otto-log-row-fallback { display: contents; }
+.gw-log-row-fallback { display: contents; }
 
-.otto-log-row-fallback .otto-log-cell-fallback {
+.gw-log-row-fallback .gw-log-cell-fallback {
   grid-column: 1 / -1;
-  padding: 2px var(--otto-space-sm);
+  padding: 2px var(--gw-space-sm);
   white-space: pre-wrap;
   word-break: break-word;
-  color: var(--otto-fg-muted);
+  color: var(--gw-fg-muted);
 }
 
 /* Empty state shown before any lines arrive — span all 4 grid columns. */
-.otto-log-empty {
+.gw-log-empty {
   grid-column: 1 / -1;
-  color: var(--otto-fg-muted);
+  color: var(--gw-fg-muted);
   text-align: center;
-  padding: var(--otto-space-lg);
-  font: 400 14px/1.5 var(--otto-font-ui);
+  padding: var(--gw-space-lg);
+  font: 400 14px/1.5 var(--gw-font-ui);
 }
 
 /* Level chip — inline pill inside the Level cell. Color lives on the chip,
  * NOT the row, so the rest of the row stays in the default fg color. */
-.otto-log-level-chip {
+.gw-log-level-chip {
   display: inline-block;
   padding: 0 6px;
   border-radius: 4px;
-  font: 600 10px/1.6 var(--otto-font-ui);
+  font: 600 10px/1.6 var(--gw-font-ui);
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
 
 /* Per-level chip palette — uses existing tokens for theme parity. */
-.otto-log-level-chip.is-debug {
-  color: var(--otto-bg);
-  background: var(--otto-fg-muted);
+.gw-log-level-chip.is-debug {
+  color: var(--gw-bg);
+  background: var(--gw-fg-muted);
 }
-.otto-log-level-chip.is-info {
-  color: var(--otto-bg);
-  background: var(--otto-fg);
+.gw-log-level-chip.is-info {
+  color: var(--gw-bg);
+  background: var(--gw-fg);
 }
-.otto-log-level-chip.is-warn {
-  color: var(--otto-bg);
-  background: var(--otto-warning);
+.gw-log-level-chip.is-warn {
+  color: var(--gw-bg);
+  background: var(--gw-warning);
 }
-.otto-log-level-chip.is-error {
-  color: var(--otto-bg);
-  background: var(--otto-failed);
+.gw-log-level-chip.is-error {
+  color: var(--gw-bg);
+  background: var(--gw-failed);
 }
-.otto-log-level-chip.is-unknown {
-  color: var(--otto-fg-muted);
+.gw-log-level-chip.is-unknown {
+  color: var(--gw-fg-muted);
   background: transparent;
-  border: 1px solid var(--otto-border);
+  border: 1px solid var(--gw-border);
 }
 
 /* Regex invalid-pattern hint (Plan 03) */
-.otto-grep-hint {
-  color: var(--otto-warning);
-  font: 400 12px/1.4 var(--otto-font-ui);
+.gw-grep-hint {
+  color: var(--gw-warning);
+  font: 400 12px/1.4 var(--gw-font-ui);
 }
 
 /* "N new" badge shown while paused (Plan 03) */
-.otto-newest-badge {
-  background: var(--otto-warning);
-  color: var(--otto-bg);
-  padding: var(--otto-space-xs) var(--otto-space-sm);
-  border-radius: var(--otto-radius-input);
-  font: 600 12px/1.4 var(--otto-font-ui);
+.gw-newest-badge {
+  background: var(--gw-warning);
+  color: var(--gw-bg);
+  padding: var(--gw-space-xs) var(--gw-space-sm);
+  border-radius: var(--gw-radius-input);
+  font: 600 12px/1.4 var(--gw-font-ui);
 }
 
 /* Input + Select shared styling */
-.otto-input,
-.otto-select {
-  background: var(--otto-bg);
-  border: 1px solid var(--otto-border);
-  border-radius: var(--otto-radius-input);
-  padding: var(--otto-space-sm) var(--otto-space-md);
-  color: var(--otto-fg);
-  font-family: var(--otto-font-ui);
+.gw-input,
+.gw-select {
+  background: var(--gw-bg);
+  border: 1px solid var(--gw-border);
+  border-radius: var(--gw-radius-input);
+  padding: var(--gw-space-sm) var(--gw-space-md);
+  color: var(--gw-fg);
+  font-family: var(--gw-font-ui);
   font-size: 14px;
 }
 
-.otto-input:focus,
-.otto-select:focus {
-  outline: 2px solid var(--otto-accent);
+.gw-input:focus,
+.gw-select:focus {
+  outline: 2px solid var(--gw-accent);
   outline-offset: 0;
 }
 
 /* Button (pause/resume) */
-.otto-btn {
-  padding: var(--otto-space-sm) var(--otto-space-base);
-  border-radius: var(--otto-radius-input);
-  font-family: var(--otto-font-ui);
+.gw-btn {
+  padding: var(--gw-space-sm) var(--gw-space-base);
+  border-radius: var(--gw-radius-input);
+  font-family: var(--gw-font-ui);
   font-size: 14px;
   font-weight: 400;
-  color: var(--otto-fg);
-  background: var(--otto-card);
-  border: 1px solid var(--otto-border);
+  color: var(--gw-fg);
+  background: var(--gw-card);
+  border: 1px solid var(--gw-border);
   cursor: pointer;
   white-space: nowrap;
 }
 
-.otto-btn.is-active {
-  background: var(--otto-link);
-  border-color: var(--otto-link);
+.gw-btn.is-active {
+  background: var(--gw-link);
+  border-color: var(--gw-link);
 }
 
-.otto-btn:hover {
+.gw-btn:hover {
   opacity: 0.85;
 }
 
 /* Pause button variant — active (paused) state uses is-paused class.
- * NOTE: --otto-link is now the OTTO yellow accent (was blue in step 1);
+ * NOTE: --gw-link is now the OTTO yellow accent (was blue in step 1);
  * the paused button is intentionally yellow as part of step 2 visual
  * identity. */
-.otto-btn.is-paused {
-  background: var(--otto-link);
-  border-color: var(--otto-link);
+.gw-btn.is-paused {
+  background: var(--gw-link);
+  border-color: var(--gw-link);
 }
 
 /* -----------------------------------------------------------------------
@@ -697,40 +697,40 @@ body {
 
 /* Tablet: 768-1023px */
 @media (max-width: 1023px) {
-  .otto-slot-grid {
+  .gw-slot-grid {
     grid-template-columns: repeat(2, 1fr);
   }
 
-  .otto-log-viewport {
+  .gw-log-viewport {
     height: 360px;
   }
 }
 
 /* Mobile: < 768px */
 @media (max-width: 767px) {
-  .otto-page {
-    padding: var(--otto-space-base) var(--otto-space-sm);
+  .gw-page {
+    padding: var(--gw-space-base) var(--gw-space-sm);
   }
 
-  .otto-slot-grid {
+  .gw-slot-grid {
     grid-template-columns: 1fr;
   }
 
-  .otto-summary-strip {
+  .gw-summary-strip {
     flex-direction: column;
     align-items: flex-start;
   }
 
-  .otto-live-zone {
+  .gw-live-zone {
     margin-left: 0;
     align-items: flex-start;
   }
 
-  .otto-log-viewport {
+  .gw-log-viewport {
     height: 240px;
   }
 
-  .otto-table-card {
+  .gw-table-card {
     overflow-x: auto;
   }
 }
@@ -745,27 +745,27 @@ body {
  * ----------------------------------------------------------------------- */
 
 /* Real light-theme palette (step 2). Mirrors :root token NAMES with
- * theme-appropriate VALUES. --otto-header is intentionally identical
+ * theme-appropriate VALUES. --gw-header is intentionally identical
  * to the dark-theme value (#1E2128) so the page header stays dark in
- * BOTH themes (Liberty-style parity). --otto-link is darkened to
+ * BOTH themes (Liberty-style parity). --gw-link is darkened to
  * #B8930A for AA contrast on light backgrounds; semantic colors are
  * shifted to their darker variants for accessible contrast. */
 [data-theme="light"] {
-  --otto-bg: #F7F8FA;
-  --otto-card: #FFFFFF;
-  --otto-card-hover: #F1F3F7;
-  --otto-header: #1E2128;
-  --otto-border: #E5E7EB;
-  --otto-fg: #1A1D24;
-  --otto-fg-muted: #4B5563;
-  --otto-fg-dim: #6B7280;
-  --otto-accent: #FAD22D;
-  --otto-accent-fg: #1A1D24;
-  --otto-link: #B8930A;
-  --otto-healthy: #059669;
-  --otto-warning: #D97706;
-  --otto-failed: #DC2626;
-  --otto-activity: #7C3AED;
+  --gw-bg: #F7F8FA;
+  --gw-card: #FFFFFF;
+  --gw-card-hover: #F1F3F7;
+  --gw-header: #1E2128;
+  --gw-border: #E5E7EB;
+  --gw-fg: #1A1D24;
+  --gw-fg-muted: #4B5563;
+  --gw-fg-dim: #6B7280;
+  --gw-accent: #FAD22D;
+  --gw-accent-fg: #1A1D24;
+  --gw-link: #B8930A;
+  --gw-healthy: #059669;
+  --gw-warning: #D97706;
+  --gw-failed: #DC2626;
+  --gw-activity: #7C3AED;
 }
 
 /* Header bar (wordmark + theme toggle). Always-dark surface in BOTH
@@ -773,28 +773,28 @@ body {
  * on the dark header bar regardless of which theme the body uses. The
  * border-bottom uses a translucent white hairline that works against
  * the dark header in both themes. */
-.otto-header {
+.gw-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 0.75rem 1.25rem;
-  background: var(--otto-header);
+  background: var(--gw-header);
   color: #FAFAFA;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
   transition: background-color 150ms, color 150ms, border-color 150ms;
 }
 
-.otto-header-brand {
+.gw-header-brand {
   font-weight: 600;
   letter-spacing: 0.01em;
 }
 
-.otto-header-actions {
+.gw-header-actions {
   display: flex;
   gap: 0.5rem;
 }
 
-.otto-theme-toggle {
+.gw-theme-toggle {
   background: transparent;
   border: 1px solid rgba(255, 255, 255, 0.2);
   color: inherit;
@@ -805,21 +805,21 @@ body {
   transition: background 150ms;
 }
 
-.otto-theme-toggle:hover {
+.gw-theme-toggle:hover {
   background: rgba(255, 255, 255, 0.06);
 }
 
 /* Tab nav strip (Dashboard / About / Docs) — sits BELOW the dark header
  * on the theme-able body background, so its border uses the theme-able
- * --otto-border token (step 2). */
-.otto-tab-nav {
+ * --gw-border token (step 2). */
+.gw-tab-nav {
   display: flex;
   gap: 1.5rem;
   padding: 0 1.25rem;
-  border-bottom: 1px solid var(--otto-border);
+  border-bottom: 1px solid var(--gw-border);
 }
 
-.otto-tab {
+.gw-tab {
   display: inline-block;
   padding: 0.65rem 0;
   color: inherit;
@@ -828,18 +828,18 @@ body {
   transition: color 150ms, border-color 150ms;
 }
 
-.otto-tab:hover {
+.gw-tab:hover {
   opacity: 1;
-  color: var(--otto-fg-muted);
+  color: var(--gw-fg-muted);
 }
 
-.otto-tab.is-active {
-  border-bottom-color: var(--otto-accent);
+.gw-tab.is-active {
+  border-bottom-color: var(--gw-accent);
   font-weight: 600;
 }
 
 /* Coming-soon placeholder card stub (About / Docs in step 1) */
-.otto-coming-soon {
+.gw-coming-soon {
   padding: 2rem;
   text-align: center;
   opacity: 0.75;
@@ -856,36 +856,36 @@ body {
  * ----------------------------------------------------------------------- */
 
 /* Card accent-border variants: 4px left border keyed to semantic color. */
-.otto-card--accent-healthy {
-  border-left: 4px solid var(--otto-healthy);
+.gw-card--accent-healthy {
+  border-left: 4px solid var(--gw-healthy);
 }
 
-.otto-card--accent-warning {
-  border-left: 4px solid var(--otto-warning);
+.gw-card--accent-warning {
+  border-left: 4px solid var(--gw-warning);
 }
 
-.otto-card--accent-failed {
-  border-left: 4px solid var(--otto-failed);
+.gw-card--accent-failed {
+  border-left: 4px solid var(--gw-failed);
 }
 
-.otto-card--accent-accent {
-  border-left: 4px solid var(--otto-accent);
+.gw-card--accent-accent {
+  border-left: 4px solid var(--gw-accent);
 }
 
 /* Pill badge modifier (additive — does NOT replace the rectangular
- * .otto-badge base rule used by existing admin.js classList writes).
+ * .gw-badge base rule used by existing admin.js classList writes).
  * The ::before generates the leading status dot in the badge's text
  * color via currentColor. */
-.otto-badge--pill {
-  border-radius: var(--otto-radius-pill);
+.gw-badge--pill {
+  border-radius: var(--gw-radius-pill);
   padding: 4px 10px;
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: var(--otto-text-xs);
+  font-size: var(--gw-text-xs);
 }
 
-.otto-badge--pill::before {
+.gw-badge--pill::before {
   content: "";
   display: inline-block;
   width: 6px;
@@ -896,32 +896,32 @@ body {
 
 /* Primary button variant: filled accent (OTTO yellow) for the primary
  * action on a page. Hover dims slightly via opacity. */
-.otto-btn--primary {
-  background: var(--otto-accent);
-  border-color: var(--otto-accent);
-  color: var(--otto-accent-fg);
+.gw-btn--primary {
+  background: var(--gw-accent);
+  border-color: var(--gw-accent);
+  color: var(--gw-accent-fg);
   font-weight: 600;
 }
 
-.otto-btn--primary:hover {
+.gw-btn--primary:hover {
   opacity: 0.9;
 }
 
 /* Secondary button variant: transparent + theme-able border. */
-.otto-btn--secondary {
+.gw-btn--secondary {
   background: transparent;
-  border: 1px solid var(--otto-border);
-  color: var(--otto-fg);
+  border: 1px solid var(--gw-border);
+  color: var(--gw-fg);
 }
 
-.otto-btn--secondary:hover {
-  background: var(--otto-card-hover);
+.gw-btn--secondary:hover {
+  background: var(--gw-card-hover);
 }
 
 /* Light-mode-only card shadow: subtle 1px ambient drop for visual
  * separation against the F7F8FA page bg. Dark mode has no shadow — it
  * would be invisible against the dark surfaces and add noise. */
-[data-theme="light"] .otto-card {
+[data-theme="light"] .gw-card {
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
 }
 
@@ -932,14 +932,14 @@ body {
  *     surface with a 32x32 icon-only button. Inline sun + moon SVGs in
  *     base.html.tmpl are shown/hidden based on [data-theme] on <html>
  *     so the CSS drives icon visibility without JS needing to know.
- *     These rules WIN OVER the prior step-1 .otto-theme-toggle declaration
+ *     These rules WIN OVER the prior step-1 .gw-theme-toggle declaration
  *     via cascade order (append-wins for same-specificity selectors).
  *
  * (b) About-page grid + typography — Identity wordmark banner +
  *     responsive 6-card grid + tight definition-list rows.
  * ----------------------------------------------------------------------- */
 
-.otto-theme-toggle {
+.gw-theme-toggle {
   width: 32px;
   height: 32px;
   padding: 0;
@@ -953,97 +953,97 @@ body {
   color: inherit;
   transition: background 150ms, transform 100ms;
 }
-.otto-theme-toggle:hover {
-  background: var(--otto-card-hover);
+.gw-theme-toggle:hover {
+  background: var(--gw-card-hover);
 }
-.otto-theme-toggle:active {
+.gw-theme-toggle:active {
   transform: scale(0.95);
 }
-.otto-theme-toggle svg {
+.gw-theme-toggle svg {
   width: 20px;
   height: 20px;
 }
-.otto-theme-toggle .icon-sun,
-.otto-theme-toggle .icon-moon {
+.gw-theme-toggle .icon-sun,
+.gw-theme-toggle .icon-moon {
   display: none;
 }
-[data-theme="dark"] .otto-theme-toggle .icon-sun {
+[data-theme="dark"] .gw-theme-toggle .icon-sun {
   display: block;
 }
-[data-theme="light"] .otto-theme-toggle .icon-moon {
+[data-theme="light"] .gw-theme-toggle .icon-moon {
   display: block;
 }
 
 /* About page Identity banner. The wordmark intentionally uses a larger
- * font than --otto-text-xl since it's the page banner, not a section
+ * font than --gw-text-xl since it's the page banner, not a section
  * heading. */
-.otto-about-identity {
+.gw-about-identity {
   text-align: center;
-  padding: var(--otto-space-xl);
+  padding: var(--gw-space-xl);
 }
-.otto-about-wordmark {
+.gw-about-wordmark {
   font-size: 32px;
   font-weight: 700;
   letter-spacing: 0.04em;
-  margin: 0 0 var(--otto-space-sm) 0;
-  color: var(--otto-fg);
+  margin: 0 0 var(--gw-space-sm) 0;
+  color: var(--gw-fg);
 }
-.otto-about-tagline {
+.gw-about-tagline {
   margin: 0;
-  color: var(--otto-fg-muted);
-  font-size: var(--otto-text-base);
+  color: var(--gw-fg-muted);
+  font-size: var(--gw-text-base);
 }
 
 /* About page card grid — auto-fit so the layout collapses from 3 columns
  * on wide screens to 2 columns on tablets and 1 on mobile without any
  * media-query glue. minmax(280px, 1fr) is the breakpoint heuristic. */
-.otto-about-grid {
+.gw-about-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: var(--otto-space-base);
+  gap: var(--gw-space-base);
 }
 
 /* Quick 260601-cx3 — pin the trimmed About-page row to 4 columns at desktop
  * width (Build info / Runtime status / Feature flags / Upstream worker).
- * The about template carries BOTH .otto-about-grid and .otto-card-grid-4
+ * The about template carries BOTH .gw-about-grid and .gw-card-grid-4
  * on the same wrapper; this rule wins at desktop because it ships later
  * in the cascade. Below 1100px the grid falls back to auto-fit minmax so
  * the cards reflow gracefully on tablet / mobile. */
-.otto-card-grid-4 {
+.gw-card-grid-4 {
   display: grid;
-  gap: var(--otto-space-base);
+  gap: var(--gw-space-base);
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 @media (max-width: 1100px) {
-  .otto-card-grid-4 {
+  .gw-card-grid-4 {
     grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   }
 }
 
 /* Definition list inside each About card — two-column dt/dd layout,
  * label muted + right-aligned-feel via max-content, value full-width. */
-.otto-about-dl {
+.gw-about-dl {
   margin: 0;
   display: grid;
   grid-template-columns: max-content 1fr;
-  gap: var(--otto-space-xs) var(--otto-space-base);
-  font-size: var(--otto-text-sm);
+  gap: var(--gw-space-xs) var(--gw-space-base);
+  font-size: var(--gw-text-sm);
 }
-.otto-about-dl dt {
-  color: var(--otto-fg-muted);
+.gw-about-dl dt {
+  color: var(--gw-fg-muted);
   font-weight: 400;
   white-space: nowrap;
 }
-.otto-about-dl dd {
+.gw-about-dl dd {
   margin: 0;
-  color: var(--otto-fg);
+  color: var(--gw-fg);
   word-break: break-word;
 }
-.otto-about-dl dd a {
-  color: var(--otto-link);
+.gw-about-dl dd a {
+  color: var(--gw-link);
   text-decoration: none;
 }
-.otto-about-dl dd a:hover {
+.gw-about-dl dd a:hover {
   text-decoration: underline;
 }
 
@@ -1053,57 +1053,57 @@ body {
  * Inside the card, a 3-column grid (collapses to 1 column under 900px)
  * holds: Posture badges, Active recognizers, Per-entity action table.
  */
-.otto-about-pii-row {
-  margin-top: var(--otto-space-base);
+.gw-about-pii-row {
+  margin-top: var(--gw-space-base);
 }
-.otto-about-pii-card h2 {
+.gw-about-pii-card h2 {
   margin-top: 0;
 }
-.otto-about-pii-summary {
-  margin: 0 0 var(--otto-space-base) 0;
+.gw-about-pii-summary {
+  margin: 0 0 var(--gw-space-base) 0;
   font-size: 14px;
   line-height: 1.55;
 }
-.otto-about-pii-summary .otto-badge {
+.gw-about-pii-summary .gw-badge {
   margin-right: 6px;
   vertical-align: middle;
 }
-.otto-about-pii-grid {
+.gw-about-pii-grid {
   display: grid;
-  gap: var(--otto-space-base);
+  gap: var(--gw-space-base);
   grid-template-columns: minmax(260px, 1fr) minmax(260px, 2fr) minmax(260px, 1fr);
 }
 @media (max-width: 1100px) {
-  .otto-about-pii-grid {
+  .gw-about-pii-grid {
     grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   }
 }
-.otto-about-pii-block h3 {
-  margin: 0 0 var(--otto-space-sm) 0;
+.gw-about-pii-block h3 {
+  margin: 0 0 var(--gw-space-sm) 0;
   font-size: 13px;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  color: var(--otto-muted);
+  color: var(--gw-muted);
 }
-.otto-about-pii-entities {
-  margin: 0 0 var(--otto-space-sm) 0;
-  font-family: var(--otto-font-mono);
+.gw-about-pii-entities {
+  margin: 0 0 var(--gw-space-sm) 0;
+  font-family: var(--gw-font-mono);
   font-size: 13px;
   word-break: break-word;
 }
-.otto-about-pii-note {
+.gw-about-pii-note {
   margin: 0;
   font-size: 12.5px;
   line-height: 1.5;
-  color: var(--otto-muted);
+  color: var(--gw-muted);
 }
-.otto-about-pii-actions-table {
+.gw-about-pii-actions-table {
   width: 100%;
-  margin: 0 0 var(--otto-space-sm) 0;
+  margin: 0 0 var(--gw-space-sm) 0;
   font-size: 13px;
 }
-.otto-about-pii-actions-table th,
-.otto-about-pii-actions-table td {
+.gw-about-pii-actions-table th,
+.gw-about-pii-actions-table td {
   padding: 4px 8px;
   text-align: left;
 }
@@ -1112,139 +1112,139 @@ body {
  * default behavior active), is-muted (grey = feature available but not
  * fired or value not set). is-warning is already defined above for the
  * SENSITIVE / off-when-should-be-on case. */
-.otto-badge.is-ok {
+.gw-badge.is-ok {
   background: rgba(15, 195, 115, 0.12);
-  color: var(--otto-healthy);
+  color: var(--gw-healthy);
 }
-.otto-badge.is-muted {
+.gw-badge.is-muted {
   background: rgba(255, 255, 255, 0.05);
-  color: var(--otto-muted);
+  color: var(--gw-muted);
 }
 
 /* ====== Quick 260601-aix — admin UI redesign step 4 (Docs page) ====== */
 
-.otto-docs-intro h1 {
+.gw-docs-intro h1 {
   margin-top: 0;
 }
 
-.otto-docs-table-scroll {
+.gw-docs-table-scroll {
   max-height: 600px;
   overflow: auto;
-  border: 1px solid var(--otto-border);
+  border: 1px solid var(--gw-border);
   border-radius: 6px;
 }
 
-.otto-docs-env-table {
+.gw-docs-env-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: var(--otto-text-sm);
+  font-size: var(--gw-text-sm);
 }
 
-.otto-docs-env-table th,
-.otto-docs-env-table td {
-  padding: var(--otto-space-sm) var(--otto-space-md);
-  border-bottom: 1px solid var(--otto-border);
+.gw-docs-env-table th,
+.gw-docs-env-table td {
+  padding: var(--gw-space-sm) var(--gw-space-md);
+  border-bottom: 1px solid var(--gw-border);
   text-align: left;
   vertical-align: top;
 }
 
-.otto-docs-env-table thead th {
+.gw-docs-env-table thead th {
   position: sticky;
   top: 0;
-  background: var(--otto-card-hover);
+  background: var(--gw-card-hover);
   z-index: 1;
 }
 
-.otto-docs-env-table td code {
-  font-size: var(--otto-text-sm);
+.gw-docs-env-table td code {
+  font-size: var(--gw-text-sm);
 }
 
-.otto-docs-env-table td.current code {
-  color: var(--otto-fg);
+.gw-docs-env-table td.current code {
+  color: var(--gw-fg);
 }
 
-.otto-docs-flags-table {
+.gw-docs-flags-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: var(--otto-text-sm);
-  margin-top: var(--otto-space-base);
+  font-size: var(--gw-text-sm);
+  margin-top: var(--gw-space-base);
 }
 
-.otto-docs-flags-table th,
-.otto-docs-flags-table td {
-  padding: var(--otto-space-sm) var(--otto-space-md);
-  border-bottom: 1px solid var(--otto-border);
+.gw-docs-flags-table th,
+.gw-docs-flags-table td {
+  padding: var(--gw-space-sm) var(--gw-space-md);
+  border-bottom: 1px solid var(--gw-border);
   text-align: left;
   vertical-align: top;
 }
 
-.otto-docs-flags-table thead th {
-  background: var(--otto-card-hover);
+.gw-docs-flags-table thead th {
+  background: var(--gw-card-hover);
 }
 
-.otto-code-block {
+.gw-code-block {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  background: var(--otto-card-hover);
-  color: var(--otto-fg);
-  padding: var(--otto-space-md);
+  background: var(--gw-card-hover);
+  color: var(--gw-fg);
+  padding: var(--gw-space-md);
   border-radius: 6px;
-  font-size: var(--otto-text-sm);
+  font-size: var(--gw-text-sm);
   overflow-x: auto;
   white-space: pre;
-  margin: var(--otto-space-sm) 0 var(--otto-space-base) 0;
+  margin: var(--gw-space-sm) 0 var(--gw-space-base) 0;
 }
 
-.otto-h3 {
-  font-size: var(--otto-text-base);
+.gw-h3 {
+  font-size: var(--gw-text-base);
   font-weight: 600;
   letter-spacing: 0.02em;
-  margin: var(--otto-space-base) 0 var(--otto-space-sm) 0;
-  color: var(--otto-fg);
+  margin: var(--gw-space-base) 0 var(--gw-space-sm) 0;
+  color: var(--gw-fg);
 }
 
-.otto-docs-endpoint-list,
-.otto-docs-bullets {
-  margin: 0 0 var(--otto-space-sm) 0;
-  padding-left: var(--otto-space-lg);
-  font-size: var(--otto-text-sm);
+.gw-docs-endpoint-list,
+.gw-docs-bullets {
+  margin: 0 0 var(--gw-space-sm) 0;
+  padding-left: var(--gw-space-lg);
+  font-size: var(--gw-text-sm);
 }
 
-.otto-docs-endpoint-list li,
-.otto-docs-bullets li {
-  margin-bottom: var(--otto-space-xs);
-  color: var(--otto-fg);
+.gw-docs-endpoint-list li,
+.gw-docs-bullets li {
+  margin-bottom: var(--gw-space-xs);
+  color: var(--gw-fg);
 }
 
-.otto-docs-bullets li strong {
-  color: var(--otto-fg);
+.gw-docs-bullets li strong {
+  color: var(--gw-fg);
 }
 
-.otto-docs-footer {
+.gw-docs-footer {
   text-align: center;
-  font-size: var(--otto-text-sm);
+  font-size: var(--gw-text-sm);
 }
 
-.otto-docs-footer a {
-  color: var(--otto-link);
+.gw-docs-footer a {
+  color: var(--gw-link);
   text-decoration: none;
 }
 
-.otto-docs-footer a:hover {
+.gw-docs-footer a:hover {
   text-decoration: underline;
 }
 
 /* ====== Quick 260601-def — round-2 docs polish: flag-table column wrap fix ====== */
 
-.otto-flag-table { table-layout: fixed; width: 100%; }
-.otto-flag-table th:nth-child(1),
-.otto-flag-table td:nth-child(1),
-.otto-flag-table th:nth-child(2),
-.otto-flag-table td:nth-child(2) {
+.gw-flag-table { table-layout: fixed; width: 100%; }
+.gw-flag-table th:nth-child(1),
+.gw-flag-table td:nth-child(1),
+.gw-flag-table th:nth-child(2),
+.gw-flag-table td:nth-child(2) {
   width: 25%;
   white-space: nowrap;
 }
-.otto-flag-table th:nth-child(3),
-.otto-flag-table td:nth-child(3) {
+.gw-flag-table th:nth-child(3),
+.gw-flag-table td:nth-child(3) {
   width: 50%;
   word-wrap: break-word;
   overflow-wrap: break-word;

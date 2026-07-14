@@ -1,16 +1,16 @@
-// OTTO Gateway Admin UI — Client Script
+// Gateway Admin UI — Client Script
 // Phase 6.1 Plan 01: Summary-strip polling + live-dot logic.
 // Plan 03 will amend this file to add the SSE log-tail EventSource.
 //
 // Constraints:
 // - Vanilla ES2018+ IIFE (no modules, no transpile, no external deps).
-// - Config island: window.OTTO_ADMIN_CONFIG = { version, commit, pollMs }.
+// - Config island: window.GW_ADMIN_CONFIG = { version, commit, pollMs }.
 // - DOM queries use document.querySelector('[data-X]') attribute hooks.
 
 (function () {
   'use strict';
 
-  var cfg = window.OTTO_ADMIN_CONFIG || {};
+  var cfg = window.GW_ADMIN_CONFIG || {};
   var pollMs = cfg.pollMs || 30000;
 
   var lastSnapshotTime = null;   // Date of last successful snapshot
@@ -93,27 +93,27 @@
 
   function buildSlotLabel(slot) {
     var el = document.createElement('div');
-    el.className = 'otto-slot-label';
+    el.className = 'gw-slot-label';
     el.textContent = slot.label || ('Slot ' + slot.id);
     return el;
   }
 
   function buildSlotBadges(slot) {
     var el = document.createElement('div');
-    el.className = 'otto-slot-badges';
+    el.className = 'gw-slot-badges';
     if (!slot.alive) {
       var dead = document.createElement('span');
-      dead.className = 'otto-badge is-dead';
+      dead.className = 'gw-badge is-dead';
       dead.textContent = 'DEAD';
       el.append(dead);
     } else {
       var alive = document.createElement('span');
-      alive.className = 'otto-badge is-alive';
+      alive.className = 'gw-badge is-alive';
       alive.textContent = 'ALIVE';
       el.append(alive);
       if (slot.current_session_id) {
         var busy = document.createElement('span');
-        busy.className = 'otto-badge is-busy';
+        busy.className = 'gw-badge is-busy';
         busy.textContent = 'BUSY';
         el.append(busy);
       }
@@ -123,7 +123,7 @@
 
   function buildSlotMeta(slot) {
     var el = document.createElement('div');
-    el.className = 'otto-slot-meta';
+    el.className = 'gw-slot-meta';
     if (!slot.alive) {
       el.classList.add('is-dead');
       el.textContent = 'Dead — respawning…';
@@ -143,7 +143,7 @@
 
   function buildSlotCard(slot) {
     var article = document.createElement('article');
-    article.className = 'otto-slot-card';
+    article.className = 'gw-slot-card';
     if (!slot.alive) {
       article.classList.add('is-dead');
     }
@@ -204,7 +204,7 @@
 
   function renderStatusBadge(sess) {
     var span = document.createElement('span');
-    span.className = 'otto-badge';
+    span.className = 'gw-badge';
     if (!sess.alive) {
       span.classList.add('is-dead');
       span.textContent = 'Dead';
@@ -600,39 +600,39 @@
     // full-width cell spanning all 4 columns so nothing is silently dropped.
     if (parsed.level === null && parsed.time === '' && parsed.msg === '') {
       row = document.createElement('div');
-      row.className = 'otto-log-row-fallback';
+      row.className = 'gw-log-row-fallback';
       row.dataset.level = 'unknown';
       row.dataset.raw = parsed.raw;
       var fallbackCell = document.createElement('div');
-      fallbackCell.className = 'otto-log-cell otto-log-cell-fallback';
+      fallbackCell.className = 'gw-log-cell gw-log-cell-fallback';
       fallbackCell.textContent = parsed.raw;  // textContent only (T-6.1-16)
       row.appendChild(fallbackCell);
     } else {
       // Standard 4-cell grid row.
       row = document.createElement('div');
-      row.className = 'otto-log-row';
+      row.className = 'gw-log-row';
       row.dataset.level = parsed.level || 'unknown';
       row.dataset.raw = parsed.raw;
 
       var timeCell = document.createElement('div');
-      timeCell.className = 'otto-log-cell otto-log-cell-time';
+      timeCell.className = 'gw-log-cell gw-log-cell-time';
       timeCell.textContent = parsed.time || '';
 
       var levelCell = document.createElement('div');
-      levelCell.className = 'otto-log-cell otto-log-cell-level';
+      levelCell.className = 'gw-log-cell gw-log-cell-level';
       var chip = document.createElement('span');
       var levelKey = parsed.level || 'unknown';
-      chip.className = 'otto-log-level-chip is-' + levelKey;
+      chip.className = 'gw-log-level-chip is-' + levelKey;
       // Chip text: uppercase level name, or "?" for unknown.
       chip.textContent = parsed.level ? parsed.level.toUpperCase() : '?';
       levelCell.appendChild(chip);
 
       var sourceCell = document.createElement('div');
-      sourceCell.className = 'otto-log-cell otto-log-cell-source';
+      sourceCell.className = 'gw-log-cell gw-log-cell-source';
       sourceCell.textContent = parsed.source || '';
 
       var msgCell = document.createElement('div');
-      msgCell.className = 'otto-log-cell otto-log-cell-message';
+      msgCell.className = 'gw-log-cell gw-log-cell-message';
       // 260530 enrichment: render `msg METHOD PATH STATUS DURATIONms` when
       // the access-log structural fields are present; otherwise just msg.
       // Fall back to the raw line when both msg and the enriched form would
@@ -648,7 +648,7 @@
 
     // Filter visibility — pass parsed.raw so the grep regex still matches
     // the original SSE line (not the concatenated cell text). With
-    // display: contents on .otto-log-row{,-fallback}, setting style.display
+    // display: contents on .gw-log-row{,-fallback}, setting style.display
     // = 'none' on the row hides all of its grid-cell children.
     if (!matchesFilters(parsed, parsed.raw)) {
       row.style.display = 'none';
@@ -658,8 +658,8 @@
     // Trim DOM to last 1000 LOG rows (the header row + empty placeholder
     // must never be evicted). Count via the row classes so the header stays
     // pinned at the top of the viewport regardless of how many lines arrive.
-    while (vp.querySelectorAll('.otto-log-row, .otto-log-row-fallback').length > 1000) {
-      var victim = vp.querySelector('.otto-log-row, .otto-log-row-fallback');
+    while (vp.querySelectorAll('.gw-log-row, .gw-log-row-fallback').length > 1000) {
+      var victim = vp.querySelector('.gw-log-row, .gw-log-row-fallback');
       if (!victim) break;
       vp.removeChild(victim);
     }
@@ -774,7 +774,7 @@
       // the original SSE line, not the concatenated cell text.
       var vp = document.querySelector('[data-log-viewport]');
       if (!vp) return;
-      var lines = vp.querySelectorAll('.otto-log-row, .otto-log-row-fallback');
+      var lines = vp.querySelectorAll('.gw-log-row, .gw-log-row-fallback');
       for (var i = 0; i < lines.length; i++) {
         var el = lines[i];
         var parsed = { level: levelFromElement(el) };
@@ -814,7 +814,7 @@
         // load-bearing correctness invariant for the grid refactor.
         var vp = document.querySelector('[data-log-viewport]');
         if (!vp) return;
-        var lines = vp.querySelectorAll('.otto-log-row, .otto-log-row-fallback');
+        var lines = vp.querySelectorAll('.gw-log-row, .gw-log-row-fallback');
         for (var i = 0; i < lines.length; i++) {
           var el = lines[i];
           var parsed = { level: levelFromElement(el) };
@@ -859,7 +859,7 @@
     sel.value = currentLogSource;
   }
 
-  // Quick 260529-ll2 — remove all .otto-log-row / .otto-log-row-fallback
+  // Quick 260529-ll2 — remove all .gw-log-row / .gw-log-row-fallback
   // children from the viewport while PRESERVING the sticky header row and
   // re-showing the empty placeholder. Used when switching source — the
   // operator should see a clean viewport before the new SSE backfill
@@ -869,7 +869,7 @@
     var vp = document.querySelector('[data-log-viewport]');
     if (!vp) return;
     var rows = Array.prototype.slice.call(
-      vp.querySelectorAll('.otto-log-row, .otto-log-row-fallback'));
+      vp.querySelectorAll('.gw-log-row, .gw-log-row-fallback'));
     for (var i = 0; i < rows.length; i++) {
       vp.removeChild(rows[i]);
     }

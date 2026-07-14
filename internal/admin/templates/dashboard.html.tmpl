@@ -1,46 +1,46 @@
 {{define "content"}}
-<main class="otto-page">
+<main class="gw-page">
 
   <!-- Section 1: Summary header strip (Plan 01 — fully populated) -->
-  <section class="otto-summary-strip" aria-labelledby="summary-heading">
+  <section class="gw-summary-strip" aria-labelledby="summary-heading">
     <h1 id="summary-heading" class="sr-only">Gateway status overview</h1>
 
     <!-- Status pill -->
-    <div class="otto-summary-item">
-      <span class="otto-summary-label">Status</span>
-      <span class="otto-status-pill" data-pill>—</span>
+    <div class="gw-summary-item">
+      <span class="gw-summary-label">Status</span>
+      <span class="gw-status-pill" data-pill>—</span>
     </div>
 
     <!-- Uptime -->
-    <div class="otto-summary-item">
-      <span class="otto-summary-label">Uptime</span>
-      <span class="otto-summary-value" data-uptime>—</span>
+    <div class="gw-summary-item">
+      <span class="gw-summary-label">Uptime</span>
+      <span class="gw-summary-value" data-uptime>—</span>
     </div>
 
     <!-- Version (baked in at render time — does not poll) -->
-    <div class="otto-summary-item">
-      <span class="otto-summary-label">Version</span>
-      <span class="otto-summary-value text-mono">{{.Version}}</span>
+    <div class="gw-summary-item">
+      <span class="gw-summary-label">Version</span>
+      <span class="gw-summary-value text-mono">{{.Version}}</span>
     </div>
 
     <!-- Debug logging enablement (baked in at render time — does not poll) -->
-    <div class="otto-summary-item">
-      <span class="otto-summary-label">Debug</span>
-      <span class="otto-summary-value">{{if .Debug}}on{{else}}off{{end}}</span>
+    <div class="gw-summary-item">
+      <span class="gw-summary-label">Debug</span>
+      <span class="gw-summary-value">{{if .Debug}}on{{else}}off{{end}}</span>
     </div>
 
     <!-- Chat-trace enablement (baked in at render time — does not poll).
          SENSITIVE: when on, raw prompts are written to disk. Surfaced as a
          safety affordance so operators are not surprised by it. -->
-    <div class="otto-summary-item">
-      <span class="otto-summary-label">Chat-trace</span>
-      <span class="otto-summary-value">{{if .ChatTrace}}on{{else}}off{{end}}</span>
+    <div class="gw-summary-item">
+      <span class="gw-summary-label">Chat-trace</span>
+      <span class="gw-summary-value">{{if .ChatTrace}}on{{else}}off{{end}}</span>
     </div>
 
     <!-- Pool counts (hydrated by JS on first poll) -->
-    <div class="otto-summary-item">
-      <span class="otto-summary-label">Pool</span>
-      <span class="otto-summary-value" data-pool-summary>—</span>
+    <div class="gw-summary-item">
+      <span class="gw-summary-label">Pool</span>
+      <span class="gw-summary-value" data-pool-summary>—</span>
     </div>
 
     <!-- Stateful sessions count (hydrated by JS on first poll).
@@ -48,32 +48,32 @@
          sessions, NOT every in-flight request. Stateless requests show
          up as a "busy" pool slot instead. Label disambiguates from the
          slot-level ACP session id on the pool cards. -->
-    <div class="otto-summary-item">
-      <span class="otto-summary-label">Stateful sessions</span>
-      <span class="otto-summary-value" data-sessions-count>—</span>
+    <div class="gw-summary-item">
+      <span class="gw-summary-label">Stateful sessions</span>
+      <span class="gw-summary-value" data-sessions-count>—</span>
     </div>
 
     <!-- Live indicator zone (right-aligned) -->
-    <div class="otto-live-zone">
-      <div class="otto-live-row">
-        <span class="otto-live-dot" data-live-dot></span>
-        <span class="otto-last-updated" data-last-updated>Loading…</span>
+    <div class="gw-live-zone">
+      <div class="gw-live-row">
+        <span class="gw-live-dot" data-live-dot></span>
+        <span class="gw-last-updated" data-last-updated>Loading…</span>
       </div>
     </div>
   </section>
 
   <!-- Section 2: Pool Slots grid (Plan 02 fills the cards) -->
   <section aria-labelledby="pool-slots-heading">
-    <h2 id="pool-slots-heading" class="otto-h2">Pool Slots</h2>
-    <div class="otto-slot-grid" data-slot-grid></div>
-    <div class="otto-slot-grid-empty" data-slot-grid-empty hidden>No pool slots configured (set POOL_SIZE)</div>
+    <h2 id="pool-slots-heading" class="gw-h2">Pool Slots</h2>
+    <div class="gw-slot-grid" data-slot-grid></div>
+    <div class="gw-slot-grid-empty" data-slot-grid-empty hidden>No pool slots configured (set POOL_SIZE)</div>
   </section>
 
   <!-- Section 3: Active Sessions table (Plan 02 fills) -->
   <section aria-labelledby="active-sessions-heading">
-    <h2 id="active-sessions-heading" class="otto-h2">Active Sessions</h2>
-    <div class="otto-sessions-card" data-sessions-card>
-      <table class="otto-sessions-table" data-sessions-table>
+    <h2 id="active-sessions-heading" class="gw-h2">Active Sessions</h2>
+    <div class="gw-sessions-card" data-sessions-card>
+      <table class="gw-sessions-table" data-sessions-table>
         <thead>
           <tr>
             <th>Session</th>
@@ -84,7 +84,7 @@
         </thead>
         <tbody data-sessions-tbody></tbody>
       </table>
-      <div class="otto-empty-state" data-sessions-empty hidden>
+      <div class="gw-empty-state" data-sessions-empty hidden>
         <strong>No active sessions</strong>
         <p>Stateful sessions created via the X-Session-Id header will appear here.</p>
       </div>
@@ -93,51 +93,51 @@
 
   <!-- Section 4: Log Tail panel (Plan 03 — SSE live tail) -->
   <section aria-labelledby="log-tail-heading">
-    <h2 id="log-tail-heading" class="otto-h2">Log Tail</h2>
-    <div class="otto-log-panel">
+    <h2 id="log-tail-heading" class="gw-h2">Log Tail</h2>
+    <div class="gw-log-panel">
 
       <!-- Activity header row: pulsing dot + connection status text -->
-      <div class="otto-log-header">
-        <span class="otto-live-dot otto-log-activity-dot" data-log-activity></span>
-        <span class="otto-log-status" data-log-status>Connecting…</span>
+      <div class="gw-log-header">
+        <span class="gw-live-dot gw-log-activity-dot" data-log-activity></span>
+        <span class="gw-log-status" data-log-status>Connecting…</span>
       </div>
 
       <!-- Control row: source dropdown, level filter, regex grep, pause/resume, newest badge -->
-      <div class="otto-log-controls">
+      <div class="gw-log-controls">
         <!-- Source selector (quick 260529-ll2). Populated from
              /admin/api/snapshot's log_sources field on the first poll;
              switching source closes the existing SSE stream and opens
              a new one against /admin/logs/stream?source=<name>. -->
-        <select class="otto-select" data-log-source aria-label="Log file"></select>
-        <select class="otto-select" data-log-level aria-label="Log level filter">
+        <select class="gw-select" data-log-source aria-label="Log file"></select>
+        <select class="gw-select" data-log-level aria-label="Log level filter">
           <option value="all">All levels</option>
           <option value="debug">Debug</option>
           <option value="info">Info</option>
           <option value="warn">Warn</option>
           <option value="error">Error</option>
         </select>
-        <input class="otto-input" type="text" placeholder="Filter lines (regex)…"
+        <input class="gw-input" type="text" placeholder="Filter lines (regex)…"
                data-log-grep aria-label="Filter lines">
-        <span class="otto-grep-hint" data-log-grep-hint hidden>Invalid regex — filter not applied</span>
-        <button class="otto-btn" type="button" data-log-pause>Pause</button>
-        <span class="otto-newest-badge" data-log-newest hidden></span>
+        <span class="gw-grep-hint" data-log-grep-hint hidden>Invalid regex — filter not applied</span>
+        <button class="gw-btn" type="button" data-log-pause>Pause</button>
+        <span class="gw-newest-badge" data-log-newest hidden></span>
       </div>
 
       <!-- Log viewport: 4-column grid, fixed-height, scrollable, aria-live.
            Header row is rendered ONCE here and stays sticky as rows scroll;
-           appendLine() in admin.js builds .otto-log-row / .otto-log-row-fallback
+           appendLine() in admin.js builds .gw-log-row / .gw-log-row-fallback
            children inside this same viewport. data-log-viewport remains on the
            OUTER scroll container so document.querySelector('[data-log-viewport]')
            keeps working unchanged. -->
-      <div class="otto-log-viewport" data-log-viewport
+      <div class="gw-log-viewport" data-log-viewport
            role="log" aria-live="polite" aria-relevant="additions">
-        <div class="otto-log-header-row">
-          <div class="otto-log-cell otto-log-cell-time">Time</div>
-          <div class="otto-log-cell otto-log-cell-level">Level</div>
-          <div class="otto-log-cell otto-log-cell-source">Source</div>
-          <div class="otto-log-cell otto-log-cell-message">Message</div>
+        <div class="gw-log-header-row">
+          <div class="gw-log-cell gw-log-cell-time">Time</div>
+          <div class="gw-log-cell gw-log-cell-level">Level</div>
+          <div class="gw-log-cell gw-log-cell-source">Source</div>
+          <div class="gw-log-cell gw-log-cell-message">Message</div>
         </div>
-        <div class="otto-log-empty" data-log-empty>Waiting for log activity…</div>
+        <div class="gw-log-empty" data-log-empty>Waiting for log activity…</div>
       </div>
 
     </div>
@@ -148,7 +148,7 @@
 <!-- Config island: bakes in version/commit at render time; pollMs is the
      JS polling cadence (30s fixed per D-06). The `js` filter escapes both
      fields for safe <script> context (html/template T-6.1-01 mitigation). -->
-<script>window.OTTO_ADMIN_CONFIG = { version: {{.Version | js}}, commit: {{.Commit | js}}, pollMs: 30000 };</script>
+<script>window.GW_ADMIN_CONFIG = { version: {{.Version | js}}, commit: {{.Commit | js}}, pollMs: 30000 };</script>
 <script src="/admin/static/js/admin.js"></script>
 {{end}}
 {{template "base" .}}

@@ -1,14 +1,14 @@
-{{define "content"}}<main class="otto-page">
-  <section class="otto-card otto-docs-intro">
-    <h1 class="otto-h2">Documentation</h1>
-    <p>Operator reference for the OTTO Gateway binary. For live status see <a href="/admin/">Dashboard</a>; for build metadata see <a href="/admin/about">About</a>. This page is a server-rendered snapshot of the running configuration — it does NOT auto-refresh.</p>
+{{define "content"}}<main class="gw-page">
+  <section class="gw-card gw-docs-intro">
+    <h1 class="gw-h2">Documentation</h1>
+    <p>Operator reference for the Gateway binary. For live status see <a href="/admin/">Dashboard</a>; for build metadata see <a href="/admin/about">About</a>. This page is a server-rendered snapshot of the running configuration — it does NOT auto-refresh.</p>
   </section>
 
-  <section class="otto-card">
-    <h2 class="otto-h2">Environment variables</h2>
+  <section class="gw-card">
+    <h2 class="gw-h2">Environment variables</h2>
     <p>Current values reflect the configuration in effect at server start. Sensitive values (bearer token, allowlist) are summarised as <code>(set)</code> / <code>(unset)</code>. Rows whose current value is <code>(see startup log)</code> are not yet surfaced in the admin runtime snapshot.</p>
-    <div class="otto-docs-table-scroll">
-      <table class="otto-table otto-docs-env-table">
+    <div class="gw-docs-table-scroll">
+      <table class="gw-table gw-docs-env-table">
         <thead>
           <tr><th scope="col">Variable</th><th scope="col">Default</th><th scope="col">Description</th><th scope="col">Current value</th></tr>
         </thead>
@@ -26,24 +26,24 @@
     </div>
   </section>
 
-  <section class="otto-card">
-    <h2 class="otto-h2">Files &amp; paths</h2>
-    <h3 class="otto-h3">Install root</h3>
-    <dl class="otto-about-dl">
+  <section class="gw-card">
+    <h2 class="gw-h2">Files &amp; paths</h2>
+    <h3 class="gw-h3">Install root</h3>
+    <dl class="gw-about-dl">
       <dt>POSIX</dt><dd><code>$HOME/.otto-gw/</code></dd>
       <dt>Windows</dt><dd><code>$env:USERPROFILE\.otto-gw\</code></dd>
       <dt>Override</dt><dd>Set <code>OTTO_HOME</code> to relocate either default install root.</dd>
     </dl>
-    <h3 class="otto-h3">Env files (loaded by the wrapper on every invocation)</h3>
-    <dl class="otto-about-dl">
+    <h3 class="gw-h3">Env files (loaded by the wrapper on every invocation)</h3>
+    <dl class="gw-about-dl">
       <dt>User env (POSIX)</dt><dd><code>$HOME/.otto-gw.env</code></dd>
       <dt>User env (Windows)</dt><dd><code>$env:USERPROFILE\.otto-gw.env</code></dd>
       <dt>Project env</dt><dd><code>$OTTO_HOME/.env.otto-gw</code></dd>
       <dt>Project overrides</dt><dd><code>$OTTO_HOME/.otto-gw.overrides.env</code></dd>
     </dl>
-    <h3 class="otto-h3">Runtime files</h3>
-    <dl class="otto-about-dl">
-      <dt>Chat trace file</dt><dd><code>{{.ChatTraceFile}}</code>{{if not .ChatTraceEnabled}} <span class="otto-badge">disabled</span>{{end}}</dd>
+    <h3 class="gw-h3">Runtime files</h3>
+    <dl class="gw-about-dl">
+      <dt>Chat trace file</dt><dd><code>{{.ChatTraceFile}}</code>{{if not .ChatTraceEnabled}} <span class="gw-badge">disabled</span>{{end}}</dd>
       <dt>Chat trace retention</dt><dd>{{.ChatTraceMaxAgeDays}} days (timberjack MaxAge)</dd>
       <dt>Admin static assets</dt><dd>Embedded in the binary via <code>embed.FS</code> (no on-disk lookup at runtime).</dd>
       <dt>Wrapper env files</dt><dd><code>.otto-gw.env</code> (generated template; load-first) then <code>.otto-gw.overrides.env</code> (operator-owned secrets/customisations; load-second wins). See <code>scripts/otto-gw upgrade-env</code>.</dd>
@@ -51,12 +51,12 @@
     </dl>
   </section>
 
-  <section class="otto-card">
-    <h2 class="otto-h2">CLI &amp; startup (otto-gw wrapper)</h2>
+  <section class="gw-card">
+    <h2 class="gw-h2">CLI &amp; startup (otto-gw wrapper)</h2>
     <p>Operators interact with the gateway through the <code>otto-gw</code> wrapper rather than the <code>otto-gateway</code> binary directly. PowerShell uses PascalCase switches (<code>-Trace</code>, <code>-Debug</code>); POSIX uses kebab-case (<code>--trace</code>, <code>--debug</code>). The <code>.bat</code> dispatcher just forwards args to PowerShell — same switch syntax.</p>
     <p>Run <code>otto-gw -h</code> / <code>otto-gw --help</code> (POSIX) or <code>otto-gw.ps1 -Help</code> (PowerShell) at any time to print the full usage to your terminal.</p>
-    <h3 class="otto-h3">macOS / Linux (POSIX)</h3>
-    <pre class="otto-code-block">./scripts/otto-gw init --non-interactive       # write $HOME/.otto-gw.env from template
+    <h3 class="gw-h3">macOS / Linux (POSIX)</h3>
+    <pre class="gw-code-block">./scripts/otto-gw init --non-interactive       # write $HOME/.otto-gw.env from template
 ./scripts/otto-gw start                         # background daemon (writes PID file)
 ./scripts/otto-gw start --pii encrypt --encrypt-key &lt;key&gt; --auth &lt;token&gt;
 ./scripts/otto-gw status                        # /admin/api/snapshot summary
@@ -68,8 +68,8 @@
 ./scripts/otto-gw upgrade-env --dry-run         # diff template vs. installed env file
 ./scripts/otto-gw migrate-to-overrides --yes    # one-time split into overrides file
 ./scripts/otto-gw version                       # delegates to the binary --version</pre>
-    <h3 class="otto-h3">Windows (PowerShell)</h3>
-    <pre class="otto-code-block">.\scripts\otto-gw.ps1 init -NonInteractive
+    <h3 class="gw-h3">Windows (PowerShell)</h3>
+    <pre class="gw-code-block">.\scripts\otto-gw.ps1 init -NonInteractive
 .\scripts\otto-gw.ps1 start
 .\scripts\otto-gw.ps1 start -Pii encrypt -EncryptKey &lt;key&gt; -Auth &lt;token&gt;
 .\scripts\otto-gw.ps1 status
@@ -82,8 +82,8 @@
 .\scripts\otto-gw.ps1 migrate-to-overrides -Yes
 .\scripts\otto-gw.ps1 version</pre>
     <p>Subcommand surface (identical on both wrappers): <code>init</code>, <code>start</code>, <code>stop</code>, <code>restart</code>, <code>status</code>, <code>logs</code>, <code>run</code>, <code>env</code>, <code>upgrade-env</code>, <code>migrate-to-overrides</code>, <code>version</code>.</p>
-    <h3 class="otto-h3">Flag &harr; switch reference</h3>
-    <table class="otto-table otto-docs-flags-table otto-flag-table">
+    <h3 class="gw-h3">Flag &harr; switch reference</h3>
+    <table class="gw-table gw-docs-flags-table gw-flag-table">
       <thead>
         <tr><th scope="col">POSIX flag</th><th scope="col">PowerShell switch</th><th scope="col">Description</th></tr>
       </thead>
@@ -119,70 +119,70 @@
     </table>
   </section>
 
-  <section class="otto-card">
-    <h2 class="otto-h2">Upgrading</h2>
-    <p>OTTO Gateway uses a <strong>two-file env model</strong> so upgrades absorb new template defaults without clobbering your secrets. The generated <code>.otto-gw.env</code> file is rewritten from the template on every upgrade. Your <code>.otto-gw.overrides.env</code> file is operator-owned, loaded last, and is NEVER touched by <code>upgrade-env</code> or <code>init</code> — its values win on shared keys.</p>
+  <section class="gw-card">
+    <h2 class="gw-h2">Upgrading</h2>
+    <p>Gateway uses a <strong>two-file env model</strong> so upgrades absorb new template defaults without clobbering your secrets. The generated <code>.otto-gw.env</code> file is rewritten from the template on every upgrade. Your <code>.otto-gw.overrides.env</code> file is operator-owned, loaded last, and is NEVER touched by <code>upgrade-env</code> or <code>init</code> — its values win on shared keys.</p>
 
     <p><strong>Do not delete <code>.otto-gw.env</code> to "start fresh".</strong> Deleting it means <code>init</code> mints a brand-new <code>AUTH_TOKEN</code> and rotates <code>PII_HASH_KEY</code>, breaking any existing auth setup and invalidating prior hash-mode correlation tokens. Use the proper upgrade flow below — it preserves existing secrets by default.</p>
 
-    <h3 class="otto-h3">Three-step upgrade flow</h3>
-    <ol class="otto-docs-bullets">
+    <h3 class="gw-h3">Three-step upgrade flow</h3>
+    <ol class="gw-docs-bullets">
       <li><strong>Pull the new install</strong> — fetches the v1.8.2 (or later) binary, template, and wrapper scripts.</li>
       <li><strong>Preview the diff</strong> — <code>upgrade-env --dry-run</code> reports which template keys would be added, orphaned, or unchanged in your env file. No disk writes.</li>
       <li><strong>Apply</strong> — re-run <code>init --force --non-interactive</code>. Existing secrets (<code>AUTH_TOKEN</code>, <code>PII_HASH_KEY</code>, <code>PII_ENCRYPT_KEY</code>) are <em>preserved across re-init</em>; missing ones are minted; new env vars (e.g., <code>PII_NER_ENABLED</code>) are added with template defaults. Restart to apply.</li>
     </ol>
 
-    <h3 class="otto-h3">macOS / Linux (POSIX)</h3>
-    <pre class="otto-code-block">curl -fsSL https://raw.githubusercontent.com/cmetech/otto-gateway/main/scripts/install.sh | sh
+    <h3 class="gw-h3">macOS / Linux (POSIX)</h3>
+    <pre class="gw-code-block">curl -fsSL https://raw.githubusercontent.com/cmetech/otto-gateway/main/scripts/install.sh | sh
 otto-gw upgrade-env --dry-run             # 1. preview
 otto-gw init --force --non-interactive    # 2. absorb new defaults; mint missing keys
 otto-gw restart                            # 3. apply</pre>
 
-    <h3 class="otto-h3">Windows (PowerShell)</h3>
-    <pre class="otto-code-block">irm https://raw.githubusercontent.com/cmetech/otto-gateway/main/scripts/install.ps1 | iex
+    <h3 class="gw-h3">Windows (PowerShell)</h3>
+    <pre class="gw-code-block">irm https://raw.githubusercontent.com/cmetech/otto-gateway/main/scripts/install.ps1 | iex
 otto-gw.ps1 upgrade-env -DryRun           # 1. preview
 otto-gw.ps1 init -Force -NonInteractive   # 2. absorb new defaults; mint missing keys
 otto-gw.ps1 restart                        # 3. apply</pre>
     <p>The <code>.bat</code> dispatcher forwards arguments to PowerShell, so <code>otto-gw init -Force -NonInteractive</code> works the same from <code>cmd.exe</code>.</p>
 
-    <h3 class="otto-h3">Preserve vs. rotate secrets</h3>
+    <h3 class="gw-h3">Preserve vs. rotate secrets</h3>
     <p>The default behavior of <code>init --force</code> is <strong>preserve</strong> — your existing <code>AUTH_TOKEN</code>, <code>PII_HASH_KEY</code>, and <code>PII_ENCRYPT_KEY</code> are carried across the upgrade verbatim. Add <code>--regenerate-secrets</code> (POSIX) or <code>-RegenerateSecrets</code> (PowerShell) to discard the existing values and mint fresh ones:</p>
-    <pre class="otto-code-block">otto-gw init --force --non-interactive --regenerate-secrets    # POSIX
+    <pre class="gw-code-block">otto-gw init --force --non-interactive --regenerate-secrets    # POSIX
 otto-gw.ps1 init -Force -NonInteractive -RegenerateSecrets     # PowerShell</pre>
     <p><strong>Rotating <code>PII_ENCRYPT_KEY</code> is a breaking change for in-flight encrypted conversations</strong> — every prior <code>[PII:Entity:base64url(...)]</code> token becomes undecryptable. Only rotate it intentionally (suspected key leak, routine secret rotation, etc.). Rotating <code>PII_HASH_KEY</code> invalidates prior hash-mode correlation tokens — the same correlation-break-on-purpose property.</p>
 
-    <h3 class="otto-h3">Upgrading from v1.8.1 → v1.8.2 specifically</h3>
+    <h3 class="gw-h3">Upgrading from v1.8.1 → v1.8.2 specifically</h3>
     <p>v1.8.2 flipped three PII defaults to make the gateway secure-by-default. If your existing env file was generated by v1.8.1 or earlier, the dry-run will show:</p>
-    <ul class="otto-docs-bullets">
+    <ul class="gw-docs-bullets">
       <li><strong>Added</strong>: <code>PII_NER_ENABLED</code> (default <code>true</code>) — prose-based PERSON / LOCATION recognizer is now on out of the box. The ~7 MB prose model is baked into the binary either way; this flag only controls the runtime allocation. Set to <code>false</code> if you do not want NER active.</li>
       <li><strong>Default change</strong>: <code>PII_REDACTION_ENABLED</code> flips from <code>false</code> → <code>true</code>. The hook does work by default now.</li>
       <li><strong>Default change</strong>: <code>PII_REDACTION_MODE</code> flips from <code>replace</code> → <code>encrypt</code>. PII flows to the worker as AES-256-GCM ciphertext and is decrypted back to plaintext before the client sees the response (round-trip).</li>
       <li><strong>Auto-mint</strong>: <code>PII_ENCRYPT_KEY</code> is now generated by <code>init</code> alongside <code>AUTH_TOKEN</code> and <code>PII_HASH_KEY</code>. If your env file already had a value, it is preserved across re-init.</li>
     </ul>
     <p>If you want to opt out of the new defaults entirely (stay on the v1.8.1 behavior), put these overrides in <code>.otto-gw.overrides.env</code>:</p>
-    <pre class="otto-code-block">PII_REDACTION_ENABLED=false
+    <pre class="gw-code-block">PII_REDACTION_ENABLED=false
 PII_REDACTION_MODE=replace
 PII_NER_ENABLED=false</pre>
     <p>The overrides file is loaded last, so its values win — and <code>upgrade-env</code> / <code>init</code> never touch it.</p>
 
-    <h3 class="otto-h3">When to keep the file vs. nuke it</h3>
-    <dl class="otto-about-dl">
+    <h3 class="gw-h3">When to keep the file vs. nuke it</h3>
+    <dl class="gw-about-dl">
       <dt>Keep the file (recommended)</dt><dd>Use <code>otto-gw init --force --non-interactive</code>. Existing secrets carry across; new env vars get template defaults. No restart-without-auth window.</dd>
       <dt>Nuke <code>.otto-gw.env</code> only when</dt><dd>The file is in a weird half-edited state you'd rather start fresh from. Back it up first (<code>cp .otto-gw.env .otto-gw.env.bak</code>) so you can recover the prior <code>AUTH_TOKEN</code> if you need to. <code>otto-gw init</code> on an absent file is a cold install and mints all three secrets fresh.</dd>
       <dt>Don't touch <code>.otto-gw.overrides.env</code></dt><dd>Operator-owned. <code>upgrade-env</code> and <code>init</code> never write to it. If you want to opt out of the new secure-by-default behavior, this is where the override lines go.</dd>
     </dl>
 
-    <h3 class="otto-h3">After upgrade — verify</h3>
-    <pre class="otto-code-block">otto-gw env                       # print resolved env (secrets masked)
+    <h3 class="gw-h3">After upgrade — verify</h3>
+    <pre class="gw-code-block">otto-gw env                       # print resolved env (secrets masked)
 otto-gw status                    # /admin/api/snapshot summary
 curl -sf http://127.0.0.1:18080/health/hooks | jq    # confirm PIIRedactionHook mode/decrypt_active</pre>
     <p>The <code>config</code> field in <code>/health/hooks</code> will show <code>"mode": "encrypt"</code> and <code>"decrypt_active": true</code> on the default-defaults install. If you opted out via overrides, those values reflect your overrides.</p>
   </section>
 
-  <section class="otto-card">
-    <h2 class="otto-h2">Endpoints reference</h2>
-    <h3 class="otto-h3">Admin (auth-exempt)</h3>
-    <ul class="otto-docs-endpoint-list">
+  <section class="gw-card">
+    <h2 class="gw-h2">Endpoints reference</h2>
+    <h3 class="gw-h3">Admin (auth-exempt)</h3>
+    <ul class="gw-docs-endpoint-list">
       <li><code>GET /admin/</code> — Dashboard HTML</li>
       <li><code>GET /admin/about</code> — About page</li>
       <li><code>GET /admin/docs</code> — This page</li>
@@ -190,25 +190,25 @@ curl -sf http://127.0.0.1:18080/health/hooks | jq    # confirm PIIRedactionHook 
       <li><code>GET /admin/logs/stream?source=&lt;name&gt;</code> — SSE log tail</li>
       <li><code>GET /admin/static/*</code> — Embedded CSS / JS / icons</li>
     </ul>
-    <h3 class="otto-h3">Public API surfaces</h3>
-    <ul class="otto-docs-endpoint-list">
+    <h3 class="gw-h3">Public API surfaces</h3>
+    <ul class="gw-docs-endpoint-list">
       <li>Ollama: prefix <code>{{.OllamaPathPrefix}}</code> &mdash; <code>/version</code>, <code>/tags</code>, <code>/chat</code>, <code>/generate</code></li>
       <li>OpenAI: prefix <code>{{.OpenAIPathPrefix}}</code> &mdash; <code>/chat/completions</code></li>
       <li>Anthropic: prefix <code>{{.AnthropicPathPrefix}}</code> &mdash; <code>/messages</code></li>
     </ul>
-    <h3 class="otto-h3">Internal</h3>
-    <ul class="otto-docs-endpoint-list">
+    <h3 class="gw-h3">Internal</h3>
+    <ul class="gw-docs-endpoint-list">
       <li><code>GET /health</code> — D-12 locked health probe (do not consume from wrappers; use <code>/admin/api/snapshot</code> instead).</li>
     </ul>
   </section>
 
-  <section class="otto-card">
-    <h2 class="otto-h2">Hooks</h2>
-    <p>OTTO Gateway processes every request through a configurable hook chain. The default chain is enabled out-of-the-box; narrow it via the <code>ENABLED_HOOKS</code> env var (comma-separated allowlist; empty value = all hooks active).</p>
+  <section class="gw-card">
+    <h2 class="gw-h2">Hooks</h2>
+    <p>Gateway processes every request through a configurable hook chain. The default chain is enabled out-of-the-box; narrow it via the <code>ENABLED_HOOKS</code> env var (comma-separated allowlist; empty value = all hooks active).</p>
 
-    <h3 class="otto-h3">Default hook chain</h3>
-    <div class="otto-docs-table-scroll">
-      <table class="otto-table otto-docs-flags-table">
+    <h3 class="gw-h3">Default hook chain</h3>
+    <div class="gw-docs-table-scroll">
+      <table class="gw-table gw-docs-flags-table">
         <thead>
           <tr><th scope="col">Hook</th><th scope="col">Kind</th><th scope="col">Default</th><th scope="col">Purpose</th></tr>
         </thead>
@@ -221,11 +221,11 @@ curl -sf http://127.0.0.1:18080/health/hooks | jq    # confirm PIIRedactionHook 
       </table>
     </div>
 
-    <h3 class="otto-h3">PII redaction</h3>
+    <h3 class="gw-h3">PII redaction</h3>
     <p>PIIRedactionHook is dual-natured: it runs Pre (third in the chain, after RequestID and Auth) so redacted prompts never reach the upstream worker, and Post (after the worker's response) so encrypt-mode tokens can be decrypted back to plaintext before the client sees the response. <strong>It is on by default with <code>PII_REDACTION_MODE=encrypt</code> — the worker never sees plaintext PII unless the operator explicitly opts out via <code>PII_REDACTION_ENABLED=false</code>.</strong></p>
     <p>Recognizer set: 13 regex recognizers (<code>Email</code>, <code>IPv4</code>, <code>IPv6</code>, <code>SSN</code>, <code>CreditCard</code>, <code>USPhone</code>, <code>SIP_URI</code>, <code>IMEI</code>, <code>IMSI</code>, <code>MSISDN</code>, <code>MAC_ADDRESS</code>, <code>COORDINATES</code>, <code>SITE</code>) plus 2 NER recognizers from <code>jdkato/prose/v2</code> (<code>PERSON</code>, <code>LOCATION</code>) when <code>PII_NER_ENABLED=true</code>. Context-anchored recognizers (<code>IMEI</code>, <code>IMSI</code>, <code>MSISDN</code>, <code>SITE</code>) require a recognizer-specific keyword within ±50 bytes of the match.</p>
 
-    <dl class="otto-about-dl">
+    <dl class="gw-about-dl">
       <dt><code>PII_REDACTION_ENABLED</code></dt><dd>default <code>true</code> — master switch. Set to <code>false</code> to keep the hook in the chain but inert (operator opt-out).</dd>
       <dt><code>PII_REDACTION_MODE</code></dt><dd>default <code>encrypt</code> — one of <code>replace</code> (numbered sentinel per match), <code>mask</code> (partial obfuscation), <code>hash</code> (HMAC-keyed correlation token), <code>drop</code> (matched substring removed entirely), <code>encrypt</code> (AES-256-GCM round-trip — request encrypted, response decrypted by the Post hook before the client sees it).</dd>
       <dt><code>PII_NER_ENABLED</code></dt><dd>default <code>true</code> — master switch for the prose-based PERSON/LOCATION recognizer. When <code>true</code>, the bundled averaged-perceptron model lazy-loads on first request. Set to <code>false</code> to skip the runtime tokenizer/tagger allocation (the ~7 MB binary impact is baked into the build either way). English-only; accuracy is decent on common Western names and major place names but weaker on Asian / multilingual names.</dd>
@@ -237,27 +237,27 @@ curl -sf http://127.0.0.1:18080/health/hooks | jq    # confirm PIIRedactionHook 
 
     <p>Detected PII is replaced with bracketed sentinels like <code>[EMAIL_1]</code>, <code>[PHONE_2]</code>, <code>[EMAIL:h-abc12345]</code> (hash mode), or <code>[PII:EMAIL:base64url(...)]</code> (encrypt mode, the default). Square brackets are deliberate — angle-bracketed sentinels like <code>&lt;EMAIL_1&gt;</code> caused kiro-cli to treat them as opening XML tags (see fix 260531-pt8).</p>
 
-    <h3 class="otto-h3">Examples</h3>
-    <pre class="otto-code-block"># Default config — PII_REDACTION_ENABLED=true, PII_REDACTION_MODE=encrypt,
+    <h3 class="gw-h3">Examples</h3>
+    <pre class="gw-code-block"># Default config — PII_REDACTION_ENABLED=true, PII_REDACTION_MODE=encrypt,
 # PII_NER_ENABLED=true, PII_ENCRYPT_KEY auto-minted at install:
 #   request:  "Email a@b.com — John Smith called"
 #   → worker: "Email [PII:EMAIL:base64url(...)] — [PII:PERSON:base64url(...)] called"
 #   response: "Tell [PII:PERSON:base64url(...)] I got [PII:EMAIL:base64url(...)]"
 #   → client: "Tell John Smith I got a@b.com"
 # Streaming auto-disabled in encrypt mode; adapters re-route to aggregated path.</pre>
-    <pre class="otto-code-block">PII_REDACTION_ENABLED=true
+    <pre class="gw-code-block">PII_REDACTION_ENABLED=true
 PII_REDACTION_MODE=replace
 # Numbered sentinels per match per entity:
 #   "Email me at a@b.com or c@d.com"
 #   → "Email me at [EMAIL_1] or [EMAIL_2]"</pre>
-    <pre class="otto-code-block">PII_REDACTION_ENABLED=true
+    <pre class="gw-code-block">PII_REDACTION_ENABLED=true
 PII_REDACTION_MODE=hash
 PII_HASH_KEY=&lt;32+ random bytes, hex or base64&gt;
 PII_ENABLED_ENTITIES=Email,SSN
 # Same value → same hash sentinel within a key lifetime (correlation
 # across requests without leaking the underlying PII):
 #   "a@b.com … a@b.com" → "[EMAIL:h-9f3a2c1d] … [EMAIL:h-9f3a2c1d]"</pre>
-    <pre class="otto-code-block"># Per-entity action mix — global encrypt, but mask PERSON for human readability
+    <pre class="gw-code-block"># Per-entity action mix — global encrypt, but mask PERSON for human readability
 # in audit logs and drop LOCATION entirely from the worker's view:
 PII_REDACTION_ENABLED=true
 PII_REDACTION_MODE=encrypt
@@ -268,34 +268,34 @@ PII_ENTITY_ACTIONS=PERSON:mask,LOCATION:drop</pre>
     <p><strong>SENSITIVE:</strong> <code>CHAT_TRACE=true</code> writes raw prompts to <code>CHAT_TRACE_FILE</code> <em>before</em> PIIRedactionHook runs. When chat-trace is on, the on-disk file contains unredacted PII — this is why the About page surfaces a SENSITIVE badge whenever <code>CHAT_TRACE=true</code>. Turn off in production unless intentionally debugging a request shape.</p>
   </section>
 
-  <section class="otto-card">
-    <h2 class="otto-h2">PII smoke test</h2>
+  <section class="gw-card">
+    <h2 class="gw-h2">PII smoke test</h2>
     <p>Every install ships a <code>test-pii</code> script that exercises PII redaction end-to-end. Three scenarios:</p>
-    <ul class="otto-docs-bullets">
+    <ul class="gw-docs-bullets">
       <li><code>diag</code> — print the gateway's PII posture from <code>/health/hooks</code> (mode, encrypt-active, active recognizers, full hook chain). No round-trip.</li>
       <li><code>wire</code> — for each surface, send a <code>"hi"</code> request with <code>stream=true</code> AND <code>stream=false</code> and assert the right <code>Content-Type</code> comes back. The v1.9.0 regression check lives here: streaming requests under <code>PII_REDACTION_MODE=encrypt</code> must yield <code>text/event-stream</code> (Anthropic / OpenAI) or <code>application/x-ndjson</code> (Ollama), NOT <code>application/json</code>.</li>
       <li><code>pii</code> — send a PII-rich prompt, capture the response, and verify each PII value round-tripped back to plaintext. Proves the encrypt Pre-hook + decrypt Post-hook pair is working end-to-end. Detects ciphertext leaks too (a <code>[PII:Entity:base64url]</code> token in the client-visible response = decrypt failed).</li>
     </ul>
     <p>Default scenario runs all three. Exit code 0 means every check passed; 1 means at least one failed.</p>
 
-    <h3 class="otto-h3">macOS / Linux</h3>
-    <pre class="otto-code-block">./scripts/test-pii.sh                         # diag + wire + pii against all surfaces
+    <h3 class="gw-h3">macOS / Linux</h3>
+    <pre class="gw-code-block">./scripts/test-pii.sh                         # diag + wire + pii against all surfaces
 ./scripts/test-pii.sh diag                    # PII posture only — no round-trip
 ./scripts/test-pii.sh wire --surface anthropic # one surface
 ./scripts/test-pii.sh pii -v                  # verbose: print extracted response text
 ./scripts/test-pii.sh --auth $TOKEN           # if AUTH_TOKEN is configured
 ./scripts/test-pii.sh --base http://10.0.0.5:18080  # remote gateway</pre>
 
-    <h3 class="otto-h3">Windows (PowerShell)</h3>
-    <pre class="otto-code-block">.\scripts\test-pii.ps1
+    <h3 class="gw-h3">Windows (PowerShell)</h3>
+    <pre class="gw-code-block">.\scripts\test-pii.ps1
 .\scripts\test-pii.ps1 diag
 .\scripts\test-pii.ps1 wire -Surface anthropic
 .\scripts\test-pii.ps1 pii -Verbose
 .\scripts\test-pii.ps1 -Auth $env:AUTH_TOKEN
 .\scripts\test-pii.ps1 -Base http://10.0.0.5:18080</pre>
 
-    <h3 class="otto-h3">What each check looks for</h3>
-    <dl class="otto-about-dl">
+    <h3 class="gw-h3">What each check looks for</h3>
+    <dl class="gw-about-dl">
       <dt>diag → hook chain</dt><dd>All 5 registered hooks (RequestIDHook, AuthHook, JSONFormatSteeringHook, PIIRedactionHook, LoggingHook) present in registration order. Drift means an operator narrowed <code>ENABLED_HOOKS</code>.</dd>
       <dt>diag → PII config</dt><dd>Surfaces <code>enabled</code> / <code>mode</code> / <code>decrypt_active</code> / <code>entities</code> from the running hook's <code>Describe</code> output. <code>decrypt_active=true</code> means encrypt round-trip is on the wire path.</dd>
       <dt>wire → Content-Type</dt><dd>Streaming requests must come back with the streaming content-type. An <code>application/json</code> response on <code>stream=true</code> means the synthetic-SSE fix isn't wired (running an older binary).</dd>
@@ -306,48 +306,48 @@ PII_ENTITY_ACTIONS=PERSON:mask,LOCATION:drop</pre>
     <p><strong>Auth note:</strong> if you have <code>AUTH_TOKEN</code> configured, pass <code>--auth TOKEN</code> (POSIX) or <code>-Auth TOKEN</code> (PowerShell). The script sets the <code>Authorization: Bearer</code> header on every probe. Without it, AuthHook returns 401 and every check fails.</p>
   </section>
 
-  <section class="otto-card">
-    <h2 class="otto-h2">Troubleshooting — kiro-cli inside WSL on Windows</h2>
+  <section class="gw-card">
+    <h2 class="gw-h2">Troubleshooting — kiro-cli inside WSL on Windows</h2>
     <p><strong>Symptom:</strong> a native Windows gateway works fine when paired with a native Windows kiro-cli, but loses the ACP connection when kiro-cli is run from inside WSL (with <code>KIRO_CMD=wsl.exe</code> or a path under <code>\\wsl$\</code>). The Node-JS gateway didn't have this problem.</p>
 
-    <h3 class="otto-h3">Why the Go gateway exposes it (and Node didn't)</h3>
+    <h3 class="gw-h3">Why the Go gateway exposes it (and Node didn't)</h3>
     <p>The data path is multi-layered when kiro-cli runs inside WSL2:</p>
-    <pre class="otto-code-block">Go gateway (Windows process)
+    <pre class="gw-code-block">Go gateway (Windows process)
    ↓ CreateProcess anonymous pipe (Windows kernel)
 wsl.exe (Windows binary — thin bridge to LXSS)
    ↓ vsock stdio translation (Windows ↔ Linux pipe FDs)
 kiro-cli (Linux process inside the WSL2 lightweight VM)</pre>
     <p>Three things go wrong, any of which can drop the long-running ACP session:</p>
-    <ol class="otto-docs-bullets">
+    <ol class="gw-docs-bullets">
       <li><strong>Linux stdio block buffering</strong> — when kiro-cli's stdout is a pipe (not a terminal), glibc defaults to <em>block buffered</em> writes. ACP responses sit inside kiro-cli's buffer until it fills or kiro-cli explicitly flushes. The gateway's blocking read on the other side of the bridge waits forever, the heartbeat times out, the pool reaps the slot.</li>
       <li><strong>Split-brain process tree</strong> — <code>wsl.exe</code> is the only PID Go can see, signal, or kill. The actual kiro-cli is a Linux process the Windows side cannot directly address. <code>Cmd.Process.Kill()</code> kills <code>wsl.exe</code> but may leave kiro-cli as a WSL orphan; conversely, when kiro-cli exits on the Linux side, <code>wsl.exe</code> may not propagate the exit cleanly back to Go's <code>Wait()</code>.</li>
       <li><strong>WSL2 vsock latency</strong> — stdio goes through Hyper-V vsock with internal batching. Cumulative latency under load can exceed the default <code>STREAM_IDLE_TIMEOUT_SEC=30</code> watchdog and trip the idle-timeout.</li>
     </ol>
     <p>The Node gateway sidestepped all three: libuv pipes are non-blocking by default (so Linux block-buffering still hurt but Node's event loop kept the connection alive between bursts), and Node had no idle-timeout watchdog at all. Go's <code>os/exec</code> reads are synchronous blocking syscalls on Windows — strict where Node was lenient. WSL2's stdio is lenient-tolerant; the Go strictness exposes the bridge's quirks.</p>
 
-    <h3 class="otto-h3">Things to try, in priority order</h3>
-    <ol class="otto-docs-bullets">
+    <h3 class="gw-h3">Things to try, in priority order</h3>
+    <ol class="gw-docs-bullets">
       <li>
         <strong>Disable Linux stdio buffering with <code>stdbuf</code>.</strong> Most likely #1 culprit — fixes the block-buffering case. Add to <code>.otto-gw.overrides.env</code>:
-        <pre class="otto-code-block">KIRO_CMD=wsl.exe
+        <pre class="gw-code-block">KIRO_CMD=wsl.exe
 KIRO_ARGS=--exec /usr/bin/stdbuf -i0 -o0 -e0 /full/path/to/kiro-cli acp</pre>
         <code>stdbuf -i0 -o0 -e0</code> tells glibc to use unbuffered stdin/stdout/stderr for the child. Responses flush the moment they're written. If <code>stdbuf</code> is missing from your distro, install <code>coreutils</code> inside WSL.
       </li>
       <li>
         <strong>Use <code>--exec</code>, not the default wsl invocation.</strong> Without <code>--exec</code>, wsl.exe starts a login shell that then runs kiro-cli. The shell adds its own buffering and complicates signal propagation. <code>--exec</code> replaces the wsl.exe process with kiro-cli directly via execve — one fewer layer, cleaner signal handling.
-        <pre class="otto-code-block">KIRO_ARGS=--exec /full/path/to/kiro-cli acp</pre>
+        <pre class="gw-code-block">KIRO_ARGS=--exec /full/path/to/kiro-cli acp</pre>
       </li>
       <li>
         <strong>Raise the idle timeout as a band-aid for vsock latency.</strong> Default is 30s — generous on native, marginal across WSL2. If the drop happens reproducibly near the 30s mark, this is your problem:
-        <pre class="otto-code-block">STREAM_IDLE_TIMEOUT_SEC=120</pre>
+        <pre class="gw-code-block">STREAM_IDLE_TIMEOUT_SEC=120</pre>
       </li>
       <li>
         <strong>Switch to TCP if kiro-cli supports it.</strong> If kiro-cli has a socket-listening mode, running it as a TCP server inside WSL and pointing the gateway at <code>127.0.0.1:PORT</code> sidesteps the entire stdio bridge. WSL2 forwards localhost ports, so a Linux-side listener is reachable from the Windows gateway. Cleanest fix but requires kiro-cli support.
       </li>
     </ol>
 
-    <h3 class="otto-h3">Diagnostic data — collect this if the steps above don't fix it</h3>
-    <pre class="otto-code-block"># 1. Confirm current KIRO_* values
+    <h3 class="gw-h3">Diagnostic data — collect this if the steps above don't fix it</h3>
+    <pre class="gw-code-block"># 1. Confirm current KIRO_* values
 otto-gw.ps1 env | Select-String "KIRO"
 
 # 2. Reproduce with DEBUG=true and capture the log around the drop
@@ -365,25 +365,25 @@ wsl.exe ps aux | findstr kiro
 #    KIRO_ARGS=--exec sh -c 'exec /path/to/kiro-cli acp 2&gt;&gt;/tmp/kiro.err'
 wsl.exe cat /tmp/kiro.err</pre>
 
-    <h3 class="otto-h3">What the log lines mean</h3>
-    <dl class="otto-about-dl">
+    <h3 class="gw-h3">What the log lines mean</h3>
+    <dl class="gw-about-dl">
       <dt><code>pii.redact.done</code> then silence</dt><dd>Gateway sent the redacted request, kiro never replied. <strong>Likely stdio buffering</strong> — try step 1.</dd>
       <dt><code>pool: slot died</code> with no obvious cause</dt><dd>Either kiro-cli exited inside WSL or wsl.exe exited mid-session. <strong>Likely process-tree split-brain</strong> — try step 2; cross-reference with <code>wsl ps</code>.</dd>
       <dt><code>stream.idle_timeout</code></dt><dd>vsock latency exceeded the watchdog threshold. <strong>Likely step 3</strong> — bump the timeout.</dd>
       <dt><code>acp: dispatcher: read EOF</code></dt><dd>The pipe closed unexpectedly. Combine with <code>wsl ps</code> output to figure out which side died first (Linux kiro exited / Windows wsl.exe exited / bridge dropped).</dd>
     </dl>
 
-    <h3 class="otto-h3">Recommended starting config</h3>
-    <pre class="otto-code-block">KIRO_CMD=wsl.exe
+    <h3 class="gw-h3">Recommended starting config</h3>
+    <pre class="gw-code-block">KIRO_CMD=wsl.exe
 KIRO_ARGS=--exec /usr/bin/stdbuf -i0 -o0 -e0 /home/&lt;you&gt;/path/to/kiro-cli acp
 STREAM_IDLE_TIMEOUT_SEC=120
 DEBUG=true</pre>
     <p>If this combination still drops the connection, paste the log lines around the drop + <code>wsl ps</code> output for the diagnostic team. If the root cause turns out to be #2 (split-brain process tree), there's a real gateway-side fix involving Windows job objects + WSL-aware kill semantics that would land in a future release.</p>
   </section>
 
-  <section class="otto-card">
-    <h2 class="otto-h2">Basic admin usage</h2>
-    <ul class="otto-docs-bullets">
+  <section class="gw-card">
+    <h2 class="gw-h2">Basic admin usage</h2>
+    <ul class="gw-docs-bullets">
       <li><strong>Status pill</strong> — green = healthy (pool ready + at least one slot idle), amber = degraded (KIRO_CMD missing or pool starving), red = down (no slots, no recovery in flight).</li>
       <li><strong>Pool slots</strong> — one card per warm kiro-cli subprocess; idle (yellow), busy (purple), or terminated (red) with last-error context.</li>
       <li><strong>Active sessions</strong> — stateful conversation sessions per the session registry; idle &gt; <code>SESSION_TTL_MS</code> are reaped on the next tick.</li>
@@ -391,9 +391,9 @@ DEBUG=true</pre>
     </ul>
   </section>
 
-  <section class="otto-card">
-    <h2 class="otto-h2">Troubleshooting</h2>
-    <ul class="otto-docs-bullets">
+  <section class="gw-card">
+    <h2 class="gw-h2">Troubleshooting</h2>
+    <ul class="gw-docs-bullets">
       <li><strong>Status shows degraded</strong> — usually <code>KIRO_CMD</code> is unset or not on <code>$PATH</code>. Check the Upstream Worker card on <a href="/admin/about">About</a>.</li>
       <li><strong>Status shows down</strong> — all pool slots terminated. Inspect the Log tail filtered on <code>pool.acquire</code> / <code>pool.recover</code> for the underlying spawn or ACP error.</li>
       <li><strong>Requests hang for ~120s then time out</strong> — server-side stream-idle watchdog is disabled (<code>STREAM_IDLE_TIMEOUT_SEC=0</code>) and the upstream stalled silently. Re-enable the watchdog (default 30s) and retry.</li>

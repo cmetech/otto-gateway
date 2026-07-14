@@ -1,4 +1,4 @@
-// Package admin provides the admin observability UI handler for OTTO Gateway.
+// Package admin provides the admin observability UI handler for Gateway.
 // It exposes GET /admin (HTML page), GET /admin/api/snapshot (JSON aggregator),
 // and GET /admin/static/* (embedded CSS/JS assets) — all auth-exempt per D-01.
 package admin
