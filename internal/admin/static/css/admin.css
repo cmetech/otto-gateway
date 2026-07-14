@@ -317,6 +317,13 @@ body {
   padding: calc(var(--gw-space-base) - 1px);
 }
 
+/* Recovering: a dead slot the pool is transparently respawning while it can
+ * still serve. Calm yellow outline, reserved from the red "Failed" state. */
+.gw-slot-card.is-recovering {
+  border: 2px solid var(--gw-warning);
+  padding: calc(var(--gw-space-base) - 1px);
+}
+
 .gw-slot-label {
   font: 600 16px/1.4 var(--gw-font-ui);
   color: var(--gw-fg);
@@ -345,6 +352,10 @@ body {
   color: var(--gw-failed);
 }
 
+.gw-slot-meta.is-recovering {
+  color: var(--gw-warning);
+}
+
 /* Badge variants for alive/dead (Plan 02 — aliases to semantic colors) */
 .gw-badge.is-alive {
   background: rgba(15, 195, 115, 0.12);
@@ -354,6 +365,11 @@ body {
 .gw-badge.is-dead {
   background: rgba(255, 50, 50, 0.12);
   color: var(--gw-failed);
+}
+
+.gw-badge.is-recovering {
+  background: rgba(255, 140, 10, 0.12);
+  color: var(--gw-warning);
 }
 
 /* Session ID short display */

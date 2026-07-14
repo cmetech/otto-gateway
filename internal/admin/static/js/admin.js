@@ -98,14 +98,23 @@
     return el;
   }
 
-  function buildSlotBadges(slot) {
+  // poolFailed distinguishes a genuine current fault (red "Failed") from a
+  // transient recycle (yellow "Recovering…") for a not-alive slot. It is
+  // derived once per snapshot from pool-level signals (status "down" OR
+  // spawn_failing) and threaded down to the per-slot renderers.
+  function buildSlotBadges(slot, poolFailed) {
     var el = document.createElement('div');
     el.className = 'gw-slot-badges';
     if (!slot.alive) {
-      var dead = document.createElement('span');
-      dead.className = 'gw-badge is-dead';
-      dead.textContent = 'DEAD';
-      el.append(dead);
+      var notAlive = document.createElement('span');
+      if (poolFailed) {
+        notAlive.className = 'gw-badge is-dead';
+        notAlive.textContent = 'FAILED';
+      } else {
+        notAlive.className = 'gw-badge is-recovering';
+        notAlive.textContent = 'RECOVERING';
+      }
+      el.append(notAlive);
     } else {
       var alive = document.createElement('span');
       alive.className = 'gw-badge is-alive';
@@ -121,12 +130,17 @@
     return el;
   }
 
-  function buildSlotMeta(slot) {
+  function buildSlotMeta(slot, poolFailed) {
     var el = document.createElement('div');
     el.className = 'gw-slot-meta';
     if (!slot.alive) {
-      el.classList.add('is-dead');
-      el.textContent = 'Dead — respawning…';
+      if (poolFailed) {
+        el.classList.add('is-dead');
+        el.textContent = 'Failed — check logs';
+      } else {
+        el.classList.add('is-recovering');
+        el.textContent = 'Recovering…';
+      }
     } else if (slot.current_session_id) {
       el.classList.add('is-busy');
       // "ACP session" disambiguates from the operator-level X-Session-Id
@@ -141,27 +155,26 @@
     return el;
   }
 
-  function buildSlotCard(slot) {
+  function buildSlotCard(slot, poolFailed) {
     var article = document.createElement('article');
     article.className = 'gw-slot-card';
     if (!slot.alive) {
-      article.classList.add('is-dead');
+      article.classList.add(poolFailed ? 'is-dead' : 'is-recovering');
     }
-    article.append(buildSlotLabel(slot), buildSlotBadges(slot), buildSlotMeta(slot));
+    article.append(buildSlotLabel(slot), buildSlotBadges(slot, poolFailed), buildSlotMeta(slot, poolFailed));
     return article;
   }
 
-  function updateSlotCard(article, slot) {
+  function updateSlotCard(article, slot, poolFailed) {
+    article.classList.remove('is-dead', 'is-recovering');
     if (!slot.alive) {
-      article.classList.add('is-dead');
-    } else {
-      article.classList.remove('is-dead');
+      article.classList.add(poolFailed ? 'is-dead' : 'is-recovering');
     }
     // Replace children in place.
-    article.replaceChildren(buildSlotLabel(slot), buildSlotBadges(slot), buildSlotMeta(slot));
+    article.replaceChildren(buildSlotLabel(slot), buildSlotBadges(slot, poolFailed), buildSlotMeta(slot, poolFailed));
   }
 
-  function renderSlots(slots) {
+  function renderSlots(slots, poolFailed) {
     var grid = document.querySelector('[data-slot-grid]');
     var empty = document.querySelector('[data-slot-grid-empty]');
     if (!grid) return;
@@ -176,11 +189,13 @@
 
     if (grid.children.length !== slots.length) {
       // Array length changed — full rebuild.
-      grid.replaceChildren.apply(grid, slots.map(buildSlotCard));
+      grid.replaceChildren.apply(grid, slots.map(function (slot) {
+        return buildSlotCard(slot, poolFailed);
+      }));
     } else {
       // Same count — update in place.
       for (var i = 0; i < slots.length; i++) {
-        updateSlotCard(grid.children[i], slots[i]);
+        updateSlotCard(grid.children[i], slots[i], poolFailed);
       }
     }
   }
@@ -318,7 +333,11 @@
       })
       .then(function (snap) {
         renderSummary(snap);
-        renderSlots(snap.pool ? snap.pool.slots : []);
+        // A not-alive slot is a genuine failure (red) only when the pool cannot
+        // serve right now (status "down") or a current spawn failure is flagged;
+        // otherwise it is a transient recycle rendered yellow "Recovering…".
+        var poolFailed = snap.status === 'down' || !!(snap.pool && snap.pool.spawn_failing);
+        renderSlots(snap.pool ? snap.pool.slots : [], poolFailed);
         renderSessions(snap.sessions || []);
         // Quick 260529-ll2 — populate the source dropdown from
         // snap.log_sources. populateLogSources no-ops when the list is
