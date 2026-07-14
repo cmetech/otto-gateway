@@ -52,8 +52,11 @@ type fakeClient struct {
 	setModelFn   func(ctx context.Context, sid, m string) error
 	promptFn     func(ctx context.Context, sid string, blocks []canonical.Block) (*acp.Stream, error)
 
-	// scripted model catalog returned by AvailableModels.
-	models []canonical.ModelInfo
+	// scripted model catalog returned by AvailableModels. When
+	// availableModelsFn is set it takes precedence (lets a test flip the
+	// catalog over time to exercise lazy self-heal).
+	models            []canonical.ModelInfo
+	availableModelsFn func() []canonical.ModelInfo
 
 	mu              sync.Mutex
 	initializeCalls int
@@ -157,6 +160,9 @@ func (f *fakeClient) Close() error {
 }
 
 func (f *fakeClient) AvailableModels() []canonical.ModelInfo {
+	if f.availableModelsFn != nil {
+		return f.availableModelsFn()
+	}
 	return f.models
 }
 

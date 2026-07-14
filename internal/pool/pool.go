@@ -123,6 +123,19 @@ type Pool struct {
 	// Warmup. Defensive copy returned by Models().
 	models []canonical.ModelInfo
 
+	// catalogRetry is the backoff schedule for the warmup catalog-capture
+	// retry (Track 1 resilient discovery). Defaulted in New; overridable in
+	// tests. len(schedule) retries → up to len+1 attempts.
+	catalogRetry []time.Duration
+
+	// catalogProbing is the singleflight guard for the lazy self-heal
+	// re-probe fired from Models() when the catalog is empty. CAS false→true
+	// launches at most one background probe at a time.
+	catalogProbing atomic.Bool
+	// probeWG tracks in-flight self-heal probe goroutines so Close waits for
+	// them (goleak-clean; probes are otherwise untracked bare goroutines).
+	probeWG sync.WaitGroup
+
 	// sessionSlots maps active session ids to their owning slot. Populated
 	// by NewSession (Task 2), consumed by SetModel / Prompt / Cancel.
 	// Guarded by mu.
@@ -202,8 +215,18 @@ func New(cfg Config) *Pool {
 		slots:        make(chan *Slot, cfg.Size),
 		sessionSlots: make(map[string]*Slot),
 		closing:      make(chan struct{}),
+		catalogRetry: defaultCatalogRetry,
 	}
 }
+
+// defaultCatalogRetry is the warmup catalog-capture backoff schedule (Track 1
+// resilient discovery): 3 retries at 250ms → 500ms → 1s absorb a transiently
+// cold kiro-cli at boot before the pool degrades to a self-healing empty
+// catalog.
+var defaultCatalogRetry = []time.Duration{250 * time.Millisecond, 500 * time.Millisecond, time.Second}
+
+// catalogProbeTimeout bounds a single lazy self-heal re-probe.
+const catalogProbeTimeout = 10 * time.Second
 
 // Warmup sequentially (D-07a) spawns + initialises cfg.Size slots. On
 // any failure it tears down partial state via closeAll and returns a
@@ -237,25 +260,21 @@ func (p *Pool) Warmup(ctx context.Context) error {
 			// Codex H-6 / D-13: capture model catalog from slot 0's
 			// session/new response. Phase 1.1 D-12 populates client.models
 			// inside NewSession; AvailableModels returns nil until then.
-			// Use cfg.KiroCWD as the warmup cwd; engine.Run uses pickCwd
-			// per request.
-			sid, err := slot.Client.NewSession(ctx, p.cfg.KiroCWD)
-			if err != nil {
-				_ = slot.Client.Close()
-				// closeAll's error intentionally discarded — see
-				// comment in the initSlot-error branch above.
-				_ = p.closeAll()
-				return fmt.Errorf("pool: warmup new-session: %w", err)
+			//
+			// Track 1 (resilient discovery, Node 6bbd0c2): a transiently-cold
+			// kiro is absorbed by captureCatalogWithRetry (retry+backoff). If
+			// the catalog is still empty after retries, DEGRADE rather than
+			// abort boot — a gateway serving "auto"-only and self-healing on
+			// demand (see selfHealCatalog) beats one that won't start. Slot
+			// spawn/Initialize failures (initSlot, above) keep their fail-fast
+			// semantics; only an empty/uncooperative catalog degrades here.
+			if models := p.captureCatalogWithRetry(ctx, slot.Client); len(models) > 0 {
+				p.mu.Lock()
+				p.models = models
+				p.mu.Unlock()
+			} else if p.cfg.Logger != nil {
+				p.cfg.Logger.Warn("pool: model catalog empty after warmup retries; serving degraded (auto-only), will self-heal on demand")
 			}
-			p.mu.Lock()
-			p.models = slot.Client.AvailableModels()
-			p.mu.Unlock()
-			// Best-effort warmup-session cleanup. Phase 2 has no
-			// dedicated session-close RPC; Cancel is the closest
-			// cleanup primitive and matches D-05 slot-stateless
-			// semantics. engine.Run will create fresh sessions per
-			// request.
-			slot.Client.Cancel(sid)
 		}
 		p.mu.Lock()
 		p.all = append(p.all, slot)
@@ -270,6 +289,83 @@ func (p *Pool) Warmup(ctx context.Context) error {
 	// pool as degraded between Warmup and the first slot release.
 	p.advanceProgress()
 	return nil
+}
+
+// probeCatalogOnce runs one session/new on the given client and captures the
+// model catalog it exposes, cancelling the throwaway probe session afterward
+// (D-05 slot-stateless: engine.Run makes fresh sessions per request). Shared by
+// Warmup (retry loop) and the lazy self-heal path so the two cannot drift.
+func (p *Pool) probeCatalogOnce(ctx context.Context, client PoolClient) ([]canonical.ModelInfo, error) {
+	sid, err := client.NewSession(ctx, p.cfg.KiroCWD)
+	if err != nil {
+		return nil, err //nolint:wrapcheck // caller decides whether to retry/degrade; error is transient
+	}
+	models := client.AvailableModels()
+	client.Cancel(sid)
+	return models, nil
+}
+
+// captureCatalogWithRetry probes the catalog with bounded retry+backoff (Track 1
+// resilient discovery). A NewSession error OR an empty catalog triggers a retry;
+// after the schedule is exhausted (or ctx is cancelled) it returns nil so the
+// caller degrades to self-heal. len(catalogRetry) retries → up to len+1 attempts.
+func (p *Pool) captureCatalogWithRetry(ctx context.Context, client PoolClient) []canonical.ModelInfo {
+	for attempt := 0; ; attempt++ {
+		if models, err := p.probeCatalogOnce(ctx, client); err == nil && len(models) > 0 {
+			return models
+		}
+		if attempt >= len(p.catalogRetry) {
+			return nil
+		}
+		select {
+		case <-time.After(p.catalogRetry[attempt]):
+		case <-ctx.Done():
+			return nil
+		}
+	}
+}
+
+// selfHealCatalog fires at most one background re-probe (singleflight via
+// catalogProbing) to recover an empty model catalog once kiro is warm — the
+// lazy half of Track 1 resilient discovery. It is non-blocking: it takes a slot
+// only if one is immediately free (never contends with request traffic) and
+// never blocks the Models() caller. probeWG lets Close wait it out (goleak).
+func (p *Pool) selfHealCatalog() {
+	if !p.catalogProbing.CompareAndSwap(false, true) {
+		return // a probe is already in flight
+	}
+	// Don't start a probe on a closing pool (avoids a probe outliving Close).
+	select {
+	case <-p.closing:
+		p.catalogProbing.Store(false)
+		return
+	default:
+	}
+	p.probeWG.Add(1)
+	go func() {
+		defer p.probeWG.Done()
+		defer p.catalogProbing.Store(false)
+
+		var slot *Slot
+		select {
+		case slot = <-p.slots:
+		case <-p.closing:
+			return
+		default:
+			return // no free slot right now; a later read retries
+		}
+		defer func() { p.slots <- slot }()
+		if !p.slotAlive(slot) {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), catalogProbeTimeout)
+		defer cancel()
+		if models, err := p.probeCatalogOnce(ctx, slot.Client); err == nil && len(models) > 0 {
+			p.mu.Lock()
+			p.models = models
+			p.mu.Unlock()
+		}
+	}()
 }
 
 // initSlot spawns + initialises a single slot via cfg.Factory. On
@@ -434,12 +530,19 @@ func (p *Pool) respawnSlot(ctx context.Context, slot *Slot) error {
 // failed before slot 0's NewSession captured the catalog.
 func (p *Pool) Models() []canonical.ModelInfo {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.models == nil {
-		return nil
+	n := len(p.models)
+	var out []canonical.ModelInfo
+	if n > 0 {
+		out = make([]canonical.ModelInfo, n)
+		copy(out, p.models)
 	}
-	out := make([]canonical.ModelInfo, len(p.models))
-	copy(out, p.models)
+	p.mu.Unlock()
+	// Track 1 lazy self-heal: an empty catalog (cold-boot degrade) triggers a
+	// background re-probe so the list recovers without a restart. The read
+	// returns the current (possibly still-empty) snapshot immediately.
+	if n == 0 {
+		p.selfHealCatalog()
+	}
 	return out
 }
 
@@ -598,6 +701,10 @@ func (p *Pool) Close() error {
 	p.closeOnce.Do(func() {
 		close(p.closing)
 		firstErr = p.closeAll()
+		// Track 1: wait out any in-flight self-heal probe goroutine so it
+		// cannot outlive Close (goleak-clean). closing is already closed, so
+		// no new probe will start (selfHealCatalog's closing-check).
+		p.probeWG.Wait()
 		// WR-01 (phase 16 review): the prior `p.warnOnce = sync.Once{}`
 		// reassignment was a data race against in-flight NewSession
 		// callers that had passed the non-blocking `<-p.slots` try and

@@ -84,6 +84,13 @@ func (p *Pool) RecordSpawnErrForTesting(err error) {
 	p.recordSpawnErr(err)
 }
 
+// SetCatalogRetryForTesting overrides the model-catalog warmup retry/backoff
+// schedule so the resilient-discovery tests don't sleep real time. Must be
+// called before Warmup. A nil/empty schedule means "one attempt, no retries".
+func (p *Pool) SetCatalogRetryForTesting(schedule []time.Duration) {
+	p.catalogRetry = schedule
+}
+
 // SetSpawnErrForTesting places the recorded spawn-error fields at a
 // controlled wall-clock instant so SpawnFailing recency tests can exercise
 // both the recent (red) and stale (not-red) branches without waiting real
