@@ -5,8 +5,19 @@ package main
 import (
 	"os"
 	"runtime"
+	"strings"
 	"time"
 )
+
+// desktopLabel formats a brand-aware desktop-section string:
+// "<DisplayName> Desktop <suffix>" (suffix may be empty, e.g. "· running").
+func desktopLabel(id brandIdentity, suffix string) string {
+	s := id.DisplayName + " Desktop"
+	if suffix != "" {
+		s += " " + suffix
+	}
+	return strings.TrimSpace(s)
+}
 
 // makeDesktopProbe returns a per-tick evidence gatherer: resolve the installed
 // app (with brand.json refinement), record its path, and check liveness. The
@@ -42,27 +53,28 @@ func (s *trayState) desktopUILoop() {
 // applyDesktopState updates the desktop menu section for the given state.
 // Install is shown only when not installed; Start/Stop are enabled by state.
 func (s *trayState) applyDesktopState(st DesktopState) {
+	id, _ := resolveDesktopIdentity(runtime.GOOS, os.Getenv, homeDir(), statExists, os.ReadFile)
 	switch st {
 	case DesktopNotInstalled:
-		s.miDesktopHeader.SetTitle("OTTO Desktop · not installed")
+		s.miDesktopHeader.SetTitle(desktopLabel(id, "· not installed"))
 		s.miDesktopInstall.Show()
 		s.miDesktopInstall.Enable()
 		s.miDesktopStart.Hide()
 		s.miDesktopStop.Hide()
 	case DesktopInstalling:
-		s.miDesktopHeader.SetTitle("OTTO Desktop · installing…")
+		s.miDesktopHeader.SetTitle(desktopLabel(id, "· installing…"))
 		s.miDesktopInstall.Show()
 		s.miDesktopInstall.Disable()
 		s.miDesktopStart.Hide()
 		s.miDesktopStop.Hide()
 	case DesktopStopped:
-		s.miDesktopHeader.SetTitle("OTTO Desktop · not running")
+		s.miDesktopHeader.SetTitle(desktopLabel(id, "· not running"))
 		s.miDesktopInstall.Hide()
 		s.miDesktopStart.Show()
 		s.miDesktopStart.Enable()
 		s.miDesktopStop.Hide()
 	case DesktopRunning:
-		s.miDesktopHeader.SetTitle("OTTO Desktop · running")
+		s.miDesktopHeader.SetTitle(desktopLabel(id, "· running"))
 		s.miDesktopInstall.Hide()
 		s.miDesktopStart.Hide()
 		s.miDesktopStop.Show()
@@ -71,8 +83,9 @@ func (s *trayState) applyDesktopState(st DesktopState) {
 }
 
 func (s *trayState) handleDesktopInstall() {
-	if !confirmDialog("Install OTTO Desktop",
-		"Download and run the official OTTO desktop installer now?", "Install", "Cancel") {
+	id, _ := resolveDesktopIdentity(runtime.GOOS, os.Getenv, homeDir(), statExists, os.ReadFile)
+	if !confirmDialog("Install "+desktopLabel(id, "")+"…",
+		"Download and run the official "+id.DisplayName+" desktop installer now?", "Install", "Cancel") {
 		return
 	}
 	s.desktopInstalling.Store(true)
@@ -80,10 +93,10 @@ func (s *trayState) handleDesktopInstall() {
 	name, args := desktopInstallCommand(runtime.GOOS)
 	res := runCmd(10*time.Minute, "", name, args...) // installs are slow (download+unpack+bootstrap)
 	if res.ExitCode != 0 || res.Err != nil {
-		notify("OTTO Desktop", "Install failed: "+firstLine(res.Stderr))
+		notify(desktopLabel(id, ""), "Install failed: "+firstLine(res.Stderr))
 		return
 	}
-	notify("OTTO Desktop", "OTTO desktop installed.")
+	notify(desktopLabel(id, ""), id.DisplayName+" desktop installed.")
 	// next poll re-detects → state flips to stopped/running
 }
 
@@ -93,29 +106,29 @@ func (s *trayState) handleDesktopStart() {
 	if p != nil {
 		appPath = *p
 	}
+	id, freshPath := resolveDesktopIdentity(runtime.GOOS, os.Getenv, homeDir(), statExists, os.ReadFile)
 	// Stale-path guard: the cached path may point at an app that was moved
 	// or uninstalled since the last poll. Re-resolve before launching so we
 	// never spawn a dead path.
 	if appPath == "" || !statExists(appPath) {
-		_, fresh := resolveDesktopIdentity(runtime.GOOS, os.Getenv, homeDir(), statExists, os.ReadFile)
-		appPath = fresh
+		appPath = freshPath
 	}
 	if appPath == "" {
-		notify("OTTO Desktop", "Desktop app not found. Install it first.")
+		notify(desktopLabel(id, ""), "Desktop app not found. Install it first.")
 		return
 	}
 	name, args := desktopStartCommand(runtime.GOOS, appPath)
 	if err := spawnDetached("", name, args...); err != nil {
-		notify("OTTO Desktop", "Failed to start: "+err.Error())
+		notify(desktopLabel(id, ""), "Failed to start: "+err.Error())
 	}
 }
 
 func (s *trayState) handleDesktopStop() {
-	if !confirmDialog("Stop OTTO Desktop",
-		"Stop the OTTO desktop app? Any unsaved work in it may be lost.", "Stop", "Cancel") {
+	id, _ := resolveDesktopIdentity(runtime.GOOS, os.Getenv, homeDir(), statExists, os.ReadFile)
+	if !confirmDialog("Stop "+desktopLabel(id, ""),
+		"Stop the "+id.DisplayName+" desktop app? Any unsaved work in it may be lost.", "Stop", "Cancel") {
 		return
 	}
-	id, _ := resolveDesktopIdentity(runtime.GOOS, os.Getenv, homeDir(), statExists, os.ReadFile)
 	// graceful first
 	name, args := desktopStopCommand(runtime.GOOS, id, false)
 	res := runCmd(15*time.Second, "", name, args...)
@@ -126,7 +139,7 @@ func (s *trayState) handleDesktopStop() {
 		res = runCmd(15*time.Second, "", fname, fargs...)
 	}
 	if res.Err != nil && isDesktopRunning(id) {
-		notify("OTTO Desktop", "Failed to stop: "+firstLine(res.Stderr))
+		notify(desktopLabel(id, ""), "Failed to stop: "+firstLine(res.Stderr))
 	}
 }
 
