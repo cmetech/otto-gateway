@@ -267,7 +267,7 @@ type Config struct {
 	// ChatTraceFile is the on-disk path of the chat-trace NDJSON log
 	// (quick 260529-ll2). Default-derived: if LOG_FILE is set, this is
 	// the LOG_FILE basename with the "-chat-trace.log" suffix in the
-	// same directory; else "./logs/otto-gateway-chat-trace.log". The
+	// same directory; else "./logs/gateway-chat-trace.log". The
 	// timberjack rotator opens this file with mode 0o600 (T-ll2-01
 	// mitigation). Loaded from CHAT_TRACE_FILE.
 	ChatTraceFile string
@@ -783,17 +783,17 @@ func Load() (Config, error) {
 // resolved LOG_FILE env value. Sibling-file convention: same directory,
 // same basename minus extension, "-chat-trace.log" suffix. When
 // logFile is empty, returns the documented packaged-default path
-// "./logs/otto-gateway-chat-trace.log".
+// "./logs/gateway-chat-trace.log".
 //
 // Used by Load() for the CHAT_TRACE_FILE default, so an operator who
 // sets LOG_FILE=/var/log/otto/otto-gateway.log gets a co-located
-// chat-trace at /var/log/otto/otto-gateway-chat-trace.log without
+// chat-trace at /var/log/otto/gateway-chat-trace.log without
 // further configuration — same directory permissions, same rotation
 // destination, same operator-cognitive home.
 func deriveChatTraceFile(logFile string) string {
 	logFile = strings.TrimSpace(logFile)
 	if logFile == "" {
-		return "./logs/otto-gateway-chat-trace.log"
+		return "./logs/gateway-chat-trace.log"
 	}
 	ext := filepath.Ext(logFile)
 	base := strings.TrimSuffix(logFile, ext)

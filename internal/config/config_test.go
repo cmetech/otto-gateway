@@ -561,7 +561,7 @@ func TestLoad_ChatTraceFile_DefaultWhenLogFileUnset(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() returned unexpected error: %v", err)
 	}
-	want := "./logs/otto-gateway-chat-trace.log"
+	want := "./logs/gateway-chat-trace.log"
 	if cfg.ChatTraceFile != want {
 		t.Errorf("ChatTraceFile: got %q, want %q", cfg.ChatTraceFile, want)
 	}
