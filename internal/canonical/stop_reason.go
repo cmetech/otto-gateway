@@ -1,5 +1,5 @@
 // Package canonical defines the typed chunk and block types that flow through
-// the OTTO Gateway. This package imports nothing under internal/.
+// the Gateway. This package imports nothing under internal/.
 package canonical
 
 // StopReason classifies why a prompt turn ended. Values mirror the ACP spec

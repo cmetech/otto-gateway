@@ -243,7 +243,7 @@ func TestLoadArgs_Version(t *testing.T) {
 }
 
 // Regression: --version must short-circuit BEFORE env validation so that
-// `otto-gw version` works on installs where env is misconfigured (e.g.
+// `gw version` works on installs where env is misconfigured (e.g.
 // PII_ENCRYPT_KEY required because encrypt mode is on, but unset). Before
 // the meta-flag pre-scan, Load() would fail with the missing-key error and
 // the user would never see the version string.

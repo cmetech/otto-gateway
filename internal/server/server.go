@@ -1,4 +1,4 @@
-// Package server provides the HTTP server for the OTTO Gateway.
+// Package server provides the HTTP server for the Gateway.
 // It wires the chi router, middleware chain, and request handlers.
 package server
 

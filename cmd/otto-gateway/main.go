@@ -1,4 +1,4 @@
-// Package main is the entry point for the OTTO Gateway binary.
+// Package main is the entry point for the Gateway binary.
 //
 // Wiring order (Plan 06 POOL-02):
 //
@@ -20,7 +20,7 @@
 //     fires via the deferred cleanup closure returned by newApp.
 //
 // D-22: the binary stays foreground-only. start/stop/status are owned by
-// scripts/otto-gw (POSIX) and scripts/otto-gw.ps1 (PowerShell). Never add
+// scripts/gw (POSIX) and scripts/gw.ps1 (PowerShell). Never add
 // lifecycle subcommands to the binary.
 package main
 
@@ -100,11 +100,11 @@ func main() {
 	logger.Info("boot: signal handler installed", "signals", []string{"SIGINT", "SIGTERM"})
 
 	// Surface which env file (if any) the wrapper sourced. The bash and
-	// PowerShell wrappers export OTTO_ENV_FILE_LOADED with the resolved
+	// PowerShell wrappers export GW_ENV_FILE_LOADED with the resolved
 	// path so operators can confirm in the structured log which file is
 	// actually in effect (project-local vs per-user vs CLI override).
 	// Empty when the binary is started without a wrapper.
-	if envFile := os.Getenv("OTTO_ENV_FILE_LOADED"); envFile != "" {
+	if envFile := os.Getenv("GW_ENV_FILE_LOADED"); envFile != "" {
 		logger.Info("env file loaded", "path", envFile)
 	} else {
 		logger.Info("env file loaded", "path", "(none — inherited environment only)")
@@ -624,7 +624,7 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 	// Tailer log path resolution (Phase 8 follow-up — log rotation):
 	//   1. LOG_FILE if set (the canonical env the gateway logger writes to)
 	//   2. OTTO_LOG (legacy / wrapper-set path, retained for back-compat)
-	//   3. ./logs/otto-gateway.log (matches the packaged distribution layout)
+	//   3. ./logs/gateway.log (matches the packaged distribution layout)
 	// The tailer's inode-tracking reopen (internal/admin/tail.go) keeps
 	// streaming across timberjack's daily rotation without UI interruption.
 	var adminPoolDetail admin.PoolDetailSource
@@ -644,7 +644,7 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 	// OTTO_LOG_BOOT). "chat-trace" is included ONLY when CHAT_TRACE=true
 	// so the UI surfaces only sources that have a tailable file on disk.
 	mainLogPath := envOrDefault("LOG_FILE",
-		envOrDefault("OTTO_LOG", "./logs/otto-gateway.log"))
+		envOrDefault("OTTO_LOG", "./logs/gateway.log"))
 	bootLogPath := envOrDefault("OTTO_LOG_BOOT", stripExt(mainLogPath)+"-boot.log")
 	logPaths := map[string]string{
 		"main":     mainLogPath,
@@ -1010,8 +1010,8 @@ func stripExt(p string) string {
 //   - LOG_FILE set   → write through a timberjack.Logger with daily
 //     rotation at 00:00 local time and 7 days of compressed backups.
 //
-// The wrapper scripts (scripts/otto-gw, scripts/otto-gw.ps1) auto-set
-// LOG_FILE to ./logs/otto-gateway.log on `start`/`restart` and leave it
+// The wrapper scripts (scripts/gw, scripts/gw.ps1) auto-set
+// LOG_FILE to ./logs/gateway.log on `start`/`restart` and leave it
 // unset on `run`, so the same binary serves both background and
 // foreground UX without a flag. The returned closer drains and closes
 // any open rotation handles; the caller MUST defer it.

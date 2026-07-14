@@ -1,5 +1,5 @@
 #!/bin/sh
-# scripts/test-pii.sh -- quick PII / streaming smoke test for OTTO Gateway.
+# scripts/test-pii.sh -- quick PII / streaming smoke test for Gateway.
 #
 # Three scenarios. Default runs all three.
 #
@@ -64,7 +64,7 @@ usage() { sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 # ---------------------------------------------------------------------------
 SCENARIO=""
 SURFACE="all"
-BASE="${OTTO_BASE_URL:-http://127.0.0.1:18080}"
+BASE="${GW_BASE_URL:-http://127.0.0.1:18080}"
 AUTH=""
 VERBOSE=0
 FAILED=0
@@ -117,7 +117,7 @@ curl_auth() {
 # Probe gateway availability before any scenario.
 if ! curl -fsS "$BASE/health" >/dev/null 2>&1; then
     printf '%sgateway not reachable at %s%s\n' "$(c_red)" "$BASE" "$(c_reset)" >&2
-    printf 'check: otto-gw status; otto-gw start\n' >&2
+    printf 'check: gw status; gw start\n' >&2
     exit 2
 fi
 

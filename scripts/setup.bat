@@ -27,7 +27,7 @@ if errorlevel 1 goto err
 
 echo.
 echo [2/2] Checking PowerShell ExecutionPolicy...
-powershell -NoProfile -Command "$effective = Get-ExecutionPolicy; $permissive = @('RemoteSigned','Unrestricted','Bypass'); if ($permissive -contains $effective) { Write-Host ('  Effective ExecutionPolicy is already ' + $effective + ' - no action needed.'); exit 0 }; try { Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force -ErrorAction Stop; $newEffective = Get-ExecutionPolicy; if ($permissive -contains $newEffective) { Write-Host ('  Set CurrentUser ExecutionPolicy to RemoteSigned (effective: ' + $newEffective + ').'); exit 0 }; Write-Host ('  Set CurrentUser to RemoteSigned but effective policy stays ' + $newEffective + ' (Group Policy override at a higher scope).'); Write-Host '  Use .\scripts\otto-gw.bat or the per-command .bat shortcuts - they bypass per-invocation.'; exit 2 } catch { Write-Host ('  Could not set ExecutionPolicy: ' + $_.Exception.Message); Write-Host '  Use .\scripts\otto-gw.bat or the per-command .bat shortcuts - they bypass per-invocation.'; exit 2 }"
+powershell -NoProfile -Command "$effective = Get-ExecutionPolicy; $permissive = @('RemoteSigned','Unrestricted','Bypass'); if ($permissive -contains $effective) { Write-Host ('  Effective ExecutionPolicy is already ' + $effective + ' - no action needed.'); exit 0 }; try { Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force -ErrorAction Stop; $newEffective = Get-ExecutionPolicy; if ($permissive -contains $newEffective) { Write-Host ('  Set CurrentUser ExecutionPolicy to RemoteSigned (effective: ' + $newEffective + ').'); exit 0 }; Write-Host ('  Set CurrentUser to RemoteSigned but effective policy stays ' + $newEffective + ' (Group Policy override at a higher scope).'); Write-Host '  Use .\scripts\gw.bat or the per-command .bat shortcuts - they bypass per-invocation.'; exit 2 } catch { Write-Host ('  Could not set ExecutionPolicy: ' + $_.Exception.Message); Write-Host '  Use .\scripts\gw.bat or the per-command .bat shortcuts - they bypass per-invocation.'; exit 2 }"
 
 REM PowerShell exit codes: 0 = ok or already-permissive, 2 = soft warning (GPO override
 REM or set failed; bat surface still works), 1 = unexpected error.
@@ -36,8 +36,8 @@ if errorlevel 1 goto err
 
 echo.
 echo Setup complete. You can now run:
-echo    .\scripts\otto-gw.ps1 status    (PowerShell wrapper)
-echo    .\scripts\otto-gw.bat status    (cmd dispatcher - works under any policy)
+echo    .\scripts\gw.ps1 status    (PowerShell wrapper)
+echo    .\scripts\gw.bat status    (cmd dispatcher - works under any policy)
 echo    .\scripts\start.bat             (Explorer-double-clickable shortcut)
 echo.
 pause
@@ -47,7 +47,7 @@ exit /b 0
 echo.
 echo Setup advisory: the per-user PowerShell policy is overridden at a higher scope
 echo (likely Group Policy). The .bat surface works without further intervention:
-echo    .\scripts\otto-gw.bat status
+echo    .\scripts\gw.bat status
 echo    .\scripts\start.bat              (double-click from Explorer)
 echo.
 pause
@@ -57,7 +57,7 @@ exit /b 0
 echo.
 echo Setup hit an unexpected error. The .bat dispatcher should still work because
 echo cmd.exe is not subject to PowerShell execution policy:
-echo    .\scripts\otto-gw.bat status
+echo    .\scripts\gw.bat status
 echo    .\scripts\start.bat              (double-click from Explorer)
 echo.
 pause

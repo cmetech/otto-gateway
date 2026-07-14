@@ -1,5 +1,5 @@
 // Package auth provides bearer-token + IP-allowlist chi-compatible HTTP
-// middlewares for the OTTO Gateway.
+// middlewares for the Gateway.
 //
 // The two factory functions (Bearer, IPAllowlist) are constructed against a
 // shared Config and emit Ollama-shape JSON errors ({"error": "..."}) on

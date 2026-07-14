@@ -786,7 +786,7 @@ func Load() (Config, error) {
 // "./logs/gateway-chat-trace.log".
 //
 // Used by Load() for the CHAT_TRACE_FILE default, so an operator who
-// sets LOG_FILE=/var/log/otto/otto-gateway.log gets a co-located
+// sets LOG_FILE=/var/log/otto/gateway.log gets a co-located
 // chat-trace at /var/log/otto/gateway-chat-trace.log without
 // further configuration — same directory permissions, same rotation
 // destination, same operator-cognitive home.
@@ -821,7 +821,7 @@ func LoadArgs(args []string) (Config, error) {
 	// is misconfigured (e.g. PII_ENCRYPT_KEY required by env-mode
 	// PII but unset). The version/help paths inspect no env state, so
 	// running them ahead of Load() loses nothing and unblocks the
-	// "otto-gw version" wrapper subcommand on fresh installs.
+	// "gw version" wrapper subcommand on fresh installs.
 	if hit := scanMetaFlag(args); hit != "" {
 		switch hit {
 		case "version":

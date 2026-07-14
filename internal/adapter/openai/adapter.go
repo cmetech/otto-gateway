@@ -1,5 +1,5 @@
 // Package openai implements the OpenAI-shape HTTP surface for the
-// OTTO Gateway. It exposes routes that mount under the configured
+// Gateway. It exposes routes that mount under the configured
 // OPENAI_PATH_PREFIX (default "/v1") and forwards canonical requests
 // through the engine to the warm kiro-cli pool.
 //

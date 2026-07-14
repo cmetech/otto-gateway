@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Quick PII / streaming smoke test for OTTO Gateway (Windows).
+    Quick PII / streaming smoke test for Gateway (Windows).
 
 .DESCRIPTION
     Three scenarios. Default runs all three.
@@ -26,7 +26,7 @@
 
 .PARAMETER Base
     Gateway base URL. Default: http://127.0.0.1:18080
-    Also reads $env:OTTO_BASE_URL when present.
+    Also reads $env:GW_BASE_URL when present.
 
 .PARAMETER Auth
     Bearer token. Sets Authorization header on every call.
@@ -63,7 +63,7 @@ param(
     [ValidateSet('anthropic', 'openai', 'ollama', 'all')]
     [string]$Surface = 'all',
 
-    [string]$Base = $(if ($env:OTTO_BASE_URL) { $env:OTTO_BASE_URL } else { 'http://127.0.0.1:18080' }),
+    [string]$Base = $(if ($env:GW_BASE_URL) { $env:GW_BASE_URL } else { 'http://127.0.0.1:18080' }),
 
     [string]$Auth = '',
 
@@ -188,7 +188,7 @@ try {
     }
 } catch {
     Write-Host "gateway not reachable at $Base" -ForegroundColor Red
-    Write-Host "check: otto-gw.ps1 status; otto-gw.ps1 start" -ForegroundColor Red
+    Write-Host "check: gw.ps1 status; gw.ps1 start" -ForegroundColor Red
     exit 2
 }
 

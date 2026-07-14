@@ -1,4 +1,4 @@
-// Package plugin provides the day-one Pre/Post hooks for OTTO Gateway:
+// Package plugin provides the day-one Pre/Post hooks for the Gateway:
 // RequestIDHook, AuthHook, LoggingHook, and PIIRedactionHook (subpackage
 // pii — Phase 8 slice 4).
 //
