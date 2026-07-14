@@ -66,6 +66,12 @@ type trayState struct {
 	miDesktopInstall  *systray.MenuItem
 	miDesktopStart    *systray.MenuItem
 	miDesktopStop     *systray.MenuItem
+
+	// advanced ▸ open-folder links
+	miAdvanced          *systray.MenuItem
+	miOpenAppFolder     *systray.MenuItem
+	miOpenDataFolder    *systray.MenuItem
+	miOpenGatewayFolder *systray.MenuItem
 }
 
 func newTrayState(installRoot string, cfg TrayConfig) *trayState {
@@ -102,6 +108,12 @@ func (s *trayState) onReady(isFirstRun bool) func() {
 		s.miDesktopInstall = systray.AddMenuItem("Install OTTO Desktop…", "Download and run the OTTO desktop installer")
 		s.miDesktopStart = systray.AddMenuItem("Start OTTO Desktop", "")
 		s.miDesktopStop = systray.AddMenuItem("Stop OTTO Desktop", "")
+		systray.AddSeparator()
+		did, _ := resolveDesktopIdentity(runtime.GOOS, os.Getenv, homeDir(), statExists, os.ReadFile)
+		s.miAdvanced = systray.AddMenuItem("Advanced", "")
+		s.miOpenAppFolder = s.miAdvanced.AddSubMenuItem("Open App Folder", "Reveal the installed desktop app folder")
+		s.miOpenDataFolder = s.miAdvanced.AddSubMenuItem("Open Data Folder (."+brandSlug(did)+")", "Open the "+did.DisplayName+" data folder")
+		s.miOpenGatewayFolder = s.miAdvanced.AddSubMenuItem("Open Gateway Folder (~/.otto-gw)", "Open the OTTO Gateway data folder")
 		systray.AddSeparator()
 		s.miSupport = systray.AddMenuItem("Create Support Bundle…", "Produce a redacted diagnostic archive")
 		systray.AddSeparator()
@@ -159,6 +171,10 @@ func (s *trayState) wireCallbacks() {
 	s.miDesktopInstall.Click(func() { go s.handleDesktopInstall() })
 	s.miDesktopStart.Click(func() { go s.handleDesktopStart() })
 	s.miDesktopStop.Click(func() { go s.handleDesktopStop() })
+
+	s.miOpenAppFolder.Click(func() { go s.handleOpenAppFolder() })
+	s.miOpenDataFolder.Click(func() { go s.handleOpenDataFolder() })
+	s.miOpenGatewayFolder.Click(func() { go s.handleOpenGatewayFolder() })
 }
 
 func (s *trayState) makeProbe() probeFunc {
