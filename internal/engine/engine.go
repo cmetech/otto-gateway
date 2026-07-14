@@ -100,6 +100,12 @@ type Config struct {
 	// /health/hooks. A nil reporter is a no-op so tests and callers
 	// without a Chain still function. Wired in cmd/otto-gateway/main.go.
 	HookErrorReporter func(hook any, err error)
+	// OnModelRequest is fired once per Run with the canonical request's Model
+	// (kiro usage-metrics parity attribution — gw_model_requests_total). Run
+	// is the single choke point every surface passes through, so this is the
+	// one place the requested model is known uniformly. A nil hook is a no-op.
+	// Wired in cmd/otto-gateway/main.go to the shared recorder.
+	OnModelRequest func(model string)
 }
 
 // Engine is the concrete orchestrator. Construct via New.
@@ -173,6 +179,15 @@ func (r *Run) StopWatchdog() func() bool { return r.stopWatchdog }
 func (e *Engine) Run(ctx context.Context, req *canonical.ChatRequest) (*Run, error) {
 	if req == nil {
 		return nil, fmt.Errorf("engine: run: req is nil")
+	}
+
+	// Kiro usage-metrics parity: attribute this request to its requested
+	// model exactly once, at the single choke point every surface passes
+	// through. Fired before PreHooks so short-circuited requests still count
+	// as an LLM request by model (mirrors the middleware's gw_llm_requests
+	// _total, which counts every chat request regardless of outcome).
+	if e.cfg.OnModelRequest != nil {
+		e.cfg.OnModelRequest(req.Model)
 	}
 
 	// Audit plugin-chain-run-error-leaks-starttimes-entries: track whether
