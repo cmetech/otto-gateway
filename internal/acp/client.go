@@ -49,6 +49,10 @@ type Config struct {
 	Env []string
 	// PingInterval is the heartbeat interval (default 60s).
 	PingInterval time.Duration
+	// Now returns the current wall-clock time; defaults to time.Now when nil.
+	// Test seam for the ping suspend-guard, which detects a laptop
+	// suspend/resume by the wall-clock gap between successive ticks.
+	Now func() time.Time
 }
 
 // applyDefaults fills in zero-value Config fields with documented defaults.
@@ -61,6 +65,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.PingInterval == 0 {
 		c.PingInterval = 60 * time.Second
+	}
+	if c.Now == nil {
+		c.Now = time.Now
 	}
 }
 
@@ -619,25 +626,52 @@ func (c *Client) pingLoop(ctx context.Context) {
 	defer c.wg.Done()
 	ticker := time.NewTicker(c.cfg.PingInterval)
 	defer ticker.Stop()
+	// lastTick is the wall-clock time of the previous cycle; seeded at loop
+	// entry so the first real tick (~one interval later) has a normal gap.
+	lastTick := c.cfg.Now()
 	for {
 		select {
 		case <-ticker.C:
-			pingCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-			if err := c.Ping(pingCtx); err != nil {
-				cancel()
-				if errors.Is(err, context.Canceled) || errors.Is(err, ErrClientClosed) {
-					return // expected on Close()
-				}
-				c.cfg.Logger.Warn("acp.ping.escalated_to_close",
-					"err", err)
-				c.cancel()
+			var stop bool
+			if lastTick, stop = c.pingTick(ctx, lastTick); stop {
 				return
 			}
-			cancel()
 		case <-ctx.Done():
 			return
 		}
 	}
+}
+
+// pingTick runs one liveness cycle and returns the updated lastTick plus whether
+// the ping loop should stop (an expected Close() or an escalated teardown).
+//
+// Suspend-guard: if the wall clock jumped by more than 2x the ping interval
+// since the previous tick, the machine was almost certainly suspended/frozen
+// (normal ticker jitter is sub-millisecond). The first post-resume tick would
+// otherwise fire against a 10s deadline that has effectively already elapsed and
+// SIGKILL a HEALTHY worker. So that one cycle skips the liveness check entirely.
+// The guard is one-shot: the very next tick is a normal cycle, so a genuinely
+// hung worker is still caught within one interval, and a worker that actually
+// exited during sleep is detected independently by the exit-watcher via Done().
+func (c *Client) pingTick(ctx context.Context, lastTick time.Time) (time.Time, bool) {
+	now := c.cfg.Now()
+	if gap := now.Sub(lastTick); gap > 2*c.cfg.PingInterval {
+		c.cfg.Logger.Info("acp.ping.skipped_after_resume",
+			"gap", gap.String(), "interval", c.cfg.PingInterval.String())
+		return now, false
+	}
+
+	pingCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := c.Ping(pingCtx); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, ErrClientClosed) {
+			return now, true // expected on Close()
+		}
+		c.cfg.Logger.Warn("acp.ping.escalated_to_close", "err", err)
+		c.cancel()
+		return now, true
+	}
+	return now, false
 }
 
 // send marshals req and queues it for the writer goroutine.
