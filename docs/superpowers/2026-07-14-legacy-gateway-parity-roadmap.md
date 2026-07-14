@@ -85,7 +85,7 @@ arg-object, scored by key-overlap. Gaps vs Node:
   add a kiro→client tool-name reconciliation layer, and surface native calls as
   structured `tool_calls` when the client supplied tools.
 
-### Track 4 — Prometheus metrics endpoint — 📝 **SPEC'D** — new — usage & ops insight
+### Track 4 — Prometheus metrics endpoint — ✅ **4a DONE** (`347a2b7`), 4b pending — new — usage & ops insight
 **Spec:** `docs/superpowers/specs/2026-07-14-prometheus-metrics-design.md`.
 Decisions: `prometheus/client_golang` (pure-Go, cgo-free preserved); `GET /metrics`
 behind `auth.IPAllowlist` (passthrough when `ALLOWED_IPS` unset); `gw_` metric
