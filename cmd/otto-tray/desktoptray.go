@@ -84,20 +84,46 @@ func (s *trayState) applyDesktopState(st DesktopState) {
 	}
 }
 
-func (s *trayState) handleDesktopInstall() {
-	if !confirmDialog("Install "+desktopLabel("")+"…",
-		"Download and run the official Co-Worker installer now?", "Install", "Cancel") {
+// desktopInstallDeps carries the injectable side-effects of an install run so
+// the ordering (start toast → run → finish toast) is unit-testable without a
+// real confirm dialog or a real multi-minute installer download.
+type desktopInstallDeps struct {
+	confirm func() bool
+	run     func() runResult
+	notify  func(title, body string)
+	label   string
+}
+
+// runDesktopInstall orchestrates an install: confirm, then an IMMEDIATE
+// "downloading" toast BEFORE the (silent, hidden-console) installer runs — so
+// the user gets instant feedback instead of a dead window until the OTTO setup
+// GUI finally appears — then a terminal success/failure toast.
+func runDesktopInstall(d desktopInstallDeps) {
+	if !d.confirm() {
 		return
 	}
+	d.notify(d.label, "Downloading the installer — this can take a minute. You'll be notified when it's done.")
+	res := d.run()
+	if res.ExitCode != 0 || res.Err != nil {
+		d.notify(d.label, "Install failed: "+firstLine(res.Stderr))
+		return
+	}
+	d.notify(d.label, "Co-Worker installed.")
+}
+
+func (s *trayState) handleDesktopInstall() {
 	s.desktopInstalling.Store(true)
 	defer s.desktopInstalling.Store(false)
 	name, args := desktopInstallCommand(runtime.GOOS)
-	res := runCmd(10*time.Minute, "", name, args...) // installs are slow (download+unpack+bootstrap)
-	if res.ExitCode != 0 || res.Err != nil {
-		notify(desktopLabel(""), "Install failed: "+firstLine(res.Stderr))
-		return
-	}
-	notify(desktopLabel(""), "Co-Worker installed.")
+	runDesktopInstall(desktopInstallDeps{
+		confirm: func() bool {
+			return confirmDialog("Install "+desktopLabel("")+"…",
+				"Download and run the official Co-Worker installer now?", "Install", "Cancel")
+		},
+		run:    func() runResult { return runCmd(10*time.Minute, "", name, args...) }, // installs are slow (download+unpack+bootstrap)
+		notify: notify,
+		label:  desktopLabel(""),
+	})
 	// next poll re-detects → state flips to stopped/running
 }
 
