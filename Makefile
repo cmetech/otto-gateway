@@ -2,8 +2,11 @@
 # Targets are intentionally simple. Per docs/briefs/go_port_brief.md §3.9,
 # cross-compilation is a first-class concern; per §3.12, linting is gated.
 
-BINARY      := otto-gateway
-PKG         := ./cmd/$(BINARY)
+# BINARY is the shipped output filename (bin/gateway[.exe]). The Go source
+# package directory is NOT renamed (still cmd/otto-gateway) — PKG is kept
+# as a literal path rather than derived from BINARY so the two can diverge.
+BINARY      := gateway
+PKG         := ./cmd/otto-gateway
 VERSION     ?= $(shell git describe --tags --always --dirty --match='v[0-9]*' 2>/dev/null || echo "0.0.0-dev")
 LDFLAGS     := -s -w -X otto-gateway/internal/version.Version=$(VERSION)
 BUILD_DIR   := bin
@@ -12,7 +15,7 @@ DIST_DIR    := dist
 # otto_gateway/ root the user sees after extracting the archive. The
 # operator-facing README is docs/operator-quickstart.md (the repo's
 # top-level README.md is developer-facing); the packager renames it.
-PKG_SCRIPTS := scripts/otto-gw scripts/otto-gw.ps1 scripts/.env.otto-gw.example
+PKG_SCRIPTS := scripts/gw scripts/gw.ps1 scripts/.env.example
 PKG_README  := docs/operator-quickstart.md
 PKG_INSTALL := docs/INSTALL.md
 
@@ -115,8 +118,11 @@ cross-windows-amd64:
 #     with a clear cgo link error and the gateway's own build is unaffected.
 # ---------------------------------------------------------------------------
 
-TRAY_BINARY := otto-tray
-TRAY_PKG    := ./cmd/$(TRAY_BINARY)
+# TRAY_BINARY is the shipped output filename (bin/gateway-tray[.exe]). The Go
+# source package directory is NOT renamed (still cmd/otto-tray) — same
+# BINARY-vs-PKG split as above.
+TRAY_BINARY := gateway-tray
+TRAY_PKG    := ./cmd/otto-tray
 
 cross-otto-tray-darwin-arm64:
 	@mkdir -p $(BUILD_DIR)
@@ -145,10 +151,16 @@ cross-otto-tray: cross-otto-tray-darwin-arm64 cross-otto-tray-darwin-amd64 cross
 # the user extracts on their laptop:
 #
 #   otto_gateway/
-#     bin/otto-gateway           (or otto-gateway.exe on Windows)
-#     scripts/otto-gw            (POSIX wrapper — start|stop|run|env|logs|...)
-#     scripts/otto-gw.ps1        (Windows wrapper)
-#     scripts/.env.otto-gw.example
+#     bin/gateway                (or gateway.exe on Windows)
+#     bin/gateway-tray           (or gateway-tray.exe; darwin + windows only)
+#     scripts/gw                 (POSIX wrapper — start|stop|run|env|logs|...)
+#     scripts/gw.ps1             (Windows wrapper)
+#     scripts/gw.bat             (Windows cmd.exe dispatcher, -> gw.ps1)
+#     scripts/.env.example
+#     scripts/lib/redact.*       (PII redaction — sourced by gw / test-pii)
+#     scripts/lib/migrate.*      (~/.otto-gw -> ~/.gw config migration; the
+#                                 installers dot-source this on first run, so
+#                                 omitting it here silently no-ops migration)
 #     logs/.gitkeep              (empty; gateway writes rotated logs here)
 #     README.md                  (operator quickstart)
 #
@@ -183,20 +195,28 @@ package-checksums: ## Generate SHA256SUMS-<version>.txt for all archives in dist
 	@cat $(DIST_DIR)/SHA256SUMS-$(VERSION).txt
 
 # stage_unix($1=goos, $2=goarch, $3=binary-suffix-on-disk):
-# Wipes the staging dir, copies bin/wrappers/template/README/.gitkeep,
-# preserves the otto-gw executable bit, and leaves an empty logs/ dir.
+# Wipes the staging dir, copies bin/wrappers/template/lib/README/.gitkeep,
+# preserves the gw executable bit, and leaves an empty logs/ dir.
+#
+# scripts/lib/migrate.* staging is LOAD-BEARING: both install.sh and
+# install.ps1 dot-source $GW_INSTALL_DIR/scripts/lib/migrate.* (or the
+# co-located copy next to the installer) to migrate a legacy ~/.otto-gw
+# config to ~/.gw. If migrate.* is missing from the archive, that
+# dot-source silently no-ops on a real release — see install.sh/.ps1.
 define stage_unix
 	rm -rf $(DIST_DIR)/otto_gateway
 	mkdir -p $(DIST_DIR)/otto_gateway/bin
 	mkdir -p $(DIST_DIR)/otto_gateway/scripts/lib
 	mkdir -p $(DIST_DIR)/otto_gateway/logs
 	cp $(BUILD_DIR)/$(BINARY)-$(1)-$(2)$(3) $(DIST_DIR)/otto_gateway/bin/$(BINARY)$(3)
-	cp scripts/otto-gw scripts/otto-gw.ps1 scripts/otto-gw.bat scripts/setup.bat scripts/start.bat scripts/stop.bat scripts/status.bat scripts/.env.otto-gw.example scripts/test-pii.sh scripts/test-pii.ps1 $(DIST_DIR)/otto_gateway/scripts/
-	cp scripts/lib/redact.sh scripts/lib/redact.ps1 $(DIST_DIR)/otto_gateway/scripts/lib/
-	chmod 755 $(DIST_DIR)/otto_gateway/scripts/otto-gw
+	cp scripts/gw scripts/gw.ps1 scripts/gw.bat scripts/setup.bat scripts/start.bat scripts/stop.bat scripts/status.bat scripts/.env.example scripts/test-pii.sh scripts/test-pii.ps1 $(DIST_DIR)/otto_gateway/scripts/
+	cp scripts/lib/redact.sh scripts/lib/redact.ps1 scripts/lib/migrate.sh scripts/lib/migrate.ps1 $(DIST_DIR)/otto_gateway/scripts/lib/
+	chmod 755 $(DIST_DIR)/otto_gateway/scripts/gw
 	chmod 755 $(DIST_DIR)/otto_gateway/scripts/test-pii.sh
 	chmod 644 $(DIST_DIR)/otto_gateway/scripts/lib/redact.sh
 	chmod 644 $(DIST_DIR)/otto_gateway/scripts/lib/redact.ps1
+	chmod 644 $(DIST_DIR)/otto_gateway/scripts/lib/migrate.sh
+	chmod 644 $(DIST_DIR)/otto_gateway/scripts/lib/migrate.ps1
 	cp $(PKG_README) $(DIST_DIR)/otto_gateway/README.md
 	cp $(PKG_INSTALL) $(DIST_DIR)/otto_gateway/INSTALL.md
 	: > $(DIST_DIR)/otto_gateway/logs/.gitkeep
@@ -260,13 +280,13 @@ ci: fmt-check vet build lint test-race arch-lint examples ## Full CI gate (brief
 	$(shell go env GOPATH)/bin/govulncheck ./...
 
 start: ## Start gateway in background (wrapper script)
-	@./scripts/otto-gw start
+	@./scripts/gw start
 
 stop: ## Stop background gateway (wrapper script)
-	@./scripts/otto-gw stop
+	@./scripts/gw stop
 
 status: ## Show gateway status (wrapper script)
-	@./scripts/otto-gw status
+	@./scripts/gw status
 
 # E2E suite: boots the real binary against real kiro-cli and ALWAYS renders a
 # markdown report regardless of pass/fail. Deliberately NOT wired into `all` or
