@@ -1545,7 +1545,7 @@ function Invoke-Support {
 
     $ts = (Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss')
     $hostname = [System.Net.Dns]::GetHostName()
-    $outDir = if ($Out) { $Out } else { Join-Path $InstallDir 'support' }
+    $outDir = if ($Out) { $Out } else { Join-Path $GwHome 'support' }
     $bundleName = "gateway-support-$hostname-$ts"
     $staging = Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetRandomFileName())
     $bundleRoot = Join-Path $staging $bundleName
@@ -1910,8 +1910,8 @@ Commands:
                       overrides.env, back up the original, then
                       regenerate .env from the template. Idempotent.
   version             Print the gateway binary version (delegates to bin\gateway --version)
-  support             Produce a redacted diagnostic archive under the
-                      install directory's support\ folder. Secrets are
+  support             Produce a redacted diagnostic archive under
+                      `$GwHome\support\. Secrets are
                       masked. No raw values are ever written. Flags: -Out DIR,
                       -MaxMb N (default 512), -Timeout SEC (default 180),
                       -LogDays D (default 7).
