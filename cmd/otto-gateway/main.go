@@ -622,9 +622,11 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 	// acceptable per CONTEXT.md.
 	//
 	// Tailer log path resolution (Phase 8 follow-up — log rotation):
-	//   1. LOG_FILE if set (the canonical env the gateway logger writes to)
-	//   2. OTTO_LOG (legacy / wrapper-set path, retained for back-compat)
-	//   3. ./logs/gateway.log (matches the packaged distribution layout)
+	//   1. LOG_FILE if set (the canonical env the gateway logger writes to;
+	//      the wrapper scripts always export this)
+	//   2. GW_LOG (de-branded direct-env override for a bare binary)
+	//   3. OTTO_LOG (deprecated legacy alias, retained for back-compat)
+	//   4. ./logs/gateway.log (matches the packaged distribution layout)
 	// The tailer's inode-tracking reopen (internal/admin/tail.go) keeps
 	// streaming across timberjack's daily rotation without UI interruption.
 	var adminPoolDetail admin.PoolDetailSource
@@ -637,15 +639,18 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 	}
 	// Quick 260529-ll2 — admin Log Tail multi-source paths.
 	//
-	// "main" is the canonical gateway log (LOG_FILE / OTTO_LOG / default
-	// distribution path). "boot-err" is the boot-time stderr capture
+	// "main" is the canonical gateway log (LOG_FILE / GW_LOG / OTTO_LOG /
+	// default distribution path). "boot-err" is the boot-time stderr capture
 	// the wrapper scripts write to (script convention: same dir as
 	// LOG_FILE, "-boot.log" suffix; operator can override via
-	// OTTO_LOG_BOOT). "chat-trace" is included ONLY when CHAT_TRACE=true
-	// so the UI surfaces only sources that have a tailable file on disk.
+	// GW_LOG_BOOT, or the deprecated OTTO_LOG_BOOT). "chat-trace" is included
+	// ONLY when CHAT_TRACE=true so the UI surfaces only sources that have a
+	// tailable file on disk.
 	mainLogPath := envOrDefault("LOG_FILE",
-		envOrDefault("OTTO_LOG", "./logs/gateway.log"))
-	bootLogPath := envOrDefault("OTTO_LOG_BOOT", stripExt(mainLogPath)+"-boot.log")
+		envOrDefault("GW_LOG",
+			envOrDefault("OTTO_LOG", "./logs/gateway.log")))
+	bootLogPath := envOrDefault("GW_LOG_BOOT",
+		envOrDefault("OTTO_LOG_BOOT", stripExt(mainLogPath)+"-boot.log"))
 	logPaths := map[string]string{
 		"main":     mainLogPath,
 		"boot-err": bootLogPath,
@@ -995,7 +1000,8 @@ func envOrDefault(key, def string) string {
 
 // stripExt returns p with the final file extension removed. Used by the
 // admin Log Tail boot-log default derivation (quick 260529-ll2):
-// OTTO_LOG_BOOT defaults to LOG_FILE without its extension + "-boot.log".
+// GW_LOG_BOOT (or the deprecated OTTO_LOG_BOOT) defaults to the main log
+// path without its extension + "-boot.log".
 func stripExt(p string) string {
 	return strings.TrimSuffix(p, filepath.Ext(p))
 }

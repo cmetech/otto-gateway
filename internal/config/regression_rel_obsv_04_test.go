@@ -4,7 +4,7 @@
 //
 // Pre-fix: the writer (chat-trace rotator at main.go:302) read from
 // cfg.ChatTraceFile while the tailer (admin.NewTailer) derived its path
-// from a parallel chain in main.go (LOG_FILE / OTTO_LOG / default). The
+// from a parallel chain in main.go (LOG_FILE / GW_LOG / OTTO_LOG / default). The
 // two chains could diverge if an operator set CHAT_TRACE_FILE but not
 // LOG_FILE.
 //
