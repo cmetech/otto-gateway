@@ -1,6 +1,6 @@
 # docs/
 
-Design, architecture, and reference material for OTTO Gateway.
+Design, architecture, and reference material for Gateway.
 
 These documents are the input context for `/gsd:new-project` and the
 phase-planning work that follows. **Read `briefs/go_port_brief.md`

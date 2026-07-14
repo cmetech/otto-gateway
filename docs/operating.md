@@ -1,6 +1,6 @@
-# Operating otto-gateway
+# Operating Gateway
 
-This document covers the developer-laptop lifecycle for otto-gateway:
+This document covers the developer-laptop lifecycle for Gateway:
 starting and stopping the gateway in the background, where PID and log
 files live, env-var overrides for the wrapper scripts, and how the
 `status` subcommand determines whether the gateway is healthy.
@@ -8,17 +8,17 @@ files live, env-var overrides for the wrapper scripts, and how the
 The Go binary is a single foreground process. Two wrapper scripts own
 process supervision on developer laptops — the binary itself has no
 `start`/`stop` subcommands. See
-[`scripts/otto-gw`](../scripts/otto-gw) (POSIX) and
-[`scripts/otto-gw.ps1`](../scripts/otto-gw.ps1) (PowerShell).
+[`scripts/gw`](../scripts/gw) (POSIX) and
+[`scripts/gw.ps1`](../scripts/gw.ps1) (PowerShell).
 
 ## Quick Start (macOS / Linux)
 
 ```bash
-make build               # compile bin/otto-gateway
+make build               # compile bin/gateway
 
-./scripts/otto-gw start   # launch in background
-./scripts/otto-gw status  # check PID + /health
-./scripts/otto-gw stop    # send SIGTERM, wait for exit
+./scripts/gw start   # launch in background
+./scripts/gw status  # check PID + /health
+./scripts/gw stop    # send SIGTERM, wait for exit
 ```
 
 Makefile shortcuts delegate to the same script:
@@ -39,19 +39,19 @@ PowerShell scripts run without any per-invocation bypass.
 ```powershell
 .\scripts\setup.bat              # one-time, post-extract
 
-.\scripts\otto-gw.ps1 start      # PowerShell wrapper
-.\scripts\otto-gw.ps1 status
-.\scripts\otto-gw.ps1 stop
+.\scripts\gw.ps1 start      # PowerShell wrapper
+.\scripts\gw.ps1 status
+.\scripts\gw.ps1 stop
 ```
 
 Three equivalent surfaces ship in every release archive:
 
-- `.\scripts\otto-gw.ps1 <cmd>` — PowerShell wrapper (subcommands: `init`, `start`, `stop`, `status`, `restart`, `logs`, `run`, `env`, `version`).
-- `.\scripts\otto-gw.bat <cmd>` — cmd.exe dispatcher. Mirrors the PowerShell wrapper's subcommand surface and passes `-ExecutionPolicy Bypass -File` internally, so it works on a fresh extract even before `setup.bat` has run.
+- `.\scripts\gw.ps1 <cmd>` — PowerShell wrapper (subcommands: `init`, `start`, `stop`, `status`, `restart`, `logs`, `run`, `env`, `version`).
+- `.\scripts\gw.bat <cmd>` — cmd.exe dispatcher. Mirrors the PowerShell wrapper's subcommand surface and passes `-ExecutionPolicy Bypass -File` internally, so it works on a fresh extract even before `setup.bat` has run.
 - `.\scripts\start.bat`, `stop.bat`, `status.bat` — Explorer-double-clickable per-command shortcuts that delegate to the dispatcher.
 
 If your organization locks PowerShell `ExecutionPolicy` at the `LocalMachine` or `MachinePolicy` scope via Group Policy, those scopes override anything `setup.bat` writes to `CurrentUser`. The `.bat` dispatcher already uses a per-invocation bypass internally, so it continues to work in Group-Policy-locked environments without any further intervention. As a manual fallback, you can also invoke the PowerShell wrapper directly:
-`powershell -ExecutionPolicy Bypass -File .\scripts\otto-gw.ps1 start`
+`powershell -ExecutionPolicy Bypass -File .\scripts\gw.ps1 start`
 
 For dev builds (running from a `make build` working tree, not a release
 archive), the `setup.bat` step is unnecessary — only release-archive
@@ -61,7 +61,7 @@ extracts get tagged with Mark-of-the-Web.
 
 ### Auth posture quick reference
 
-Otto Gateway enforces bearer-token auth via `AuthHook` on all model-execution
+Gateway enforces bearer-token auth via `AuthHook` on all model-execution
 routes. Two routes are exempt by intentional design; document them here so
 operators don't surface them on untrusted networks.
 
@@ -108,14 +108,19 @@ have to remember the underlying env-var names. Flags are valid on `start`,
 **.env auto-load** — the wrapper looks for the first match of:
 
 1. `--env-file PATH` / `-EnvFile PATH` (CLI override)
-2. `$OTTO_ENV_FILE` (env override)
-3. `./.env.otto-gw` (project-local)
-4. `$HOME/.otto-gw.env` (per-user; `$env:USERPROFILE\.otto-gw.env` on Windows)
+2. `$GW_ENV_FILE` (env override)
+3. `./.env` (project-local)
+4. `$GW_HOME/.env` (per-user; default `$HOME/.gw/.env`, or `$env:USERPROFILE\.gw\.env` on Windows)
+
+An `overrides.env` file chains on top the same way (`./overrides.env` →
+`$GW_HOME/overrides.env`) and loads SECOND, so its values win on any shared
+key — this is the operator-owned layer for secrets/customizations that
+survives `gw upgrade-env` / `gw init --force` untouched.
 
 If a match is found it is sourced before the binary starts. Format is the
 standard `KEY=value` per line; `#` comments and blank lines are skipped;
 `export KEY=value` is also tolerated. A template lives at
-`scripts/.env.otto-gw.example` — copy it and uncomment the lines you need.
+`scripts/.env.example` — copy it and uncomment the lines you need.
 
 **Precedence (highest first):** CLI flag → .env file → inherited shell env.
 The .env loader only sets keys it actually contains; anything you already
@@ -126,73 +131,101 @@ anything you pass via `--pii` / `--hash-key` / etc. wins over both.
 
 ```bash
 # Verify what would be passed to the gateway, no launch.
-./scripts/otto-gw env
+./scripts/gw env
 
 # Enable hash-mode PII with a fresh key, restart.
-./scripts/otto-gw restart --pii hash --hash-key "$(openssl rand -hex 32)"
+./scripts/gw restart --pii hash --hash-key "$(openssl rand -hex 32)"
 
 # Run in foreground, filter the chain to RequestID + Logging only.
-./scripts/otto-gw run --hooks RequestIDHook,LoggingHook
+./scripts/gw run --hooks RequestIDHook,LoggingHook
 
 # Use a project-local .env (committed) plus override one knob.
-./scripts/otto-gw start --env-file ./deploy/local.env --pii replace
+./scripts/gw start --env-file ./deploy/local.env --pii replace
 ```
 
 ```powershell
-.\scripts\otto-gw.ps1 env
-.\scripts\otto-gw.ps1 restart -Pii hash -HashKey (-join ((48..57) + (97..102) | Get-Random -Count 64 | % {[char]$_}))
-.\scripts\otto-gw.ps1 run -Hooks "RequestIDHook,LoggingHook"
+.\scripts\gw.ps1 env
+.\scripts\gw.ps1 restart -Pii hash -HashKey (-join ((48..57) + (97..102) | Get-Random -Count 64 | % {[char]$_}))
+.\scripts\gw.ps1 run -Hooks "RequestIDHook,LoggingHook"
 ```
 
 ## File Locations
 
-The defaults match the packaged distribution layout (`otto_gateway/`
-extracted from the release tarball/zip). All paths are project-local so
-the same `./scripts/otto-gw` call works from the package root regardless
-of OS.
+Layout is split across two anchors, resolved independently (see
+`scripts/gw` header comments):
+
+- **`GW_INSTALL_DIR`** — code (binary, wrapper scripts). Replaceable on
+  upgrade. Defaults to the directory containing the wrapper — i.e. the
+  extracted `otto_gateway/` folder when running from a release tarball/zip,
+  or the repo root after `make build`. The one-liner installer relocates
+  this to a per-OS default: `~/Library/Application Support/Gateway`
+  (macOS), `${XDG_DATA_HOME:-~/.local/share}/gateway` (Linux),
+  `%LOCALAPPDATA%\Gateway` (Windows).
+- **`GW_HOME`** — config + runtime state (`.env`, `overrides.env`, logs,
+  PID). Precious; never overwritten by an upgrade. Default `$HOME/.gw`
+  (macOS/Linux) or `$env:USERPROFILE\.gw` (Windows), regardless of where
+  `GW_INSTALL_DIR` points — this is what lets you replace the binary/scripts
+  wholesale on upgrade without touching config.
 
 | File | macOS / Linux default | Windows default |
 |------|-----------------------|-----------------|
-| Binary | `./bin/otto-gateway` | `.\bin\otto-gateway.exe` |
-| PID file | `./.otto/gw/otto-gateway.pid` | `.\.otto\gw\otto-gateway.pid` |
-| Structured log (rotated) | `./logs/otto-gateway.log` | `.\logs\otto-gateway.log` |
-| Rotated backups | `./logs/otto-gateway-<timestamp>.log.gz` | `.\logs\otto-gateway-<timestamp>.log.gz` |
-| Boot/crash sidecar | `./logs/otto-gateway-boot.log` (stdout+stderr) | `.\logs\otto-gateway.boot-out.log` + `.boot-err.log` |
+| Binary | `$GW_INSTALL_DIR/bin/gateway` | `$GW_INSTALL_DIR\bin\gateway.exe` |
+| PID file | `$GW_HOME/state/gateway.pid` | `$GwHome\state\gateway.pid` |
+| Structured log (rotated) | `$GW_HOME/logs/gateway.log` | `$GwHome\logs\gateway.log` |
+| Rotated backups | `$GW_HOME/logs/gateway-<timestamp>.log.gz` | `$GwHome\logs\gateway-<timestamp>.log.gz` |
+| Boot/crash sidecar | `$GW_HOME/logs/gateway-boot.log` (stdout+stderr) | `$GwHome\logs\gateway.boot-out.log` + `.boot-err.log` |
 
 The gateway owns the structured log file directly via timberjack
 (daily rotation, 7-day retention, gzip). The boot sidecar captures
 only pre-logger output and stderr (kiro-cli subprocess + Go panics) —
 it's small and rarely consulted, but invaluable on incident.
 
+### Legacy `~/.otto-gw` migration
+
+Upgrading from a pre-relayout install (`~/.otto-gw/`, wrapper named
+`otto-gw`)? The installer (and the wrapper's own `load_config` path) runs a
+one-time, idempotent migration: `~/.otto-gw.env` (or the legacy
+`~/.otto-gw/.env.otto-gw` fallback path) moves to `$GW_HOME/.env`,
+`~/.otto-gw.overrides.env` moves to `$GW_HOME/overrides.env`, and
+`~/.otto-gw/tray.json` moves to `$GW_HOME/tray.json` — a `mv`, not a `cp`,
+so secrets like `AUTH_TOKEN` aren't left behind in two places. It is a
+no-op once `$GW_HOME/.env` already exists, so it's safe to run on every
+invocation. The legacy code directory `~/.otto-gw/` itself (binary,
+scripts) is never touched or deleted — only those specific config files are
+read out of it.
+
 ## Environment Variable Overrides
 
 These variables control the wrapper scripts. Set them in your shell,
-your `.env.otto-gw`, or via wrapper flags (see *Gateway config flags*
-above).
+your `.env` / `overrides.env` (see `GW_HOME` above), or via wrapper flags
+(see *Gateway config flags* above).
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OTTO_BIN` | `./bin/otto-gateway` (macOS/Linux) / `.\bin\otto-gateway.exe` (Windows) | Path to the gateway binary |
-| `OTTO_PID` | `./.otto/gw/otto-gateway.pid` | Full PID file path (overrides `OTTO_STATE_DIR` if both are set). |
-| `OTTO_STATE_DIR` | `./.otto/gw` | Directory the wrapper uses for runtime state. PID file lives inside; nested under `.otto/` to share the namespace with the OTTER client without colliding (subdir = `gw/`). Override to relocate state outside the project (e.g., `$HOME/.local/state/otto-gw` for FHS-friendly setups). |
-| `OTTO_LOG` | `./logs/otto-gateway.log` | Structured log file path. Auto-exported to the binary as `LOG_FILE` for daily timberjack rotation. |
-| `OTTO_LOG_BOOT` | `${OTTO_LOG%.log}-boot.log` (POSIX) | Boot/crash sidecar that captures the gateway's stderr (kiro-cli + panics). |
-| `OTTO_LOGOUT` / `OTTO_LOGERR` | `<log>.boot-out.log` / `<log>.boot-err.log` (Windows) | Boot sidecars (Windows requires separate stdout / stderr files). |
-| `OTTO_ADDR` | `http://localhost:18080` | Gateway address used by the `status` subcommand for the `/health` probe. |
+| `GW_INSTALL_DIR` | Directory containing the wrapper script | Code anchor — binary + scripts. Replaceable on upgrade. |
+| `GW_HOME` | `$HOME/.gw` (macOS/Linux) / `$env:USERPROFILE\.gw` (Windows) | Config anchor — `.env`, `overrides.env`, `logs/`, `state/`. Precious; never overwritten. |
+| `GW_BIN` | `$GW_INSTALL_DIR/bin/gateway` (macOS/Linux) / `$GW_INSTALL_DIR\bin\gateway.exe` (Windows) | Path to the gateway binary |
+| `GW_PID` | `$GW_HOME/state/gateway.pid` | Full PID file path (overrides `GW_STATE_DIR` if both are set). |
+| `GW_STATE_DIR` | `$GW_HOME/state` | Directory the wrapper uses for runtime state. PID file lives inside. Override to relocate state elsewhere. |
+| `GW_LOG` | `$GW_HOME/logs/gateway.log` | Structured log file path. Auto-exported to the binary as `LOG_FILE` for daily timberjack rotation. |
+| `GW_LOG_BOOT` | `${GW_LOG%.log}-boot.log` (POSIX) | Boot/crash sidecar that captures the gateway's stderr (kiro-cli + panics). |
+| `GW_LOGOUT` / `GW_LOGERR` | `<log>.boot-out.log` / `<log>.boot-err.log` (Windows) | Boot sidecars (Windows requires separate stdout / stderr files). |
+| `GW_ADDR` | `http://localhost:18080` | Gateway address used by the `status` subcommand for the `/health` probe. |
+| `GW_ENV_FILE` / `GW_OVERRIDES_FILE` | _(unset — falls back to the search order above)_ | Override the resolved `.env` / `overrides.env` path. |
 
 Example — point logs at a project-specific directory:
 
 ```bash
-export OTTO_LOG=~/Projects/otto/gateway.log
-export OTTO_PID=~/Projects/otto/gateway.pid
-./scripts/otto-gw start
+export GW_LOG=~/Projects/otto/gateway.log
+export GW_PID=~/Projects/otto/gateway.pid
+./scripts/gw start
 ```
 
 ## Gateway Environment Variables
 
 Reference for what the gateway binary itself accepts. For day-to-day
-laptop use, prefer the wrapper flags + `.env.otto-gw` described above —
-this table is the underlying contract every knob maps to.
+laptop use, prefer the wrapper flags + `.env` / `overrides.env` described
+above — this table is the underlying contract every knob maps to.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -220,7 +253,7 @@ LoggingHook also on Post for timing + structured exit records.
 | `PII_ENABLED_ENTITIES` | _(empty = all active)_ | Comma-split list of recognizer names. Default empty = all registered recognizers active. Allowed names: regex — `Email`, `IPv4`, `IPv6`, `SSN`, `CreditCard`, `USPhone`, `SIP_URI`, `IMEI`, `IMSI`, `MSISDN`, `MAC_ADDRESS`, `COORDINATES`, `SITE`; NER (requires `PII_NER_ENABLED=true`) — `PERSON`, `LOCATION`. Unknown names → boot error. Context-anchored recognizers (`IMEI`, `IMSI`, `MSISDN`, `SITE`) require a recognizer-specific keyword within ±50 bytes of the match. |
 | `PII_REDACTION_MODE` | `encrypt` | One of `replace`, `mask`, `hash`, `drop`, `encrypt`. Default `encrypt`: PII is replaced with `[PII:EMAIL:base64url]` AES-256-GCM ciphertext before the worker sees the request, and the response Post-hook decrypts those tokens back to plaintext before the client sees the response (round-trip). Other modes: `replace` substitutes `[EMAIL_N]` tokens with a per-canonical-value counter; `mask` substitutes partial obfuscation (e.g., `co***@cm***.io`); `hash` substitutes `[EMAIL:h-XXXXXXXX]` with the first 8 hex chars of `HMAC-SHA256(PII_HASH_KEY, canonical(value))`; `drop` substitutes an empty string. Unknown values → boot error. |
 | `PII_HASH_KEY` | _(empty)_ | HMAC-SHA256 key for `PII_REDACTION_MODE=hash`. **Required when mode is `hash`** — boot error otherwise (no silent unkeyed-HMAC fallback). Rotating this key invalidates prior correlation tokens — feature, not a bug: rotate to break attacker correlation if a key leak is suspected. |
-| `PII_ENCRYPT_KEY` | _(empty, but install scripts auto-seed)_ | Key for `PII_REDACTION_MODE=encrypt` (the default) or any per-entity encrypt override via `PII_ENTITY_ACTIONS`. Accepts **any non-empty string** — the gateway derives a 32-byte AES-256-GCM key via SHA-256 at boot. **Required when encrypt is active anywhere** — boot error otherwise (no silent fallback). `otto-gw init` auto-mints this alongside `AUTH_TOKEN` and `PII_HASH_KEY`, and `--regenerate-secrets` / `-RegenerateSecrets` rotates all three. Rotating invalidates prior round-trip tokens (in-flight chat history affected; new requests after restart use the new key). |
+| `PII_ENCRYPT_KEY` | _(empty, but install scripts auto-seed)_ | Key for `PII_REDACTION_MODE=encrypt` (the default) or any per-entity encrypt override via `PII_ENTITY_ACTIONS`. Accepts **any non-empty string** — the gateway derives a 32-byte AES-256-GCM key via SHA-256 at boot. **Required when encrypt is active anywhere** — boot error otherwise (no silent fallback). `gw init` auto-mints this alongside `AUTH_TOKEN` and `PII_HASH_KEY`, and `--regenerate-secrets` / `-RegenerateSecrets` rotates all three. Rotating invalidates prior round-trip tokens (in-flight chat history affected; new requests after restart use the new key). |
 | `PII_ENTITY_ACTIONS` | _(empty)_ | Per-entity action overrides. Shape: `Entity:action,Entity:action,...` e.g. `Email:encrypt,SSN:drop,PERSON:mask`. When non-empty, the listed entities use the specified action instead of the global `PII_REDACTION_MODE`. Unlisted entities fall back to the global mode. Allowed entity names: see `PII_ENABLED_ENTITIES`. Allowed actions: `replace`, `mask`, `hash`, `drop`, `encrypt`. Unknown entity names or unknown action values → boot error. |
 | `PII_NER_ENABLED` | `true` | Master switch for the `jdkato/prose/v2` NER engine that emits `PERSON` and `LOCATION` spans alongside the regex recognizers. Default `true` (secure-by-default). Set `PII_NER_ENABLED=false` to skip the prose model load — the binary impact (~7 MB, 10 MB → 17 MB) is baked into the build either way; this flag controls the runtime tokenizer/tagger allocation. English-only; accuracy is decent on common Western names and major place names but weaker on Asian / multilingual names — see `docs/superpowers/specs/2026-06-01-pii-encrypt-design.md` §11.2 for the documented accuracy ceiling. |
 
@@ -286,12 +319,12 @@ attacker correlation if a log leak is suspected:
 ```bash
 # Day 0
 export PII_HASH_KEY="initial-32-byte-key-padding-here!!"
-./scripts/otto-gw restart
+./scripts/gw restart
 # logs now show <EMAIL:h-5e114e4d> for corey@cmetech.io
 
 # Day N — leak suspected, rotate
 export PII_HASH_KEY="rotated-32-byte-key-padding-here!!"
-./scripts/otto-gw restart
+./scripts/gw restart
 # logs now show <EMAIL:h-XXXXXXXX> (different tag) for the same value
 ```
 
@@ -323,14 +356,14 @@ Example — run with a custom binary path and debug logging:
 ```bash
 export KIRO_CMD=~/.local/bin/kiro-cli
 export DEBUG=true
-./scripts/otto-gw start
+./scripts/gw start
 ```
 
 ## How `status` Works
 
 The `status` subcommand combines two checks:
 
-1. **PID file check.** If no PID file exists at `$OTTO_PID`, the
+1. **PID file check.** If no PID file exists at `$GW_PID`, the
    gateway is stopped. If the file exists but the process is gone
    (stale PID), `status` reports `stopped (stale PID)` and exits
    non-zero.
@@ -340,7 +373,7 @@ The `status` subcommand combines two checks:
    `Get-Process -Id $pid` is used.
 
 3. **Health probe.** If the process is alive, `status` sends
-   `GET $OTTO_ADDR/health` and prints the JSON response. The
+   `GET $GW_ADDR/health` and prints the JSON response. The
    response includes gateway version, uptime seconds, and pool/session/
    embedding stats.
 
@@ -358,14 +391,14 @@ request-scoped keys (`request_id`, `method`, `path`, `status`,
 
 | File | Default path | Role |
 |------|-------------|------|
-| Structured log | `./logs/otto-gateway.log` | Daily-rotated JSON (`LOG_FILE` env). The file the admin UI tails and the one operators read. |
-| Rotated backups | `./logs/otto-gateway-2026-05-28T00-00-00.log.gz` | One per day; up to 7 retained; gzip-compressed. |
-| Boot/crash sidecar (POSIX) | `./logs/otto-gateway-boot.log` | Captures stderr — kiro-cli subprocess output, pre-logger errors, Go runtime panics. |
-| Boot sidecars (Windows) | `./logs/otto-gateway.boot-out.log` + `.boot-err.log` | Same role; Windows requires separate stdout / stderr redirection files. |
+| Structured log | `$GW_HOME/logs/gateway.log` | Daily-rotated JSON (`LOG_FILE` env). The file the admin UI tails and the one operators read. |
+| Rotated backups | `$GW_HOME/logs/gateway-2026-05-28T00-00-00.log.gz` | One per day; up to 7 retained; gzip-compressed. |
+| Boot/crash sidecar (POSIX) | `$GW_HOME/logs/gateway-boot.log` | Captures stderr — kiro-cli subprocess output, pre-logger errors, Go runtime panics. |
+| Boot sidecars (Windows) | `$GwHome\logs\gateway.boot-out.log` + `.boot-err.log` | Same role; Windows requires separate stdout / stderr redirection files. |
 
-Override the structured log path with `OTTO_LOG` (wrapper) or `LOG_FILE`
-(direct binary invocation). The wrapper auto-exports `LOG_FILE=$OTTO_LOG`
-and `mkdir -p $(dirname $OTTO_LOG)` on `start`.
+Override the structured log path with `GW_LOG` (wrapper) or `LOG_FILE`
+(direct binary invocation). The wrapper auto-exports `LOG_FILE=$GW_LOG`
+and `mkdir -p $(dirname $GW_LOG)` on `start`.
 
 ### Rotation contract
 
@@ -378,24 +411,24 @@ and `mkdir -p $(dirname $OTTO_LOG)` on `start`.
 ### Viewing logs
 
 ```bash
-./scripts/otto-gw logs        # last 50 lines of the structured log
-./scripts/otto-gw logs -f     # follow the structured log
+./scripts/gw logs        # last 50 lines of the structured log
+./scripts/gw logs -f     # follow the structured log
 
 # Crash diagnostics:
-tail -f ./logs/otto-gateway-boot.log    # macOS/Linux
+tail -f ~/.gw/logs/gateway-boot.log    # macOS/Linux
 ```
 
 ```powershell
-.\scripts\otto-gw.ps1 logs    # follow the structured log (Windows)
+.\scripts\gw.ps1 logs    # follow the structured log (Windows)
 # Crash diagnostics — paths printed at start time and visible in `logs` output:
-Get-Content -Wait .\logs\otto-gateway.boot-err.log
+Get-Content -Wait "$env:USERPROFILE\.gw\logs\gateway.boot-err.log"
 ```
 
 ### Direct-binary behavior (no wrapper)
 
-Running `./bin/otto-gateway` without `LOG_FILE` keeps the legacy stdout
+Running `./bin/gateway` without `LOG_FILE` keeps the legacy stdout
 JSON behavior — useful for `make run`, ad-hoc dev, and the e2e suite
-(which captures stdout). Set `LOG_FILE=./logs/otto-gateway.log` to
+(which captures stdout). Set `LOG_FILE=~/.gw/logs/gateway.log` to
 enable rotation when invoking the binary directly.
 
 ### Engine prompt log-line semantics (Phase 8.3)
@@ -430,7 +463,7 @@ arm so dashboards can attribute non-happy-path turns:
 
 ## Admin Observability UI
 
-OTTO Gateway ships a dark-mode admin page at `GET /admin` that surfaces
+Gateway ships a dark-mode admin page at `GET /admin` that surfaces
 `/health` + `/health/agents` data through a styled HTML/CSS/JS bundle
 served from `embed.FS` (single static binary; no external runtime deps).
 
@@ -440,19 +473,19 @@ served from `embed.FS` (single static binary; no external runtime deps).
 |------|---------|
 | `GET /admin` | The HTML page (renders summary strip, pool slots grid, active sessions table, log tail panel) |
 | `GET /admin/api/snapshot` | Unified JSON snapshot composing pool + registry detail (polled client-side every 30s) |
-| `GET /admin/logs/stream` | SSE stream of new log lines from `OTTO_LOG` (backfill of last ≤500 lines on connect, then live forward) |
+| `GET /admin/logs/stream` | SSE stream of new log lines from `GW_LOG` (backfill of last ≤500 lines on connect, then live forward) |
 | `GET /admin/static/*` | Embedded CSS + JS assets |
 
-### OTTO_LOG dependency
+### GW_LOG dependency
 
-The log tail panel reads from the file pointed at by `OTTO_LOG`
-(defaults to `/tmp/otto-gateway.log`). When the gateway is launched
-via `scripts/otto-gw start`, the wrapper redirects stdout/stderr via
+The log tail panel reads from the file pointed at by `GW_LOG`
+(defaults to `/tmp/gateway.log`). When the gateway is launched
+via `scripts/gw start`, the wrapper redirects stdout/stderr via
 shell `>>` to this file, and the admin page's tail panel renders
 incoming lines within ~1s.
 
 When the gateway is launched directly via `go run ./cmd/otto-gateway`
-or `./bin/otto-gateway` without `OTTO_LOG` or without shell
+or `./bin/gateway` without `GW_LOG` or without shell
 redirection, the log file is empty/absent and the tail panel shows
 "Waiting for log activity…" indefinitely — this is a graceful
 degraded mode, not a failure.

@@ -28,59 +28,60 @@
 
   <section class="gw-card">
     <h2 class="gw-h2">Files &amp; paths</h2>
-    <h3 class="gw-h3">Install root</h3>
+    <h3 class="gw-h3">Install anchors</h3>
     <dl class="gw-about-dl">
-      <dt>POSIX</dt><dd><code>$HOME/.otto-gw/</code></dd>
-      <dt>Windows</dt><dd><code>$env:USERPROFILE\.otto-gw\</code></dd>
-      <dt>Override</dt><dd>Set <code>OTTO_HOME</code> to relocate either default install root.</dd>
+      <dt>Config (<code>GW_HOME</code>)</dt><dd><code>$HOME/.gw</code> (POSIX) / <code>$env:USERPROFILE\.gw</code> (Windows) — precious; <code>.env</code>, <code>overrides.env</code>, logs, state. Never overwritten on upgrade.</dd>
+      <dt>Code (<code>GW_INSTALL_DIR</code>)</dt><dd>Per-OS default — <code>~/Library/Application Support/Gateway</code> (macOS), <code>${XDG_DATA_HOME:-~/.local/share}/gateway</code> (Linux), <code>%LOCALAPPDATA%\Gateway</code> (Windows) — binary + wrapper scripts. Replaceable on upgrade.</dd>
+      <dt>Override</dt><dd>Set <code>GW_HOME</code> / <code>GW_INSTALL_DIR</code> to relocate either anchor independently.</dd>
     </dl>
     <h3 class="gw-h3">Env files (loaded by the wrapper on every invocation)</h3>
     <dl class="gw-about-dl">
-      <dt>User env (POSIX)</dt><dd><code>$HOME/.otto-gw.env</code></dd>
-      <dt>User env (Windows)</dt><dd><code>$env:USERPROFILE\.otto-gw.env</code></dd>
-      <dt>Project env</dt><dd><code>$OTTO_HOME/.env.otto-gw</code></dd>
-      <dt>Project overrides</dt><dd><code>$OTTO_HOME/.otto-gw.overrides.env</code></dd>
+      <dt>User env (POSIX)</dt><dd><code>$GW_HOME/.env</code> — default <code>$HOME/.gw/.env</code></dd>
+      <dt>User env (Windows)</dt><dd><code>$GW_HOME\.env</code> — default <code>$env:USERPROFILE\.gw\.env</code></dd>
+      <dt>Project env</dt><dd><code>./.env</code> (relative to cwd; checked before the user env above)</dd>
+      <dt>User overrides</dt><dd><code>$GW_HOME/overrides.env</code> — operator-owned; loaded last, wins on shared keys</dd>
+      <dt>Project overrides</dt><dd><code>./overrides.env</code> (relative to cwd; checked before the user overrides above)</dd>
     </dl>
     <h3 class="gw-h3">Runtime files</h3>
     <dl class="gw-about-dl">
       <dt>Chat trace file</dt><dd><code>{{.ChatTraceFile}}</code>{{if not .ChatTraceEnabled}} <span class="gw-badge">disabled</span>{{end}}</dd>
       <dt>Chat trace retention</dt><dd>{{.ChatTraceMaxAgeDays}} days (timberjack MaxAge)</dd>
       <dt>Admin static assets</dt><dd>Embedded in the binary via <code>embed.FS</code> (no on-disk lookup at runtime).</dd>
-      <dt>Wrapper env files</dt><dd><code>.otto-gw.env</code> (generated template; load-first) then <code>.otto-gw.overrides.env</code> (operator-owned secrets/customisations; load-second wins). See <code>scripts/otto-gw upgrade-env</code>.</dd>
+      <dt>Wrapper env files</dt><dd><code>.env</code> (generated template; load-first) then <code>overrides.env</code> (operator-owned secrets/customisations; load-second wins). See <code>scripts/gw upgrade-env</code>.</dd>
       <dt>Log destination</dt><dd>Structured slog JSON to stdout/stderr by default. Set <code>LOG_FILE</code> to also write a rotated file.</dd>
     </dl>
   </section>
 
   <section class="gw-card">
-    <h2 class="gw-h2">CLI &amp; startup (otto-gw wrapper)</h2>
-    <p>Operators interact with the gateway through the <code>otto-gw</code> wrapper rather than the <code>otto-gateway</code> binary directly. PowerShell uses PascalCase switches (<code>-Trace</code>, <code>-Debug</code>); POSIX uses kebab-case (<code>--trace</code>, <code>--debug</code>). The <code>.bat</code> dispatcher just forwards args to PowerShell — same switch syntax.</p>
-    <p>Run <code>otto-gw -h</code> / <code>otto-gw --help</code> (POSIX) or <code>otto-gw.ps1 -Help</code> (PowerShell) at any time to print the full usage to your terminal.</p>
+    <h2 class="gw-h2">CLI &amp; startup (gw wrapper)</h2>
+    <p>Operators interact with the gateway through the <code>gw</code> wrapper rather than the <code>gateway</code> binary directly. PowerShell uses PascalCase switches (<code>-Trace</code>, <code>-Debug</code>); POSIX uses kebab-case (<code>--trace</code>, <code>--debug</code>). The <code>.bat</code> dispatcher just forwards args to PowerShell — same switch syntax.</p>
+    <p>Run <code>gw -h</code> / <code>gw --help</code> (POSIX) or <code>gw.ps1 -Help</code> (PowerShell) at any time to print the full usage to your terminal.</p>
     <h3 class="gw-h3">macOS / Linux (POSIX)</h3>
-    <pre class="gw-code-block">./scripts/otto-gw init --non-interactive       # write $HOME/.otto-gw.env from template
-./scripts/otto-gw start                         # background daemon (writes PID file)
-./scripts/otto-gw start --pii encrypt --encrypt-key &lt;key&gt; --auth &lt;token&gt;
-./scripts/otto-gw status                        # /admin/api/snapshot summary
-./scripts/otto-gw logs -f                       # tail the rotated structured log
-./scripts/otto-gw restart --idle-timeout 60
-./scripts/otto-gw stop                          # SIGTERM + reap stray kiro-cli orphans
-./scripts/otto-gw run --trace                   # foreground; DEBUG=true + CHAT_TRACE=true
-./scripts/otto-gw env --show-secrets            # dump resolved env (secrets visible)
-./scripts/otto-gw upgrade-env --dry-run         # diff template vs. installed env file
-./scripts/otto-gw migrate-to-overrides --yes    # one-time split into overrides file
-./scripts/otto-gw version                       # delegates to the binary --version</pre>
+    <pre class="gw-code-block">./scripts/gw init --non-interactive       # write $GW_HOME/.env from template
+./scripts/gw start                         # background daemon (writes PID file)
+./scripts/gw start --pii encrypt --encrypt-key &lt;key&gt; --auth &lt;token&gt;
+./scripts/gw status                        # /admin/api/snapshot summary
+./scripts/gw logs -f                       # tail the rotated structured log
+./scripts/gw restart --idle-timeout 60
+./scripts/gw stop                          # SIGTERM + reap stray kiro-cli orphans
+./scripts/gw run --trace                   # foreground; DEBUG=true + CHAT_TRACE=true
+./scripts/gw env --show-secrets            # dump resolved env (secrets visible)
+./scripts/gw upgrade-env --dry-run         # diff template vs. installed env file
+./scripts/gw migrate-to-overrides --yes    # one-time split into overrides file
+./scripts/gw version                       # delegates to the binary --version</pre>
     <h3 class="gw-h3">Windows (PowerShell)</h3>
-    <pre class="gw-code-block">.\scripts\otto-gw.ps1 init -NonInteractive
-.\scripts\otto-gw.ps1 start
-.\scripts\otto-gw.ps1 start -Pii encrypt -EncryptKey &lt;key&gt; -Auth &lt;token&gt;
-.\scripts\otto-gw.ps1 status
-.\scripts\otto-gw.ps1 logs -Follow
-.\scripts\otto-gw.ps1 restart -IdleTimeout 60
-.\scripts\otto-gw.ps1 stop
-.\scripts\otto-gw.ps1 run -Trace
-.\scripts\otto-gw.ps1 env -ShowSecrets
-.\scripts\otto-gw.ps1 upgrade-env -DryRun
-.\scripts\otto-gw.ps1 migrate-to-overrides -Yes
-.\scripts\otto-gw.ps1 version</pre>
+    <pre class="gw-code-block">.\scripts\gw.ps1 init -NonInteractive
+.\scripts\gw.ps1 start
+.\scripts\gw.ps1 start -Pii encrypt -EncryptKey &lt;key&gt; -Auth &lt;token&gt;
+.\scripts\gw.ps1 status
+.\scripts\gw.ps1 logs -Follow
+.\scripts\gw.ps1 restart -IdleTimeout 60
+.\scripts\gw.ps1 stop
+.\scripts\gw.ps1 run -Trace
+.\scripts\gw.ps1 env -ShowSecrets
+.\scripts\gw.ps1 upgrade-env -DryRun
+.\scripts\gw.ps1 migrate-to-overrides -Yes
+.\scripts\gw.ps1 version</pre>
     <p>Subcommand surface (identical on both wrappers): <code>init</code>, <code>start</code>, <code>stop</code>, <code>restart</code>, <code>status</code>, <code>logs</code>, <code>run</code>, <code>env</code>, <code>upgrade-env</code>, <code>migrate-to-overrides</code>, <code>version</code>.</p>
     <h3 class="gw-h3">Flag &harr; switch reference</h3>
     <table class="gw-table gw-docs-flags-table gw-flag-table">
@@ -90,15 +91,15 @@
       <tbody>
         <tr><td><code>--pii MODE</code></td><td><code>-Pii MODE</code></td><td>PII redaction mode (<code>off</code>, <code>replace</code>, <code>mask</code>, <code>hash</code>, <code>drop</code>, <code>encrypt</code>). <code>off</code> sets <code>PII_REDACTION_ENABLED=false</code>; any other value enables redaction with that mode.</td></tr>
         <tr><td><code>--hash-key KEY</code></td><td><code>-HashKey KEY</code></td><td>Sets <code>PII_HASH_KEY</code>. Required when <code>--pii hash</code> / <code>-Pii hash</code> is in effect.</td></tr>
-        <tr><td><code>--encrypt-key KEY</code></td><td><code>-EncryptKey KEY</code></td><td>Sets <code>PII_ENCRYPT_KEY</code>. Required when <code>--pii encrypt</code> / <code>-Pii encrypt</code> is in effect (the default), or any <code>PII_ENTITY_ACTIONS</code> entry uses <code>:encrypt</code>. Any non-empty string — the gateway derives a 32-byte AES-256-GCM key via SHA-256 at boot. <code>otto-gw init</code> auto-mints one; <code>--regenerate-secrets</code> rotates it alongside <code>AUTH_TOKEN</code> and <code>PII_HASH_KEY</code>.</td></tr>
+        <tr><td><code>--encrypt-key KEY</code></td><td><code>-EncryptKey KEY</code></td><td>Sets <code>PII_ENCRYPT_KEY</code>. Required when <code>--pii encrypt</code> / <code>-Pii encrypt</code> is in effect (the default), or any <code>PII_ENTITY_ACTIONS</code> entry uses <code>:encrypt</code>. Any non-empty string — the gateway derives a 32-byte AES-256-GCM key via SHA-256 at boot. <code>gw init</code> auto-mints one; <code>--regenerate-secrets</code> rotates it alongside <code>AUTH_TOKEN</code> and <code>PII_HASH_KEY</code>.</td></tr>
         <tr><td><code>--entities LIST</code></td><td><code>-Entities LIST</code></td><td>Comma-split <code>PII_ENABLED_ENTITIES</code> allowlist (e.g. <code>Email,SSN,PERSON</code>). Empty = all registered recognizers (13 regex + 2 NER when <code>PII_NER_ENABLED=true</code>).</td></tr>
         <tr><td><code>--hooks LIST</code></td><td><code>-Hooks LIST</code></td><td>Comma-split <code>ENABLED_HOOKS</code> allowlist. Empty = all hooks in the chain enabled.</td></tr>
         <tr><td><code>--auth TOKEN</code></td><td><code>-Auth TOKEN</code></td><td>Sets <code>AUTH_TOKEN</code> for bearer-token auth.</td></tr>
         <tr><td><code>--idle-timeout SEC</code></td><td><code>-IdleTimeout SEC</code></td><td>Sets <code>STREAM_IDLE_TIMEOUT_SEC</code> (0 disables the watchdog; negative is a boot error).</td></tr>
         <tr><td><code>--env-file PATH</code></td><td><code>-EnvFile PATH</code></td><td>Override the resolved primary <code>.env</code> path.</td></tr>
-        <tr><td><code>--overrides-file PATH</code></td><td><code>-OverridesFile PATH</code></td><td>Override the resolved <code>.otto-gw.overrides.env</code> path (loaded second; wins on shared keys).</td></tr>
-        <tr><td><code>--template PATH</code></td><td><code>-Template PATH</code></td><td>Override the <code>.env.otto-gw.example</code> template used by <code>init</code> / <code>upgrade-env</code> / <code>migrate-to-overrides</code>.</td></tr>
-        <tr><td><code>--dest PATH</code></td><td><code>-Dest PATH</code></td><td>Override the destination <code>.otto-gw.env</code> path for <code>init</code> / <code>upgrade-env</code> / <code>migrate-to-overrides</code>.</td></tr>
+        <tr><td><code>--overrides-file PATH</code></td><td><code>-OverridesFile PATH</code></td><td>Override the resolved <code>overrides.env</code> path (loaded second; wins on shared keys).</td></tr>
+        <tr><td><code>--template PATH</code></td><td><code>-Template PATH</code></td><td>Override the <code>.env.example</code> template used by <code>init</code> / <code>upgrade-env</code> / <code>migrate-to-overrides</code>.</td></tr>
+        <tr><td><code>--dest PATH</code></td><td><code>-Dest PATH</code></td><td>Override the destination <code>.env</code> path for <code>init</code> / <code>upgrade-env</code> / <code>migrate-to-overrides</code>.</td></tr>
         <tr><td><code>--overrides-dest PATH</code></td><td><code>-OverridesDest PATH</code></td><td>Override the destination overrides path for <code>migrate-to-overrides</code>.</td></tr>
         <tr><td><code>--dry-run</code></td><td><code>-DryRun</code></td><td>Preview a write-side subcommand (<code>upgrade-env</code>, <code>migrate-to-overrides</code>) without modifying disk.</td></tr>
         <tr><td><code>--yes</code></td><td><code>-Yes</code></td><td>Skip confirmation prompts (CI-friendly).</td></tr>
@@ -121,9 +122,9 @@
 
   <section class="gw-card">
     <h2 class="gw-h2">Upgrading</h2>
-    <p>Gateway uses a <strong>two-file env model</strong> so upgrades absorb new template defaults without clobbering your secrets. The generated <code>.otto-gw.env</code> file is rewritten from the template on every upgrade. Your <code>.otto-gw.overrides.env</code> file is operator-owned, loaded last, and is NEVER touched by <code>upgrade-env</code> or <code>init</code> — its values win on shared keys.</p>
+    <p>Gateway uses a <strong>two-file env model</strong> so upgrades absorb new template defaults without clobbering your secrets. The generated <code>.env</code> file is rewritten from the template on every upgrade. Your <code>overrides.env</code> file is operator-owned, loaded last, and is NEVER touched by <code>upgrade-env</code> or <code>init</code> — its values win on shared keys.</p>
 
-    <p><strong>Do not delete <code>.otto-gw.env</code> to "start fresh".</strong> Deleting it means <code>init</code> mints a brand-new <code>AUTH_TOKEN</code> and rotates <code>PII_HASH_KEY</code>, breaking any existing auth setup and invalidating prior hash-mode correlation tokens. Use the proper upgrade flow below — it preserves existing secrets by default.</p>
+    <p><strong>Do not delete <code>.env</code> to "start fresh".</strong> Deleting it means <code>init</code> mints a brand-new <code>AUTH_TOKEN</code> and rotates <code>PII_HASH_KEY</code>, breaking any existing auth setup and invalidating prior hash-mode correlation tokens. Use the proper upgrade flow below — it preserves existing secrets by default.</p>
 
     <h3 class="gw-h3">Three-step upgrade flow</h3>
     <ol class="gw-docs-bullets">
@@ -134,21 +135,21 @@
 
     <h3 class="gw-h3">macOS / Linux (POSIX)</h3>
     <pre class="gw-code-block">curl -fsSL https://raw.githubusercontent.com/cmetech/otto-gateway/main/scripts/install.sh | sh
-otto-gw upgrade-env --dry-run             # 1. preview
-otto-gw init --force --non-interactive    # 2. absorb new defaults; mint missing keys
-otto-gw restart                            # 3. apply</pre>
+gw upgrade-env --dry-run             # 1. preview
+gw init --force --non-interactive    # 2. absorb new defaults; mint missing keys
+gw restart                            # 3. apply</pre>
 
     <h3 class="gw-h3">Windows (PowerShell)</h3>
     <pre class="gw-code-block">irm https://raw.githubusercontent.com/cmetech/otto-gateway/main/scripts/install.ps1 | iex
-otto-gw.ps1 upgrade-env -DryRun           # 1. preview
-otto-gw.ps1 init -Force -NonInteractive   # 2. absorb new defaults; mint missing keys
-otto-gw.ps1 restart                        # 3. apply</pre>
-    <p>The <code>.bat</code> dispatcher forwards arguments to PowerShell, so <code>otto-gw init -Force -NonInteractive</code> works the same from <code>cmd.exe</code>.</p>
+gw.ps1 upgrade-env -DryRun           # 1. preview
+gw.ps1 init -Force -NonInteractive   # 2. absorb new defaults; mint missing keys
+gw.ps1 restart                        # 3. apply</pre>
+    <p>The <code>.bat</code> dispatcher forwards arguments to PowerShell, so <code>gw init -Force -NonInteractive</code> works the same from <code>cmd.exe</code>.</p>
 
     <h3 class="gw-h3">Preserve vs. rotate secrets</h3>
     <p>The default behavior of <code>init --force</code> is <strong>preserve</strong> — your existing <code>AUTH_TOKEN</code>, <code>PII_HASH_KEY</code>, and <code>PII_ENCRYPT_KEY</code> are carried across the upgrade verbatim. Add <code>--regenerate-secrets</code> (POSIX) or <code>-RegenerateSecrets</code> (PowerShell) to discard the existing values and mint fresh ones:</p>
-    <pre class="gw-code-block">otto-gw init --force --non-interactive --regenerate-secrets    # POSIX
-otto-gw.ps1 init -Force -NonInteractive -RegenerateSecrets     # PowerShell</pre>
+    <pre class="gw-code-block">gw init --force --non-interactive --regenerate-secrets    # POSIX
+gw.ps1 init -Force -NonInteractive -RegenerateSecrets     # PowerShell</pre>
     <p><strong>Rotating <code>PII_ENCRYPT_KEY</code> is a breaking change for in-flight encrypted conversations</strong> — every prior <code>[PII:Entity:base64url(...)]</code> token becomes undecryptable. Only rotate it intentionally (suspected key leak, routine secret rotation, etc.). Rotating <code>PII_HASH_KEY</code> invalidates prior hash-mode correlation tokens — the same correlation-break-on-purpose property.</p>
 
     <h3 class="gw-h3">Upgrading from v1.8.1 → v1.8.2 specifically</h3>
@@ -159,7 +160,7 @@ otto-gw.ps1 init -Force -NonInteractive -RegenerateSecrets     # PowerShell</pre
       <li><strong>Default change</strong>: <code>PII_REDACTION_MODE</code> flips from <code>replace</code> → <code>encrypt</code>. PII flows to the worker as AES-256-GCM ciphertext and is decrypted back to plaintext before the client sees the response (round-trip).</li>
       <li><strong>Auto-mint</strong>: <code>PII_ENCRYPT_KEY</code> is now generated by <code>init</code> alongside <code>AUTH_TOKEN</code> and <code>PII_HASH_KEY</code>. If your env file already had a value, it is preserved across re-init.</li>
     </ul>
-    <p>If you want to opt out of the new defaults entirely (stay on the v1.8.1 behavior), put these overrides in <code>.otto-gw.overrides.env</code>:</p>
+    <p>If you want to opt out of the new defaults entirely (stay on the v1.8.1 behavior), put these overrides in <code>overrides.env</code>:</p>
     <pre class="gw-code-block">PII_REDACTION_ENABLED=false
 PII_REDACTION_MODE=replace
 PII_NER_ENABLED=false</pre>
@@ -167,14 +168,14 @@ PII_NER_ENABLED=false</pre>
 
     <h3 class="gw-h3">When to keep the file vs. nuke it</h3>
     <dl class="gw-about-dl">
-      <dt>Keep the file (recommended)</dt><dd>Use <code>otto-gw init --force --non-interactive</code>. Existing secrets carry across; new env vars get template defaults. No restart-without-auth window.</dd>
-      <dt>Nuke <code>.otto-gw.env</code> only when</dt><dd>The file is in a weird half-edited state you'd rather start fresh from. Back it up first (<code>cp .otto-gw.env .otto-gw.env.bak</code>) so you can recover the prior <code>AUTH_TOKEN</code> if you need to. <code>otto-gw init</code> on an absent file is a cold install and mints all three secrets fresh.</dd>
-      <dt>Don't touch <code>.otto-gw.overrides.env</code></dt><dd>Operator-owned. <code>upgrade-env</code> and <code>init</code> never write to it. If you want to opt out of the new secure-by-default behavior, this is where the override lines go.</dd>
+      <dt>Keep the file (recommended)</dt><dd>Use <code>gw init --force --non-interactive</code>. Existing secrets carry across; new env vars get template defaults. No restart-without-auth window.</dd>
+      <dt>Nuke <code>.env</code> only when</dt><dd>The file is in a weird half-edited state you'd rather start fresh from. Back it up first (<code>cp .env .env.bak</code>) so you can recover the prior <code>AUTH_TOKEN</code> if you need to. <code>gw init</code> on an absent file is a cold install and mints all three secrets fresh.</dd>
+      <dt>Don't touch <code>overrides.env</code></dt><dd>Operator-owned. <code>upgrade-env</code> and <code>init</code> never write to it. If you want to opt out of the new secure-by-default behavior, this is where the override lines go.</dd>
     </dl>
 
     <h3 class="gw-h3">After upgrade — verify</h3>
-    <pre class="gw-code-block">otto-gw env                       # print resolved env (secrets masked)
-otto-gw status                    # /admin/api/snapshot summary
+    <pre class="gw-code-block">gw env                       # print resolved env (secrets masked)
+gw status                    # /admin/api/snapshot summary
 curl -sf http://127.0.0.1:18080/health/hooks | jq    # confirm PIIRedactionHook mode/decrypt_active</pre>
     <p>The <code>config</code> field in <code>/health/hooks</code> will show <code>"mode": "encrypt"</code> and <code>"decrypt_active": true</code> on the default-defaults install. If you opted out via overrides, those values reflect your overrides.</p>
   </section>
@@ -231,8 +232,8 @@ curl -sf http://127.0.0.1:18080/health/hooks | jq    # confirm PIIRedactionHook 
       <dt><code>PII_NER_ENABLED</code></dt><dd>default <code>true</code> — master switch for the prose-based PERSON/LOCATION recognizer. When <code>true</code>, the bundled averaged-perceptron model lazy-loads on first request. Set to <code>false</code> to skip the runtime tokenizer/tagger allocation (the ~7 MB binary impact is baked into the build either way). English-only; accuracy is decent on common Western names and major place names but weaker on Asian / multilingual names.</dd>
       <dt><code>PII_ENABLED_ENTITIES</code></dt><dd>default empty (all registered recognizers active) — comma-separated allowlist from <code>Email,IPv4,IPv6,SSN,CreditCard,USPhone,SIP_URI,IMEI,IMSI,MSISDN,MAC_ADDRESS,COORDINATES,SITE,PERSON,LOCATION</code>. <code>PERSON</code> and <code>LOCATION</code> require <code>PII_NER_ENABLED=true</code> to actually fire.</dd>
       <dt><code>PII_ENTITY_ACTIONS</code></dt><dd>default empty — per-entity action override map. Shape: <code>Entity:action,Entity:action,…</code> (e.g. <code>Email:encrypt,SSN:drop,PERSON:mask</code>). Listed entities use the named action; unlisted entities fall back to <code>PII_REDACTION_MODE</code>. Allowed actions: <code>replace</code>, <code>mask</code>, <code>hash</code>, <code>drop</code>, <code>encrypt</code>. Unknown entity name or action ⇒ boot error.</dd>
-      <dt><code>PII_HASH_KEY</code></dt><dd>auto-minted by <code>otto-gw init</code> — REQUIRED when <code>PII_REDACTION_MODE=hash</code> (boot error otherwise). HMAC-SHA256 key. Rotating it invalidates prior session correlation tokens.</dd>
-      <dt><code>PII_ENCRYPT_KEY</code></dt><dd>auto-minted by <code>otto-gw init</code> — REQUIRED when encrypt is active anywhere (the default <code>PII_REDACTION_MODE=encrypt</code>, OR any <code>PII_ENTITY_ACTIONS</code> entry of the form <code>Entity:encrypt</code>); boot error otherwise, naming the env var in the fatal log. Any non-empty string; the gateway derives a 32-byte AES-256-GCM key via SHA-256 at boot. <code>--regenerate-secrets</code> rotates this alongside <code>AUTH_TOKEN</code> and <code>PII_HASH_KEY</code>. Rotating invalidates every prior encrypted token (decrypt-on-response will fail) — treat as a breaking change for any in-flight round-tripping conversation. Streaming is auto-disabled when encrypt is active (the Pre hook flips <code>Stream=false</code> and adapters re-route to the aggregated path).</dd>
+      <dt><code>PII_HASH_KEY</code></dt><dd>auto-minted by <code>gw init</code> — REQUIRED when <code>PII_REDACTION_MODE=hash</code> (boot error otherwise). HMAC-SHA256 key. Rotating it invalidates prior session correlation tokens.</dd>
+      <dt><code>PII_ENCRYPT_KEY</code></dt><dd>auto-minted by <code>gw init</code> — REQUIRED when encrypt is active anywhere (the default <code>PII_REDACTION_MODE=encrypt</code>, OR any <code>PII_ENTITY_ACTIONS</code> entry of the form <code>Entity:encrypt</code>); boot error otherwise, naming the env var in the fatal log. Any non-empty string; the gateway derives a 32-byte AES-256-GCM key via SHA-256 at boot. <code>--regenerate-secrets</code> rotates this alongside <code>AUTH_TOKEN</code> and <code>PII_HASH_KEY</code>. Rotating invalidates every prior encrypted token (decrypt-on-response will fail) — treat as a breaking change for any in-flight round-tripping conversation. Streaming is auto-disabled when encrypt is active (the Pre hook flips <code>Stream=false</code> and adapters re-route to the aggregated path).</dd>
     </dl>
 
     <p>Detected PII is replaced with bracketed sentinels like <code>[EMAIL_1]</code>, <code>[PHONE_2]</code>, <code>[EMAIL:h-abc12345]</code> (hash mode), or <code>[PII:EMAIL:base64url(...)]</code> (encrypt mode, the default). Square brackets are deliberate — angle-bracketed sentinels like <code>&lt;EMAIL_1&gt;</code> caused kiro-cli to treat them as opening XML tags (see fix 260531-pt8).</p>
@@ -328,7 +329,7 @@ kiro-cli (Linux process inside the WSL2 lightweight VM)</pre>
     <h3 class="gw-h3">Things to try, in priority order</h3>
     <ol class="gw-docs-bullets">
       <li>
-        <strong>Disable Linux stdio buffering with <code>stdbuf</code>.</strong> Most likely #1 culprit — fixes the block-buffering case. Add to <code>.otto-gw.overrides.env</code>:
+        <strong>Disable Linux stdio buffering with <code>stdbuf</code>.</strong> Most likely #1 culprit — fixes the block-buffering case. Add to <code>overrides.env</code>:
         <pre class="gw-code-block">KIRO_CMD=wsl.exe
 KIRO_ARGS=--exec /usr/bin/stdbuf -i0 -o0 -e0 /full/path/to/kiro-cli acp</pre>
         <code>stdbuf -i0 -o0 -e0</code> tells glibc to use unbuffered stdin/stdout/stderr for the child. Responses flush the moment they're written. If <code>stdbuf</code> is missing from your distro, install <code>coreutils</code> inside WSL.
@@ -348,13 +349,13 @@ KIRO_ARGS=--exec /usr/bin/stdbuf -i0 -o0 -e0 /full/path/to/kiro-cli acp</pre>
 
     <h3 class="gw-h3">Diagnostic data — collect this if the steps above don't fix it</h3>
     <pre class="gw-code-block"># 1. Confirm current KIRO_* values
-otto-gw.ps1 env | Select-String "KIRO"
+gw.ps1 env | Select-String "KIRO"
 
 # 2. Reproduce with DEBUG=true and capture the log around the drop
-Add-Content $env:USERPROFILE\.otto-gw.overrides.env "DEBUG=true"
-otto-gw.ps1 restart
+Add-Content $env:USERPROFILE\.gw\overrides.env "DEBUG=true"
+gw.ps1 restart
 # (reproduce — send a request)
-otto-gw.ps1 logs | Select-Object -Last 50
+gw.ps1 logs | Select-Object -Last 50
 
 # 3. Immediately after the connection drop, check WSL — is kiro-cli
 #    still alive (bridge break) or did it exit (real kiro death)?

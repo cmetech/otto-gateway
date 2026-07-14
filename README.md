@@ -1,10 +1,10 @@
-<!-- OTTO Gateway — the inference + ACP router at the heart of the OTTO stack -->
+<!-- Gateway — the inference + ACP router at the heart of the OTTO stack -->
 
-# OTTO Gateway
+# Gateway
 
 > The brain of the **OTTO** product family. One process, three API standards, a configurable guardrails chain, and pooled `kiro-cli` ACP workers.
 
-The OTTO Gateway is the on-laptop component that every other piece of the OTTO stack talks to when it needs to think. OTTER (the CLI) sends chat-completion calls here. Langflow sends inference calls here. OSCAR's operational data round-trips through here. Whatever speaks Anthropic, OpenAI, or Ollama on one side gets translated into ACP — to local `kiro-cli` workers for inference or to remote OSCAR for ops data — on the other.
+The Gateway is the on-laptop component that every other piece of the OTTO stack talks to when it needs to think. OTTER (the CLI) sends chat-completion calls here. Langflow sends inference calls here. OSCAR's operational data round-trips through here. Whatever speaks Anthropic, OpenAI, or Ollama on one side gets translated into ACP — to local `kiro-cli` workers for inference or to remote OSCAR for ops data — on the other.
 
 ---
 
@@ -31,7 +31,7 @@ The architectural value: every LLM token on the laptop egresses through one proc
 
 The activity diagram above shows the Gateway as one tile. The architecture diagram below shows what is inside that tile.
 
-![OTTO Gateway architecture overview — three API surfaces, guardrails, engine + pool](docs/architecture/architecture-overview.jpg)
+![Gateway architecture overview — three API surfaces, guardrails, engine + pool](docs/architecture/architecture-overview.jpg)
 
 Reading left-to-right:
 
@@ -112,16 +112,24 @@ curl -fsSL https://raw.githubusercontent.com/cmetech/otto-gateway/main/scripts/i
 irm https://raw.githubusercontent.com/cmetech/otto-gateway/main/scripts/install.ps1 | iex
 ```
 
-This downloads the latest release, verifies its checksum, installs to `~/.otto-gw`
-(override with `OTTO_HOME`), writes a default config (no auth, `127.0.0.1:18080`,
-all hooks, chat-trace off), and puts `otto-gw` on your PATH. Pin a version with
-`OTTO_VERSION=v1.5.5`. Install `kiro-cli` separately — the gateway returns 503 on
-chat requests without it. See [`docs/INSTALL.md`](docs/INSTALL.md) for the manual
-archive install and per-OS detail.
+This downloads the latest release, verifies its checksum, and splits the
+install across two anchors: `GW_INSTALL_DIR` for code (binaries + scripts,
+replaceable on upgrade — default `~/Library/Application Support/Gateway` on
+macOS, `${XDG_DATA_HOME:-~/.local/share}/gateway` on Linux,
+`%LOCALAPPDATA%\Gateway` on Windows) and `GW_HOME` for config (`.env`, logs,
+state — precious, never overwritten — default `~/.gw`). It writes a default
+config into `GW_HOME` (no auth, `127.0.0.1:18080`, all hooks, chat-trace
+off), and puts `gw` on your PATH. Pin a version with `GW_VERSION=v1.5.5`.
+Install `kiro-cli` separately — the gateway returns 503 on chat requests
+without it. Upgrading a pre-relayout install? The installer auto-migrates a
+legacy `~/.otto-gw.env` (plus its overrides/tray-config companions) into
+`~/.gw/` the first time it runs — nothing to do by hand. See
+[`docs/INSTALL.md`](docs/INSTALL.md) for the manual archive install and
+per-OS detail.
 
 macOS and Windows installs also drop a menu-bar / system-tray launcher
-(macOS: `~/.otto-gw/OTTO Tray.app`; Windows: `~/.otto-gw/bin/otto-tray.exe`)
-— optional, off by default.
+(macOS: `$GW_INSTALL_DIR/Gateway Tray.app`; Windows:
+`$GW_INSTALL_DIR\bin\gateway-tray.exe`) — optional, off by default.
 See [Optional: launch the menu-bar / system-tray app](docs/operator-quickstart.md#optional-launch-the-menu-bar--system-tray-app-macos--windows)
 in the operator quickstart for what it does and how to remove its login-item
 registration.
@@ -148,23 +156,23 @@ Build the binary first, then use the platform wrapper script:
 
 ```bash
 make build
-./scripts/otto-gw start    # launch in background
-./scripts/otto-gw status   # check PID + /health
-./scripts/otto-gw stop     # stop gracefully
+./scripts/gw start    # launch in background
+./scripts/gw status   # check PID + /health
+./scripts/gw stop     # stop gracefully
 ```
 
 **Windows (PowerShell):**
 
 ```powershell
 make build
-.\scripts\otto-gw.ps1 start
-.\scripts\otto-gw.ps1 status
-.\scripts\otto-gw.ps1 stop
+.\scripts\gw.ps1 start
+.\scripts\gw.ps1 status
+.\scripts\gw.ps1 stop
 ```
 
 `make start`, `make status`, and `make stop` are Makefile shortcuts for the POSIX wrapper on macOS/Linux.
 
-See [`docs/operating.md`](docs/operating.md) for full reference: PID and log file locations, env-var overrides (`OTTO_BIN`, `OTTO_PID`, `OTTO_LOG`, `OTTO_ADDR`), gateway env vars (`HTTP_ADDR`, `KIRO_CMD`, `PING_INTERVAL`, …), and how `status` works.
+See [`docs/operating.md`](docs/operating.md) for full reference: PID and log file locations, env-var overrides (`GW_BIN`, `GW_PID`, `GW_LOG`, `GW_ADDR`, `GW_HOME`, `GW_INSTALL_DIR`), gateway env vars (`HTTP_ADDR`, `KIRO_CMD`, `PING_INTERVAL`, …), and how `status` works.
 
 ---
 

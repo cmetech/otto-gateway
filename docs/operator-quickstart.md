@@ -1,4 +1,4 @@
-# OTTO Gateway
+# Gateway
 
 A single-binary LLM gateway. Exposes OpenAI-, Ollama-, and Anthropic-compatible HTTP APIs on one port and routes every request through a configurable guardrails chain (auth, request-ID, logging, PII redaction) to a pool of `kiro-cli` ACP worker processes.
 
@@ -35,10 +35,10 @@ You should now see the layout described in [What's in the box](#whats-in-the-box
 If you downloaded the archive via a browser, macOS Gatekeeper will refuse to launch the binary the first time. Strip the quarantine attribute once:
 
 ```bash
-xattr -d com.apple.quarantine bin/otto-gateway
+xattr -d com.apple.quarantine bin/gateway
 ```
 
-Full context in [Troubleshooting → macOS](#macos-otto-gateway-cannot-be-opened-because-apple-cannot-check-it-for-malicious-software).
+Full context in [Troubleshooting → macOS](#macos-gateway-cannot-be-opened-because-apple-cannot-check-it-for-malicious-software).
 
 ### 3b. (Windows only) Run setup.bat once
 
@@ -51,11 +51,11 @@ flags.
 
 After setup, three equivalent ways to run subcommands:
 
-- `.\scripts\otto-gw.ps1 <command>` — the PowerShell wrapper
-- `.\scripts\otto-gw.bat <command>` — cmd.exe-friendly dispatcher
+- `.\scripts\gw.ps1 <command>` — the PowerShell wrapper
+- `.\scripts\gw.bat <command>` — cmd.exe-friendly dispatcher
 - `.\scripts\start.bat` / `stop.bat` / `status.bat` — double-clickable per-command shortcuts
 
-Full context in [Troubleshooting → Windows: setup.bat says "Setup hit an error"](#windows-setupbat-says-setup-hit-an-error-or-otto-gwps1-still-refuses-to-run) if the per-machine ExecutionPolicy is Group-Policy-locked.
+Full context in [Troubleshooting → Windows: setup.bat says "Setup hit an error"](#windows-setupbat-says-setup-hit-an-error-or-gwps1-still-refuses-to-run) if the per-machine ExecutionPolicy is Group-Policy-locked.
 
 ### 4. Install kiro-cli
 
@@ -73,14 +73,14 @@ If `kiro-cli` lives somewhere not on `PATH`, note its absolute path — `init` w
 
 ### 5. Run `init`
 
-Generates a random `AUTH_TOKEN` + `PII_HASH_KEY`, prompts for `KIRO_CMD`, `HTTP_ADDR`, and PII mode, then writes `~/.otto-gw.env` (mode `0600`):
+Generates a random `AUTH_TOKEN` + `PII_HASH_KEY`, prompts for `KIRO_CMD`, `HTTP_ADDR`, and PII mode, then writes `$GW_HOME/.env` — default `~/.gw/.env` (mode `0600`):
 
 ```bash
-./scripts/otto-gw init           # macOS / Linux
+./scripts/gw init           # macOS / Linux
 ```
 
 ```powershell
-.\scripts\otto-gw.ps1 init       # Windows
+.\scripts\gw.ps1 init       # Windows
 ```
 
 For non-interactive installs (CI, image baking, etc.) see [`init` — non-interactive form](#init--non-interactive-form-for-scripts--ci).
@@ -88,11 +88,11 @@ For non-interactive installs (CI, image baking, etc.) see [`init` — non-intera
 ### 6. Start
 
 ```bash
-./scripts/otto-gw start          # macOS / Linux
+./scripts/gw start          # macOS / Linux
 ```
 
 ```powershell
-.\scripts\otto-gw.ps1 start      # Windows
+.\scripts\gw.ps1 start      # Windows
 ```
 
 The wrapper waits for `/health` to come up before returning. On failure it tails the last 20 lines of the structured log inline so you see the actual error (config typo, hash-mode-without-key, port conflict, etc.) without grepping. Hit `http://localhost:18080/health` in a browser to confirm.
@@ -105,14 +105,19 @@ The wrapper waits for `/health` to come up before returning. On failure it tails
 
 ```
 otto_gateway/
-  bin/otto-gateway        the gateway binary (single static executable)
-  scripts/otto-gw         POSIX wrapper (init | start | stop | status | restart | logs | run | env)
-  scripts/otto-gw.ps1     Windows PowerShell wrapper (same subcommands)
-  scripts/.env.otto-gw.example
+  bin/gateway             the gateway binary (single static executable)
+  scripts/gw              POSIX wrapper (init | start | stop | status | restart | logs | run | env)
+  scripts/gw.ps1          Windows PowerShell wrapper (same subcommands)
+  scripts/.env.example
                           starter template for the persistent config file
-  logs/                   the gateway writes its rotated JSON logs here
   README.md               this file
 ```
+
+The archive itself is just the code — it is the `GW_INSTALL_DIR` half of the
+layout. Config (`.env`, `overrides.env`) and runtime state (`logs/`,
+`state/`) are NOT written inside this folder; they live under `GW_HOME`
+(default `~/.gw`) so they survive a fresh extract when you upgrade. See
+[Configuration](#configuration) below for the exact paths.
 
 ---
 
@@ -125,9 +130,9 @@ otto_gateway/
 **Required by the binary itself:**
 
 - A free local TCP port. Default is `127.0.0.1:18080`; override via `HTTP_ADDR`.
-- For Windows: PowerShell 5.1+ (built into Windows 10/11). If execution policy blocks the script, run `powershell -ExecutionPolicy Bypass -File .\scripts\otto-gw.ps1 <command>`.
+- For Windows: PowerShell 5.1+ (built into Windows 10/11). If execution policy blocks the script, run `powershell -ExecutionPolicy Bypass -File .\scripts\gw.ps1 <command>`.
 
-**Port-default note for migrators:** the legacy Node Ollama proxy listened on `11434`. The Go gateway picks `18080` instead so it can coexist with a real Ollama install on the same machine. If you're swapping the Node proxy for this gateway and pointing LangFlow (or any Ollama client) at it, set `HTTP_ADDR=127.0.0.1:11434` in your `.env.otto-gw` — the gateway will then take over the Ollama port and your clients need no reconfiguration.
+**Port-default note for migrators:** the legacy Node Ollama proxy listened on `11434`. The Go gateway picks `18080` instead so it can coexist with a real Ollama install on the same machine. If you're swapping the Node proxy for this gateway and pointing LangFlow (or any Ollama client) at it, set `HTTP_ADDR=127.0.0.1:11434` in your `.env` (default `$GW_HOME/.env`, i.e. `~/.gw/.env`) — the gateway will then take over the Ollama port and your clients need no reconfiguration.
 
 ---
 
@@ -136,33 +141,33 @@ otto_gateway/
 Once installed (see [Install](#install--first-time-setup)), the day-to-day surface is the same on every OS:
 
 ```bash
-./scripts/otto-gw start         # launches; waits for /health to come up
-./scripts/otto-gw status        # PID + /health JSON
-./scripts/otto-gw logs -f       # follow the structured JSON log
-./scripts/otto-gw restart       # stop + start (re-applies flags / .env)
-./scripts/otto-gw stop          # SIGTERM, wait for clean exit
-./scripts/otto-gw env           # preview what would be passed; secrets masked
+./scripts/gw start         # launches; waits for /health to come up
+./scripts/gw status        # PID + /health JSON
+./scripts/gw logs -f       # follow the structured JSON log
+./scripts/gw restart       # stop + start (re-applies flags / .env)
+./scripts/gw stop          # SIGTERM, wait for clean exit
+./scripts/gw env           # preview what would be passed; secrets masked
 ```
 
-On Windows substitute `.\scripts\otto-gw.ps1 <command>` and drop `-f` (the PowerShell `logs` always follows).
+On Windows substitute `.\scripts\gw.ps1 <command>` and drop `-f` (the PowerShell `logs` always follows).
 
 ---
 
 ## Optional: launch the menu-bar / system-tray app (macOS + Windows)
 
-The install drops `bin/otto-tray` (or `bin/otto-tray.exe`) alongside `bin/otto-gateway` on macOS and Windows. The tray app is **optional** — every operation it exposes is also available via the wrappers on the command line. Linux installs do not ship the tray.
+The install drops `bin/gateway-tray` (or `bin/gateway-tray.exe`) alongside `bin/gateway` on macOS and Windows, inside `GW_INSTALL_DIR`. The tray app is **optional** — every operation it exposes is also available via the wrappers on the command line. Linux installs do not ship the tray.
 
 Launch it:
 
-- **macOS:** `open "~/.otto-gw/OTTO Tray.app"` (or double-click `OTTO Tray.app` in Finder). The install script generates a minimal `.app` wrapper around the binary with `LSUIElement=true` so the icon goes to the menu bar with no Dock entry. Running the raw `~/.otto-gw/bin/otto-tray` binary via `open` won't work — `open` falls back to Terminal for unwrapped Mach-O executables and the menu-bar item never appears.
-- **Windows:** `Start-Process "$env:USERPROFILE\.otto-gw\bin\otto-tray.exe"`, or double-click `%USERPROFILE%\.otto-gw\bin\otto-tray.exe` in Explorer.
+- **macOS:** `open "$GW_INSTALL_DIR/Gateway Tray.app"` (or double-click `Gateway Tray.app` in Finder — default location `~/Library/Application Support/Gateway/Gateway Tray.app`). The install script generates a minimal `.app` wrapper around the binary with `LSUIElement=true` so the icon goes to the menu bar with no Dock entry. Running the raw `$GW_INSTALL_DIR/bin/gateway-tray` binary via `open` won't work — `open` falls back to Terminal for unwrapped Mach-O executables and the menu-bar item never appears.
+- **Windows:** `Start-Process "$env:LOCALAPPDATA\Gateway\bin\gateway-tray.exe"`, or double-click `%LOCALAPPDATA%\Gateway\bin\gateway-tray.exe` in Explorer.
 
 The icon appears in the menu bar (macOS) or system tray (Windows). From its menu you can:
 
-- **Start, Stop, Restart** the gateway. These call the same `otto-gw` / `otto-gw.ps1` wrapper as the CLI — same env files, same config; the tray is not a second source of truth.
+- **Start, Stop, Restart** the gateway. These call the same `gw` / `gw.ps1` wrapper as the CLI — same env files, same config; the tray is not a second source of truth.
 - **Open dashboard** — opens `/admin` in your default browser.
 - **Copy health URL** — puts `http://127.0.0.1:18080/health` on the clipboard.
-- **Preferences → Launch tray at login** — when on, the tray re-appears every login (LaunchAgent on macOS at `~/Library/LaunchAgents/io.cmetech.otto-tray.plist`; `HKCU\…\Run\OttoTray` on Windows). Off by default; the installer never touches login-items.
+- **Preferences → Launch tray at login** — when on, the tray re-appears every login (LaunchAgent on macOS at `~/Library/LaunchAgents/io.cmetech.gateway-tray.plist`; `HKCU\…\Run\GatewayTray` on Windows). Off by default; the installer never touches login-items.
 - **Preferences → Start gateway when tray launches** — when on, the gateway starts automatically a moment after the icon appears.
 
 The header line shows the live state — `running`, `starting`, `degraded` (pool empty), `error`, or `stopped` — and is polled every 3 seconds against `/health` and `/admin/api/snapshot`. Start/Stop/Restart are enabled or greyed depending on the current state.
@@ -172,11 +177,11 @@ The header line shows the live state — `running`, `starting`, `degraded` (pool
 If you toggled "Launch tray at login" on and later want to remove the LaunchAgent (macOS) or `HKCU\Run` value (Windows), run:
 
 ```sh
-~/.otto-gw/bin/otto-tray --uninstall          # macOS
-& "$env:USERPROFILE\.otto-gw\bin\otto-tray.exe" --uninstall   # Windows
+$GW_INSTALL_DIR/bin/gateway-tray --uninstall          # macOS
+& "$env:LOCALAPPDATA\Gateway\bin\gateway-tray.exe" --uninstall   # Windows
 ```
 
-This removes only the login-item registration; the binary itself stays put (delete it with the rest of `~/.otto-gw/` whenever you wish).
+This removes only the login-item registration; the binary itself stays put (delete it with the rest of `$GW_INSTALL_DIR` whenever you wish).
 
 ---
 
@@ -185,7 +190,7 @@ This removes only the login-item registration; the binary itself stays put (dele
 Both wrappers accept flags so `init` can be driven without prompts:
 
 ```bash
-./scripts/otto-gw init \
+./scripts/gw init \
   --non-interactive \
   --kiro /usr/local/bin/kiro \
   --addr 127.0.0.1:11434 \
@@ -193,7 +198,7 @@ Both wrappers accept flags so `init` can be driven without prompts:
 ```
 
 ```powershell
-.\scripts\otto-gw.ps1 init `
+.\scripts\gw.ps1 init `
   -NonInteractive `
   -Kiro "C:\Tools\kiro.exe" `
   -Addr "127.0.0.1:11434" `
@@ -201,7 +206,7 @@ Both wrappers accept flags so `init` can be driven without prompts:
 ```
 
 Flags: `--dest PATH` / `-Dest PATH` chooses the output file; `--here` /
-`-Here` writes `./.env.otto-gw` instead of the home directory; `--force`
+`-Here` writes `./.env` instead of `$GW_HOME/.env`; `--force`
 / `-Force` overwrites; `--auth-token`/`-AuthToken` and `--hash-key`/
 `-HashKey` substitute provided values for generated secrets.
 
@@ -232,17 +237,19 @@ Three ways to set gateway config. Precedence (highest first):
 The wrapper looks for the first file that exists:
 
 1. `--env-file PATH` (flag override)
-2. `$OTTO_ENV_FILE` (env override)
-3. `./.env.otto-gw` (project-local — handy for per-project configs)
-4. `$HOME/.otto-gw.env` (macOS/Linux per-user) or `%USERPROFILE%\.otto-gw.env` (Windows)
+2. `$GW_ENV_FILE` (env override)
+3. `./.env` (project-local — handy for per-project configs)
+4. `$GW_HOME/.env` — default `$HOME/.gw/.env` (macOS/Linux) or `$env:USERPROFILE\.gw\.env` (Windows)
 
-The file is `KEY=value` per line, `#` for comments, `export ` prefix tolerated. See `scripts/.env.otto-gw.example`.
+An `overrides.env` file is then chained on top the same way (`./overrides.env` → `$GW_HOME/overrides.env`) — it loads second, so its values win on any shared key; this is where operator secrets/customizations belong.
+
+The file is `KEY=value` per line, `#` for comments, `export ` prefix tolerated. See `scripts/.env.example`.
 
 ### Preview without launching
 
 ```bash
-./scripts/otto-gw env                    # secrets masked
-./scripts/otto-gw env --show-secrets     # secrets visible
+./scripts/gw env                    # secrets masked
+./scripts/gw env --show-secrets     # secrets visible
 ```
 
 ---
@@ -252,14 +259,14 @@ The file is `KEY=value` per line, `#` for comments, `export ` prefix tolerated. 
 ### Enable PII redaction (replace mode — easy to read in logs)
 
 ```bash
-./scripts/otto-gw restart --pii replace
+./scripts/gw restart --pii replace
 ```
 
 ### Enable PII redaction (hash mode — for log correlation across requests)
 
 ```bash
 KEY=$(openssl rand -hex 32)
-./scripts/otto-gw restart --pii hash --hash-key "$KEY"
+./scripts/gw restart --pii hash --hash-key "$KEY"
 # Same email now shows up as <EMAIL:h-XXXXXXXX> in logs.
 # Same key → same hash. Different key → different hash (rotates correlation).
 ```
@@ -270,7 +277,7 @@ Persist by adding `PII_REDACTION_ENABLED=true`, `PII_REDACTION_MODE=hash`, and `
 
 ```bash
 KEY=$(openssl rand -hex 32)
-./scripts/otto-gw restart --pii encrypt --encrypt-key "$KEY"
+./scripts/gw restart --pii encrypt --encrypt-key "$KEY"
 # Detected PII becomes [PII:Entity:base64url(...)] (AES-256-GCM with the
 # entity name bound as AAD) before the worker sees it, then the response
 # Post-hook decrypts those tokens back to plaintext before the client
@@ -285,14 +292,14 @@ Persist by adding `PII_REDACTION_ENABLED=true`, `PII_REDACTION_MODE=encrypt`, an
 
 ```bash
 NEW=$(openssl rand -hex 32)
-./scripts/otto-gw restart --hash-key "$NEW"
+./scripts/gw restart --hash-key "$NEW"
 # Update the .env too so the next plain `restart` picks up the new key.
 ```
 
 ### Filter the chain (e.g. disable auth for local dev)
 
 ```bash
-./scripts/otto-gw restart --hooks RequestIDHook,LoggingHook    # AuthHook + PII off
+./scripts/gw restart --hooks RequestIDHook,LoggingHook    # AuthHook + PII off
 ```
 
 The gateway preserves **registration order** regardless of the allowlist order you provide. Unknown hook names cause the gateway to refuse to start — protects against typos like `PIIRedaction` silently disabling PII (the correct name is `PIIRedactionHook`).
@@ -300,7 +307,7 @@ The gateway preserves **registration order** regardless of the allowlist order y
 ### Change the listen port
 
 ```bash
-HTTP_ADDR=:11434 ./scripts/otto-gw restart    # take over the Ollama default port
+HTTP_ADDR=:11434 ./scripts/gw restart    # take over the Ollama default port
 ```
 
 or persist via `HTTP_ADDR=127.0.0.1:11434` in your `.env`.
@@ -309,31 +316,34 @@ or persist via `HTTP_ADDR=127.0.0.1:11434` in your `.env`.
 
 ## Logs
 
+Logs live under `GW_HOME` (default `~/.gw/logs`), not inside the install
+folder — they survive a fresh extract on upgrade.
+
 | File | Role |
 |------|------|
-| `./logs/otto-gateway.log` | Active structured JSON log (current day). |
-| `./logs/otto-gateway-2026-05-28T00-00-00.log.gz` | Rotated backup — one per day, gzip-compressed. |
-| `./logs/otto-gateway-boot.log` (POSIX) | Pre-logger / crash / `kiro-cli` stderr sidecar — small, rarely consulted. |
-| `./logs/otto-gateway.boot-out.log` + `.boot-err.log` (Windows) | Same role as the POSIX sidecar; Windows requires two files. |
+| `$GW_HOME/logs/gateway.log` | Active structured JSON log (current day). |
+| `$GW_HOME/logs/gateway-2026-05-28T00-00-00.log.gz` | Rotated backup — one per day, gzip-compressed. |
+| `$GW_HOME/logs/gateway-boot.log` (POSIX) | Pre-logger / crash / `kiro-cli` stderr sidecar — small, rarely consulted. |
+| `$GW_HOME/logs/gateway.boot-out.log` + `.boot-err.log` (Windows) | Same role as the POSIX sidecar; Windows requires two files. |
 
 **Rotation contract:** the active log rolls over at `00:00` local time every day. The previous day is gzip-compressed and kept for 7 days; older backups are pruned automatically.
 
 ```bash
-./scripts/otto-gw logs           # last 50 lines of the structured log
-./scripts/otto-gw logs -f        # follow live
-tail -f ./logs/otto-gateway-boot.log    # crash / kiro-cli stderr (POSIX)
+./scripts/gw logs           # last 50 lines of the structured log
+./scripts/gw logs -f        # follow live
+tail -f ~/.gw/logs/gateway-boot.log    # crash / kiro-cli stderr (POSIX)
 ```
 
 ```powershell
-.\scripts\otto-gw.ps1 logs       # follow the structured log
-Get-Content -Wait .\logs\otto-gateway.boot-err.log    # crash sidecar
+.\scripts\gw.ps1 logs       # follow the structured log
+Get-Content -Wait "$env:USERPROFILE\.gw\logs\gateway.boot-err.log"    # crash sidecar
 ```
 
 ---
 
 ## Troubleshooting
 
-### macOS: "otto-gateway cannot be opened because Apple cannot check it for malicious software"
+### macOS: "gateway cannot be opened because Apple cannot check it for malicious software"
 
 The binary is ad-hoc signed but NOT notarized by Apple (we deliberately keep notarization out of v1 distribution — it requires a paid Apple Developer account). The macOS Gatekeeper attaches a `com.apple.quarantine` attribute to anything downloaded via a browser or extracted from a downloaded archive, and refuses to launch quarantined binaries from unidentified developers.
 
@@ -342,16 +352,16 @@ Two ways to resolve:
 **Option A — strip the quarantine attribute (recommended):**
 
 ```bash
-xattr -d com.apple.quarantine bin/otto-gateway
+xattr -d com.apple.quarantine bin/gateway
 ```
 
 This is one-time per install. The wrapper scripts don't need this since shell scripts aren't gated by Gatekeeper.
 
 **Option B — right-click → Open (per binary, one-time):**
 
-In Finder, control-click `bin/otto-gateway` → Open → "Open" in the dialog. macOS records the exception and subsequent launches via the wrapper work normally.
+In Finder, control-click `bin/gateway` → Open → "Open" in the dialog. macOS records the exception and subsequent launches via the wrapper work normally.
 
-### Windows: setup.bat says "Setup hit an error" or otto-gw.ps1 still refuses to run
+### Windows: setup.bat says "Setup hit an error" or gw.ps1 still refuses to run
 
 If your organization sets PowerShell `ExecutionPolicy` at the
 `LocalMachine` or `MachinePolicy` scope via Group Policy, those scopes
@@ -360,20 +370,20 @@ invoke the wrapper with a per-invocation bypass (this works because
 cmd.exe is not subject to PowerShell execution policy):
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\otto-gw.ps1 <command>
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\gw.ps1 <command>
 ```
 
-The `.\scripts\otto-gw.bat` dispatcher already uses this exact form
-internally, so `.\scripts\otto-gw.bat <command>` (and the per-command
+The `.\scripts\gw.bat` dispatcher already uses this exact form
+internally, so `.\scripts\gw.bat <command>` (and the per-command
 `.bat` shortcuts) also work in Group-Policy-locked environments without
 any further intervention.
 
-### "otto-gateway started" but no log output appears
+### "gateway started" but no log output appears
 
 Check the boot sidecar — the gateway probably failed before its structured logger started up:
 
 ```bash
-cat ./logs/otto-gateway-boot.log
+cat ~/.gw/logs/gateway-boot.log
 ```
 
 Common causes: `KIRO_CMD` not set / wrong path, `PII_REDACTION_MODE=hash` without `PII_HASH_KEY`, `PII_REDACTION_MODE=encrypt` (or a `PII_ENTITY_ACTIONS` entry using `:encrypt`) without `PII_ENCRYPT_KEY`, `ENABLED_HOOKS` contains an unknown name, port already in use.
@@ -383,7 +393,7 @@ Common causes: `KIRO_CMD` not set / wrong path, `PII_REDACTION_MODE=hash` withou
 Another process holds the port. Override:
 
 ```bash
-HTTP_ADDR=:18081 ./scripts/otto-gw restart
+HTTP_ADDR=:18081 ./scripts/gw restart
 ```
 
 or find and kill the other process: `lsof -ti :18080 | xargs kill`.
@@ -394,7 +404,7 @@ The gateway boots even when `kiro-cli` isn't available, but chat requests return
 
 ```bash
 export KIRO_CMD=/absolute/path/to/kiro
-./scripts/otto-gw restart
+./scripts/gw restart
 ```
 
 ### Hash-mode boot refusal
@@ -402,7 +412,7 @@ export KIRO_CMD=/absolute/path/to/kiro
 `PII_REDACTION_MODE=hash` requires `PII_HASH_KEY` — by design, the gateway refuses to start in hash mode without a key (the alternative is rainbow-table-trivial unkeyed HMAC). Set the key:
 
 ```bash
-./scripts/otto-gw restart --pii hash --hash-key "$(openssl rand -hex 32)"
+./scripts/gw restart --pii hash --hash-key "$(openssl rand -hex 32)"
 ```
 
 ### Encrypt-mode boot refusal
@@ -410,17 +420,17 @@ export KIRO_CMD=/absolute/path/to/kiro
 `PII_REDACTION_MODE=encrypt` (or any `PII_ENTITY_ACTIONS` entry using `:encrypt`) requires `PII_ENCRYPT_KEY` — the gateway refuses to start in encrypt mode without one, naming the env var in the fatal log. Set the key:
 
 ```bash
-./scripts/otto-gw restart --pii encrypt --encrypt-key "$(openssl rand -hex 32)"
+./scripts/gw restart --pii encrypt --encrypt-key "$(openssl rand -hex 32)"
 ```
 
 Any non-empty string is accepted (the gateway derives a 32-byte AES-256-GCM key via SHA-256 at boot), but a high-entropy random string is the operator-grade default.
 
 ### Configuration not taking effect
 
-The gateway reads env vars once at startup. After any config change, you must `./scripts/otto-gw restart` (not just `start`). The `env` subcommand shows what would actually be passed:
+The gateway reads env vars once at startup. After any config change, you must `./scripts/gw restart` (not just `start`). The `env` subcommand shows what would actually be passed:
 
 ```bash
-./scripts/otto-gw env --show-secrets
+./scripts/gw env --show-secrets
 ```
 
 ---
@@ -502,8 +512,8 @@ if ($want -eq $got) { "OK" } else { "MISMATCH" }
   - **Ollama**: `POST /api/chat`, `POST /api/generate` (and standard companion endpoints)
   - **OpenAI**: `POST /v1/chat/completions`, `POST /v1/embeddings`
   - **Anthropic**: `POST /v1/messages` (requires `anthropic-version` header)
-- Binary version: `./bin/otto-gateway --version`
-- Binary help: `./bin/otto-gateway --help`
+- Binary version: `./bin/gateway --version`
+- Binary help: `./bin/gateway --help`
 
 ---
 
