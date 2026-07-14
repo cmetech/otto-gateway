@@ -221,10 +221,10 @@ extract_default_value() {
 # load .env from a sensible location, so the sentinel-skip
 # is the safer of two bad options.
 config_error_sentinel_path() {
-    if [[ -z "${HOME:-}" ]]; then
+    if [[ -z "${GW_HOME:-}" ]]; then
         return 1
     fi
-    printf '%s/.gw/.config-error' "$HOME"
+    printf '%s/.config-error' "$GW_HOME"
 }
 
 # clear_config_error_sentinel removes the sentinel file. Called after
@@ -276,7 +276,7 @@ write_config_error_sentinel() {
 #
 # REL-TRAY-08 (D-18-09): tracks malformed lines (no '=' after export
 # strip) and writes the first failure to the sentinel at
-# $HOME/.gw/.config-error so the tray surfaces it as StateError.
+# ${GW_HOME}/.config-error so the tray surfaces it as StateError.
 # On a clean parse the sentinel is removed — failures should not stick
 # across edits.
 load_env_file() {
