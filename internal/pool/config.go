@@ -92,6 +92,21 @@ func (acpClientFactory) Spawn(_ context.Context, cfg acp.Config) (PoolClient, er
 	return c, nil
 }
 
+// MetricsRecorder receives kiro per-turn usage events from each slot's acp
+// client (kiro usage-metrics parity build). The pool forwards the acp
+// OnTurnMeter/OnContextPct/OnMCPInit hooks to it; *metrics.Metrics satisfies
+// this structurally. Defined here (rather than importing internal/metrics) so
+// the pool→metrics dependency edge stays out of the import graph, matching the
+// existing pull-collector boundary. A nil recorder leaves the hooks unset.
+//
+// The interface is intentionally duplicated in internal/session (rather than
+// shared) so the two packages remain disjoint — same rationale as PoolClient.
+type MetricsRecorder interface {
+	RecordTurnMeter(credits float64, turnMs int64)
+	RecordContextPct(pct float64)
+	RecordMCPInit(server string, ok bool)
+}
+
 // Config bundles all pool dependencies. Size defaults to 1 in Phase 2
 // (D-07). KiroCmd / KiroArgs / KiroCWD / PingInterval are forwarded
 // verbatim to acp.Config for each slot's subprocess.
@@ -121,6 +136,11 @@ type Config struct {
 	// Tests inject a fake factory to drive pool behaviour without
 	// spawning real kiro-cli (Codex M-2).
 	Factory ClientFactory
+	// Metrics receives kiro per-turn usage events from each slot's acp
+	// client (kiro usage-metrics parity). Optional; nil leaves the acp
+	// OnTurnMeter/OnContextPct/OnMCPInit hooks unset. Wired in
+	// cmd/otto-gateway/main.go to the shared *metrics.Metrics recorder.
+	Metrics MetricsRecorder
 }
 
 // applyDefaults fills in zero-value Config fields. Size floors to 1
