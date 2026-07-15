@@ -109,6 +109,18 @@ func (f *fakeClient) Done() <-chan struct{} {
 	return f.doneCh
 }
 
+// closeDoneForTest closes the Done channel (creating it first if no watcher has
+// called Done() yet), modeling a real acp.Client whose Close fires Done. Callers
+// must ensure it runs at most once (e.g. via sync.Once) to avoid a double close.
+func (f *fakeClient) closeDoneForTest() {
+	f.doneMu.Lock()
+	defer f.doneMu.Unlock()
+	if f.doneCh == nil {
+		f.doneCh = make(chan struct{})
+	}
+	close(f.doneCh)
+}
+
 func (f *fakeClient) newSessionCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()

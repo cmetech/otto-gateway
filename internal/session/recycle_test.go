@@ -3,7 +3,11 @@
 package session_test
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -11,6 +15,25 @@ import (
 	"otto-gateway/internal/session"
 	"otto-gateway/internal/testutil"
 )
+
+// syncBuf is a goroutine-safe slog destination — watcher goroutines write to it
+// concurrently while the test runs.
+type syncBuf struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (s *syncBuf) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+func (s *syncBuf) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
+}
 
 // recycleRegistry builds a registry scripted with the given clients and a
 // recycle threshold. Reuses the fakeClient/fakeClientFactory from registry_test.go.
@@ -191,6 +214,54 @@ func TestRegistry_Get_RecycleDisabled(t *testing.T) {
 	}
 	if r.Recycled() != 0 {
 		t.Errorf("Recycled = %d; want 0 (disabled)", r.Recycled())
+	}
+}
+
+// TestRegistry_Recycle_NoFalseCrashWarning: a planned recycle closes the old
+// client (which, like a real acp.Client, closes Done). The per-entry watcher
+// then wakes, correctly finds the entry already removed (cur != e), and must
+// stay SILENT — not emit "subprocess exited unexpectedly", which is reserved for
+// a genuine unexpected exit of a still-mapped entry.
+func TestRegistry_Recycle_NoFalseCrashWarning(t *testing.T) {
+	logs := &syncBuf{}
+	logger := slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	// fc1's Close closes its Done channel exactly once, modeling real
+	// acp.Client teardown (the review noted the plain fake hides this).
+	fc1 := newFake("kiro-1")
+	var closeOnce sync.Once
+	fc1.closeFn = func() error {
+		closeOnce.Do(func() { fc1.closeDoneForTest() })
+		return nil
+	}
+	fc2 := newFake("kiro-2")
+
+	ff := &fakeClientFactory{clients: []session.PoolClient{fc1, fc2}}
+	r := session.New(session.Config{Logger: logger, Factory: ff, RecyclePct: 80})
+
+	ctx := context.Background()
+	e1, err := r.Get(ctx, "sid", "/tmp")
+	if err != nil {
+		t.Fatalf("Get #1: %v", err)
+	}
+	e1.SetCtxPctForTest(85)
+
+	if _, err := r.Get(ctx, "sid", "/tmp"); err != nil {
+		t.Fatalf("Get #2 (recycle): %v", err)
+	}
+
+	// Close drains all watcher goroutines (wg.Wait), so fc1's watcher has
+	// definitely processed its Done by the time this returns.
+	if err := r.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	out := logs.String()
+	if !strings.Contains(out, "session.recycled") {
+		t.Errorf("expected a session.recycled log, got:\n%s", out)
+	}
+	if strings.Contains(out, "subprocess exited unexpectedly") {
+		t.Errorf("planned recycle must NOT log 'subprocess exited unexpectedly':\n%s", out)
 	}
 }
 

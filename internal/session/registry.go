@@ -474,21 +474,27 @@ func (r *Registry) watchEntry(sid string, e *Entry) {
 		return
 	}
 	// Subprocess exited. Take r.mu and, only if the map still points to
-	// our entry, delete + flip Dead. Concurrent Delete / reap may have
-	// already cleared it — that's fine, the guard absorbs the race.
+	// our entry, delete + flip Dead. Concurrent Delete / reap / recycle may
+	// have already cleared it — that's fine, the guard absorbs the race.
 	r.mu.Lock()
-	if cur, ok := r.entries[sid]; ok && cur == e {
+	cur, ok := r.entries[sid]
+	unexpected := ok && cur == e
+	if unexpected {
 		delete(r.entries, sid)
 		e.Dead = true
 	}
 	r.mu.Unlock()
 	// Best-effort client close — Done() typically fires because Close
-	// already ran (Delete, reaper, registry shutdown), so this is a
+	// already ran (Delete, reaper, recycle, registry shutdown), so this is a
 	// no-op via PoolClient.Close's idempotency. We still call it to
 	// cover the readLoop-EOF path (subprocess crash) where the client
 	// fired Done() via defer c.cancel() but Close was never invoked.
 	_ = e.Client.Close()
-	if r.cfg.Logger != nil {
+	// Only warn on a GENUINE unexpected exit: the entry was still the live
+	// mapped one when Done fired. A planned teardown (recycle/Delete/reaper/
+	// Close) has already removed it from the map, so cur != e and we stay
+	// silent — otherwise every proactive recycle looks like a crash in the logs.
+	if unexpected && r.cfg.Logger != nil {
 		r.cfg.Logger.Warn("session: subprocess exited unexpectedly",
 			"sid", sid,
 			"idle_for", time.Since(e.LastUsed()))
