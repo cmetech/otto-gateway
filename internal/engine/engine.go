@@ -26,6 +26,7 @@ import (
 	"sync"
 	"time"
 
+	"otto-gateway/internal/acp"
 	"otto-gateway/internal/canonical"
 )
 
@@ -253,6 +254,11 @@ func (e *Engine) Run(ctx context.Context, req *canonical.ChatRequest) (*Run, err
 			return nil, fmt.Errorf("engine: set model: %w", err)
 		}
 	}
+
+	// Track 3a: when the caller supplied tools, deny kiro's built-in tools this
+	// turn so the model emits a {"tool_call":…} block instead of doing the task
+	// itself (the acp permission handler reads this off the ctx).
+	ctx = acp.WithDenyBuiltinTools(ctx, len(req.Tools) > 0)
 
 	// (6) Prompt.
 	stream, err := e.cfg.ACP.Prompt(ctx, sid, blocks)

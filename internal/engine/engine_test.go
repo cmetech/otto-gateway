@@ -25,6 +25,7 @@ import (
 	"sync"
 	"testing"
 
+	"otto-gateway/internal/acp"
 	"otto-gateway/internal/canonical"
 	"otto-gateway/internal/testutil"
 )
@@ -44,10 +45,11 @@ type fakeACP struct {
 	resultErr     error
 
 	// recorded calls
-	newSessionCalls []string // cwds
-	setModelCalls   []string // model ids
-	promptCalls     []string // session ids
-	cancelCalls     []string // session ids
+	newSessionCalls []string        // cwds
+	setModelCalls   []string        // model ids
+	promptCalls     []string        // session ids
+	cancelCalls     []string        // session ids
+	lastPromptCtx   context.Context // captured from Prompt call
 }
 
 func (f *fakeACP) NewSession(_ context.Context, cwd string) (string, error) {
@@ -71,9 +73,10 @@ func (f *fakeACP) SetModel(_ context.Context, _, modelID string) error {
 	return f.setModelErr
 }
 
-func (f *fakeACP) Prompt(_ context.Context, sessionID string, _ []canonical.Block) (Stream, error) {
+func (f *fakeACP) Prompt(ctx context.Context, sessionID string, _ []canonical.Block) (Stream, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.lastPromptCtx = ctx
 	f.promptCalls = append(f.promptCalls, sessionID)
 	if f.promptErr != nil {
 		return nil, f.promptErr
@@ -590,5 +593,66 @@ func TestEngine_PostHook_RunsOnPreHookShortCircuit(t *testing.T) {
 	}
 	if len(ack.newSessionCalls) != 0 {
 		t.Errorf("ACP was touched despite short-circuit; got %v", ack.newSessionCalls)
+	}
+}
+
+// TestRun_SetsDenyBuiltinToolsWhenToolsPresent verifies that when the caller
+// supplies tools in the request, the engine sets the per-turn deny-builtin-tools
+// flag on the context passed to ACP.Prompt (Track 3a).
+func TestRun_SetsDenyBuiltinToolsWhenToolsPresent(t *testing.T) {
+	ack := &fakeACP{
+		newSessionID: "sid-tools-test",
+		chunksToEmit: []canonical.Chunk{
+			{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "response"}},
+		},
+	}
+	e := newTestEngine(t, ack)
+
+	// Test 1: with tools — deny flag should be true
+	reqWithTools := &canonical.ChatRequest{
+		Model: "test-model",
+		Messages: []canonical.Message{
+			{Role: canonical.RoleUser, Content: []canonical.ContentPart{
+				{Kind: canonical.ContentKindText, Text: "hi"},
+			}},
+		},
+		Tools: []canonical.ToolSpec{
+			{Name: "tool1", Description: "a tool"},
+		},
+	}
+	_, err := e.Run(context.Background(), reqWithTools)
+	if err != nil {
+		t.Fatalf("Run with tools: %v", err)
+	}
+	if ack.lastPromptCtx == nil {
+		t.Fatal("Prompt was not called or context was not captured")
+	}
+	if !acp.DenyBuiltinTools(ack.lastPromptCtx) {
+		t.Error("DenyBuiltinTools should be true when req.Tools is non-empty")
+	}
+
+	// Reset for test 2
+	ack.lastPromptCtx = nil
+	ack.newSessionID = "sid-no-tools"
+
+	// Test 2: without tools — deny flag should be false
+	reqWithoutTools := &canonical.ChatRequest{
+		Model: "test-model",
+		Messages: []canonical.Message{
+			{Role: canonical.RoleUser, Content: []canonical.ContentPart{
+				{Kind: canonical.ContentKindText, Text: "hi"},
+			}},
+		},
+		Tools: nil,
+	}
+	_, err = e.Run(context.Background(), reqWithoutTools)
+	if err != nil {
+		t.Fatalf("Run without tools: %v", err)
+	}
+	if ack.lastPromptCtx == nil {
+		t.Fatal("Prompt was not called or context was not captured")
+	}
+	if acp.DenyBuiltinTools(ack.lastPromptCtx) {
+		t.Error("DenyBuiltinTools should be false when req.Tools is empty")
 	}
 }
