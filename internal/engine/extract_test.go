@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRepairControlChars(t *testing.T) {
@@ -126,6 +127,52 @@ func TestExtractToolCallObjects(t *testing.T) {
 			},
 		},
 		{
+			// Defect 2 (nested sibling): a closed nested object ({"x":1})
+			// precedes the "tool_call" key inside the SAME enclosing object.
+			// The scanner must associate the key with its TRUE enclosing
+			// object, not the sibling that closed before it.
+			name:    "tool_call after nested sibling object",
+			input:   `prefix {"meta":{"x":1},"tool_call":{"name":"get_weather","arguments":{"city":"Paris"}}} suffix`,
+			wantLen: 1,
+			validate: func(t *testing.T, objs []map[string]any) {
+				if len(objs) != 1 {
+					t.Fatalf("expected 1 object, got %d", len(objs))
+				}
+				tc, ok := objs[0]["tool_call"].(map[string]any)
+				if !ok {
+					t.Fatal("tool_call is not a map")
+				}
+				if name, _ := tc["name"].(string); name != "get_weather" {
+					t.Errorf("tool_call.name = %q, want get_weather", name)
+				}
+			},
+		},
+		{
+			// Wrapper nested one level deep: "tool_call" is a DIRECT key of
+			// the inner object. Intended behavior (matching the JS reference:
+			// extract the object of which tool_call is a direct key) is to
+			// return the minimal enclosing object, so the extracted map has
+			// the tool_call key and NOT the "outer" key.
+			name:    "tool_call nested one level deep",
+			input:   `{"outer":{"tool_call":{"name":"get_weather","arguments":{}}}}`,
+			wantLen: 1,
+			validate: func(t *testing.T, objs []map[string]any) {
+				if len(objs) != 1 {
+					t.Fatalf("expected 1 object, got %d", len(objs))
+				}
+				if _, ok := objs[0]["outer"]; ok {
+					t.Error("extracted object has outer key; expected minimal enclosing object")
+				}
+				tc, ok := objs[0]["tool_call"].(map[string]any)
+				if !ok {
+					t.Fatal("tool_call is not a map")
+				}
+				if name, _ := tc["name"].(string); name != "get_weather" {
+					t.Errorf("tool_call.name = %q, want get_weather", name)
+				}
+			},
+		},
+		{
 			name:    "truncated tool_call (missing closing brace)",
 			input:   `{"tool_call":{"name":"x","arguments":{"city":"Paris"}}`,
 			wantLen: 1,
@@ -166,6 +213,35 @@ func TestExtractToolCallObjects(t *testing.T) {
 					t.Errorf("content not properly parsed: %q", content)
 				}
 			},
+		},
+		{
+			// Value-vs-key discrimination (nextNonSpaceIsColon): the
+			// "note":"tool_call" VALUE equals tool_call but is NOT a key, so
+			// it must not create a spurious/duplicate mark. Only the real
+			// "tool_call": KEY counts → exactly 1 object, name get_weather.
+			name:    "string value equal to tool_call is not the key",
+			input:   `{"note":"tool_call","tool_call":{"name":"get_weather","arguments":{"city":"Paris"}}}`,
+			wantLen: 1,
+			validate: func(t *testing.T, objs []map[string]any) {
+				if len(objs) != 1 {
+					t.Fatalf("expected 1 object, got %d", len(objs))
+				}
+				tc, ok := objs[0]["tool_call"].(map[string]any)
+				if !ok {
+					t.Fatal("tool_call is not a map")
+				}
+				if name, _ := tc["name"].(string); name != "get_weather" {
+					t.Errorf("tool_call.name = %q, want get_weather", name)
+				}
+			},
+		},
+		{
+			// A tool_call substring inside a string VALUE, with no real
+			// "tool_call": key anywhere → 0 objects.
+			name:     "tool_call substring inside a value is not a key",
+			input:    `{"x":"see the tool_call docs"}`,
+			wantLen:  0,
+			validate: nil,
 		},
 		{
 			name:     "no tool_call in text",
@@ -258,4 +334,42 @@ func TestExtractToolCallObjects_KeyNotInObject(t *testing.T) {
 		t.Errorf("expected 0 objects for bare text, got %d", len(objs))
 	}
 	// Test passes if it completes without hanging.
+}
+
+// TestExtractToolCallObjects_AdversarialSize_Bounded
+// Defect 1 (DoS): the pre-fix backward-LastIndex + per-key rescan scanner
+// was O(n^2) on repeated "tool_call" keys. Assistant text from kiro is
+// unbounded (MaxBytesReader caps the request body, not kiro's output), so a
+// ~5 MB input of 400k repeated `"tool_call" ` tokens forced hundreds of
+// thousands of full-length rescans + repair allocations. The single forward
+// pass plus the input-size budget must keep this bounded: it must RETURN
+// quickly and yield 0 valid wrappers (none is a real {"tool_call":...}).
+func TestExtractToolCallObjects_AdversarialSize_Bounded(t *testing.T) {
+	input := "{" + strings.Repeat(`"tool_call" `, 400_000) // ~5 MB
+	start := time.Now()
+	objs := extractToolCallObjects(input)
+	elapsed := time.Since(start)
+	if len(objs) != 0 {
+		t.Errorf("expected 0 objects for adversarial input, got %d", len(objs))
+	}
+	// Generous bound; the O(n) forward pass over a 1 MiB budget completes in
+	// low-single-digit milliseconds. 5s would only trip on quadratic blowup.
+	if elapsed > 5*time.Second {
+		t.Fatalf("adversarial input took %v — expected bounded/near-instant", elapsed)
+	}
+}
+
+// TestExtractToolCallObjects_DeeplyNested_Bounded
+// Exercises the nesting budget: a runaway stream of `{` must not push an
+// unbounded stack or hang. The scanner caps open-object depth and returns.
+func TestExtractToolCallObjects_DeeplyNested_Bounded(t *testing.T) {
+	input := strings.Repeat("{", 500_000)
+	start := time.Now()
+	objs := extractToolCallObjects(input) // must not panic/OOM/hang
+	if len(objs) != 0 {
+		t.Errorf("expected 0 objects for deeply-nested braces, got %d", len(objs))
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("deeply-nested input took %v — expected bounded", elapsed)
+	}
 }

@@ -457,20 +457,60 @@ func repairControlChars(s string) string {
 	return out.String()
 }
 
-// extractToolCallObjects locates all {"tool_call":...} wrappers in text,
-// using balanced-brace scanning to extract complete JSON objects even
-// when truncated. For each occurrence of the "tool_call" key:
-//  1. Find the enclosing { via strings.LastIndex.
-//  2. Scan forward with inStr/esc/depth tracking to find the matching }.
-//  3. Try to parse slice → if fail, try repairControlChars(slice).
-//  4. If the scan runs off-end with 1 <= depth <= 8 and not inStr,
-//     truncation-repair: close with }*depth and retry parse.
+// Budgets for extractToolCallObjects. The single forward pass is already
+// O(n); these are belt-and-suspenders caps that keep work bounded on
+// pathological, untrusted, model-generated input (kiro's output is NOT
+// capped by http.MaxBytesReader — that only bounds the request body).
+const (
+	// maxScanBytes bounds total scan work regardless of input length. A
+	// legitimate kiro {"tool_call":…} wrapper is at most a few hundred
+	// bytes; anything past 1 MiB is not a wrapper. We scan only the first
+	// 1 MiB so the pass is O(min(len, 1 MiB)) — never O(n) on a 5 MB blob,
+	// and never quadratic.
+	maxScanBytes = 1 << 20 // 1 MiB
+	// maxToolCallCandidates caps how many objects we extract, so an input
+	// packed with thousands of tiny wrappers cannot blow up output size or
+	// allocation count. 32 is far beyond any real multi-tool response.
+	maxToolCallCandidates = 32
+	// maxNestDepth bounds the open-object stack. Real wrappers nest only a
+	// handful of levels; a runaway stream of '{' is refused past this so
+	// the stack (and work) stay bounded.
+	maxNestDepth = 64
+	// maxRepairSlice caps the size of a truncation-repaired slice we build
+	// and parse, so the repair path can never allocate/parse a multi-MB
+	// blob even if a huge object was left unclosed at EOF.
+	maxRepairSlice = 64 << 10 // 64 KiB
+)
+
+// extractToolCallObjects locates {"tool_call":…} wrapper objects embedded in
+// prose and returns them as parsed maps. It is the Strategy 2 fallback of
+// ExtractToolCallWrappers (whole-content/array parsing is Strategy 1).
 //
-// Returns a slice of parsed objects (map[string]any) or nil if none found.
-// Only objects that unmarshal into map[string]any are included; arrays
-// and scalars are skipped (handled at wrapper layer by the caller).
+// Algorithm — a SINGLE forward pass, O(min(len(text), maxScanBytes)):
+//   - Maintain a stack of open-object start indices (parallel `starts` /
+//     `marked` slices) with correct string/escape state, so braces and
+//     quotes inside string VALUES never change depth.
+//   - On '{' (outside a string) push the current index; on '}' pop — the
+//     popped [start..here] is a complete object.
+//   - When the literal "tool_call" appears as a KEY (a string whose content
+//     is exactly tool_call, immediately followed by ':') of the currently
+//     open object, mark that enclosing object's stack frame. This binds the
+//     key to its TRUE enclosing object — fixing the nested-sibling defect
+//     where a prior closed sibling ({"x":1}) misled a backward LastIndex.
+//   - When a MARKED object closes, slice text[start:end+1], parse (raw →
+//     then repairControlChars fallback), and append if it is a JSON object.
+//     For a wrapper nested one level deep, "tool_call" is a direct key of the
+//     inner object, so we extract the minimal enclosing object (JS-reference
+//     intent) — not the outer wrapper.
+//   - Truncation repair: if EOF leaves a marked object unclosed with
+//     1 <= depth <= 8 and not inside a string, close it with '}'×depth
+//     (trimmed to the last meaningful byte) and retry parse.
+//
+// Returns parsed objects (map[string]any) or nil if none found.
 func extractToolCallObjects(text string) []map[string]any {
 	var out []map[string]any
+
+	const toolCallKey = "tool_call" // key NAME (quotes handled by scan state)
 
 	// tryParse attempts to unmarshal s into map[string]any.
 	tryParse := func(s string) (map[string]any, bool) {
@@ -479,97 +519,151 @@ func extractToolCallObjects(text string) []map[string]any {
 		return m, err == nil
 	}
 
-	idx := 0
-	toolCallKey := `"tool_call"`
-	keyLen := len(toolCallKey) // 11 bytes
-	b := []byte(text)          // Hoist byte allocation outside the loop
+	scanLen := len(text)
+	if scanLen > maxScanBytes {
+		scanLen = maxScanBytes // input-size budget (defect 1)
+	}
+	// Copy only the scanned prefix — never the whole (possibly multi-MB)
+	// input — so the byte copy is bounded by the budget too, not just the
+	// scan loop. All indexing below stays within [0, scanLen).
+	b := []byte(text[:scanLen])
 
-	for idx < len(text) {
-		relIdx := strings.Index(text[idx:], toolCallKey)
-		if relIdx == -1 {
-			break
-		}
-		idx += relIdx // Absolute position of "tool_call" in text
+	// Parallel stack: starts[i] is the byte index of an open object's '{';
+	// marked[i] is true once "tool_call" is seen as a direct key of it.
+	var starts []int
+	var marked []bool
 
-		// Find the opening { before this position.
-		start := strings.LastIndex(text[:idx], "{")
-		if start == -1 {
-			idx += keyLen
+	inStr := false
+	esc := false
+	strStart := -1       // index just past the opening quote of current string
+	lastMeaningful := -1 // last structurally meaningful byte (for repair)
+
+	for j := 0; j < scanLen; j++ {
+		ch := b[j]
+		if inStr {
+			if esc {
+				esc = false
+				continue
+			}
+			switch ch {
+			case '\\':
+				esc = true
+			case '"':
+				inStr = false
+				lastMeaningful = j
+				// "tool_call" is a KEY iff its content matches exactly and the
+				// next non-space byte is ':'. Only mark when inside an object.
+				if len(marked) > 0 &&
+					bytesEqualString(b[strStart:j], toolCallKey) &&
+					nextNonSpaceIsColon(b, j+1, scanLen) {
+					marked[len(marked)-1] = true
+				}
+			}
 			continue
 		}
 
-		// String-aware balanced-brace scan from start to find matching }.
-		depth := 0
-		inStr := false
-		esc := false
-		end := -1
-		lastMeaningful := start
-
-		for j := start; j < len(text); j++ {
-			ch := b[j]
-			if inStr {
-				if esc {
-					esc = false
-				} else if ch == '\\' {
-					esc = true
-				} else if ch == '"' {
-					inStr = false
-					lastMeaningful = j
-				}
-				continue
+		switch ch {
+		case '"':
+			inStr = true
+			strStart = j + 1
+		case '{':
+			if len(starts) >= maxNestDepth {
+				// Nesting budget exceeded — not a real wrapper. Stop scanning;
+				// truncation repair below is refused (depth > 8) so we return
+				// whatever complete objects we already collected.
+				goto done
 			}
-
-			if ch == '"' {
-				inStr = true
-			} else if ch == '{' {
-				depth++
-			} else if ch == '}' {
-				depth--
+			starts = append(starts, j)
+			marked = append(marked, false)
+		case '}':
+			if n := len(starts); n > 0 {
+				start := starts[n-1]
+				isMarked := marked[n-1]
+				starts = starts[:n-1]
+				marked = marked[:n-1]
 				lastMeaningful = j
-				if depth == 0 {
-					end = j
-					break
+				if isMarked {
+					slice := text[start : j+1]
+					if parsed, ok := tryParse(slice); ok {
+						out = append(out, parsed)
+					} else if parsed, ok := tryParse(repairControlChars(slice)); ok {
+						out = append(out, parsed)
+					}
+					if len(out) >= maxToolCallCandidates {
+						return out // candidate budget reached
+					}
 				}
-			} else if ch == ']' || isWordOrDot(ch) {
+			}
+		case ']':
+			lastMeaningful = j
+		default:
+			if isWordOrDot(ch) {
 				lastMeaningful = j
 			}
-		}
-
-		// If we found a complete, balanced object, try to parse it.
-		// CRITICAL: Only accept if end >= idx (the closing brace must come
-		// at or after the "tool_call" key position). If end < idx, the found
-		// { belonged to an unrelated earlier object that closed before the
-		// key, so we skip it and advance idx to avoid infinite loop.
-		if end > start && end >= idx {
-			slice := text[start : end+1]
-			if parsed, ok := tryParse(slice); ok {
-				out = append(out, parsed)
-			} else if parsed, ok := tryParse(repairControlChars(slice)); ok {
-				out = append(out, parsed)
-			}
-			idx = end + 1
-		} else if end > start {
-			// end < idx: the closing brace is before the key, false match
-			idx += keyLen
-		} else if depth >= 1 && depth <= 8 && !inStr {
-			// Truncation-repair: close with missing braces and retry.
-			slice := text[start : lastMeaningful+1]
-			repaired := slice + strings.Repeat("}", depth)
-			if parsed, ok := tryParse(repaired); ok {
-				out = append(out, parsed)
-			} else if parsed, ok := tryParse(repairControlChars(repaired)); ok {
-				out = append(out, parsed)
-			}
-			idx += keyLen
-		} else {
-			idx += keyLen
 		}
 	}
 
+	// Truncation repair (defect-1-safe): close the innermost still-open
+	// object that contains a "tool_call" key, if its unclosed depth is
+	// 1..8, we are not mid-string, and the repaired slice stays within the
+	// per-candidate size cap.
+	if !inStr && len(starts) > 0 {
+		for i := len(marked) - 1; i >= 0; i-- {
+			if !marked[i] {
+				continue
+			}
+			depth := len(starts) - i
+			if depth >= 1 && depth <= 8 && lastMeaningful >= starts[i] {
+				end := lastMeaningful + 1
+				if end-starts[i] <= maxRepairSlice {
+					repaired := text[starts[i]:end] + strings.Repeat("}", depth)
+					if parsed, ok := tryParse(repaired); ok {
+						out = append(out, parsed)
+					} else if parsed, ok := tryParse(repairControlChars(repaired)); ok {
+						out = append(out, parsed)
+					}
+				}
+			}
+			break // only the innermost marked object is repaired
+		}
+	}
+
+done:
 	if len(out) == 0 {
 		return nil
 	}
 	return out
+}
+
+// bytesEqualString reports whether b equals s byte-for-byte, without
+// allocating (used in the hot scan loop to detect the "tool_call" key).
+func bytesEqualString(b []byte, s string) bool {
+	if len(b) != len(s) {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if b[i] != s[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// nextNonSpaceIsColon reports whether the first non-JSON-whitespace byte in
+// b[from:limit] is ':'. Used to distinguish a "tool_call" KEY from a string
+// VALUE that merely happens to equal tool_call.
+func nextNonSpaceIsColon(b []byte, from, limit int) bool {
+	for k := from; k < limit; k++ {
+		switch b[k] {
+		case ' ', '\t', '\n', '\r':
+			continue
+		case ':':
+			return true
+		default:
+			return false
+		}
+	}
+	return false
 }
 
 // isWordOrDot reports whether ch is a word character (a-z, A-Z, 0-9, _)
