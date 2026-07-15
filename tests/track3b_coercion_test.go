@@ -30,6 +30,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -234,6 +235,328 @@ func track3bAppendSection(path, body string) error {
 	var out bytes.Buffer
 	out.Write(existing)
 	out.WriteString("\n## Track 3b outcome (live, 2026-07-15)\n\n")
+	out.WriteString(body)
+	return os.WriteFile(path, out.Bytes(), 0o644)
+}
+
+// --- streaming (SSE) Anthropic probe ----------------------------------------
+//
+// TestTrack3bCoercion above only drives NON-streaming probes (stream:false /
+// omitted). Anthropic's streaming branch (internal/adapter/anthropic/sse.go)
+// is a SEPARATE code path from the non-streaming render path — it has its
+// own Track 3b wrapper-buffering state machine (sseEmitter.buffering /
+// bufferDecided / finalizeBufferedText) that decides, per-chunk, whether to
+// withhold `{"tool_call":…}` wrapper text from the wire and replay it as a
+// native tool_use content-block trio at end-of-stream. That SSE buffering
+// path had ZERO live end-to-end coverage before this test — an adversarial
+// review flagged it as the highest-risk untested code, since it is the one
+// most likely to reorder or drop frames under real (non-deterministic)
+// kiro timing. TestTrack3bAnthropicStreaming closes that gap: it drives the
+// SAME get_weather round-trip as track3aProbes()'s anthropic probe, but with
+// stream:true, and asserts the CLIENT-VISIBLE SSE frame sequence (not just
+// the final JSON body) carries a coerced tool_use block.
+
+// track3bSSEFrame is one parsed `event: <name>\ndata: <json>\n\n` frame from
+// an Anthropic SSE response body.
+type track3bSSEFrame struct {
+	Event string
+	Data  string
+}
+
+// track3bParseSSE splits a complete (already fully-read) SSE response body
+// into frames. Frames are separated by a blank line; within a frame, an
+// `event:` line sets the event name and one or more `data:` lines carry the
+// payload (joined with "\n" and each stripped of at most one leading space,
+// per the SSE field-parsing rule) — Anthropic emits a single `data:` line
+// per frame in practice, but this does not assume that. CRLF line endings
+// are normalized to LF first defensively; the gateway emits LF (writeEvent
+// in internal/adapter/anthropic/sse.go uses "\n"), but a test parser should
+// not silently misparse if that ever changes.
+func track3bParseSSE(body string) []track3bSSEFrame {
+	body = strings.ReplaceAll(body, "\r\n", "\n")
+	var frames []track3bSSEFrame
+	for _, block := range strings.Split(body, "\n\n") {
+		block = strings.TrimSpace(block)
+		if block == "" {
+			continue
+		}
+		var f track3bSSEFrame
+		var dataLines []string
+		for _, line := range strings.Split(block, "\n") {
+			switch {
+			case strings.HasPrefix(line, "event:"):
+				f.Event = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+			case strings.HasPrefix(line, "data:"):
+				dataLines = append(dataLines, strings.TrimPrefix(strings.TrimPrefix(line, "data:"), " "))
+			}
+		}
+		if len(dataLines) > 0 {
+			f.Data = strings.Join(dataLines, "\n")
+		}
+		if f.Event != "" || f.Data != "" {
+			frames = append(frames, f)
+		}
+	}
+	return frames
+}
+
+// track3bSSEContentBlockStart mirrors the wire shape of a
+// `content_block_start` frame's payload, narrowed to the fields this test
+// asserts on (content_block.type, content_block.name). Defined locally (not
+// imported from the adapter package) for the same reason
+// track3bAnthropicResp is — this test verifies the WIRE shape, independent
+// of the adapter's internal types.
+type track3bSSEContentBlockStart struct {
+	Index        int `json:"index"`
+	ContentBlock struct {
+		Type string `json:"type"`
+		Name string `json:"name"`
+	} `json:"content_block"`
+}
+
+// track3bSSEContentBlockDelta mirrors `content_block_delta`. Delta.Text and
+// Delta.PartialJSON are both plain strings on the same struct (rather than
+// an `any` field decoded twice) because the two delta kinds
+// (text_delta/input_json_delta) never share a JSON key — decoding into both
+// fields at once is safe and avoids a second unmarshal.
+type track3bSSEContentBlockDelta struct {
+	Index int `json:"index"`
+	Delta struct {
+		Type        string `json:"type"`
+		Text        string `json:"text"`
+		PartialJSON string `json:"partial_json"`
+	} `json:"delta"`
+}
+
+// track3bSSEContentBlockStop mirrors `content_block_stop`.
+type track3bSSEContentBlockStop struct {
+	Index int `json:"index"`
+}
+
+// track3bSSEMessageDelta mirrors `message_delta`, narrowed to
+// delta.stop_reason.
+type track3bSSEMessageDelta struct {
+	Delta struct {
+		StopReason string `json:"stop_reason"`
+	} `json:"delta"`
+}
+
+// track3bDriveSSE POSTs probe p and returns the full response body (read to
+// completion — the gateway closes the stream at end, so no incremental
+// reading is needed to observe the whole SSE sequence) plus the response's
+// Content-Type header. Distinct from track3aDrive (which discards
+// resp.Header) because this probe needs to assert Content-Type is
+// text/event-stream.
+func track3bDriveSSE(t *testing.T, c *http.Client, p track3aProbe) (body, contentType string) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, track3aGWURL()+p.path, strings.NewReader(p.body))
+	if err != nil {
+		t.Fatalf("[%s] build req: %v", p.name, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	for k, v := range p.headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := c.Do(req)
+	if err != nil {
+		t.Fatalf("[%s] POST %s: %v", p.name, p.path, err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	return string(b), resp.Header.Get("Content-Type")
+}
+
+// TestTrack3bAnthropicStreaming drives the SAME get_weather round-trip
+// track3aProbes()'s anthropic probe uses, but with stream:true, and asserts
+// the coerced tool_use SSE sequence: a content_block_start whose
+// content_block.type=="tool_use" and content_block.name=="get_weather", at
+// least one content_block_delta of type input_json_delta for that block
+// whose accumulated partial_json parses to an object carrying the key
+// "city", a matching content_block_stop, and a message_delta whose
+// delta.stop_reason=="tool_use" — plus a negative assertion that no
+// text_delta ever carried the raw `{"tool_call"` wrapper JSON (i.e. the
+// wrapper was coerced, not streamed to the client as prose). Every
+// assertion uses t.Errorf (not t.Fatal) so a partial miss still reports
+// what WAS received, and the outcome is appended to the Track 3b findings
+// doc as its own "Track 3b streaming outcome" section — kept separate from
+// TestTrack3bCoercion's non-streaming section so the two are never
+// conflated into one misleading "Track 3b passed" signal.
+func TestTrack3bAnthropicStreaming(t *testing.T) {
+	client := newTrack3bClient()
+
+	if !track3aFetchCapture(t, client).Enabled {
+		t.Fatal("capture is not enabled — start the gateway with ACP_CAPTURE=true")
+	}
+
+	var anthropicProbe track3aProbe
+	found := false
+	for _, p := range track3aProbes() {
+		if p.name == "anthropic" {
+			anthropicProbe = p
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("no anthropic probe in track3aProbes() — cannot build the streaming variant")
+	}
+
+	// Reuse the non-streaming anthropic probe body verbatim, only flipping
+	// stream:true. Decode/re-encode (rather than a string patch) so this
+	// stays correct if the probe body's fields ever change shape.
+	var reqBody map[string]any
+	if err := json.Unmarshal([]byte(anthropicProbe.body), &reqBody); err != nil {
+		t.Fatalf("decode anthropic probe body: %v", err)
+	}
+	reqBody["stream"] = true
+	streamBody, err := json.Marshal(reqBody)
+	if err != nil {
+		t.Fatalf("re-encode streaming probe body: %v", err)
+	}
+
+	streamProbe := track3aProbe{
+		name:    "anthropic-streaming",
+		path:    anthropicProbe.path,
+		headers: anthropicProbe.headers, // carries anthropic-version
+		body:    string(streamBody),
+	}
+
+	rawSSE, contentType := track3bDriveSSE(t, client, streamProbe)
+	if !strings.Contains(contentType, "text/event-stream") {
+		t.Errorf("[anthropic-streaming] Content-Type=%q, want text/event-stream", contentType)
+	}
+
+	frames := track3bParseSSE(rawSSE)
+	if len(frames) == 0 {
+		t.Errorf("[anthropic-streaming] no SSE frames parsed from a %d-byte response body", len(rawSSE))
+	}
+
+	var (
+		toolUseIndex     = -1
+		blockStartOK     bool
+		blockStartDetail string
+		partialJSON      strings.Builder
+		blockStopOK      bool
+		stopReasonOK     bool
+		stopReasonValue  string
+		textLeakDetail   string
+	)
+
+	for _, f := range frames {
+		switch f.Event {
+		case "content_block_start":
+			var cbs track3bSSEContentBlockStart
+			if err := json.Unmarshal([]byte(f.Data), &cbs); err != nil {
+				continue
+			}
+			if cbs.ContentBlock.Type == "tool_use" && cbs.ContentBlock.Name == "get_weather" {
+				blockStartOK = true
+				toolUseIndex = cbs.Index
+				blockStartDetail = fmt.Sprintf("index=%d name=%s", cbs.Index, cbs.ContentBlock.Name)
+			}
+		case "content_block_delta":
+			var cbd track3bSSEContentBlockDelta
+			if err := json.Unmarshal([]byte(f.Data), &cbd); err != nil {
+				continue
+			}
+			if cbd.Delta.Type == "input_json_delta" && toolUseIndex >= 0 && cbd.Index == toolUseIndex {
+				partialJSON.WriteString(cbd.Delta.PartialJSON)
+			}
+			if cbd.Delta.Type == "text_delta" && strings.Contains(cbd.Delta.Text, `{"tool_call"`) {
+				textLeakDetail = fmt.Sprintf("index=%d text=%s", cbd.Index, first(cbd.Delta.Text, 200))
+			}
+		case "content_block_stop":
+			var cbs track3bSSEContentBlockStop
+			if err := json.Unmarshal([]byte(f.Data), &cbs); err != nil {
+				continue
+			}
+			if toolUseIndex >= 0 && cbs.Index == toolUseIndex {
+				blockStopOK = true
+			}
+		case "message_delta":
+			var md track3bSSEMessageDelta
+			if err := json.Unmarshal([]byte(f.Data), &md); err != nil {
+				continue
+			}
+			stopReasonValue = md.Delta.StopReason
+			if md.Delta.StopReason == "tool_use" {
+				stopReasonOK = true
+			}
+		}
+	}
+
+	var cityValue any
+	cityPresent := false
+	var argsErr error
+	if partialJSON.Len() > 0 {
+		var args map[string]any
+		if err := json.Unmarshal([]byte(partialJSON.String()), &args); err != nil {
+			argsErr = err
+		} else if v, ok := args["city"]; ok {
+			cityPresent = true
+			cityValue = v
+		}
+	}
+
+	if !blockStartOK {
+		t.Errorf("[anthropic-streaming] no content_block_start with content_block.type=tool_use name=get_weather (frames=%d)", len(frames))
+	}
+	switch {
+	case partialJSON.Len() == 0:
+		t.Errorf("[anthropic-streaming] no input_json_delta content_block_delta observed for the tool_use block")
+	case argsErr != nil:
+		t.Errorf("[anthropic-streaming] accumulated partial_json did not parse as JSON: %v (raw=%s)", argsErr, partialJSON.String())
+	case !cityPresent:
+		t.Errorf("[anthropic-streaming] accumulated tool_use args missing key \"city\": %s", partialJSON.String())
+	}
+	if !blockStopOK {
+		t.Errorf("[anthropic-streaming] no content_block_stop observed for the tool_use block (index=%d)", toolUseIndex)
+	}
+	if !stopReasonOK {
+		t.Errorf("[anthropic-streaming] message_delta.delta.stop_reason=%q, want %q", stopReasonValue, "tool_use")
+	}
+	if textLeakDetail != "" {
+		t.Errorf("[anthropic-streaming] raw {\"tool_call\" wrapper leaked as a text_delta instead of being coerced: %s", textLeakDetail)
+	}
+
+	t.Logf("[anthropic-streaming] block_start=%v(%s) block_stop=%v stop_reason=%q city_present=%v city_value=%v text_leak=%v",
+		blockStartOK, blockStartDetail, blockStopOK, stopReasonValue, cityPresent, cityValue, textLeakDetail != "")
+
+	overallOK := blockStartOK && blockStopOK && stopReasonOK && cityPresent && textLeakDetail == ""
+
+	var report bytes.Buffer
+	fmt.Fprintf(&report, "### anthropic (streaming, SSE)\n\n")
+	fmt.Fprintf(&report, "- **Content-Type:** %s\n", contentType)
+	fmt.Fprintf(&report, "- **Streaming tool_use sequence received:** %v\n", overallOK)
+	fmt.Fprintf(&report, "- **content_block_start tool_use:** %v (%s)\n", blockStartOK, blockStartDetail)
+	fmt.Fprintf(&report, "- **input_json_delta accumulated args:** %s\n", partialJSON.String())
+	fmt.Fprintf(&report, "- **city key present:** %v value=%v\n", cityPresent, cityValue)
+	fmt.Fprintf(&report, "- **content_block_stop for tool_use block:** %v\n", blockStopOK)
+	fmt.Fprintf(&report, "- **message_delta.delta.stop_reason:** %q (want \"tool_use\")\n", stopReasonValue)
+	fmt.Fprintf(&report, "- **raw {\"tool_call\" wrapper leaked as text_delta:** %v %s\n", textLeakDetail != "", textLeakDetail)
+	fmt.Fprintf(&report, "\n- Raw SSE stream (first 600 bytes):\n\n```\n%s\n```\n\n", first(rawSSE, 600))
+
+	path := "../docs/reviews/2026-07-14-track0-toolcall-findings.md"
+	if err := track3bAppendStreamingSection(path, report.String()); err != nil {
+		t.Fatalf("append streaming findings section: %v", err)
+	}
+	t.Logf("appended Track 3b streaming outcome section to %s", path)
+}
+
+// track3bAppendStreamingSection appends body under its own "Track 3b
+// streaming outcome (live, 2026-07-15)" heading, distinct from
+// track3bAppendSection's "Track 3b outcome" heading — the streaming probe
+// is a separate code path (sse.go's buffering state machine) from the
+// non-streaming probes TestTrack3bCoercion drives, and the findings doc
+// should not conflate the two into one pass/fail signal.
+func track3bAppendStreamingSection(path, body string) error {
+	existing, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var out bytes.Buffer
+	out.Write(existing)
+	out.WriteString("\n## Track 3b streaming outcome (live, 2026-07-15)\n\n")
 	out.WriteString(body)
 	return os.WriteFile(path, out.Bytes(), 0o644)
 }
