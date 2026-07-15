@@ -320,3 +320,222 @@ _kiro.dev/metadata {"sessionId":"45d5e457-2406-4c36-be01-aab03ee8e340","contextU
 
 </details>
 
+
+## Track 3a outcome (live, 2026-07-15)
+
+**Headline: the elicitation apparatus works — all three surfaces now emit
+`{"tool_call":…}` JSON directly, but the permission-denial path (Task 4's
+load-bearing inversion) was never exercised live, because kiro never tried a
+built-in tool in the first place.**
+
+Ran `tests/track3a_elicitation_test.go` (`TestTrack3aElicitation`) against a
+gateway on `127.0.0.1:18099` with `ACP_CAPTURE=true` and real `kiro-cli`, using
+the same `get_weather` probe Track 0 used on all three surfaces
+(anthropic/openai/ollama). Result for every surface:
+
+| Surface | `session/request_permission` seen | `{"tool_call":…}` JSON emitted | Still prose refusal |
+|---|---|---|---|
+| anthropic | false | **true** | false |
+| openai | false | **true** | false |
+| ollama | false | **true** | false |
+
+Each surface's raw response now contains, verbatim:
+
+```
+{"tool_call": {"name": "get_weather", "arguments": {"city": "Paris"}}}
+```
+
+wrapped in a ```` ```json ```` fence, streamed token-by-token as
+`agent_message_chunk` text — a clean behavior change from Track 0's prose
+refusal ("I don't have a `get_weather` tool available…"). This is the
+Track 3a success condition from the task-7 brief (permission request OR
+tool_call emission on at least one surface) — met on **all three**, not just
+one. `internal/acp/client.go`'s `Track 3a: MAX_TOOL_DENIALS reached` log line
+and the `session/request_permission` deny branch did **not** fire at all
+during this run — `grep -i "permission\|denial" /tmp/track3a-gw.log` returned
+nothing.
+
+**Why:** the strict function-calling prompt (`build_acp.go`'s
+`[Available tools]` block, rule 6: "Built-in tool attempts are rejected
+automatically — if one is rejected, do NOT retry it; output the tool_call JSON
+block instead") appears sufficient on its own to make kiro skip attempting its
+own built-in tools and go straight to the JSON protocol, at least for
+single-turn, single-tool prompts. Two additional ad hoc probes (not part of
+the committed harness — driven manually via `curl` against the same live
+gateway, same session) tried to provoke a built-in-tool attempt instead:
+"list the files in the current working directory" (declared tool
+`list_directory_contents`) and "run the shell command `pwd`... using whatever
+tool you have access to, built-in or otherwise" (declared tool `run_shell`) —
+explicitly inviting kiro to reach for a real built-in fs/shell tool. Both
+produced the same outcome: kiro emitted the `{"tool_call":…}` JSON for the
+*declared* tool name directly, with zero `session/request_permission` frames
+in the capture ring either time.
+
+**What this means for the Task 1 reconciliation ask:** the task brief asked to
+reconcile the real `session/request_permission` frame shape
+(`permissionParams`/`pickRejectOption`, guessed from the JS reference) against
+a live-captured frame. **That reconciliation could not be performed** — no
+`session/request_permission` frame was captured in this session, across five
+total probes (3 committed + 2 ad hoc). `internal/acp/permission_test.go`'s
+fixtures (`{"optionId":"reject_always","kind":"reject_always"}`,
+`{"optionId":"allow_once","kind":"allow"}`, toolCall `{"title":"..."}`) remain
+JS-reference-derived guesses, unverified against real kiro-cli wire data. The
+deny branch and `MAX_TOOL_DENIALS` breaker in `client.go` are covered by unit
+tests against those synthetic fixtures (`internal/acp/permission_handler_test.go`,
+`internal/acp/permission_test.go`) but have **zero live-fire evidence** as of
+this run. A follow-up should either (a) find a prompt/tool combination that
+reliably makes kiro attempt one of its own built-in tools despite the strict
+prompt (candidates not yet tried: multi-turn conversations, tools whose
+declared name collides with a kiro built-in's actual name/description, or
+tasks kiro judges as unsafe/high-stakes enough to insist on its own
+tooling), or (b) accept that the strict prompt alone is carrying the whole
+apparatus for the cases tested so far and treat the deny path as
+defense-in-depth whose real-wire-shape verification remains open.
+
+**What this means for Track 3b (coercion) scope:** the free-text
+`{"tool_call":…}` extractor (`extractToolCallObjects` per the Track 0
+findings) is now confirmed **necessary and immediately actionable** — real
+kiro output was captured on all three surfaces in the exact shape Track 0
+predicted (`{"tool_call": {"name": ..., "arguments": {...}}}` inside a
+` ```json ` fence, single object, not truncated, argument names matching the
+caller's declared schema exactly). No wrapper variations, no truncation, no
+multi-object emissions were observed in this small sample — Track 3b's
+"truncated-JSON repair" and "multi-object" hardening remain reasonable
+defensive additions but are not evidenced as *required* by this capture.
+Structured `tool_calls` surfacing on OpenAI/Ollama (`collect.go`) is still
+needed independent of 3a, per the original Track 0 findings table above.
+
+Full per-surface raw capture (as generated by the harness) follows.
+
+# Track 3a — live elicitation capture (2026-07-15)
+
+Generated by tests/track3a_elicitation_test.go (real kiro, gateway patched
+with Tasks 1-6). Each surface drove a `get_weather` tool round-trip against
+the SAME prompt Track 0 used; the raw kiro frames captured for that turn are
+classified below against the Track 0 baseline (no permission request, no
+tool_call, prose refusal).
+
+### anthropic
+
+- Frames captured this turn: 13
+- **session/request_permission seen:** false
+- **{"tool_call":…} JSON emitted:** true
+- **Still prose refusal (Track 0 regression case):** false
+
+<details><summary>tool_call JSON snippet(s)</summary>
+
+```json
+{"sessionId":"49f2cba0-e6ff-4cb6-9e13-e67013c59d0a","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"json\n{\"tool_call\": {\""}}}
+```
+
+</details>
+
+- Client-visible response (first 400 bytes):
+
+```
+{"id":"msg_017204c81bfd7a18be123a829f","type":"message","role":"assistant","model":"auto","content":[{"type":"text","text":"```json\n{\"tool_call\": {\"name\": \"get_weather\", \"arguments\": {\"city\": \"Paris\"}}}\n```"}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}
+
+```
+
+<details><summary>raw frames</summary>
+
+```json
+_kiro.dev/subagent/list_update {"subagents":[],"pendingStages":[]}
+_kiro.dev/subagent/list_update {"subagents":[],"pendingStages":[]}
+ 
+_kiro.dev/commands/available {"sessionId":"49f2cba0-e6ff-4cb6-9e13-e67013c59d0a","commands":[{"name":"/agent","description":"Select or list available agents","meta":{"optionsMethod":"_kiro.dev/commands/agent/options","inputType":"selection","hint":"","subcommands":["create","edit","swap"],"subcommandHints":{"create":"<name>","edit":"[name]","swap":"<name>"}}},{"name":"/chat","description":"Load a previous session or start a new one","meta":{"inputType":"selection","local":true,"hint":"save <path>, load <path>, new [prompt]","subcommands":["save","load","new"],"subcommandHints":{"save":"[--force] <path>","load":"<path>","n…
+_kiro.dev/metadata {"sessionId":"49f2cba0-e6ff-4cb6-9e13-e67013c59d0a","contextUsagePercentage":4.896999835968018}
+session/update {"sessionId":"49f2cba0-e6ff-4cb6-9e13-e67013c59d0a","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"```"}}}
+session/update {"sessionId":"49f2cba0-e6ff-4cb6-9e13-e67013c59d0a","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"json\n{\"tool_call\": {\""}}}
+session/update {"sessionId":"49f2cba0-e6ff-4cb6-9e13-e67013c59d0a","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"name\": \"get_weather\", \""}}}
+session/update {"sessionId":"49f2cba0-e6ff-4cb6-9e13-e67013c59d0a","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"arguments\": {\"city\": \"Paris\"}"}}}
+session/update {"sessionId":"49f2cba0-e6ff-4cb6-9e13-e67013c59d0a","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"}}\n```"}}}
+_kiro.dev/metadata {"sessionId":"49f2cba0-e6ff-4cb6-9e13-e67013c59d0a","contextUsagePercentage":1.5993999242782593}
+_kiro.dev/metadata {"sessionId":"49f2cba0-e6ff-4cb6-9e13-e67013c59d0a","contextUsagePercentage":1.5993999242782593,"meteringUsage":[{"value":0.053722903316749594,"unit":"credit","unitPlural":"credits"}],"turnDurationMs":2039}
+ 
+```
+
+</details>
+
+### openai
+
+- Frames captured this turn: 12
+- **session/request_permission seen:** false
+- **{"tool_call":…} JSON emitted:** true
+- **Still prose refusal (Track 0 regression case):** false
+
+<details><summary>tool_call JSON snippet(s)</summary>
+
+```json
+{"sessionId":"6196236e-6ac9-4db5-967b-d204e1b2aa3b","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"json\n{\"tool_call\": {\""}}}
+```
+
+</details>
+
+- Client-visible response (first 400 bytes):
+
+```
+{"id":"chatcmpl-632355aa02c0031b5a967bd6","object":"chat.completion","created":1784103065,"model":"auto","choices":[{"index":0,"message":{"role":"assistant","content":"```json\n{\"tool_call\": {\"name\": \"get_weather\", \"arguments\": {\"city\": \"Paris\"}}}\n```"},"finish_reason":"stop"}],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}
+
+```
+
+<details><summary>raw frames</summary>
+
+```json
+_kiro.dev/subagent/list_update {"subagents":[],"pendingStages":[]}
+ 
+_kiro.dev/commands/available {"sessionId":"6196236e-6ac9-4db5-967b-d204e1b2aa3b","commands":[{"name":"/agent","description":"Select or list available agents","meta":{"optionsMethod":"_kiro.dev/commands/agent/options","inputType":"selection","hint":"","subcommands":["create","edit","swap"],"subcommandHints":{"create":"<name>","edit":"[name]","swap":"<name>"}}},{"name":"/chat","description":"Load a previous session or start a new one","meta":{"inputType":"selection","local":true,"hint":"save <path>, load <path>, new [prompt]","subcommands":["save","load","new"],"subcommandHints":{"save":"[--force] <path>","load":"<path>","n…
+_kiro.dev/metadata {"sessionId":"6196236e-6ac9-4db5-967b-d204e1b2aa3b","contextUsagePercentage":4.896999835968018}
+session/update {"sessionId":"6196236e-6ac9-4db5-967b-d204e1b2aa3b","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"```"}}}
+session/update {"sessionId":"6196236e-6ac9-4db5-967b-d204e1b2aa3b","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"json\n{\"tool_call\": {\""}}}
+session/update {"sessionId":"6196236e-6ac9-4db5-967b-d204e1b2aa3b","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"name\": \"get_weather\", \""}}}
+session/update {"sessionId":"6196236e-6ac9-4db5-967b-d204e1b2aa3b","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"arguments\": {\"city\": \"Paris\"}"}}}
+session/update {"sessionId":"6196236e-6ac9-4db5-967b-d204e1b2aa3b","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"}}\n```"}}}
+_kiro.dev/metadata {"sessionId":"6196236e-6ac9-4db5-967b-d204e1b2aa3b","contextUsagePercentage":1.5993999242782593}
+_kiro.dev/metadata {"sessionId":"6196236e-6ac9-4db5-967b-d204e1b2aa3b","contextUsagePercentage":1.5993999242782593,"meteringUsage":[{"value":0.03592738092868989,"unit":"credit","unitPlural":"credits"}],"turnDurationMs":1934}
+ 
+```
+
+</details>
+
+### ollama
+
+- Frames captured this turn: 12
+- **session/request_permission seen:** false
+- **{"tool_call":…} JSON emitted:** true
+- **Still prose refusal (Track 0 regression case):** false
+
+<details><summary>tool_call JSON snippet(s)</summary>
+
+```json
+{"sessionId":"8d9c2fae-8dc8-49c4-9fe2-356007a61e06","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"json\n{\"tool_call\": {\""}}}
+```
+
+</details>
+
+- Client-visible response (first 400 bytes):
+
+```
+{"model":"auto","created_at":"2026-07-15T08:11:09.578205Z","message":{"role":"assistant","content":"```json\n{\"tool_call\": {\"name\": \"get_weather\", \"arguments\": {\"city\": \"Paris\"}}}\n```"},"done":true,"done_reason":"stop","total_duration":2366878625,"load_duration":0,"prompt_eval_count":0,"prompt_eval_duration":355031793,"eval_count":21,"eval_duration":2011846831}
+
+```
+
+<details><summary>raw frames</summary>
+
+```json
+_kiro.dev/subagent/list_update {"subagents":[],"pendingStages":[]}
+ 
+_kiro.dev/commands/available {"sessionId":"8d9c2fae-8dc8-49c4-9fe2-356007a61e06","commands":[{"name":"/agent","description":"Select or list available agents","meta":{"optionsMethod":"_kiro.dev/commands/agent/options","inputType":"selection","hint":"","subcommands":["create","edit","swap"],"subcommandHints":{"create":"<name>","edit":"[name]","swap":"<name>"}}},{"name":"/chat","description":"Load a previous session or start a new one","meta":{"inputType":"selection","local":true,"hint":"save <path>, load <path>, new [prompt]","subcommands":["save","load","new"],"subcommandHints":{"save":"[--force] <path>","load":"<path>","n…
+_kiro.dev/metadata {"sessionId":"8d9c2fae-8dc8-49c4-9fe2-356007a61e06","contextUsagePercentage":4.896999835968018}
+session/update {"sessionId":"8d9c2fae-8dc8-49c4-9fe2-356007a61e06","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"```"}}}
+session/update {"sessionId":"8d9c2fae-8dc8-49c4-9fe2-356007a61e06","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"json\n{\"tool_call\": {\""}}}
+session/update {"sessionId":"8d9c2fae-8dc8-49c4-9fe2-356007a61e06","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"name\": \"get_weather\", \""}}}
+session/update {"sessionId":"8d9c2fae-8dc8-49c4-9fe2-356007a61e06","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"arguments\": {\"city\": \"Paris\"}"}}}
+session/update {"sessionId":"8d9c2fae-8dc8-49c4-9fe2-356007a61e06","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"}}\n```"}}}
+_kiro.dev/metadata {"sessionId":"8d9c2fae-8dc8-49c4-9fe2-356007a61e06","contextUsagePercentage":1.5993999242782593}
+_kiro.dev/metadata {"sessionId":"8d9c2fae-8dc8-49c4-9fe2-356007a61e06","contextUsagePercentage":1.5993999242782593,"meteringUsage":[{"value":0.03592738092868989,"unit":"credit","unitPlural":"credits"}],"turnDurationMs":1950}
+ 
+```
+
+</details>
+
