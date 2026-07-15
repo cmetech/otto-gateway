@@ -13,8 +13,9 @@
 //     assembled (Codex H-5).
 //
 // The engine package depends only on canonical types and the consumer-
-// defined ACPClient interface declared here. The single boundary file
-// that imports internal/acp is acp_adapter.go (Codex H-3 Option B).
+// defined ACPClient interface declared here (Codex H-3 Option B). The one
+// exception is the per-turn deny-builtin-tools signal (Track 3a): both
+// acp_adapter.go and engine.go import internal/acp for acp.WithDenyBuiltinTools.
 package engine
 
 import (

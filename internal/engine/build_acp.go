@@ -26,7 +26,7 @@ import (
 //	[System]\n<text>\n\n
 //	[Reasoning] Think through the problem step by step...
 //	[Output format] Respond ONLY with JSON...
-//	[Available tools]\nEmit a tool_call ACP notification...\n```json\n<tools>\n```\n\n
+//	[Available tools]\n<strict function-calling prompt>...\n```json\n<tools>\n```\n\n
 //	[User]\n<text>\n\n
 //	[Assistant]\n<text>\n\n
 //
