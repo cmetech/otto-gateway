@@ -211,3 +211,51 @@ func TestExtractToolCallObjectsValidJSON(t *testing.T) {
 		t.Error("marshaled data is empty")
 	}
 }
+
+// TestExtractToolCallObjects_UnrelatedPriorClosedObject_NoHang
+// Regression test for infinite-loop bug: when an unrelated earlier
+// object has already closed before the "tool_call" text, the LastIndex
+// finds that earlier object's opening brace, scans to its closing brace
+// (which is before the key position), and if not guarded by end >= idx,
+// this false match causes idx to move backward indefinitely.
+func TestExtractToolCallObjects_UnrelatedPriorClosedObject_NoHang(t *testing.T) {
+	input := `{"status":"ok"} the "tool_call" field is missing`
+	objs := extractToolCallObjects(input)
+	// Should return 0 objects (no valid tool_call wrapper found).
+	if len(objs) != 0 {
+		t.Errorf("expected 0 objects for unrelated prior object, got %d", len(objs))
+	}
+	// Test passes if it completes without hanging.
+}
+
+// TestExtractToolCallObjects_WrapperAfterUnrelatedObject
+// Regression test: verify that when a real tool_call wrapper exists
+// after an unrelated closed object, it is correctly extracted (not
+// confused with the prior object).
+func TestExtractToolCallObjects_WrapperAfterUnrelatedObject(t *testing.T) {
+	input := `{"status":"ok"} then {"tool_call":{"name":"x","arguments":{}}}`
+	objs := extractToolCallObjects(input)
+	if len(objs) != 1 {
+		t.Errorf("expected 1 object, got %d", len(objs))
+	}
+	// Verify the extracted object is the tool_call one, not the status one.
+	if len(objs) > 0 {
+		if _, ok := objs[0]["tool_call"]; !ok {
+			t.Error("extracted object does not have tool_call key; extracted wrong object")
+		}
+		if _, ok := objs[0]["status"]; ok {
+			t.Error("extracted object has status key; extracted prior object instead of tool_call")
+		}
+	}
+}
+
+// TestExtractToolCallObjects_KeyNotInObject
+// Regression test: bare "tool_call" text not in braces should not hang.
+func TestExtractToolCallObjects_KeyNotInObject(t *testing.T) {
+	input := `Some text mentioning "tool_call" with no braces nearby.`
+	objs := extractToolCallObjects(input)
+	if len(objs) != 0 {
+		t.Errorf("expected 0 objects for bare text, got %d", len(objs))
+	}
+	// Test passes if it completes without hanging.
+}

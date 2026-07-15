@@ -331,6 +331,7 @@ func extractToolCallObjects(text string) []map[string]any {
 	idx := 0
 	toolCallKey := `"tool_call"`
 	keyLen := len(toolCallKey) // 11 bytes
+	b := []byte(text)          // Hoist byte allocation outside the loop
 
 	for idx < len(text) {
 		relIdx := strings.Index(text[idx:], toolCallKey)
@@ -347,7 +348,6 @@ func extractToolCallObjects(text string) []map[string]any {
 		}
 
 		// String-aware balanced-brace scan from start to find matching }.
-		b := []byte(text)
 		depth := 0
 		inStr := false
 		esc := false
@@ -385,7 +385,11 @@ func extractToolCallObjects(text string) []map[string]any {
 		}
 
 		// If we found a complete, balanced object, try to parse it.
-		if end > start {
+		// CRITICAL: Only accept if end >= idx (the closing brace must come
+		// at or after the "tool_call" key position). If end < idx, the found
+		// { belonged to an unrelated earlier object that closed before the
+		// key, so we skip it and advance idx to avoid infinite loop.
+		if end > start && end >= idx {
 			slice := text[start : end+1]
 			if parsed, ok := tryParse(slice); ok {
 				out = append(out, parsed)
@@ -393,6 +397,9 @@ func extractToolCallObjects(text string) []map[string]any {
 				out = append(out, parsed)
 			}
 			idx = end + 1
+		} else if end > start {
+			// end < idx: the closing brace is before the key, false match
+			idx += keyLen
 		} else if depth >= 1 && depth <= 8 && !inStr {
 			// Truncation-repair: close with missing braces and retry.
 			slice := text[start : lastMeaningful+1]
