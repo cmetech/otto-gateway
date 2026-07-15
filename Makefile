@@ -141,8 +141,11 @@ cross-otto-tray-windows-amd64:
 	# from Start-Process, the Run-key login-item, or a double-click).
 	# A console-subsystem tray would pop an empty terminal on every
 	# launch — the v2.0.1 symptom.
-	CGO_ENABLED=1 GOOS=windows GOARCH=amd64 \
-		CC=$${CC:-x86_64-w64-mingw32-gcc} \
+	# CGO_ENABLED=0: the Windows tray needs NO cgo. github.com/energye/systray
+	# is pure-Go on Windows (cgo is only used on darwin/Cocoa + linux/GTK), so
+	# no mingw / x86_64-w64-mingw32-gcc toolchain is required to cross-build
+	# from macOS. (The darwin tray targets DO need cgo; Windows does not.)
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 \
 		go build -ldflags="$(LDFLAGS) -H windowsgui" -o $(BUILD_DIR)/$(TRAY_BINARY)-windows-amd64.exe $(TRAY_PKG)
 
 cross-otto-tray: cross-otto-tray-darwin-arm64 cross-otto-tray-darwin-amd64 cross-otto-tray-windows-amd64 ## Cross-compile otto-tray for darwin + windows
