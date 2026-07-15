@@ -102,6 +102,25 @@ arg-object, scored by key-overlap. Gaps vs Node:
   add a kiro→client tool-name reconciliation layer, and surface native calls as
   structured `tool_calls` when the client supplied tools.
 
+**⚠️ Track 0 findings (corrected 2026-07-15) — the real blocker is upstream.**
+The live capture showed Go elicits **zero** tool_calls from kiro. Root cause
+(verified against `loop_24/acp_server/acp-server-ollama.js`, which works): the
+free-text robustness gaps above are real but *downstream* of a missing
+elicitation apparatus. JS prompt-embeds tools like Go, but also (1) uses a
+strict function-calling prompt + explicit `{"tool_call":…}` JSON protocol, and
+(2) **rejects** kiro's `session/request_permission` when the caller supplied
+tools (`denyKiroTools`) so the model emits tool_call JSON instead of using its
+own built-in tools — **Go currently auto-grants** that permission
+(`internal/acp/client.go:1186`), the exact inversion. So Track 3 splits:
+  - **Track 3a (NEW, do first):** port the elicitation apparatus — permission
+    *denial* when caller tools present, the strict tool-call prompt, and the
+    corrective-nudge/circuit-breaker. Without this kiro never emits a tool_call.
+  - **Track 3b:** the free-text robustness items above (extractor/repair/remap/
+    structured surfacing), sized against real kiro output *after* 3a lands.
+  See `docs/reviews/2026-07-14-track0-toolcall-findings.md` for the corrected
+  analysis. (The earlier "needs an `mcpServers` capability-negotiation spike"
+  conclusion is withdrawn — prompt-embedding is the correct channel.)
+
 ### Track 4 — Prometheus metrics endpoint — ✅ **DONE** (4a `347a2b7`, 4b + identity `c4fd2a6`, skill attribution `4faab1c`) — usage & ops insight
 Added beyond the original spec: **gateway_id** constant label on every series
 (GW_ID env → persisted ULID) + `gw_build_info` for fleet grouping; **4b event
