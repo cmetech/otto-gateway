@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-06-12)
 Phase: Milestone v1.10.3 complete
 Plan: —
 Status: Awaiting next milestone
-Last activity: 2026-06-12 — Milestone v1.10.3 completed and archived
+Last activity: 2026-07-15 - Completed quick task 260715-bxc: Save Track 3 tool-call adversarial review as Markdown
 
 ## Performance Metrics
 
@@ -182,6 +182,7 @@ None yet.
 | 260713-qw7 | Fix "Start OTTO Desktop" launching the Electron app with no visible window on Windows (v2.1.0 regression): `spawnDetached` launched the GUI app via `detachProcessGroup`, which sets HideWindow (SW_HIDE) — correct for the headless gateway wrapper, wrong for a GUI app (5 live OTTO.exe procs, "running", but hidden). Added per-OS `detachGUIProcess()` (windows: new process group, NO HideWindow; darwin: Setpgid) and pointed `spawnDetached` at it; gateway wrapper keeps HideWindow. Windows-only regression test. gofmt/gofumpt/vet clean, darwin tests pass, GOOS=windows build+vet+test-compile clean. Shipped v2.1.2. | 2026-07-13 | 797d4f1 | [260713-qw7-tray-desktop-start-hidden-window](./quick/260713-qw7-tray-desktop-start-hidden-window/) |
 | 260713-saf | Tray "Advanced ▸ Open Folder" links: new Advanced submenu with 3 read-only links opening App folder (win: %LOCALAPPDATA%\Programs\<Brand>; mac: reveal .app), Data folder (HERMES_HOME ~/.otto \| %LOCALAPPDATA%\otto, brand-derived via env->win-registry->default), and Gateway folder (~/.otto-gw) in Explorer/Finder. explorer/open launched fire-and-forget WITHOUT HideWindow (GUI must show); only the win `reg` probe uses hideConsole. Pure read/open, nothing deleted. Replaced the cancelled tray-uninstall design. Pure unit tests; gofmt/gofumpt/vet/golangci-lint clean, darwin tests pass, GOOS=windows build+vet+test-compile clean. Shipped v2.2.0. | 2026-07-13 | 5890381 | [260713-saf-tray-open-folder-links](./quick/260713-saf-tray-open-folder-links/) |
 | 260713-t1p | Brand-aware tray icon: use OTTO icon ONLY when desktop brand.json present + OTTO; else (brand.json absent — tray ships with gw, can precede desktop — or brand != OTTO) show new loop24 mark. Added loop24.png (44px darwin) + loop24.ico (16/32/48 win) from ~/loop24 bare mark; loop24 via SetIcon (colored, non-adaptive), OTTO keeps SetTemplateIcon. brandUsesLoop24/resolveBrandJSON report brand.json presence (vs today's OTTO-default); brandLoop24 atomic flag refreshed each desktop tick, read by single gateway icon-writer so a later desktop install flips within a couple ticks. Only Running/idle glyph branded; Warning/Error keep status icons; removed dead setIcon. Seam-injected tests; gofmt/gofumpt/vet/golangci-lint clean, darwin tests pass, GOOS=windows+linux build clean. Runtime check pending release. | 2026-07-13 | 755b53d | [260713-t1p-tray-brand-aware-icon](./quick/260713-t1p-tray-brand-aware-icon/) |
+| 260715-bxc | Save Track 3 tool-call adversarial review as Markdown | 2026-07-15 | 249609a | [260715-bxc-save-track-3-tool-call-adversarial-revie](./quick/260715-bxc-save-track-3-tool-call-adversarial-revie/) |
 
 ## Deferred Items
 
