@@ -457,6 +457,56 @@ func Example_buildBlocks() {
 	// Hi.
 }
 
+// TestBuildBlocks_StrictToolPrompt verifies that the strict function-calling
+// prompt is emitted when tools are present. The prompt must include markers
+// indicating the expected JSON structure ("tool_call", "arguments") and must
+// NOT contain the old weak prompt text. The tool name from the catalog must
+// be present in the emitted prompt.
+func TestBuildBlocks_StrictToolPrompt(t *testing.T) {
+	req := &canonical.ChatRequest{
+		Tools: []canonical.ToolSpec{
+			{
+				Name:        "get_weather",
+				Description: "Get current weather",
+				Parameters: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"location": map[string]any{"type": "string"},
+					},
+				},
+			},
+		},
+		Messages: []canonical.Message{
+			{Role: canonical.RoleUser, Content: []canonical.ContentPart{
+				{Kind: canonical.ContentKindText, Text: "What's the weather?"},
+			}},
+		},
+	}
+	got := buildBlocks(req)
+	if len(got) == 0 || got[0].Text == nil {
+		t.Fatal("expected text block with strict tool prompt")
+	}
+	content := got[0].Text.Content
+
+	// Assert key markers of strict function-calling prompt are present
+	requiredStrings := []string{
+		"\"tool_call\"",
+		"\"arguments\"",
+		"must NOT use your own built-in tools",
+		"get_weather",
+	}
+	for _, required := range requiredStrings {
+		if !contains(content, required) {
+			t.Errorf("strict prompt missing required marker %q; content:\n%s", required, content)
+		}
+	}
+
+	// Assert old weak prompt is NOT present
+	if contains(content, "Emit a tool_call ACP notification") {
+		t.Errorf("old weak prompt still present; should use strict prompt. Content:\n%s", content)
+	}
+}
+
 // contains is a tiny helper to keep test-string assertions readable
 // without importing strings in every test file.
 func contains(s, sub string) bool {

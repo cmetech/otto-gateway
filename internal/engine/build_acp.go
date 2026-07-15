@@ -87,6 +87,9 @@ func buildBlocks(req *canonical.ChatRequest) []canonical.Block {
 		// least sees the section. We use slog.Default() so callers
 		// can inject their own logger via the slog global without
 		// churning the buildBlocks signature for an edge case.
+		//
+		// Track 3a: Strict function-calling prompt (JSON-in-text),
+		// ported from JS reference (acp-server-ollama.js:801-818).
 		wireCatalog := make([]availableToolWire, 0, len(req.Tools))
 		for _, t := range req.Tools {
 			wireCatalog = append(wireCatalog, availableToolWire{
@@ -102,11 +105,22 @@ func buildBlocks(req *canonical.ChatRequest) []canonical.Block {
 				"err", err.Error(),
 				"tools_count", len(req.Tools),
 			)
-			b.WriteString("[Available tools]\nEmit a tool_call ACP notification to invoke any of the registered tools.\n\n")
+			b.WriteString(
+				"[Available tools]\n" +
+					"You are acting as a function-calling model for an EXTERNAL system that executes the tools listed below and returns their results to you. You must NOT use your own built-in tools (file read/write, shell, etc.) to perform the task yourself — any such attempt will be rejected.\n" +
+					"To call a tool, output a JSON code block in EXACTLY this format — no prose before, between, or after the blocks:\n" +
+					"```json\n{\"tool_call\": {\"name\": \"<tool_name>\", \"arguments\": {\"<param>\": \"<value>\"}}}\n```\n" +
+					"Rules: (1) One block per tool call; multiple independent calls may use multiple blocks. (2) No text outside the JSON blocks. (3) Do NOT use ```tool_call``` fences or Python-style call syntax. (4) When you have the final answer, reply with plain text and no JSON blocks. (5) Arguments must be valid JSON (escape newlines as \\n and quotes as \\\"). (6) Built-in tool attempts are rejected automatically — if one is rejected, do NOT retry it; output the tool_call JSON block instead.\n\n",
+			)
 		} else {
 			fmt.Fprintf(
 				&b,
-				"[Available tools]\nEmit a tool_call ACP notification to invoke any of the registered tools.\n\n```json\n%s\n```\n\n",
+				"[Available tools]\n"+
+					"You are acting as a function-calling model for an EXTERNAL system that executes the tools listed below and returns their results to you. You must NOT use your own built-in tools (file read/write, shell, etc.) to perform the task yourself — any such attempt will be rejected.\n"+
+					"To call a tool, output a JSON code block in EXACTLY this format — no prose before, between, or after the blocks:\n"+
+					"```json\n{\"tool_call\": {\"name\": \"<tool_name>\", \"arguments\": {\"<param>\": \"<value>\"}}}\n```\n"+
+					"Rules: (1) One block per tool call; multiple independent calls may use multiple blocks. (2) No text outside the JSON blocks. (3) Do NOT use ```tool_call``` fences or Python-style call syntax. (4) When you have the final answer, reply with plain text and no JSON blocks. (5) Arguments must be valid JSON (escape newlines as \\n and quotes as \\\"). (6) Built-in tool attempts are rejected automatically — if one is rejected, do NOT retry it; output the tool_call JSON block instead.\n"+
+					"Available tools:\n```json\n%s\n```\n\n",
 				string(toolsJSON),
 			)
 		}
