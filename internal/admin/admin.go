@@ -49,6 +49,24 @@ type RegistryStatsSource interface {
 	Detail() []SnapshotSess
 }
 
+// CaptureFrame is admin's own wire type for one captured raw ACP frame — the
+// cmd layer adapts internal/capture.Frame into this, keeping admin free of an
+// internal/capture import (TRST-04, same pattern as SnapshotSess).
+type CaptureFrame struct {
+	Seq    uint64    `json:"seq"`
+	Ts     time.Time `json:"ts"`
+	Method string    `json:"method"`
+	Params string    `json:"params"`
+	Bytes  int       `json:"bytes"`
+}
+
+// AcpCaptureSource is the consumer-defined interface the admin handler uses to
+// read the raw-frame capture ring. Returns admin's own wire type so this
+// package stays boundary-clean. nil in Deps means capture is disabled.
+type AcpCaptureSource interface {
+	Snapshot() []CaptureFrame
+}
+
 // Deps bundles the inputs the admin Handler needs. All fields are optional
 // (nil-safe guards in the handlers).
 //
@@ -83,6 +101,7 @@ type Deps struct {
 	Start        time.Time
 	PoolDetail   PoolDetailSource
 	Registry     RegistryStatsSource
+	AcpCapture   AcpCaptureSource
 	LogPaths     map[string]string
 	LogPathOrder []string
 	Debug        bool
@@ -185,6 +204,9 @@ func Handler(deps Deps) http.Handler {
 
 	// GET /api/snapshot — return unified Snapshot JSON (D-05).
 	r.Get("/api/snapshot", h.snapshotHandler)
+
+	// GET /api/acp-capture — raw kiro frame capture ring (Track 0; enabled:false when unset).
+	r.Get("/api/acp-capture", h.acpCaptureHandler)
 
 	// GET /static/* — serve embedded CSS/JS assets.
 	// chi.Mount("/admin", h) does NOT rewrite r.URL.Path in the sub-router;
