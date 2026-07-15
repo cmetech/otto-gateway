@@ -385,8 +385,8 @@ dashboard = {
     "templating": templating,
     "time": {"from": "now-6h", "to": "now"}, "timepicker": {},
     "timezone": "browser",
-    "title": "OTTO Gateway — Developer Observability",
-    "uid": "otto-gw-dev-obs", "version": 1, "weekStart": "",
+    "title": "Loop24 Co-worker",
+    "uid": "gw-dev-obs", "version": 1, "weekStart": "",
 }
 
 # Post-fix: Prometheus-sourced heatmap panels need format=heatmap on their target.

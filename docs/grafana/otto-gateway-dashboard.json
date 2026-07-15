@@ -3280,8 +3280,8 @@
   },
   "timepicker": {},
   "timezone": "browser",
-  "title": "OTTO Gateway \u2014 Developer Observability",
-  "uid": "otto-gw-dev-obs",
+  "title": "Loop24 Co-worker",
+  "uid": "gw-dev-obs",
   "version": 1,
   "weekStart": ""
 }

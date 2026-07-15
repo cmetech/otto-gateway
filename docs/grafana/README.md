@@ -1,8 +1,9 @@
 # Grafana dashboards
 
-## OTTO Gateway — Developer Observability
+## Loop24 Co-worker
 
-`otto-gateway-dashboard.json` visualizes everything the gateway exposes at
+`otto-gateway-dashboard.json` (dashboard title **"Loop24 Co-worker"**, uid
+`gw-dev-obs`) visualizes everything the gateway exposes at
 `/metrics` (and that the tray remote-writes to Grafana Cloud): usage attribution,
 HTTP traffic & latency, kiro engine usage, pool/session health, and per-gateway +
 per-worker resource usage.
