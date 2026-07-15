@@ -807,35 +807,134 @@ func TestAnthropic_NoCoerce_Behavioral(t *testing.T) {
 	}
 }
 
+// TestAnthropic_CoercesToolCallWrapper is the Track 3b positive guard:
+// the Anthropic non-streaming surface MUST coerce an explicit
+// {"tool_call":{"name":...,"arguments":...}} wrapper embedded in
+// assistant text (kiro's marker shape) into a structured tool_use
+// content block — this is the UNAMBIGUOUS engine.ExtractToolCallWrappers
+// path, distinct from the forbidden engine.CoerceToolCall bare-JSON
+// heuristic exercised (as the negative case) by
+// TestAnthropic_NoCoerce_Behavioral above. Drives a fake engine that
+// emits a single text chunk whose payload is a fenced
+// {"tool_call":...} wrapper, with a matching tools[] catalog entry,
+// and asserts the response synthesizes a tool_use content block with
+// the coerced name/input AND overrides stop_reason to "tool_use".
+func TestAnthropic_CoercesToolCallWrapper(t *testing.T) {
+	wrapperText := "```json\n{\"tool_call\":{\"name\":\"get_weather\",\"arguments\":{\"city\":\"Paris\"}}}\n```"
+	eng := &fakeEngine{
+		collectResp: &canonical.ChatResponse{
+			Model: "auto",
+			Message: canonical.Message{
+				Role: canonical.RoleAssistant,
+				Content: []canonical.ContentPart{
+					{Kind: canonical.ContentKindText, Text: wrapperText},
+				},
+			},
+			StopReason: canonical.StopEndTurn,
+		},
+	}
+	a := newTestAdapter(eng)
+	body := `{
+		"model": "auto",
+		"max_tokens": 256,
+		"messages": [{"role":"user","content":"what's the weather in Paris?"}],
+		"tools": [{
+			"name": "get_weather",
+			"description": "look up weather",
+			"input_schema": {
+				"type": "object",
+				"properties": {
+					"location": {"type": "string"}
+				},
+				"required": ["location"]
+			}
+		}]
+	}`
+	w := doPost(t, a, "/messages", body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	var resp anthropicMessage
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v; body=%s", err, w.Body.String())
+	}
+
+	// Shape: a coerced pure-tool-call turn must render as EXACTLY one
+	// tool_use block — no leading empty {"type":"text"} placeholder in
+	// front of it (the brief's "coerced text not also rendered as a
+	// text block" contract; Review fix 1).
+	if len(resp.Content) != 1 {
+		t.Fatalf("content length: got %d, want 1 (only the tool_use block, no leading empty text block); content=%+v", len(resp.Content), resp.Content)
+	}
+	var toolUse *contentBlock
+	for i := range resp.Content {
+		if resp.Content[i].Type == "tool_use" {
+			toolUse = &resp.Content[i]
+		}
+	}
+	if toolUse == nil {
+		t.Fatalf("expected a tool_use content block synthesized from the {\"tool_call\"} wrapper; content=%+v", resp.Content)
+	}
+	if toolUse.Name != "get_weather" {
+		t.Errorf("tool_use.name: got %q, want %q", toolUse.Name, "get_weather")
+	}
+	if toolUse.Input == nil {
+		t.Fatal("tool_use.input: nil, want {\"city\":\"Paris\"}")
+	}
+	if city, _ := (*toolUse.Input)["city"].(string); city != "Paris" {
+		t.Errorf("tool_use.input.city: got %v, want %q; input=%+v", (*toolUse.Input)["city"], "Paris", *toolUse.Input)
+	}
+	if resp.StopReason == nil || *resp.StopReason != "tool_use" {
+		got := "nil"
+		if resp.StopReason != nil {
+			got = *resp.StopReason
+		}
+		t.Errorf("stop_reason: got %q, want \"tool_use\"", got)
+	}
+}
+
 // TestAnthropic_DoesNotCallCoerceToolCall is the belt-and-suspenders
 // static-source guard. Cheap to run, fail-fast on the symbol —
-// catches refactors that add CoerceToolCall to handlers.go before the
-// behavioral test even runs. Primary regression guard is
-// TestAnthropic_NoCoerce_Behavioral above. Per CONTEXT D-01 / D-17
-// scenario 5, the Anthropic surface intentionally does NOT call
-// engine.CoerceToolCall.
+// catches refactors that add CoerceToolCall to handlers.go or
+// collect.go before the behavioral tests even run. Primary regression
+// guards are TestAnthropic_NoCoerce_Behavioral (negative — bare JSON
+// stays untouched) and TestAnthropic_CoercesToolCallWrapper (positive
+// — explicit {"tool_call"} wrapper coerces) above.
+//
+// Track 3b UPDATED CONTRACT: the Anthropic surface MUST NOT call
+// engine.CoerceToolCall (the ambiguous bare-`{args}` heuristic — would
+// forge tool_use blocks out of legitimate JSON-shaped assistant text),
+// but MAY call engine.ExtractToolCallWrappers (the unambiguous
+// {"tool_call":{name,arguments}} wrapper extractor — collect.go's D-07
+// coercion path). This guard scans BOTH handlers.go and collect.go for
+// the forbidden `engine.CoerceToolCall` symbol in non-comment code,
+// and explicitly does NOT forbid `engine.ExtractToolCallWrappers`.
 func TestAnthropic_DoesNotCallCoerceToolCall(t *testing.T) {
-	// G304 silenced: handlers.go is a known sibling source file,
-	// never user input.
-	src, err := os.ReadFile("handlers.go") //nolint:gosec // sibling source file; constant path
-	if err != nil {
-		t.Fatalf("ReadFile handlers.go: %v", err)
-	}
-	// Strip Go line + block comments so the PHASE 6 INVARIANT
-	// documentation block (which mentions engine.CoerceToolCall to
-	// EXPLAIN the absence) does not trip a false positive. We want
-	// to assert that the SYMBOL is not referenced in actual code.
-	stripped := stripGoComments(string(src))
-	if strings.Contains(stripped, "engine.CoerceToolCall") {
-		t.Errorf("D-01 violation: handlers.go references engine.CoerceToolCall in non-comment code. "+
-			"Per CONTEXT D-01 + D-17 scenario 5, the Anthropic surface intentionally "+
-			"does NOT call CoerceToolCall — running coerce would silently rewrite "+
-			"messages.stream() consumers' assistant text into synthesized tool_use "+
-			"blocks (wire-shape forgery). Remove the reference and rely on the "+
-			"per-surface contract: kiro-native ChunkKindToolCall is aggregated by "+
-			"CollectAnthropicChat (the D-07 exception); bare-JSON assistant text is "+
-			"preserved verbatim. See TestAnthropic_NoCoerce_Behavioral for the "+
-			"primary behavioral regression guard. stripped source:\n%s", stripped)
+	// G304 silenced: handlers.go and collect.go are known sibling
+	// source files, never user input.
+	for _, file := range []string{"handlers.go", "collect.go"} {
+		src, err := os.ReadFile(file) //nolint:gosec // sibling source file; constant path
+		if err != nil {
+			t.Fatalf("ReadFile %s: %v", file, err)
+		}
+		// Strip Go line + block comments so documentation blocks
+		// (which mention engine.CoerceToolCall to EXPLAIN the
+		// absence) do not trip a false positive. We want to assert
+		// that the SYMBOL is not referenced in actual code.
+		stripped := stripGoComments(string(src))
+		if strings.Contains(stripped, "engine.CoerceToolCall") {
+			t.Errorf("D-01 violation: %s references engine.CoerceToolCall in non-comment code. "+
+				"Per CONTEXT D-01 + D-17 scenario 5, the Anthropic surface intentionally "+
+				"does NOT call CoerceToolCall — running coerce would silently rewrite "+
+				"messages.stream() consumers' assistant text into synthesized tool_use "+
+				"blocks (wire-shape forgery). Remove the reference and rely on the "+
+				"per-surface contract: kiro-native ChunkKindToolCall is aggregated by "+
+				"CollectAnthropicChat (the D-07 exception); explicit {\"tool_call\"} wrapper "+
+				"text is coerced ONLY via engine.ExtractToolCallWrappers (the unambiguous "+
+				"extractor — Track 3b); bare-JSON assistant text is preserved verbatim. "+
+				"See TestAnthropic_NoCoerce_Behavioral / TestAnthropic_CoercesToolCallWrapper "+
+				"for the behavioral regression guards. stripped source:\n%s", file, stripped)
+		}
 	}
 }
 

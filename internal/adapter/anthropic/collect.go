@@ -30,6 +30,19 @@ package anthropic
 // leaks adapter concerns into the engine and either expands the
 // canonical type surface or branches engine code on adapter identity
 // — both violate the per-surface contract's intent.
+//
+// Track 3b Task 4 adds a second, narrower divergence: when no native
+// tool_use was produced by the loop above, CollectAnthropicChat calls
+// engine.ExtractToolCallWrappers on the assembled text to coerce an
+// explicit {"tool_call":{name,arguments}} wrapper (kiro's marker
+// shape) into the same ContentKindToolUse + Message.ToolCalls pair
+// the native path produces. This is NOT engine.CoerceToolCall (the
+// ambiguous bare-`{args}` heuristic Ollama/OpenAI use) — Anthropic
+// never calls that, to preserve the anti-forgery invariant that
+// legitimate JSON-shaped assistant text is never rewritten into a
+// tool_use block. See the coercion block in CollectAnthropicChat
+// below and TestAnthropic_DoesNotCallCoerceToolCall /
+// TestAnthropic_CoercesToolCallWrapper in handlers_test.go.
 
 import (
 	"context"
@@ -39,6 +52,7 @@ import (
 	"time"
 
 	"otto-gateway/internal/canonical"
+	"otto-gateway/internal/engine"
 )
 
 // CollectAnthropicChat runs the request through eng.Run and aggregates
@@ -203,7 +217,38 @@ func CollectAnthropicChat(ctx context.Context, eng Engine, req *canonical.ChatRe
 		stop()
 	}
 
-	resp := assembleAnthropicChatResponse(req, sb.String(), thoughtSB.String(), toolParts, toolCalls, final)
+	// Track 3b Task 4 — {"tool_call"} wrapper coercion. Gated on: the
+	// request declares tools (nothing to coerce into otherwise), AND
+	// no native tool_use already arrived this turn (if kiro emitted a
+	// real ChunkKindToolCall, do not ALSO try to coerce narration
+	// text — that would double up on the same assistant turn). Uses
+	// ONLY engine.ExtractToolCallWrappers — the unambiguous wrapper
+	// extractor that fires solely on the explicit {"tool_call":{name,
+	// arguments}} marker shape. engine.CoerceToolCall (the ambiguous
+	// bare-`{args}` heuristic) is never called here; see
+	// TestAnthropic_DoesNotCallCoerceToolCall.
+	assembledText := sb.String()
+	if req != nil && len(req.Tools) > 0 && len(toolParts) == 0 {
+		if coerced := engine.ExtractToolCallWrappers(assembledText, req.Tools); len(coerced) > 0 {
+			// Clear the assembled text so the wrapper JSON does not
+			// ALSO render as a text content block alongside the
+			// synthesized tool_use block(s).
+			assembledText = ""
+			for _, tc := range coerced {
+				toolParts = append(toolParts, canonical.ContentPart{
+					Kind: canonical.ContentKindToolUse,
+					ToolUse: &canonical.ToolUsePart{
+						ID:    tc.ID,
+						Name:  tc.Name,
+						Input: tc.Arguments,
+					},
+				})
+				toolCalls = append(toolCalls, tc)
+			}
+		}
+	}
+
+	resp := assembleAnthropicChatResponse(req, assembledText, thoughtSB.String(), toolParts, toolCalls, final)
 	// Quick 260530-df2 — non-streaming Anthropic PostHook gap fix.
 	// CollectAnthropicChat is the D-07 exception path that bypassed
 	// engine.Collect's PostHook traversal. Wiring RunPostHooks here
@@ -223,11 +268,15 @@ func CollectAnthropicChat(ctx context.Context, eng Engine, req *canonical.ChatRe
 }
 
 // assembleAnthropicChatResponse builds a canonical.ChatResponse from
-// the aggregated text/thinking/tool_use parts. The text part is
-// ALWAYS present at Content[0] (may be empty when only tool_use
-// chunks arrived — mirrors engine.Collect's Phase 3.1 D-02 contract
-// so the rest of the canonical-render path stays stable). Thinking
-// appends after text when present; tool_use parts append after.
+// the aggregated text/thinking/tool_use parts. The leading text part
+// is present at Content[0] in every case EXCEPT when it would be empty
+// AND tool_use parts are present (text == "" && len(toolParts) > 0) —
+// there the empty placeholder is omitted so a pure-tool-call turn
+// renders as `content:[{tool_use...}]` rather than a spurious
+// `content:[{text:""},{tool_use...}]`. The D-02 empty-response
+// contract still holds for the no-tools case: no tool_use parts +
+// empty text still yields one empty text block. Thinking appends after
+// text when present; tool_use parts append after.
 //
 // ToolCalls is populated separately on Message — the Anthropic SDK
 // non-streaming response path reads either form depending on what
@@ -247,8 +296,22 @@ func assembleAnthropicChatResponse(
 	if req != nil {
 		model = req.Model
 	}
-	content := []canonical.ContentPart{
-		{Kind: canonical.ContentKindText, Text: text},
+	var content []canonical.ContentPart
+	// Seed the leading text part unless it would be an empty placeholder
+	// sitting in front of tool_use content. A coerced (or native) pure-
+	// tool-call turn clears the text to "" — prepending an empty
+	// {"type":"text"} block there yields a spurious leading text block on
+	// the Anthropic wire (`content:[{text:""},{tool_use...}]`), which is
+	// not the real Anthropic tool-only shape. Omitting it when
+	// text=="" && len(toolParts)>0 fixes both the wrapper-coercion path
+	// and the native pure-tool-call path. The D-02 empty-response
+	// contract is preserved: no tools + empty text still yields one empty
+	// text block (len(toolParts)==0 keeps the seed).
+	if text != "" || len(toolParts) == 0 {
+		content = append(content, canonical.ContentPart{
+			Kind: canonical.ContentKindText,
+			Text: text,
+		})
 	}
 	if thinking != "" {
 		content = append(content, canonical.ContentPart{

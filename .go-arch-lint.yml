@@ -8,7 +8,10 @@
 #                       it structurally via cmd/main.go wiring).
 #   * adapter_anthropic → canonical only (same TRST-04 contract; the
 #                         next plan (03.1-02) creates source files under
-#                         internal/adapter/anthropic/**).
+#                         internal/adapter/anthropic/**). Track 3b Task 4
+#                         adds a scoped engine dep for
+#                         engine.ExtractToolCallWrappers only — see the
+#                         adapter_anthropic.mayDependOn comment below.
 #   * engine          → canonical + acp (via acp_adapter.go boundary file).
 #   * pool            → canonical + acp + engine (satisfies engine.ACPClient).
 #   * auth            → no internal deps (standalone middleware).
@@ -119,6 +122,19 @@ deps:
     mayDependOn:
       - canonical
       - session
+      - engine  # Track 3b Task 4: collect.go's CollectAnthropicChat
+                # calls engine.ExtractToolCallWrappers ONLY — the
+                # unambiguous {"tool_call":{name,arguments}} wrapper
+                # extractor, which fires solely on that explicit
+                # marker shape. It NEVER calls engine.CoerceToolCall
+                # (the ambiguous bare-`{args}` heuristic used by
+                # adapter_ollama / adapter_openai below) — that would
+                # forge tool_use blocks out of legitimate JSON-shaped
+                # assistant text and break the Anthropic anti-forgery
+                # invariant (D-01 / D-17 scenario 5). The static guard
+                # TestAnthropic_DoesNotCallCoerceToolCall enforces the
+                # CoerceToolCall exclusion at the source level across
+                # both handlers.go and collect.go.
       - auth    # Phase 8 PLUG-03 / 08-02 Task 4: same rationale as
                 # adapter_ollama. Anthropic checks x-api-key first per
                 # Phase 3.1 D-15, then falls back to auth.ExtractToken
