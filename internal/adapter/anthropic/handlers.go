@@ -300,7 +300,7 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
-		resp, err := runSSEEmitter(streamCtx, w, runHandle, wire.Model, a.cfg.StreamIdleTimeout, a.cfg.Logger)
+		resp, err := runSSEEmitter(streamCtx, w, runHandle, req.Tools, wire.Model, a.cfg.StreamIdleTimeout, a.cfg.Logger)
 		if err != nil {
 			// Audit anthropic-flusher-assertion-fail-swallowed: the
 			// no-flusher branch returns BEFORE any bytes are written,

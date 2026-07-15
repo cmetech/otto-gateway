@@ -906,13 +906,17 @@ func TestAnthropic_CoercesToolCallWrapper(t *testing.T) {
 // forge tool_use blocks out of legitimate JSON-shaped assistant text),
 // but MAY call engine.ExtractToolCallWrappers (the unambiguous
 // {"tool_call":{name,arguments}} wrapper extractor — collect.go's D-07
-// coercion path). This guard scans BOTH handlers.go and collect.go for
-// the forbidden `engine.CoerceToolCall` symbol in non-comment code,
-// and explicitly does NOT forbid `engine.ExtractToolCallWrappers`.
+// coercion path). This guard scans handlers.go, collect.go, and sse.go
+// (Track 3b Task 5 — streaming wrapper coercion) for the forbidden
+// `engine.CoerceToolCall` symbol in non-comment code, and explicitly
+// does NOT forbid `engine.ExtractToolCallWrappers`.
 func TestAnthropic_DoesNotCallCoerceToolCall(t *testing.T) {
-	// G304 silenced: handlers.go and collect.go are known sibling
-	// source files, never user input.
-	for _, file := range []string{"handlers.go", "collect.go"} {
+	// G304 silenced: handlers.go, collect.go, and sse.go are known
+	// sibling source files, never user input. sse.go is scanned per
+	// Track 3b Task 5 — the streaming wrapper coercion lands there and
+	// must call ONLY engine.ExtractToolCallWrappers, never
+	// engine.CoerceToolCall.
+	for _, file := range []string{"handlers.go", "collect.go", "sse.go"} {
 		src, err := os.ReadFile(file) //nolint:gosec // sibling source file; constant path
 		if err != nil {
 			t.Fatalf("ReadFile %s: %v", file, err)

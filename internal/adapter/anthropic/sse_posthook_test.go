@@ -46,7 +46,11 @@ func runSSEEmitterAndPostHooks(t *testing.T, ctx context.Context, eng Engine, re
 		sessionID: "session_posthook",
 	}
 	rec := httptest.NewRecorder()
-	resp, err := runSSEEmitter(ctx, rec, runHandle, "auto", 0, logger)
+	var tools []canonical.ToolSpec
+	if req != nil {
+		tools = req.Tools
+	}
+	resp, err := runSSEEmitter(ctx, rec, runHandle, tools, "auto", 0, logger)
 	if resp != nil {
 		if pErr := eng.RunPostHooks(ctx, req, resp); pErr != nil {
 			// Streaming WARN-and-swallow contract — log via the test
@@ -96,7 +100,11 @@ func TestAnthropicSSE_PostHooksFireAfterStreamCompletes(t *testing.T) {
 	if resp == nil {
 		t.Fatal("lastPostResp: got nil, want aggregated response")
 	}
-	// Text part is always at Content[0] per assembleAnthropicChatResponse.
+	// Text part is at Content[0] per assembleAnthropicChatResponse —
+	// EXCEPT a coerced/native tool-only turn (text=="" && tool parts
+	// present) omits the leading empty text block (Track 3b Task 5). This
+	// test feeds non-empty text ("Hello world"), so the text part is
+	// present at Content[0].
 	if len(resp.Message.Content) < 1 {
 		t.Fatalf("Content: got %v, want at least 1 part (text)", resp.Message.Content)
 	}
@@ -244,7 +252,7 @@ func TestAnthropicSSE_PostHooksFireOnClientDisconnect(t *testing.T) {
 		cancel()
 	}()
 	rec := httptest.NewRecorder()
-	resp, err := runSSEEmitter(ctx, rec, runHandle, "auto", 0, nullLogger())
+	resp, err := runSSEEmitter(ctx, rec, runHandle, nil, "auto", 0, nullLogger())
 	if err == nil {
 		t.Fatalf("runSSEEmitter: got nil err, want ctx-cancel error")
 	}

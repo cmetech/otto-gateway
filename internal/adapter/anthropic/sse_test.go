@@ -777,7 +777,7 @@ func TestRunSSEEmitter_NoFlusherError(t *testing.T) {
 	nfw := &nonFlusherWriter{headerMap: http.Header{}}
 	runHandle := newRunHandle()
 
-	_, err := runSSEEmitter(context.Background(), nfw, runHandle, "auto", 0, nullLogger())
+	_, err := runSSEEmitter(context.Background(), nfw, runHandle, nil, "auto", 0, nullLogger())
 	if err == nil || !strings.Contains(err.Error(), "response writer is not flusher") {
 		t.Errorf("error: got %v, want 'response writer is not flusher'", err)
 	}
@@ -811,7 +811,7 @@ func TestRunSSEEmitter_EndToEnd_Headers(t *testing.T) {
 		canonical.Chunk{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "hi"}},
 	)
 
-	_, err := runSSEEmitter(context.Background(), rec, runHandle, "auto", 0, nullLogger())
+	_, err := runSSEEmitter(context.Background(), rec, runHandle, nil, "auto", 0, nullLogger())
 	if err != nil {
 		t.Fatalf("runSSEEmitter: %v", err)
 	}

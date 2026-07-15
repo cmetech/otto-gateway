@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"otto-gateway/internal/canonical"
+	"otto-gateway/internal/engine"
 	"otto-gateway/internal/plugin"
 )
 
@@ -176,6 +177,42 @@ type sseEmitter struct {
 	blockIndex  int
 	currentKind canonical.ChunkKind
 	blockOpen   bool
+
+	// tools is the request's declared tool catalog (req.Tools). Threaded
+	// through so finalizeBufferedText can run
+	// engine.ExtractToolCallWrappers over buffered assistant text at
+	// end-of-stream (Track 3b). Empty/nil disables wrapper coercion —
+	// the buffering seam never engages, so a tool-less stream is
+	// byte-for-byte unchanged on the wire.
+	//
+	// D-05 single-goroutine invariant: read only inside the select-loop
+	// goroutine (applyChunk decision + finalizeStream). No mutex needed.
+	tools []canonical.ToolSpec
+
+	// Track 3b tool-call-wrapper buffering state. kiro can emit an
+	// explicit {"tool_call":{name,arguments}} wrapper as assistant TEXT
+	// (the JS gateway's coercion apparatus). If that text streamed as
+	// text_delta frames, the client would see BOTH the raw JSON AND a
+	// tool_use block. So a tool-call-SHAPED first text chunk (starts with
+	// `{` or a code fence) flips buffering=true: subsequent text is
+	// withheld from the wire and accumulated in bufferedText, then
+	// resolved at end-of-stream (finalizeBufferedText) into either
+	// native tool_use frames (wrapper found) or a verbatim text block
+	// (no wrapper). Mirrors the Ollama NDJSON + OpenAI SSE buffering.
+	//
+	//   - bufferDecided: one-shot guard so eligibility is decided on the
+	//     FIRST text chunk only (matches the "entire text" invariant —
+	//     a split prose-then-JSON stream never buffers).
+	//   - bufferConsumed: set once finalizeBufferedText resolves the
+	//     buffer (coerced or flushed). Guards aggregatedResponse from
+	//     double-counting bufferedText on terminal error/disconnect
+	//     paths where the buffer was never resolved.
+	//
+	// D-05 single-goroutine invariant applies to all three.
+	buffering      bool
+	bufferDecided  bool
+	bufferConsumed bool
+	bufferedText   strings.Builder
 	// toolUseEmitted is set true once a tool_use content_block_start
 	// has been written (regardless of whether a populated delta
 	// followed). finalizeStream consults this flag and overrides the
@@ -286,6 +323,37 @@ func (e *sseEmitter) writeEvent(eventName string, payload any) error {
 // closing before checking kind support would bump the index on
 // dropped chunks and force the next supported chunk into a new block.
 func (e *sseEmitter) applyChunk(c canonical.Chunk) error {
+	// Track 3b: tool-call-wrapper buffering. On the FIRST text chunk
+	// (one-shot via bufferDecided) decide eligibility: with tools
+	// declared AND a tool-call-SHAPED opener (`{` or a code fence),
+	// buffer this and every subsequent text fragment instead of
+	// streaming text_delta frames. finalizeBufferedText resolves the
+	// accumulated buffer at end-of-stream into native tool_use frames
+	// (wrapper found) or a verbatim text block (no wrapper).
+	//
+	// Nil-Text chunks fall through to the existing switch UNCHANGED so
+	// the defensive nil-guard path (open-empty-block behavior) is
+	// preserved — the decision only considers real text content.
+	if c.Kind == canonical.ChunkKindText && c.Text != nil {
+		if !e.bufferDecided {
+			e.bufferDecided = true
+			if len(e.tools) > 0 {
+				trimmed := strings.TrimSpace(c.Text.Content)
+				if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "```") {
+					e.buffering = true
+				}
+			}
+		}
+		if e.buffering {
+			// Withhold from the wire; keep separate from aggText so a
+			// coerced tool-only turn carries NO leading text part (note
+			// 6). aggregatedResponse folds this in only on the
+			// non-coerced/terminal paths (via bufferConsumed).
+			e.bufferedText.WriteString(c.Text.Content)
+			return nil
+		}
+	}
+
 	// Step 1: identify block header. Unsupported kinds short-circuit
 	// BEFORE any state mutation — no close, no bump, no log-as-open.
 	var header any
@@ -485,10 +553,22 @@ func (e *sseEmitter) applyChunk(c canonical.Chunk) error {
 
 // aggregatedResponse builds the canonical.ChatResponse from the
 // per-stream aggregator state. Mirrors
-// assembleAnthropicChatResponse (collect.go:147-181) — text part
-// ALWAYS present at Content[0], thinking appended when non-empty,
-// tool_use parts appended after; Message.ToolCalls populated
-// separately per the D-07 Anthropic exception.
+// assembleAnthropicChatResponse (collect.go:284) — thinking appended
+// when non-empty, tool_use parts appended after; Message.ToolCalls
+// populated separately per the D-07 Anthropic exception.
+//
+// The leading text part is present at Content[0] in every case EXCEPT
+// a coerced/native tool-only turn (text=="" && len(aggToolParts)>0),
+// where the empty placeholder is omitted — matching
+// assembleAnthropicChatResponse so streaming and non-streaming produce
+// identical canonical shape (Track 3b Task 5, note 6). The D-02
+// empty-response contract still holds for the no-tools case.
+//
+// Track 3b: on terminal error/disconnect paths the buffered wrapper
+// text may not have been resolved by finalizeBufferedText. When
+// buffering is active and unconsumed, the buffered text is folded into
+// the forensic text so PostHooks observe the assistant text
+// (bufferConsumed guards against double-counting once resolved).
 //
 // Quick 260530-df2: this method exists so handlers.go can hand
 // the aggregated response to RunPostHooks after the streaming branch
@@ -501,8 +581,16 @@ func (e *sseEmitter) aggregatedResponse(stop canonical.StopReason) *canonical.Ch
 	// wave behavior-neutral; e.model carries the wire model and a
 	// future caller can opt in by reading it explicitly.
 	model := ""
-	content := []canonical.ContentPart{
-		{Kind: canonical.ContentKindText, Text: e.aggText.String()},
+	text := e.aggText.String()
+	if e.buffering && !e.bufferConsumed {
+		text += e.bufferedText.String()
+	}
+	var content []canonical.ContentPart
+	if text != "" || len(e.aggToolParts) == 0 {
+		content = append(content, canonical.ContentPart{
+			Kind: canonical.ContentKindText,
+			Text: text,
+		})
 	}
 	if e.aggThought.Len() > 0 {
 		content = append(content, canonical.ContentPart{
@@ -558,6 +646,150 @@ func (e *sseEmitter) flushPendingToolUseIfNeeded() error {
 	})
 }
 
+// finalizeBufferedText resolves the Track 3b buffered assistant text at
+// end-of-stream. No-op unless a tool-call-shaped opener flipped
+// buffering=true and text actually accumulated.
+//
+// Decision:
+//   - With tools declared AND no native tool_use already on the wire
+//     (!toolUseEmitted), run engine.ExtractToolCallWrappers — the
+//     UNAMBIGUOUS {"tool_call":{name,arguments}} extractor. Anthropic
+//     MUST NOT call engine.CoerceToolCall (the ambiguous bare-{args}
+//     heuristic — anti-forgery invariant; TestAnthropic_DoesNotCall-
+//     CoerceToolCall scans this file).
+//   - Wrapper(s) found → emit one native tool_use frame trio per call
+//     (content_block_start / input_json_delta / content_block_stop),
+//     set toolUseEmitted so finalizeStream overrides stop_reason to
+//     "tool_use". The buffered wrapper JSON is NOT flushed as text and
+//     is NOT folded into aggText — a coerced tool-only turn carries no
+//     leading text part (note 6).
+//   - No wrapper (or native tool_use already emitted) → flush the
+//     buffered text verbatim as a normal text block so the client still
+//     sees the assistant text; fold it into aggText for forensics.
+//
+// Any block still open (a thinking/tool_use block that interleaved with
+// the buffered text) is closed first so the resolved block(s) start
+// from a clean index — mirrors applyChunk's step-2 close discipline.
+func (e *sseEmitter) finalizeBufferedText() error {
+	if !e.buffering || e.bufferedText.Len() == 0 {
+		return nil
+	}
+
+	var calls []canonical.ToolCall
+	if len(e.tools) > 0 && !e.toolUseEmitted {
+		calls = engine.ExtractToolCallWrappers(e.bufferedText.String(), e.tools)
+	}
+
+	// Close any block left open before emitting the resolved block(s).
+	if e.blockOpen {
+		if err := e.flushPendingToolUseIfNeeded(); err != nil {
+			return err
+		}
+		if err := e.writeEvent("content_block_stop", contentBlockStop{
+			Type:  "content_block_stop",
+			Index: e.blockIndex,
+		}); err != nil {
+			return err
+		}
+		e.blockIndex++
+		e.blockOpen = false
+	}
+
+	if len(calls) > 0 {
+		for _, call := range calls {
+			if err := e.emitCoercedToolUse(call); err != nil {
+				return err
+			}
+		}
+		e.toolUseEmitted = true
+		e.bufferConsumed = true
+		return nil
+	}
+
+	// No wrapper — flush the buffered text verbatim as a text block.
+	// Leave the block OPEN so finalizeStream's existing close emits the
+	// matching content_block_stop.
+	if err := e.writeEvent("content_block_start", contentBlockStart{
+		Type:         "content_block_start",
+		Index:        e.blockIndex,
+		ContentBlock: textBlockHeader{Type: "text", Text: ""},
+	}); err != nil {
+		return err
+	}
+	if err := e.writeEvent("content_block_delta", contentBlockDelta{
+		Type:  "content_block_delta",
+		Index: e.blockIndex,
+		Delta: textDelta{Type: "text_delta", Text: e.bufferedText.String()},
+	}); err != nil {
+		return err
+	}
+	e.currentKind = canonical.ChunkKindText
+	e.blockOpen = true
+	e.aggText.WriteString(e.bufferedText.String())
+	e.bufferConsumed = true
+	return nil
+}
+
+// emitCoercedToolUse writes one full tool_use content-block frame trio
+// for a coerced ToolCall — content_block_start (with the CR-01 pointer-
+// to-empty-map `"input":{}` trick) → input_json_delta (marshaled args,
+// or "{}" for a zero-arg tool so the SDK parser gets exactly one
+// well-formed value) → content_block_stop — and bumps blockIndex. Also
+// appends the canonical aggregator parts so PostHooks observe the D-07
+// tool_use shape. Reuses the exact frame shapes from applyChunk's
+// ChunkKindToolCall path.
+func (e *sseEmitter) emitCoercedToolUse(call canonical.ToolCall) error {
+	emptyMap := map[string]any{}
+	if err := e.writeEvent("content_block_start", contentBlockStart{
+		Type:  "content_block_start",
+		Index: e.blockIndex,
+		ContentBlock: toolUseBlockHeader{
+			Type:  "tool_use",
+			ID:    call.ID,
+			Name:  call.Name,
+			Input: &emptyMap,
+		},
+	}); err != nil {
+		return err
+	}
+
+	partial := "{}"
+	if len(call.Arguments) > 0 {
+		if b, err := json.Marshal(call.Arguments); err == nil {
+			partial = string(b)
+		}
+	}
+	if err := e.writeEvent("content_block_delta", contentBlockDelta{
+		Type:  "content_block_delta",
+		Index: e.blockIndex,
+		Delta: inputJSONDelta{Type: "input_json_delta", PartialJSON: partial},
+	}); err != nil {
+		return err
+	}
+	if err := e.writeEvent("content_block_stop", contentBlockStop{
+		Type:  "content_block_stop",
+		Index: e.blockIndex,
+	}); err != nil {
+		return err
+	}
+	e.blockIndex++
+
+	e.aggToolParts = append(e.aggToolParts, canonical.ContentPart{
+		Kind: canonical.ContentKindToolUse,
+		ToolUse: &canonical.ToolUsePart{
+			ID:    call.ID,
+			Name:  call.Name,
+			Input: call.Arguments,
+		},
+	})
+	e.aggToolCalls = append(e.aggToolCalls, canonical.ToolCall{
+		ID:        call.ID,
+		Name:      call.Name,
+		Arguments: call.Arguments,
+	})
+	return nil
+}
+
 // runSSEEmitter is the entry point for the SSE streaming branch. It
 // errNoFlusher is returned by runSSEEmitter when the ResponseWriter
 // does not implement http.Flusher. Distinct from in-flight emitter
@@ -588,7 +820,7 @@ var errNoFlusher = errors.New("anthropic: response writer is not flusher")
 // Result() failure, or any wrapped writeEvent error. The Flusher-
 // assertion failure short-circuits BEFORE any aggregation work, so
 // the response is nil in that single case.
-func runSSEEmitter(ctx context.Context, w http.ResponseWriter, run RunHandle, model string, streamIdle time.Duration, logger *slog.Logger) (*canonical.ChatResponse, error) {
+func runSSEEmitter(ctx context.Context, w http.ResponseWriter, run RunHandle, tools []canonical.ToolSpec, model string, streamIdle time.Duration, logger *slog.Logger) (*canonical.ChatResponse, error) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		// Caller (handlers.go) is responsible for translating this into
@@ -613,6 +845,7 @@ func runSSEEmitter(ctx context.Context, w http.ResponseWriter, run RunHandle, mo
 		logger:    logger,
 		messageID: genMessageID(),
 		model:     model,
+		tools:     tools,
 	}
 
 	// message_start: empty content, null stop_reason/stop_sequence,
@@ -767,6 +1000,14 @@ func runSSEEmitterLoop(ctx context.Context, e *sseEmitter, run RunHandle, ticker
 //   - Result() success → emit message_delta (with mapped stop_reason)
 //   - message_stop + return nil.
 func finalizeStream(e *sseEmitter, run RunHandle) (*canonical.ChatResponse, error) {
+	// Track 3b: resolve buffered tool-call-wrapper text BEFORE the
+	// existing block-close + message_delta. Emits native tool_use frames
+	// (wrapper found) or a verbatim text block (no wrapper). On a write
+	// failure the stream is already broken; surface the error with the
+	// partial aggregated response for PostHook forensics.
+	if err := e.finalizeBufferedText(); err != nil {
+		return e.aggregatedResponse(canonical.StopUnknown), err
+	}
 	if e.blockOpen {
 		// Best-effort close; the stream is ending either way.
 		// Flush a `partial_json:"{}"` first if the closing block is a
