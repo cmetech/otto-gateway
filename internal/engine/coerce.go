@@ -264,3 +264,162 @@ func StripFences(text string) (string, bool) {
 	}
 	return t, false
 }
+
+// repairControlChars escapes raw control characters inside JSON string
+// values. Iterates over bytes (not runes) to handle multi-byte UTF-8
+// verbatim. When inside a quoted string (tracking inStr/esc), replaces
+// raw \n → \\n, \r → \\r, \t → \\t. Outside strings, copies verbatim.
+// This matches JS semantics for ASCII control chars in JSON repair.
+func repairControlChars(s string) string {
+	var out strings.Builder
+	b := []byte(s)
+	inStr := false
+	esc := false
+
+	for _, ch := range b {
+		if inStr {
+			if esc {
+				out.WriteByte(ch)
+				esc = false
+			} else if ch == '\\' {
+				out.WriteByte(ch)
+				esc = true
+			} else if ch == '"' {
+				out.WriteByte(ch)
+				inStr = false
+			} else if ch == '\n' {
+				out.WriteString("\\n")
+			} else if ch == '\r' {
+				out.WriteString("\\r")
+			} else if ch == '\t' {
+				out.WriteString("\\t")
+			} else {
+				out.WriteByte(ch)
+			}
+		} else {
+			if ch == '"' {
+				inStr = true
+			}
+			out.WriteByte(ch)
+		}
+	}
+	return out.String()
+}
+
+// extractToolCallObjects locates all {"tool_call":...} wrappers in text,
+// using balanced-brace scanning to extract complete JSON objects even
+// when truncated. For each occurrence of the "tool_call" key:
+//  1. Find the enclosing { via strings.LastIndex.
+//  2. Scan forward with inStr/esc/depth tracking to find the matching }.
+//  3. Try to parse slice → if fail, try repairControlChars(slice).
+//  4. If the scan runs off-end with 1 <= depth <= 8 and not inStr,
+//     truncation-repair: close with }*depth and retry parse.
+//
+// Returns a slice of parsed objects (map[string]any) or nil if none found.
+// Only objects that unmarshal into map[string]any are included; arrays
+// and scalars are skipped (handled at wrapper layer by the caller).
+func extractToolCallObjects(text string) []map[string]any {
+	var out []map[string]any
+
+	// tryParse attempts to unmarshal s into map[string]any.
+	tryParse := func(s string) (map[string]any, bool) {
+		var m map[string]any
+		err := json.Unmarshal([]byte(s), &m)
+		return m, err == nil
+	}
+
+	idx := 0
+	toolCallKey := `"tool_call"`
+	keyLen := len(toolCallKey) // 11 bytes
+
+	for idx < len(text) {
+		relIdx := strings.Index(text[idx:], toolCallKey)
+		if relIdx == -1 {
+			break
+		}
+		idx += relIdx // Absolute position of "tool_call" in text
+
+		// Find the opening { before this position.
+		start := strings.LastIndex(text[:idx], "{")
+		if start == -1 {
+			idx += keyLen
+			continue
+		}
+
+		// String-aware balanced-brace scan from start to find matching }.
+		b := []byte(text)
+		depth := 0
+		inStr := false
+		esc := false
+		end := -1
+		lastMeaningful := start
+
+		for j := start; j < len(text); j++ {
+			ch := b[j]
+			if inStr {
+				if esc {
+					esc = false
+				} else if ch == '\\' {
+					esc = true
+				} else if ch == '"' {
+					inStr = false
+					lastMeaningful = j
+				}
+				continue
+			}
+
+			if ch == '"' {
+				inStr = true
+			} else if ch == '{' {
+				depth++
+			} else if ch == '}' {
+				depth--
+				lastMeaningful = j
+				if depth == 0 {
+					end = j
+					break
+				}
+			} else if ch == ']' || isWordOrDot(ch) {
+				lastMeaningful = j
+			}
+		}
+
+		// If we found a complete, balanced object, try to parse it.
+		if end > start {
+			slice := text[start : end+1]
+			if parsed, ok := tryParse(slice); ok {
+				out = append(out, parsed)
+			} else if parsed, ok := tryParse(repairControlChars(slice)); ok {
+				out = append(out, parsed)
+			}
+			idx = end + 1
+		} else if depth >= 1 && depth <= 8 && !inStr {
+			// Truncation-repair: close with missing braces and retry.
+			slice := text[start : lastMeaningful+1]
+			repaired := slice + strings.Repeat("}", depth)
+			if parsed, ok := tryParse(repaired); ok {
+				out = append(out, parsed)
+			} else if parsed, ok := tryParse(repairControlChars(repaired)); ok {
+				out = append(out, parsed)
+			}
+			idx += keyLen
+		} else {
+			idx += keyLen
+		}
+	}
+
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// isWordOrDot reports whether ch is a word character (a-z, A-Z, 0-9, _)
+// or a dot (.). Used in balanced-brace scanning to track lastMeaningful.
+func isWordOrDot(ch byte) bool {
+	return (ch >= 'a' && ch <= 'z') ||
+		(ch >= 'A' && ch <= 'Z') ||
+		(ch >= '0' && ch <= '9') ||
+		ch == '_' ||
+		ch == '.'
+}
