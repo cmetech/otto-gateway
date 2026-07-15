@@ -67,11 +67,17 @@ type trayState struct {
 	miDesktopStart    *systray.MenuItem
 	miDesktopStop     *systray.MenuItem
 
-	// advanced ▸ open-folder links
+	// advanced ▸ open-folder links + metrics remote-write toggle
 	miAdvanced          *systray.MenuItem
 	miOpenAppFolder     *systray.MenuItem
 	miOpenDataFolder    *systray.MenuItem
 	miOpenGatewayFolder *systray.MenuItem
+	miMetricsRW         *systray.MenuItem
+
+	// metricsRWEnabled is the live on/off for Grafana Cloud remote-write, read
+	// each cycle by runRemoteWriter and flipped by the Advanced-menu checkbox so
+	// enable/disable takes effect without a tray restart.
+	metricsRWEnabled atomic.Bool
 
 	// brandLoop24 selects the tray icon: true → loop24 mark (default when the
 	// desktop brand.json is absent), false → OTTO. Updated by the desktop poller.
@@ -120,6 +126,9 @@ func (s *trayState) onReady(isFirstRun bool) func() {
 		s.miOpenAppFolder = s.miAdvanced.AddSubMenuItem("Open App Folder", "Reveal the installed desktop app folder")
 		s.miOpenDataFolder = s.miAdvanced.AddSubMenuItem("Open Data Folder (."+brandSlug(did)+")", "Open the "+did.DisplayName+" data folder")
 		s.miOpenGatewayFolder = s.miAdvanced.AddSubMenuItem("Open Gateway Folder (~/.gw)", "Open the Gateway data folder")
+		rwInitial := resolveMetricsRWEnabled(s.cfg, s.gwHome)
+		s.metricsRWEnabled.Store(rwInitial)
+		s.miMetricsRW = s.miAdvanced.AddSubMenuItemCheckbox("Send metrics to Grafana Cloud", "Scrape the gateway's metrics and remote-write them to Grafana Cloud", rwInitial)
 		systray.AddSeparator()
 		s.miSupport = systray.AddMenuItem("Create Support Bundle…", "Produce a redacted diagnostic archive")
 		systray.AddSeparator()
@@ -142,6 +151,12 @@ func (s *trayState) onReady(isFirstRun bool) func() {
 		dtick := time.NewTicker(3 * time.Second).C
 		go runDesktopPoller(ctx, s.makeDesktopProbe(), dtick, s.desktopCh)
 		go s.desktopUILoop()
+
+		// Grafana Cloud metrics remote-write agent (quick 260715-q5m). Shares the
+		// poller ctx so it stops on tray exit. Reads its interval/endpoint/token
+		// from overrides.env/.env each cycle; the Advanced checkbox gates it live.
+		rw := newRemoteWriter(s.dashboardURL+"/metrics", s.gwHome, &s.metricsRWEnabled)
+		go runRemoteWriter(ctx, rw, sleepCtx)
 
 		go func() {
 			time.Sleep(500 * time.Millisecond)
@@ -181,6 +196,7 @@ func (s *trayState) wireCallbacks() {
 	s.miOpenAppFolder.Click(func() { go s.handleOpenAppFolder() })
 	s.miOpenDataFolder.Click(func() { go s.handleOpenDataFolder() })
 	s.miOpenGatewayFolder.Click(func() { go s.handleOpenGatewayFolder() })
+	s.miMetricsRW.Click(func() { go s.toggleMetricsRemoteWrite() })
 }
 
 func (s *trayState) makeProbe() probeFunc {
@@ -509,6 +525,37 @@ func (s *trayState) toggleStartGatewayOnLaunch() {
 	} else {
 		s.miPrefsStart.Uncheck()
 	}
+	if err := saveTrayConfig(gwTrayConfigPath(s.gwHome), cfg); err != nil {
+		slog.Error("save tray.json", "err", err)
+	}
+}
+
+// resolveMetricsRWEnabled decides the checkbox's initial state: the persisted
+// tray.json override wins when present, otherwise the env default
+// (GW_METRICS_REMOTE_WRITE_ENABLED). This is the "checkbox persists, env is
+// default" model.
+func resolveMetricsRWEnabled(cfg TrayConfig, gwHome string) bool {
+	if cfg.MetricsRemoteWriteEnabled != nil {
+		return *cfg.MetricsRemoteWriteEnabled
+	}
+	return loadRemoteWriteConfig(gwHome).EnvEnabled
+}
+
+// toggleMetricsRemoteWrite flips the live atomic (so the writer goroutine picks
+// it up on its next cycle) and persists the concrete on/off to tray.json so the
+// choice survives restarts and thereafter wins over the env default.
+func (s *trayState) toggleMetricsRemoteWrite() {
+	newVal := !s.metricsRWEnabled.Load()
+	s.metricsRWEnabled.Store(newVal)
+	if newVal {
+		s.miMetricsRW.Check()
+	} else {
+		s.miMetricsRW.Uncheck()
+	}
+	s.mu.Lock()
+	s.cfg.MetricsRemoteWriteEnabled = &newVal
+	cfg := s.cfg
+	s.mu.Unlock()
 	if err := saveTrayConfig(gwTrayConfigPath(s.gwHome), cfg); err != nil {
 		slog.Error("save tray.json", "err", err)
 	}

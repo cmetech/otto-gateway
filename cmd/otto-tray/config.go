@@ -15,6 +15,13 @@ import (
 type TrayConfig struct {
 	LaunchAtLogin        bool `json:"launch_tray_at_login"`
 	StartGatewayOnLaunch bool `json:"start_gateway_when_tray_launches"`
+	// MetricsRemoteWriteEnabled is the Advanced-menu toggle for Grafana Cloud
+	// remote-write. A pointer with omitempty so nil (field absent) means "not
+	// set by the user" — the writer then falls back to the env default
+	// (GW_METRICS_REMOTE_WRITE_ENABLED). Once the operator flips the checkbox it
+	// becomes a concrete true/false that wins over the env default. Never holds
+	// the endpoint/token — only the on/off bit lives here.
+	MetricsRemoteWriteEnabled *bool `json:"metrics_remote_write_enabled,omitempty"`
 }
 
 // loadTrayConfig reads tray.json. Missing file ⇒ defaults + isFirstRun
