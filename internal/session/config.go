@@ -114,6 +114,10 @@ type Config struct {
 	// (Track 0 tool-call wire capture). Optional; nil leaves the acp OnRawFrame
 	// hook unset. Wired in cmd/otto-gateway/main.go to the capture ring.
 	Capture func(method string, params json.RawMessage)
+	// MaxToolDenials is the Track 3a circuit-breaker threshold forwarded
+	// to each session's acp.Config.MaxToolDenials. Loaded from MAX_TOOL_DENIALS
+	// (default 4); 0 causes the permission handler to fall back to 4 defensively.
+	MaxToolDenials int
 }
 
 // applyDefaults fills in zero-value Config fields. TTL/TickInterval/

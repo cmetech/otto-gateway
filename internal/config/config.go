@@ -197,6 +197,11 @@ type Config struct {
 	// ACP_CAPTURE_SIZE; must be > 0.
 	AcpCaptureSize int
 
+	// MaxToolDenials is the Track 3a circuit-breaker threshold: after this many
+	// built-in-tool permission denials in one turn, the turn is cancelled.
+	// Default 4 (Node-parity). Loaded from MAX_TOOL_DENIALS; must be > 0.
+	MaxToolDenials int
+
 	// EnabledHooks is the comma-split allowlist of hook type names enabled
 	// at boot (Phase 8 D-02). Default empty = all hooks in the chain
 	// enabled (matches AUTH_TOKEN semantics — permissive default). A name
@@ -551,6 +556,14 @@ func Load() (Config, error) {
 		errs = append(errs, fmt.Errorf("ACP_CAPTURE_SIZE: must be > 0, got %d", acpCaptureSize))
 	}
 
+	maxToolDenials, err := getEnvInt("MAX_TOOL_DENIALS", 4)
+	if err != nil {
+		errs = append(errs, err)
+	}
+	if maxToolDenials <= 0 {
+		errs = append(errs, fmt.Errorf("MAX_TOOL_DENIALS: must be > 0, got %d", maxToolDenials))
+	}
+
 	// Quick 260531-ruv — STREAM_IDLE_TIMEOUT_SEC. Default 30 (seconds).
 	// Zero is VALID (explicit disable). Negative values are a boot error.
 	// Non-integer values bubble up from getEnvInt as a wrapped error
@@ -815,6 +828,7 @@ func Load() (Config, error) {
 		RecyclePct:                recyclePct,
 		AcpCapture:                acpCapture,
 		AcpCaptureSize:            acpCaptureSize,
+		MaxToolDenials:            maxToolDenials,
 		EnabledHooks:              enabledHooks,
 		PIIRedactionEnabled:       piiEnabled,
 		PIIEnabledEntities:        piiEntities,

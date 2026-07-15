@@ -90,6 +90,12 @@ type Config struct {
 	// raw wire behavior. nil = no capture (one nil check on the read path, zero
 	// cost when disabled).
 	OnRawFrame func(method string, params json.RawMessage)
+
+	// MaxToolDenials is the Track 3a circuit-breaker threshold: after this many
+	// built-in-tool permission denials in one turn, the turn is cancelled.
+	// Client-lifetime; loaded from MAX_TOOL_DENIALS (default 4). <=0 ⇒ handler
+	// falls back to 4.
+	MaxToolDenials int
 }
 
 // applyDefaults fills in zero-value Config fields with documented defaults.

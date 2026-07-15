@@ -558,6 +558,8 @@ func (p *Pool) acpSlotConfig() acp.Config {
 	if p.cfg.Capture != nil {
 		cfg.OnRawFrame = p.cfg.Capture
 	}
+	// Track 3a circuit breaker: forward the max-tool-denials threshold to each slot.
+	cfg.MaxToolDenials = p.cfg.MaxToolDenials
 	return cfg
 }
 

@@ -405,10 +405,11 @@ func (r *Registry) createEntry(ctx context.Context, sid, cwd string, e *Entry) (
 		// from OnTurnMeter's end-of-turn ctx. OnTurnMeter / OnMCPInit forward to
 		// the shared recorder. Wired per-entry because OnContextPct closes over
 		// this specific *Entry.
-		OnContextPct: func(pct float64) { e.setCtxPct(pct) },
-		OnTurnMeter:  r.recorderTurnMeter(),
-		OnMCPInit:    r.recorderMCPInit(),
-		OnRawFrame:   r.cfg.Capture, // Track 0 capture (nil when disabled)
+		OnContextPct:   func(pct float64) { e.setCtxPct(pct) },
+		OnTurnMeter:    r.recorderTurnMeter(),
+		OnMCPInit:      r.recorderMCPInit(),
+		OnRawFrame:     r.cfg.Capture, // Track 0 capture (nil when disabled)
+		MaxToolDenials: r.cfg.MaxToolDenials,
 	})
 	if err != nil {
 		return publishError(nil, fmt.Errorf("session: spawn %q: %w", sid, err))

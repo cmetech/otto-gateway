@@ -411,14 +411,15 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 
 	if cfg.KiroCmd != "" {
 		a.pool = pool.New(pool.Config{
-			Logger:       logger,
-			Size:         cfg.PoolSize,
-			KiroCmd:      cfg.KiroCmd,
-			KiroArgs:     cfg.KiroArgs,
-			KiroCWD:      cfg.KiroCWD,
-			PingInterval: cfg.PingInterval,
-			Metrics:      gwMetrics,                         // kiro usage-metrics parity: forward slot usage events
-			Capture:      captureRecordFunc(acpCaptureRing), // Track 0 (nil ring → nil func → no capture)
+			Logger:         logger,
+			Size:           cfg.PoolSize,
+			KiroCmd:        cfg.KiroCmd,
+			KiroArgs:       cfg.KiroArgs,
+			KiroCWD:        cfg.KiroCWD,
+			PingInterval:   cfg.PingInterval,
+			Metrics:        gwMetrics,                         // kiro usage-metrics parity: forward slot usage events
+			Capture:        captureRecordFunc(acpCaptureRing), // Track 0 (nil ring → nil func → no capture)
+			MaxToolDenials: cfg.MaxToolDenials,                // Track 3a: circuit breaker threshold
 		})
 
 		// POOL-02: warmup BEFORE the HTTP listener accepts traffic.
@@ -450,17 +451,18 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 		// env-var contract; SessionTTL + SessionMax are Phase 5 additions
 		// loaded by internal/config.
 		a.registry = session.New(session.Config{
-			Logger:       logger,
-			TTL:          cfg.SessionTTL,
-			TickInterval: cfg.SessionTickInterval,
-			MaxSessions:  cfg.SessionMax,
-			KiroCmd:      cfg.KiroCmd,
-			KiroArgs:     cfg.KiroArgs,
-			KiroCWD:      cfg.KiroCWD,
-			PingInterval: cfg.PingInterval,
-			RecyclePct:   cfg.RecyclePct, // Track 2: proactive context recycle at CTX_RECYCLE_PCT
-			Metrics:      gwMetrics,      // kiro usage-metrics parity: forward per-session usage events
-			Capture:      captureRecordFunc(acpCaptureRing),
+			Logger:         logger,
+			TTL:            cfg.SessionTTL,
+			TickInterval:   cfg.SessionTickInterval,
+			MaxSessions:    cfg.SessionMax,
+			KiroCmd:        cfg.KiroCmd,
+			KiroArgs:       cfg.KiroArgs,
+			KiroCWD:        cfg.KiroCWD,
+			PingInterval:   cfg.PingInterval,
+			RecyclePct:     cfg.RecyclePct, // Track 2: proactive context recycle at CTX_RECYCLE_PCT
+			Metrics:        gwMetrics,      // kiro usage-metrics parity: forward per-session usage events
+			Capture:        captureRecordFunc(acpCaptureRing),
+			MaxToolDenials: cfg.MaxToolDenials, // Track 3a: circuit breaker threshold
 		})
 		a.registry.Start(context.Background())
 	}

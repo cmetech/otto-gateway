@@ -146,6 +146,10 @@ type Config struct {
 	// OnRawFrame hook unset. Wired in cmd/otto-gateway/main.go to the capture
 	// ring's Record method when ACP_CAPTURE is enabled.
 	Capture func(method string, params json.RawMessage)
+	// MaxToolDenials is the Track 3a circuit-breaker threshold forwarded
+	// to each slot's acp.Config.MaxToolDenials. Loaded from MAX_TOOL_DENIALS
+	// (default 4); 0 causes the permission handler to fall back to 4 defensively.
+	MaxToolDenials int
 }
 
 // applyDefaults fills in zero-value Config fields. Size floors to 1
