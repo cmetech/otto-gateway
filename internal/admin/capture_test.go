@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -68,5 +69,34 @@ func TestAcpCapture_Disabled(t *testing.T) {
 	}
 	if body.Frames == nil {
 		t.Error("frames must be a non-nil (empty) array")
+	}
+}
+
+// TestAbout_AcpCaptureRow: the About page's Feature Flags card shows an
+// "ACP capture" row reflecting whether ACP_CAPTURE is on — "on" (with the
+// SENSITIVE badge) when a capture source is wired, "off" when it is nil. The
+// wired-vs-nil AcpCaptureSource is the canonical enabled signal.
+func TestAbout_AcpCaptureRow(t *testing.T) {
+	const onRow = `<dt>ACP capture</dt><dd>on <span class="gw-badge is-warning">SENSITIVE</span></dd>`
+	const offRow = `<dt>ACP capture</dt><dd>off</dd>`
+
+	// Wired source → on.
+	hOn := admin.Handler(admin.Deps{AcpCapture: fakeCaptureSource{}})
+	recOn := doGet(t, hOn, "/about")
+	if recOn.Code != http.StatusOK {
+		t.Fatalf("GET /about (wired): status = %d, want 200", recOn.Code)
+	}
+	if body := recOn.Body.String(); !strings.Contains(body, onRow) {
+		t.Errorf("About page missing ACP-capture ON row %q", onRow)
+	}
+
+	// No source → off.
+	hOff := admin.Handler(admin.Deps{})
+	recOff := doGet(t, hOff, "/about")
+	if recOff.Code != http.StatusOK {
+		t.Fatalf("GET /about (nil): status = %d, want 200", recOff.Code)
+	}
+	if body := recOff.Body.String(); !strings.Contains(body, offRow) {
+		t.Errorf("About page missing ACP-capture OFF row %q", offRow)
 	}
 }

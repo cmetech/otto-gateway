@@ -305,6 +305,11 @@ type aboutData struct {
 	KiroArgs             string
 	KiroCwd              string
 
+	// AcpCaptureEnabled mirrors whether ACP_CAPTURE is on. Populated by
+	// aboutHandler from Deps.AcpCapture != nil — the canonical "capture
+	// wired" signal (see capture.go: a nil source means capture is off).
+	AcpCaptureEnabled bool
+
 	// PII view-model fields. Populated by aboutHandler from the cfg
 	// snapshot in Deps. EntityActions is rendered as a sorted slice
 	// (templates can't iterate a Go map in a stable order) and
@@ -410,6 +415,7 @@ func (h *handler) aboutHandler(w http.ResponseWriter, r *http.Request) {
 		IPAllowlistEnabled:   h.deps.IPAllowlistEnabled,
 		Debug:                h.deps.Debug,
 		ChatTrace:            h.deps.ChatTrace,
+		AcpCaptureEnabled:    h.deps.AcpCapture != nil,
 		KiroCmd:              kiroCmd,
 		KiroArgs:             kiroArgs,
 		KiroCwd:              kiroCwd,
