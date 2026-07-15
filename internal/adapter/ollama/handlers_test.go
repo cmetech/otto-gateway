@@ -596,6 +596,66 @@ func TestHandleChat_NonStreaming_CoerceFires(t *testing.T) {
 	}
 }
 
+// TestHandleChat_NonStreaming_ToolCallWrapperCoerce proves Track 3b: a
+// fenced `{"tool_call":{"name":...,"arguments":{...}}}` wrapper emitted as
+// assistant text — kiro's elicitation-coercion apparatus shape, distinct
+// from the bare-{args} LangChain shape covered by
+// TestHandleChat_NonStreaming_CoerceFires above — is coerced into
+// structured message.tool_calls via the ExtractToolCallWrappers tier
+// inside engine.CoerceToolCall, which runs BEFORE the legacy bare-{args}
+// heuristic. Ollama's wire renderer emits arguments as a JSON OBJECT
+// (D-04), verified via both the raw byte canary and structured decode.
+func TestHandleChat_NonStreaming_ToolCallWrapperCoerce(t *testing.T) {
+	wrapperText := "```json\n{\"tool_call\":{\"name\":\"get_weather\",\"arguments\":{\"city\":\"Paris\"}}}\n```"
+	eng := &fakeEngine{
+		resp: &canonical.ChatResponse{
+			Model: "auto",
+			Message: canonical.Message{
+				Role: canonical.RoleAssistant,
+				Content: []canonical.ContentPart{
+					{Kind: canonical.ContentKindText, Text: wrapperText},
+				},
+			},
+			StopReason: canonical.StopEndTurn,
+		},
+	}
+	a := newTestAdapter(eng, nil)
+	body := `{"model":"auto","messages":[{"role":"user","content":"weather in Paris?"}],"stream":false,"tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object","properties":{"city":{"type":"string"}}}}}]}`
+	w := doPost(t, a, "/chat", body)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+
+	// Byte-level wire-shape canary: arguments serialize as a plain JSON
+	// object (Ollama D-04), NOT an OpenAI-style JSON-encoded string.
+	bodyStr := w.Body.String()
+	if !strings.Contains(bodyStr, `"arguments":{"city":"Paris"}`) {
+		t.Errorf("wire-shape canary FAILED — expected plain-object arguments in response; got: %s", bodyStr)
+	}
+	if strings.Contains(bodyStr, `"arguments":"`) {
+		t.Errorf("wire-shape canary FAILED — found JSON-string arguments form (OpenAI shape); got: %s", bodyStr)
+	}
+
+	var resp ollamaChatResponse
+	if err := json.NewDecoder(strings.NewReader(bodyStr)).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Message.ToolCalls) != 1 {
+		t.Fatalf("Message.ToolCalls len: got %d, want 1 (wrapper coerce must have fired); body=%s", len(resp.Message.ToolCalls), bodyStr)
+	}
+	if resp.Message.ToolCalls[0].Function.Name != "get_weather" {
+		t.Errorf("ToolCalls[0].Function.Name: got %q, want get_weather", resp.Message.ToolCalls[0].Function.Name)
+	}
+	if resp.Message.ToolCalls[0].Function.Arguments["city"] != "Paris" {
+		t.Errorf("ToolCalls[0].Function.Arguments[city]: got %v, want Paris", resp.Message.ToolCalls[0].Function.Arguments["city"])
+	}
+	// Step 8: text content is cleared after coerce.
+	if resp.Message.Content != "" {
+		t.Errorf("Message.Content: got %q, want empty (coerce clears the matched text)", resp.Message.Content)
+	}
+}
+
 // TestHandleChat_NonStreaming_KiroNativeNarration_NoCoerce locks the
 // iteration-3 interaction: when engine.Collect produces `[tool: <name>]\n`
 // narration text (from the 06-01 aggregator), CoerceToolCall sees the

@@ -292,6 +292,95 @@ func TestIntegration_FakeEngine_NonStream(t *testing.T) {
 	}
 }
 
+// TestIntegration_FakeEngine_NonStream_ToolCallWrapperCoerce proves
+// Track 3b end to end over the real HTTP handler (not just the render
+// unit tests in render_test.go): a fenced
+// `{"tool_call":{"name":...,"arguments":{...}}}` wrapper emitted as
+// assistant text — kiro's elicitation-coercion apparatus shape — is
+// coerced by the real engine.CoerceToolCall (via the
+// ExtractToolCallWrappers tier, which runs BEFORE the legacy bare-{args}
+// heuristic) into structured choices[0].message.tool_calls. Per the
+// OpenAI wire convention (opposite of Ollama's D-04 object form),
+// function.arguments renders as a JSON-encoded STRING, and
+// finish_reason flips to "tool_calls".
+func TestIntegration_FakeEngine_NonStream_ToolCallWrapperCoerce(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	wrapperText := "```json\n{\"tool_call\":{\"name\":\"get_weather\",\"arguments\":{\"city\":\"Paris\"}}}\n```"
+	eng := &fakeEngine{
+		collectResp: &canonical.ChatResponse{
+			StopReason: canonical.StopEndTurn,
+			Message: canonical.Message{
+				Role: canonical.RoleAssistant,
+				Content: []canonical.ContentPart{
+					{Kind: canonical.ContentKindText, Text: wrapperText},
+				},
+			},
+		},
+	}
+	srv := mountedAdapter(newFakeAdapter(eng))
+	defer srv.Close()
+
+	body := []byte(`{"model":"auto","messages":[{"role":"user","content":"weather in Paris?"}],"stream":false,"tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object","properties":{"city":{"type":"string"}}}}}]}`)
+	req, err := http.NewRequestWithContext(context.Background(),
+		http.MethodPost, srv.URL+"/v1/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: got %d, want 200; body=%s", resp.StatusCode, raw)
+	}
+	ct := resp.Header.Get("Content-Type")
+	if !strings.HasPrefix(ct, "application/json") {
+		t.Errorf("Content-Type: got %q, want application/json prefix", ct)
+	}
+
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+
+	// Byte-level wire-shape canary: arguments serialize as a JSON-encoded
+	// STRING (OpenAI convention), NOT an Ollama-style plain object.
+	if !strings.Contains(string(raw), `"arguments":"{\"city\":\"Paris\"}"`) {
+		t.Errorf("wire-shape canary FAILED — expected JSON-string arguments in response; got: %s", raw)
+	}
+
+	var completion chatCompletion
+	if err := json.Unmarshal(raw, &completion); err != nil {
+		t.Fatalf("decode chat.completion: %v", err)
+	}
+	if len(completion.Choices) == 0 {
+		t.Fatal("choices: empty")
+	}
+	if len(completion.Choices[0].Message.ToolCalls) != 1 {
+		t.Fatalf("message.tool_calls len: got %d, want 1 (wrapper coerce must have fired); body=%s", len(completion.Choices[0].Message.ToolCalls), raw)
+	}
+	tc := completion.Choices[0].Message.ToolCalls[0]
+	if tc.Function.Name != "get_weather" {
+		t.Errorf("tool_calls[0].function.name: got %q, want get_weather", tc.Function.Name)
+	}
+	var args map[string]any
+	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+		t.Fatalf("tool_calls[0].function.arguments must be a JSON-encoded string that parses: %v; raw=%q", err, tc.Function.Arguments)
+	}
+	if args["city"] != "Paris" {
+		t.Errorf("tool_calls[0].function.arguments[city]: got %v, want Paris", args["city"])
+	}
+	if completion.Choices[0].FinishReason != "tool_calls" {
+		t.Errorf("finish_reason: got %q, want tool_calls", completion.Choices[0].FinishReason)
+	}
+}
+
 // TestIntegration_FakeEngine_Streaming (SC2): POST stream:true → 200 +
 // Content-Type text/event-stream + correct frame sequence + data: [DONE].
 // This is the Pi/SC2 acceptance path.
