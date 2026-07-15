@@ -189,6 +189,14 @@ type Config struct {
 	// session.Config.RecyclePct.
 	RecyclePct float64
 
+	// AcpCapture enables the Track 0 raw-frame capture ring + the
+	// GET /admin/api/acp-capture endpoint. Off by default (diagnostic mode).
+	// Loaded from ACP_CAPTURE.
+	AcpCapture bool
+	// AcpCaptureSize bounds the capture ring (frames). Default 512. Loaded from
+	// ACP_CAPTURE_SIZE; must be > 0.
+	AcpCaptureSize int
+
 	// EnabledHooks is the comma-split allowlist of hook type names enabled
 	// at boot (Phase 8 D-02). Default empty = all hooks in the chain
 	// enabled (matches AUTH_TOKEN semantics — permissive default). A name
@@ -528,6 +536,21 @@ func Load() (Config, error) {
 		errs = append(errs, fmt.Errorf("CTX_RECYCLE_PCT: must be in [0,100], got %v", recyclePct))
 	}
 
+	// Track 0 tool-call wire capture. Off by default; ACP_CAPTURE_SIZE bounds
+	// the in-memory ring. Diagnostic mode — records raw prompt/response content,
+	// admin-only, never persisted (see docs/operating.md).
+	acpCapture, err := getEnvBool("ACP_CAPTURE", false)
+	if err != nil {
+		errs = append(errs, err)
+	}
+	acpCaptureSize, err := getEnvInt("ACP_CAPTURE_SIZE", 512)
+	if err != nil {
+		errs = append(errs, err)
+	}
+	if acpCaptureSize <= 0 {
+		errs = append(errs, fmt.Errorf("ACP_CAPTURE_SIZE: must be > 0, got %d", acpCaptureSize))
+	}
+
 	// Quick 260531-ruv — STREAM_IDLE_TIMEOUT_SEC. Default 30 (seconds).
 	// Zero is VALID (explicit disable). Negative values are a boot error.
 	// Non-integer values bubble up from getEnvInt as a wrapped error
@@ -790,6 +813,8 @@ func Load() (Config, error) {
 		SessionMax:                sessionMax,
 		SessionTickInterval:       sessionTickInterval,
 		RecyclePct:                recyclePct,
+		AcpCapture:                acpCapture,
+		AcpCaptureSize:            acpCaptureSize,
 		EnabledHooks:              enabledHooks,
 		PIIRedactionEnabled:       piiEnabled,
 		PIIEnabledEntities:        piiEntities,
