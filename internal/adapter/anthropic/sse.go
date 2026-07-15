@@ -213,6 +213,25 @@ type sseEmitter struct {
 	bufferDecided  bool
 	bufferConsumed bool
 	bufferedText   strings.Builder
+
+	// pendingWhitespace holds leading whitespace-only text chunks that
+	// arrive BEFORE the one-shot buffering decision (H2 fix). kiro can
+	// emit a leading "\n" token before the fenced/JSON tool-call wrapper;
+	// deciding eligibility on that whitespace chunk (TrimSpace == "")
+	// would permanently disable coercion. Instead the whitespace is held
+	// here WITHOUT deciding, and the first chunk carrying non-whitespace
+	// content makes the call:
+	//   - buffering=true  → the held whitespace is prepended into
+	//     bufferedText so a no-wrapper flush replays it EXACTLY.
+	//   - buffering=false → the held whitespace is replayed as normal
+	//     text_delta(s) via flushPendingWhitespace before this chunk
+	//     streams, preserving the byte-for-byte passthrough invariant.
+	// Drained to a text block at end-of-stream if the whole stream was
+	// whitespace-only (finalizeStream). Folded into aggregatedResponse on
+	// terminal paths so forensics never lose the leading whitespace.
+	//
+	// D-05 single-goroutine invariant applies.
+	pendingWhitespace strings.Builder
 	// toolUseEmitted is set true once a tool_use content_block_start
 	// has been written (regardless of whether a populated delta
 	// followed). finalizeStream consults this flag and overrides the
@@ -336,12 +355,39 @@ func (e *sseEmitter) applyChunk(c canonical.Chunk) error {
 	// preserved — the decision only considers real text content.
 	if c.Kind == canonical.ChunkKindText && c.Text != nil {
 		if !e.bufferDecided {
+			trimmed := strings.TrimSpace(c.Text.Content)
+			if trimmed == "" {
+				// H2 fix: leading whitespace-only text arriving BEFORE the
+				// one-shot decision. Hold it WITHOUT deciding — a leading
+				// "\n" token must not permanently disable coercion. The
+				// first chunk carrying non-whitespace content makes the
+				// call below.
+				e.pendingWhitespace.WriteString(c.Text.Content)
+				return nil
+			}
+			// First NON-WHITESPACE text content — decide eligibility now
+			// based on this content's leading non-whitespace prefix.
 			e.bufferDecided = true
-			if len(e.tools) > 0 {
-				trimmed := strings.TrimSpace(c.Text.Content)
-				if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "```") {
-					e.buffering = true
+			if len(e.tools) > 0 &&
+				(strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "```")) {
+				e.buffering = true
+			}
+			if e.buffering {
+				// Prepend any held leading whitespace so a no-wrapper flush
+				// replays it EXACTLY, then buffer this chunk too.
+				if e.pendingWhitespace.Len() > 0 {
+					e.bufferedText.WriteString(e.pendingWhitespace.String())
+					e.pendingWhitespace.Reset()
 				}
+				e.bufferedText.WriteString(c.Text.Content)
+				return nil
+			}
+			// Not buffering — replay held leading whitespace as normal
+			// text_delta(s) IN ORDER before this chunk streams below. The
+			// passthrough invariant requires the whitespace on the wire
+			// verbatim, as its own delta(s), byte-identical to no-buffering.
+			if err := e.flushPendingWhitespace(); err != nil {
+				return err
 			}
 		}
 		if e.buffering {
@@ -351,6 +397,30 @@ func (e *sseEmitter) applyChunk(c canonical.Chunk) error {
 			// non-coerced/terminal paths (via bufferConsumed).
 			e.bufferedText.WriteString(c.Text.Content)
 			return nil
+		}
+	}
+
+	// H3(b) fix: a non-text chunk that WILL emit to the wire (a thinking
+	// delta or a native tool_use block) arrived while Track 3b state is
+	// pending. Resolve that state FIRST so wire order is preserved rather
+	// than reordered to [non-text, buffered-text]:
+	//   - held leading whitespace (pre-decision) → replay it as text.
+	//   - active buffering with pending wrapper text → coerce-or-flush it
+	//     (same logic as finalizeBufferedText), then turn buffering OFF so
+	//     this chunk and all subsequent text stream normally. The EOF
+	//     finalizeBufferedText call then no-ops.
+	// Gated to chunks that actually write (Thought/ToolCall with non-nil
+	// payload) so dormant/dropped kinds never prematurely flush the buffer.
+	if (c.Kind == canonical.ChunkKindThought && c.Thought != nil) ||
+		(c.Kind == canonical.ChunkKindToolCall && c.ToolCall != nil) {
+		if err := e.flushPendingWhitespace(); err != nil {
+			return err
+		}
+		if e.buffering && e.bufferedText.Len() > 0 {
+			if err := e.finalizeBufferedText(); err != nil {
+				return err
+			}
+			e.buffering = false
 		}
 	}
 
@@ -585,6 +655,14 @@ func (e *sseEmitter) aggregatedResponse(stop canonical.StopReason) *canonical.Ch
 	if e.buffering && !e.bufferConsumed {
 		text += e.bufferedText.String()
 	}
+	// H2: leading whitespace held pre-decision but never emitted (a
+	// terminal error/disconnect struck before finalizeStream flushed it).
+	// Prepend it so forensics never lose the leading whitespace. When the
+	// decision resolved, pendingWhitespace is already drained (empty) so
+	// this is a no-op on every non-terminal path.
+	if e.pendingWhitespace.Len() > 0 {
+		text = e.pendingWhitespace.String() + text
+	}
 	var content []canonical.ContentPart
 	if text != "" || len(e.aggToolParts) == 0 {
 		content = append(content, canonical.ContentPart{
@@ -608,6 +686,67 @@ func (e *sseEmitter) aggregatedResponse(stop canonical.StopReason) *canonical.Ch
 		},
 		StopReason: stop,
 	}
+}
+
+// emitTextRaw emits `text` as a text content_block_delta through the
+// standard block-transition machinery (Steps 2-4 of applyChunk for a
+// text chunk), BYPASSING the Track 3b buffering pre-check. It is the
+// shared primitive for replaying held leading whitespace
+// (flushPendingWhitespace) without re-entering the buffering decision,
+// and it mirrors the switch text path byte-for-byte so a replayed
+// whitespace delta is indistinguishable from an un-buffered one.
+func (e *sseEmitter) emitTextRaw(text string) error {
+	// Step 2: close + bump on kind transition (matches applyChunk step 2,
+	// including the tool_use zero-arg flush before closing).
+	if e.blockOpen && e.currentKind != canonical.ChunkKindText {
+		if err := e.flushPendingToolUseIfNeeded(); err != nil {
+			return err
+		}
+		if err := e.writeEvent("content_block_stop", contentBlockStop{
+			Type:  "content_block_stop",
+			Index: e.blockIndex,
+		}); err != nil {
+			return err
+		}
+		e.blockIndex++
+		e.blockOpen = false
+	}
+	// Step 3: open a text block if none is open.
+	if !e.blockOpen {
+		if err := e.writeEvent("content_block_start", contentBlockStart{
+			Type:         "content_block_start",
+			Index:        e.blockIndex,
+			ContentBlock: textBlockHeader{Type: "text", Text: ""},
+		}); err != nil {
+			return err
+		}
+		e.currentKind = canonical.ChunkKindText
+		e.blockOpen = true
+	}
+	// Step 4: text_delta + forensic aggregation.
+	if err := e.writeEvent("content_block_delta", contentBlockDelta{
+		Type:  "content_block_delta",
+		Index: e.blockIndex,
+		Delta: textDelta{Type: "text_delta", Text: text},
+	}); err != nil {
+		return err
+	}
+	e.aggText.WriteString(text)
+	return nil
+}
+
+// flushPendingWhitespace replays any held leading whitespace (H2) as a
+// normal text_delta through emitTextRaw, then clears the buffer. No-op
+// when nothing is held. Called on the not-buffering decision branch,
+// before emitting an interleaving non-text chunk, and at end-of-stream
+// for a whitespace-only stream.
+func (e *sseEmitter) flushPendingWhitespace() error {
+	if e.pendingWhitespace.Len() == 0 {
+		return nil
+	}
+	ws := e.pendingWhitespace.String()
+	e.pendingWhitespace.Reset()
+	return e.emitTextRaw(ws)
 }
 
 // flushPendingToolUseIfNeeded emits a single `partial_json:"{}"`
@@ -1000,6 +1139,14 @@ func runSSEEmitterLoop(ctx context.Context, e *sseEmitter, run RunHandle, ticker
 //   - Result() success → emit message_delta (with mapped stop_reason)
 //   - message_stop + return nil.
 func finalizeStream(e *sseEmitter, run RunHandle) (*canonical.ChatResponse, error) {
+	// Track 3b (H2): a stream whose entire text was leading whitespace
+	// held pre-decision must still emit that whitespace as a text block —
+	// otherwise it is silently dropped. Runs before finalizeBufferedText
+	// (which no-ops here, buffering never engaged) and before the
+	// block-close so the emitted text block gets its content_block_stop.
+	if err := e.flushPendingWhitespace(); err != nil {
+		return e.aggregatedResponse(canonical.StopUnknown), err
+	}
 	// Track 3b: resolve buffered tool-call-wrapper text BEFORE the
 	// existing block-close + message_delta. Emits native tool_use frames
 	// (wrapper found) or a verbatim text block (no wrapper). On a write
