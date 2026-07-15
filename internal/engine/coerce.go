@@ -120,6 +120,14 @@ func CoerceToolCall(req *canonical.ChatRequest, resp *canonical.ChatResponse) bo
 		return false
 	}
 
+	// Track 3b: try the explicit {"tool_call":…} wrapper first (unambiguous).
+	// On miss, fall through to the bare-{args} key-overlap heuristic below.
+	if wrappers := ExtractToolCallWrappers(rawText, req.Tools); len(wrappers) > 0 {
+		resp.Message.Content[textIdx].Text = ""
+		resp.Message.ToolCalls = wrappers
+		return true
+	}
+
 	// Step 3: try raw json.Unmarshal.
 	var parsed any
 	if err := json.Unmarshal([]byte(rawText), &parsed); err != nil {
@@ -263,6 +271,128 @@ func StripFences(text string) (string, bool) {
 		return inner, true
 	}
 	return t, false
+}
+
+// ExtractToolCallWrappers finds every explicit {"tool_call":{"name","arguments"}}
+// object in text and returns canonical.ToolCalls, with invented-name remap
+// against tools. Unambiguous (wrapper shape only) — safe on every surface incl.
+// Anthropic. Returns nil when none found. Ports acp-server-ollama.js:1139-1200.
+func ExtractToolCallWrappers(text string, tools []canonical.ToolSpec) []canonical.ToolCall {
+	// toolDeclared checks if any tool in tools has the given name.
+	toolDeclared := func(name string, tools []canonical.ToolSpec) bool {
+		for _, t := range tools {
+			if t.Name == name {
+				return true
+			}
+		}
+		return false
+	}
+
+	// pushWrapper tries to extract and validate a {"tool_call":{...}} wrapper
+	// from a map. If successful, remaps invented names via pickBestTool and
+	// returns (canonical.ToolCall, true). On any failure, returns (_, false).
+	pushWrapper := func(m map[string]any) (canonical.ToolCall, bool) {
+		// Extract the "tool_call" key as a map.
+		tc, ok := m["tool_call"].(map[string]any)
+		if !ok {
+			return canonical.ToolCall{}, false
+		}
+
+		// Extract the name field (required, non-empty).
+		name, _ := tc["name"].(string)
+		if name == "" {
+			return canonical.ToolCall{}, false
+		}
+
+		// Extract arguments, handling three cases:
+		// 1. arguments is a map[string]any → use directly.
+		// 2. arguments is a string → json.Unmarshal it.
+		// 3. arguments is missing/nil → use empty map.
+		var args map[string]any
+		switch a := tc["arguments"].(type) {
+		case map[string]any:
+			args = a
+		case string:
+			if a != "" {
+				if err := json.Unmarshal([]byte(a), &args); err != nil {
+					args = map[string]any{}
+				}
+			} else {
+				args = map[string]any{}
+			}
+		default:
+			args = map[string]any{}
+		}
+		if args == nil {
+			args = map[string]any{}
+		}
+
+		// Invented-name remap: if the name is not in tools, try pickBestTool.
+		if !toolDeclared(name, tools) {
+			best, score := pickBestTool(args, tools)
+			if best == nil || score == 0 {
+				return canonical.ToolCall{}, false
+			}
+			name = best.Name
+		}
+
+		// Create and return the ToolCall.
+		return canonical.ToolCall{
+			ID:        fmt.Sprintf("call_%d", time.Now().UnixNano()),
+			Name:      name,
+			Arguments: args,
+		}, true
+	}
+
+	// Strategy 1: try whole-content parse (raw or after fence-strip).
+	var v any
+	if err := json.Unmarshal([]byte(text), &v); err != nil {
+		// Retry after fence-strip.
+		if stripped, ok := StripFences(text); ok {
+			_ = json.Unmarshal([]byte(stripped), &v)
+		}
+	}
+
+	var candidates []map[string]any
+
+	// If v is a single map, collect it.
+	if m, ok := v.(map[string]any); ok {
+		candidates = append(candidates, m)
+	}
+	// If v is an array, collect each element that is a map.
+	if arr, ok := v.([]any); ok {
+		for _, elem := range arr {
+			if m, ok := elem.(map[string]any); ok {
+				candidates = append(candidates, m)
+			}
+		}
+	}
+
+	// If Strategy 1 found candidates, try pushWrapper on them.
+	if len(candidates) > 0 {
+		var out []canonical.ToolCall
+		for _, m := range candidates {
+			if tc, ok := pushWrapper(m); ok {
+				out = append(out, tc)
+			}
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
+
+	// Strategy 2: use extractToolCallObjects if Strategy 1 yielded zero.
+	var out []canonical.ToolCall
+	for _, m := range extractToolCallObjects(text) {
+		if tc, ok := pushWrapper(m); ok {
+			out = append(out, tc)
+		}
+	}
+	if len(out) > 0 {
+		return out
+	}
+
+	return nil
 }
 
 // repairControlChars escapes raw control characters inside JSON string

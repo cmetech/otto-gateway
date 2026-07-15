@@ -222,6 +222,7 @@ func TestCoerceToolCall_AlgorithmCases(t *testing.T) {
 		preExistingCalls []canonical.ToolCall
 		wantFired        bool
 		wantToolName     string // when wantFired==true, the synthesized ToolCall name
+		wantCallCount    int    // expected number of tool calls when wantFired==true (defaults to 1)
 	}
 	rows := []row{
 		// D-09 Step 3 — raw JSON parse success.
@@ -335,6 +336,55 @@ func TestCoerceToolCall_AlgorithmCases(t *testing.T) {
 			preExistingCalls: []canonical.ToolCall{{ID: "tc_pre", Name: "preexisting", Arguments: map[string]any{}}},
 			wantFired:        false,
 		},
+		// Track 3b wrapper extraction — plain wrapper object.
+		{
+			name:         "wrapper_plain_object",
+			text:         `{"tool_call":{"name":"get_weather","arguments":{"city":"Paris"}}}`,
+			tools:        []canonical.ToolSpec{weatherTool()},
+			wantFired:    true,
+			wantToolName: "get_weather",
+		},
+		// Track 3b wrapper extraction — wrapper in fenced block.
+		{
+			name:         "wrapper_fenced_json",
+			text:         "```json\n{\"tool_call\":{\"name\":\"get_weather\",\"arguments\":{\"location\":\"London\"}}}\n```",
+			tools:        []canonical.ToolSpec{weatherTool()},
+			wantFired:    true,
+			wantToolName: "get_weather",
+		},
+		// Track 3b wrapper extraction — wrapper embedded in prose.
+		{
+			name:         "wrapper_in_prose",
+			text:         "Here's the tool call: {\"tool_call\":{\"name\":\"get_weather\",\"arguments\":{\"location\":\"Tokyo\"}}} Done.",
+			tools:        []canonical.ToolSpec{weatherTool()},
+			wantFired:    true,
+			wantToolName: "get_weather",
+		},
+		// Track 3b wrapper extraction — invented name remapped to declared tool.
+		{
+			name:         "wrapper_invented_name_remapped",
+			text:         `{"tool_call":{"name":"getWeatherNow","arguments":{"location":"Berlin"}}}`,
+			tools:        []canonical.ToolSpec{weatherTool()},
+			wantFired:    true,
+			wantToolName: "get_weather",
+		},
+		// Track 3b wrapper extraction — arguments as string.
+		{
+			name:         "wrapper_arguments_as_string",
+			text:         `{"tool_call":{"name":"get_weather","arguments":"{\"location\":\"Rome\"}"}}`,
+			tools:        []canonical.ToolSpec{weatherTool()},
+			wantFired:    true,
+			wantToolName: "get_weather",
+		},
+		// Track 3b wrapper extraction — array of wrappers → multiple ToolCalls.
+		{
+			name:          "wrapper_array_of_wrappers",
+			text:          `[{"tool_call":{"name":"get_weather","arguments":{"location":"NYC"}}},{"tool_call":{"name":"get_weather","arguments":{"location":"LA"}}}]`,
+			tools:         []canonical.ToolSpec{weatherTool()},
+			wantFired:     true,
+			wantToolName:  "get_weather",
+			wantCallCount: 2,
+		},
 	}
 
 	for _, r := range rows {
@@ -351,14 +401,21 @@ func TestCoerceToolCall_AlgorithmCases(t *testing.T) {
 					gotFired, r.wantFired, r.text, toolNames(r.tools))
 			}
 			if r.wantFired {
-				if len(resp.Message.ToolCalls) != 1 {
-					t.Fatalf("expected 1 tool_call, got %d (text=%q)", len(resp.Message.ToolCalls), r.text)
+				wantCount := r.wantCallCount
+				if wantCount == 0 {
+					wantCount = 1 // default to 1 when not specified
 				}
-				if resp.Message.ToolCalls[0].Name != r.wantToolName {
-					t.Errorf("synthesized tool name: got %q, want %q", resp.Message.ToolCalls[0].Name, r.wantToolName)
+				if len(resp.Message.ToolCalls) != wantCount {
+					t.Fatalf("expected %d tool_call(s), got %d (text=%q)", wantCount, len(resp.Message.ToolCalls), r.text)
 				}
-				if !strings.HasPrefix(resp.Message.ToolCalls[0].ID, "call_") {
-					t.Errorf("synthesized ID format: got %q, want prefix 'call_' (D-11)", resp.Message.ToolCalls[0].ID)
+				// Check that all tool calls have the expected name
+				for i, tc := range resp.Message.ToolCalls {
+					if tc.Name != r.wantToolName {
+						t.Errorf("tool_call[%d] name: got %q, want %q", i, tc.Name, r.wantToolName)
+					}
+					if !strings.HasPrefix(tc.ID, "call_") {
+						t.Errorf("tool_call[%d] ID format: got %q, want prefix 'call_' (D-11)", i, tc.ID)
+					}
 				}
 				if resp.Message.Content[0].Text != "" {
 					t.Errorf("on coerce, Content[0].Text must be cleared; got %q", resp.Message.Content[0].Text)
@@ -389,6 +446,103 @@ func toolNames(tools []canonical.ToolSpec) []string {
 		out = append(out, t.Name)
 	}
 	return out
+}
+
+// TestExtractToolCallWrappers directly tests the wrapper extraction logic.
+func TestExtractToolCallWrappers(t *testing.T) {
+	type testCase struct {
+		name      string
+		text      string
+		tools     []canonical.ToolSpec
+		wantCount int
+		wantNames []string // expected tool names in order
+	}
+	cases := []testCase{
+		// Array of two wrappers → len 2.
+		{
+			name:      "array_of_two_wrappers",
+			text:      `[{"tool_call":{"name":"get_weather","arguments":{"location":"NYC"}}},{"tool_call":{"name":"get_weather","arguments":{"location":"LA"}}}]`,
+			tools:     []canonical.ToolSpec{weatherTool()},
+			wantCount: 2,
+			wantNames: []string{"get_weather", "get_weather"},
+		},
+		// Map with no "tool_call" key → nil.
+		{
+			name:      "map_without_tool_call_key",
+			text:      `{"location":"Boston"}`,
+			tools:     []canonical.ToolSpec{weatherTool()},
+			wantCount: 0,
+		},
+		// Wrapper with unknown name + no arg-overlap → nil (dropped).
+		{
+			name:      "wrapper_unknown_name_no_overlap",
+			text:      `{"tool_call":{"name":"unknown_tool","arguments":{"foo":"bar"}}}`,
+			tools:     []canonical.ToolSpec{weatherTool()},
+			wantCount: 0,
+		},
+		// Wrapper with unknown name but args match → remapped.
+		{
+			name:      "wrapper_unknown_name_args_match",
+			text:      `{"tool_call":{"name":"getWeather","arguments":{"location":"Paris"}}}`,
+			tools:     []canonical.ToolSpec{weatherTool()},
+			wantCount: 1,
+			wantNames: []string{"get_weather"},
+		},
+		// Single wrapper → len 1.
+		{
+			name:      "single_wrapper",
+			text:      `{"tool_call":{"name":"get_weather","arguments":{"location":"Boston"}}}`,
+			tools:     []canonical.ToolSpec{weatherTool()},
+			wantCount: 1,
+			wantNames: []string{"get_weather"},
+		},
+		// Wrapper in prose (via extractToolCallObjects) → len 1.
+		{
+			name:      "wrapper_in_prose",
+			text:      "Check weather: {\"tool_call\":{\"name\":\"get_weather\",\"arguments\":{\"location\":\"London\"}}} Thanks.",
+			tools:     []canonical.ToolSpec{weatherTool()},
+			wantCount: 1,
+			wantNames: []string{"get_weather"},
+		},
+		// Empty text → nil.
+		{
+			name:      "empty_text",
+			text:      "",
+			tools:     []canonical.ToolSpec{weatherTool()},
+			wantCount: 0,
+		},
+		// Plain text (no wrapper) → nil.
+		{
+			name:      "plain_text_no_wrapper",
+			text:      "Just checking the weather for you.",
+			tools:     []canonical.ToolSpec{weatherTool()},
+			wantCount: 0,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			result := ExtractToolCallWrappers(tc.text, tc.tools)
+			if len(result) != tc.wantCount {
+				t.Errorf("expected %d tool calls, got %d (text=%q)", tc.wantCount, len(result), tc.text)
+			}
+			if tc.wantCount > 0 && tc.wantNames != nil {
+				for i, wantName := range tc.wantNames {
+					if i >= len(result) {
+						break
+					}
+					if result[i].Name != wantName {
+						t.Errorf("tool_call[%d] name: got %q, want %q", i, result[i].Name, wantName)
+					}
+					// Verify ID format.
+					if !strings.HasPrefix(result[i].ID, "call_") {
+						t.Errorf("tool_call[%d] ID format: got %q, want prefix 'call_'", i, result[i].ID)
+					}
+				}
+			}
+		})
+	}
 }
 
 // ExampleCoerceToolCall is a runnable godoc example (TRST-07). The
