@@ -100,3 +100,20 @@ func TestAbout_AcpCaptureRow(t *testing.T) {
 		t.Errorf("About page missing ACP-capture OFF row %q", offRow)
 	}
 }
+
+// TestDocs_AcpCaptureRows: the operator Docs page env-var table documents
+// ACP_CAPTURE and ACP_CAPTURE_SIZE (added so the diagnostics flag is
+// discoverable alongside the other env vars).
+func TestDocs_AcpCaptureRows(t *testing.T) {
+	h := admin.Handler(admin.Deps{})
+	rec := doGet(t, h, "/docs")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /docs: status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"ACP_CAPTURE", "ACP_CAPTURE_SIZE"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("Docs page env table missing %q row", want)
+		}
+	}
+}
