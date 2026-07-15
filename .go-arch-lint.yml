@@ -46,6 +46,8 @@ components:
     in: auth/**
   canonical:
     in: canonical/**
+  capture:
+    in: capture/**
   config:
     in: config/**
   engine:
@@ -144,6 +146,8 @@ deps:
   auth:
     anyVendorDeps: true
   canonical:
+    anyVendorDeps: true
+  capture:
     anyVendorDeps: true
   config:
     anyVendorDeps: true
