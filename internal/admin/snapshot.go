@@ -28,6 +28,15 @@ type Snapshot struct {
 	Pool          SnapshotPool   `json:"pool"`
 	Sessions      []SnapshotSess `json:"sessions"`
 	LogSources    []string       `json:"log_sources"`
+
+	// Gateway process resource usage (procstat, cgo-free). ProcessCPUSeconds is
+	// cumulative CPU time — the dashboard derives a live percent by diffing
+	// successive polls. ProcessStatOK is false on platforms where the read is
+	// unavailable (darwin dev box); the UI then shows "n/a" instead of a
+	// misleading zero. GeneratedAt is the wall-clock reference for the CPU diff.
+	ProcessCPUSeconds float64 `json:"process_cpu_seconds"`
+	ProcessRSSBytes   uint64  `json:"process_rss_bytes"`
+	ProcessStatOK     bool    `json:"process_stat_ok"`
 }
 
 // SnapshotPool is the pool sub-object of Snapshot.
@@ -53,6 +62,15 @@ type SnapshotSlot struct {
 	Alive            bool    `json:"alive"`
 	Busy             bool    `json:"busy"`
 	CurrentSessionID *string `json:"current_session_id"`
+
+	// Per-worker resource usage, merged in by snapshotHandler from the
+	// ProcSampler keyed on Label. CPUSeconds is cumulative (percent derived
+	// client-side by diffing polls). StatOK is false when the worker's process
+	// could not be read (dead/respawning slot, or an unsupported platform), and
+	// the dashboard renders "n/a" for that slot.
+	CPUSeconds float64 `json:"cpu_seconds"`
+	RSSBytes   uint64  `json:"rss_bytes"`
+	StatOK     bool    `json:"stat_ok"`
 }
 
 // SnapshotSess is the per-session detail row in the admin snapshot.
@@ -64,6 +82,24 @@ type SnapshotSess struct {
 	Busy     bool      `json:"busy"`
 	LastUsed time.Time `json:"last_used"`
 	Model    *string   `json:"model"`
+}
+
+// ProcSample is the admin-package projection of a process's CPU/RSS reading.
+// OK is false when the sample is unavailable (unreadable pid, or an unsupported
+// platform such as the darwin dev box).
+type ProcSample struct {
+	CPUSeconds float64
+	RSSBytes   uint64
+	OK         bool
+}
+
+// ProcSampler surfaces process resource usage for the dashboard perf tiles.
+// Self is the gateway process; Workers maps a pool slot's Label to that
+// worker's sample. Implemented by the cmd wiring over internal/procstat so admin
+// stays free of internal/pool and internal/procstat imports (TRST-04 boundary).
+type ProcSampler interface {
+	Self() ProcSample
+	Workers() map[string]ProcSample
 }
 
 // snapshotHandler handles GET /api/snapshot.
@@ -130,6 +166,25 @@ func (h *handler) snapshotHandler(w http.ResponseWriter, r *http.Request) {
 	// null) because the JSON encoder marshals a zero-length non-nil
 	// slice as an empty array.
 	snap.LogSources = append([]string{}, h.deps.LogPathOrder...)
+
+	// Process perf — gateway self + per-worker, merged by slot label. Nil-safe:
+	// when Proc is unset the fields stay zero-valued with StatOK=false and the
+	// dashboard renders the tiles as unavailable.
+	if h.deps.Proc != nil {
+		self := h.deps.Proc.Self()
+		snap.ProcessCPUSeconds = self.CPUSeconds
+		snap.ProcessRSSBytes = self.RSSBytes
+		snap.ProcessStatOK = self.OK
+
+		workers := h.deps.Proc.Workers()
+		for i := range snap.Pool.Slots {
+			if ws, ok := workers[snap.Pool.Slots[i].Label]; ok && ws.OK {
+				snap.Pool.Slots[i].CPUSeconds = ws.CPUSeconds
+				snap.Pool.Slots[i].RSSBytes = ws.RSSBytes
+				snap.Pool.Slots[i].StatOK = true
+			}
+		}
+	}
 
 	// Derive status from pool counts.
 	snap.Status = computeStatus(snap)

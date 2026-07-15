@@ -55,6 +55,10 @@ components:
     in: config/**
   engine:
     in: engine/**
+  metrics:
+    in: metrics/**
+  procstat:
+    in: procstat/**
   plugin_pii:
     in: plugin/pii/**
   plugin:
@@ -172,6 +176,17 @@ deps:
     mayDependOn:
       - canonical
       - acp
+  metrics:
+    anyVendorDeps: true
+    mayDependOn:
+      - procstat  # Track 4: the per-worker collector reads each pool worker's
+                  # CPU/RSS through procstat (cgo-free, per-OS). metrics stays
+                  # free of internal/pool — the cmd wiring adapts pool.WorkerProc
+                  # into metrics.WorkerProc at the boundary (TRST-04).
+  procstat:
+    anyVendorDeps: true
+    # Leaf package: reads /proc (linux) or the Win32 psapi/kernel32 APIs
+    # (windows) via vendored procfs / x/sys. No internal deps.
   plugin:
     anyVendorDeps: true
     mayDependOn:

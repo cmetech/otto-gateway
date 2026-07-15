@@ -28,6 +28,7 @@ func testMetrics(pool metrics.PoolStats, sess metrics.SessionStats) *metrics.Met
 		metrics.BuildInfo{GatewayID: "gw-test-123", Version: "1.2.3", Commit: "deadbee"},
 		func() metrics.PoolStats { return pool },
 		func() metrics.SessionStats { return sess },
+		nil, // worker procs: exercised separately in worker_collector_test.go
 	)
 }
 

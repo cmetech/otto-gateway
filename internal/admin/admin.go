@@ -95,13 +95,17 @@ type AcpCaptureSource interface {
 //     tracer is enabled. When on, raw prompts are written to disk; surfacing
 //     this is a safety affordance so operators are not surprised by it.
 type Deps struct {
-	Logger       *slog.Logger
-	Version      string
-	Commit       string
-	Start        time.Time
-	PoolDetail   PoolDetailSource
-	Registry     RegistryStatsSource
-	AcpCapture   AcpCaptureSource
+	Logger     *slog.Logger
+	Version    string
+	Commit     string
+	Start      time.Time
+	PoolDetail PoolDetailSource
+	Registry   RegistryStatsSource
+	AcpCapture AcpCaptureSource
+	// Proc surfaces gateway + per-worker CPU/RSS for the dashboard perf tiles.
+	// Nil-safe: when unset, the snapshot's process fields stay zero with
+	// StatOK/ProcessStatOK false and the UI renders "n/a".
+	Proc         ProcSampler
 	LogPaths     map[string]string
 	LogPathOrder []string
 	Debug        bool

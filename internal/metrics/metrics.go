@@ -14,6 +14,8 @@ import (
 	"sync"
 	"time"
 
+	"otto-gateway/internal/procstat"
+
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/prometheus/client_golang/prometheus"
@@ -231,7 +233,7 @@ func surfaceForRoute(route string) (string, bool) {
 // info.GatewayID is applied as a CONSTANT label on every series (via
 // WrapRegistererWith) so a fleet can group by gateway_id; empty collapses to
 // "unknown".
-func New(info BuildInfo, pool func() PoolStats, sessions func() SessionStats) *Metrics {
+func New(info BuildInfo, pool func() PoolStats, sessions func() SessionStats, workers func() []WorkerProc) *Metrics {
 	reg := prometheus.NewRegistry()
 	gwID := info.GatewayID
 	if gwID == "" {
@@ -308,6 +310,12 @@ func New(info BuildInfo, pool func() PoolStats, sessions func() SessionStats) *M
 		m.kiroCredits, m.kiroTurns, m.kiroTurnDur, m.kiroCtxPct, m.mcpInit, m.modelReqs,
 		newPoolCollector(pool, sessions),
 	)
+	// Per-worker CPU/RSS. Registered through reggw (like every other collector)
+	// so the gateway_id constant label rides along. Reads procstat at scrape
+	// time; a nil workers closure yields an inert collector (no series).
+	if workers != nil {
+		reggw.MustRegister(newWorkerCollector(workers, procstat.Read))
+	}
 	return m
 }
 

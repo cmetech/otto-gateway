@@ -356,6 +356,81 @@ body {
   color: var(--gw-warning);
 }
 
+/* ---------------------------------------------------------------------------
+ * Perf tiles + sparklines (per-worker CPU/RSS + gateway process).
+ * The sparkline is a hand-drawn inline-SVG polyline — no chart lib, no CDN,
+ * consistent with the single-binary self-contained ethos. Colors reuse the
+ * existing semantic tokens (CPU = accent, Mem = activity/violet).
+ * ------------------------------------------------------------------------- */
+
+/* Per-slot perf block appended to each slot card. */
+.gw-slot-perf {
+  display: flex;
+  gap: var(--gw-space-base);
+  align-items: flex-end;
+  margin-top: var(--gw-space-xs);
+  padding-top: var(--gw-space-sm);
+  border-top: 1px solid var(--gw-border);
+}
+
+.gw-perf-stat {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: baseline;
+  gap: 2px var(--gw-space-xs);
+  min-width: 0;
+}
+
+.gw-perf-label {
+  font: 600 var(--gw-text-xs)/1.2 var(--gw-font-ui);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--gw-fg-dim);
+}
+
+.gw-perf-value {
+  font: 600 var(--gw-text-sm)/1.2 var(--gw-font-mono);
+  color: var(--gw-fg);
+  white-space: nowrap;
+}
+
+.gw-perf-na {
+  font: 400 var(--gw-text-xs)/1.4 var(--gw-font-ui);
+  color: var(--gw-fg-dim);
+  font-style: italic;
+}
+
+/* Sparkline SVG — fixed box, scales to fill its host cell width. */
+.gw-spark {
+  grid-column: 1 / -1;
+  width: 80px;
+  height: 20px;
+  display: block;
+}
+
+.gw-spark-line {
+  stroke: var(--gw-accent);
+  stroke-width: 1.25;
+  vector-effect: non-scaling-stroke;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.gw-spark.is-mem .gw-spark-line {
+  stroke: var(--gw-activity);
+}
+
+/* Gateway process tiles in the summary strip. */
+.gw-summary-perf .gw-perf-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--gw-space-sm);
+}
+
+.gw-summary-perf .gw-spark-host {
+  display: inline-flex;
+}
+
 /* Badge variants for alive/dead (Plan 02 — aliases to semantic colors) */
 .gw-badge.is-alive {
   background: rgba(15, 195, 115, 0.12);

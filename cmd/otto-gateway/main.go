@@ -55,6 +55,7 @@ import (
 	"otto-gateway/internal/plugin/jsonformat"
 	"otto-gateway/internal/plugin/pii"
 	"otto-gateway/internal/pool"
+	"otto-gateway/internal/procstat"
 	"otto-gateway/internal/server"
 	"otto-gateway/internal/session"
 	"otto-gateway/internal/version"
@@ -395,6 +396,17 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 				Created:  a.registry.Created(),
 				Recycled: a.registry.Recycled(),
 			}
+		},
+		func() []metrics.WorkerProc {
+			if a.pool == nil {
+				return nil
+			}
+			wps := a.pool.WorkerProcs()
+			out := make([]metrics.WorkerProc, 0, len(wps))
+			for _, w := range wps {
+				out = append(out, metrics.WorkerProc{Slot: w.Label, Pid: w.Pid})
+			}
+			return out
 		},
 	)
 
@@ -757,6 +769,7 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 		PoolDetail:   adminPoolDetail,
 		Registry:     adminRegistry,
 		AcpCapture:   adminAcpCapture(acpCaptureRing),
+		Proc:         adminProcSampler{pool: a.pool},
 		LogPaths:     logPaths,
 		LogPathOrder: logPathOrder,
 		Debug:        cfg.Debug,
@@ -1051,6 +1064,32 @@ func (a adminRegistryAdapter) Detail() []admin.SnapshotSess {
 			LastUsed: r.LastUsed,
 			Model:    r.Model,
 		}
+	}
+	return out
+}
+
+// adminProcSampler satisfies admin.ProcSampler by reading the gateway process
+// and each live pool worker through internal/procstat (cgo-free, per-OS). It
+// keeps admin free of both internal/pool and internal/procstat imports (TRST-04)
+// — the pid enumeration lives here, admin only sees ProcSample values keyed by
+// slot label. A nil pool yields Self-only samples (no workers).
+type adminProcSampler struct {
+	pool *pool.Pool
+}
+
+func (a adminProcSampler) Self() admin.ProcSample {
+	s := procstat.Self()
+	return admin.ProcSample{CPUSeconds: s.CPUSeconds, RSSBytes: s.RSSBytes, OK: s.OK}
+}
+
+func (a adminProcSampler) Workers() map[string]admin.ProcSample {
+	out := map[string]admin.ProcSample{}
+	if a.pool == nil {
+		return out
+	}
+	for _, w := range a.pool.WorkerProcs() {
+		s := procstat.Read(w.Pid)
+		out[w.Label] = admin.ProcSample{CPUSeconds: s.CPUSeconds, RSSBytes: s.RSSBytes, OK: s.OK}
 	}
 	return out
 }

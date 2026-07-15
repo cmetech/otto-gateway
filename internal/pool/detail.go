@@ -59,3 +59,48 @@ func (p *Pool) Detail() []AgentSlot {
 	}
 	return rows
 }
+
+// WorkerProc pairs a slot's stable label with the live OS pid of the kiro-cli
+// subprocess it wraps. It is the input to the gateway's per-worker resource
+// metrics (Prometheus gw_worker_* series and the admin dashboard perf tiles) —
+// the label is the bounded, respawn-stable series key, never the pid.
+type WorkerProc struct {
+	Label string
+	Pid   int
+}
+
+// WorkerProcs returns the (label, pid) of every live slot for per-worker CPU/RSS
+// sampling. Dead, nil, and not-yet-spawned slots (pid <= 0) are skipped so a
+// caller only sees processes it can actually read.
+//
+// Concurrency mirrors Detail: the (label, Client) pairs are snapshotted under
+// p.mu, then the lock is released BEFORE any slot.Client.Pid() call — upholding
+// the pool invariant that no slot.Client method runs while p.mu is held. Pid()
+// is a cheap non-blocking getter, but keeping it outside the critical section
+// keeps the discipline uniform with the exit-watcher and stats paths.
+func (p *Pool) WorkerProcs() []WorkerProc {
+	type labelled struct {
+		label  string
+		client PoolClient
+	}
+
+	p.mu.Lock()
+	pending := make([]labelled, 0, len(p.all))
+	for _, slot := range p.all {
+		if slot == nil || slot.dead || slot.Client == nil {
+			continue
+		}
+		pending = append(pending, labelled{label: slot.Label, client: slot.Client})
+	}
+	p.mu.Unlock()
+
+	out := make([]WorkerProc, 0, len(pending))
+	for _, e := range pending {
+		pid := e.client.Pid()
+		if pid <= 0 {
+			continue
+		}
+		out = append(out, WorkerProc{Label: e.label, Pid: pid})
+	}
+	return out
+}

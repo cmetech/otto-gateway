@@ -88,6 +88,167 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Perf: gateway + per-worker CPU/RSS tiles and rolling-window sparklines.
+  //
+  // The snapshot carries CPU as a cumulative counter (process_cpu_seconds /
+  // slot cpu_seconds), so a live percent is derived client-side by diffing two
+  // successive polls: Δcpu / Δwall × 100. Because the poll cadence is a fixed
+  // 30s (D-06), the first CPU% for any series appears on the SECOND poll and the
+  // sparkline is a ~15-minute rolling window (PERF_MAX points). RSS is
+  // instantaneous and shows on the first poll. History lives here in JS (the
+  // server keeps none for the UI — that is Prometheus/Grafana's job), so the
+  // DOM can be freely rebuilt each poll from these buffers.
+  // ---------------------------------------------------------------------------
+
+  var SVG_NS = 'http://www.w3.org/2000/svg';
+  var PERF_MAX = 30;          // rolling-window length (points)
+  var perfPrev = {};          // key -> { t: wallMs, cpu: cumulativeSeconds }
+  var perfHist = {};          // key -> [ { cpuPct: number|null, rss: number } ]
+  var GW_KEY = '__gateway__';
+
+  function slotKey(label) { return 'slot:' + label; }
+
+  // pushSample folds one reading into a series' ring buffer, deriving cpuPct
+  // from the previous sample. A counter that went backwards (a respawned worker
+  // with a fresh pid resets cumulative CPU) is treated as 0% rather than a
+  // negative spike.
+  function pushSample(key, cpuSeconds, rssBytes, wallMs) {
+    var prev = perfPrev[key];
+    var pct = null;
+    if (prev) {
+      var dt = (wallMs - prev.t) / 1000;
+      if (dt > 0) {
+        pct = cpuSeconds >= prev.cpu ? ((cpuSeconds - prev.cpu) / dt) * 100 : 0;
+      }
+    }
+    perfPrev[key] = { t: wallMs, cpu: cpuSeconds };
+    var hist = perfHist[key] || (perfHist[key] = []);
+    hist.push({ cpuPct: pct === null ? null : Math.max(0, pct), rss: rssBytes });
+    if (hist.length > PERF_MAX) hist.shift();
+  }
+
+  // ingestPerf updates every series' buffer from a fresh snapshot. Unreadable
+  // series (stat_ok false — a dead slot, or the darwin dev box) are simply not
+  // sampled; their tiles render "n/a" and any existing sparkline freezes.
+  function ingestPerf(snap) {
+    var wallMs = Date.parse(snap.generated_at) || Date.now();
+    if (snap.process_stat_ok) {
+      pushSample(GW_KEY, snap.process_cpu_seconds || 0, snap.process_rss_bytes || 0, wallMs);
+    }
+    var slots = (snap.pool && snap.pool.slots) || [];
+    slots.forEach(function (s) {
+      if (s.stat_ok) pushSample(slotKey(s.label), s.cpu_seconds || 0, s.rss_bytes || 0, wallMs);
+    });
+  }
+
+  function latestCPUPct(key) {
+    var hist = perfHist[key];
+    if (!hist || !hist.length) return null;
+    return hist[hist.length - 1].cpuPct;
+  }
+
+  // sparkValues returns the drawable series for a field: cpu% (null → 0 so the
+  // pre-first-derivative gap draws flat) or rss bytes.
+  function sparkValues(key, field) {
+    var hist = perfHist[key] || [];
+    return hist.map(function (h) {
+      return field === 'cpu' ? (h.cpuPct === null ? 0 : h.cpuPct) : h.rss;
+    });
+  }
+
+  function fmtPct(pct) {
+    if (pct === null || pct === undefined) return '…';
+    return (pct >= 10 ? Math.round(pct) : pct.toFixed(1)) + '%';
+  }
+
+  function formatBytes(n) {
+    if (n === null || n === undefined) return '—';
+    var units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    var v = n, i = 0;
+    while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+    return (i === 0 ? v : v.toFixed(1)) + ' ' + units[i];
+  }
+
+  // buildSparkline draws a normalized polyline into a fixed 80×20 viewBox. The
+  // series is scaled to its own window max so a mostly-flat line still shows
+  // shape. Fewer than two points → an empty (blank) SVG placeholder.
+  function buildSparkline(values, modifier) {
+    var W = 80, H = 20;
+    var svg = document.createElementNS(SVG_NS, 'svg');
+    svg.setAttribute('class', 'gw-spark' + (modifier ? ' ' + modifier : ''));
+    svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+    svg.setAttribute('preserveAspectRatio', 'none');
+    svg.setAttribute('aria-hidden', 'true');
+    if (!values || values.length < 2) return svg;
+    var max = 0;
+    for (var k = 0; k < values.length; k++) { if (values[k] > max) max = values[k]; }
+    if (max <= 0) max = 1;
+    var n = values.length;
+    var pts = values.map(function (v, i) {
+      var x = (i / (n - 1)) * W;
+      var y = H - (v / max) * (H - 2) - 1; // 1px top/bottom padding
+      return x.toFixed(1) + ',' + y.toFixed(1);
+    }).join(' ');
+    var poly = document.createElementNS(SVG_NS, 'polyline');
+    poly.setAttribute('class', 'gw-spark-line');
+    poly.setAttribute('points', pts);
+    poly.setAttribute('fill', 'none');
+    svg.append(poly);
+    return svg;
+  }
+
+  // perfStat builds one "LABEL value + sparkline" cell for a slot card.
+  function perfStat(label, valueText, values, modifier) {
+    var cell = document.createElement('div');
+    cell.className = 'gw-perf-stat';
+    var lab = document.createElement('span');
+    lab.className = 'gw-perf-label';
+    lab.textContent = label;
+    var val = document.createElement('span');
+    val.className = 'gw-perf-value';
+    val.textContent = valueText;
+    cell.append(lab, val, buildSparkline(values, modifier));
+    return cell;
+  }
+
+  // buildSlotPerf is the per-worker CPU/Mem block appended to each slot card.
+  function buildSlotPerf(slot) {
+    var el = document.createElement('div');
+    el.className = 'gw-slot-perf';
+    if (slot.stat_ok) {
+      var key = slotKey(slot.label);
+      el.append(perfStat('CPU', fmtPct(latestCPUPct(key)), sparkValues(key, 'cpu'), 'is-cpu'));
+      el.append(perfStat('Mem', formatBytes(slot.rss_bytes), sparkValues(key, 'rss'), 'is-mem'));
+    } else {
+      var na = document.createElement('span');
+      na.className = 'gw-perf-na';
+      na.textContent = 'perf n/a';
+      el.append(na);
+    }
+    return el;
+  }
+
+  // renderGatewayPerf updates the two summary-strip perf tiles + sparklines.
+  function renderGatewayPerf(snap) {
+    var cpuEl = qs('data-gw-cpu');
+    var memEl = qs('data-gw-mem');
+    if (snap.process_stat_ok) {
+      if (cpuEl) cpuEl.textContent = fmtPct(latestCPUPct(GW_KEY));
+      if (memEl) memEl.textContent = formatBytes(snap.process_rss_bytes);
+    } else {
+      if (cpuEl) cpuEl.textContent = 'n/a';
+      if (memEl) memEl.textContent = 'n/a';
+    }
+    replaceSpark('data-gw-cpu-spark', sparkValues(GW_KEY, 'cpu'), 'is-cpu');
+    replaceSpark('data-gw-mem-spark', sparkValues(GW_KEY, 'rss'), 'is-mem');
+  }
+
+  function replaceSpark(attr, values, modifier) {
+    var host = qs(attr);
+    if (host) host.replaceChildren(buildSparkline(values, modifier));
+  }
+
+  // ---------------------------------------------------------------------------
   // renderSlots: DOM-patch the pool-slot grid from snapshot pool.slots[]
   // ---------------------------------------------------------------------------
 
@@ -161,7 +322,7 @@
     if (!slot.alive) {
       article.classList.add(poolFailed ? 'is-dead' : 'is-recovering');
     }
-    article.append(buildSlotLabel(slot), buildSlotBadges(slot, poolFailed), buildSlotMeta(slot, poolFailed));
+    article.append(buildSlotLabel(slot), buildSlotBadges(slot, poolFailed), buildSlotMeta(slot, poolFailed), buildSlotPerf(slot));
     return article;
   }
 
@@ -171,7 +332,7 @@
       article.classList.add(poolFailed ? 'is-dead' : 'is-recovering');
     }
     // Replace children in place.
-    article.replaceChildren(buildSlotLabel(slot), buildSlotBadges(slot, poolFailed), buildSlotMeta(slot, poolFailed));
+    article.replaceChildren(buildSlotLabel(slot), buildSlotBadges(slot, poolFailed), buildSlotMeta(slot, poolFailed), buildSlotPerf(slot));
   }
 
   function renderSlots(slots, poolFailed) {
@@ -314,6 +475,10 @@
       updateDot('is-red');
     }
 
+    // Gateway process CPU/RSS tiles + sparklines (buffers already updated by
+    // ingestPerf earlier in the poll).
+    renderGatewayPerf(snap);
+
     // Store successful fetch time for the 1s ticker.
     lastSnapshotTime = new Date();
     consecutiveFailures = 0;
@@ -332,6 +497,9 @@
         return resp.json();
       })
       .then(function (snap) {
+        // Fold CPU/RSS readings into the rolling buffers BEFORE any render, so
+        // the summary tiles and slot cards read a current window this poll.
+        ingestPerf(snap);
         renderSummary(snap);
         // A not-alive slot is a genuine failure (red) only when the pool cannot
         // serve right now (status "down") or a current spawn failure is flagged;

@@ -13,6 +13,7 @@ require (
 	github.com/jdkato/prose/v2 v2.0.0
 	github.com/oklog/ulid/v2 v2.1.1
 	github.com/prometheus/client_golang v1.23.2
+	github.com/prometheus/procfs v0.16.1
 	golang.org/x/sys v0.45.0
 	pgregory.net/rapid v1.3.0
 )
@@ -28,7 +29,6 @@ require (
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.66.1 // indirect
-	github.com/prometheus/procfs v0.16.1 // indirect
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
 	gonum.org/v1/gonum v0.7.0 // indirect
 	google.golang.org/protobuf v1.36.8 // indirect

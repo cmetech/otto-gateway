@@ -53,6 +53,26 @@
       <span class="gw-summary-value" data-sessions-count>—</span>
     </div>
 
+    <!-- Gateway process CPU (hydrated by JS; live percent derived from the
+         cumulative process_cpu_seconds counter across polls). "n/a" on
+         platforms where the read is unavailable (e.g. darwin dev box). -->
+    <div class="gw-summary-item gw-summary-perf">
+      <span class="gw-summary-label">Gateway CPU</span>
+      <span class="gw-perf-inline">
+        <span class="gw-summary-value" data-gw-cpu>—</span>
+        <span class="gw-spark-host" data-gw-cpu-spark></span>
+      </span>
+    </div>
+
+    <!-- Gateway process resident memory (RSS / working set), hydrated by JS. -->
+    <div class="gw-summary-item gw-summary-perf">
+      <span class="gw-summary-label">Gateway Mem</span>
+      <span class="gw-perf-inline">
+        <span class="gw-summary-value" data-gw-mem>—</span>
+        <span class="gw-spark-host" data-gw-mem-spark></span>
+      </span>
+    </div>
+
     <!-- Live indicator zone (right-aligned) -->
     <div class="gw-live-zone">
       <div class="gw-live-row">
