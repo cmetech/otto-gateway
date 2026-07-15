@@ -1205,16 +1205,58 @@ func (c *Client) handleNotification(frame rpcFrame) {
 			c.cfg.Logger.Warn("acp: permission request without id — dropped")
 			return
 		}
-		// Best-effort Debug log of the inbound RequestID (useful when DEBUG=1).
-		// Parse failure does not block the response — the response only needs
-		// the original frame id, which is already in hand.
+		// Best-effort parse — errors are ignored. The response only needs
+		// frame.ID (already in hand); the deny path below needs
+		// params.Options / params.ToolCall.Title, and the grant path's
+		// Debug log needs params.RequestID, but a parse failure must not
+		// block the response either way.
 		// CR-01: frame.ID is json.RawMessage; log its raw byte form so string
 		// AND numeric ids both render readably.
 		var params permissionParams
-		if err := json.Unmarshal(frame.Params, &params); err == nil && params.RequestID != "" {
+		parseErr := json.Unmarshal(frame.Params, &params)
+
+		// Track 3a D3: snapshot the active stream (existing idiom, see
+		// Prompt/awaitPromptResult above) so the deny decision reflects the
+		// turn actually in flight.
+		c.streamMu.Lock()
+		s := c.activeStream
+		c.streamMu.Unlock()
+
+		optionID := "allow_always"
+		granted := true
+		breaker := false
+		var denialCount, maxDenials int
+
+		switch {
+		case s != nil && s.denyTools():
+			// Track 3a D3: the turn's caller supplied its own tools, so
+			// kiro's built-in tools must be DENIED — select the best reject
+			// option kiro offered and record the denial against the
+			// per-turn counter.
+			optionID = pickRejectOption(params.Options)
+			granted = false
+			denialCount = s.recordDenial()
+			maxDenials = c.cfg.MaxToolDenials
+			if maxDenials <= 0 {
+				// Defensive default: a zero-valued Config (MaxToolDenials
+				// unset) must not disable the circuit breaker.
+				maxDenials = 4
+			}
+			breaker = denialCount >= maxDenials
+			c.cfg.Logger.Debug("acp: denying built-in tool permission",
+				"tool", params.ToolCall.Title,
+				"denials", denialCount,
+				"max", maxDenials,
+				"requestId", params.RequestID,
+				"frameId", string(frame.ID))
+		case parseErr == nil && params.RequestID != "":
+			// Unchanged grant-path Debug log — byte-identical to
+			// pre-Track-3a behaviour. Preserves every tool-less /
+			// plain-chat / Anthropic-without-tools request.
 			c.cfg.Logger.Debug("acp: auto-granting permission",
 				"requestId", params.RequestID, "frameId", string(frame.ID))
 		}
+
 		// CR-01: echo frame.ID verbatim so a string-id permission request
 		// gets a string-id response. The Phase 1.1-pre code dereffed a
 		// *uint64 here, which would silently drop string ids and reintroduce
@@ -1223,8 +1265,8 @@ func (c *Client) handleNotification(frame rpcFrame) {
 			JSONRPC: "2.0",
 			ID:      frame.ID,
 			Result: map[string]any{
-				"optionId": "allow_always",
-				"granted":  true,
+				"optionId": optionID,
+				"granted":  granted,
 			},
 		})
 		if err != nil {
@@ -1254,6 +1296,19 @@ func (c *Client) handleNotification(frame rpcFrame) {
 			c.cfg.Logger.Warn("acp.permission_response.write_failed_escalating",
 				"err", err)
 			c.cancel()
+			return
+		}
+
+		// Track 3a D3: MAX_TOOL_DENIALS circuit breaker. Response-first-
+		// then-cancel — mirrors the JS reference `_send(...); if
+		// (denials>=max) cancel()` — so the deny response for THIS request
+		// always lands before the turn is torn down. breaker is only ever
+		// set inside the `s != nil && s.denyTools()` arm above, so s is
+		// guaranteed non-nil here.
+		if breaker {
+			c.cfg.Logger.Warn("acp: MAX_TOOL_DENIALS reached — cancelling turn",
+				"denials", denialCount, "max", maxDenials)
+			c.Cancel(s.SessionID())
 		}
 
 	case "session/update", "session/notification", "_kiro.dev/session/update":
