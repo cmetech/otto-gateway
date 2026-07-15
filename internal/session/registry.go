@@ -408,6 +408,7 @@ func (r *Registry) createEntry(ctx context.Context, sid, cwd string, e *Entry) (
 		OnContextPct: func(pct float64) { e.setCtxPct(pct) },
 		OnTurnMeter:  r.recorderTurnMeter(),
 		OnMCPInit:    r.recorderMCPInit(),
+		OnRawFrame:   r.cfg.Capture, // Track 0 capture (nil when disabled)
 	})
 	if err != nil {
 		return publishError(nil, fmt.Errorf("session: spawn %q: %w", sid, err))

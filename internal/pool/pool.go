@@ -554,6 +554,10 @@ func (p *Pool) acpSlotConfig() acp.Config {
 		cfg.OnTurnMeter = rec.RecordTurnMeter
 		cfg.OnMCPInit = rec.RecordMCPInit
 	}
+	// Track 0 capture: forward raw frames to the ring when enabled.
+	if p.cfg.Capture != nil {
+		cfg.OnRawFrame = p.cfg.Capture
+	}
 	return cfg
 }
 

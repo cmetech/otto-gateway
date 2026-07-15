@@ -11,6 +11,7 @@ package pool
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"os"
 	"strconv"
@@ -140,6 +141,11 @@ type Config struct {
 	// OnTurnMeter/OnContextPct/OnMCPInit hooks unset. Wired in
 	// cmd/otto-gateway/main.go to the shared *metrics.Metrics recorder.
 	Metrics MetricsRecorder
+	// Capture, when set, receives every slot's raw inbound kiro frames
+	// (Track 0 tool-call wire capture). Optional; nil leaves the acp
+	// OnRawFrame hook unset. Wired in cmd/otto-gateway/main.go to the capture
+	// ring's Record method when ACP_CAPTURE is enabled.
+	Capture func(method string, params json.RawMessage)
 }
 
 // applyDefaults fills in zero-value Config fields. Size floors to 1

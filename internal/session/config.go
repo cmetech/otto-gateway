@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"time"
 
@@ -109,6 +110,10 @@ type Config struct {
 	// still wired for recycle). Wired in cmd/otto-gateway/main.go to the
 	// shared *metrics.Metrics recorder.
 	Metrics MetricsRecorder
+	// Capture, when set, receives every session's raw inbound kiro frames
+	// (Track 0 tool-call wire capture). Optional; nil leaves the acp OnRawFrame
+	// hook unset. Wired in cmd/otto-gateway/main.go to the capture ring.
+	Capture func(method string, params json.RawMessage)
 }
 
 // applyDefaults fills in zero-value Config fields. TTL/TickInterval/
