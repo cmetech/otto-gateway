@@ -2,7 +2,7 @@
 quick_id: 260715-kre
 slug: add-per-worker-cpu-memory-prometheus-met
 date: 2026-07-15
-status: in-progress
+status: complete
 ---
 
 # Quick Task: Per-worker CPU/memory metrics + admin UI perf tiles
