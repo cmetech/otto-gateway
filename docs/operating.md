@@ -475,6 +475,17 @@ served from `embed.FS` (single static binary; no external runtime deps).
 | `GET /admin/api/snapshot` | Unified JSON snapshot composing pool + registry detail (polled client-side every 30s) |
 | `GET /admin/logs/stream` | SSE stream of new log lines from `GW_LOG` (backfill of last ≤500 lines on connect, then live forward) |
 | `GET /admin/static/*` | Embedded CSS + JS assets |
+| `GET /admin/api/acp-capture` | Track 0 raw-frame capture ring (see [ACP raw-frame capture](#acp-raw-frame-capture-diagnostic) below) |
+
+### ACP raw-frame capture (diagnostic)
+
+`ACP_CAPTURE=true` enables an in-memory ring of the raw kiro ACP frames the
+gateway receives, exposed at `GET /admin/api/acp-capture` (behind the admin
+IP-allowlist). `ACP_CAPTURE_SIZE` bounds the ring (default 512 frames; per-frame
+params are truncated to 8 KiB). **Off by default.** Capture records raw
+prompt/response content, so treat it as a diagnostic mode: enable it only to
+investigate wire behavior, and keep the admin surface allowlisted. Frames are
+never written to disk by the gateway.
 
 ### GW_LOG dependency
 

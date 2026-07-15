@@ -26,6 +26,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -46,6 +47,7 @@ import (
 	"otto-gateway/internal/adapter/openai"
 	"otto-gateway/internal/admin"
 	"otto-gateway/internal/canonical"
+	"otto-gateway/internal/capture"
 	"otto-gateway/internal/config"
 	"otto-gateway/internal/engine"
 	"otto-gateway/internal/metrics"
@@ -396,6 +398,17 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 		},
 	)
 
+	// Track 0 tool-call wire capture: construct the ring only when enabled, so
+	// the acp OnRawFrame hooks stay nil (zero cost) otherwise. Shared across the
+	// pool and the session registry; read by the admin endpoint.
+	const acpCaptureFrameCapBytes = 8 * 1024 // per-frame params byte cap
+	var acpCaptureRing *capture.Ring
+	if cfg.AcpCapture {
+		acpCaptureRing = capture.NewRing(cfg.AcpCaptureSize, acpCaptureFrameCapBytes)
+		logger.Info("acp raw-frame capture enabled",
+			"size", cfg.AcpCaptureSize, "endpoint", "/admin/api/acp-capture")
+	}
+
 	if cfg.KiroCmd != "" {
 		a.pool = pool.New(pool.Config{
 			Logger:       logger,
@@ -404,7 +417,8 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 			KiroArgs:     cfg.KiroArgs,
 			KiroCWD:      cfg.KiroCWD,
 			PingInterval: cfg.PingInterval,
-			Metrics:      gwMetrics, // kiro usage-metrics parity: forward slot usage events
+			Metrics:      gwMetrics,                         // kiro usage-metrics parity: forward slot usage events
+			Capture:      captureRecordFunc(acpCaptureRing), // Track 0 (nil ring → nil func → no capture)
 		})
 
 		// POOL-02: warmup BEFORE the HTTP listener accepts traffic.
@@ -446,6 +460,7 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 			PingInterval: cfg.PingInterval,
 			RecyclePct:   cfg.RecyclePct, // Track 2: proactive context recycle at CTX_RECYCLE_PCT
 			Metrics:      gwMetrics,      // kiro usage-metrics parity: forward per-session usage events
+			Capture:      captureRecordFunc(acpCaptureRing),
 		})
 		a.registry.Start(context.Background())
 	}
@@ -739,6 +754,7 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 		Start:        time.Now(),
 		PoolDetail:   adminPoolDetail,
 		Registry:     adminRegistry,
+		AcpCapture:   adminAcpCapture(acpCaptureRing),
 		LogPaths:     logPaths,
 		LogPathOrder: logPathOrder,
 		Debug:        cfg.Debug,
@@ -891,6 +907,39 @@ func resolveGatewayID(logger *slog.Logger) string {
 		logger.Warn("gateway id: could not persist; using an ephemeral id for this run", "path", path)
 	}
 	return id
+}
+
+// captureRecordFunc returns the ring's Record method, or nil when capture is
+// disabled (nil ring) so the acp OnRawFrame hook stays unset.
+func captureRecordFunc(ring *capture.Ring) func(method string, params json.RawMessage) {
+	if ring == nil {
+		return nil
+	}
+	return ring.Record
+}
+
+// acpCaptureAdapter adapts *capture.Ring to admin.AcpCaptureSource, converting
+// capture.Frame into admin's own CaptureFrame wire type (TRST-04 boundary).
+type acpCaptureAdapter struct{ ring *capture.Ring }
+
+func (a acpCaptureAdapter) Snapshot() []admin.CaptureFrame {
+	frames := a.ring.Snapshot()
+	out := make([]admin.CaptureFrame, len(frames))
+	for i, f := range frames {
+		out[i] = admin.CaptureFrame{
+			Seq: f.Seq, Ts: f.Ts, Method: f.Method, Params: f.Params, Bytes: f.Bytes,
+		}
+	}
+	return out
+}
+
+// adminAcpCapture wraps the ring as an admin.AcpCaptureSource, or returns nil
+// when capture is disabled so the endpoint renders enabled:false.
+func adminAcpCapture(ring *capture.Ring) admin.AcpCaptureSource {
+	if ring == nil {
+		return nil
+	}
+	return acpCaptureAdapter{ring: ring}
 }
 
 // poolDetailAdapter wraps *pool.Pool to satisfy server.PoolDetailSource.
