@@ -466,6 +466,15 @@ func TestExtractToolCallWrappers(t *testing.T) {
 			wantCount: 2,
 			wantNames: []string{"get_weather", "get_weather"},
 		},
+		// Mixed array: one valid wrapper + one non-map element → the
+		// non-map element is skipped (not an error); exactly one call.
+		{
+			name:      "array_mixed_valid_and_nonmap",
+			text:      `[{"tool_call":{"name":"get_weather","arguments":{"city":"Paris"}}},"not-a-map"]`,
+			tools:     []canonical.ToolSpec{weatherTool()},
+			wantCount: 1,
+			wantNames: []string{"get_weather"},
+		},
 		// Map with no "tool_call" key → nil.
 		{
 			name:      "map_without_tool_call_key",

@@ -52,7 +52,8 @@ import (
 	"otto-gateway/internal/canonical"
 )
 
-// CoerceToolCall (D-01 + D-09 — the locked 9-step algorithm):
+// CoerceToolCall (D-01 + D-09 — the locked 9-step bare-{args} algorithm,
+// with a Track 3b wrapper-tier fast path that runs first):
 //
 //  1. Defensive nil guards + skip:
 //     - req == nil OR resp == nil → return false.
@@ -61,7 +62,15 @@ import (
 //     a non-empty ToolCalls short-circuits a re-invocation no-op).
 //  2. Extract assistant text: locate the single ContentKindText part in
 //     resp.Message.Content. If absent or empty (after TrimSpace), return
-//     false. The text-part index is remembered so Step 8 can clear it.
+//     false. The text-part index is remembered so later steps can clear it.
+//     2a. Track 3b wrapper tier (runs BEFORE the bare-{args} path below):
+//     try ExtractToolCallWrappers(rawText, req.Tools) — the explicit
+//     {"tool_call":{"name","arguments"}} wrapper is unambiguous, so it
+//     takes precedence over the key-overlap heuristic. If it returns one
+//     or more calls, clear Content[textIdx].Text, set
+//     resp.Message.ToolCalls to the extracted calls, and return true
+//     immediately — steps 3-9 below do NOT run. If it returns zero
+//     calls, fall through to Step 3.
 //  3. Try json.Unmarshal on the raw text.
 //  4. If fail, run stripFences to strip ```json or bare ``` fences (the
 //     fence MUST wrap the ENTIRE text — Pitfall 3 "entire text"
@@ -278,6 +287,13 @@ func StripFences(text string) (string, bool) {
 // against tools. Unambiguous (wrapper shape only) — safe on every surface incl.
 // Anthropic. Returns nil when none found. Ports acp-server-ollama.js:1139-1200.
 func ExtractToolCallWrappers(text string, tools []canonical.ToolSpec) []canonical.ToolCall {
+	// seq is a per-invocation counter appended to each minted ID so that
+	// two (or more) wrappers extracted within the SAME call get distinct
+	// IDs even when time.Now().UnixNano() returns the same value for both
+	// (a coarse clock can do this when multiple calls are extracted back
+	// to back). Incremented once per successfully pushed wrapper.
+	seq := 0
+
 	// toolDeclared checks if any tool in tools has the given name.
 	toolDeclared := func(name string, tools []canonical.ToolSpec) bool {
 		for _, t := range tools {
@@ -336,9 +352,14 @@ func ExtractToolCallWrappers(text string, tools []canonical.ToolSpec) []canonica
 			name = best.Name
 		}
 
-		// Create and return the ToolCall.
+		// Create and return the ToolCall. The ID incorporates seq (this
+		// invocation's push index) so that multiple wrappers extracted in
+		// one ExtractToolCallWrappers call never collide on ID even if
+		// UnixNano() ticks are identical.
+		id := fmt.Sprintf("call_%d_%d", time.Now().UnixNano(), seq)
+		seq++
 		return canonical.ToolCall{
-			ID:        fmt.Sprintf("call_%d", time.Now().UnixNano()),
+			ID:        id,
 			Name:      name,
 			Arguments: args,
 		}, true
