@@ -83,6 +83,13 @@ type Config struct {
 	OnTurnMeter  func(credits float64, turnMs int64, ctxPct float64, hasCtxPct bool)
 	OnContextPct func(pct float64)
 	OnMCPInit    func(server string, ok bool)
+
+	// OnRawFrame, when set, is fired by readLoop for every inbound kiro frame
+	// (after a successful json.Unmarshal, before dispatch) with the frame's
+	// method and raw params. Used by the Track 0 capture ring to observe kiro's
+	// raw wire behavior. nil = no capture (one nil check on the read path, zero
+	// cost when disabled).
+	OnRawFrame func(method string, params json.RawMessage)
 }
 
 // applyDefaults fills in zero-value Config fields with documented defaults.
@@ -597,6 +604,11 @@ func (c *Client) readLoop(ctx context.Context) {
 		if err := json.Unmarshal(frame, &f); err != nil {
 			c.cfg.Logger.Warn("acp: malformed frame", "err", err)
 			continue // log and continue — don't kill session on parse error (T-02-04)
+		}
+		// Track 0 capture: hand the raw method + params to the capture ring
+		// before dispatch. Cheap nil check when capture is disabled.
+		if c.cfg.OnRawFrame != nil {
+			c.cfg.OnRawFrame(f.Method, f.Params)
 		}
 		c.disp.route(f)
 		_ = ctx // ctx is passed for future cancellation use; readLoop exits on EOF
