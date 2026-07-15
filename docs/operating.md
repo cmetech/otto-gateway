@@ -480,12 +480,16 @@ served from `embed.FS` (single static binary; no external runtime deps).
 ### ACP raw-frame capture (diagnostic)
 
 `ACP_CAPTURE=true` enables an in-memory ring of the raw kiro ACP frames the
-gateway receives, exposed at `GET /admin/api/acp-capture` (behind the admin
-IP-allowlist). `ACP_CAPTURE_SIZE` bounds the ring (default 512 frames; per-frame
-params are truncated to 8 KiB). **Off by default.** Capture records raw
-prompt/response content, so treat it as a diagnostic mode: enable it only to
-investigate wire behavior, and keep the admin surface allowlisted. Frames are
-never written to disk by the gateway.
+gateway receives, exposed at `GET /admin/api/acp-capture`. `ACP_CAPTURE_SIZE`
+bounds the ring (default 512 frames; per-frame params are truncated to 8 KiB).
+**Off by default.** Capture records raw prompt/response content, so treat it as
+a diagnostic mode: enable it only to investigate wire behavior. Note that
+`/admin` — including this route — is **auth-exempt and not IP-allowlisted**
+(Phase 6.1 D-01; the `ALLOWED_IPS` allowlist is applied to the surface routes
+and `/metrics`, not to `/admin`). Because the captured frames contain raw
+prompt/response content, only enable capture when the gateway is bound to
+`localhost` or the port is firewalled to trusted hosts. Frames are never
+written to disk by the gateway.
 
 ### GW_LOG dependency
 
