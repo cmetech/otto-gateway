@@ -148,13 +148,25 @@ type mcpServerParams struct {
 	ServerName string `json:"serverName"`
 }
 
+// permissionOption represents a single permission choice in the session/request_permission
+// notification. Each option has an ID and a Kind (allow, reject, etc.).
+type permissionOption struct {
+	OptionID string `json:"optionId"`
+	Kind     string `json:"kind"`
+}
+
 // permissionParams holds the deserialized fields from a session/request_permission
 // notification. Phase 1.1 D-20: the gateway responds on the original frame id —
 // the request body itself is no longer load-bearing for the response, but the
 // type is preserved so handleNotification can debug-log the inbound RequestID
-// when DEBUG=1 is set.
+// when DEBUG=1 is set. Track 3a: extended with Options and ToolCall to enable
+// the deny path to select the best reject option.
 type permissionParams struct {
-	RequestID string `json:"requestId"`
+	RequestID string             `json:"requestId"`
+	Options   []permissionOption `json:"options"`
+	ToolCall  struct {
+		Title string `json:"title"`
+	} `json:"toolCall"`
 }
 
 // firstNonEmpty returns the first non-empty string from values, or "" if all
@@ -190,6 +202,30 @@ func parseStopReason(s string) canonical.StopReason {
 	default:
 		return canonical.StopUnknown
 	}
+}
+
+// pickRejectOption returns the OptionID of the best reject option from a list of
+// permission options (Track 3a). Selection order:
+// 1. First option whose Kind+" "+OptionID (lowercased) contains both "reject" and "always".
+// 2. Fall back to first option whose Kind+" "+OptionID (lowercased) contains "reject".
+// 3. Final fallback: literal string "reject_always" if no reject option exists.
+func pickRejectOption(opts []permissionOption) string {
+	// First pass: look for reject_always variants
+	for _, opt := range opts {
+		s := strings.ToLower(opt.Kind + " " + opt.OptionID)
+		if strings.Contains(s, "reject") && strings.Contains(s, "always") {
+			return opt.OptionID
+		}
+	}
+	// Second pass: look for any reject variant
+	for _, opt := range opts {
+		s := strings.ToLower(opt.Kind + " " + opt.OptionID)
+		if strings.Contains(s, "reject") {
+			return opt.OptionID
+		}
+	}
+	// Final fallback
+	return "reject_always"
 }
 
 // normalizeUpdateType normalizes a session/update discriminator string to
