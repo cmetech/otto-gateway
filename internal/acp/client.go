@@ -989,6 +989,12 @@ func (c *Client) Prompt(ctx context.Context, sessionID string, blocks []canonica
 
 	stream := newStream(ctx, sessionID)
 
+	// Track 3a: record the per-turn deny-builtin-tools signal (set by
+	// engine.Run via WithDenyBuiltinTools) BEFORE the stream is published as
+	// c.activeStream, so the permission handler (later task) always observes
+	// a consistent value once the stream is reachable.
+	stream.setDenyBuiltinTools(DenyBuiltinTools(ctx))
+
 	// Register the active stream BEFORE sending the prompt so no update is missed.
 	c.streamMu.Lock()
 	c.activeStream = stream

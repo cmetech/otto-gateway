@@ -90,6 +90,15 @@ type Stream struct {
 	mu     sync.Mutex
 	result *FinalResult
 	err    error
+
+	// denyBuiltinTools carries the per-turn Track 3a signal (set from the
+	// Prompt ctx via DenyBuiltinTools) that the acp permission handler should
+	// DENY kiro's built-in-tool session/request_permission for this turn.
+	denyBuiltinTools bool
+	// denialCount tracks how many built-in-tool requests have been denied
+	// this turn. Incremented by recordDenial(); read via denyTools() callers
+	// in a later task (permission handler).
+	denialCount int
 }
 
 // newStream constructs a Stream for the given sessionID.
@@ -208,6 +217,33 @@ func (s *Stream) Result() (*FinalResult, error) {
 	}
 	cp := *s.result
 	return &cp, s.err
+}
+
+// setDenyBuiltinTools records the per-turn Track 3a deny signal on the
+// stream. Called by Client.Prompt before the stream is published as
+// c.activeStream, so it is safe to read via denyTools() as soon as Prompt
+// returns.
+func (s *Stream) setDenyBuiltinTools(v bool) {
+	s.mu.Lock()
+	s.denyBuiltinTools = v
+	s.mu.Unlock()
+}
+
+// denyTools reports whether this turn should deny kiro's built-in tools.
+func (s *Stream) denyTools() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.denyBuiltinTools
+}
+
+// recordDenial increments the per-turn denial count and returns the new
+// value. Used by a later task (the permission handler) to track how many
+// built-in-tool requests were denied this turn.
+func (s *Stream) recordDenial() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.denialCount++
+	return s.denialCount
 }
 
 // SessionID returns the ACP session id captured at newStream time. Safe
