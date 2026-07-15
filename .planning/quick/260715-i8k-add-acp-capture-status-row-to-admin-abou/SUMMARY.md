@@ -28,8 +28,17 @@ holds raw ACP frames (prompt/response content) exposed at
 - `go test ./internal/admin/` PASS (incl. new `TestAbout_AcpCaptureRow`).
 - `CGO_ENABLED=0 go build ./cmd/otto-gateway` OK.
 
+## Follow-up: discoverability (commit 3a97046)
+Made ACP_CAPTURE discoverable alongside the other env vars (minimal scope — no
+new CLI flag; operators enable via overrides.env):
+- `scripts/.env.example` — commented diagnostics block for ACP_CAPTURE /
+  ACP_CAPTURE_SIZE (default off) so `gw init`/`gw upgrade-env` carry the keys
+  into the generated `.env`; notes enable-via-overrides.env + SENSITIVE frames.
+- `internal/admin/admin.go` docsHandler — ACP_CAPTURE (on/off) + ACP_CAPTURE_SIZE
+  rows added to the /admin/docs env table; `TestDocs_AcpCaptureRows` asserts both.
+
 ## Notes
 - Read-only display; no behavior change. `ACP_CAPTURE` still requires a gateway
   restart to take effect (config loads at startup; no hot-reload).
 - Branch `quick/260715-i8k-acp-capture-about-flag` off `main` (post v2.7.0).
-  NOT pushed/merged — stopped for review per instruction.
+  Shipped as v2.7.1.
