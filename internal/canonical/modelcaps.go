@@ -8,6 +8,8 @@ import "time"
 // never used where the source can be unknown.
 type CapabilityState string
 
+// The three valid capability states. Unknown is the honest default when a
+// capability has not been verified against evidence.
 const (
 	CapUnknown     CapabilityState = "unknown"
 	CapSupported   CapabilityState = "supported"

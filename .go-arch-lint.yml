@@ -65,6 +65,8 @@ components:
     in: plugin/**
   pool:
     in: pool/**
+  registry:
+    in: registry/**
   session:
     in: session/**
   server:
@@ -169,6 +171,15 @@ deps:
     anyVendorDeps: true
   capture:
     anyVendorDeps: true
+  registry:
+    anyVendorDeps: true
+    # Model-capability registry: embedded registry.json + validation +
+    # live-catalog enrichment. Depends only on canonical (the enriched
+    # CapabilityCatalog types); the OpenAI adapter consumes it via a
+    # consumer-defined seam wired in cmd/otto-gateway, so adapter_openai
+    # does NOT import registry (TRST-04 upheld).
+    mayDependOn:
+      - canonical
   config:
     anyVendorDeps: true
   engine:
