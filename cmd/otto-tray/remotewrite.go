@@ -152,7 +152,8 @@ func (rw *remoteWriter) scrapeAndConvert(ctx context.Context, cfg remoteWriteCon
 // expects on /api/prom/push.
 func (rw *remoteWriter) push(ctx context.Context, cfg remoteWriteConfig, series []promwrite.TimeSeries) error {
 	client := promwrite.NewClient(cfg.URL, promwrite.HttpClient(rw.httpc))
-	_, err := client.Write(ctx, &promwrite.WriteRequest{TimeSeries: series},
+	_, err := client.Write(
+		ctx, &promwrite.WriteRequest{TimeSeries: series},
 		promwrite.WriteHeaders(map[string]string{
 			"Authorization": "Basic " + basicAuth(cfg.User, cfg.Token),
 		}),

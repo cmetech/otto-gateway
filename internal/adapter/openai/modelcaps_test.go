@@ -36,15 +36,21 @@ func sampleCatalog() canonical.CapabilityCatalog {
 		RegistryRevision: "sha256-abc",
 		GeneratedAt:      time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC),
 		Entries: []canonical.ModelCapability{
-			{ID: "auto", Name: "Automatic", Available: true, SelectionMode: "automatic",
+			{
+				ID: "auto", Name: "Automatic", Available: true, SelectionMode: "automatic",
 				Capabilities: map[string]canonical.CapabilityState{"completion": "unknown", "tools": "unknown", "vision": "unknown", "reasoning": "unknown"},
-				Evidence:     map[string]canonical.Evidence{}},
-			{ID: "claude-opus-4.8", Name: "Claude Opus 4.8", Available: true, SelectionMode: "explicit",
+				Evidence:     map[string]canonical.Evidence{},
+			},
+			{
+				ID: "claude-opus-4.8", Name: "Claude Opus 4.8", Available: true, SelectionMode: "explicit",
 				Capabilities: map[string]canonical.CapabilityState{"completion": "supported", "tools": "unknown", "vision": "unknown", "reasoning": "unknown"},
-				Evidence:     map[string]canonical.Evidence{"completion": {Source: "kiro_declared", Reference: "live catalog", VerifiedAt: "2026-07-16"}}},
-			{ID: "ghost", Name: "Ghost", Available: true, SelectionMode: "explicit",
+				Evidence:     map[string]canonical.Evidence{"completion": {Source: "kiro_declared", Reference: "live catalog", VerifiedAt: "2026-07-16"}},
+			},
+			{
+				ID: "ghost", Name: "Ghost", Available: true, SelectionMode: "explicit",
 				Capabilities: map[string]canonical.CapabilityState{"completion": "unknown", "tools": "unknown", "vision": "unknown", "reasoning": "unknown"},
-				Evidence:     map[string]canonical.Evidence{}},
+				Evidence:     map[string]canonical.Evidence{},
+			},
 		},
 	}
 }
