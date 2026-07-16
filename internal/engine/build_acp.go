@@ -30,12 +30,16 @@ import (
 //	[User]\n<text>\n\n
 //	[Assistant]\n<text>\n\n
 //
-// Phase 2 emits [System], [Reasoning], [Output format], [User], and
-// [Assistant] sections; [Available tools] / [Assistant tool call] /
-// [Tool result] are forward-design seams kept here for Phase 3.1 / 6
-// activation. RoleSystem messages skip the transcript (System field
-// already extracted upstream) but still contribute image parts. RoleTool
-// messages are dormant in Phase 2.
+// Emits [System], [Reasoning], [Output format], [Available tools],
+// [User], [Assistant], and — for multi-turn tool calling (JS reference
+// parity, acp-server-ollama.js:830/836-838) — [Assistant tool call:
+// <name>] and [Tool result (id: …)] sections. Without the latter two,
+// kiro never sees its prior tool call or the tool's result and re-invokes
+// the tool instead of answering. RoleSystem messages skip the transcript
+// (System field already extracted upstream) but still contribute image
+// parts. RoleTool messages render as [Tool result]; Anthropic tool_result
+// content blocks (carried in the user turn) render before that turn's
+// [User] text.
 //
 // Image emission: every ContentPart with Kind == ContentKindImage and
 // Image != nil produces one BlockKindImage block appended AFTER the
@@ -147,9 +151,24 @@ func buildBlocks(req *canonical.ChatRequest) []canonical.Block {
 			if thinking != "" {
 				fmt.Fprintf(&b, "[Reasoning]\n%s\n\n", thinking)
 			}
+			// Multi-turn tool-calling parity (JS reference
+			// acp-server-ollama.js:830): replay the assistant's PRIOR tool
+			// calls as [Assistant tool call: <name>] sections so kiro sees
+			// that it already invoked the tool this turn — without them it
+			// re-invokes the tool instead of consuming the result below.
+			appendAssistantToolCalls(&b, m)
 		case canonical.RoleTool:
-			// Dormant in Phase 2 (Phase 6 fills the [Tool result] body).
+			// Multi-turn tool-calling parity (JS reference
+			// acp-server-ollama.js:836-838): OpenAI/Ollama carry the tool
+			// result as a role:"tool" message; render it as a [Tool result]
+			// section so kiro consumes it instead of re-calling the tool.
+			appendToolResultSection(&b, m.ToolCallID, joinTextParts(m.Content), false)
 		default: // RoleUser
+			// Anthropic carries tool results as tool_result content blocks
+			// inside the user turn. Per the JS reference (lines 1798-1810)
+			// they answer the PREVIOUS assistant turn, so they precede this
+			// turn's own [User] text.
+			appendToolResultParts(&b, m)
 			text := joinTextParts(m.Content)
 			if text != "" {
 				fmt.Fprintf(&b, "[User]\n%s\n\n", text)
@@ -190,6 +209,75 @@ func buildBlocks(req *canonical.ChatRequest) []canonical.Block {
 	}
 
 	return out
+}
+
+// appendAssistantToolCalls renders an assistant turn's prior tool calls
+// as "[Assistant tool call: <name>]\n<pretty-JSON args>\n\n" sections,
+// mirroring the JS reference (acp-server-ollama.js:830). The two canonical
+// carriers are mutually exclusive inbound: Anthropic surfaces tool calls
+// as ContentKindToolUse parts; OpenAI/Ollama surface them on
+// Message.ToolCalls. ToolUse parts are preferred; ToolCalls is the
+// fallback so a message never double-renders.
+func appendAssistantToolCalls(b *strings.Builder, m canonical.Message) {
+	rendered := false
+	for _, cp := range m.Content {
+		if cp.Kind == canonical.ContentKindToolUse && cp.ToolUse != nil {
+			fmt.Fprintf(b, "[Assistant tool call: %s]\n%s\n\n",
+				cp.ToolUse.Name, marshalToolArgs(cp.ToolUse.Input))
+			rendered = true
+		}
+	}
+	if rendered {
+		return
+	}
+	for _, tc := range m.ToolCalls {
+		fmt.Fprintf(b, "[Assistant tool call: %s]\n%s\n\n",
+			tc.Name, marshalToolArgs(tc.Arguments))
+	}
+}
+
+// appendToolResultParts renders every ContentKindToolResult part on a
+// message as a [Tool result] section (Anthropic carries tool results as
+// tool_result content blocks inside the user turn). Mirrors the JS
+// reference is_error prefix (acp-server-ollama.js:1782).
+func appendToolResultParts(b *strings.Builder, m canonical.Message) {
+	for _, cp := range m.Content {
+		if cp.Kind == canonical.ContentKindToolResult && cp.ToolResult != nil {
+			appendToolResultSection(b, cp.ToolResult.ToolUseID, cp.ToolResult.Content, cp.ToolResult.IsError)
+		}
+	}
+}
+
+// appendToolResultSection writes one "[Tool result (id: <id>)]\n<content>"
+// block (the id suffix is omitted when id is empty — the Ollama tool role
+// has no call id). An error result is prefixed "[TOOL ERROR] " per the JS
+// reference (acp-server-ollama.js:1782). Emitted even for empty content so
+// kiro sees the tool returned (matching the JS unconditional push).
+func appendToolResultSection(b *strings.Builder, id, content string, isError bool) {
+	if isError {
+		content = "[TOOL ERROR] " + content
+	}
+	if id != "" {
+		fmt.Fprintf(b, "[Tool result (id: %s)]\n%s\n\n", id, content)
+	} else {
+		fmt.Fprintf(b, "[Tool result]\n%s\n\n", content)
+	}
+}
+
+// marshalToolArgs renders tool-call arguments as pretty (2-space-indented)
+// JSON, matching the JS reference's JSON.stringify(args, null, 2)
+// (acp-server-ollama.js:830). A nil map renders as "{}"; a marshal error
+// (should be impossible for a map[string]any tree) falls back to "{}" so a
+// malformed arg map never aborts the whole prompt.
+func marshalToolArgs(args map[string]any) string {
+	if len(args) == 0 {
+		return "{}"
+	}
+	out, err := json.MarshalIndent(args, "", "  ")
+	if err != nil {
+		return "{}"
+	}
+	return string(out)
 }
 
 // joinTextParts concatenates the Text fields of every ContentPart whose

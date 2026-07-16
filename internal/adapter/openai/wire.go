@@ -86,6 +86,29 @@ type openAIToolChoiceObjectFunction struct {
 type chatMessage struct {
 	Role    string          `json:"role"`
 	Content json.RawMessage `json:"content"`
+	// ToolCalls carries an assistant turn's prior tool invocations
+	// (multi-turn tool calling). Preserved into canonical.Message.ToolCalls
+	// so engine.buildBlocks can replay them as [Assistant tool call]
+	// sections — without this the assistant turn is dropped and kiro
+	// re-invokes the tool. content is null on such turns, so the message is
+	// carried on the strength of ToolCalls alone.
+	ToolCalls []openAIReqToolCall `json:"tool_calls,omitempty"`
+	// ToolCallID links a role:"tool" result message back to the assistant
+	// tool call it answers. Rendered into the [Tool result (id: …)] header.
+	ToolCallID string `json:"tool_call_id,omitempty"`
+}
+
+// openAIReqToolCall is the inbound assistant tool-call shape
+// ({id,type,function:{name,arguments}}). arguments is a JSON-ENCODED
+// STRING per the OpenAI spec (not an object); wireToChatRequest parses it
+// into the canonical map[string]any.
+type openAIReqToolCall struct {
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
 }
 
 // openAIContentPart is one entry in a messages[].content array. Only the
@@ -150,19 +173,37 @@ func wireToChatRequest(w *chatCompletionRequest, r *http.Request) *canonical.Cha
 			continue
 		}
 
-		if text == "" {
-			// Empty content after decode — skip the message (permissive per
-			// the accept-and-ignore invariant; mirrors anthropic/wire.go:165).
+		// Multi-turn tool calling: preserve the assistant turn's prior tool
+		// calls. arguments is a JSON string on the wire → parse to the
+		// canonical map[string]any.
+		var toolCalls []canonical.ToolCall
+		for _, tc := range m.ToolCalls {
+			toolCalls = append(toolCalls, canonical.ToolCall{
+				ID:        tc.ID,
+				Name:      tc.Function.Name,
+				Arguments: parseToolArguments(tc.Function.Arguments),
+			})
+		}
+
+		// Carry the message when it has ANY content: text, tool calls
+		// (assistant, content null), or a tool result (role:"tool"). Only a
+		// wholly empty non-tool message is skipped (accept-and-ignore
+		// invariant; mirrors anthropic/wire.go:165).
+		if text == "" && len(toolCalls) == 0 && role != canonical.RoleTool {
 			continue
 		}
 
-		req.Messages = append(req.Messages, canonical.Message{
-			Role: role,
-			Content: []canonical.ContentPart{{
+		msg := canonical.Message{Role: role, ToolCalls: toolCalls}
+		if text != "" {
+			msg.Content = []canonical.ContentPart{{
 				Kind: canonical.ContentKindText,
 				Text: text,
-			}},
-		})
+			}}
+		}
+		if role == canonical.RoleTool {
+			msg.ToolCallID = m.ToolCallID
+		}
+		req.Messages = append(req.Messages, msg)
 	}
 
 	// Tools (Phase 6 D-13 + iteration-3 MEDIUM #4): unmarshal each
@@ -248,6 +289,25 @@ func decodeToolChoice(raw json.RawMessage) *canonical.ToolChoice {
 //   - Array form: `[{"type":"text","text":"hello"},{"type":"text","text":" world"}]`
 //     → joined text parts "hello world"
 //   - Malformed or empty: return "" (permissive, no 400 at decode layer)
+//
+// parseToolArguments decodes an OpenAI tool-call arguments string (a
+// JSON-encoded object, e.g. `{"city":"Paris"}`) into the canonical
+// map[string]any. An empty or unparseable value yields an empty map so a
+// malformed arguments field degrades to a zero-arg call rather than
+// aborting the request decode.
+func parseToolArguments(s string) map[string]any {
+	if s == "" {
+		return map[string]any{}
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(s), &m); err != nil {
+		slog.Default().Debug("openai: tool_call arguments not valid JSON object; using empty args",
+			"err", err.Error())
+		return map[string]any{}
+	}
+	return m
+}
+
 func decodeMessageContent(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""

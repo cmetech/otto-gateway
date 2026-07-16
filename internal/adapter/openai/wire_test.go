@@ -522,6 +522,47 @@ func TestChatCompletions_NonStream(t *testing.T) {
 // ---- helpers ----------------------------------------------------------------
 
 // jsonRaw returns a json.RawMessage from a raw JSON string literal.
+// TestWire_ToolCallRoundTrip covers the multi-turn tool-calling mapping:
+// an assistant turn with tool_calls and null content must SURVIVE (it was
+// previously dropped as empty), its tool_calls map onto
+// canonical.Message.ToolCalls with arguments parsed from the JSON string,
+// and a role:"tool" message maps onto RoleTool with ToolCallID + content.
+func TestWire_ToolCallRoundTrip(t *testing.T) {
+	body := `{
+	  "model":"auto",
+	  "messages":[
+	    {"role":"user","content":"Weather in Paris?"},
+	    {"role":"assistant","content":null,"tool_calls":[
+	      {"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Paris\"}"}}
+	    ]},
+	    {"role":"tool","tool_call_id":"call_1","content":"18C sunny"}
+	  ]
+	}`
+	var wire chatCompletionRequest
+	if err := json.Unmarshal([]byte(body), &wire); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	req := wireToChatRequest(&wire, fakeHTTPRequest(t))
+	if len(req.Messages) != 3 {
+		t.Fatalf("messages: got %d, want 3 (assistant tool-call turn must survive)", len(req.Messages))
+	}
+	asst := req.Messages[1]
+	if asst.Role != canonical.RoleAssistant || len(asst.ToolCalls) != 1 {
+		t.Fatalf("assistant tool_calls not mapped: %+v", asst)
+	}
+	tc := asst.ToolCalls[0]
+	if tc.ID != "call_1" || tc.Name != "get_weather" || tc.Arguments["city"] != "Paris" {
+		t.Errorf("tool call mapping: got id=%q name=%q args=%v", tc.ID, tc.Name, tc.Arguments)
+	}
+	tool := req.Messages[2]
+	if tool.Role != canonical.RoleTool || tool.ToolCallID != "call_1" {
+		t.Errorf("tool role/id: got role=%v id=%q", tool.Role, tool.ToolCallID)
+	}
+	if len(tool.Content) != 1 || tool.Content[0].Text != "18C sunny" {
+		t.Errorf("tool content: %+v", tool.Content)
+	}
+}
+
 func jsonRaw(s string) json.RawMessage {
 	return json.RawMessage(s)
 }

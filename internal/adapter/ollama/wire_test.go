@@ -105,6 +105,42 @@ func TestWireToChatRequest(t *testing.T) {
 	}
 }
 
+// TestWireToChatRequest_ToolCallRoundTrip covers the multi-turn
+// tool-calling mapping: an assistant turn with tool_calls and empty
+// content must SURVIVE (previously dropped), its tool_calls map onto
+// canonical.Message.ToolCalls (arguments already an object), and a
+// role:"tool" message maps onto RoleTool with its content preserved.
+func TestWireToChatRequest_ToolCallRoundTrip(t *testing.T) {
+	body := `{"model":"auto","messages":[
+	  {"role":"user","content":"Weather in Paris?"},
+	  {"role":"assistant","content":"","tool_calls":[{"function":{"name":"get_weather","arguments":{"city":"Paris"}}}]},
+	  {"role":"tool","content":"18C sunny"}
+	]}`
+	var w ollamaChatRequest
+	if err := json.Unmarshal([]byte(body), &w); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/chat", nil)
+	req, err := wireToChatRequest(&w, r)
+	if err != nil {
+		t.Fatalf("wireToChatRequest: %v", err)
+	}
+	if len(req.Messages) != 3 {
+		t.Fatalf("messages: got %d, want 3 (assistant tool-call turn must survive)", len(req.Messages))
+	}
+	asst := req.Messages[1]
+	if asst.Role != canonical.RoleAssistant || len(asst.ToolCalls) != 1 {
+		t.Fatalf("assistant tool_calls not mapped: %+v", asst)
+	}
+	if tc := asst.ToolCalls[0]; tc.Name != "get_weather" || tc.Arguments["city"] != "Paris" {
+		t.Errorf("tool call mapping: got name=%q args=%v", tc.Name, tc.Arguments)
+	}
+	if tool := req.Messages[2]; tool.Role != canonical.RoleTool ||
+		len(tool.Content) != 1 || tool.Content[0].Text != "18C sunny" {
+		t.Errorf("tool result message: %+v", req.Messages[2])
+	}
+}
+
 // TestWireToChatRequest_Images is the Codex M-1 acceptance test: one
 // message with text + a base64 PNG → canonical Content with [text,
 // image] parts; the image part carries detectMIME's "image/png" plus

@@ -369,16 +369,29 @@ func wireToChatRequest(w *ollamaChatRequest, r *http.Request) (*canonical.ChatRe
 			})
 		}
 
-		// Skip messages that produced neither text nor image parts —
-		// happens for assistant tool-call-only messages on the input
-		// side (Phase 2 has no tool dispatch yet).
-		if len(parts) == 0 {
+		// Multi-turn tool calling: preserve the assistant turn's prior tool
+		// calls so engine.buildBlocks can replay them as [Assistant tool
+		// call] sections. Ollama arguments are already an object
+		// (map[string]any); no string parse needed (unlike OpenAI).
+		var toolCalls []canonical.ToolCall
+		for _, tc := range m.ToolCalls {
+			toolCalls = append(toolCalls, canonical.ToolCall{
+				Name:      tc.Function.Name,
+				Arguments: tc.Function.Arguments,
+			})
+		}
+
+		// Skip only wholly empty messages. A tool-call-only assistant turn
+		// (no content) is carried on the strength of ToolCalls; a role:"tool"
+		// result is carried so buildBlocks can render its [Tool result].
+		if len(parts) == 0 && len(toolCalls) == 0 && role != canonical.RoleTool {
 			continue
 		}
 
 		req.Messages = append(req.Messages, canonical.Message{
-			Role:    role,
-			Content: parts,
+			Role:      role,
+			Content:   parts,
+			ToolCalls: toolCalls,
 		})
 	}
 

@@ -507,6 +507,96 @@ func TestBuildBlocks_StrictToolPrompt(t *testing.T) {
 	}
 }
 
+// TestBuildBlocks_MultiTurnToolCall_Anthropic verifies the JS-parity
+// multi-turn tool-calling sections for the Anthropic canonical shape:
+// an assistant ContentKindToolUse renders as [Assistant tool call], and a
+// following user turn's ContentKindToolResult renders as [Tool result …]
+// BEFORE that turn's own [User] text (JS reference 830 + 1798-1810).
+// Without these sections kiro never sees its prior call or the result and
+// re-invokes the tool (the phase-2 re-call bug).
+func TestBuildBlocks_MultiTurnToolCall_Anthropic(t *testing.T) {
+	req := &canonical.ChatRequest{
+		Messages: []canonical.Message{
+			{Role: canonical.RoleUser, Content: []canonical.ContentPart{
+				{Kind: canonical.ContentKindText, Text: "Weather in Paris?"},
+			}},
+			{Role: canonical.RoleAssistant, Content: []canonical.ContentPart{
+				{Kind: canonical.ContentKindToolUse, ToolUse: &canonical.ToolUsePart{
+					ID: "call_1", Name: "get_weather", Input: map[string]any{"city": "Paris"},
+				}},
+			}},
+			{Role: canonical.RoleUser, Content: []canonical.ContentPart{
+				{Kind: canonical.ContentKindToolResult, ToolResult: &canonical.ToolResultPart{
+					ToolUseID: "call_1", Content: "18C sunny",
+				}},
+				{Kind: canonical.ContentKindText, Text: "thanks"},
+			}},
+		},
+	}
+	got := buildBlocks(req)[0].Text.Content
+	if !contains(got, "[Assistant tool call: get_weather]\n{\n  \"city\": \"Paris\"\n}") {
+		t.Errorf("missing/mis-rendered [Assistant tool call] section in:\n%s", got)
+	}
+	// Contiguous block proves BOTH the [Tool result] rendering AND that it
+	// precedes the same turn's [User] text.
+	if !contains(got, "[Tool result (id: call_1)]\n18C sunny\n\n[User]\nthanks") {
+		t.Errorf("tool result must render before [User] text in:\n%s", got)
+	}
+}
+
+// TestBuildBlocks_MultiTurnToolCall_ToolCallsAndRoleTool verifies the same
+// sections for the OpenAI/Ollama canonical shape: assistant tool calls on
+// Message.ToolCalls, and the tool result carried as a RoleTool message
+// with ToolCallID (JS reference 830 + 836-838). Also asserts the
+// is_error prefix and the empty-id ([Tool result], no "(id: …)") form.
+func TestBuildBlocks_MultiTurnToolCall_ToolCallsAndRoleTool(t *testing.T) {
+	req := &canonical.ChatRequest{
+		Messages: []canonical.Message{
+			{Role: canonical.RoleUser, Content: []canonical.ContentPart{
+				{Kind: canonical.ContentKindText, Text: "Weather in Paris?"},
+			}},
+			{Role: canonical.RoleAssistant, ToolCalls: []canonical.ToolCall{
+				{ID: "call_1", Name: "get_weather", Arguments: map[string]any{"city": "Paris"}},
+			}},
+			{Role: canonical.RoleTool, ToolCallID: "call_1", Content: []canonical.ContentPart{
+				{Kind: canonical.ContentKindText, Text: "18C sunny"},
+			}},
+		},
+	}
+	got := buildBlocks(req)[0].Text.Content
+	if !contains(got, "[Assistant tool call: get_weather]\n{\n  \"city\": \"Paris\"\n}") {
+		t.Errorf("missing/mis-rendered [Assistant tool call] section in:\n%s", got)
+	}
+	if !contains(got, "[Tool result (id: call_1)]\n18C sunny") {
+		t.Errorf("missing [Tool result (id: …)] section in:\n%s", got)
+	}
+
+	// Error tool result with no call id → "[TOOL ERROR]" prefix, bare header.
+	req2 := &canonical.ChatRequest{
+		Messages: []canonical.Message{
+			{Role: canonical.RoleTool, Content: []canonical.ContentPart{
+				{Kind: canonical.ContentKindText, Text: "boom"},
+			}},
+		},
+	}
+	// IsError lives on ToolResultPart (Anthropic path); exercise it there.
+	req3 := &canonical.ChatRequest{
+		Messages: []canonical.Message{
+			{Role: canonical.RoleUser, Content: []canonical.ContentPart{
+				{Kind: canonical.ContentKindToolResult, ToolResult: &canonical.ToolResultPart{
+					Content: "boom", IsError: true,
+				}},
+			}},
+		},
+	}
+	if got2 := buildBlocks(req2)[0].Text.Content; !contains(got2, "[Tool result]\nboom") {
+		t.Errorf("empty-id tool result should render bare [Tool result] header; got:\n%s", got2)
+	}
+	if got3 := buildBlocks(req3)[0].Text.Content; !contains(got3, "[Tool result]\n[TOOL ERROR] boom") {
+		t.Errorf("error tool result should carry [TOOL ERROR] prefix; got:\n%s", got3)
+	}
+}
+
 // contains is a tiny helper to keep test-string assertions readable
 // without importing strings in every test file.
 func contains(s, sub string) bool {
