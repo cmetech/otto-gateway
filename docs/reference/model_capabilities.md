@@ -335,3 +335,36 @@ fail-fast at `Load()`) and by the endpoint/registry test suites
 (`internal/registry/*_test.go`, `internal/adapter/openai/modelcaps_test.go`),
 not by this document alone — a registry edit that violates it fails at
 startup or in CI, not silently at request time.
+
+## 10. Client integration notes (consumer contract stability)
+
+The primary consumer (the Hermes client) validates this response **strictly** and
+joins it against `GET /v1/models` by exact model ID. Two properties of that
+coupling are load-bearing and easy to break accidentally:
+
+- **Additive capability keys are a BREAKING change for strict clients.** A
+  conformant strict consumer may reject the *entire* response if it sees a
+  capability key outside the documented set (`completion`, `tools`, `vision`,
+  `reasoning`) — turning "one new capability" into "every model reads as
+  unverified" on that client. This gateway emits exactly those four keys
+  (`internal/canonical/modelcaps.go`, `RequiredCapabilities`). **Do not add a
+  fifth capability key without coordinating a client release first**; treat it as
+  a versioned contract change, not an additive one. (The client-side hardening is
+  to ignore unknown keys rather than hard-reject, but the gateway must not assume
+  every consumer has adopted it.)
+
+- **Duplicate IDs are rejected whole-catalog by strict clients.** `Enrich` emits
+  each explicit live ID **at most once** (first occurrence wins) precisely so a
+  Kiro double-listing cannot surface a duplicate ID that blanks the client's
+  catalog. Kiro is known to double-list `auto` on `/v1/models`; the capability
+  endpoint normalizes both `auto` and any repeated explicit ID.
+
+- **Capability freshness vs. availability freshness.** Availability comes from the
+  live catalog and is authoritative per request; **capability evidence may be
+  cached by the client** (the Hermes client caches this catalog for up to ~1h,
+  keyed by provider/base-URL/credentials, while fetching `/v1/models` fresh). A
+  registry change (which changes `registry_revision`) can therefore take up to the
+  client's cache TTL to be observed — always in the safe direction (a newly
+  verified model reads as `unknown`/over-blocked until the cache refreshes, never
+  over-permitted). If you ship a registry update that must be observed
+  immediately, expect a lag on clients that cache.

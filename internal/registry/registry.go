@@ -174,8 +174,11 @@ func contains(ss []string, s string) bool {
 
 // Enrich fuses the live Kiro catalog with the registry. auto is emitted first
 // (normalized, all-unknown); any live "auto" is dropped. Each explicit live
-// model gets its registered states or all-unknown when unregistered. Registry
-// entries absent from the live catalog are omitted. Inputs are never mutated.
+// model gets its registered states or all-unknown when unregistered, and is
+// emitted at most once (first occurrence wins) so a duplicate live id cannot
+// reach the wire — the Hermes client rejects the whole catalog on a duplicate
+// id, and Kiro is known to double-list entries. Registry entries absent from the
+// live catalog are omitted. Inputs are never mutated.
 func (r *Registry) Enrich(live []canonical.ModelInfo, now time.Time) canonical.CapabilityCatalog {
 	out := canonical.CapabilityCatalog{
 		RegistryRevision: r.revision,
@@ -184,10 +187,15 @@ func (r *Registry) Enrich(live []canonical.ModelInfo, now time.Time) canonical.C
 	}
 	out.Entries = append(out.Entries, autoEntry())
 
+	seen := make(map[string]struct{}, len(live))
 	for _, m := range live {
 		if m.ID == "" || m.ID == "auto" { // dedupe auto, skip empty
 			continue
 		}
+		if _, dup := seen[m.ID]; dup { // dedupe repeated explicit ids
+			continue
+		}
+		seen[m.ID] = struct{}{}
 		entry := canonical.ModelCapability{
 			ID:            m.ID,
 			Available:     true,

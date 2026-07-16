@@ -241,3 +241,38 @@ func TestEnrich_DoesNotMutateInput(t *testing.T) {
 		t.Errorf("input mutated: %+v", live)
 	}
 }
+
+// TestEnrich_DedupesDuplicateLiveIDs guards the client contract: the Hermes
+// parser rejects the entire catalog on a duplicate id. Kiro already double-lists
+// "auto"; if it ever double-lists a real model, Enrich must still emit that id
+// exactly once (first occurrence wins, preserving order and the first live name).
+func TestEnrich_DedupesDuplicateLiveIDs(t *testing.T) {
+	live := []canonical.ModelInfo{
+		{ID: "m1", Name: "First"},
+		{ID: "m1", Name: "Second"}, // registered dup
+		{ID: "ghost", Name: "GhostA"},
+		{ID: "ghost", Name: "GhostB"}, // unregistered dup
+	}
+	cat := testRegistry(t).Enrich(live, time.Unix(0, 0))
+
+	counts := map[string]int{}
+	names := map[string]string{}
+	for _, e := range cat.Entries {
+		counts[e.ID]++
+		if _, seen := names[e.ID]; !seen {
+			names[e.ID] = e.Name
+		}
+	}
+	if counts["m1"] != 1 {
+		t.Errorf("registered dup id m1 emitted %d times, want 1", counts["m1"])
+	}
+	if counts["ghost"] != 1 {
+		t.Errorf("unregistered dup id ghost emitted %d times, want 1", counts["ghost"])
+	}
+	if names["m1"] != "First" {
+		t.Errorf("first live name should win for m1: got %q, want First", names["m1"])
+	}
+	if names["ghost"] != "GhostA" {
+		t.Errorf("first live name should win for ghost: got %q, want GhostA", names["ghost"])
+	}
+}
