@@ -56,7 +56,7 @@ type ndjsonGenerateLine struct {
 }
 
 // ----------------------------------------------------------------------------
-// emitterState — Phase 6 streaming coerce + kiro-native narration state
+// emitterState — Phase 6 streaming coerce + kiro-native tool-call state
 // ----------------------------------------------------------------------------
 
 // emitterState carries the per-stream accumulators introduced in Phase 6
@@ -74,6 +74,13 @@ type emitterState struct {
 	deferredTextLines     [][]byte
 	sawKiroNativeToolCall bool
 	textFlushed           bool
+
+	// Defect 1c (2026-07-16) — kiro-native tool calls accumulated during
+	// the stream and surfaced structurally on the done:true line's
+	// message.tool_calls (via chatResponseToWire), mirroring the coerce-hit
+	// path. Replaces the old `[tool: <name>]` narration line that discarded
+	// the arguments. D-05 single-goroutine invariant applies.
+	nativeToolCalls []canonical.ToolCall
 
 	// Quick 260530-df2 — post-stream aggregator. Captures EVERY text
 	// fragment written (or buffered) plus every thinking fragment, so
@@ -121,9 +128,9 @@ func (s *emitterState) shouldBuffer(req *canonical.ChatRequest, newText string) 
 //   - ChunkKindText → done:false line with content (chat) or response (generate)
 //   - ChunkKindThought + isChat=true → done:false line with thinking field (D-04)
 //   - ChunkKindThought + isChat=false → drop silently (/api/generate has no thinking — D-04)
-//   - ChunkKindToolCall + isChat=true → emit `[tool: <name>]\n` narration line
-//     per Phase 6 REVIEW HIGH #2 two-path rule. The done:true final line is the
-//     SOLE source of Message.ToolCalls (from coerce only) per D-03/D-05.
+//   - ChunkKindToolCall + isChat=true → accumulate onto emitterState
+//     (Defect 1c); the done:true final line renders it structurally via
+//     message.tool_calls. No `[tool:` narration line is written.
 //   - ChunkKindToolCall + isChat=false → drop silently (/api/generate has no
 //     content-block semantics — kiro-native tool_calls cannot meaningfully
 //     surface there).
@@ -176,43 +183,30 @@ func emitNDJSONChunk(w http.ResponseWriter, flusher http.Flusher, c canonical.Ch
 		return nil
 
 	case canonical.ChunkKindToolCall:
-		// REVIEW HIGH #2 + iteration-3 fix to HIGH #2: kiro-native tool_call
-		// emits a `[tool: <name>]\n` thought-text narration line and sets
-		// sawKiroNativeToolCall=true on the emitter state (suppresses the
-		// end-of-stream coerce). Does NOT accumulate into any tool_calls
-		// slice — the two-path rule isolates kiro-native (narration only)
-		// from coerce-synthesized (done line only).
+		// Defect 1c (2026-07-16): surface the kiro-native tool call
+		// STRUCTURALLY. Accumulate it onto the emitter state and set
+		// sawKiroNativeToolCall=true (suppresses the end-of-stream coerce);
+		// finalizeNDJSON renders it onto the done:true line's
+		// message.tool_calls via chatResponseToWire. No `[tool:` narration
+		// line is written — the old narration discarded the arguments.
 		if !isChat {
 			return nil // /api/generate has no content-block semantics.
 		}
-		name := "unknown"
-		if c.ToolCall != nil && c.ToolCall.Name != "" {
-			name = c.ToolCall.Name
+		if c.ToolCall == nil || state == nil {
+			return nil // defensive nil-guard
 		}
-		if state != nil {
-			state.sawKiroNativeToolCall = true
+		state.sawKiroNativeToolCall = true
+		id := c.ToolCall.ID
+		if id == "" {
+			// Synthesize a stable id when kiro omits toolCallId (mirrors
+			// the non-streaming aggregator + CoerceToolCall convention).
+			id = fmt.Sprintf("call_%d_%d", time.Now().UnixNano(), len(state.nativeToolCalls))
 		}
-		narration := fmt.Sprintf("[tool: %s]\n", name)
-		payload := ndjsonChatLine{
-			Model:     model,
-			CreatedAt: now,
-			Message: ollamaChatResponseMessage{
-				Role:    "assistant",
-				Content: narration,
-			},
-			Done: false,
-		}
-		if err := marshalAndWrite(w, flusher, payload, cancelFn); err != nil {
-			return err
-		}
-		// Quick 260530-df2 — aggregate the narration into Content text
-		// so the post-stream canonical response carries the kiro-native
-		// tool_call visibility for PostHooks. Mirrors engine.Collect's
-		// `[tool: name]\n` narration text (collect.go ChunkKindToolCall
-		// branch).
-		if state != nil {
-			state.aggregatedText.WriteString(narration)
-		}
+		state.nativeToolCalls = append(state.nativeToolCalls, canonical.ToolCall{
+			ID:        id,
+			Name:      c.ToolCall.Name,
+			Arguments: c.ToolCall.Args,
+		})
 		return nil
 
 	default:
@@ -493,12 +487,12 @@ func runNDJSONEmitter(ctx context.Context, cancelFn context.CancelFunc, w http.R
 // the canonical response handed to RunPostHooks has the same content
 // shape the non-streaming path produces.
 //
-// Tool-call handling differs from anthropic because ollama's wire shape
-// has tool_calls only on the done:true line — ChunkKindToolCall is
-// rendered as `[tool: name]\n` narration text per Phase 6 REVIEW HIGH #2.
-// When the streaming-coerce path hits (coerce-synthesized ToolCalls
-// populated on a synthetic resp built inside finalizeNDJSON), the
-// finalize caller uses that synthetic resp instead of this builder.
+// Tool-call handling: ollama's wire shape carries tool_calls only on the
+// done:true line. Kiro-native ChunkKindToolCall chunks are accumulated onto
+// state.nativeToolCalls (Defect 1c) and mirrored onto Message.ToolCalls here
+// so PostHooks observe them. When the streaming-coerce path hits instead
+// (coerce-synthesized ToolCalls on a synthetic resp built inside
+// finalizeNDJSON), the finalize caller uses that synthetic resp.
 func aggregateOllamaResponse(req *canonical.ChatRequest, state *emitterState, stop canonical.StopReason) *canonical.ChatResponse {
 	model := ""
 	if req != nil {
@@ -516,8 +510,9 @@ func aggregateOllamaResponse(req *canonical.ChatRequest, state *emitterState, st
 	return &canonical.ChatResponse{
 		Model: model,
 		Message: canonical.Message{
-			Role:    canonical.RoleAssistant,
-			Content: content,
+			Role:      canonical.RoleAssistant,
+			Content:   content,
+			ToolCalls: state.nativeToolCalls, // Defect 1c — visible to PostHooks
 		},
 		StopReason: stop,
 	}
@@ -537,8 +532,9 @@ func aggregateOllamaResponse(req *canonical.ChatRequest, state *emitterState, st
 //  3. Phase 6 Slice 2 iteration-3 skip-or-coerce-or-flush logic on the
 //     emitter state:
 //     a. If state.sawKiroNativeToolCall == true: SKIP coerce. Release any
-//     buffered text as plain NDJSON lines. Done:true line carries NO
-//     tool_calls.
+//     buffered text as plain NDJSON lines. The done:true line renders the
+//     accumulated native tool call(s) structurally in message.tool_calls
+//     (Defect 1c).
 //     b. Else if !state.buffering: emit done:true normally (Phase 4
 //     behavior, unchanged).
 //     c. Else: build synthetic resp from textBuffer + call
@@ -626,11 +622,11 @@ func finalizeNDJSON(w http.ResponseWriter, flusher http.Flusher, run RunHandle, 
 	coerceFired := false
 	if isChat && state != nil {
 		if state.sawKiroNativeToolCall {
-			// Iteration-3 fix to HIGH #2: kiro-native fired during the
-			// stream, so we SKIP coerce entirely and FLUSH any buffered text
-			// as plain text lines. The user-visible behavior is "kiro-native
-			// ran (narration already emitted), plus any incidental
-			// JSON-shaped text that wasn't a coerce target".
+			// Defect 1c: kiro-native tool call(s) accumulated during the
+			// stream. SKIP coerce entirely (already surfaced structurally)
+			// and FLUSH any incidental buffered JSON-shaped text as plain
+			// text lines. The accumulated calls are rendered onto the
+			// done:true line's message.tool_calls below.
 			if err := releaseBufferedLines(w, flusher, state.deferredTextLines); err != nil {
 				return aggregateOllamaResponse(req, state, stopReason), err
 			}
@@ -676,6 +672,17 @@ func finalizeNDJSON(w http.ResponseWriter, flusher http.Flusher, run RunHandle, 
 			// The synthetic resp carries the populated ToolCalls slice —
 			// chatResponseToWire's tool_calls populate loop picks it up.
 			doneResp = syntheticResp
+		} else if state != nil && len(state.nativeToolCalls) > 0 {
+			// Defect 1c: render the kiro-native tool call(s) onto the
+			// done:true line's message.tool_calls. Content is left empty —
+			// any surrounding text was already streamed as done:false frames.
+			doneResp = &canonical.ChatResponse{
+				Message: canonical.Message{
+					Role:      canonical.RoleAssistant,
+					ToolCalls: state.nativeToolCalls,
+				},
+				StopReason: stopReason,
+			}
 		}
 		out := chatResponseToWire(doneResp, start, model)
 		out.Done = true

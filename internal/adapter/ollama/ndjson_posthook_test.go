@@ -207,15 +207,12 @@ func TestOllamaNDJSON_PostHooksFireOnClientDisconnect(t *testing.T) {
 	}
 }
 
-// TestOllamaNDJSON_ChatPostHookSeesToolCalls — when stream emits a
-// kiro-native ChunkKindToolCall on /api/chat, the narration goes into
-// Content[0].Text and sawKiroNativeToolCall flips on. The done:true
-// line carries NO tool_calls (HIGH #2 two-path rule). Likewise the
-// post-stream aggregated response carries the narration text and no
-// Message.ToolCalls — exactly what the production streaming-coerce
-// path already builds (the aggregator does NOT re-derive ToolCalls
-// independently; it reuses the same final canonical shape). This is
-// observational, not functional.
+// TestOllamaNDJSON_ChatPostHookSeesToolCalls (Defect 1c, 2026-07-16) —
+// when the stream emits a kiro-native ChunkKindToolCall on /api/chat, it is
+// surfaced structurally on the done:true line AND mirrored onto the
+// post-stream aggregated response's Message.ToolCalls so LoggingHook.After /
+// ChatTraceHook.After observe the structured call. No `[tool:` narration is
+// written into Content.
 func TestOllamaNDJSON_ChatPostHookSeesToolCalls(t *testing.T) {
 	eng := &fakeEngine{}
 	chunks := []canonical.Chunk{
@@ -242,14 +239,17 @@ func TestOllamaNDJSON_ChatPostHookSeesToolCalls(t *testing.T) {
 	if resp == nil {
 		t.Fatal("lastPostResp: got nil")
 	}
-	// Narration text appears in Content[0].Text.
-	if len(resp.Message.Content) < 1 || !strings.Contains(resp.Message.Content[0].Text, "[tool: read]") {
-		t.Errorf("Content[0].Text: missing '[tool: read]' narration; got %+v", resp.Message.Content)
+	// No `[tool:` narration in Content.
+	for _, part := range resp.Message.Content {
+		if strings.Contains(part.Text, "[tool:") {
+			t.Errorf("Content must not carry a [tool: marker; got %+v", resp.Message.Content)
+		}
 	}
-	// HIGH #2 two-path rule: kiro-native → narration ONLY; ToolCalls
-	// stays empty on the aggregator path. Coerce is skipped because
-	// sawKiroNativeToolCall fired.
-	if len(resp.Message.ToolCalls) != 0 {
-		t.Errorf("ToolCalls: got %d, want 0 (kiro-native is narration-only per HIGH #2 two-path rule)", len(resp.Message.ToolCalls))
+	// The structured tool call is mirrored onto Message.ToolCalls.
+	if len(resp.Message.ToolCalls) != 1 {
+		t.Fatalf("ToolCalls: got %d, want 1 (kiro-native surfaced structurally)", len(resp.Message.ToolCalls))
+	}
+	if got := resp.Message.ToolCalls[0].Name; got != "read" {
+		t.Errorf("ToolCalls[0].Name: got %q, want read", got)
 	}
 }

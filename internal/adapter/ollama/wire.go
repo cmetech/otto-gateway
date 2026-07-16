@@ -134,13 +134,11 @@ type ollamaChatResponseMessage struct {
 	// surface's convention). The field is symmetric with the request-side
 	// ollamaMessage.ToolCalls.
 	//
-	// Per the Phase 6 per-surface contract (D-03/D-05/D-07), this field
-	// is populated ONLY by engine.CoerceToolCall (the coerce-from-text
-	// path) for the Ollama surface. Kiro-native tool_call chunks render
-	// as `[tool: <name>]\n` narration text in Content — for non-streaming
-	// they come from engine.Collect's iteration-3 narration aggregator
-	// (06-01), for streaming they come from ndjson.go's per-chunk
-	// ChunkKindToolCall handler.
+	// This field is populated for the Ollama surface by engine.CoerceToolCall
+	// (the coerce-from-text rescue) AND by kiro-native tool_call chunks
+	// surfaced structurally (Defect 1c) — non-streaming via engine.Collect,
+	// streaming via ndjson.go's done:true accumulation. Arguments render as a
+	// plain JSON object.
 	ToolCalls []ollamaToolCall `json:"tool_calls,omitempty"`
 	Thinking  string           `json:"thinking,omitempty"`
 }

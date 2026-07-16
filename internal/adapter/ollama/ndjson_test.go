@@ -464,12 +464,12 @@ func TestNDJSON_StreamingCoerce_NotJSON_PassThrough(t *testing.T) {
 	}
 }
 
-// TestNDJSON_KiroNative_ThoughtTextOnly: REVIEW HIGH #2 verification.
-// A kiro-native ChunkKindToolCall must render as a `[tool: <name>]\n`
-// thought-text NDJSON line. The done:true final line must NOT carry
-// tool_calls[] (the two-path rule — only coerce-synthesized populates
-// tool_calls on the wire).
-func TestNDJSON_KiroNative_ThoughtTextOnly(t *testing.T) {
+// TestNDJSON_KiroNative_StructuredToolCall (Defect 1c, 2026-07-16): a
+// kiro-native ChunkKindToolCall surrounded by text streams the text as
+// done:false content frames and surfaces the tool call STRUCTURALLY on the
+// done:true line's message.tool_calls (object-shaped arguments). No `[tool:`
+// marker appears; no intermediate narration line is emitted.
+func TestNDJSON_KiroNative_StructuredToolCall(t *testing.T) {
 	chunks := []canonical.Chunk{
 		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "starting "}},
 		{Kind: canonical.ChunkKindToolCall, ToolCall: &canonical.ToolCallChunk{
@@ -493,47 +493,29 @@ func TestNDJSON_KiroNative_ThoughtTextOnly(t *testing.T) {
 	body := w.Body.String()
 	lines := scanNDJSON(t, w.Body.Bytes())
 
-	// Expect 4 lines: "starting ", "[tool: get_weather]\n", " done", done:true.
-	if len(lines) != 4 {
-		t.Fatalf("NDJSON lines: got %d, want 4 (2 text + 1 tool-narration + 1 done); body=%s", len(lines), body)
+	// Expect 3 lines: "starting ", " done", done:true (no narration line).
+	if len(lines) != 3 {
+		t.Fatalf("NDJSON lines: got %d, want 3 (2 text + 1 done, no narration); body=%s", len(lines), body)
 	}
-
-	// No line carries tool_calls (two-path rule: kiro-native renders as
-	// narration only, done line has no tool_calls because no coerce fired).
-	if strings.Contains(body, `"tool_calls"`) {
-		t.Errorf("kiro-native two-path rule violated — body contains tool_calls; body=%s", body)
+	if strings.Contains(body, "[tool:") {
+		t.Errorf("kiro-native must NOT emit a [tool: marker; body=%s", body)
 	}
-
-	// Narration line shape.
-	if !strings.Contains(body, `[tool: get_weather]`) {
-		t.Errorf("missing [tool: get_weather] narration; body=%s", body)
+	// The done:true line carries structured object-shaped tool_calls.
+	if !strings.Contains(body, `"tool_calls":[{"function":{"name":"get_weather","arguments":{"location":"NYC"}}}]`) {
+		t.Errorf("done line missing structured tool_calls with object args; body=%s", body)
 	}
-
-	// The narration line must NOT set done:true.
-	var second struct {
-		Message struct {
-			Content string `json:"content"`
-		} `json:"message"`
-		Done bool `json:"done"`
-	}
-	if err := json.Unmarshal(lines[1], &second); err != nil {
-		t.Fatalf("decode narration line: %v", err)
-	}
-	if second.Done {
-		t.Error("narration line: done==true, want false (intermediate line)")
-	}
-	if second.Message.Content != "[tool: get_weather]\n" {
-		t.Errorf("narration line content: got %q, want %q", second.Message.Content, "[tool: get_weather]\n")
+	// Surrounding text streamed as done:false content frames.
+	if !strings.Contains(body, `"content":"starting "`) || !strings.Contains(body, `"content":" done"`) {
+		t.Errorf("surrounding text not streamed as content frames; body=%s", body)
 	}
 }
 
-// TestStream_NativeToolCall_ThenJSONText_NoCoerce: iteration-3 fix to
-// HIGH #2. After a kiro-native tool_call passes through during the stream,
-// sawKiroNativeToolCall is set to true. At stream end, even if subsequent
-// JSON-shaped text was buffered, coerce is SKIPPED entirely. The buffered
-// text is FLUSHED as plain text lines and the done:true line carries NO
-// tool_calls.
-func TestStream_NativeToolCall_ThenJSONText_NoCoerce(t *testing.T) {
+// TestStream_NativeToolCall_ThenJSONText_SkipsCoerce (Defect 1c): after a
+// kiro-native tool_call is surfaced structurally, sawKiroNativeToolCall is
+// true so subsequent JSON-shaped text is FLUSHED as plain content frames
+// (coerce is SKIPPED — no second, duplicate tool call). The done:true line
+// carries exactly the one native tool call (NYC), not a Tokyo coerce dup.
+func TestStream_NativeToolCall_ThenJSONText_SkipsCoerce(t *testing.T) {
 	chunks := []canonical.Chunk{
 		{Kind: canonical.ChunkKindToolCall, ToolCall: &canonical.ToolCallChunk{
 			ID:   "tc_1",
@@ -558,29 +540,27 @@ func TestStream_NativeToolCall_ThenJSONText_NoCoerce(t *testing.T) {
 
 	body := w.Body.String()
 
-	// No tool_calls anywhere (kiro-native render via narration; coerce skipped).
-	if strings.Contains(body, `"tool_calls"`) {
-		t.Errorf("iteration-3 fix violated — body contains tool_calls after kiro-native chunk; body=%s", body)
+	if strings.Contains(body, "[tool:") {
+		t.Errorf("must NOT emit a [tool: marker; body=%s", body)
 	}
-
-	// The narration must appear.
-	if !strings.Contains(body, `[tool: get_weather]`) {
-		t.Errorf("missing [tool: get_weather] narration; body=%s", body)
+	// The one native tool call surfaces with NYC args on the done line.
+	if !strings.Contains(body, `"arguments":{"location":"NYC"}`) {
+		t.Errorf("native tool call NYC args missing; body=%s", body)
 	}
-
-	// The buffered JSON-shaped text MUST be flushed (not discarded) because
-	// coerce was skipped — the text "Tokyo" should appear verbatim.
+	// Coerce must NOT re-fire on the trailing Tokyo JSON text.
+	if strings.Contains(body, `"arguments":{"location":"Tokyo"}`) {
+		t.Errorf("coerce must not re-fire on trailing JSON text; body=%s", body)
+	}
+	// The buffered JSON-shaped text is flushed as content (not discarded).
 	if !strings.Contains(body, "Tokyo") {
-		t.Errorf("buffered text was dropped instead of flushed (iteration-3 contract); body=%s", body)
+		t.Errorf("buffered text was dropped instead of flushed; body=%s", body)
 	}
 }
 
-// TestStream_NativeToolCall_Only_NoCoerce: iteration-3 fix to HIGH #2,
-// minimal case. Only a kiro-native tool_call chunk passes through (no
-// text). sawKiroNativeToolCall = true, no buffering, no text to flush.
-// Final output: exactly the `[tool: <name>]\n` narration line plus the
-// done:true line. No tool_calls anywhere.
-func TestStream_NativeToolCall_Only_NoCoerce(t *testing.T) {
+// TestStream_NativeToolCall_Only_Structured (Defect 1c): only a kiro-native
+// tool_call chunk (no surrounding text). Output is exactly one done:true
+// line carrying the structured tool call — no narration line, no `[tool:`.
+func TestStream_NativeToolCall_Only_Structured(t *testing.T) {
 	chunks := []canonical.Chunk{
 		{Kind: canonical.ChunkKindToolCall, ToolCall: &canonical.ToolCallChunk{
 			ID:   "tc_1",
@@ -601,22 +581,21 @@ func TestStream_NativeToolCall_Only_NoCoerce(t *testing.T) {
 
 	body := w.Body.String()
 	lines := scanNDJSON(t, w.Body.Bytes())
-	if len(lines) != 2 {
-		t.Fatalf("NDJSON lines: got %d, want 2 (narration + done); body=%s", len(lines), body)
+	if len(lines) != 1 {
+		t.Fatalf("NDJSON lines: got %d, want 1 (done line only); body=%s", len(lines), body)
 	}
-	if strings.Contains(body, `"tool_calls"`) {
-		t.Errorf("native-only path must NOT produce tool_calls; body=%s", body)
+	if strings.Contains(body, "[tool:") {
+		t.Errorf("native-only path must NOT emit a [tool: marker; body=%s", body)
 	}
-	if !strings.Contains(body, `[tool: get_weather]`) {
-		t.Errorf("missing narration; body=%s", body)
+	if !strings.Contains(body, `"tool_calls":[{"function":{"name":"get_weather","arguments":{"location":"NYC"}}}]`) {
+		t.Errorf("done line missing structured tool_calls; body=%s", body)
 	}
 }
 
-// TestNDJSON_KiroNative_DefensiveNilName: defensive nil-name fallback —
-// when ToolCall.Name is empty/missing, the narration emits "[tool: unknown]\n".
-// This mirrors the discipline established in translate.go's
-// firstNonEmpty(body.Title, "unknown") fallback (06-01 Task 1).
-func TestNDJSON_KiroNative_DefensiveNilName(t *testing.T) {
+// TestNDJSON_KiroNative_NilToolCall_Dropped: defensive — a ChunkKindToolCall
+// with a nil ToolCall pointer is dropped silently (no panic, no tool_calls,
+// no `[tool:` marker). Only the done:true line is emitted.
+func TestNDJSON_KiroNative_NilToolCall_Dropped(t *testing.T) {
 	chunks := []canonical.Chunk{
 		{Kind: canonical.ChunkKindToolCall, ToolCall: nil},
 	}
@@ -631,8 +610,11 @@ func TestNDJSON_KiroNative_DefensiveNilName(t *testing.T) {
 	}
 
 	body := w.Body.String()
-	if !strings.Contains(body, `[tool: unknown]`) {
-		t.Errorf("nil ToolCall must emit [tool: unknown] fallback; body=%s", body)
+	if strings.Contains(body, "[tool:") {
+		t.Errorf("nil ToolCall must not emit a [tool: marker; body=%s", body)
+	}
+	if strings.Contains(body, `"tool_calls"`) {
+		t.Errorf("nil ToolCall must not produce tool_calls; body=%s", body)
 	}
 }
 

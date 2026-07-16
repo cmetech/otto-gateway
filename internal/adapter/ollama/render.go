@@ -68,15 +68,13 @@ func chatResponseToWire(resp *canonical.ChatResponse, start time.Time, requested
 		EvalDuration:       int64(math.Floor(float64(totalNs) * 0.85)),
 	}
 
-	// Per-surface contract (Phase 6 D-03/D-05): resp.Message.ToolCalls is
-	// populated for Ollama ONLY by engine.CoerceToolCall (the coerce-from-text
-	// path invoked by handlers.go non-streaming branch and by ndjson.go at
-	// stream end). Kiro-native tool_calls render as `[tool: <name>]\n`
-	// narration text in message.content — for non-streaming that text comes
-	// from engine.Collect's narration aggregator (06-01 Task 2), for streaming
-	// it comes from ndjson.go's per-chunk ChunkKindToolCall handler. Per the
-	// Phase 6 two-path rule (D-03/D-05), Anthropic has its own D-07 exception
-	// using its adapter-local Collect.
+	// Per-surface contract (updated Defect 1c, 2026-07-16):
+	// resp.Message.ToolCalls is populated for Ollama by engine.CoerceToolCall
+	// (the coerce-from-text rescue) AND by kiro-native ChunkKindToolCall
+	// chunks surfaced structurally — for non-streaming via engine.Collect,
+	// for streaming via ndjson.go accumulating onto the done:true line. Both
+	// reach this renderer as Message.ToolCalls. Anthropic has its own D-07
+	// path using its adapter-local Collect.
 	//
 	// Wire-shape canary (D-04/D-15): Arguments passes through as
 	// map[string]any — encoding/json emits a plain JSON OBJECT, NOT a
