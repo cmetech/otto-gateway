@@ -562,6 +562,95 @@ func TestAfter_RoundTripDecrypt(t *testing.T) {
 	}
 }
 
+// TestAfter_DecryptsToolCallArguments is the RED test for the tool-call PII
+// leak surfaced by the gateway-toolcall-parity harness (2026-07): with the PII
+// hook in encrypt mode + NER on, get_weather(city="Paris") returned CIPHERTEXT
+// on all three surfaces because After decrypted assistant TEXT only and never
+// touched tool-call ARGUMENT values.
+//
+// It also pins the wrapper-stripping root cause (verified via ACP_CAPTURE):
+// kiro reproduces PII inside structured tool_call JSON as the RAW base64url
+// payload only, dropping the "[PII:<entity>:" prefix and "]" suffix it echoes
+// verbatim in prose. So recovery must (a) walk the tool-call surfaces and
+// (b) trial-decrypt the BARE payload against the candidate entity AADs. The
+// test feeds bare (wrapper-stripped) payloads exactly as kiro emits them and
+// asserts both response surfaces round-trip:
+//   - ContentKindToolUse.Input leaf (Anthropic native + coerced), incl. a
+//     nested-slice leaf to prove WalkStrings recursion.
+//   - Message.ToolCalls[].Arguments leaf (OpenAI/Ollama).
+func TestAfter_DecryptsToolCallArguments(t *testing.T) {
+	k, err := DeriveKey("test")
+	if err != nil {
+		t.Fatalf("DeriveKey: %v", err)
+	}
+	// Recognizers wired so decryptEntities() surfaces "Email" as a candidate
+	// AAD for bare-payload recovery (production wires the full registry).
+	h := &PIIRedactionHook{Enabled: true, Mode: "encrypt", EncryptKey: k, Recognizers: Recognizers}
+
+	// Encrypt under a real recognizer entity, then STRIP the wrapper down to
+	// the bare base64url payload — exactly what kiro emits in tool_call args.
+	tok, err := EncryptValue(k, "Email", "corey@cmetech.io")
+	if err != nil {
+		t.Fatalf("EncryptValue: %v", err)
+	}
+	sub := decryptTokenRe.FindStringSubmatch(tok)
+	if len(sub) != 3 {
+		t.Fatalf("token %q did not match wrapper regex", tok)
+	}
+	bare := sub[2] // base64url payload only, no "[PII:Email:" / "]"
+	if bare == "corey@cmetech.io" || strings.Contains(bare, "PII") || strings.ContainsAny(bare, "[]:") {
+		t.Fatalf("bare payload extraction failed: %q", bare)
+	}
+
+	// prose text carrying the bare payload inside tool_call JSON — the
+	// OpenAI/Ollama shape, decrypted BEFORE engine.CoerceToolCall parses it.
+	proseText := "```json\n{\"tool_call\": {\"name\": \"send_email\", \"arguments\": {\"to\": \"" + bare + "\"}}}\n```"
+
+	resp := &canonical.ChatResponse{
+		Message: canonical.Message{
+			Content: []canonical.ContentPart{
+				{Kind: canonical.ContentKindText, Text: proseText},
+				{Kind: canonical.ContentKindToolUse, ToolUse: &canonical.ToolUsePart{
+					ID:   "call_1",
+					Name: "send_email",
+					// bare leaf (string), nested-slice leaf, and a
+					// still-wrapped leaf (proves decrypt handles both forms).
+					Input: map[string]any{
+						"to":      bare,
+						"cc":      []any{bare},
+						"subject": "ping " + tok,
+					},
+				}},
+			},
+			ToolCalls: []canonical.ToolCall{
+				{ID: "call_1", Name: "send_email", Arguments: map[string]any{"to": bare}},
+			},
+		},
+	}
+	if err := h.After(context.Background(), &canonical.ChatRequest{}, resp); err != nil {
+		t.Fatalf("After: %v", err)
+	}
+
+	const want = "corey@cmetech.io"
+	// prose text: bare payload recovered in-place so later coercion sees plaintext.
+	if got := resp.Message.Content[0].Text; strings.Contains(got, bare) || !strings.Contains(got, want) {
+		t.Errorf("Content[0].Text: bare payload not recovered in prose text: got %q", got)
+	}
+	gotInput := resp.Message.Content[1].ToolUse.Input
+	if gotInput["to"] != want {
+		t.Errorf("ToolUse.Input.to: got %v, want %q (bare tool-call arg not decrypted)", gotInput["to"], want)
+	}
+	if cc, ok := gotInput["cc"].([]any); !ok || len(cc) != 1 || cc[0] != want {
+		t.Errorf("ToolUse.Input.cc: got %v, want [%q] (nested-slice leaf not decrypted)", gotInput["cc"], want)
+	}
+	if gotInput["subject"] != "ping "+want {
+		t.Errorf("ToolUse.Input.subject: got %v, want %q (wrapped leaf not decrypted)", gotInput["subject"], "ping "+want)
+	}
+	if got := resp.Message.ToolCalls[0].Arguments["to"]; got != want {
+		t.Errorf("ToolCalls[0].Arguments.to: got %v, want %q (ToolCalls seam not decrypted)", got, want)
+	}
+}
+
 // TestAfter_RoundTripDecrypt_EntityNamesWithDigits is the RED test for the
 // bug surfaced on a v1.9.4 Windows operator run on 2026-06-03: IPv4 / IPv6
 // cipher tokens passed through the After-hook decrypt step UNCHANGED because

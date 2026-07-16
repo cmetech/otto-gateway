@@ -198,6 +198,53 @@ func (h *PIIRedactionHook) encryptActive() bool {
 	return false
 }
 
+// decryptEntities returns the set of entity AAD labels that the encrypt
+// path could have produced this request — the active regex-recognizer
+// names PLUS the NER-emitted names ("PERSON"/"LOCATION") when NER is
+// active — restricted to entities whose action is "encrypt". It is the
+// candidate set for bare-payload trial decryption in After: kiro strips
+// the "[PII:<entity>:" wrapper down to a naked payload in tool-call
+// arguments, discarding the entity label, so After must try each
+// candidate label as GCM Associated Data until one authenticates. GCM
+// binds (key, AAD, ciphertext), so at most one candidate Opens and a
+// non-ciphertext string can never spuriously "decrypt" (~2^-128).
+//
+// EnabledEntities filtering is applied so the candidate set exactly
+// mirrors what Before could have encrypted (activeEntityNames already
+// filters the regex side; the NER names are filtered here). Returns an
+// empty slice when nothing is encrypt-active — callers then no-op the
+// bare-payload scan, preserving the wrapped-token-only behavior for
+// unit hooks that wire neither Recognizers nor NER.
+func (h *PIIRedactionHook) decryptEntities() []string {
+	seen := make(map[string]struct{})
+	out := make([]string, 0, len(h.Recognizers)+2)
+	add := func(name string) {
+		if _, dup := seen[name]; dup {
+			return
+		}
+		if h.actionFor(name) != "encrypt" {
+			return
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	for _, name := range h.activeEntityNames() {
+		add(name)
+	}
+	if h.NER != nil {
+		allow := h.enabledEntitiesSet()
+		for _, name := range []string{"PERSON", "LOCATION"} {
+			if allow != nil {
+				if _, ok := allow[name]; !ok {
+					continue
+				}
+			}
+			add(name)
+		}
+	}
+	return out
+}
+
 // collectRegexSpans iterates recs over s and returns the accepted
 // (Validate-pass, context-pass, non-overlapping) spans against the
 // ORIGINAL string s. counters / nextN / summary are mutated as
@@ -339,6 +386,24 @@ func (h *PIIRedactionHook) logger() *slog.Logger {
 // verbatim to the client. Re-derive the alternation from recognizer
 // Names if a new entity ever introduces another character class.
 var decryptTokenRe = regexp.MustCompile(`\[PII:([A-Za-z0-9_]+):([A-Za-z0-9_-]+)\]`)
+
+// barePayloadRe matches a maximal run of base64url characters long enough
+// to be an AES-GCM ciphertext payload — the WRAPPER-STRIPPED remnant of an
+// encrypt token. Root cause (verified via ACP_CAPTURE): kiro (the LLM)
+// reproduces PII inside a structured tool_call as the raw base64url payload
+// ONLY, dropping the surrounding "[PII:<entity>:" and "]" it faithfully
+// echoes in prose text. So on the tool-call ARGUMENT surface the
+// decryptTokenRe wrapper never appears and cannot match; After recovers the
+// plaintext by trial-decrypting each bare run against the candidate entity
+// AADs (see After / decryptEntities).
+//
+// Length floor 38 = base64url(RawURLEncoding) of the 28-byte GCM minimum
+// (12-byte nonce + 16-byte tag, empty plaintext). Shorter runs cannot be a
+// valid token, so gating here avoids pointless Open attempts; DecryptToken
+// still validates length + base64 internally as a second guard. base64url
+// alphabet is [A-Za-z0-9_-] (RawURLEncoding, unpadded) — matches
+// EncryptValue (encrypt.go).
+var barePayloadRe = regexp.MustCompile(`[A-Za-z0-9_-]{38,}`)
 
 // Before is the PreHook entry. Algorithm:
 //
@@ -485,13 +550,35 @@ func (h *PIIRedactionHook) Before(ctx context.Context, req *canonical.ChatReques
 	return nil, nil
 }
 
-// After is the PostHook entry for the encrypt round-trip. It scans
-// every ContentKindText part in resp.Message.Content for
-// "[PII:<entity>:<base64url>]" tokens and decrypts each via
-// DecryptToken. Failures (mangled token shape, bad base64, GCM Open
-// error from wrong key / AAD mismatch / corruption) leave the token
-// verbatim and emit a WARN — the client sees a visible defect, not
-// a silent lie.
+// After is the PostHook entry for the encrypt round-trip. It restores
+// plaintext on every canonical string surface the assistant turn can
+// carry PII on: message text, tool_use.Input arg values, tool_result
+// content, and the (OpenAI/Ollama) Message.ToolCalls[].Arguments. It is
+// the exact inverse of Before's D-03 walk (Before encrypts Text +
+// ToolUse.Input + ToolResult.Content; After decrypts the same, plus the
+// per-surface ToolCalls seam). Failures (mangled token, bad base64, GCM
+// Open error from wrong key / AAD mismatch / corruption) leave the value
+// verbatim and emit a WARN — the client sees a visible defect, not a
+// silent lie.
+//
+// Two token shapes are recovered, because the worker echoes PII
+// differently on the two surfaces (verified via ACP_CAPTURE):
+//
+//   - WRAPPED "[PII:<entity>:<base64url>]" — kiro echoes this verbatim in
+//     prose it copies literally, so decryptTokenRe matches and decrypts it.
+//   - BARE base64url payload — when kiro reproduces PII inside structured
+//     tool_call JSON it emits the RAW payload only, dropping the
+//     "[PII:<entity>:" prefix and "]" suffix. The wrapper regex cannot
+//     match, and the entity (GCM AAD) is lost from the wire — so recovery
+//     trial-decrypts each bare run against decryptEntities() until one
+//     candidate AAD Opens. The historical "decrypt Text only" hook leaked
+//     ciphertext into tool_call args on all three surfaces: the value
+//     reaches the client either directly in tool_use.Input (Anthropic) or
+//     inside prose text that engine.CoerceToolCall parses into
+//     Message.ToolCalls AFTER this hook (OpenAI/Ollama).
+//
+// The encrypt (Before) path is untouched — the worker still only ever
+// sees ciphertext; recovery is purely response-side.
 //
 // After Algorithm:
 //
@@ -499,22 +586,25 @@ func (h *PIIRedactionHook) Before(ctx context.Context, req *canonical.ChatReques
 //     !encryptActive(), return nil immediately. engine.Collect still
 //     ranges PostHooks even when encryptActive is false; this hook just
 //     exits early.
-//  2. For each ContentKindText part, run decryptTokenRe.ReplaceAllStringFunc.
-//     Per match: regex FindStringSubmatch extracts entity + payload;
-//     DecryptToken decrypts; on success the match is replaced with
-//     plaintext; on failure (bad shape, GCM error) the match is left
-//     verbatim and a WARN is emitted via pii.decrypt.failed.
-//  3. Non-Text content parts (image, thinking, tool_use, tool_result) are
-//     skipped — encrypt round-trip is scoped to Text only in v1. The
-//     tool_use/tool_result surfaces ARE encrypted on the Pre side (Before
-//     walks them via WalkStrings) but the kiro-cli response surface is
-//     text-only for the assistant turn, so decrypt only needs Text.
+//  2. The single `decrypt` restore (wrapped tokens THEN bare-payload
+//     recovery) is applied to ContentKindText, every string LEAF of
+//     ToolUse.Input (via WalkStrings), ToolResult.Content, and every string
+//     LEAF of Message.ToolCalls[].Arguments — the inverse of Before's D-03
+//     walk, plus the per-surface ToolCalls seam. ContentKindThinking /
+//     Image carry no encrypt-bearing leaves and are skipped (Before skips
+//     them symmetrically).
+//  3. Wrapped-token failures leave the token verbatim + WARN via
+//     pii.decrypt.failed; bare-payload non-matches are left verbatim with
+//     no WARN (a non-PII arg legitimately fails every candidate AAD).
 //  4. Failure WARN log shape: pii.decrypt.failed with entity + reason +
 //     err. Reason categories: bad_token_shape (malformed submatch),
 //     bad_base64 (DecryptToken base64 decode error), gcm_open (GCM
 //     authentication failure — usually wrong key, AAD mismatch, or
 //     tag corruption), payload_too_short (blob shorter than the GCM
 //     nonce size), decrypt_other (any unclassified DecryptToken error).
+//     Bare-payload Open failures are NOT logged: a non-ciphertext arg
+//     value legitimately fails every candidate AAD, so a WARN there
+//     would be pure noise.
 //
 // req is unused but required by the engine.PostHook interface; matches
 // the LoggingHook precedent.
@@ -522,12 +612,16 @@ func (h *PIIRedactionHook) After(ctx context.Context, _ *canonical.ChatRequest, 
 	if !h.Enabled || resp == nil || !h.encryptActive() {
 		return nil
 	}
-	for i := range resp.Message.Content {
-		cp := &resp.Message.Content[i]
-		if cp.Kind != canonical.ContentKindText {
-			continue
-		}
-		cp.Text = decryptTokenRe.ReplaceAllStringFunc(cp.Text, func(match string) string {
+
+	// Candidate entity AADs for bare-payload recovery, computed once.
+	entities := h.decryptEntities()
+
+	// decryptWrapped restores WRAPPED "[PII:<entity>:<payload>]" tokens
+	// embedded in a string — the form kiro echoes verbatim. Failure (bad
+	// shape / GCM Open) leaves the token verbatim + WARN so the client sees
+	// a visible defect, not a silent lie.
+	decryptWrapped := func(s string) string {
+		return decryptTokenRe.ReplaceAllStringFunc(s, func(match string) string {
 			sub := decryptTokenRe.FindStringSubmatch(match)
 			if len(sub) != 3 {
 				h.logger().Warn("pii.decrypt.failed", "reason", "bad_token_shape")
@@ -544,6 +638,71 @@ func (h *PIIRedactionHook) After(ctx context.Context, _ *canonical.ChatRequest, 
 			}
 			return pt
 		})
+	}
+
+	// decrypt is the full response-side restore applied to every
+	// encrypt-bearing string surface. It runs the wrapped-token decrypt
+	// first, then recovers any WRAPPER-STRIPPED bare payload by
+	// trial-decrypting each base64url run against the candidate entity AADs.
+	// Bare recovery is essential on BOTH the tool_use.Input leaves (Anthropic)
+	// AND the assistant TEXT (OpenAI/Ollama): kiro emits the tool call as
+	// prose JSON whose PII arg is a bare payload, and engine.CoerceToolCall
+	// reconstructs Message.ToolCalls from that text AFTER this hook runs — so
+	// the bare payload must be restored in the text here, before coercion.
+	// GCM authentication makes a spurious match on a non-ciphertext value
+	// cryptographically negligible (~2^-128), so an unmatched run is left
+	// verbatim without a WARN (a non-PII arg legitimately fails every AAD).
+	decrypt := func(s string) string {
+		s = decryptWrapped(s)
+		if len(entities) == 0 {
+			return s
+		}
+		return barePayloadRe.ReplaceAllStringFunc(s, func(payload string) string {
+			for _, ent := range entities {
+				if pt, err := DecryptToken(h.EncryptKey, ent, payload); err == nil {
+					return pt
+				}
+			}
+			return payload
+		})
+	}
+
+	for i := range resp.Message.Content {
+		cp := &resp.Message.Content[i]
+		switch cp.Kind {
+		case canonical.ContentKindText:
+			cp.Text = decrypt(cp.Text)
+		case canonical.ContentKindToolUse:
+			if cp.ToolUse == nil || cp.ToolUse.Input == nil {
+				continue
+			}
+			if m, ok := WalkStrings(cp.ToolUse.Input, decrypt).(map[string]any); ok {
+				cp.ToolUse.Input = m
+			}
+		case canonical.ContentKindToolResult:
+			if cp.ToolResult == nil {
+				continue
+			}
+			cp.ToolResult.Content = decrypt(cp.ToolResult.Content)
+		default:
+			// ContentKindImage / ContentKindThinking — no encrypt-bearing
+			// string leaves in v1 (Before skips them symmetrically).
+		}
+	}
+
+	// OpenAI/Ollama read assistant tool calls off Message.ToolCalls, which
+	// engine.CoerceToolCall reconstructs from the already-decrypted assistant
+	// text — fragile and order-dependent. Decrypt the canonical
+	// ToolCalls[].Arguments leaves here too so a future ordering change can't
+	// leak ciphertext through that seam.
+	for i := range resp.Message.ToolCalls {
+		tc := &resp.Message.ToolCalls[i]
+		if tc.Arguments == nil {
+			continue
+		}
+		if m, ok := WalkStrings(tc.Arguments, decrypt).(map[string]any); ok {
+			tc.Arguments = m
+		}
 	}
 	return nil
 }
