@@ -109,7 +109,10 @@ func load(data []byte) (*Registry, error) {
 				supportedSet[req] = struct{}{}
 			}
 		}
-		// Reject any capability key outside the required set.
+		// Defense-in-depth: the exact-count and per-required-key checks above
+		// already guarantee only the four required keys are present, so this
+		// loop is a redundant safety net rejecting any capability key outside
+		// the required set.
 		for k := range e.Capabilities {
 			if !contains(canonical.RequiredCapabilities, k) {
 				return nil, fmt.Errorf("registry: %q: unknown capability key %q", e.ID, k)
@@ -121,20 +124,20 @@ func load(data []byte) (*Registry, error) {
 			return nil, fmt.Errorf("registry: %q: evidence keys must equal the supported/unsupported set", e.ID)
 		}
 		evidence := make(map[string]canonical.Evidence, len(e.Evidence))
-		for cap, ev := range e.Evidence {
-			if _, want := supportedSet[cap]; !want {
-				return nil, fmt.Errorf("registry: %q: evidence for capability %q not in supported/unsupported state", e.ID, cap)
+		for capName, ev := range e.Evidence {
+			if _, want := supportedSet[capName]; !want {
+				return nil, fmt.Errorf("registry: %q: evidence for capability %q not in supported/unsupported state", e.ID, capName)
 			}
 			if _, ok := validSources[ev.Source]; !ok {
-				return nil, fmt.Errorf("registry: %q: capability %q: invalid evidence source %q", e.ID, cap, ev.Source)
+				return nil, fmt.Errorf("registry: %q: capability %q: invalid evidence source %q", e.ID, capName, ev.Source)
 			}
 			if ev.Reference == "" {
-				return nil, fmt.Errorf("registry: %q: capability %q: missing evidence reference", e.ID, cap)
+				return nil, fmt.Errorf("registry: %q: capability %q: missing evidence reference", e.ID, capName)
 			}
 			if _, err := time.Parse("2006-01-02", ev.VerifiedAt); err != nil {
-				return nil, fmt.Errorf("registry: %q: capability %q: invalid verified_at %q (want YYYY-MM-DD)", e.ID, cap, ev.VerifiedAt)
+				return nil, fmt.Errorf("registry: %q: capability %q: invalid verified_at %q (want YYYY-MM-DD)", e.ID, capName, ev.VerifiedAt)
 			}
-			evidence[cap] = canonical.Evidence{
+			evidence[capName] = canonical.Evidence{
 				Source: ev.Source, Reference: ev.Reference, VerifiedAt: ev.VerifiedAt, Notes: ev.Notes,
 			}
 		}
