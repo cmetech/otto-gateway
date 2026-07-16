@@ -2075,10 +2075,30 @@ EOF
         fi
     fi
 
+    # Resolve the Gateway ID the same way the gateway does (resolveGatewayID):
+    # GW_ID env → $GW_HOME/gateway-id → <UserConfigDir>/gateway/gateway-id
+    # (macOS: ~/Library/Application Support; Linux: $XDG_CONFIG_HOME|~/.config).
+    # Support triage groups a user's metrics/logs by this id.
+    local gw_id="${GW_ID:-}"
+    if [[ -z "$gw_id" ]]; then
+        local _idf
+        for _idf in \
+            "$GW_HOME/gateway-id" \
+            "${XDG_CONFIG_HOME:-$HOME/.config}/gateway/gateway-id" \
+            "$HOME/Library/Application Support/gateway/gateway-id"; do
+            if [[ -f "$_idf" ]]; then
+                gw_id="$(tr -d '[:space:]' < "$_idf")"
+                [[ -n "$gw_id" ]] && break
+            fi
+        done
+    fi
+    [[ -z "$gw_id" ]] && gw_id="(unknown)"
+
     # ---- MANIFEST.txt (written LAST so contents listing is accurate) ---
     {
         echo "gw support bundle"
         echo "======================"
+        echo "gateway_id: $gw_id"
         echo "timestamp:  $ts UTC"
         echo "host:       $host"
         echo "os:         $(uname -a)"

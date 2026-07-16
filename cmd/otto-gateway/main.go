@@ -357,9 +357,12 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 	// The pull closures read a.pool / a.registry lazily at scrape time (nil-safe
 	// for degraded / no-KIRO_CMD mode), so early construction is safe.
 	// gateway_id is a constant label on every series so a fleet groups by it.
+	// Resolved once here and reused for the admin UI / About page so the value
+	// operators read off the dashboard matches the metric label exactly.
+	gatewayID := resolveGatewayID(logger)
 	gwMetrics := metrics.New(
 		metrics.BuildInfo{
-			GatewayID: resolveGatewayID(logger),
+			GatewayID: gatewayID,
 			Version:   version.Version,
 			Commit:    version.Commit(),
 		},
@@ -765,6 +768,7 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 		Logger:       logger,
 		Version:      version.Version,
 		Commit:       version.Commit(),
+		GatewayID:    gatewayID,
 		Start:        time.Now(),
 		PoolDetail:   adminPoolDetail,
 		Registry:     adminRegistry,

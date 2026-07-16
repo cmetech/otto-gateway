@@ -95,9 +95,14 @@ type AcpCaptureSource interface {
 //     tracer is enabled. When on, raw prompts are written to disk; surfacing
 //     this is a safety affordance so operators are not surprised by it.
 type Deps struct {
-	Logger     *slog.Logger
-	Version    string
-	Commit     string
+	Logger  *slog.Logger
+	Version string
+	Commit  string
+	// GatewayID is the stable per-install identifier (the gateway_id metric
+	// label; see cmd/otto-gateway resolveGatewayID). Surfaced in the shared
+	// admin header and the /admin/about Runtime Status card so support can ask
+	// a user to read it off any admin page. Empty renders as nothing.
+	GatewayID  string
 	Start      time.Time
 	PoolDetail PoolDetailSource
 	Registry   RegistryStatsSource
@@ -256,12 +261,14 @@ func (h *handler) dashboardHandler(w http.ResponseWriter, r *http.Request) {
 	data := struct {
 		Version   string
 		Commit    string
+		GatewayID string
 		Debug     bool
 		ChatTrace bool
 		TabActive string
 	}{
 		Version:   h.deps.Version,
 		Commit:    h.deps.Commit,
+		GatewayID: h.deps.GatewayID,
 		Debug:     h.deps.Debug,
 		ChatTrace: h.deps.ChatTrace,
 		TabActive: "dashboard",
@@ -292,6 +299,7 @@ type aboutData struct {
 	PageTitle            string
 	Version              string
 	Commit               string
+	GatewayID            string
 	GoVersion            string
 	GOOS                 string
 	GOARCH               string
@@ -406,6 +414,7 @@ func (h *handler) aboutHandler(w http.ResponseWriter, r *http.Request) {
 		PageTitle:            "About",
 		Version:              h.deps.Version,
 		Commit:               h.deps.Commit,
+		GatewayID:            h.deps.GatewayID,
 		GoVersion:            runtime.Version(),
 		GOOS:                 runtime.GOOS,
 		GOARCH:               runtime.GOARCH,
@@ -477,6 +486,7 @@ type docsData struct {
 	PageTitle           string
 	Version             string
 	Commit              string
+	GatewayID           string
 	EnvVars             []envVarRow
 	CliFlags            []cliFlagRow
 	ChatTraceEnabled    bool
@@ -606,6 +616,7 @@ func (h *handler) docsHandler(w http.ResponseWriter, r *http.Request) {
 		PageTitle:           "Documentation",
 		Version:             h.deps.Version,
 		Commit:              h.deps.Commit,
+		GatewayID:           h.deps.GatewayID,
 		EnvVars:             envVars,
 		CliFlags:            cliFlags,
 		ChatTraceEnabled:    h.deps.ChatTrace,

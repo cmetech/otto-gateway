@@ -16,6 +16,7 @@
     <article class="gw-card">
       <h2 class="gw-h2">Runtime Status</h2>
       <dl class="gw-about-dl">
+        <dt>Gateway ID</dt><dd>{{if .GatewayID}}<code>{{.GatewayID}}</code>{{else}}(unset){{end}}</dd>
         <dt>Started at</dt><dd>{{.StartedAt}}</dd>
         <dt>Listen address</dt><dd>{{.HTTPAddr}}</dd>
         <dt>Pool size</dt><dd>{{.PoolSize}}</dd>

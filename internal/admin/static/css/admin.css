@@ -880,6 +880,21 @@ body {
   letter-spacing: 0.01em;
 }
 
+/* Gateway ID chip beside the header brand — muted, monospace, selectable so
+   support can ask the user to read/copy it off any admin page. */
+.gw-header-gwid {
+  margin-left: 0.5rem;
+  padding: 0.05rem 0.4rem;
+  border: 1px solid rgba(128, 128, 128, 0.35);
+  border-radius: 0.35rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.8em;
+  font-weight: 400;
+  opacity: 0.7;
+  user-select: all;
+  vertical-align: middle;
+}
+
 .gw-header-actions {
   display: flex;
   gap: 0.5rem;

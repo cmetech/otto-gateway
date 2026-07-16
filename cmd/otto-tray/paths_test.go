@@ -3,6 +3,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -38,6 +39,50 @@ func TestGWSubPaths(t *testing.T) {
 	}
 	if gwTrayConfigPath(gw) != filepath.Join(gw, "tray.json") {
 		t.Errorf("tray.json: %q", gwTrayConfigPath(gw))
+	}
+}
+
+func TestResolveGatewayID(t *testing.T) {
+	// GW_ID env override wins (and beats any file).
+	env := func(k string) string {
+		if k == "GW_ID" {
+			return "OVERRIDE-ID"
+		}
+		return ""
+	}
+	if got := resolveGatewayID("/nope", env); got != "OVERRIDE-ID" {
+		t.Errorf("GW_ID override: got %q, want OVERRIDE-ID", got)
+	}
+
+	// $GW_HOME/gateway-id is read (trimmed) when GW_ID is unset.
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "gateway-id"), []byte("01ABCDEF\n"), 0o644); err != nil {
+		t.Fatalf("write gateway-id: %v", err)
+	}
+	envHome := func(k string) string {
+		if k == "GW_HOME" {
+			return dir
+		}
+		return ""
+	}
+	if got := resolveGatewayID("/ignored", envHome); got != "01ABCDEF" {
+		t.Errorf("GW_HOME file: got %q, want 01ABCDEF", got)
+	}
+
+	// The tray-managed gwHome is probed too (covers the default install where
+	// the gateway persisted under UserConfigDir but the tray passes its home).
+	if got := resolveGatewayID(dir, func(string) string { return "" }); got != "01ABCDEF" {
+		t.Errorf("gwHome file: got %q, want 01ABCDEF", got)
+	}
+
+	// Degrades to "" when nothing is found (tray must not generate an id).
+	// Point the OS config-dir base (macOS: HOME; Windows: APPDATA) at an empty
+	// temp dir so os.UserConfigDir resolves somewhere without a gateway-id.
+	empty := t.TempDir()
+	t.Setenv("HOME", empty)
+	t.Setenv("APPDATA", empty)
+	if got := resolveGatewayID(filepath.Join(empty, "none"), func(string) string { return "" }); got != "" {
+		t.Errorf("missing: got %q, want empty", got)
 	}
 }
 

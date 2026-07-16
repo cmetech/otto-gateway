@@ -45,18 +45,19 @@ type trayState struct {
 	pollerCancel context.CancelFunc
 	stateCh      chan stateOutput
 
-	miHeader     *systray.MenuItem
-	miSubheader  *systray.MenuItem
-	miStart      *systray.MenuItem
-	miStop       *systray.MenuItem
-	miRestart    *systray.MenuItem
-	miDashboard  *systray.MenuItem
-	miCopyHealth *systray.MenuItem
-	miSupport    *systray.MenuItem
-	miPrefsLogin *systray.MenuItem
-	miPrefsStart *systray.MenuItem
-	miAbout      *systray.MenuItem
-	miQuit       *systray.MenuItem
+	miHeader        *systray.MenuItem
+	miSubheader     *systray.MenuItem
+	miStart         *systray.MenuItem
+	miStop          *systray.MenuItem
+	miRestart       *systray.MenuItem
+	miDashboard     *systray.MenuItem
+	miCopyHealth    *systray.MenuItem
+	miCopyGatewayID *systray.MenuItem
+	miSupport       *systray.MenuItem
+	miPrefsLogin    *systray.MenuItem
+	miPrefsStart    *systray.MenuItem
+	miAbout         *systray.MenuItem
+	miQuit          *systray.MenuItem
 
 	// desktop-app management (parallel to the gateway controls)
 	desktopCh         chan DesktopState
@@ -114,6 +115,7 @@ func (s *trayState) onReady(isFirstRun bool) func() {
 		systray.AddSeparator()
 		s.miDashboard = systray.AddMenuItem("Open dashboard", s.dashboardURL)
 		s.miCopyHealth = systray.AddMenuItem("Copy health URL", "")
+		s.miCopyGatewayID = systray.AddMenuItem("Copy Gateway ID", "Copy this gateway's ID to quote when contacting support")
 		systray.AddSeparator()
 		did, _ := resolveDesktopIdentity(runtime.GOOS, os.Getenv, homeDir(), statExists, os.ReadFile)
 		s.miDesktopHeader = systray.AddMenuItem(desktopLabel("· …"), "")
@@ -183,6 +185,7 @@ func (s *trayState) wireCallbacks() {
 	s.miRestart.Click(func() { go s.handleRestart() })
 	s.miDashboard.Click(func() { go openURL(s.dashboardURL + "/admin") })
 	s.miCopyHealth.Click(func() { go copyToClipboard(s.dashboardURL + "/health") })
+	s.miCopyGatewayID.Click(func() { go s.copyGatewayID() })
 	s.miSupport.Click(func() { go s.handleSupportBundle() })
 	s.miPrefsLogin.Click(func() { go s.toggleLaunchAtLogin() })
 	s.miPrefsStart.Click(func() { go s.toggleStartGatewayOnLaunch() })
@@ -562,7 +565,23 @@ func (s *trayState) toggleMetricsRemoteWrite() {
 }
 
 func (s *trayState) showAbout() {
-	body := fmt.Sprintf("Version: %s\nCommit: %s\nInstall: %s\nGo: %s",
-		version.Version, version.Commit(), s.installDir, runtime.Version())
+	gwID := resolveGatewayID(s.gwHome, os.Getenv)
+	if gwID == "" {
+		gwID = "(unknown — start the gateway once)"
+	}
+	body := fmt.Sprintf("Version: %s\nCommit: %s\nGateway ID: %s\nInstall: %s\nGo: %s",
+		version.Version, version.Commit(), gwID, s.installDir, runtime.Version())
 	infoDialog("About Gateway", body)
+}
+
+// copyGatewayID copies the persisted Gateway ID to the clipboard so support
+// can ask a user to read it off the tray. Silent on success (mirrors the
+// "Copy health URL" item); shows a dialog when no id exists yet rather than
+// copying an empty string.
+func (s *trayState) copyGatewayID() {
+	if id := resolveGatewayID(s.gwHome, os.Getenv); id != "" {
+		copyToClipboard(id)
+	} else {
+		infoDialog("Gateway ID", "No Gateway ID found yet.\nStart the gateway once, then try again.")
+	}
 }

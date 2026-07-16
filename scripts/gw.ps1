@@ -1824,10 +1824,29 @@ function Invoke-Support {
                 }
         }
 
+        # Resolve the Gateway ID the same way the gateway does
+        # (resolveGatewayID): GW_ID env -> $GW_HOME\gateway-id ->
+        # <UserConfigDir>\gateway\gateway-id (Windows UserConfigDir = %APPDATA%).
+        # Support triage groups a user's metrics/logs by this id.
+        $gwId = $env:GW_ID
+        if (-not $gwId) {
+            $idCandidates = @()
+            if ($env:GW_HOME) { $idCandidates += (Join-Path $env:GW_HOME 'gateway-id') }
+            if ($env:APPDATA) { $idCandidates += (Join-Path (Join-Path $env:APPDATA 'gateway') 'gateway-id') }
+            foreach ($f in $idCandidates) {
+                if (Test-Path -LiteralPath $f) {
+                    $v = (Get-Content -Raw -ErrorAction SilentlyContinue -LiteralPath $f)
+                    if ($v) { $gwId = $v.Trim(); if ($gwId) { break } }
+                }
+            }
+        }
+        if (-not $gwId) { $gwId = '(unknown)' }
+
         # ---- MANIFEST.txt (last so contents listing is accurate) -------
         $manifest = New-Object System.Collections.Generic.List[string]
         $manifest.Add("gw support bundle") | Out-Null
         $manifest.Add("======================") | Out-Null
+        $manifest.Add("gateway_id: $gwId") | Out-Null
         $manifest.Add("timestamp:  $ts UTC") | Out-Null
         $manifest.Add("host:       $hostname") | Out-Null
         $manifest.Add("os:         $([System.Runtime.InteropServices.RuntimeInformation]::OSDescription)") | Out-Null
