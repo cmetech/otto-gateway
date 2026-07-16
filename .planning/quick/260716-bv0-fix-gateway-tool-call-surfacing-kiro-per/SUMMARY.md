@@ -5,7 +5,7 @@ date: 2026-07-16
 title: "Gateway tool-call surfacing + kiro persona bleed"
 status: complete
 branch: quick/gateway-toolcall-surfacing
-commits: [019c7e4, 1f4fcd3, e6334d2, 116df0a, 8d1c1e7, fd9c8ce]
+commits: [019c7e4, 1f4fcd3, e6334d2, 116df0a, 8d1c1e7, fd9c8ce, 39d5320]
 ---
 
 # Summary — Gateway tool-call surfacing + kiro persona bleed
@@ -41,6 +41,50 @@ executed, the model retried, and hallucinated a permission error.
   the response round-trip (non-streaming; encrypt-mode streaming re-routes through
   the same aggregation). No new PII work needed.
 
+## Defect 1 — REDESIGNED: alias-primary native tool-call surfacing (commit 39d5320)
+
+The first fix surfaced whatever native name kiro emitted **verbatim**. A real
+`kiro-cli` capture (offered `run_shell`, prompted to run a shell command,
+`ACP_CAPTURE=true`) proved that is wrong:
+
+- kiro ignores the offered tool and emits a native ACP `tool_call` for its OWN
+  built-in shell tool: `kind:"execute"`, `_meta.kiro.toolName:"shell"`,
+  `rawInput:{"command":"…"}`. `translate.go` maps `kind` → `ToolCallChunk.Name`,
+  so the native name is `execute` — a name the host never offered and cannot
+  route.
+- The gateway **denies** kiro's built-in whenever the caller offered tools
+  (`acp.WithDenyBuiltinTools`, engaged by `engine.go` when `len(req.Tools) > 0`).
+  kiro **retries with a fresh id** after each denial, then falls back to emitting
+  the host-tool JSON as prose (flaky).
+- Surfacing `execute` verbatim gave the host an unroutable call AND suppressed the
+  correct coerced `run_shell` (idempotency guard) → would fail the parity check.
+
+**Redesign — resolve, alias, drop, dedup:**
+
+- **`KIRO_TOOL_ALIASES`** config (`internal/config/config.go`): comma-split
+  `from:to` pairs (e.g. `execute:run_shell,shell:run_shell`). Empty default —
+  aliases are deployment-specific.
+- **`internal/engine/toolcall_resolve.go`** — shared primitives:
+  - `ResolveNativeToolName(name, tools, aliases)` — no tools offered → surface
+    as-is; native name (or its alias) matches an offered tool → surface under the
+    **offered** name; otherwise **drop** (host can't route it; leaves the
+    coerce/wrapper fallback unclobbered).
+  - `DedupToolCalls(calls)` — merge kiro's `tool_call_chunk`+`tool_call` by id,
+    then collapse identical `(name,args)` denial-retries to the first.
+- **Wired into every surface**: `engine/collect.go` (OpenAI+Ollama non-stream),
+  `adapter/openai/sse.go` (streaming; `sawKiroNativeToolCall` set only when a call
+  actually SURFACES so coerce still runs on drops), `adapter/ollama/ndjson.go`
+  (streaming done:true line), `adapter/anthropic/collect.go` (non-stream).
+  `ToolAliases` threaded through `engine.Config` + all three adapter configs +
+  `cmd/otto-gateway/main.go`.
+- **Encrypt-mode replay:** `runSyntheticSSEFromResponse` (OpenAI) now emits
+  tool_calls + `finish_reason:"tool_calls"`; Ollama's synthetic replay already
+  carried them via `chatResponseToWire`.
+
+This resolves the Defect-1 scope question below: the gateway now maps kiro's
+built-in back to the host tool the caller offered, instead of leaving it to the
+model to reformat.
+
 ## Defect 2 — kiro persona bleed
 
 **Root cause.** No gateway-side persona existed to remove — `NewSession` takes
@@ -64,6 +108,17 @@ bare "who are you?" turn is covered.
   `tools_fixtures_test.go`); `AssertSameCanonicalToolCall` now compares **name AND
   args** across all three surfaces (was name-only via narration parsing).
 - Kept `anthropic/collect_test.go` + Anthropic e2e green as the regression fence.
+- **Alias-primary unit tests:** `internal/config/tool_aliases_test.go`
+  (`parseToolAliases`), `internal/engine/toolcall_resolve_test.go`
+  (`ResolveNativeToolName` surface/alias/drop + `DedupToolCalls` chunk-merge +
+  denial-retry collapse).
+- **Alias-primary e2e** (`tests/e2e/tools_alias_test.go`, native `kind`+`rawInput`
+  fixtures via new `NotifToolCallNative`/`NotifToolCallChunkNative` helpers):
+  native `execute` + `KIRO_TOOL_ALIASES=execute:run_shell` + offered `run_shell`
+  → structured `run_shell` on OpenAI (stream + non-stream), Ollama non-stream, and
+  Anthropic non-stream `tool_use`; an unaliased built-in (`fs_write`, no alias) is
+  dropped (no tool_calls, no `finish_reason:"tool_calls"`); and a
+  chunk+full+denial-retry sequence dedups to exactly one call.
 - Refreshed the Phase-6 contract comments in `collect.go`, `coerce.go`,
   `openai/render.go`, `openai/handlers.go`, `ollama/{render,wire,ndjson}.go`, and
   `acp/translate.go` (whose docstring wrongly claimed `tool_call → ChunkKindThought`).
@@ -78,6 +133,17 @@ bare "who are you?" turn is covered.
 - Confirmed end-to-end over HTTP: the real gateway returns structured
   `tool_calls` + `finish_reason:"tool_calls"` (OpenAI) / object-args
   `message.tool_calls` on the done line (Ollama) with no `[tool:` markers.
+- **Alias-primary proven against REAL kiro-cli (v2.12.1, 2026-07-16).** Offered
+  `run_shell`, prompted to run `python3 -c "print(2+2)"`, with
+  `KIRO_TOOL_ALIASES=execute:run_shell,shell:run_shell`. The gateway returned
+  exactly one structured `tool_calls` entry `{name:"run_shell",
+  arguments:"{\"command\":\"python3 -c \\\"print(2+2)\\\"\"}"}` +
+  `finish_reason:"tool_calls"`, NO `execute`, NO `[tool:`. The `ACP_CAPTURE`
+  ring confirmed the mechanism: kiro emitted native `kind:"execute"`
+  (`_meta.kiro.toolName:"shell"`), was denied, retried with a fresh id, and the
+  gateway resolved `execute` → `run_shell` via the alias, surfaced it, and
+  deduped the retry. Admin docs (`/admin/docs`) now list `KIRO_TOOL_ALIASES` with
+  its live value.
 
 ## Out of scope (unchanged)
 
@@ -86,13 +152,20 @@ bare "who are you?" turn is covered.
 
 ## Notes / follow-ups
 
-- **Defect-2 scope question (unanswered by operator):** the live `[tool: execute]`
-  repro shows kiro reaching for its *own* built-in `execute` tool rather than the
-  host's `code_execution`. Structured surfacing faithfully surfaces whatever kiro
-  emits; making the model prefer the host tool names is a model/prompt concern.
-  The `[Available tools]` section already says "You must NOT use your own built-in
-  tools" — a stronger "use ONLY the listed tool names" nudge was left out pending
-  a decision.
+- **Defect-1 scope question (RESOLVED by the alias-primary redesign, 39d5320):**
+  the live `[tool: execute]` repro showed kiro reaching for its *own* built-in
+  `execute`/`shell` tool rather than the host tool. Rather than relying on the
+  model to reformat (flaky), the gateway now aliases the native name to the
+  caller-offered tool (`KIRO_TOOL_ALIASES`) and surfaces it structurally.
+- **Anthropic STREAMING SSE still surfaces native `tool_use` verbatim** (deferred,
+  NOT a regression — its pre-existing behavior). The resolver is applied on the
+  Anthropic non-stream path and both OpenAI/Ollama stream + non-stream paths, but
+  the Anthropic streaming content-block state machine (`adapter/anthropic/sse.go`)
+  was left unchanged for context budget + state-machine risk. To make it
+  consistent: apply `engine.ResolveNativeToolName` at the block-open
+  (`toolUseBlockHeader`, gate when `!surface`) + at `aggToolCalls`, thread
+  `aliases` onto the emitter, add a per-turn denial-retry dedup guard; test hard
+  against real kiro. HANDOFF.md §4 has the line-level pointers.
 - **Encrypt-mode streaming limitation (pre-existing, not addressed):** in encrypt
   mode a streaming request is re-routed to the aggregated path and re-emitted via
   `runSyntheticSSEFromResponse`/`runSyntheticNDJSONFromResponse`, which drop
