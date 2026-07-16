@@ -154,6 +154,53 @@ func TestSSE_RoleFirstDelta(t *testing.T) {
 	}
 }
 
+// TestSSE_KiroNativeToolCall_StructuredFrames (Defect 1a, 2026-07-16): a
+// kiro-native ChunkKindToolCall surfaces as a structured delta.tool_calls
+// sequence (frame B id+name, frame C arguments JSON-string), the terminal
+// finish_reason is "tool_calls", and NO `[tool:` marker appears anywhere.
+func TestSSE_KiroNativeToolCall_StructuredFrames(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	ch := make(chan canonical.Chunk, 1)
+	ch <- canonical.Chunk{Kind: canonical.ChunkKindToolCall, ToolCall: &canonical.ToolCallChunk{
+		ID:   "tc_1",
+		Name: "run_shell",
+		Args: map[string]any{"command": "echo hi"},
+	}}
+	close(ch)
+
+	runHandle := &fakeRunHandle{
+		stream: &fakeStream{
+			chunks: ch,
+			final:  &canonical.FinalResult{StopReason: canonical.StopEndTurn},
+		},
+		sessionID: "session_native_tool",
+	}
+
+	rec := httptest.NewRecorder()
+	req := &canonical.ChatRequest{Model: "auto", Tools: []canonical.ToolSpec{{Name: "run_shell"}}}
+	if _, err := runSSEEmitter(context.Background(), rec, runHandle, req, "auto", 0, nullLogger()); err != nil {
+		t.Fatalf("runSSEEmitter: %v", err)
+	}
+	body := rec.Body.String()
+
+	if strings.Contains(body, "[tool:") {
+		t.Errorf("SSE body must not contain a [tool: marker; body=%q", body)
+	}
+	for _, want := range []string{
+		`"tool_calls"`,
+		`"id":"tc_1"`,
+		`"name":"run_shell"`,
+		`"arguments":"{\"command\":\"echo hi\"}"`,
+		`"finish_reason":"tool_calls"`,
+		"data: [DONE]",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("SSE body missing %q; body=%q", want, body)
+		}
+	}
+}
+
 // TestSSE_FixedIDAndCreated verifies that all data frames in one stream
 // share the same "id" and "created" values (Pitfall 8).
 func TestSSE_FixedIDAndCreated(t *testing.T) {

@@ -299,12 +299,13 @@ func TestSSE_Golden_StreamingCoerce_BareJSON(t *testing.T) {
 	}
 }
 
-// TestSSE_Golden_KiroNative_TextDelta locks REVIEW HIGH #2: kiro-native
-// ChunkKindToolCall renders as a text-delta narration line ("[tool: <name>]\n")
-// — NOT a native delta.tool_calls frame. The output must contain NO
-// delta.tool_calls frames and the terminal finish_reason must NOT be
-// "tool_calls" (coerce did not fire).
-func TestSSE_Golden_KiroNative_TextDelta(t *testing.T) {
+// TestSSE_Golden_KiroNative_StructuredToolCall locks Defect 1a (2026-07-16):
+// a kiro-native ChunkKindToolCall surrounded by text surfaces as a
+// structured delta.tool_calls sequence (id+name frame, then arguments
+// JSON-string frame) with the surrounding text streamed as plain content
+// deltas. The terminal finish_reason is "tool_calls" and NO `[tool:`
+// marker appears anywhere.
+func TestSSE_Golden_KiroNative_StructuredToolCall(t *testing.T) {
 	defer goleak.VerifyNone(t)
 	chunks := []canonical.Chunk{
 		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "I'll check. "}},
@@ -323,32 +324,28 @@ func TestSSE_Golden_KiroNative_TextDelta(t *testing.T) {
 	if got := bytes.Count(body, []byte(`"role":"assistant"`)); got != 1 {
 		t.Errorf("role frame count: got %d, want 1; body=%q", got, out)
 	}
-
-	// All three text-delta fragments appear.
+	// No `[tool:` marker anywhere.
+	if strings.Contains(out, "[tool:") {
+		t.Errorf("kiro-native path must NOT emit a [tool: marker; body=%q", out)
+	}
+	// Surrounding text streamed as plain content deltas.
 	if !strings.Contains(out, `"delta":{"content":"I'll check. "}`) {
 		t.Errorf("expected 'I'll check. ' text delta; body=%q", out)
-	}
-	if !strings.Contains(out, `"delta":{"content":"[tool: get_weather]\n"}`) {
-		t.Errorf("expected [tool: get_weather] text delta; body=%q", out)
 	}
 	if !strings.Contains(out, `"delta":{"content":" Done."}`) {
 		t.Errorf("expected ' Done.' text delta; body=%q", out)
 	}
-
-	// NO native delta.tool_calls anywhere.
-	if strings.Contains(out, `"tool_calls"`) {
-		t.Errorf("kiro-native path must NOT emit delta.tool_calls; body=%q", out)
+	// Structured tool-call frames: id+name, then arguments JSON-string.
+	if !strings.Contains(out, `"id":"tc_1","type":"function","function":{"name":"get_weather","arguments":""}`) {
+		t.Errorf("expected id+name tool_call frame; body=%q", out)
 	}
-
-	// Terminal finish_reason is NOT "tool_calls".
-	if strings.Contains(out, `"finish_reason":"tool_calls"`) {
-		t.Errorf("kiro-native-only path must NOT have finish_reason:tool_calls; body=%q", out)
+	if !strings.Contains(out, `"function":{"arguments":"{\"location\":\"NYC\"}"}`) {
+		t.Errorf("expected arguments JSON-string frame; body=%q", out)
 	}
-	if !strings.Contains(out, `"finish_reason":"stop"`) {
-		t.Errorf("expected terminal finish_reason:stop; body=%q", out)
+	// Terminal finish_reason is "tool_calls".
+	if !strings.Contains(out, `"finish_reason":"tool_calls"`) {
+		t.Errorf("expected terminal finish_reason:tool_calls; body=%q", out)
 	}
-
-	// data: [DONE] terminator.
 	if !strings.Contains(out, "data: [DONE]") {
 		t.Errorf("expected data: [DONE] terminator; body=%q", out)
 	}
@@ -356,8 +353,8 @@ func TestSSE_Golden_KiroNative_TextDelta(t *testing.T) {
 
 // TestSSE_Golden_ToolCallFirst_RoleEmitOnce locks REVIEW LOW #8: when a
 // tool_call chunk is the FIRST chunk in the stream (no preceding text),
-// the role frame is still emitted exactly once before the tool_call
-// text-delta frame.
+// the role frame is still emitted exactly once before the structured
+// tool_call frames.
 func TestSSE_Golden_ToolCallFirst_RoleEmitOnce(t *testing.T) {
 	defer goleak.VerifyNone(t)
 	chunks := []canonical.Chunk{
@@ -375,30 +372,28 @@ func TestSSE_Golden_ToolCallFirst_RoleEmitOnce(t *testing.T) {
 	if got := bytes.Count(body, []byte(`"role":"assistant"`)); got != 1 {
 		t.Errorf("role frame count: got %d, want exactly 1; body=%q", got, out)
 	}
-
-	// Narration text-delta appears.
-	if !strings.Contains(out, `"delta":{"content":"[tool: get_weather]\n"}`) {
-		t.Errorf("expected [tool: get_weather] narration; body=%q", out)
+	if strings.Contains(out, "[tool:") {
+		t.Errorf("tool_call-first must NOT emit a [tool: marker; body=%q", out)
 	}
-
-	// No native delta.tool_calls.
-	if strings.Contains(out, `"tool_calls"`) {
-		t.Errorf("tool_call-first must NOT emit delta.tool_calls; body=%q", out)
+	// Structured tool_call frames present.
+	if !strings.Contains(out, `"name":"get_weather"`) {
+		t.Errorf("expected structured tool_call name frame; body=%q", out)
 	}
-
-	// data: [DONE] terminator.
+	if !strings.Contains(out, `"finish_reason":"tool_calls"`) {
+		t.Errorf("expected terminal finish_reason:tool_calls; body=%q", out)
+	}
 	if !strings.Contains(out, "data: [DONE]") {
 		t.Errorf("expected data: [DONE] terminator; body=%q", out)
 	}
 }
 
-// TestStream_NativeToolCall_ThenJSONText_NoCoerce locks the iteration-3
-// HIGH #2 fix: if a kiro-native ChunkKindToolCall fires during the stream,
-// sawKiroNativeToolCall is set true. Any subsequent JSON-shaped text gets
-// buffered, but at stream end the buffered text is FLUSHED as plain
-// text-delta frames (NOT coerced into a tool_call). The terminal
-// finish_reason is "stop", NOT "tool_calls".
-func TestStream_NativeToolCall_ThenJSONText_NoCoerce(t *testing.T) {
+// TestStream_NativeToolCall_ThenJSONText_SkipsCoerce locks the interaction:
+// if a kiro-native ChunkKindToolCall fires (surfaced structurally),
+// sawKiroNativeToolCall is set true so any subsequent JSON-shaped text is
+// FLUSHED as plain text-delta frames (NOT re-coerced into a second
+// tool_call). Exactly one structured tool_call is emitted; terminal
+// finish_reason is "tool_calls".
+func TestStream_NativeToolCall_ThenJSONText_SkipsCoerce(t *testing.T) {
 	defer goleak.VerifyNone(t)
 	chunks := []canonical.Chunk{
 		{Kind: canonical.ChunkKindToolCall, ToolCall: &canonical.ToolCallChunk{
@@ -415,42 +410,36 @@ func TestStream_NativeToolCall_ThenJSONText_NoCoerce(t *testing.T) {
 	body := driveGoldenWithReq(t, chunks, final, makeReqWithTools())
 	out := string(body)
 
-	// Narration line for kiro-native.
-	if !strings.Contains(out, `"delta":{"content":"[tool: get_weather]\n"}`) {
-		t.Errorf("expected [tool: get_weather] narration; body=%q", out)
+	if strings.Contains(out, "[tool:") {
+		t.Errorf("must NOT emit a [tool: marker; body=%q", out)
 	}
-
-	// Buffered text MUST be released as plain text-delta frames.
-	for _, frag := range []string{`"delta":{"content":"{"}`, `"delta":{"content":"\"location\":"}`, `"delta":{"content":"\"Tokyo\""}`, `"delta":{"content":"}"}`} {
-		if !strings.Contains(out, frag) {
-			t.Errorf("expected buffered fragment to be released; missing %q in body=%q", frag, out)
-		}
+	// The single native tool call surfaces structurally with NYC args
+	// (the coerce path must NOT re-fire on the trailing Tokyo JSON text).
+	if !strings.Contains(out, `"function":{"arguments":"{\"location\":\"NYC\"}"}`) {
+		t.Errorf("expected native tool_call NYC args; body=%q", out)
 	}
-
-	// NO native delta.tool_calls.
-	if strings.Contains(out, `"tool_calls"`) {
-		t.Errorf("sawKiroNativeToolCall=true must skip coerce; no delta.tool_calls allowed; body=%q", out)
+	if strings.Contains(out, "Tokyo") == false {
+		t.Errorf("expected trailing JSON text to be released as content; body=%q", out)
 	}
-
-	// finish_reason is "stop", NOT "tool_calls".
-	if strings.Contains(out, `"finish_reason":"tool_calls"`) {
-		t.Errorf("must NOT emit finish_reason:tool_calls; body=%q", out)
+	if strings.Contains(out, `"arguments":"{\"location\":\"Tokyo\"}"`) {
+		t.Errorf("coerce must NOT re-fire on trailing JSON text; body=%q", out)
 	}
-	if !strings.Contains(out, `"finish_reason":"stop"`) {
-		t.Errorf("expected terminal finish_reason:stop; body=%q", out)
+	// Exactly one id+name tool_call frame (one native call, no coerce dup).
+	if got := strings.Count(out, `"type":"function"`); got != 1 {
+		t.Errorf("expected exactly 1 structured tool_call; got %d; body=%q", got, out)
 	}
-
-	// data: [DONE] terminator.
+	if !strings.Contains(out, `"finish_reason":"tool_calls"`) {
+		t.Errorf("expected terminal finish_reason:tool_calls; body=%q", out)
+	}
 	if !strings.Contains(out, "data: [DONE]") {
 		t.Errorf("expected data: [DONE] terminator; body=%q", out)
 	}
 }
 
-// TestStream_NativeToolCall_Only_NoCoerce locks iteration-3 HIGH #2 fix
-// for the kiro-native-only scenario (no surrounding text). The narration
-// fires, sawKiroNativeToolCall=true, no buffered text, terminal
-// finish_reason is "stop".
-func TestStream_NativeToolCall_Only_NoCoerce(t *testing.T) {
+// TestStream_NativeToolCall_Only_Structured locks the kiro-native-only
+// scenario (no surrounding text): one structured tool_call, role emitted
+// once, terminal finish_reason "tool_calls", no `[tool:` marker.
+func TestStream_NativeToolCall_Only_Structured(t *testing.T) {
 	defer goleak.VerifyNone(t)
 	chunks := []canonical.Chunk{
 		{Kind: canonical.ChunkKindToolCall, ToolCall: &canonical.ToolCallChunk{
@@ -463,28 +452,18 @@ func TestStream_NativeToolCall_Only_NoCoerce(t *testing.T) {
 	body := driveGoldenWithReq(t, chunks, final, makeReqWithTools())
 	out := string(body)
 
-	// Role + narration.
 	if got := bytes.Count(body, []byte(`"role":"assistant"`)); got != 1 {
 		t.Errorf("role frame count: got %d, want 1; body=%q", got, out)
 	}
-	if !strings.Contains(out, `"delta":{"content":"[tool: get_weather]\n"}`) {
-		t.Errorf("expected [tool: get_weather] narration; body=%q", out)
+	if strings.Contains(out, "[tool:") {
+		t.Errorf("kiro-native-only must NOT emit a [tool: marker; body=%q", out)
 	}
-
-	// NO native delta.tool_calls.
-	if strings.Contains(out, `"tool_calls"`) {
-		t.Errorf("kiro-native-only must NOT emit delta.tool_calls; body=%q", out)
+	if !strings.Contains(out, `"id":"tc_1","type":"function","function":{"name":"get_weather","arguments":""}`) {
+		t.Errorf("expected structured id+name tool_call frame; body=%q", out)
 	}
-
-	// finish_reason is "stop", NOT "tool_calls".
-	if strings.Contains(out, `"finish_reason":"tool_calls"`) {
-		t.Errorf("must NOT emit finish_reason:tool_calls; body=%q", out)
+	if !strings.Contains(out, `"finish_reason":"tool_calls"`) {
+		t.Errorf("expected terminal finish_reason:tool_calls; body=%q", out)
 	}
-	if !strings.Contains(out, `"finish_reason":"stop"`) {
-		t.Errorf("expected terminal finish_reason:stop; body=%q", out)
-	}
-
-	// data: [DONE] terminator.
 	if !strings.Contains(out, "data: [DONE]") {
 		t.Errorf("expected data: [DONE] terminator; body=%q", out)
 	}
