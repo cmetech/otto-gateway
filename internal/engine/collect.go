@@ -66,12 +66,13 @@ func (e *Engine) Collect(ctx context.Context, req *canonical.ChatRequest) (*cano
 //     response directly (Codex H-4); PostHooks still run on it (H-5).
 //   - Normal path: range run.stream.Chunks() via
 //     RangeChunksWithIdleTimeout, accumulate ChunkKindText and
-//     ChunkKindThought into separate builders, render ChunkKindToolCall
-//     as `[tool: <name>]\n` narration text (D-03/D-05/D-07 contract —
-//     Message.ToolCalls remains untouched here; per-surface coerce is
-//     the adapter's concern), call run.stream.Result() for the
-//     FinalResult, stop the watchdog, assemble via assembleChatResponse,
-//     run PostHooks.
+//     ChunkKindThought into separate builders, surface ChunkKindToolCall
+//     as STRUCTURED Message.ToolCalls entries (Defect 1a, 2026-07-16 —
+//     the non-streaming Ollama/OpenAI renderers map Message.ToolCalls
+//     onto their wire shapes; per-surface CoerceToolCall still runs after
+//     for the JSON-as-text case and no-ops when ToolCalls is already
+//     populated), call run.stream.Result() for the FinalResult, stop the
+//     watchdog, assemble via assembleChatResponse, run PostHooks.
 //
 // Idle timeout: when e.cfg.StreamIdleTimeout > 0, the chunk loop
 // returns canonical.ErrStreamIdleTimeout (wrapped) on a stalled
@@ -112,18 +113,24 @@ func (e *Engine) CollectFromRun(ctx context.Context, run *Run, req *canonical.Ch
 		// the helper degrades to a bare ctx-aware range with zero timer
 		// cost.
 		//
-		// Per-surface Message.ToolCalls contract (D-03/D-05/D-07):
-		//   - Generic engine.Collect (this function) does NOT populate
-		//     Message.ToolCalls from any chunk source.
-		//   - Ollama and OpenAI populate Message.ToolCalls ONLY via
-		//     engine.CoerceToolCall (the coerce-from-text path — D-05),
-		//     invoked by the adapter handlers AFTER this function
-		//     returns.
-		//   - Anthropic (D-07 exception) populates Message.ToolCalls via
-		//     its adapter-local CollectAnthropicChat from kiro-native
+		// Per-surface Message.ToolCalls contract (updated Defect 1a,
+		// 2026-07-16):
+		//   - Generic engine.Collect (this function) NOW populates
+		//     Message.ToolCalls from kiro-native ChunkKindToolCall chunks
+		//     (id/name/arguments). This function is used only by the
+		//     Ollama and OpenAI non-streaming paths; both renderers map
+		//     Message.ToolCalls to their surface wire shape.
+		//   - Ollama and OpenAI ALSO run engine.CoerceToolCall after this
+		//     function returns (the coerce-from-text path — D-05) to
+		//     rescue JSON-as-text tool invocations. It no-ops when
+		//     ToolCalls is already populated (idempotency guard), so a
+		//     kiro-native call is never double-counted.
+		//   - Anthropic (D-07) populates Message.ToolCalls via its
+		//     adapter-local CollectAnthropicChat from kiro-native
 		//     ChunkKindToolCall chunks. That adapter uses engine.Run +
 		//     its own aggregator and bypasses this function.
 		var sb, thoughtSB strings.Builder
+		var toolCalls []canonical.ToolCall
 		onChunk := func(chunk canonical.Chunk) error {
 			switch chunk.Kind {
 			case canonical.ChunkKindText:
@@ -135,15 +142,28 @@ func (e *Engine) CollectFromRun(ctx context.Context, run *Run, req *canonical.Ch
 					thoughtSB.WriteString(chunk.Thought.Content)
 				}
 			case canonical.ChunkKindToolCall:
-				// ChunkKindToolCall renders as `[tool: <name>]\n`
-				// narration text. ChunkKindPlan still drops.
-				name := "unknown"
-				if chunk.ToolCall != nil && chunk.ToolCall.Name != "" {
-					name = chunk.ToolCall.Name
+				// Defect 1a (2026-07-16): surface kiro-native tool calls
+				// as STRUCTURED Message.ToolCalls (id/name/arguments), not
+				// as `[tool: <name>]\n` narration text. The non-streaming
+				// Ollama/OpenAI renderers map Message.ToolCalls onto their
+				// surface wire shapes; discarding the args into a text
+				// marker was the bug (native tool call args never reached
+				// the caller). ChunkKindPlan still drops.
+				if chunk.ToolCall != nil {
+					id := chunk.ToolCall.ID
+					if id == "" {
+						// OpenAI clients require a stable id; synthesize one
+						// (mirrors CoerceToolCall's `call_` convention). The
+						// per-call seq keeps ids distinct when UnixNano ticks
+						// collide within one aggregation.
+						id = fmt.Sprintf("call_%d_%d", time.Now().UnixNano(), len(toolCalls))
+					}
+					toolCalls = append(toolCalls, canonical.ToolCall{
+						ID:        id,
+						Name:      chunk.ToolCall.Name,
+						Arguments: chunk.ToolCall.Args,
+					})
 				}
-				sb.WriteString("[tool: ")
-				sb.WriteString(name)
-				sb.WriteString("]\n")
 			}
 			return nil
 		}
@@ -203,7 +223,7 @@ func (e *Engine) CollectFromRun(ctx context.Context, run *Run, req *canonical.Ch
 		if stop := run.StopWatchdog(); stop != nil {
 			stop()
 		}
-		resp = assembleChatResponse(req, sb.String(), thoughtSB.String(), final)
+		resp = assembleChatResponse(req, sb.String(), thoughtSB.String(), toolCalls, final)
 	}
 
 	// Codex H-5: PostHook traversal happens HERE in Collect (not in
@@ -239,7 +259,7 @@ func (e *Engine) CollectFromRun(ctx context.Context, run *Run, req *canonical.Ch
 //     `ollamaChatResponseMessage.Thinking` field via the existing
 //     joinThinkingContent helper (the omitempty JSON tag drops the
 //     field for thought-free responses).
-func assembleChatResponse(req *canonical.ChatRequest, text, thinking string, final *canonical.FinalResult) *canonical.ChatResponse {
+func assembleChatResponse(req *canonical.ChatRequest, text, thinking string, toolCalls []canonical.ToolCall, final *canonical.FinalResult) *canonical.ChatResponse {
 	stop := canonical.StopUnknown
 	if final != nil {
 		stop = final.StopReason
@@ -261,8 +281,9 @@ func assembleChatResponse(req *canonical.ChatRequest, text, thinking string, fin
 		ID:    fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano()),
 		Model: model,
 		Message: canonical.Message{
-			Role:    canonical.RoleAssistant,
-			Content: content,
+			Role:      canonical.RoleAssistant,
+			Content:   content,
+			ToolCalls: toolCalls,
 		},
 		StopReason: stop,
 		Usage:      canonical.Usage{},

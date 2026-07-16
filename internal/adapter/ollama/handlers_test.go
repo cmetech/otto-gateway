@@ -656,20 +656,21 @@ func TestHandleChat_NonStreaming_ToolCallWrapperCoerce(t *testing.T) {
 	}
 }
 
-// TestHandleChat_NonStreaming_KiroNativeNarration_NoCoerce locks the
-// iteration-3 interaction: when engine.Collect produces `[tool: <name>]\n`
-// narration text (from the 06-01 aggregator), CoerceToolCall sees the
-// narration as non-JSON text, Step 3 + Step 4 both fail, Step 5 returns
-// false, and the narration text passes through to message.content
-// unchanged. No tool_calls field is populated.
-func TestHandleChat_NonStreaming_KiroNativeNarration_NoCoerce(t *testing.T) {
+// TestHandleChat_NonStreaming_KiroNativeToolCall_Structured locks Defect 1a
+// (2026-07-16): engine.Collect now surfaces a kiro-native tool call as a
+// STRUCTURED Message.ToolCalls entry (empty assistant text). The handler's
+// post-Collect CoerceToolCall no-ops (idempotency guard), and the Ollama
+// wire body carries object-shaped message.tool_calls with NO `[tool:`
+// marker anywhere.
+func TestHandleChat_NonStreaming_KiroNativeToolCall_Structured(t *testing.T) {
 	eng := &fakeEngine{
 		resp: &canonical.ChatResponse{
 			Model: "auto",
 			Message: canonical.Message{
-				Role: canonical.RoleAssistant,
-				Content: []canonical.ContentPart{
-					{Kind: canonical.ContentKindText, Text: "[tool: get_weather]\n"},
+				Role:    canonical.RoleAssistant,
+				Content: []canonical.ContentPart{{Kind: canonical.ContentKindText, Text: ""}},
+				ToolCalls: []canonical.ToolCall{
+					{ID: "tc_1", Name: "get_weather", Arguments: map[string]any{"location": "NYC"}},
 				},
 			},
 			StopReason: canonical.StopEndTurn,
@@ -683,11 +684,14 @@ func TestHandleChat_NonStreaming_KiroNativeNarration_NoCoerce(t *testing.T) {
 		t.Fatalf("status: got %d, want 200; body=%s", w.Code, w.Body.String())
 	}
 	bodyStr := w.Body.String()
-	if strings.Contains(bodyStr, `"tool_calls"`) {
-		t.Errorf("non-streaming kiro-native narration must NOT produce tool_calls; body=%s", bodyStr)
+	if strings.Contains(bodyStr, "[tool:") {
+		t.Errorf("non-streaming kiro-native tool call must NOT emit a [tool: marker; body=%s", bodyStr)
 	}
-	if !strings.Contains(bodyStr, `[tool: get_weather]`) {
-		t.Errorf("narration text missing from response; body=%s", bodyStr)
+	if !strings.Contains(bodyStr, `"tool_calls"`) {
+		t.Errorf("non-streaming kiro-native tool call must surface tool_calls; body=%s", bodyStr)
+	}
+	if !strings.Contains(bodyStr, `"arguments":{"location":"NYC"}`) {
+		t.Errorf("tool_calls must carry object-shaped arguments; body=%s", bodyStr)
 	}
 }
 

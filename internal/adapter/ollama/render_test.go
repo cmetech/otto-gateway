@@ -18,14 +18,12 @@ import (
 // This is the load-bearing distinction between the Ollama and OpenAI wire
 // surfaces (OpenAI marshals arguments to a string per spec).
 //
-// Per the per-surface contract (Phase 6 D-03/D-05/D-07), the source of
-// truth for Message.ToolCalls in Ollama is engine.CoerceToolCall — NOT
-// kiro-native ChunkKindToolCall chunks. The render layer here just passes
-// through whatever Message.ToolCalls contains; the "kiro-native narration"
-// sub-case proves that when ToolCalls is nil but Content carries the
-// [tool: <name>]\n narration (sourced from engine.Collect's iteration-3
-// aggregator in 06-01), the wire output has narration text in content AND
-// NO tool_calls key.
+// Message.ToolCalls in Ollama is populated by engine.CoerceToolCall (the
+// JSON-as-text rescue) AND, since Defect 1a (2026-07-16), by engine.Collect
+// surfacing kiro-native ChunkKindToolCall chunks structurally. The render
+// layer here just maps whatever Message.ToolCalls contains onto the wire
+// (arguments as a plain OBJECT); the KiroNativeToolCall sub-case proves a
+// native-derived tool call surfaces structurally with NO `[tool:` marker.
 func TestChatResponseToWire_ToolCalls(t *testing.T) {
 	start := time.Now().Add(-10 * time.Millisecond)
 
@@ -150,39 +148,39 @@ func TestChatResponseToWire_ToolCalls(t *testing.T) {
 		}
 	})
 
-	t.Run("KiroNativeNarration_NoToolCalls", func(t *testing.T) {
-		// iteration-3: kiro-native ChunkKindToolCall now lands as narration
-		// in Message.Content via engine.Collect's aggregator (06-01 Task 2).
-		// Message.ToolCalls stays nil. The Ollama render layer must pass
-		// the narration through to message.content without re-synthesizing
-		// any tool_calls entries.
+	t.Run("KiroNativeToolCall_StructuredNoMarker", func(t *testing.T) {
+		// Defect 1a (2026-07-16): kiro-native ChunkKindToolCall now reaches
+		// the Ollama renderer as a STRUCTURED Message.ToolCalls entry (the
+		// shape engine.Collect produces), with empty assistant text. The
+		// wire output must carry object-shaped tool_calls[].function.arguments
+		// and MUST NOT contain any `[tool:` marker.
 		resp := &canonical.ChatResponse{
 			Model: "auto",
 			Message: canonical.Message{
-				Role: canonical.RoleAssistant,
-				Content: []canonical.ContentPart{
-					{Kind: canonical.ContentKindText, Text: "[tool: get_weather]\n"},
+				Role:    canonical.RoleAssistant,
+				Content: []canonical.ContentPart{{Kind: canonical.ContentKindText, Text: ""}},
+				ToolCalls: []canonical.ToolCall{
+					{ID: "tc_1", Name: "get_weather", Arguments: map[string]any{"location": "NYC"}},
 				},
-				// ToolCalls intentionally nil.
 			},
 			StopReason: canonical.StopEndTurn,
 		}
 		got := chatResponseToWire(resp, start, "auto")
-		if got.Message.Content != "[tool: get_weather]\n" {
-			t.Errorf("Message.Content: got %q, want narration pass-through", got.Message.Content)
+		if len(got.Message.ToolCalls) != 1 {
+			t.Fatalf("ToolCalls: got %d entries, want 1", len(got.Message.ToolCalls))
 		}
-		if len(got.Message.ToolCalls) != 0 {
-			t.Errorf("ToolCalls: got %d entries, want 0 (kiro-native narration must not re-synthesize)", len(got.Message.ToolCalls))
+		if got.Message.ToolCalls[0].Function.Name != "get_weather" {
+			t.Errorf("ToolCalls[0].Function.Name: got %q, want get_weather", got.Message.ToolCalls[0].Function.Name)
 		}
 		raw, err := json.Marshal(got)
 		if err != nil {
 			t.Fatalf("marshal: %v", err)
 		}
-		if strings.Contains(string(raw), `"tool_calls"`) {
-			t.Errorf("serialized output contains tool_calls key for kiro-native narration: %s", raw)
+		if strings.Contains(string(raw), "[tool:") {
+			t.Errorf("serialized output must not contain a [tool: marker: %s", raw)
 		}
-		if !strings.Contains(string(raw), `[tool: get_weather]`) {
-			t.Errorf("serialized output missing narration content: %s", raw)
+		if !strings.Contains(string(raw), `"arguments":{"location":"NYC"}`) {
+			t.Errorf("serialized output missing object-shaped arguments: %s", raw)
 		}
 	})
 }

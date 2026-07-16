@@ -9,17 +9,16 @@ import (
 )
 
 // TestChatResponseToCompletion_ToolCalls locks the OpenAI non-streaming
-// tool_calls render path per D-07 + iteration-3 KiroNativeNarration:
+// tool_calls render path per D-07:
 //   - resp.Message.ToolCalls nil → no tool_calls key on the wire (omitempty)
-//   - coerce-synthesized tool_calls → choices[0].message.tool_calls with
-//     Arguments serialized as a JSON-STRING (NOT object — wire-shape
-//     divergence canary opposite of Ollama's Slice 2 lock)
+//   - coerce-synthesized OR kiro-native tool_calls → choices[0].message.
+//     tool_calls with Arguments serialized as a JSON-STRING (NOT object —
+//     wire-shape divergence canary opposite of Ollama's plain-object lock)
 //   - non-empty ToolCalls → finish_reason override "tool_calls"
 //   - multi-tool order preserved
-//   - KiroNativeNarration: when Content carries "[tool: <name>]\n" but
-//     ToolCalls is nil, render outputs the narration as message.content
-//     and emits NO tool_calls field; finish_reason is NOT "tool_calls"
-//     (iteration-3 lock — depends on 06-01 Task 2 narration aggregator).
+//   - KiroNativeToolCall_StructuredArgsString: kiro-native tool calls now
+//     reach the renderer as structured Message.ToolCalls (Defect 1a) and
+//     surface as tool_calls with NO `[tool:` marker in content.
 func TestChatResponseToCompletion_ToolCalls(t *testing.T) {
 	t.Run("NilToolCalls_NoToolCallsKey", func(t *testing.T) {
 		resp := &canonical.ChatResponse{
@@ -126,42 +125,47 @@ func TestChatResponseToCompletion_ToolCalls(t *testing.T) {
 		}
 	})
 
-	t.Run("KiroNativeNarration_NoToolCalls", func(t *testing.T) {
-		// Iteration-3 lock: non-streaming kiro-native scenario where
-		// 06-01 Task 2's narration aggregator populated Content with
-		// "[tool: <name>]\n" text. CoerceToolCall did NOT fire (the
-		// narration text fails JSON parse), so Message.ToolCalls stays
-		// nil. The wire output must carry the narration text in
-		// message.content with NO tool_calls field; finish_reason MUST
-		// NOT be "tool_calls".
+	t.Run("KiroNativeToolCall_StructuredArgsString", func(t *testing.T) {
+		// Defect 1a (2026-07-16): non-streaming kiro-native scenario. The
+		// engine.Collect aggregator now surfaces a kiro-native tool call as
+		// a STRUCTURED Message.ToolCalls entry (empty assistant text). The
+		// OpenAI wire output must carry tool_calls[].function.arguments as a
+		// JSON-encoded STRING, finish_reason:"tool_calls", and NO `[tool:`
+		// marker in message.content.
 		resp := &canonical.ChatResponse{
 			StopReason: canonical.StopEndTurn,
 			Message: canonical.Message{
-				Role: canonical.RoleAssistant,
-				Content: []canonical.ContentPart{
-					{Kind: canonical.ContentKindText, Text: "[tool: get_weather]\n"},
+				Role:    canonical.RoleAssistant,
+				Content: []canonical.ContentPart{{Kind: canonical.ContentKindText, Text: ""}},
+				ToolCalls: []canonical.ToolCall{
+					{ID: "tc_1", Name: "get_weather", Arguments: map[string]any{"location": "NYC"}},
 				},
-				ToolCalls: nil,
 			},
 		}
 		out := chatResponseToCompletion(resp, "auto")
 
-		if out.Choices[0].Message.Content != "[tool: get_weather]\n" {
-			t.Errorf("content: got %q, want %q", out.Choices[0].Message.Content, "[tool: get_weather]\n")
+		if strings.Contains(out.Choices[0].Message.Content, "[tool:") {
+			t.Errorf("content must not contain a [tool: marker; got %q", out.Choices[0].Message.Content)
 		}
-		if len(out.Choices[0].Message.ToolCalls) != 0 {
-			t.Errorf("ToolCalls: got %d, want 0", len(out.Choices[0].Message.ToolCalls))
+		if len(out.Choices[0].Message.ToolCalls) != 1 {
+			t.Fatalf("ToolCalls: got %d, want 1", len(out.Choices[0].Message.ToolCalls))
 		}
-		if out.Choices[0].FinishReason == "tool_calls" {
-			t.Errorf("finish_reason: got %q, must NOT be tool_calls for kiro-native narration path", out.Choices[0].FinishReason)
+		if got := out.Choices[0].Message.ToolCalls[0].Function.Name; got != "get_weather" {
+			t.Errorf("tc.Name: got %q, want get_weather", got)
+		}
+		if got := out.Choices[0].Message.ToolCalls[0].Function.Arguments; got != `{"location":"NYC"}` {
+			t.Errorf("tc.Arguments: got %q, want JSON-string {\"location\":\"NYC\"}", got)
+		}
+		if out.Choices[0].FinishReason != "tool_calls" {
+			t.Errorf("finish_reason: got %q, want tool_calls", out.Choices[0].FinishReason)
 		}
 
 		raw, err := json.Marshal(out)
 		if err != nil {
 			t.Fatalf("marshal: %v", err)
 		}
-		if strings.Contains(string(raw), `"tool_calls"`) {
-			t.Errorf("kiro-native narration path must omit tool_calls field; got: %s", raw)
+		if strings.Contains(string(raw), "[tool:") {
+			t.Errorf("serialized output must not contain a [tool: marker; got: %s", raw)
 		}
 	})
 }

@@ -136,18 +136,16 @@ func TestCollect_ThoughtOnly_StillEmitsEmptyTextPart(t *testing.T) {
 	}
 }
 
-// TestCollect_AggregatesKiroNativeToolCallAsNarration (Phase 6 D-03
-// iteration-3 fix to HIGH #1): engine.Collect MUST aggregate
-// ChunkKindToolCall into the response's assistant text as
-// `[tool: <name>]\n` narration. Non-streaming Ollama/OpenAI receive
-// only *canonical.ChatResponse from Collect — without this aggregation,
-// kiro-native tool calls would disappear entirely from non-streaming
-// responses. Message.ToolCalls remains untouched (per-surface contract:
-// Ollama/OpenAI populate via engine.CoerceToolCall; Anthropic populates
-// via adapter-local Collect).
-func TestCollect_AggregatesKiroNativeToolCallAsNarration(t *testing.T) {
+// TestCollect_SurfacesKiroNativeToolCallStructured (Defect 1a fix,
+// 2026-07-16): engine.Collect MUST surface kiro-native ChunkKindToolCall
+// as a structured Message.ToolCalls entry (id/name/arguments) — NOT as
+// `[tool: <name>]\n` narration text. Non-streaming Ollama/OpenAI receive
+// only *canonical.ChatResponse from Collect; the render layer maps
+// Message.ToolCalls to the surface wire shape. The text builder carries
+// ONLY the surrounding assistant prose — never a `[tool:` marker.
+func TestCollect_SurfacesKiroNativeToolCallStructured(t *testing.T) {
 	ack := &fakeACP{
-		newSessionID: "sid-toolcall-narration",
+		newSessionID: "sid-toolcall-structured",
 		chunksToEmit: []canonical.Chunk{
 			{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "checking weather "}},
 			{Kind: canonical.ChunkKindToolCall, ToolCall: &canonical.ToolCallChunk{
@@ -163,50 +161,45 @@ func TestCollect_AggregatesKiroNativeToolCallAsNarration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Collect: %v", err)
 	}
-	// (1) Message.ToolCalls is empty — Collect MUST NOT populate it for
-	// any chunk source; that is a per-surface concern (Phase 6 D-03/D-05/D-07).
-	if len(resp.Message.ToolCalls) != 0 {
-		t.Errorf("Message.ToolCalls: got %d entries, want 0 (Collect must not populate ToolCalls)", len(resp.Message.ToolCalls))
+	// (1) Exactly one structured tool call with faithful id/name/args.
+	if len(resp.Message.ToolCalls) != 1 {
+		t.Fatalf("Message.ToolCalls: got %d entries, want 1", len(resp.Message.ToolCalls))
 	}
-	// (2) Exactly one ContentKindText part with all three substrings in
-	// emission order.
+	tc := resp.Message.ToolCalls[0]
+	if tc.ID != "tc_1" {
+		t.Errorf("ToolCalls[0].ID: got %q, want %q", tc.ID, "tc_1")
+	}
+	if tc.Name != "get_weather" {
+		t.Errorf("ToolCalls[0].Name: got %q, want %q", tc.Name, "get_weather")
+	}
+	if got, ok := tc.Arguments["location"].(string); !ok || got != "NYC" {
+		t.Errorf("ToolCalls[0].Arguments[location]: got %v, want NYC", tc.Arguments["location"])
+	}
+	// (2) Text content carries the surrounding prose and NO `[tool:` marker.
 	if len(resp.Message.Content) != 1 {
-		t.Fatalf("Content parts: got %d, want 1 (text only — no thinking, no tool-use)", len(resp.Message.Content))
+		t.Fatalf("Content parts: got %d, want 1 (text only)", len(resp.Message.Content))
 	}
 	if resp.Message.Content[0].Kind != canonical.ContentKindText {
 		t.Errorf("Content[0].Kind: got %v, want ContentKindText", resp.Message.Content[0].Kind)
 	}
 	text := resp.Message.Content[0].Text
-	for _, sub := range []string{"checking weather ", "[tool: get_weather]\n", " done"} {
-		if !strings.Contains(text, sub) {
-			t.Errorf("Content[0].Text missing %q in:\n%q", sub, text)
-		}
+	if strings.Contains(text, "[tool:") {
+		t.Errorf("Content[0].Text must not contain a [tool: marker; got %q", text)
 	}
-	// Ordering: checking < tool-narration < done.
-	idxChecking := strings.Index(text, "checking weather ")
-	idxNarration := strings.Index(text, "[tool: get_weather]\n")
-	idxDone := strings.Index(text, " done")
-	if idxChecking >= idxNarration || idxNarration >= idxDone {
-		t.Errorf("expected order checking < narration < done; got indices %d, %d, %d in %q",
-			idxChecking, idxNarration, idxDone, text)
-	}
-	// (3) No ContentKindToolUse parts appended.
-	for i, part := range resp.Message.Content {
-		if part.Kind == canonical.ContentKindToolUse {
-			t.Errorf("Content[%d].Kind: ContentKindToolUse must not be appended by Collect", i)
-		}
+	if want := "checking weather  done"; text != want {
+		t.Errorf("Content[0].Text: got %q, want %q", text, want)
 	}
 }
 
 // TestCollect_KiroNativeToolCall_OnlyChunk: a stream containing only a
-// tool_call chunk (no surrounding text) yields a single ContentKindText
-// part whose Text is exactly `[tool: <name>]\n`. Message.ToolCalls stays
-// empty.
+// tool_call chunk (no surrounding text) yields a single structured
+// Message.ToolCalls entry and an empty text part. No `[tool:` marker.
 func TestCollect_KiroNativeToolCall_OnlyChunk(t *testing.T) {
 	ack := &fakeACP{
 		newSessionID: "sid-toolcall-only",
 		chunksToEmit: []canonical.Chunk{
 			{Kind: canonical.ChunkKindToolCall, ToolCall: &canonical.ToolCallChunk{
+				ID:   "tc_only",
 				Name: "search_web",
 				Args: map[string]any{"q": "go"},
 			}},
@@ -217,29 +210,31 @@ func TestCollect_KiroNativeToolCall_OnlyChunk(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Collect: %v", err)
 	}
-	if len(resp.Message.ToolCalls) != 0 {
-		t.Errorf("Message.ToolCalls: got %d entries, want 0", len(resp.Message.ToolCalls))
+	if len(resp.Message.ToolCalls) != 1 {
+		t.Fatalf("Message.ToolCalls: got %d entries, want 1", len(resp.Message.ToolCalls))
+	}
+	if got := resp.Message.ToolCalls[0].Name; got != "search_web" {
+		t.Errorf("ToolCalls[0].Name: got %q, want search_web", got)
 	}
 	if len(resp.Message.Content) != 1 {
 		t.Fatalf("Content parts: got %d, want 1", len(resp.Message.Content))
 	}
-	if got, want := resp.Message.Content[0].Text, "[tool: search_web]\n"; got != want {
-		t.Errorf("Content[0].Text: got %q, want %q", got, want)
+	if got := resp.Message.Content[0].Text; got != "" {
+		t.Errorf("Content[0].Text: got %q, want empty (no [tool: narration)", got)
 	}
 }
 
-// TestCollect_KiroNativeToolCall_NilName_Fallback: defensive — if the
-// ToolCall pointer is nil or Name is empty (should not happen given
-// translate.go's firstNonEmpty fallback, but lock the discipline),
-// Collect appends `[tool: unknown]\n` rather than panicking or emitting
-// a malformed narration.
-func TestCollect_KiroNativeToolCall_NilName_Fallback(t *testing.T) {
+// TestCollect_KiroNativeToolCall_EmptyID_Synthesized: when kiro emits a
+// tool_call chunk with no toolCallId, Collect synthesizes a non-empty
+// `call_<n>` id (OpenAI clients require a stable id). Name passes through
+// verbatim even when empty; no panic, no `[tool:` narration.
+func TestCollect_KiroNativeToolCall_EmptyID_Synthesized(t *testing.T) {
 	ack := &fakeACP{
-		newSessionID: "sid-toolcall-nilname",
+		newSessionID: "sid-toolcall-emptyid",
 		chunksToEmit: []canonical.Chunk{
 			{Kind: canonical.ChunkKindToolCall, ToolCall: &canonical.ToolCallChunk{
-				ID:   "tc_x",
-				Name: "",
+				ID:   "",
+				Name: "run",
 				Args: nil,
 			}},
 		},
@@ -249,11 +244,14 @@ func TestCollect_KiroNativeToolCall_NilName_Fallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Collect: %v", err)
 	}
-	if len(resp.Message.Content) != 1 {
-		t.Fatalf("Content parts: got %d, want 1", len(resp.Message.Content))
+	if len(resp.Message.ToolCalls) != 1 {
+		t.Fatalf("Message.ToolCalls: got %d entries, want 1", len(resp.Message.ToolCalls))
 	}
-	if got, want := resp.Message.Content[0].Text, "[tool: unknown]\n"; got != want {
-		t.Errorf("Content[0].Text: got %q, want %q", got, want)
+	if id := resp.Message.ToolCalls[0].ID; id == "" || !strings.HasPrefix(id, "call_") {
+		t.Errorf("ToolCalls[0].ID: got %q, want synthesized call_ prefix", id)
+	}
+	if len(resp.Message.Content) != 1 || strings.Contains(resp.Message.Content[0].Text, "[tool:") {
+		t.Errorf("Content must be a single text part with no [tool: marker; got %+v", resp.Message.Content)
 	}
 }
 
