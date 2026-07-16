@@ -44,7 +44,7 @@ func runSSEEmitterAndPostHooks(t *testing.T, ctx context.Context, eng Engine, re
 		sessionID: "session_posthook",
 	}
 	rec := httptest.NewRecorder()
-	resp, err := runSSEEmitter(ctx, rec, run, req, "auto", 0, logger)
+	resp, err := runSSEEmitter(ctx, rec, run, req, nil, "auto", 0, logger)
 	if resp != nil {
 		if pErr := eng.RunPostHooks(ctx, req, resp); pErr != nil {
 			// Streaming WARN-and-swallow contract.
@@ -157,7 +157,7 @@ func TestOpenAISSE_PostHooksFireOnClientDisconnect(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	go cancel()
 	rec := httptest.NewRecorder()
-	resp, err := runSSEEmitter(ctx, rec, run, &canonical.ChatRequest{Model: "auto"}, "auto", 0, nullLogger())
+	resp, err := runSSEEmitter(ctx, rec, run, &canonical.ChatRequest{Model: "auto"}, nil, "auto", 0, nullLogger())
 	if err == nil {
 		t.Fatal("runSSEEmitter: got nil err, want ctx-cancel error")
 	}

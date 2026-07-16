@@ -177,6 +177,10 @@ type Config struct {
 	// (quick 260531-ruv). Read by the NDJSON emitter to bound
 	// silent-kiro hangs.
 	StreamIdleTimeout time.Duration
+	// ToolAliases maps kiro's native built-in tool name to a caller-offered
+	// tool name (alias-primary tool-call design, 2026-07-16). Threaded from
+	// cfg.ToolAliases; read by the NDJSON emitter to resolve native tool calls.
+	ToolAliases map[string]string
 }
 
 // Adapter wires the Ollama HTTP surface. Construct via New.

@@ -138,7 +138,7 @@ func TestNDJSON_Chat_TextChunks(t *testing.T) {
 	w := httptest.NewRecorder()
 	ctx := context.Background()
 
-	_, err := runNDJSONEmitter(ctx, noopCancelFn, w, run, "auto", true, time.Now(), nilLogger(), nil, 0)
+	_, err := runNDJSONEmitter(ctx, noopCancelFn, w, run, "auto", true, time.Now(), nilLogger(), nil, nil, 0)
 	if err != nil {
 		t.Fatalf("runNDJSONEmitter: %v", err)
 	}
@@ -178,7 +178,7 @@ func TestNDJSON_Chat_ThoughtChunk(t *testing.T) {
 	w := httptest.NewRecorder()
 	ctx := context.Background()
 
-	_, err := runNDJSONEmitter(ctx, noopCancelFn, w, run, "auto", true, time.Now(), nilLogger(), nil, 0)
+	_, err := runNDJSONEmitter(ctx, noopCancelFn, w, run, "auto", true, time.Now(), nilLogger(), nil, nil, 0)
 	if err != nil {
 		t.Fatalf("runNDJSONEmitter: %v", err)
 	}
@@ -224,7 +224,7 @@ func TestNDJSON_Generate_ThoughtDropped(t *testing.T) {
 	w := httptest.NewRecorder()
 	ctx := context.Background()
 
-	_, err := runNDJSONEmitter(ctx, noopCancelFn, w, run, "auto", false, time.Now(), nilLogger(), nil, 0)
+	_, err := runNDJSONEmitter(ctx, noopCancelFn, w, run, "auto", false, time.Now(), nilLogger(), nil, nil, 0)
 	if err != nil {
 		t.Fatalf("runNDJSONEmitter: %v", err)
 	}
@@ -259,7 +259,7 @@ func TestNDJSON_FlusherAssertionFails(t *testing.T) {
 	w := newNonFlusherWriter()
 	ctx := context.Background()
 
-	_, err := runNDJSONEmitter(ctx, noopCancelFn, w, run, "auto", true, time.Now(), nilLogger(), nil, 0)
+	_, err := runNDJSONEmitter(ctx, noopCancelFn, w, run, "auto", true, time.Now(), nilLogger(), nil, nil, 0)
 	if err == nil {
 		t.Fatal("runNDJSONEmitter: want error for non-flusher writer, got nil")
 	}
@@ -290,7 +290,7 @@ func TestNDJSON_WriteError_CancelsCtx(t *testing.T) {
 	ew := newErrorWriter()
 	ctx := context.Background()
 
-	_, err := runNDJSONEmitter(ctx, cancelFn, ew, run, "auto", true, time.Now(), nilLogger(), nil, 0)
+	_, err := runNDJSONEmitter(ctx, cancelFn, ew, run, "auto", true, time.Now(), nilLogger(), nil, nil, 0)
 	if err == nil {
 		t.Fatal("runNDJSONEmitter: want error for failing writer, got nil")
 	}
@@ -311,7 +311,7 @@ func TestNDJSON_StreamResultError(t *testing.T) {
 	w := httptest.NewRecorder()
 	ctx := context.Background()
 
-	_, err := runNDJSONEmitter(ctx, noopCancelFn, w, run, "kiro-model", true, time.Now(), nilLogger(), nil, 0)
+	_, err := runNDJSONEmitter(ctx, noopCancelFn, w, run, "kiro-model", true, time.Now(), nilLogger(), nil, nil, 0)
 	if err == nil {
 		t.Fatal("runNDJSONEmitter: want error when stream.Result() fails, got nil")
 	}
@@ -376,7 +376,7 @@ func TestNDJSON_StreamingCoerce_BareJSON(t *testing.T) {
 	ctx := context.Background()
 	req := makeToolsCatalog()
 
-	if _, err := runNDJSONEmitter(ctx, noopCancelFn, w, run, "auto", true, time.Now(), nilLogger(), req, 0); err != nil {
+	if _, err := runNDJSONEmitter(ctx, noopCancelFn, w, run, "auto", true, time.Now(), nilLogger(), req, nil, 0); err != nil {
 		t.Fatalf("runNDJSONEmitter: %v", err)
 	}
 
@@ -441,7 +441,7 @@ func TestNDJSON_StreamingCoerce_NotJSON_PassThrough(t *testing.T) {
 	ctx := context.Background()
 	req := makeToolsCatalog()
 
-	if _, err := runNDJSONEmitter(ctx, noopCancelFn, w, run, "auto", true, time.Now(), nilLogger(), req, 0); err != nil {
+	if _, err := runNDJSONEmitter(ctx, noopCancelFn, w, run, "auto", true, time.Now(), nilLogger(), req, nil, 0); err != nil {
 		t.Fatalf("runNDJSONEmitter: %v", err)
 	}
 
@@ -486,7 +486,7 @@ func TestNDJSON_KiroNative_StructuredToolCall(t *testing.T) {
 	ctx := context.Background()
 	req := makeToolsCatalog()
 
-	if _, err := runNDJSONEmitter(ctx, noopCancelFn, w, run, "auto", true, time.Now(), nilLogger(), req, 0); err != nil {
+	if _, err := runNDJSONEmitter(ctx, noopCancelFn, w, run, "auto", true, time.Now(), nilLogger(), req, nil, 0); err != nil {
 		t.Fatalf("runNDJSONEmitter: %v", err)
 	}
 
@@ -534,7 +534,7 @@ func TestStream_NativeToolCall_ThenJSONText_SkipsCoerce(t *testing.T) {
 	ctx := context.Background()
 	req := makeToolsCatalog()
 
-	if _, err := runNDJSONEmitter(ctx, noopCancelFn, w, run, "auto", true, time.Now(), nilLogger(), req, 0); err != nil {
+	if _, err := runNDJSONEmitter(ctx, noopCancelFn, w, run, "auto", true, time.Now(), nilLogger(), req, nil, 0); err != nil {
 		t.Fatalf("runNDJSONEmitter: %v", err)
 	}
 
@@ -575,7 +575,7 @@ func TestStream_NativeToolCall_Only_Structured(t *testing.T) {
 	ctx := context.Background()
 	req := makeToolsCatalog()
 
-	if _, err := runNDJSONEmitter(ctx, noopCancelFn, w, run, "auto", true, time.Now(), nilLogger(), req, 0); err != nil {
+	if _, err := runNDJSONEmitter(ctx, noopCancelFn, w, run, "auto", true, time.Now(), nilLogger(), req, nil, 0); err != nil {
 		t.Fatalf("runNDJSONEmitter: %v", err)
 	}
 
@@ -605,7 +605,7 @@ func TestNDJSON_KiroNative_NilToolCall_Dropped(t *testing.T) {
 	w := httptest.NewRecorder()
 	ctx := context.Background()
 
-	if _, err := runNDJSONEmitter(ctx, noopCancelFn, w, run, "auto", true, time.Now(), nilLogger(), nil, 0); err != nil {
+	if _, err := runNDJSONEmitter(ctx, noopCancelFn, w, run, "auto", true, time.Now(), nilLogger(), nil, nil, 0); err != nil {
 		t.Fatalf("runNDJSONEmitter: %v", err)
 	}
 
@@ -640,7 +640,7 @@ func TestStream_ProseThenJSON_NoCoerce_NoLeak(t *testing.T) {
 	ctx := context.Background()
 	req := makeToolsCatalog()
 
-	if _, err := runNDJSONEmitter(ctx, noopCancelFn, w, run, "auto", true, time.Now(), nilLogger(), req, 0); err != nil {
+	if _, err := runNDJSONEmitter(ctx, noopCancelFn, w, run, "auto", true, time.Now(), nilLogger(), req, nil, 0); err != nil {
 		t.Fatalf("runNDJSONEmitter: %v", err)
 	}
 
@@ -711,7 +711,7 @@ func TestNDJSON_IdleTimeout_EmitsErrorLine(t *testing.T) {
 
 	start := time.Now()
 	resp, err := runNDJSONEmitter(context.Background(), noopCancelFn, w, run,
-		"auto", true, time.Now(), nilLogger(), nil, 100*time.Millisecond)
+		"auto", true, time.Now(), nilLogger(), nil, nil, 100*time.Millisecond)
 	elapsed := time.Since(start)
 
 	if elapsed > 500*time.Millisecond {

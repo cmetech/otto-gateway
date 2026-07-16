@@ -173,6 +173,10 @@ func withPostHooks(hooks ...PostHook) func(*Config) {
 	return func(c *Config) { c.PostHooks = hooks }
 }
 
+func withToolAliases(m map[string]string) func(*Config) {
+	return func(c *Config) { c.ToolAliases = m }
+}
+
 func simpleUserReq(text, model string) *canonical.ChatRequest {
 	return &canonical.ChatRequest{
 		Model: model,

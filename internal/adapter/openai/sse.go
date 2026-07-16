@@ -151,13 +151,17 @@ type sseEmitter struct {
 	// D-05 single-goroutine invariant applies.
 	aggregatedText strings.Builder
 
-	// Defect 1a (2026-07-16) — kiro-native tool calls emitted structurally
-	// during the stream (delta.tool_calls frames). nativeToolCallCount is
-	// the next tool-call `index` on the wire; aggregatedToolCalls mirrors
-	// them onto the post-stream PostHook canonical response. D-05
-	// single-goroutine invariant applies.
-	nativeToolCallCount int
-	aggregatedToolCalls []canonical.ToolCall
+	// Alias-primary tool-call design (2026-07-16). aliases is the configured
+	// kiro-native→offered-tool map. nativeToolCalls accumulates the resolved
+	// (aliased) native tool calls seen during the stream; they are emitted as
+	// structured delta.tool_calls frames at end-of-stream (deduped), NOT
+	// per-chunk — so denial retries and chunk+full pairs collapse to the
+	// minimal set. sawKiroNativeToolCall flips true only when a native call
+	// actually SURFACES (resolves to an offered tool); a dropped built-in
+	// leaves it false so the coerce/wrapper fallback can still fire.
+	// D-05 single-goroutine invariant applies.
+	aliases         map[string]string
+	nativeToolCalls []canonical.ToolCall
 }
 
 // writeData marshals payload to JSON and writes it as "data: <json>\n\n" +
@@ -330,77 +334,75 @@ func (e *sseEmitter) applyTextChunk(c canonical.Chunk) error {
 	return nil
 }
 
-// applyToolCallChunk handles a ChunkKindToolCall. Defect 1a (2026-07-16):
-// emit the kiro-native tool call as a structured delta.tool_calls sequence
-// (frame B: index+id+name with empty arguments; frame C: the arguments as
-// a single JSON-string atom — no splitting, per Pitfall 2). Sets
-// sawKiroNativeToolCall = true so end-of-stream coerce is skipped (the call
-// is already surfaced structurally and must not be double-counted) and the
-// terminal finish_reason becomes "tool_calls". Multiple native calls in one
-// turn get incrementing wire indices. NO `[tool:` narration is ever written.
+// applyToolCallChunk handles a ChunkKindToolCall (alias-primary design,
+// 2026-07-16). It RESOLVES the native tool name against the caller's offered
+// tools + aliases and, if it surfaces, ACCUMULATES the resolved call for a
+// deduped end-of-stream emission (finalizeSSE) — it does NOT emit a frame
+// per chunk, so denial retries and chunk+full pairs collapse. A native
+// built-in with no alias to an offered tool is DROPPED and does not set
+// sawKiroNativeToolCall, so the coerce/wrapper fallback can still fire on the
+// assistant text. NO `[tool:` narration is ever written.
 func (e *sseEmitter) applyToolCallChunk(c canonical.Chunk) error {
 	if c.ToolCall == nil {
 		return nil
 	}
+	var reqTools []canonical.ToolSpec
+	if e.req != nil {
+		reqTools = e.req.Tools
+	}
+	resolved, surface := engine.ResolveNativeToolName(c.ToolCall.Name, reqTools, e.aliases)
+	if !surface {
+		return nil // denied built-in with no offered alias — drop, let coerce run
+	}
 	if err := e.ensureRoleSent(); err != nil {
 		return err
 	}
-	idx := e.nativeToolCallCount
 	id := c.ToolCall.ID
 	if id == "" {
 		// OpenAI clients require a stable id; synthesize one (mirrors the
 		// non-streaming aggregator + CoerceToolCall `call_` convention).
-		id = fmt.Sprintf("call_%d_%d", time.Now().UnixNano(), idx)
+		id = fmt.Sprintf("call_%d_%d", time.Now().UnixNano(), len(e.nativeToolCalls))
 	}
-
-	// Frame B: index + id + name, empty arguments.
-	if err := e.writeData(e.buildChunk(chunkChoice{
-		Index: 0,
-		Delta: chunkDelta{
-			ToolCalls: []chunkDeltaToolCall{{
-				Index: idx,
-				ID:    id,
-				Type:  "function",
-				Function: chunkDeltaToolCallFunction{
-					Name:      c.ToolCall.Name,
-					Arguments: "",
-				},
-			}},
-		},
-		FinishReason: nil,
-	})); err != nil {
-		return err
-	}
-
-	// Frame C: arguments JSON-string (single atom, no splits — Pitfall 2).
-	argsJSON, err := json.Marshal(c.ToolCall.Args)
-	if err != nil {
-		argsJSON = []byte("{}")
-	}
-	if err := e.writeData(e.buildChunk(chunkChoice{
-		Index: 0,
-		Delta: chunkDelta{
-			ToolCalls: []chunkDeltaToolCall{{
-				Index: idx,
-				Function: chunkDeltaToolCallFunction{
-					Arguments: string(argsJSON),
-				},
-			}},
-		},
-		FinishReason: nil,
-	})); err != nil {
-		return err
-	}
-
 	e.sawKiroNativeToolCall = true
-	e.nativeToolCallCount++
-	// Mirror onto the post-stream PostHook canonical response so
-	// LoggingHook.After / ChatTraceHook.After observe the structured call.
-	e.aggregatedToolCalls = append(e.aggregatedToolCalls, canonical.ToolCall{
+	e.nativeToolCalls = append(e.nativeToolCalls, canonical.ToolCall{
 		ID:        id,
-		Name:      c.ToolCall.Name,
+		Name:      resolved,
 		Arguments: c.ToolCall.Args,
 	})
+	return nil
+}
+
+// emitToolCallFrames writes the structured delta.tool_calls SSE frames for a
+// deduped set of calls: per call, frame B (index+id+name, empty arguments)
+// then frame C (arguments as a single JSON-string atom — no splitting, per
+// Pitfall 2). Shared by the native-surfacing and coerce-hit paths.
+func (e *sseEmitter) emitToolCallFrames(calls []canonical.ToolCall) error {
+	for i, tc := range calls {
+		if err := e.writeData(e.buildChunk(chunkChoice{
+			Index: 0,
+			Delta: chunkDelta{ToolCalls: []chunkDeltaToolCall{{
+				Index: i, ID: tc.ID, Type: "function",
+				Function: chunkDeltaToolCallFunction{Name: tc.Name, Arguments: ""},
+			}}},
+			FinishReason: nil,
+		})); err != nil {
+			return err
+		}
+		argsJSON, err := json.Marshal(tc.Arguments)
+		if err != nil {
+			argsJSON = []byte("{}")
+		}
+		if err := e.writeData(e.buildChunk(chunkChoice{
+			Index: 0,
+			Delta: chunkDelta{ToolCalls: []chunkDeltaToolCall{{
+				Index:    i,
+				Function: chunkDeltaToolCallFunction{Arguments: string(argsJSON)},
+			}}},
+			FinishReason: nil,
+		})); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -438,7 +440,7 @@ func (e *sseEmitter) applyToolCallChunk(c canonical.Chunk) error {
 // a kiro-native ChunkKindToolCall is surfaced structurally per-chunk
 // (Defect 1a) and trips the sawKiroNativeToolCall flag so end-of-stream
 // coerce is skipped.
-func runSSEEmitter(ctx context.Context, w http.ResponseWriter, run RunHandle, req *canonical.ChatRequest, model string, streamIdle time.Duration, logger *slog.Logger) (*canonical.ChatResponse, error) {
+func runSSEEmitter(ctx context.Context, w http.ResponseWriter, run RunHandle, req *canonical.ChatRequest, aliases map[string]string, model string, streamIdle time.Duration, logger *slog.Logger) (*canonical.ChatResponse, error) {
 	// Assert Flusher BEFORE any write so the caller can fall back to JSON 500
 	// if the ResponseWriter does not support streaming (Pitfall 2 + anthropic analog).
 	flusher, ok := w.(http.Flusher)
@@ -460,6 +462,7 @@ func runSSEEmitter(ctx context.Context, w http.ResponseWriter, run RunHandle, re
 		created: time.Now().Unix(), // fixed once (Pitfall 8)
 		model:   model,
 		req:     req,
+		aliases: aliases,
 	}
 
 	chunks := run.Stream().Chunks()
@@ -561,11 +564,21 @@ func runSSEEmitter(ctx context.Context, w http.ResponseWriter, run RunHandle, re
 // PostHooks observe the same final canonical shape the wire produced.
 func (e *sseEmitter) aggregatedResponse(stop canonical.StopReason, syntheticToolCalls []canonical.ToolCall) *canonical.ChatResponse {
 	model := ""
+	var reqTools []canonical.ToolSpec
 	if e.req != nil {
 		model = e.req.Model
+		reqTools = e.req.Tools
+	}
+	// Alias-primary: in the deny regime, a surfaced tool call means the
+	// streamed prose was apologetic/wrapper noise — hand PostHooks an empty
+	// content part so traces/logs record the structured call, not the noise
+	// (mirrors the non-streaming collect.go clearing).
+	text := e.aggregatedText.String()
+	if len(reqTools) > 0 && len(syntheticToolCalls) > 0 {
+		text = ""
 	}
 	content := []canonical.ContentPart{
-		{Kind: canonical.ContentKindText, Text: e.aggregatedText.String()},
+		{Kind: canonical.ContentKindText, Text: text},
 	}
 	return &canonical.ChatResponse{
 		Model: model,
@@ -669,12 +682,16 @@ func finalizeSSE(e *sseEmitter, run RunHandle) (*canonical.ChatResponse, error) 
 	var syntheticToolCalls []canonical.ToolCall
 	switch {
 	case e.sawKiroNativeToolCall:
-		// Defect 1a (2026-07-16): kiro-native tool call(s) were surfaced
-		// structurally as delta.tool_calls during the stream. SKIP coerce
-		// (already surfaced; no double-count). Flush any incidental buffered
-		// text frames in order, then emit terminal finish_reason:"tool_calls".
-		if err := e.flushDeferred(); err != nil {
-			return e.aggregatedResponse(stopReason, e.aggregatedToolCalls), err
+		// Alias-primary (2026-07-16): one or more native tool calls resolved to
+		// offered tools during the stream. DISCARD any buffered/deferred text
+		// (in the deny regime it's the apologetic "permission issue" prose or
+		// the raw wrapper JSON), dedup the accumulated calls, emit them as
+		// structured delta.tool_calls frames, then terminal finish_reason:
+		// "tool_calls". SKIP coerce (already surfaced natively).
+		e.deferredTextFrames = nil
+		calls := engine.DedupToolCalls(e.nativeToolCalls)
+		if err := e.emitToolCallFrames(calls); err != nil {
+			return e.aggregatedResponse(stopReason, calls), err
 		}
 		fr := "tool_calls"
 		if err := e.writeData(e.buildChunk(chunkChoice{
@@ -682,9 +699,9 @@ func finalizeSSE(e *sseEmitter, run RunHandle) (*canonical.ChatResponse, error) 
 			Delta:        chunkDelta{}, // empty delta on final frame
 			FinishReason: &fr,
 		})); err != nil {
-			return e.aggregatedResponse(stopReason, e.aggregatedToolCalls), err
+			return e.aggregatedResponse(stopReason, calls), err
 		}
-		syntheticToolCalls = e.aggregatedToolCalls
+		syntheticToolCalls = calls
 	case !e.buffering:
 		// No buffered text → no streaming-coerce candidate.
 		if err := e.emitTerminalFrame(stopReason); err != nil {
@@ -900,8 +917,22 @@ func runSyntheticSSEFromResponse(_ context.Context, w http.ResponseWriter, resp 
 		}
 	}
 
+	// Item 2 (2026-07-16): carry structured tool_calls through the synthetic
+	// re-emit. Under encrypt mode a streaming request is aggregated and
+	// re-emitted here; without this the tool call (populated on resp by the
+	// non-streaming Collect path) would be dropped. Emit the same
+	// delta.tool_calls frames the live emitter uses and override the terminal
+	// finish_reason to "tool_calls".
+	finishReason := mapFinishReason(stopReason)
+	if resp != nil && len(resp.Message.ToolCalls) > 0 {
+		if err := e.emitToolCallFrames(resp.Message.ToolCalls); err != nil {
+			return err
+		}
+		finishReason = "tool_calls"
+	}
+
 	// Final frame with finish_reason set + empty delta.
-	finish := mapFinishReason(stopReason)
+	finish := finishReason
 	if err := e.writeData(e.buildChunk(chunkChoice{
 		Index:        0,
 		Delta:        chunkDelta{},

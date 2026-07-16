@@ -102,6 +102,14 @@ type Config struct {
 	KiroArgs []string
 	// KiroCWD is the working directory for the kiro-cli subprocess (default "").
 	KiroCWD string
+	// ToolAliases maps kiro's native built-in tool name (its ACP `kind`, e.g.
+	// "execute") to the caller-offered tool name it should be surfaced as
+	// (e.g. "run_shell"). Loaded from KIRO_TOOL_ALIASES as comma-separated
+	// `from:to` pairs. When the caller offers tools, a native tool call whose
+	// (aliased) name matches an offered tool is surfaced structurally under
+	// that name; native calls with no match are dropped. Empty by default —
+	// aliases are deployment-specific because host tool names vary.
+	ToolAliases map[string]string
 	// Debug enables debug-level logging (default false).
 	Debug bool
 	// PingInterval is the heartbeat interval for kiro-cli (default 60s).
@@ -330,6 +338,10 @@ func Load() (Config, error) {
 	kiroCmd := getEnvStr("KIRO_CMD", "kiro-cli")
 	kiroArgs := getEnvStrSlice("KIRO_ARGS", []string{"acp"})
 	kiroCWD := getEnvStr("KIRO_CWD", "")
+	toolAliases, toolAliasErr := parseToolAliases(getEnvStr("KIRO_TOOL_ALIASES", ""))
+	if toolAliasErr != nil {
+		errs = append(errs, fmt.Errorf("KIRO_TOOL_ALIASES: %w", toolAliasErr))
+	}
 
 	// D-18-02 REL-CFG-06: KIRO_CMD validation — exec.LookPath checks the
 	// PATH for bare names AND verifies executability for absolute/relative
@@ -810,6 +822,7 @@ func Load() (Config, error) {
 		KiroCmd:                   kiroCmd,
 		KiroArgs:                  kiroArgs,
 		KiroCWD:                   kiroCWD,
+		ToolAliases:               toolAliases,
 		Debug:                     debug,
 		PingInterval:              pingInterval,
 		AuthToken:                 authTokens,
@@ -1136,6 +1149,46 @@ func validatePIIEntities(names []string) error {
 		return errors.Join(errs...)
 	}
 	return nil
+}
+
+// parseToolAliases parses the KIRO_TOOL_ALIASES env value into a
+// from→to tool-name map. Shape: "from:to,from:to,..." e.g.
+// "execute:run_shell,fs_read:read_file". `from` is kiro's native built-in
+// tool name (its ACP `kind`); `to` is the caller-offered tool name it
+// should surface as. Returns (nil, nil) for empty input. Malformed pairs
+// (missing side, empty side) are errors; a later `from` wins on duplicate
+// keys. Both sides are case-sensitive and trimmed.
+func parseToolAliases(raw string) (map[string]string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	out := make(map[string]string)
+	var errs []error
+	for _, pair := range strings.Split(raw, ",") {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
+		}
+		kv := strings.SplitN(pair, ":", 2)
+		if len(kv) != 2 {
+			errs = append(errs, fmt.Errorf("malformed pair %q (expected from:to)", pair))
+			continue
+		}
+		from, to := strings.TrimSpace(kv[0]), strings.TrimSpace(kv[1])
+		if from == "" || to == "" {
+			errs = append(errs, fmt.Errorf("malformed pair %q (empty side)", pair))
+			continue
+		}
+		out[from] = to
+	}
+	if len(errs) > 0 {
+		return nil, errors.Join(errs...)
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
 }
 
 // parsePIIEntityActions parses the PII_ENTITY_ACTIONS env value.

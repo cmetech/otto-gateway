@@ -53,7 +53,7 @@ func TestRegression_REL_HTTP_03_MidStreamTruncationIsSilent(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	_, err := runSSEEmitter(context.Background(), rec, run, &canonical.ChatRequest{}, "auto", 0, nullLogger())
+	_, err := runSSEEmitter(context.Background(), rec, run, &canonical.ChatRequest{}, nil, "auto", 0, nullLogger())
 
 	// runSSEEmitter should return a non-nil error wrapping the worker death.
 	if err == nil {

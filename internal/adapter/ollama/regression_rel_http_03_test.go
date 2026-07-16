@@ -53,7 +53,7 @@ func TestRegression_REL_HTTP_03_MidStreamTruncationIsSilent(t *testing.T) {
 	start := time.Now()
 
 	_, err := runNDJSONEmitter(context.Background(), noopCancelFn, rec, run,
-		"auto", true, start, nilLogger(), nil, 0)
+		"auto", true, start, nilLogger(), nil, nil, 0)
 
 	// runNDJSONEmitter should return a non-nil error wrapping the worker death.
 	if err == nil {

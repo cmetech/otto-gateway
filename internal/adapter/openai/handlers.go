@@ -248,7 +248,7 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 			}
 			return
 		}
-		resp, err := runSSEEmitter(streamCtx, w, runHandle, req, wire.Model, a.cfg.StreamIdleTimeout, a.cfg.Logger)
+		resp, err := runSSEEmitter(streamCtx, w, runHandle, req, a.cfg.ToolAliases, wire.Model, a.cfg.StreamIdleTimeout, a.cfg.Logger)
 		if err != nil {
 			// runSSEEmitter has already written SSE headers + at least some frames.
 			// We cannot send a JSON 500 after WriteHeader; log at debug and let

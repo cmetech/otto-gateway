@@ -88,6 +88,12 @@ type Config struct {
 	// RangeChunksWithIdleTimeout helper. Adapters get their own copy
 	// in their respective Config structs.
 	StreamIdleTimeout time.Duration
+	// ToolAliases maps kiro's native built-in tool name (ACP `kind`) to a
+	// caller-offered tool name it should be surfaced as (alias-primary
+	// tool-call design, 2026-07-16). Threaded from cfg.ToolAliases. Consumed
+	// by Collect (non-streaming) via ResolveNativeToolName. Adapters get their
+	// own copy in their Config structs. Empty by default.
+	ToolAliases map[string]string
 	// PreHooks is the Phase 8 PreHook chain. Run iterates in order;
 	// the first non-nil response short-circuits ACP.
 	PreHooks []PreHook

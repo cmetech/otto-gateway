@@ -454,6 +454,7 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 			PreHooks:          chain.Pre,
 			PostHooks:         chain.Post,
 			StreamIdleTimeout: streamIdle,
+			ToolAliases:       cfg.ToolAliases,
 			HookErrorReporter: hookErrors.Record,
 			OnModelRequest:    gwMetrics.RecordModelRequest, // kiro usage-metrics parity: gw_model_requests_total
 		})
@@ -518,9 +519,10 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 				Logger:            logger,
 				ACP:               entry,
 				DefaultCWD:        cfg.KiroCWD,
-				PreHooks:          chain.Pre,                    // Phase 8 — per-session chain
-				PostHooks:         chain.Post,                   // Phase 8 — per-session chain
-				StreamIdleTimeout: streamIdle,                   // quick 260531-ruv
+				PreHooks:          chain.Pre,  // Phase 8 — per-session chain
+				PostHooks:         chain.Post, // Phase 8 — per-session chain
+				StreamIdleTimeout: streamIdle, // quick 260531-ruv
+				ToolAliases:       cfg.ToolAliases,
 				HookErrorReporter: hookErrors.Record,            // /health/hooks LastError surface
 				OnModelRequest:    gwMetrics.RecordModelRequest, // kiro usage-metrics parity: gw_model_requests_total
 			})}
@@ -530,9 +532,10 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 				Logger:            logger,
 				ACP:               entry,
 				DefaultCWD:        cfg.KiroCWD,
-				PreHooks:          chain.Pre,                    // Phase 8
-				PostHooks:         chain.Post,                   // Phase 8
-				StreamIdleTimeout: streamIdle,                   // quick 260531-ruv
+				PreHooks:          chain.Pre,  // Phase 8
+				PostHooks:         chain.Post, // Phase 8
+				StreamIdleTimeout: streamIdle, // quick 260531-ruv
+				ToolAliases:       cfg.ToolAliases,
 				HookErrorReporter: hookErrors.Record,            // /health/hooks LastError surface
 				OnModelRequest:    gwMetrics.RecordModelRequest, // kiro usage-metrics parity: gw_model_requests_total
 			})}
@@ -542,9 +545,10 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 				Logger:            logger,
 				ACP:               entry,
 				DefaultCWD:        cfg.KiroCWD,
-				PreHooks:          chain.Pre,                    // Phase 8
-				PostHooks:         chain.Post,                   // Phase 8
-				StreamIdleTimeout: streamIdle,                   // quick 260531-ruv
+				PreHooks:          chain.Pre,  // Phase 8
+				PostHooks:         chain.Post, // Phase 8
+				StreamIdleTimeout: streamIdle, // quick 260531-ruv
+				ToolAliases:       cfg.ToolAliases,
 				HookErrorReporter: hookErrors.Record,            // /health/hooks LastError surface
 				OnModelRequest:    gwMetrics.RecordModelRequest, // kiro usage-metrics parity: gw_model_requests_total
 			})}
@@ -563,6 +567,7 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 			EngineForSession:  ollamaEngineForSession,
 			KiroCWD:           cfg.KiroCWD,
 			StreamIdleTimeout: streamIdle, // quick 260531-ruv
+			ToolAliases:       cfg.ToolAliases,
 		})
 	}
 
@@ -588,6 +593,7 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 			EngineForSession:  anthropicEngineForSession,
 			KiroCWD:           cfg.KiroCWD,
 			StreamIdleTimeout: streamIdle, // quick 260531-ruv
+			ToolAliases:       cfg.ToolAliases,
 		})
 	}
 
@@ -617,6 +623,7 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 			EngineForSession:  openaiEngineForSession,
 			KiroCWD:           cfg.KiroCWD,
 			StreamIdleTimeout: streamIdle, // quick 260531-ruv
+			ToolAliases:       cfg.ToolAliases,
 		})
 	}
 

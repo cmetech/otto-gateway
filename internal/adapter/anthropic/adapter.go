@@ -138,6 +138,11 @@ type Config struct {
 	// (quick 260531-ruv). Read by the SSE emitter and by
 	// CollectAnthropicChat to bound silent-kiro hangs.
 	StreamIdleTimeout time.Duration
+	// ToolAliases maps kiro's native built-in tool name to a caller-offered
+	// tool name (alias-primary tool-call design, 2026-07-16). Threaded from
+	// cfg.ToolAliases; read by CollectAnthropicChat + the SSE emitter to
+	// resolve native tool calls into tool_use blocks.
+	ToolAliases map[string]string
 }
 
 // Adapter wires the Anthropic HTTP surface. Construct via New.

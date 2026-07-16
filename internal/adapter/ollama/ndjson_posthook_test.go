@@ -41,7 +41,7 @@ func runNDJSONEmitterAndPostHooks(t *testing.T, ctx context.Context, eng Engine,
 		sessionID: "session_posthook",
 	}
 	rec := httptest.NewRecorder()
-	resp, err := runNDJSONEmitter(ctx, noopCancelFn, rec, run, "auto", isChat, time.Now(), logger, req, 0)
+	resp, err := runNDJSONEmitter(ctx, noopCancelFn, rec, run, "auto", isChat, time.Now(), logger, req, nil, 0)
 	if resp != nil {
 		if pErr := eng.RunPostHooks(ctx, req, resp); pErr != nil {
 			// Streaming WARN-and-swallow contract — log via test logger.
@@ -192,7 +192,7 @@ func TestOllamaNDJSON_PostHooksFireOnClientDisconnect(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	go cancel()
 	rec := httptest.NewRecorder()
-	resp, err := runNDJSONEmitter(ctx, noopCancelFn, rec, run, "auto", true, time.Now(), nilLogger(), &canonical.ChatRequest{Model: "auto"}, 0)
+	resp, err := runNDJSONEmitter(ctx, noopCancelFn, rec, run, "auto", true, time.Now(), nilLogger(), &canonical.ChatRequest{Model: "auto"}, nil, 0)
 	if err == nil {
 		t.Fatal("runNDJSONEmitter: got nil err, want ctx-cancel error")
 	}

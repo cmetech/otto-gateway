@@ -194,7 +194,7 @@ func TestCollectAnthropicChat_ParityWithEngine_TextOnly(t *testing.T) {
 		t.Fatalf("reference Collect: %v", refErr)
 	}
 
-	gotResp, gotErr := CollectAnthropicChat(context.Background(), eng, req, 0)
+	gotResp, gotErr := CollectAnthropicChat(context.Background(), eng, req, nil, 0)
 	if gotErr != nil {
 		t.Fatalf("CollectAnthropicChat: %v", gotErr)
 	}
@@ -225,7 +225,7 @@ func TestCollectAnthropicChat_ParityWithEngine_ThinkingOnly(t *testing.T) {
 	if refErr != nil {
 		t.Fatalf("reference Collect: %v", refErr)
 	}
-	gotResp, gotErr := CollectAnthropicChat(context.Background(), eng, req, 0)
+	gotResp, gotErr := CollectAnthropicChat(context.Background(), eng, req, nil, 0)
 	if gotErr != nil {
 		t.Fatalf("CollectAnthropicChat: %v", gotErr)
 	}
@@ -256,7 +256,7 @@ func TestCollectAnthropicChat_ParityWithEngine_MixedTextThinking(t *testing.T) {
 	if refErr != nil {
 		t.Fatalf("reference Collect: %v", refErr)
 	}
-	gotResp, gotErr := CollectAnthropicChat(context.Background(), eng, req, 0)
+	gotResp, gotErr := CollectAnthropicChat(context.Background(), eng, req, nil, 0)
 	if gotErr != nil {
 		t.Fatalf("CollectAnthropicChat: %v", gotErr)
 	}
@@ -288,7 +288,7 @@ func TestCollectAnthropicChat_ParityWithEngine_StopReasonPropagation(t *testing.
 			}
 			req := &canonical.ChatRequest{Model: "auto"}
 			refResp, _ := eng.Collect(context.Background(), req)
-			gotResp, err := CollectAnthropicChat(context.Background(), eng, req, 0)
+			gotResp, err := CollectAnthropicChat(context.Background(), eng, req, nil, 0)
 			if err != nil {
 				t.Fatalf("CollectAnthropicChat: %v", err)
 			}
@@ -326,7 +326,7 @@ func TestCollectAnthropicChat_ParityWithEngine_ErrorPropagation(t *testing.T) {
 	// CollectAnthropicChat must surface the same underlying error via
 	// errors.Is. The wrap layer may differ; what matters is that
 	// callers can distinguish via the sentinel.
-	_, gotErr := CollectAnthropicChat(context.Background(), eng, req, 0)
+	_, gotErr := CollectAnthropicChat(context.Background(), eng, req, nil, 0)
 	if gotErr == nil {
 		t.Fatal("CollectAnthropicChat: nil error; want non-nil")
 	}
@@ -362,7 +362,7 @@ func TestCollectAnthropicChat_ParityWithEngine_ErrorPropagation_RunPath(t *testi
 
 	// CollectAnthropicChat: exercises the Run-error wrap path. errors.Is
 	// must still reach the sentinel.
-	_, gotErr := CollectAnthropicChat(context.Background(), eng, req, 0)
+	_, gotErr := CollectAnthropicChat(context.Background(), eng, req, nil, 0)
 	if gotErr == nil {
 		t.Fatal("CollectAnthropicChat: nil error; want non-nil")
 	}
@@ -390,7 +390,7 @@ func TestCollectAnthropicChat_AnthropicException_ToolCallProducesToolUse(t *test
 	eng := &parityFakeEngine{chunks: chunks, final: final}
 	req := &canonical.ChatRequest{Model: "auto"}
 
-	resp, err := CollectAnthropicChat(context.Background(), eng, req, 0)
+	resp, err := CollectAnthropicChat(context.Background(), eng, req, nil, 0)
 	if err != nil {
 		t.Fatalf("CollectAnthropicChat: %v", err)
 	}
@@ -477,7 +477,7 @@ func TestCollectAnthropicChat_IdleTimeout(t *testing.T) {
 	req := &canonical.ChatRequest{Model: "auto"}
 
 	start := time.Now()
-	_, err := CollectAnthropicChat(context.Background(), eng, req, 100*time.Millisecond)
+	_, err := CollectAnthropicChat(context.Background(), eng, req, nil, 100*time.Millisecond)
 	elapsed := time.Since(start)
 
 	if elapsed > 500*time.Millisecond {

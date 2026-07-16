@@ -217,7 +217,7 @@ func TestOllama_NoDoublePostHookFire(t *testing.T) {
 func runNDJSONEmitterDirect(t *testing.T, ctx context.Context, run RunHandle, isChat bool, req *canonical.ChatRequest) (*canonical.ChatResponse, []byte, error) { //nolint:unparam // helper-pair symmetry with runNDJSONEmitterAndPostHooks
 	t.Helper()
 	w := newDiscardFlusher()
-	resp, err := runNDJSONEmitter(ctx, noopCancelFn, w, run, "auto", isChat, time.Now(), nilLogger(), req, 0)
+	resp, err := runNDJSONEmitter(ctx, noopCancelFn, w, run, "auto", isChat, time.Now(), nilLogger(), req, nil, 0)
 	return resp, w.bytes(), err
 }
 

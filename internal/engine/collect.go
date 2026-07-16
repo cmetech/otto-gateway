@@ -129,6 +129,10 @@ func (e *Engine) CollectFromRun(ctx context.Context, run *Run, req *canonical.Ch
 		//     adapter-local CollectAnthropicChat from kiro-native
 		//     ChunkKindToolCall chunks. That adapter uses engine.Run +
 		//     its own aggregator and bypasses this function.
+		var reqTools []canonical.ToolSpec
+		if req != nil {
+			reqTools = req.Tools
+		}
 		var sb, thoughtSB strings.Builder
 		var toolCalls []canonical.ToolCall
 		onChunk := func(chunk canonical.Chunk) error {
@@ -142,27 +146,29 @@ func (e *Engine) CollectFromRun(ctx context.Context, run *Run, req *canonical.Ch
 					thoughtSB.WriteString(chunk.Thought.Content)
 				}
 			case canonical.ChunkKindToolCall:
-				// Defect 1a (2026-07-16): surface kiro-native tool calls
-				// as STRUCTURED Message.ToolCalls (id/name/arguments), not
-				// as `[tool: <name>]\n` narration text. The non-streaming
-				// Ollama/OpenAI renderers map Message.ToolCalls onto their
-				// surface wire shapes; discarding the args into a text
-				// marker was the bug (native tool call args never reached
-				// the caller). ChunkKindPlan still drops.
+				// Alias-primary tool-call design (2026-07-16): surface
+				// kiro-native tool calls STRUCTURALLY, resolving the native
+				// name against the caller's offered tools + configured aliases
+				// (e.g. kiro `execute` → offered `run_shell`). A native
+				// built-in with no alias to an offered tool is DROPPED — the
+				// host can't route it, and dropping leaves the coerce/wrapper
+				// fallback unclobbered. No `[tool:` narration is written.
+				// ChunkKindPlan still drops.
 				if chunk.ToolCall != nil {
-					id := chunk.ToolCall.ID
-					if id == "" {
-						// OpenAI clients require a stable id; synthesize one
-						// (mirrors CoerceToolCall's `call_` convention). The
-						// per-call seq keeps ids distinct when UnixNano ticks
-						// collide within one aggregation.
-						id = fmt.Sprintf("call_%d_%d", time.Now().UnixNano(), len(toolCalls))
+					resolved, surface := ResolveNativeToolName(chunk.ToolCall.Name, reqTools, e.cfg.ToolAliases)
+					if surface {
+						id := chunk.ToolCall.ID
+						if id == "" {
+							// OpenAI clients require a stable id; synthesize one
+							// (mirrors CoerceToolCall's `call_` convention).
+							id = fmt.Sprintf("call_%d_%d", time.Now().UnixNano(), len(toolCalls))
+						}
+						toolCalls = append(toolCalls, canonical.ToolCall{
+							ID:        id,
+							Name:      resolved,
+							Arguments: chunk.ToolCall.Args,
+						})
 					}
-					toolCalls = append(toolCalls, canonical.ToolCall{
-						ID:        id,
-						Name:      chunk.ToolCall.Name,
-						Arguments: chunk.ToolCall.Args,
-					})
 				}
 			}
 			return nil
@@ -223,7 +229,19 @@ func (e *Engine) CollectFromRun(ctx context.Context, run *Run, req *canonical.Ch
 		if stop := run.StopWatchdog(); stop != nil {
 			stop()
 		}
-		resp = assembleChatResponse(req, sb.String(), thoughtSB.String(), toolCalls, final)
+		// Alias-primary: collapse the redundant native tool-call entries
+		// (chunk+full merge, denial-retry duplicates). In the DENY regime
+		// (caller offered tools) a surfaced call means kiro's prose is the
+		// apologetic "permission issue" narration or the raw wrapper JSON —
+		// clear it so the client sees only the structured call (mirrors
+		// CoerceToolCall clearing content on a hit). In the no-tools regime the
+		// text is legitimate agent output and is preserved.
+		toolCalls = DedupToolCalls(toolCalls)
+		text := sb.String()
+		if len(reqTools) > 0 && len(toolCalls) > 0 {
+			text = ""
+		}
+		resp = assembleChatResponse(req, text, thoughtSB.String(), toolCalls, final)
 	}
 
 	// Codex H-5: PostHook traversal happens HERE in Collect (not in

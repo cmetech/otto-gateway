@@ -67,7 +67,7 @@ import (
 // wrapped with the "anthropic: collect" prefix so callers can
 // distinguish the Anthropic-local aggregation path from the generic
 // engine.Collect path in upstream logs.
-func CollectAnthropicChat(ctx context.Context, eng Engine, req *canonical.ChatRequest, streamIdle time.Duration) (*canonical.ChatResponse, error) {
+func CollectAnthropicChat(ctx context.Context, eng Engine, req *canonical.ChatRequest, aliases map[string]string, streamIdle time.Duration) (*canonical.ChatResponse, error) {
 	run, err := eng.Run(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("anthropic: collect: %w", err)
@@ -98,11 +98,16 @@ func CollectAnthropicChat(ctx context.Context, eng Engine, req *canonical.ChatRe
 	}
 
 	var (
-		sb        strings.Builder
-		thoughtSB strings.Builder
-		toolParts []canonical.ContentPart
-		toolCalls []canonical.ToolCall
+		sb          strings.Builder
+		thoughtSB   strings.Builder
+		toolParts   []canonical.ContentPart
+		toolCalls   []canonical.ToolCall
+		nativeCalls []canonical.ToolCall // alias-primary: resolved native calls, deduped after the loop
 	)
+	var reqTools []canonical.ToolSpec
+	if req != nil {
+		reqTools = req.Tools
+	}
 
 	// Quick 260531-ruv — adapter-local idle watchdog. TRST-04 forbids
 	// importing internal/engine here, so the loop replicates the
@@ -146,24 +151,26 @@ func CollectAnthropicChat(ctx context.Context, eng Engine, req *canonical.ChatRe
 						thoughtSB.WriteString(chunk.Thought.Content)
 					}
 				case canonical.ChunkKindToolCall:
-					// D-07 Anthropic exception: kiro-native tool_call
-					// chunks produce ContentKindToolUse parts + populate
-					// Message.ToolCalls. The text/thinking builders are
-					// NOT touched — no `[tool: <name>]\n` narration.
+					// Alias-primary tool-call design (2026-07-16): RESOLVE the
+					// native tool name against the caller's offered tools +
+					// aliases (e.g. kiro `execute` → offered `run_shell`) and
+					// accumulate it for a deduped build after the loop. A native
+					// built-in with no alias to an offered tool is DROPPED — the
+					// host can't route it, and dropping leaves the wrapper-
+					// extract fallback unclobbered. No `[tool:` narration.
 					if chunk.ToolCall != nil {
-						toolParts = append(toolParts, canonical.ContentPart{
-							Kind: canonical.ContentKindToolUse,
-							ToolUse: &canonical.ToolUsePart{
-								ID:    chunk.ToolCall.ID,
-								Name:  chunk.ToolCall.Name,
-								Input: chunk.ToolCall.Args,
-							},
-						})
-						toolCalls = append(toolCalls, canonical.ToolCall{
-							ID:        chunk.ToolCall.ID,
-							Name:      chunk.ToolCall.Name,
-							Arguments: chunk.ToolCall.Args,
-						})
+						resolved, surface := engine.ResolveNativeToolName(chunk.ToolCall.Name, reqTools, aliases)
+						if surface {
+							id := chunk.ToolCall.ID
+							if id == "" {
+								id = fmt.Sprintf("call_%d_%d", time.Now().UnixNano(), len(nativeCalls))
+							}
+							nativeCalls = append(nativeCalls, canonical.ToolCall{
+								ID:        id,
+								Name:      resolved,
+								Arguments: chunk.ToolCall.Args,
+							})
+						}
 					}
 				}
 				// ChunkKindPlan still drops (no Phase 6 work; mirrors
@@ -215,6 +222,20 @@ func CollectAnthropicChat(ctx context.Context, eng Engine, req *canonical.ChatRe
 	// goroutine. Mirrors engine.Collect's discipline.
 	if stop := run.StopWatchdog(); stop != nil {
 		stop()
+	}
+
+	// Alias-primary: build the tool_use parts + Message.ToolCalls from the
+	// resolved native calls, deduped (chunk+full merge, denial-retry collapse).
+	for _, tc := range engine.DedupToolCalls(nativeCalls) {
+		toolParts = append(toolParts, canonical.ContentPart{
+			Kind: canonical.ContentKindToolUse,
+			ToolUse: &canonical.ToolUsePart{
+				ID:    tc.ID,
+				Name:  tc.Name,
+				Input: tc.Arguments,
+			},
+		})
+		toolCalls = append(toolCalls, tc)
 	}
 
 	// Track 3b Task 4 — {"tool_call"} wrapper coercion. Gated on: the

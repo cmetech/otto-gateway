@@ -154,6 +154,10 @@ type Config struct {
 	// (quick 260531-ruv). Read by the SSE emitter to bound
 	// silent-kiro hangs.
 	StreamIdleTimeout time.Duration
+	// ToolAliases maps kiro's native built-in tool name to a caller-offered
+	// tool name (alias-primary tool-call design, 2026-07-16). Threaded from
+	// cfg.ToolAliases; read by the SSE emitter to resolve native tool calls.
+	ToolAliases map[string]string
 }
 
 // Adapter wires the OpenAI HTTP surface. Construct via New.

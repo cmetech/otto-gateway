@@ -366,7 +366,7 @@ func (a *Adapter) handleChat(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	resp, emitErr := runNDJSONEmitter(streamCtx, cancelFn, w, run, wire.Model, true, start, a.cfg.Logger, req, a.cfg.StreamIdleTimeout)
+	resp, emitErr := runNDJSONEmitter(streamCtx, cancelFn, w, run, wire.Model, true, start, a.cfg.Logger, req, a.cfg.ToolAliases, a.cfg.StreamIdleTimeout)
 	if emitErr != nil {
 		a.cfg.Logger.Debug("ollama: ndjson chat emitter error", "err", emitErr)
 	}
@@ -641,7 +641,7 @@ func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 	// Generate has no tools[] — pass req so the emitter signature stays
 	// uniform; the streaming-coerce buffering logic only activates when
 	// len(req.Tools) > 0 so this is a no-op for /api/generate in practice.
-	resp, emitErr := runNDJSONEmitter(streamCtx, cancelFn, w, run, wire.Model, false, start, a.cfg.Logger, req, a.cfg.StreamIdleTimeout)
+	resp, emitErr := runNDJSONEmitter(streamCtx, cancelFn, w, run, wire.Model, false, start, a.cfg.Logger, req, a.cfg.ToolAliases, a.cfg.StreamIdleTimeout)
 	if emitErr != nil {
 		a.cfg.Logger.Debug("ollama: ndjson generate emitter error", "err", emitErr)
 	}

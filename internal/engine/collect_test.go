@@ -191,6 +191,57 @@ func TestCollect_SurfacesKiroNativeToolCallStructured(t *testing.T) {
 	}
 }
 
+// TestCollect_DenyRegime_AliasesNativeAndDrops (alias-primary, 2026-07-16):
+// when the caller offers tools, a kiro-native built-in tool call is resolved
+// against the offered tools + aliases. `execute` aliases to the offered
+// `run_shell` and surfaces under that name (chunk+full+retry collapse to ONE
+// call, with args); an unaliased `fs_write` is dropped. The apologetic prose
+// is cleared. Mirrors the real-kiro capture sequence.
+func TestCollect_DenyRegime_AliasesNativeAndDrops(t *testing.T) {
+	args := map[string]any{"command": "python3 -c \"print(2+2)\""}
+	ack := &fakeACP{
+		newSessionID: "sid-deny-alias",
+		chunksToEmit: []canonical.Chunk{
+			{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "It appears there's a permission issue. "}},
+			// native execute: chunk (no args) then full (args), then a denial retry.
+			{Kind: canonical.ChunkKindToolCall, ToolCall: &canonical.ToolCallChunk{ID: "tooluse_A", Name: "execute"}},
+			{Kind: canonical.ChunkKindToolCall, ToolCall: &canonical.ToolCallChunk{ID: "tooluse_A", Name: "execute", Args: args}},
+			{Kind: canonical.ChunkKindToolCall, ToolCall: &canonical.ToolCallChunk{ID: "tooluse_B", Name: "execute", Args: args}},
+			// an unaliased built-in the host never offered → dropped.
+			{Kind: canonical.ChunkKindToolCall, ToolCall: &canonical.ToolCallChunk{ID: "tooluse_C", Name: "fs_write", Args: map[string]any{"path": "/x"}}},
+		},
+	}
+	e := newTestEngine(t, ack, withToolAliases(map[string]string{"execute": "run_shell"}))
+	req := &canonical.ChatRequest{
+		Model:    "auto",
+		Messages: []canonical.Message{{Role: canonical.RoleUser, Content: []canonical.ContentPart{{Kind: canonical.ContentKindText, Text: "run it"}}}},
+		Tools:    []canonical.ToolSpec{{Name: "run_shell"}},
+	}
+	resp, err := e.Collect(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	// Exactly one structured call, aliased to run_shell, with args.
+	if len(resp.Message.ToolCalls) != 1 {
+		t.Fatalf("ToolCalls: got %d, want 1: %+v", len(resp.Message.ToolCalls), resp.Message.ToolCalls)
+	}
+	tc := resp.Message.ToolCalls[0]
+	if tc.Name != "run_shell" {
+		t.Errorf("ToolCalls[0].Name: got %q, want run_shell (aliased)", tc.Name)
+	}
+	if got, _ := tc.Arguments["command"].(string); got != args["command"] {
+		t.Errorf("ToolCalls[0].Arguments[command]: got %v, want %v", tc.Arguments["command"], args["command"])
+	}
+	// Apologetic prose cleared; no [tool: marker.
+	text := resp.Message.Content[0].Text
+	if text != "" {
+		t.Errorf("Content[0].Text: got %q, want empty (deny-regime prose cleared)", text)
+	}
+	if strings.Contains(text, "[tool:") {
+		t.Errorf("content must not contain a [tool: marker; got %q", text)
+	}
+}
+
 // TestCollect_KiroNativeToolCall_OnlyChunk: a stream containing only a
 // tool_call chunk (no surrounding text) yields a single structured
 // Message.ToolCalls entry and an empty text part. No `[tool:` marker.

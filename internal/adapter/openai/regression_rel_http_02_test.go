@@ -87,7 +87,7 @@ func TestRegression_REL_HTTP_02_IdleTimeoutReturnsHungWorker(t *testing.T) {
 	// Drive runSSEEmitter with a short idle timeout (100ms) so the idle branch
 	// fires quickly. Post-fix: the idleC branch must NOT call StopWatchdog().
 	const idleTimeout = 100 * time.Millisecond
-	_, err := runSSEEmitter(ctx, rec, run, &canonical.ChatRequest{}, "auto", idleTimeout, nullLogger())
+	_, err := runSSEEmitter(ctx, rec, run, &canonical.ChatRequest{}, nil, "auto", idleTimeout, nullLogger())
 
 	// Expect an idle-timeout error.
 	if !errors.Is(err, canonical.ErrStreamIdleTimeout) {

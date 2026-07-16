@@ -363,7 +363,7 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// from kiro-native ChunkKindToolCall chunks on the non-streaming
 	// path — Anthropic's wire protocol has tool_use as a native
 	// first-class element and the SDK expects it that way.
-	resp, err := CollectAnthropicChat(ctx, eng, req, a.cfg.StreamIdleTimeout)
+	resp, err := CollectAnthropicChat(ctx, eng, req, a.cfg.ToolAliases, a.cfg.StreamIdleTimeout)
 	if err != nil {
 		// D-07 REL-POOL-01: pool exhaustion maps to 503 with Anthropic
 		// overloaded_error body on the non-streaming path.

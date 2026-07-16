@@ -42,7 +42,7 @@ func TestSSE_CtxCancel(t *testing.T) {
 	cancel() // cancel immediately — before the emitter even starts the select-loop
 
 	rec := httptest.NewRecorder()
-	_, err := runSSEEmitter(ctx, rec, runHandle, &canonical.ChatRequest{}, "auto", 0, nullLogger())
+	_, err := runSSEEmitter(ctx, rec, runHandle, &canonical.ChatRequest{}, nil, "auto", 0, nullLogger())
 	if err == nil {
 		t.Error("expected non-nil error on ctx cancel, got nil")
 	}
@@ -77,7 +77,7 @@ func TestSSE_HeadersSetBeforeBody(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	if _, err := runSSEEmitter(context.Background(), rec, runHandle, &canonical.ChatRequest{}, "auto", 0, nullLogger()); err != nil {
+	if _, err := runSSEEmitter(context.Background(), rec, runHandle, &canonical.ChatRequest{}, nil, "auto", 0, nullLogger()); err != nil {
 		t.Fatalf("runSSEEmitter: %v", err)
 	}
 
@@ -179,7 +179,7 @@ func TestSSE_KiroNativeToolCall_StructuredFrames(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	req := &canonical.ChatRequest{Model: "auto", Tools: []canonical.ToolSpec{{Name: "run_shell"}}}
-	if _, err := runSSEEmitter(context.Background(), rec, runHandle, req, "auto", 0, nullLogger()); err != nil {
+	if _, err := runSSEEmitter(context.Background(), rec, runHandle, req, nil, "auto", 0, nullLogger()); err != nil {
 		t.Fatalf("runSSEEmitter: %v", err)
 	}
 	body := rec.Body.String()
@@ -247,7 +247,7 @@ func TestSSE_IdleTimeout_EmitsErrorFrame(t *testing.T) {
 	req := &canonical.ChatRequest{Model: "auto"}
 
 	start := time.Now()
-	resp, err := runSSEEmitter(context.Background(), rec, runHandle, req, "auto", 100*time.Millisecond, nullLogger())
+	resp, err := runSSEEmitter(context.Background(), rec, runHandle, req, nil, "auto", 100*time.Millisecond, nullLogger())
 	elapsed := time.Since(start)
 
 	if elapsed > 500*time.Millisecond {

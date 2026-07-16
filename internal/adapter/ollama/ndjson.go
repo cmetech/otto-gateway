@@ -75,11 +75,12 @@ type emitterState struct {
 	sawKiroNativeToolCall bool
 	textFlushed           bool
 
-	// Defect 1c (2026-07-16) — kiro-native tool calls accumulated during
-	// the stream and surfaced structurally on the done:true line's
-	// message.tool_calls (via chatResponseToWire), mirroring the coerce-hit
-	// path. Replaces the old `[tool: <name>]` narration line that discarded
-	// the arguments. D-05 single-goroutine invariant applies.
+	// Alias-primary tool-call design (2026-07-16). aliases is the configured
+	// kiro-native→offered-tool map. nativeToolCalls accumulates the resolved
+	// (aliased) native tool calls seen during the stream; they are deduped and
+	// rendered on the done:true line's message.tool_calls (via
+	// chatResponseToWire). D-05 single-goroutine invariant applies.
+	aliases         map[string]string
 	nativeToolCalls []canonical.ToolCall
 
 	// Quick 260530-df2 — post-stream aggregator. Captures EVERY text
@@ -183,17 +184,27 @@ func emitNDJSONChunk(w http.ResponseWriter, flusher http.Flusher, c canonical.Ch
 		return nil
 
 	case canonical.ChunkKindToolCall:
-		// Defect 1c (2026-07-16): surface the kiro-native tool call
-		// STRUCTURALLY. Accumulate it onto the emitter state and set
-		// sawKiroNativeToolCall=true (suppresses the end-of-stream coerce);
-		// finalizeNDJSON renders it onto the done:true line's
-		// message.tool_calls via chatResponseToWire. No `[tool:` narration
-		// line is written — the old narration discarded the arguments.
+		// Alias-primary tool-call design (2026-07-16): RESOLVE the native tool
+		// name against the caller's offered tools + aliases (e.g. kiro
+		// `execute` → offered `run_shell`) and, if it surfaces, ACCUMULATE it
+		// onto the emitter state for a deduped render on the done:true line
+		// (chatResponseToWire → message.tool_calls). A native built-in with no
+		// alias to an offered tool is DROPPED and does NOT set
+		// sawKiroNativeToolCall, so the coerce/wrapper fallback can still fire.
+		// No `[tool:` narration line is ever written.
 		if !isChat {
 			return nil // /api/generate has no content-block semantics.
 		}
 		if c.ToolCall == nil || state == nil {
 			return nil // defensive nil-guard
+		}
+		var reqTools []canonical.ToolSpec
+		if req != nil {
+			reqTools = req.Tools
+		}
+		resolved, surface := engine.ResolveNativeToolName(c.ToolCall.Name, reqTools, state.aliases)
+		if !surface {
+			return nil // denied built-in with no offered alias — drop
 		}
 		state.sawKiroNativeToolCall = true
 		id := c.ToolCall.ID
@@ -204,7 +215,7 @@ func emitNDJSONChunk(w http.ResponseWriter, flusher http.Flusher, c canonical.Ch
 		}
 		state.nativeToolCalls = append(state.nativeToolCalls, canonical.ToolCall{
 			ID:        id,
-			Name:      c.ToolCall.Name,
+			Name:      resolved,
 			Arguments: c.ToolCall.Args,
 		})
 		return nil
@@ -362,7 +373,7 @@ func marshalAndWrite(w http.ResponseWriter, flusher http.Flusher, payload any, c
 // completion (done:true emitted), ctx.Err() on client disconnect, or a
 // wrapped write/marshal error. The Flusher-assertion failure returns
 // (nil, err) BEFORE any aggregation.
-func runNDJSONEmitter(ctx context.Context, cancelFn context.CancelFunc, w http.ResponseWriter, run RunHandle, model string, isChat bool, start time.Time, logger *slog.Logger, req *canonical.ChatRequest, streamIdle time.Duration) (*canonical.ChatResponse, error) {
+func runNDJSONEmitter(ctx context.Context, cancelFn context.CancelFunc, w http.ResponseWriter, run RunHandle, model string, isChat bool, start time.Time, logger *slog.Logger, req *canonical.ChatRequest, aliases map[string]string, streamIdle time.Duration) (*canonical.ChatResponse, error) {
 	// Assert Flusher BEFORE any write so the caller can fall back to JSON 500
 	// when the ResponseWriter does not support streaming (Pitfall 2).
 	flusher, ok := w.(http.Flusher)
@@ -377,7 +388,7 @@ func runNDJSONEmitter(ctx context.Context, cancelFn context.CancelFunc, w http.R
 
 	// Phase 6 Slice 2 emitter state (REVIEW HIGH #1 + iteration-3 HIGH #2).
 	// Lives on the goroutine stack — no mutex needed (D-05).
-	state := &emitterState{}
+	state := &emitterState{aliases: aliases}
 
 	chunks := run.Stream().Chunks()
 
@@ -495,11 +506,21 @@ func runNDJSONEmitter(ctx context.Context, cancelFn context.CancelFunc, w http.R
 // finalizeNDJSON), the finalize caller uses that synthetic resp.
 func aggregateOllamaResponse(req *canonical.ChatRequest, state *emitterState, stop canonical.StopReason) *canonical.ChatResponse {
 	model := ""
+	var reqTools []canonical.ToolSpec
 	if req != nil {
 		model = req.Model
+		reqTools = req.Tools
+	}
+	toolCalls := engine.DedupToolCalls(state.nativeToolCalls)
+	// Alias-primary: in the deny regime a surfaced tool call means the streamed
+	// prose was apologetic/wrapper noise — hand PostHooks empty text so
+	// traces/logs record the structured call, not the noise (mirrors collect.go).
+	textOut := state.aggregatedText.String()
+	if len(reqTools) > 0 && len(toolCalls) > 0 {
+		textOut = ""
 	}
 	content := []canonical.ContentPart{
-		{Kind: canonical.ContentKindText, Text: state.aggregatedText.String()},
+		{Kind: canonical.ContentKindText, Text: textOut},
 	}
 	if state.aggregatedThinking.Len() > 0 {
 		content = append(content, canonical.ContentPart{
@@ -512,7 +533,7 @@ func aggregateOllamaResponse(req *canonical.ChatRequest, state *emitterState, st
 		Message: canonical.Message{
 			Role:      canonical.RoleAssistant,
 			Content:   content,
-			ToolCalls: state.nativeToolCalls, // Defect 1c — visible to PostHooks
+			ToolCalls: toolCalls, // alias-primary — visible to PostHooks
 		},
 		StopReason: stop,
 	}
@@ -673,13 +694,14 @@ func finalizeNDJSON(w http.ResponseWriter, flusher http.Flusher, run RunHandle, 
 			// chatResponseToWire's tool_calls populate loop picks it up.
 			doneResp = syntheticResp
 		} else if state != nil && len(state.nativeToolCalls) > 0 {
-			// Defect 1c: render the kiro-native tool call(s) onto the
-			// done:true line's message.tool_calls. Content is left empty —
-			// any surrounding text was already streamed as done:false frames.
+			// Alias-primary: render the resolved native tool call(s) onto the
+			// done:true line's message.tool_calls, deduped (chunk+full merge,
+			// denial-retry collapse). Content is left empty — any surrounding
+			// text was already streamed as done:false frames.
 			doneResp = &canonical.ChatResponse{
 				Message: canonical.Message{
 					Role:      canonical.RoleAssistant,
-					ToolCalls: state.nativeToolCalls,
+					ToolCalls: engine.DedupToolCalls(state.nativeToolCalls),
 				},
 				StopReason: stopReason,
 			}

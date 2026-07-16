@@ -160,7 +160,7 @@ func driveGoldenWithReq(t *testing.T, chunks []canonical.Chunk, final *canonical
 		sessionID: "session_golden",
 	}
 	rec := httptest.NewRecorder()
-	if _, err := runSSEEmitter(context.Background(), rec, runHandle, req, "auto", 0, nullLogger()); err != nil {
+	if _, err := runSSEEmitter(context.Background(), rec, runHandle, req, nil, "auto", 0, nullLogger()); err != nil {
 		t.Fatalf("runSSEEmitter: %v", err)
 	}
 	return rec.Body.Bytes()
@@ -413,13 +413,15 @@ func TestStream_NativeToolCall_ThenJSONText_SkipsCoerce(t *testing.T) {
 	if strings.Contains(out, "[tool:") {
 		t.Errorf("must NOT emit a [tool: marker; body=%q", out)
 	}
-	// The single native tool call surfaces structurally with NYC args
-	// (the coerce path must NOT re-fire on the trailing Tokyo JSON text).
+	// The single native tool call surfaces structurally with NYC args.
 	if !strings.Contains(out, `"function":{"arguments":"{\"location\":\"NYC\"}"}`) {
 		t.Errorf("expected native tool_call NYC args; body=%q", out)
 	}
-	if strings.Contains(out, "Tokyo") == false {
-		t.Errorf("expected trailing JSON text to be released as content; body=%q", out)
+	// Alias-primary: once a native call surfaces in the deny regime, the
+	// trailing buffered JSON text is DISCARDED (it's wrapper/apologetic noise),
+	// so neither the raw Tokyo text nor a Tokyo coerce dup appears.
+	if strings.Contains(out, "Tokyo") {
+		t.Errorf("trailing JSON noise must be discarded once native tool call surfaced; body=%q", out)
 	}
 	if strings.Contains(out, `"arguments":"{\"location\":\"Tokyo\"}"`) {
 		t.Errorf("coerce must NOT re-fire on trailing JSON text; body=%q", out)
