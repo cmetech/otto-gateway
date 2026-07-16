@@ -111,6 +111,16 @@ type ModelCatalog interface {
 	Models() []canonical.ModelInfo
 }
 
+// ModelCapabilityCatalog is the consumer-defined interface used by
+// handleModelCapabilities to obtain the enriched per-model capability catalog
+// (live Kiro catalog fused with the embedded registry). The concrete combiner
+// is wired in cmd/otto-gateway/main.go so this package does not import
+// internal/registry or internal/pool (TRST-04). May be nil in a misconfigured
+// construction; the handler then returns an empty list.
+type ModelCapabilityCatalog interface {
+	ModelCapabilities() canonical.CapabilityCatalog
+}
+
 // EngineForSessionFunc is the per-request engine factory used by the
 // X-Session-Id branch (Plan 05-03 Task 3). See the ollama adapter for
 // the full TRST-04 rationale; the OpenAI wiring is identical.
@@ -137,6 +147,9 @@ type Config struct {
 	// ModelCatalog enumerates known models for GET /models.
 	// May be nil; handleModels returns only the synthetic "auto" entry.
 	ModelCatalog ModelCatalog
+	// ModelCapabilities supplies the enriched capability catalog for
+	// GET /model-capabilities. May be nil (handler returns an empty list).
+	ModelCapabilities ModelCapabilityCatalog
 	// Registry is the dedicated-session registry; non-nil enables the
 	// X-Session-Id branch in handleChatCompletions / handleCompletions.
 	// (Plan 05-03 D-04..D-11)
@@ -187,6 +200,7 @@ func (a *Adapter) RegisterRoutes(r chi.Router) {
 	r.Post("/chat/completions", a.handleChatCompletions)
 	r.Post("/completions", a.handleCompletions)
 	r.Get("/models", a.handleModels)
+	r.Get("/model-capabilities", a.handleModelCapabilities)
 }
 
 // chatBodyCap is the maximum request body size for POST /chat/completions
