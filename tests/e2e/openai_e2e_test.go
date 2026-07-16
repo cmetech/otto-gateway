@@ -479,3 +479,70 @@ func truncate(s string, n int) string {
 	}
 	return s[:n] + "…"
 }
+
+// TestE2E_OpenAI_ModelCapabilities boots a gateway backed by the fake kiro with
+// a scripted catalog: a registered model (claude-sonnet-4.5), an unknown model
+// (unknown-model-zzz, absent from the registry). It asserts the
+// /v1/model-capabilities contract. (spec §11.4)
+func TestE2E_OpenAI_ModelCapabilities(t *testing.T) {
+	gateOrSkip(t)
+	cmd, env := FakeKiro(t, Script{})
+	baseURL, cleanup := bootGateway(t, mergeEnv(env, map[string]string{
+		"KIRO_CMD":            cmd,
+		"GW_FAKE_KIRO_MODELS": "auto:Auto,claude-sonnet-4.5:Claude Sonnet 4.5,unknown-model-zzz:Unknown Model",
+	}))
+	defer cleanup()
+
+	resp := ollamaRequest(t, http.MethodGet, baseURL+"/v1/model-capabilities", nil, "Bearer e2e-token")
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: got %d, want 200; body=%s", resp.StatusCode, readAll(resp))
+	}
+
+	var list struct {
+		Object string `json:"object"`
+		Data   []struct {
+			ID            string            `json:"id"`
+			SelectionMode string            `json:"selection_mode"`
+			Capabilities  map[string]string `json:"capabilities"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if list.Object != "list" || len(list.Data) == 0 || list.Data[0].ID != "auto" {
+		t.Fatalf("auto not first / bad envelope: %+v", list)
+	}
+
+	byID := map[string]map[string]string{}
+	ids := make([]string, 0, len(list.Data))
+	for _, e := range list.Data {
+		byID[e.ID] = e.Capabilities
+		ids = append(ids, e.ID)
+	}
+
+	// 1+2. Registered model present with its verified completion state.
+	reg, ok := byID["claude-sonnet-4.5"]
+	if !ok {
+		t.Fatalf("registered model claude-sonnet-4.5 not returned; got ids %v", ids)
+	}
+	if reg["completion"] != "supported" {
+		t.Errorf("claude-sonnet-4.5 completion: got %q, want supported", reg["completion"])
+	}
+
+	// 3. Unknown model present but all-unknown.
+	unk, ok := byID["unknown-model-zzz"]
+	if !ok {
+		t.Fatalf("unknown model not returned; got ids %v", ids)
+	}
+	for _, k := range []string{"completion", "tools", "vision", "reasoning"} {
+		if unk[k] != "unknown" {
+			t.Errorf("unknown-model-zzz %q: got %q, want unknown", k, unk[k])
+		}
+	}
+
+	// 4. A registry model absent from the live catalog is NOT returned.
+	if _, present := byID["claude-haiku-4.5"]; present {
+		t.Errorf("stale registry model claude-haiku-4.5 leaked into response")
+	}
+}

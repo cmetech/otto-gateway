@@ -28,6 +28,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 )
 
@@ -35,6 +36,7 @@ const (
 	envNotificationsFile  = "GW_FAKE_KIRO_NOTIFICATIONS_FILE"
 	envReceivedFramesFile = "GW_FAKE_KIRO_RECEIVED_FRAMES_FILE"
 	envStopReason         = "GW_FAKE_KIRO_STOP_REASON"
+	envModels             = "GW_FAKE_KIRO_MODELS" // "id:name,id:name" — overrides the default catalog
 )
 
 // stdoutMu guards stdout writes — notifications + responses can race when the
@@ -113,11 +115,8 @@ func main() {
 			respond(idRaw, map[string]any{
 				"sessionId": "e2e-session-1",
 				"models": map[string]any{
-					"availableModels": []map[string]any{
-						{"modelId": "auto", "name": "Auto"},
-						{"modelId": "sonnet", "name": "Sonnet"},
-					},
-					"currentModelId": "auto",
+					"availableModels": availableModels(),
+					"currentModelId":  "auto",
 				},
 			})
 
@@ -172,6 +171,32 @@ func respond(idRaw json.RawMessage, result map[string]any) {
 		"result":  result,
 	}
 	writeFrame(resp)
+}
+
+// availableModels returns the scripted catalog. GW_FAKE_KIRO_MODELS overrides
+// the default ("auto:Auto,sonnet:Sonnet") with a comma-separated list of
+// "modelId:name" pairs (name defaults to id when the ":name" half is omitted).
+func availableModels() []map[string]any {
+	spec := os.Getenv(envModels)
+	if spec == "" {
+		return []map[string]any{
+			{"modelId": "auto", "name": "Auto"},
+			{"modelId": "sonnet", "name": "Sonnet"},
+		}
+	}
+	var out []map[string]any
+	for _, pair := range strings.Split(spec, ",") {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
+		}
+		id, name, found := strings.Cut(pair, ":")
+		if !found || name == "" {
+			name = id
+		}
+		out = append(out, map[string]any{"modelId": id, "name": name})
+	}
+	return out
 }
 
 // emitNotifications reads GW_FAKE_KIRO_NOTIFICATIONS_FILE (if set) and emits
