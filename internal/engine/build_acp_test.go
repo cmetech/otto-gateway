@@ -1,11 +1,9 @@
 // Package engine — buildBlocks golden bracketed-section tests +
-// image-block emission tests + runnable Example. D-02 + D-09 footnote +
-// Codex M-1.
+// image-block emission tests. D-02 + D-09 footnote + Codex M-1.
 package engine
 
 import (
 	"encoding/base64"
-	"fmt"
 	"reflect"
 	"testing"
 
@@ -41,10 +39,70 @@ func TestBuildBlocks_GoldenSystemUserAssistant(t *testing.T) {
 	if got[0].Text == nil {
 		t.Fatal("first block Text is nil")
 	}
-	want := "[System]\nYou are helpful.\n\n[User]\nHello!\n\n[Assistant]\nHi there.\n\n[User]\nHow are you?"
+	// Defect 2 (2026-07-16): the [System] section now pairs the caller's
+	// identity with the brand-neutral identityGuardClause.
+	want := "[System]\nYou are helpful.\n\n" + identityGuardClause + "\n\n[User]\nHello!\n\n[Assistant]\nHi there.\n\n[User]\nHow are you?"
 	if got[0].Text.Content != want {
 		t.Errorf("bracketed text mismatch.\n got: %q\nwant: %q", got[0].Text.Content, want)
 	}
+}
+
+// TestBuildBlocks_IdentityGuard_AlwaysPresent (Defect 2): the persona guard
+// clause is emitted on every request — including a bare "who are you?" turn
+// with NO caller system prompt — so kiro-cli's built-in persona cannot leak.
+// The guard is brand-neutral (no OTTO/LOOP24), names Kiro/AWS only to forbid
+// them, and uses no angle-bracket markers.
+func TestBuildBlocks_IdentityGuard_AlwaysPresent(t *testing.T) {
+	t.Run("no_system_prompt", func(t *testing.T) {
+		req := &canonical.ChatRequest{
+			Messages: []canonical.Message{
+				{Role: canonical.RoleUser, Content: []canonical.ContentPart{
+					{Kind: canonical.ContentKindText, Text: "who are you?"},
+				}},
+			},
+		}
+		got := buildBlocks(req)
+		content := got[0].Text.Content
+		if !contains(content, "[System]") {
+			t.Errorf("expected a [System] section even without a caller system prompt; got %q", content)
+		}
+		if !contains(content, identityGuardClause) {
+			t.Errorf("expected identity guard clause in output; got %q", content)
+		}
+		// Guard must forbid the kiro/AWS persona and cross-agent deferral.
+		for _, sub := range []string{`"Kiro CLI"`, "AWS", "requires, a different agent"} {
+			if !contains(content, sub) {
+				t.Errorf("guard missing expected phrase %q; got %q", sub, content)
+			}
+		}
+		// No brand hardcode, no angle-bracket markers.
+		for _, banned := range []string{"OTTO", "LOOP24", "<", ">"} {
+			if contains(content, banned) {
+				t.Errorf("guard must not contain %q; got %q", banned, content)
+			}
+		}
+	})
+
+	t.Run("with_system_prompt_caller_identity_precedes_guard", func(t *testing.T) {
+		req := &canonical.ChatRequest{
+			System: "You are Aria, the host assistant.",
+			Messages: []canonical.Message{
+				{Role: canonical.RoleUser, Content: []canonical.ContentPart{
+					{Kind: canonical.ContentKindText, Text: "hi"},
+				}},
+			},
+		}
+		got := buildBlocks(req)
+		content := got[0].Text.Content
+		idxCaller := indexOfSection(content, "You are Aria, the host assistant.")
+		idxGuard := indexOfSection(content, identityGuardClause)
+		if idxCaller < 0 || idxGuard < 0 {
+			t.Fatalf("expected both caller identity and guard; got %q", content)
+		}
+		if idxCaller >= idxGuard {
+			t.Errorf("caller identity must precede the guard; got %q", content)
+		}
+	})
 }
 
 // TestBuildBlocks_ThinkBlock verifies the [Reasoning] section emits when
@@ -438,7 +496,11 @@ func TestBuildBlocks_AvailableTools_JSONCatalog(t *testing.T) {
 // Example_buildBlocks is a runnable godoc example (TRST-07). The
 // Output: block is validated by `go test -run Example`. Lowercase
 // suffix style because buildBlocks is unexported.
-func Example_buildBlocks() {
+// TestBuildBlocks_SystemThenUser pins the canonical single-turn transcript
+// shape: [System] (caller identity + Defect-2 guard) then [User]. Replaces
+// the former Example_buildBlocks, whose exact-stdout match became brittle
+// once the always-on identityGuardClause landed in the [System] section.
+func TestBuildBlocks_SystemThenUser(t *testing.T) {
 	req := &canonical.ChatRequest{
 		System: "Be brief.",
 		Messages: []canonical.Message{
@@ -447,14 +509,11 @@ func Example_buildBlocks() {
 			}},
 		},
 	}
-	blocks := buildBlocks(req)
-	fmt.Println(blocks[0].Text.Content)
-	// Output:
-	// [System]
-	// Be brief.
-	//
-	// [User]
-	// Hi.
+	got := buildBlocks(req)
+	want := "[System]\nBe brief.\n\n" + identityGuardClause + "\n\n[User]\nHi."
+	if got[0].Text.Content != want {
+		t.Errorf("transcript mismatch.\n got: %q\nwant: %q", got[0].Text.Content, want)
+	}
 }
 
 // TestBuildBlocks_StrictToolPrompt verifies that the strict function-calling

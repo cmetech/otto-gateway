@@ -19,6 +19,21 @@ import (
 	"otto-gateway/internal/canonical"
 )
 
+// identityGuardClause is the brand-neutral persona guard appended to the
+// [System] section on every request (Defect 2, 2026-07-16). It stops
+// kiro-cli's built-in "Kiro CLI"/AWS persona from overriding the caller
+// identity: the model must present as the host assistant, must not name
+// Kiro or AWS as its identity, and must treat every offered tool/skill as
+// its own to invoke rather than deferring to "a different agent". No brand
+// is hardcoded — the host supplies identity via req.System. No angle-bracket
+// markers are used (kiro-cli mis-parses `<...>` as XML — see the PII marker
+// shape decision).
+const identityGuardClause = "You ARE the assistant defined by this system context and the host application that provides your tools. " +
+	"Do not identify yourself as \"Kiro CLI\", \"Kiro\", or an AWS tool, and do not describe your identity or capabilities in terms of Kiro or AWS. " +
+	"Treat every tool and skill offered in this request as your own to invoke directly. " +
+	"Never claim that a task, tool, or skill belongs to, or requires, a different agent, a separate environment, or another product. " +
+	"When asked who you are or what you can do, answer only as the host assistant described here."
+
 // buildBlocks flattens a canonical.ChatRequest into the ACP block list
 // kiro-cli expects. Bracketed sections (Node reference parity, lines
 // 484-541 of acp-ollama-server.js):
@@ -55,9 +70,21 @@ func buildBlocks(req *canonical.ChatRequest) []canonical.Block {
 	}
 
 	var b strings.Builder
+	// Defect 2 (2026-07-16): always compose a [System] section pairing the
+	// caller's identity (authoritative, when present) with a brand-neutral
+	// guard clause. kiro-cli ships a baked-in "Kiro CLI"/AWS persona that
+	// otherwise leaks — the model self-identifies as Kiro and refuses host
+	// tasks by claiming host tools "require a different agent". The gateway
+	// injects NO brand of its own (the host supplies identity via
+	// req.System); the guard only stops the leak. Emitted even when
+	// req.System is empty so a bare "who are you?" turn is still covered.
+	b.WriteString("[System]\n")
 	if req.System != "" {
-		fmt.Fprintf(&b, "[System]\n%s\n\n", req.System)
+		b.WriteString(req.System)
+		b.WriteString("\n\n")
 	}
+	b.WriteString(identityGuardClause)
+	b.WriteString("\n\n")
 	if req.Think {
 		b.WriteString("[Reasoning] Think through the problem step by step before answering. Show your reasoning.\n\n")
 	}
