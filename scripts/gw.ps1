@@ -1353,12 +1353,19 @@ function Invoke-UpgradeEnv {
         }
     }
 
+    # "Up to date" is byte-identity with the template, NOT key-set equality.
+    # upgrade-env regenerates .env as a byte-for-byte copy, so a value/comment
+    # change (same keys) still updates the file — reporting "nothing to change"
+    # off the key diff alone would be misleading.
+    $identical = (Test-Path -LiteralPath $destPath) -and `
+        ((Get-FileHash -LiteralPath $templatePath -Algorithm SHA256).Hash -eq (Get-FileHash -LiteralPath $destPath -Algorithm SHA256).Hash)
+
     $mode = if ($DryRun) { "dry-run — nothing will be written" } else { "applying" }
     Write-Host "gw upgrade-env ($mode)"
     Write-Host "  template:  $templatePath"
     Write-Host "  your .env: $destPath"
     Write-Host ""
-    if ($added.Count -eq 0 -and $orphaned.Count -eq 0) {
+    if ($identical) {
         Write-Host ("  Your .env already matches the template — nothing to change ({0} keys)." -f $unchanged.Count)
     } else {
         if ($added.Count -gt 0) {
@@ -1374,6 +1381,9 @@ function Invoke-UpgradeEnv {
             Write-Host "  - 0 keys to remove"
         }
         Write-Host ("  = {0} key(s) unchanged" -f $unchanged.Count)
+        if ($added.Count -eq 0 -and $orphaned.Count -eq 0) {
+            Write-Host "  (no keys added or removed, but the template's default values or comments changed — applying refreshes .env to match)"
+        }
     }
     Write-Host ""
     Write-Host "  Note: your customizations in overrides.env are never touched by upgrade-env."
