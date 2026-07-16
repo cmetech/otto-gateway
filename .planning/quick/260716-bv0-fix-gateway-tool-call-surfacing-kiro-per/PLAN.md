@@ -3,7 +3,7 @@ quick_id: 260716-bv0
 slug: fix-gateway-tool-call-surfacing-kiro-per
 date: 2026-07-16
 title: "Gateway tool-call surfacing + kiro persona bleed"
-status: in-progress
+status: complete
 ---
 
 # Quick Task: Gateway tool-call surfacing + kiro persona bleed
