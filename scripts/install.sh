@@ -276,8 +276,10 @@ PLIST
         warn "  Install it per your team's instructions, or set KIRO_CMD in ~/.gw/.env."
     fi
 
+    preserved_env=0
     if [ -f "$GW_HOME/.env" ]; then
         info "Existing config found — preserving it (skipping init)."
+        preserved_env=1
     else
         info "Writing default config (no auth, 127.0.0.1:18080, all hooks, PII redaction=encrypt, NER=on, chat-trace off) ..."
         "$GW_INSTALL_DIR/scripts/gw" init --non-interactive
@@ -317,6 +319,9 @@ PLIST
             ;;
     esac
     printf '\nNext steps:\n'
+    if [ "$preserved_env" = "1" ]; then
+        printf '  %s upgrade-env --dry-run   # check for new env keys this build added (then run without --dry-run to apply)\n' "$cmd"
+    fi
     printf '  %s start     # launch the gateway\n' "$cmd"
     printf '  %s status    # verify it is up\n' "$cmd"
     if [ -d "$GW_INSTALL_DIR/Gateway Tray.app" ]; then

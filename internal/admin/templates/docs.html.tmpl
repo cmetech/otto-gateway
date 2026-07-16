@@ -83,6 +83,13 @@
 .\scripts\gw.ps1 migrate-to-overrides -Yes
 .\scripts\gw.ps1 version</pre>
     <p>Subcommand surface (identical on both wrappers): <code>init</code>, <code>start</code>, <code>stop</code>, <code>restart</code>, <code>status</code>, <code>logs</code>, <code>run</code>, <code>env</code>, <code>upgrade-env</code>, <code>migrate-to-overrides</code>, <code>version</code>.</p>
+    <h3 class="gw-h3">Picking up new env vars after an upgrade</h3>
+    <p>Installing a new gateway build <strong>preserves your existing <code>.env</code></strong> — it does not add newly-introduced keys (e.g. <code>KIRO_TOOL_ALIASES</code>). Because of the two-file model, the generated <code>.env</code> is a byte-for-byte copy of the <code>.env.example</code> template and <code>overrides.env</code> is operator-owned and loaded last (wins on shared keys). To reconcile after an upgrade:</p>
+    <pre class="gw-code-block">gw upgrade-env --dry-run    # diff installed .env against the new template
+                            #   -> reports added / orphaned / unchanged keys
+gw upgrade-env              # regenerate .env from the template (prompts unless --yes)
+                            #   orphaned keys are logged to $GW_HOME/upgrade.log first</pre>
+    <p><code>upgrade-env</code> never touches <code>overrides.env</code>. Set real deployment values there so they survive every upgrade — e.g. append <code>KIRO_TOOL_ALIASES=execute:run_shell,shell:run_shell</code> to <code>$GW_HOME/overrides.env</code>, then <code>gw restart</code>. Env values also load from the process environment, so the template entry is primarily for discoverability; an unset var falls back to its default (for <code>KIRO_TOOL_ALIASES</code>, no aliases).</p>
     <h3 class="gw-h3">Flag &harr; switch reference</h3>
     <table class="gw-table gw-docs-flags-table gw-flag-table">
       <thead>
