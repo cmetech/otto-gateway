@@ -69,18 +69,14 @@ func TestE2E_Tools_Ollama(t *testing.T) {
 		if err := json.NewDecoder(resp.Body).Decode(&chat); err != nil {
 			t.Fatalf("decode: %v", err)
 		}
-		// Iteration-3 HIGH #1 contract: kiro-native tool_call on Ollama
-		// non-streaming renders as `[tool: get_weather]\n` narration in
-		// message.content; message.tool_calls is empty (kiro-native is the
-		// non-coerce path).
-		if !strings.Contains(chat.Message.Content, "[tool: get_weather]") {
-			t.Errorf("content missing `[tool: get_weather]` narration: %q", chat.Message.Content)
+		// Defect 1a (2026-07-16): kiro-native tool_call on Ollama
+		// non-streaming surfaces STRUCTURALLY in message.tool_calls
+		// (object-shaped args); message.content carries no `[tool:` marker.
+		if strings.Contains(chat.Message.Content, "[tool:") {
+			t.Errorf("content must not contain a [tool: marker: %q", chat.Message.Content)
 		}
-		if len(chat.Message.ToolCalls) != 0 {
-			t.Errorf("kiro-native tool_call must NOT populate message.tool_calls on non-streaming (two-path rule); got %d entries", len(chat.Message.ToolCalls))
-		}
-		if chat.DoneReason == "tool_calls" {
-			t.Errorf("done_reason: got %q, want NOT tool_calls (kiro-native two-path rule)", chat.DoneReason)
+		if len(chat.Message.ToolCalls) != 1 {
+			t.Fatalf("kiro-native tool_call must populate message.tool_calls; got %d entries", len(chat.Message.ToolCalls))
 		}
 	})
 
@@ -95,14 +91,15 @@ func TestE2E_Tools_Ollama(t *testing.T) {
 		body := OllamaToolsRequest("search the web", ToolsCatalog, true)
 		lines := streamNDJSON(t, baseURL+"/api/chat", body, auth)
 
-		// REVIEW HIGH #2: intermediate lines carry `[tool: search_web]\n` text;
-		// final done line does NOT carry message.tool_calls from kiro-native.
+		// Defect 1c: no `[tool:` marker anywhere; the done:true line carries
+		// the structured message.tool_calls (object-shaped args).
 		joined := strings.Join(lines, "\n")
-		if !strings.Contains(joined, "[tool: search_web]") {
-			t.Errorf("streaming NDJSON missing `[tool: search_web]` narration: %q", joined)
+		if strings.Contains(joined, "[tool:") {
+			t.Errorf("streaming NDJSON must not contain a [tool: marker: %q", joined)
 		}
-		// Find the last line (done:true) and assert no tool_calls.
-		assertNDJSONNoToolCallsOnDone(t, lines)
+		if !strings.Contains(joined, `"tool_calls":[{"function":{"name":"search_web"`) {
+			t.Errorf("done line missing structured search_web tool_call: %q", joined)
+		}
 	})
 
 	// ----- Scenario 3: coerce from bare JSON (non-streaming) ------
@@ -246,38 +243,31 @@ func TestE2E_Tools_Ollama(t *testing.T) {
 		resp := ollamaRequest(t, http.MethodPost, baseURL+"/api/chat", body, auth)
 		defer func() { _ = resp.Body.Close() }()
 		raw := readAll(resp)
-		// kiro-native tool_call narration present.
-		if !strings.Contains(raw, "[tool: get_weather]") {
-			t.Errorf("kiro-native narration missing: %s", raw)
+		// Defect 1a: get_weather (kiro-native) surfaces structurally in
+		// message.tool_calls; no `[tool:` marker; and CoerceToolCall no-ops on
+		// the trailing JSON text (native already populated ToolCalls) so there
+		// is exactly one tool_call — get_weather, not a coerced duplicate.
+		if strings.Contains(raw, "[tool:") {
+			t.Errorf("content must not contain a [tool: marker: %s", raw)
 		}
-		// Coerce should NOT fire AGAIN on the trailing JSON-text (engine
-		// contract: kiro-native narration in content text — but per-surface
-		// non-streaming path may still coerce text since the Coerce algorithm
-		// runs after Collect aggregates narration into content; the narration
-		// text starts with `[tool:` which won't parse as JSON → no coerce).
-		// We assert: at most ONE tool_calls entry — and if there IS one, it
-		// must be read_file or absent. The kiro-native get_weather doesn't
-		// surface as tool_calls (two-path rule) so the assertion is "no
-		// duplicate tool_use for get_weather as a tool_calls entry".
-		if strings.Count(raw, `"name":"get_weather"`) > 0 && strings.Contains(raw, `"tool_calls":[`) {
-			// Verify get_weather does not appear inside tool_calls (only as narration).
-			// We can do this by extracting message.tool_calls and checking names.
-			var chat struct {
-				Message struct {
-					ToolCalls []struct {
-						Function struct {
-							Name string `json:"name"`
-						} `json:"function"`
-					} `json:"tool_calls"`
-				} `json:"message"`
+		var chat struct {
+			Message struct {
+				ToolCalls []struct {
+					Function struct {
+						Name string `json:"name"`
+					} `json:"function"`
+				} `json:"tool_calls"`
+			} `json:"message"`
+		}
+		if err := json.Unmarshal([]byte(raw), &chat); err != nil {
+			t.Fatalf("decode: %v; %s", err, raw)
+		}
+		if len(chat.Message.ToolCalls) != 1 || chat.Message.ToolCalls[0].Function.Name != "get_weather" {
+			names := []string{}
+			for _, tc := range chat.Message.ToolCalls {
+				names = append(names, tc.Function.Name)
 			}
-			if err := json.Unmarshal([]byte(raw), &chat); err == nil {
-				for _, tc := range chat.Message.ToolCalls {
-					if tc.Function.Name == "get_weather" {
-						t.Errorf("scenario 9: kiro-native get_weather must NOT appear in message.tool_calls (two-path rule): %s", raw)
-					}
-				}
-			}
+			t.Errorf("scenario 9: expected exactly one get_weather tool_call (no coerce dup); got %v: %s", names, raw)
 		}
 	})
 
@@ -355,8 +345,8 @@ func TestE2E_Tools_Ollama(t *testing.T) {
 		}
 	})
 
-	// ----- iteration-3 HIGH #2: streaming native-then-JSON no coerce ---
-	t.Run("NativeToolCall_ThenJSONText_NoCoerce_Streaming", func(t *testing.T) {
+	// ----- Defect 1c: streaming native-then-JSON, coerce skipped ------
+	t.Run("NativeToolCall_ThenJSONText_SkipsCoerce_Streaming", func(t *testing.T) {
 		defer GoleakVerifyAtEnd(t)
 		notifs := ConcatNotifs(
 			NotifToolCall(ollamaSessionID, "tc_012", "search_web", map[string]any{"query": "x"}),
@@ -368,13 +358,23 @@ func TestE2E_Tools_Ollama(t *testing.T) {
 
 		body := OllamaToolsRequest("query", ToolsCatalog, true)
 		lines := streamNDJSON(t, baseURL+"/api/chat", body, auth)
-		// Iteration-3 HIGH #2: sawKiroNativeToolCall suppresses end-of-stream
-		// coerce; the buffered JSON-text flushes as plain text frames.
-		assertNDJSONNoToolCallsOnDone(t, lines)
+		joined := strings.Join(lines, "\n")
+		// Defect 1c: the native search_web surfaces structurally on the done
+		// line; sawKiroNativeToolCall suppresses the coerce so the trailing
+		// JSON adds no second call. No `[tool:` marker.
+		if strings.Contains(joined, "[tool:") {
+			t.Errorf("must not contain a [tool: marker: %q", joined)
+		}
+		if !strings.Contains(joined, `"tool_calls":[{"function":{"name":"search_web"`) {
+			t.Errorf("done line missing structured search_web tool_call: %q", joined)
+		}
+		if got := strings.Count(joined, `"tool_calls":[`); got != 1 {
+			t.Errorf("expected exactly one tool_calls done-line (no coerce dup); got %d: %q", got, joined)
+		}
 	})
 
-	// ----- Additional: kiro-native ONLY streaming (no trailing text) ---
-	t.Run("NativeToolCall_Only_NoCoerce_Streaming", func(t *testing.T) {
+	// ----- Defect 1c: kiro-native ONLY streaming (no trailing text) ---
+	t.Run("NativeToolCall_Only_Structured_Streaming", func(t *testing.T) {
 		defer GoleakVerifyAtEnd(t)
 		notifs := NotifToolCall(ollamaSessionID, "tc_only", "get_weather", map[string]any{"location": "NYC"})
 		cmd, env := FakeKiro(t, Script{Notifications: notifs})
@@ -383,17 +383,18 @@ func TestE2E_Tools_Ollama(t *testing.T) {
 
 		body := OllamaToolsRequest("weather", ToolsCatalog, true)
 		lines := streamNDJSON(t, baseURL+"/api/chat", body, auth)
-		// Kiro-native renders as `[tool: get_weather]\n` text in intermediate
-		// frames, done line has no message.tool_calls.
 		joined := strings.Join(lines, "\n")
-		if !strings.Contains(joined, "[tool: get_weather]") {
-			t.Errorf("kiro-native streaming missing narration: %q", joined)
+		// Defect 1c: structured tool_calls on the done line, no `[tool:` marker.
+		if strings.Contains(joined, "[tool:") {
+			t.Errorf("must not contain a [tool: marker: %q", joined)
 		}
-		assertNDJSONNoToolCallsOnDone(t, lines)
+		if !strings.Contains(joined, `"tool_calls":[{"function":{"name":"get_weather"`) {
+			t.Errorf("done line missing structured get_weather tool_call: %q", joined)
+		}
 	})
 
-	// ----- Additional: kiro-native followed by plain text streaming ---
-	t.Run("NativeToolCall_ThenPlainText_NoCoerce_Streaming", func(t *testing.T) {
+	// ----- Defect 1c: kiro-native followed by plain text streaming ----
+	t.Run("NativeToolCall_ThenPlainText_Structured_Streaming", func(t *testing.T) {
 		defer GoleakVerifyAtEnd(t)
 		notifs := ConcatNotifs(
 			NotifToolCall(ollamaSessionID, "tc_pln", "read_file", map[string]any{"path": "/etc/hosts"}),
@@ -406,13 +407,17 @@ func TestE2E_Tools_Ollama(t *testing.T) {
 		body := OllamaToolsRequest("read", ToolsCatalog, true)
 		lines := streamNDJSON(t, baseURL+"/api/chat", body, auth)
 		joined := strings.Join(lines, "\n")
-		if !strings.Contains(joined, "[tool: read_file]") {
-			t.Errorf("kiro-native narration missing: %q", joined)
+		// Defect 1c: the trailing plain text streams as content, and the
+		// native read_file surfaces structurally on the done line.
+		if strings.Contains(joined, "[tool:") {
+			t.Errorf("must not contain a [tool: marker: %q", joined)
 		}
 		if !strings.Contains(joined, "Some narrative text") {
 			t.Errorf("plain text after tool call missing: %q", joined)
 		}
-		assertNDJSONNoToolCallsOnDone(t, lines)
+		if !strings.Contains(joined, `"tool_calls":[{"function":{"name":"read_file"`) {
+			t.Errorf("done line missing structured read_file tool_call: %q", joined)
+		}
 	})
 }
 
@@ -445,20 +450,6 @@ func lastDoneLine(t *testing.T, lines []string) string {
 		t.Fatal("streamNDJSON returned no lines")
 	}
 	return lines[len(lines)-1]
-}
-
-// assertNDJSONNoToolCallsOnDone asserts the final NDJSON line does NOT carry
-// message.tool_calls[] (the two-path rule: kiro-native renders as narration
-// text in intermediate frames, NOT as tool_calls on the done line).
-func assertNDJSONNoToolCallsOnDone(t *testing.T, lines []string) {
-	t.Helper()
-	if len(lines) == 0 {
-		t.Fatal("no NDJSON lines")
-	}
-	last := lines[len(lines)-1]
-	if strings.Contains(last, `"tool_calls":[{`) {
-		t.Errorf("done line carries tool_calls (two-path-rule regression): %s", last)
-	}
 }
 
 // _ context import keeps the goimports tool happy when subtests don't use it

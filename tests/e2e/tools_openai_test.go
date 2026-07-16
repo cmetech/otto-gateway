@@ -52,13 +52,17 @@ func TestE2E_Tools_OpenAI(t *testing.T) {
 		resp := ollamaRequest(t, http.MethodPost, baseURL+"/v1/chat/completions", body, auth)
 		defer func() { _ = resp.Body.Close() }()
 		raw := readAll(resp)
-		// Iteration-3 HIGH #1: kiro-native renders as narration in content;
-		// tool_calls absent/empty; finish_reason NOT "tool_calls".
-		if !strings.Contains(raw, "[tool: get_weather]") {
-			t.Errorf("OpenAI message.content missing narration: %s", raw)
+		// Defect 1a (2026-07-16): kiro-native surfaces as a STRUCTURED
+		// tool_calls entry (id/name/JSON-string args) + finish_reason:
+		// "tool_calls". NO `[tool:` marker in content.
+		if strings.Contains(raw, "[tool:") {
+			t.Errorf("OpenAI content must not contain a [tool: marker: %s", raw)
 		}
-		if strings.Contains(raw, `"finish_reason":"tool_calls"`) {
-			t.Errorf("kiro-native must NOT set finish_reason:tool_calls (two-path rule): %s", raw)
+		if !strings.Contains(raw, `"name":"get_weather"`) || !strings.Contains(raw, `"arguments":"{\"location\":\"NYC\"}"`) {
+			t.Errorf("OpenAI missing structured get_weather tool_call: %s", raw)
+		}
+		if !strings.Contains(raw, `"finish_reason":"tool_calls"`) {
+			t.Errorf("kiro-native must set finish_reason:tool_calls: %s", raw)
 		}
 	})
 
@@ -71,14 +75,16 @@ func TestE2E_Tools_OpenAI(t *testing.T) {
 
 		body := OpenAIToolsRequest("search", ToolsCatalog, true)
 		sse := readSSEFrames(t, baseURL+"/v1/chat/completions", body, auth)
-		// REVIEW HIGH #2: kiro-native renders as text-delta content; NO
-		// delta.tool_calls from kiro-native; terminal finish_reason NOT
-		// "tool_calls".
-		if !strings.Contains(sse, "[tool: search_web]") {
-			t.Errorf("SSE missing kiro-native narration: %s", sse)
+		// Defect 1b: kiro-native surfaces as native delta.tool_calls frames
+		// + terminal finish_reason:"tool_calls". NO `[tool:` marker.
+		if strings.Contains(sse, "[tool:") {
+			t.Errorf("SSE must not contain a [tool: marker: %s", sse)
 		}
-		if strings.Contains(sse, `"finish_reason":"tool_calls"`) {
-			t.Errorf("SSE has finish_reason:tool_calls from kiro-native (two-path-rule regression): %s", sse)
+		if !strings.Contains(sse, `"name":"search_web"`) {
+			t.Errorf("SSE missing native delta.tool_calls name: %s", sse)
+		}
+		if !strings.Contains(sse, `"finish_reason":"tool_calls"`) {
+			t.Errorf("SSE must set finish_reason:tool_calls from kiro-native: %s", sse)
 		}
 	})
 
@@ -209,13 +215,13 @@ func TestE2E_Tools_OpenAI(t *testing.T) {
 		resp := ollamaRequest(t, http.MethodPost, baseURL+"/v1/chat/completions", body, auth)
 		defer func() { _ = resp.Body.Close() }()
 		raw := readAll(resp)
-		if !strings.Contains(raw, "[tool: get_weather]") {
-			t.Errorf("kiro-native narration missing in OpenAI content: %s", raw)
+		// Defect 1a: get_weather (kiro-native) now appears STRUCTURALLY in
+		// tool_calls, with no `[tool:` marker. The trailing JSON text does
+		// NOT produce a secondary coerced tool_call (native already fired →
+		// Collect populated ToolCalls → CoerceToolCall no-ops).
+		if strings.Contains(raw, "[tool:") {
+			t.Errorf("OpenAI content must not contain a [tool: marker: %s", raw)
 		}
-		// The trailing JSON-text may or may not coerce on Ollama/OpenAI —
-		// the engine's per-surface contract is that get_weather (kiro-native)
-		// does not appear in tool_calls (two-path rule). Document that
-		// get_weather is NOT in tool_calls.
 		var resp2 struct {
 			Choices []struct {
 				Message struct {
@@ -227,12 +233,15 @@ func TestE2E_Tools_OpenAI(t *testing.T) {
 				} `json:"message"`
 			} `json:"choices"`
 		}
-		if err := json.Unmarshal([]byte(raw), &resp2); err == nil && len(resp2.Choices) > 0 {
-			for _, tc := range resp2.Choices[0].Message.ToolCalls {
-				if tc.Function.Name == "get_weather" {
-					t.Errorf("kiro-native get_weather must NOT appear in tool_calls (two-path rule): %s", raw)
-				}
-			}
+		if err := json.Unmarshal([]byte(raw), &resp2); err != nil || len(resp2.Choices) == 0 {
+			t.Fatalf("decode: %v; %s", err, raw)
+		}
+		names := []string{}
+		for _, tc := range resp2.Choices[0].Message.ToolCalls {
+			names = append(names, tc.Function.Name)
+		}
+		if len(names) != 1 || names[0] != "get_weather" {
+			t.Errorf("expected exactly one get_weather tool_call (no coerce dup); got %v: %s", names, raw)
 		}
 	})
 
@@ -279,7 +288,7 @@ func TestE2E_Tools_OpenAI(t *testing.T) {
 		}
 	})
 
-	t.Run("NativeToolCall_ThenJSONText_NoCoerce_Streaming", func(t *testing.T) {
+	t.Run("NativeToolCall_ThenJSONText_SkipsCoerce_Streaming", func(t *testing.T) {
 		defer GoleakVerifyAtEnd(t)
 		notifs := ConcatNotifs(
 			NotifToolCall(openaiSessionID, "tc_then", "search_web", map[string]any{"query": "x"}),
@@ -291,8 +300,21 @@ func TestE2E_Tools_OpenAI(t *testing.T) {
 
 		body := OpenAIToolsRequest("query", ToolsCatalog, true)
 		sse := readSSEFrames(t, baseURL+"/v1/chat/completions", body, auth)
-		if strings.Contains(sse, `"finish_reason":"tool_calls"`) {
-			t.Errorf("iteration-3 HIGH #2: native-then-JSON must NOT set finish_reason:tool_calls (sawKiroNativeToolCall suppression): %s", sse)
+		// Defect 1b: the native search_web surfaces structurally, so the
+		// terminal finish_reason IS "tool_calls". sawKiroNativeToolCall still
+		// suppresses the end-of-stream coerce, so the trailing JSON does NOT
+		// add a second tool_call — exactly one native call is emitted.
+		if strings.Contains(sse, "[tool:") {
+			t.Errorf("SSE must not contain a [tool: marker: %s", sse)
+		}
+		if !strings.Contains(sse, `"name":"search_web"`) {
+			t.Errorf("SSE missing native search_web tool_call: %s", sse)
+		}
+		if !strings.Contains(sse, `"finish_reason":"tool_calls"`) {
+			t.Errorf("native tool call must set finish_reason:tool_calls: %s", sse)
+		}
+		if got := strings.Count(sse, `"type":"function"`); got != 1 {
+			t.Errorf("expected exactly 1 structured tool_call (no coerce dup); got %d: %s", got, sse)
 		}
 	})
 
@@ -312,9 +334,16 @@ func TestE2E_Tools_OpenAI(t *testing.T) {
 		if count != 1 {
 			t.Errorf("REVIEW LOW #8: expected exactly 1 role frame, got %d: %s", count, sse)
 		}
+		// Defect 1b: tool-call-first still surfaces structurally, no marker.
+		if strings.Contains(sse, "[tool:") {
+			t.Errorf("SSE must not contain a [tool: marker: %s", sse)
+		}
+		if !strings.Contains(sse, `"finish_reason":"tool_calls"`) {
+			t.Errorf("tool-call-first must set finish_reason:tool_calls: %s", sse)
+		}
 	})
 
-	t.Run("NativeToolCall_Only_NoCoerce_Streaming", func(t *testing.T) {
+	t.Run("NativeToolCall_Only_Structured_Streaming", func(t *testing.T) {
 		defer GoleakVerifyAtEnd(t)
 		notifs := NotifToolCall(openaiSessionID, "tc_only", "get_weather", map[string]any{"location": "NYC"})
 		cmd, env := FakeKiro(t, Script{Notifications: notifs})
@@ -323,15 +352,19 @@ func TestE2E_Tools_OpenAI(t *testing.T) {
 
 		body := OpenAIToolsRequest("weather", ToolsCatalog, true)
 		sse := readSSEFrames(t, baseURL+"/v1/chat/completions", body, auth)
-		if !strings.Contains(sse, "[tool: get_weather]") {
-			t.Errorf("kiro-native streaming SSE missing narration: %s", sse)
+		// Defect 1b: structured delta.tool_calls + finish_reason:tool_calls.
+		if strings.Contains(sse, "[tool:") {
+			t.Errorf("SSE must not contain a [tool: marker: %s", sse)
 		}
-		if strings.Contains(sse, `"finish_reason":"tool_calls"`) {
-			t.Errorf("kiro-native only must NOT set finish_reason:tool_calls: %s", sse)
+		if !strings.Contains(sse, `"name":"get_weather"`) {
+			t.Errorf("SSE missing native get_weather tool_call: %s", sse)
+		}
+		if !strings.Contains(sse, `"finish_reason":"tool_calls"`) {
+			t.Errorf("kiro-native only must set finish_reason:tool_calls: %s", sse)
 		}
 	})
 
-	t.Run("NativeToolCall_ThenPlainText_NoCoerce_Streaming", func(t *testing.T) {
+	t.Run("NativeToolCall_ThenPlainText_Structured_Streaming", func(t *testing.T) {
 		defer GoleakVerifyAtEnd(t)
 		notifs := ConcatNotifs(
 			NotifToolCall(openaiSessionID, "tc_pln", "read_file", map[string]any{"path": "/etc/hosts"}),
@@ -343,11 +376,20 @@ func TestE2E_Tools_OpenAI(t *testing.T) {
 
 		body := OpenAIToolsRequest("read", ToolsCatalog, true)
 		sse := readSSEFrames(t, baseURL+"/v1/chat/completions", body, auth)
+		// Defect 1b: the native read_file surfaces structurally (→
+		// finish_reason:tool_calls) and the trailing plain text still streams
+		// as content deltas.
+		if strings.Contains(sse, "[tool:") {
+			t.Errorf("SSE must not contain a [tool: marker: %s", sse)
+		}
 		if !strings.Contains(sse, "narrative after tool call") {
 			t.Errorf("plain-text after tool_call missing: %s", sse)
 		}
-		if strings.Contains(sse, `"finish_reason":"tool_calls"`) {
-			t.Errorf("native-then-text must NOT coerce: %s", sse)
+		if !strings.Contains(sse, `"name":"read_file"`) {
+			t.Errorf("SSE missing native read_file tool_call: %s", sse)
+		}
+		if !strings.Contains(sse, `"finish_reason":"tool_calls"`) {
+			t.Errorf("native tool call must set finish_reason:tool_calls: %s", sse)
 		}
 	})
 }

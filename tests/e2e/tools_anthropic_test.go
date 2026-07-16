@@ -235,12 +235,12 @@ func TestE2E_Tools_Anthropic(t *testing.T) {
 
 // TestE2E_Tools_CrossSurface_CanonicalEquivalence proves the D-17 cross-
 // surface assertion: identical input (modulo model field) produces an
-// equivalent canonical tool-call identity across all three surfaces. The
-// iteration-3 reworded contract scopes equivalence to (name, args) only;
-// the helper normalizes the per-surface rendering accordingly:
-//   - Ollama   → parses `[tool: <name>]` narration out of message.content
-//   - OpenAI   → parses `[tool: <name>]` narration out of choices[0].content
-//   - Anthropic → reads content[].type==tool_use, takes name + input
+// equivalent canonical tool-call identity across all three surfaces. Since
+// Defect 1a (2026-07-16) every surface surfaces tool calls structurally, so
+// equivalence covers (name, args) via structured fields:
+//   - Ollama   → message.tool_calls[0].function.{name, arguments}
+//   - OpenAI   → choices[0].message.tool_calls[0].function.{name, arguments}
+//   - Anthropic → content[].type==tool_use, name + input
 func TestE2E_Tools_CrossSurface_CanonicalEquivalence(t *testing.T) {
 	gateOrSkip(t)
 	const auth = "Bearer e2e-token"

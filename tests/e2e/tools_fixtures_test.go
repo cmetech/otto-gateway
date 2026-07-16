@@ -54,7 +54,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"testing"
 	"time"
 
@@ -378,70 +377,93 @@ func AnthropicToolsRequest(userText string, tools []ToolSpecJSON, stream bool) [
 
 // AssertSameCanonicalToolCall extracts the (name, args) tool-call identity
 // from a non-streaming response body for each surface and asserts they
-// match. Per the iteration-3 normalization contract, Ollama and OpenAI
-// render kiro-native tool_calls as `[tool: <name>]\n` narration in
-// message.content (no native tool_calls field on non-streaming), while
-// Anthropic renders them as a native tool_use content block.
+// match. Since Defect 1a (2026-07-16) all three surfaces surface kiro-native
+// tool calls STRUCTURALLY, so the equivalence covers BOTH name and args:
 //
-// The helper normalizes accordingly:
-//
-//	Ollama  → parses "[tool: <name>]" out of message.content; args=nil
-//	         (Ollama narration doesn't carry args at the canonical layer)
-//	OpenAI  → parses "[tool: <name>]" out of choices[0].message.content;
-//	         args=nil
-//	Anthropic → reads content[].type=="tool_use", takes .name and .input
-//
-// For Ollama/OpenAI the comparison reduces to "all three saw the same tool
-// name". For Anthropic we additionally assert the input round-trip matches
-// the args we supplied.
+//	Ollama    → message.tool_calls[0].function.{name, arguments(object)}
+//	OpenAI    → choices[0].message.tool_calls[0].function.{name,
+//	            arguments(JSON-string → object)}
+//	Anthropic → content[].type=="tool_use", .name + .input(object)
 func AssertSameCanonicalToolCall(t *testing.T, ollamaBody, openaiBody, anthropicBody []byte) {
 	t.Helper()
 
-	ollamaName := extractOllamaNarrationToolName(t, ollamaBody)
-	openaiName := extractOpenAINarrationToolName(t, openaiBody)
-	anthropicName, _ := extractAnthropicToolUse(t, anthropicBody)
+	ollamaName, ollamaArgs := extractOllamaToolCall(t, ollamaBody)
+	openaiName, openaiArgs := extractOpenAIToolCall(t, openaiBody)
+	anthropicName, anthropicArgs := extractAnthropicToolUse(t, anthropicBody)
 
-	if ollamaName != openaiName {
-		t.Errorf("cross-surface tool name divergence: ollama=%q openai=%q", ollamaName, openaiName)
+	if ollamaName != openaiName || openaiName != anthropicName {
+		t.Errorf("cross-surface tool name divergence: ollama=%q openai=%q anthropic=%q",
+			ollamaName, openaiName, anthropicName)
 	}
-	if openaiName != anthropicName {
-		t.Errorf("cross-surface tool name divergence: openai=%q anthropic=%q", openaiName, anthropicName)
+	oa, pa, aa := canonicalJSON(t, ollamaArgs), canonicalJSON(t, openaiArgs), canonicalJSON(t, anthropicArgs)
+	if oa != pa || pa != aa {
+		t.Errorf("cross-surface tool args divergence: ollama=%s openai=%s anthropic=%s", oa, pa, aa)
 	}
 }
 
-// extractOllamaNarrationToolName parses `[tool: <name>]` out of the assistant
-// content. The narration is the iteration-3 D-03 wording: kiro-native tool
-// calls flow into message.content for Ollama/OpenAI's non-streaming path via
-// engine.Collect's aggregator.
-func extractOllamaNarrationToolName(t *testing.T, body []byte) string {
+// canonicalJSON marshals a map to JSON for order-independent comparison
+// (encoding/json sorts map keys, so equal maps produce equal bytes).
+func canonicalJSON(t *testing.T, m map[string]any) string {
+	t.Helper()
+	b, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+	return string(b)
+}
+
+// extractOllamaToolCall reads the structured message.tool_calls[0] entry
+// (Ollama arguments are a plain JSON object).
+func extractOllamaToolCall(t *testing.T, body []byte) (name string, args map[string]any) {
 	t.Helper()
 	var resp struct {
 		Message struct {
-			Content string `json:"content"`
+			ToolCalls []struct {
+				Function struct {
+					Name      string         `json:"name"`
+					Arguments map[string]any `json:"arguments"`
+				} `json:"function"`
+			} `json:"tool_calls"`
 		} `json:"message"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
 		t.Fatalf("ollama body: %v\nbody=%s", err, string(body))
 	}
-	return parseToolNarration(resp.Message.Content)
+	if len(resp.Message.ToolCalls) == 0 {
+		t.Fatalf("ollama body: message.tool_calls[] empty\nbody=%s", string(body))
+	}
+	return resp.Message.ToolCalls[0].Function.Name, resp.Message.ToolCalls[0].Function.Arguments
 }
 
-func extractOpenAINarrationToolName(t *testing.T, body []byte) string {
+// extractOpenAIToolCall reads the structured choices[0].message.tool_calls[0]
+// entry (OpenAI arguments are a JSON-encoded STRING).
+func extractOpenAIToolCall(t *testing.T, body []byte) (name string, args map[string]any) {
 	t.Helper()
 	var resp struct {
 		Choices []struct {
 			Message struct {
-				Content string `json:"content"`
+				ToolCalls []struct {
+					Function struct {
+						Name      string `json:"name"`
+						Arguments string `json:"arguments"`
+					} `json:"function"`
+				} `json:"tool_calls"`
 			} `json:"message"`
 		} `json:"choices"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
 		t.Fatalf("openai body: %v\nbody=%s", err, string(body))
 	}
-	if len(resp.Choices) == 0 {
-		t.Fatal("openai body: choices[] empty")
+	if len(resp.Choices) == 0 || len(resp.Choices[0].Message.ToolCalls) == 0 {
+		t.Fatalf("openai body: tool_calls[] empty\nbody=%s", string(body))
 	}
-	return parseToolNarration(resp.Choices[0].Message.Content)
+	fn := resp.Choices[0].Message.ToolCalls[0].Function
+	if fn.Arguments != "" {
+		if err := json.Unmarshal([]byte(fn.Arguments), &args); err != nil {
+			t.Fatalf("openai arguments not valid JSON: %v (%q)", err, fn.Arguments)
+		}
+	}
+	return fn.Name, args
 }
 
 func extractAnthropicToolUse(t *testing.T, body []byte) (name string, input map[string]any) {
@@ -465,22 +487,6 @@ func extractAnthropicToolUse(t *testing.T, body []byte) (name string, input map[
 		}
 	}
 	return "", nil
-}
-
-// parseToolNarration extracts the tool name from a `[tool: <name>]\n`
-// narration string. Returns "" if no narration is present.
-func parseToolNarration(content string) string {
-	const prefix = "[tool: "
-	idx := strings.Index(content, prefix)
-	if idx < 0 {
-		return ""
-	}
-	rest := content[idx+len(prefix):]
-	end := strings.Index(rest, "]")
-	if end < 0 {
-		return ""
-	}
-	return rest[:end]
 }
 
 // --- Goroutine-leak gate ----------------------------------------------
