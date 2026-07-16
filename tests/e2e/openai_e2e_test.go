@@ -502,9 +502,12 @@ func TestE2E_OpenAI_ModelCapabilities(t *testing.T) {
 	var list struct {
 		Object string `json:"object"`
 		Data   []struct {
-			ID            string            `json:"id"`
-			SelectionMode string            `json:"selection_mode"`
-			Capabilities  map[string]string `json:"capabilities"`
+			ID            string                       `json:"id"`
+			Name          string                       `json:"name"`
+			Available     bool                         `json:"available"`
+			SelectionMode string                       `json:"selection_mode"`
+			Capabilities  map[string]string            `json:"capabilities"`
+			Evidence      map[string]map[string]string `json:"evidence"`
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
@@ -515,19 +518,29 @@ func TestE2E_OpenAI_ModelCapabilities(t *testing.T) {
 	}
 
 	byID := map[string]map[string]string{}
+	evByID := map[string]map[string]map[string]string{}
 	ids := make([]string, 0, len(list.Data))
 	for _, e := range list.Data {
 		byID[e.ID] = e.Capabilities
+		evByID[e.ID] = e.Evidence
 		ids = append(ids, e.ID)
 	}
 
-	// 1+2. Registered model present with its verified completion state.
+	// 1+2. Registered model present with ALL four seeded states AND their
+	// evidence — guards against silently dropping/corrupting a verified model's
+	// tools/vision/reasoning or its evidence (claude-sonnet-4.5 is seeded
+	// completion+tools+vision+reasoning=supported).
 	reg, ok := byID["claude-sonnet-4.5"]
 	if !ok {
 		t.Fatalf("registered model claude-sonnet-4.5 not returned; got ids %v", ids)
 	}
-	if reg["completion"] != "supported" {
-		t.Errorf("claude-sonnet-4.5 completion: got %q, want supported", reg["completion"])
+	for _, k := range []string{"completion", "tools", "vision", "reasoning"} {
+		if reg[k] != "supported" {
+			t.Errorf("claude-sonnet-4.5 %q: got %q, want supported", k, reg[k])
+		}
+		if _, hasEv := evByID["claude-sonnet-4.5"][k]; !hasEv {
+			t.Errorf("claude-sonnet-4.5 %q: missing evidence object", k)
+		}
 	}
 
 	// 3. Unknown model present but all-unknown.
@@ -544,5 +557,17 @@ func TestE2E_OpenAI_ModelCapabilities(t *testing.T) {
 	// 4. A registry model absent from the live catalog is NOT returned.
 	if _, present := byID["claude-haiku-4.5"]; present {
 		t.Errorf("stale registry model claude-haiku-4.5 leaked into response")
+	}
+
+	// 5. Auth parity with /v1/models: both are read-only catalog endpoints gated
+	// by IP-allowlist only (no bearer — accepted T-8 posture). With NO
+	// Authorization header, both must still return 200, proving they share the
+	// same no-bearer posture by route placement.
+	for _, path := range []string{"/v1/models", "/v1/model-capabilities"} {
+		r := ollamaRequest(t, http.MethodGet, baseURL+path, nil, "")
+		if r.StatusCode != http.StatusOK {
+			t.Errorf("no-auth GET %s: got %d, want 200 (IP-allowlist-only, no bearer)", path, r.StatusCode)
+		}
+		_ = r.Body.Close()
 	}
 }
