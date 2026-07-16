@@ -280,7 +280,7 @@ func normalizeUpdateType(s string) string {
 //
 //	agent_message_chunk       → ChunkKindText    (content)
 //	agent_thought_chunk       → ChunkKindThought (content)
-//	tool_call, tool_call_chunk → ChunkKindThought ("[tool: <title>]\n")
+//	tool_call, tool_call_chunk → ChunkKindToolCall (id/name/args)
 //	tool_call_update          → ChunkKindThought (output ?? content)
 //	plan                       → ChunkKindPlan    (entries joined by \n)
 //	default (incl. empty)     → ChunkKindText    (content) — preserve Phase 1
@@ -348,14 +348,13 @@ func translateUpdate(logger *slog.Logger, u sessionUpdateParams) (canonical.Chun
 		// kiro-emitted tool_call notification to a real
 		// canonical.ToolCallChunk with the wire fields preserved. The
 		// `[tool: <name>]\n` narration text that Phase 1.1 produced
-		// here has moved downstream:
-		//   - engine.Collect aggregates ChunkKindToolCall into the
-		//     assistant text for non-streaming Ollama/OpenAI (Phase 6
-		//     D-03 iteration-3 wording — see internal/engine/collect.go).
+		// here has moved downstream, and (Defect 1a/1c, 2026-07-16) every
+		// surface now renders this chunk STRUCTURALLY:
+		//   - engine.Collect populates Message.ToolCalls for non-streaming
+		//     Ollama/OpenAI (see internal/engine/collect.go).
 		//   - Per-surface streaming emitters render the chunk in their
 		//     native shape (Anthropic content_block_*, OpenAI
-		//     delta.tool_calls, Ollama tool_calls on done — Phase 6
-		//     06-02/03/04).
+		//     delta.tool_calls, Ollama tool_calls on the done:true line).
 		//
 		// Wire-shape variance (Node ref fixtures vs. real kiro):
 		//

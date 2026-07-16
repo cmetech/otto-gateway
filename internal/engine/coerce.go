@@ -28,17 +28,15 @@
 //     Message.ToolCalls via its adapter-local Collect (06-04 Option A1)
 //     from kiro-native ChunkKindToolCall chunks.
 //
-// Interaction with engine.Collect (Phase 6 iteration-3 narration): because
-// engine.Collect now aggregates kiro-native ChunkKindToolCall chunks
-// into the assistant text as `[tool: <name>]\n` narration, the
-// assistant text seen by CoerceToolCall in a kiro-native scenario
-// STARTS with that narration text — which does NOT begin with `{` or
-// ` ``` `. Therefore Step 3 (raw JSON parse) and Step 4 (fence-strip
-// retry) both fail, Step 5 returns false, and the response is preserved
-// verbatim. The kiro-native + Ollama/OpenAI non-streaming path lands
-// the narration on the wire and coerce does not fire. No special-case
-// logic in CoerceToolCall is needed — the algorithm naturally handles
-// it. The kiro-native narration no-coerce assertion is locked by
+// Interaction with engine.Collect (updated Defect 1a, 2026-07-16): kiro-native
+// ChunkKindToolCall chunks are now surfaced structurally onto
+// Message.ToolCalls by engine.Collect (no longer as `[tool: <name>]`
+// narration text). The idempotency guard in Step 1 (len(ToolCalls) > 0 →
+// return false) means CoerceToolCall no-ops on a kiro-native turn, so the
+// native call is never double-counted. As a defensive belt-and-braces, the
+// algorithm also naturally leaves any stray `[tool: …]`-shaped text alone —
+// it is neither `{`- nor fence-prefixed, so Steps 3/4 fail and Step 5
+// returns false. That defensive property is locked by
 // `TestCoerceToolCall_AlgorithmCases/kiro_native_narration_text_no_coerce`
 // in coerce_test.go.
 package engine

@@ -327,11 +327,9 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 	// between aggregation and per-surface render. The function mutates
 	// resp in place (Pitfall 6 — pass the pointer directly, no
 	// pre-copy). Coerce-from-text returns true iff Message.ToolCalls
-	// was rewritten; the kiro-native narration path (06-01 Task 2
-	// narration aggregator → text like "[tool: <name>]\n") naturally
-	// fails the JSON-parse step and is a coerce miss, so the narration
-	// text flows through resp.Message.Content into choices[0].message.
-	// content as expected.
+	// was rewritten. When engine.Collect already surfaced a kiro-native
+	// tool call structurally (Defect 1a), Message.ToolCalls is non-empty
+	// and CoerceToolCall no-ops via its idempotency guard — no double-count.
 	if engine.CoerceToolCall(req, resp) {
 		// REVIEW LOW #7 defensive length-guard: even though CoerceToolCall
 		// only returns true after appending a ToolCall entry, guard the

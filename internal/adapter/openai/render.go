@@ -93,10 +93,10 @@ type completionChoice struct {
 // responseMessage is the message object inside a non-streaming choice.
 // Role is always "assistant"; Content is the joined text output.
 // ToolCalls carries the assistant's outbound tool invocations for the
-// OpenAI surface (Phase 6 D-07). Populated ONLY by engine.CoerceToolCall
-// (the coerce-from-text path) per the per-surface contract documented
-// below — kiro-native ChunkKindToolCall renders as `[tool: <name>]\n`
-// narration text in Content, NOT here.
+// OpenAI surface (Phase 6 D-07). Populated by engine.Collect from kiro-native
+// ChunkKindToolCall chunks (Defect 1a, 2026-07-16) AND by engine.CoerceToolCall
+// (the coerce-from-text rescue) — both reach this renderer as
+// Message.ToolCalls.
 type responseMessage struct {
 	Role      string           `json:"role"`    // "assistant"
 	Content   string           `json:"content"` // joined text parts
@@ -162,19 +162,16 @@ func chatResponseToCompletion(resp *canonical.ChatResponse, requestedModel strin
 		stopReason = resp.StopReason
 	}
 
-	// resp.Message.ToolCalls is populated for the OpenAI surface ONLY by
-	// engine.CoerceToolCall (the coerce-from-text path). Per the Phase 6
-	// per-surface population contract (D-03/D-05/D-07 — Anthropic is the
-	// D-07 exception; Ollama and OpenAI share this code-path discipline):
-	//   - kiro-native ChunkKindToolCall renders as `[tool: <name>]\n`
-	//     narration text in Content (non-streaming path inherits this
-	//     from engine.Collect's 06-01 Task 2 narration aggregator;
-	//     streaming path emits via sse.go's per-chunk ChunkKindToolCall
-	//     handler — also text-delta narration, NOT delta.tool_calls).
+	// resp.Message.ToolCalls is populated for the OpenAI surface by two
+	// paths, both surfaced structurally (Anthropic is the separate D-07
+	// exception):
+	//   - kiro-native ChunkKindToolCall → engine.Collect populates
+	//     Message.ToolCalls for non-streaming (Defect 1a); the streaming
+	//     path emits native delta.tool_calls via sse.go (Defect 1b).
 	//   - engine.CoerceToolCall rescues LangChain-style JSON-as-text
-	//     emissions and populates Message.ToolCalls with synthetic
-	//     entries. The render path below converts those into the OpenAI
-	//     wire shape (Arguments as JSON-STRING, not object).
+	//     emissions and populates Message.ToolCalls with synthetic entries.
+	// The render path below converts either into the OpenAI wire shape
+	// (Arguments as JSON-STRING, not object).
 	var toolCalls []openAIToolCall
 	if resp != nil {
 		for _, tc := range resp.Message.ToolCalls {
