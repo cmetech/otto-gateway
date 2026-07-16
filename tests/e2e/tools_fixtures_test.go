@@ -255,6 +255,52 @@ func NotifToolCall(sessionID, toolCallID, name string, args map[string]any) []by
 	})
 }
 
+// NotifToolCallNative returns a tool_call notification frame in the REAL
+// kiro-cli wire shape — the stable tool name in `kind` (translate.go prefers
+// Kind over Title) and arguments in `rawInput` (not `args`). This models a
+// kiro built-in tool call (e.g. kind:"execute" for its shell tool) so the
+// alias-primary resolver (engine.ResolveNativeToolName) is exercised end-to-end
+// against the native name the host never offered directly.
+func NotifToolCallNative(sessionID, toolCallID, kind string, rawInput map[string]any) []byte {
+	return notifFrame(map[string]any{
+		"jsonrpc": "2.0",
+		"method":  "session/update",
+		"params": map[string]any{
+			"sessionId": sessionID,
+			"update": map[string]any{
+				"sessionUpdate": "tool_call",
+				"toolCallId":    toolCallID,
+				// title is kiro's per-chunk user-facing status string; the
+				// resolver keys off kind, so set title to something that is
+				// deliberately NOT a valid host tool name to prove kind wins.
+				"title":    "Running: " + kind,
+				"kind":     kind,
+				"rawInput": rawInput,
+			},
+		},
+	})
+}
+
+// NotifToolCallChunkNative returns a tool_call_chunk frame (native shape: kind,
+// no args) — the placeholder kiro emits before the full tool_call. Pairs with
+// NotifToolCallNative (same toolCallId) to exercise DedupToolCalls' chunk+full
+// id-merge in the e2e path.
+func NotifToolCallChunkNative(sessionID, toolCallID, kind string) []byte {
+	return notifFrame(map[string]any{
+		"jsonrpc": "2.0",
+		"method":  "session/update",
+		"params": map[string]any{
+			"sessionId": sessionID,
+			"update": map[string]any{
+				"sessionUpdate": "tool_call_chunk",
+				"toolCallId":    toolCallID,
+				"title":         "Running: " + kind,
+				"kind":          kind,
+			},
+		},
+	})
+}
+
 // NotifPlan returns a plan-chunk notification frame (kiro's PlanChunk).
 func NotifPlan(sessionID string, entries []string) []byte {
 	entryObjs := make([]map[string]any, 0, len(entries))

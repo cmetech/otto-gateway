@@ -139,9 +139,14 @@ type Deps struct {
 	KiroCmd              string
 	KiroArgs             []string
 	KiroCwd              string
-	OllamaPathPrefix     string
-	OpenAIPathPrefix     string
-	AnthropicPathPrefix  string
+	// KiroToolAliases is a read-only snapshot of the KIRO_TOOL_ALIASES map
+	// (kiro native tool name → caller-offered tool name, e.g. execute →
+	// run_shell). Surfaced on /admin/docs so an operator can confirm the
+	// alias wiring without grepping env. Empty = no aliases configured.
+	KiroToolAliases     map[string]string
+	OllamaPathPrefix    string
+	OpenAIPathPrefix    string
+	AnthropicPathPrefix string
 
 	// Chat-trace file location and retention surfaced on /admin/docs
 	// (quick 260601-aix, step 4 of admin UI redesign). Read-only
@@ -543,6 +548,15 @@ func (h *handler) docsHandler(w http.ResponseWriter, r *http.Request) {
 	if kiroCwdCurrent == "" {
 		kiroCwdCurrent = "(empty)"
 	}
+	toolAliasesCurrent := "(none)"
+	if len(h.deps.KiroToolAliases) > 0 {
+		pairs := make([]string, 0, len(h.deps.KiroToolAliases))
+		for from, to := range h.deps.KiroToolAliases {
+			pairs = append(pairs, from+":"+to)
+		}
+		sort.Strings(pairs)
+		toolAliasesCurrent = truncate(strings.Join(pairs, ","), 60)
+	}
 	streamIdleCurrent := "disabled"
 	if h.deps.StreamIdleTimeoutSec != 0 {
 		streamIdleCurrent = fmt.Sprintf("%ds", h.deps.StreamIdleTimeoutSec)
@@ -557,6 +571,7 @@ func (h *handler) docsHandler(w http.ResponseWriter, r *http.Request) {
 		{Name: "KIRO_CMD", Default: "kiro-cli", Description: "kiro-cli binary name or path resolved on PATH. Empty value puts the gateway in degraded mode.", CurrentValue: kiroCmdCurrent},
 		{Name: "KIRO_ARGS", Default: "acp", Description: "Whitespace-split argv passed to KIRO_CMD.", CurrentValue: kiroArgsCurrent},
 		{Name: "KIRO_CWD", Default: "(empty)", Description: "Working directory for the kiro-cli subprocess. Empty = inherit gateway cwd.", CurrentValue: kiroCwdCurrent},
+		{Name: "KIRO_TOOL_ALIASES", Default: "(none)", Description: "Comma-split from:to pairs mapping kiro's native built-in tool name (its ACP kind, e.g. execute / shell / fs_read) to a caller-offered tool name (e.g. run_shell). When the caller offers tools, kiro emits a native tool_call for its own built-in; the gateway surfaces it structurally under the aliased offered name. Native built-ins with no alias to an offered tool are dropped. Deployment-specific; empty default.", CurrentValue: toolAliasesCurrent},
 		{Name: "POOL_SIZE", Default: "4", Description: "Number of warm kiro-cli subprocesses kept in the pool.", CurrentValue: strconv.Itoa(h.deps.PoolSize)},
 		{Name: "SESSION_TTL_MS", Default: "1800000 (30m)", Description: "Idle stateful-session reap threshold. Accepts ms-integer (Node parity) or Go duration string.", CurrentValue: h.deps.SessionTTL.String()},
 		{Name: "STREAM_IDLE_TIMEOUT_SEC", Default: "30", Description: "Server-side idle-stream watchdog (0 disables, negative = boot error).", CurrentValue: streamIdleCurrent},
