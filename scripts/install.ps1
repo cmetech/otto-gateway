@@ -129,8 +129,10 @@ try {
         Warn "kiro-cli not found on PATH. The gateway returns 503 on chat requests until it is installed (or set KIRO_CMD in your .env)."
     }
 
+    $preservedEnv = $false
     if (Test-Path (Join-Path $GwHome '.env')) {
         Info "Existing config found — preserving it (skipping init)."
+        $preservedEnv = $true
     } else {
         Info "Writing default config (no auth, 127.0.0.1:18080, all hooks, PII redaction=encrypt, NER=on, chat-trace off) ..."
         & $bat init -NonInteractive
@@ -179,6 +181,9 @@ try {
     Write-Host ""
     Ok "Gateway $version installed to $InstallDir"
     Write-Host "`nNext steps (new terminal):"
+    if ($preservedEnv) {
+        Write-Host "  gw upgrade-env -DryRun   # check for new env keys this build added (then run without -DryRun to apply)"
+    }
     Write-Host "  gw start     # launch the gateway"
     Write-Host "  gw status    # verify it is up"
     $trayExe = Join-Path $InstallDir 'bin\gateway-tray.exe'
