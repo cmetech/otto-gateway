@@ -192,7 +192,13 @@ function Get-TemplateKeys {
         if ($key -notmatch '^[A-Za-z_][A-Za-z0-9_]*$') { return }
         [void]$out.Add($key)
     }
-    return ,$out.ToArray()
+    # NO leading comma: `return ,$array` wraps the list as a SINGLE pipeline
+    # object, which defeats the `Get-TemplateKeys | Sort-Object -Unique`
+    # de-dup AND makes Compare-Object treat both key sets as one opaque object
+    # (every key lands in both added+orphaned, unchanged=0). Emit the array so
+    # it enumerates element-by-element into the pipeline. Empty/1-element cases
+    # are safe: all callers wrap in @(...) or foreach.
+    return $out.ToArray()
 }
 
 # Get-EnvKeysPresent is a thin alias for Get-TemplateKeys — the name reads
@@ -1347,19 +1353,33 @@ function Invoke-UpgradeEnv {
         }
     }
 
-    Write-Host "gw upgrade-env:"
-    Write-Host "  template: $templatePath"
-    Write-Host "  dest:     $destPath"
-    if ($added.Count -gt 0) {
-        Write-Host ("  added:     {0} ({1})" -f $added.Count, ($added -join ' '))
-    } else { Write-Host "  added:     0" }
-    if ($orphaned.Count -gt 0) {
-        Write-Host ("  orphaned:  {0} ({1})" -f $orphaned.Count, ($orphaned -join ' '))
-    } else { Write-Host "  orphaned:  0" }
-    Write-Host ("  unchanged: {0}" -f $unchanged.Count)
+    $mode = if ($DryRun) { "dry-run — nothing will be written" } else { "applying" }
+    Write-Host "gw upgrade-env ($mode)"
+    Write-Host "  template:  $templatePath"
+    Write-Host "  your .env: $destPath"
+    Write-Host ""
+    if ($added.Count -eq 0 -and $orphaned.Count -eq 0) {
+        Write-Host ("  Your .env already matches the template — nothing to change ({0} keys)." -f $unchanged.Count)
+    } else {
+        if ($added.Count -gt 0) {
+            Write-Host ("  + {0} new key(s) to ADD to your .env:" -f $added.Count)
+            foreach ($k in ($added | Sort-Object)) { Write-Host "      $k" }
+        } else {
+            Write-Host "  + 0 new keys to add"
+        }
+        if ($orphaned.Count -gt 0) {
+            Write-Host ("  - {0} key(s) in your .env are no longer in the template (will be REMOVED; old values saved to the upgrade log first):" -f $orphaned.Count)
+            foreach ($k in ($orphaned | Sort-Object)) { Write-Host "      $k" }
+        } else {
+            Write-Host "  - 0 keys to remove"
+        }
+        Write-Host ("  = {0} key(s) unchanged" -f $unchanged.Count)
+    }
+    Write-Host ""
+    Write-Host "  Note: your customizations in overrides.env are never touched by upgrade-env."
 
     if ($DryRun) {
-        Write-Host "(dry-run; nothing written)"
+        Write-Host "  To apply, run:  gw upgrade-env    (without -DryRun)"
         return
     }
 

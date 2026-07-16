@@ -1056,26 +1056,36 @@ upgrade_env_cmd() {
     n_orphaned="$(printf '%s\n' "$orphaned" | grep -c . || true)"
     n_unchanged="$(printf '%s\n' "$unchanged" | grep -c . || true)"
 
-    echo "gw upgrade-env:"
-    echo "  template: $template"
-    echo "  dest:     $dest"
-    if [[ "$n_added" -gt 0 ]]; then
-        # Compact: count plus space-joined key list.
-        local joined; joined="$(printf '%s\n' "$added" | tr '\n' ' ' | sed 's/ $//')"
-        echo "  added:     $n_added ($joined)"
+    local mode
+    if [[ "${FLAG_DRY_RUN:-0}" == "1" ]]; then mode="dry-run — nothing will be written"; else mode="applying"; fi
+    echo "gw upgrade-env ($mode)"
+    echo "  template:  $template"
+    echo "  your .env: $dest"
+    echo ""
+    if [[ "$n_added" -eq 0 && "$n_orphaned" -eq 0 ]]; then
+        echo "  Your .env already matches the template — nothing to change ($n_unchanged keys)."
     else
-        echo "  added:     0"
+        if [[ "$n_added" -gt 0 ]]; then
+            # One key per line so a long list is readable ($added is already
+            # sorted+unique from comm above).
+            echo "  + $n_added new key(s) to ADD to your .env:"
+            printf '%s\n' "$added" | sed 's/^/      /'
+        else
+            echo "  + 0 new keys to add"
+        fi
+        if [[ "$n_orphaned" -gt 0 ]]; then
+            echo "  - $n_orphaned key(s) in your .env are no longer in the template (will be REMOVED; old values saved to the upgrade log first):"
+            printf '%s\n' "$orphaned" | sed 's/^/      /'
+        else
+            echo "  - 0 keys to remove"
+        fi
+        echo "  = $n_unchanged key(s) unchanged"
     fi
-    if [[ "$n_orphaned" -gt 0 ]]; then
-        local joined; joined="$(printf '%s\n' "$orphaned" | tr '\n' ' ' | sed 's/ $//')"
-        echo "  orphaned:  $n_orphaned ($joined)"
-    else
-        echo "  orphaned:  0"
-    fi
-    echo "  unchanged: $n_unchanged"
+    echo ""
+    echo "  Note: your customizations in overrides.env are never touched by upgrade-env."
 
     if [[ "${FLAG_DRY_RUN:-0}" == "1" ]]; then
-        echo "(dry-run; nothing written)"
+        echo "  To apply, run:  gw upgrade-env    (without --dry-run)"
         return 0
     fi
 

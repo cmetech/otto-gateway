@@ -109,8 +109,11 @@ section "3. upgrade-env --dry-run on stale dest (added + orphaned)"
 grep -v "^# STREAM_IDLE_TIMEOUT_SEC=" "$TEMPLATE" > ./.env.otto-gw
 echo 'FOO_ORPHAN=banana' >> ./.env.otto-gw
 diff_out="$("$WRAPPER" upgrade-env --dry-run --template "$TEMPLATE" --dest ./.env.otto-gw 2>&1)"
-assert 'echo "$diff_out" | grep -qE "added:[[:space:]]+1.*STREAM_IDLE_TIMEOUT_SEC"'
-assert 'echo "$diff_out" | grep -qE "orphaned:[[:space:]]+1.*FOO_ORPHAN"'
+# Per-key display (post 260716 fix): counts on a header line, keys one-per-line.
+assert 'echo "$diff_out" | grep -qE "\+ 1 new key"'
+assert 'echo "$diff_out" | grep -qE "^[[:space:]]+STREAM_IDLE_TIMEOUT_SEC$"'
+assert 'echo "$diff_out" | grep -qE "\- 1 key.*REMOVED"'
+assert 'echo "$diff_out" | grep -qE "^[[:space:]]+FOO_ORPHAN$"'
 # Dry-run wrote nothing.
 assert 'grep -q "^FOO_ORPHAN=banana$" ./.env.otto-gw'
 
