@@ -10,6 +10,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
+	"strings"
 	"time"
 
 	"otto-gateway/internal/canonical"
@@ -80,11 +82,22 @@ func load(data []byte) (*Registry, error) {
 	if err := dec.Decode(&entries); err != nil {
 		return nil, fmt.Errorf("registry: decode: %w", err)
 	}
+	// A JSON `null` root decodes to a nil slice — reject it so the loader fails
+	// fast instead of certifying an empty (all-unknown) registry. An explicit
+	// empty array `[]` decodes to a non-nil zero-length slice and is allowed.
+	if entries == nil {
+		return nil, fmt.Errorf("registry: root must be a JSON array, got null or absent")
+	}
+	// json.Decoder.Decode reads a single value; reject any trailing content so a
+	// second document cannot ship silently ignored.
+	if err := dec.Decode(new(json.RawMessage)); err != io.EOF {
+		return nil, fmt.Errorf("registry: unexpected trailing content after the JSON array")
+	}
 
 	reg := &Registry{entries: make(map[string]storedEntry, len(entries))}
 	for i, e := range entries {
-		if e.ID == "" {
-			return nil, fmt.Errorf("registry: entry %d: empty id", i)
+		if strings.TrimSpace(e.ID) == "" {
+			return nil, fmt.Errorf("registry: entry %d: empty or whitespace-only id", i)
 		}
 		if _, dup := reg.entries[e.ID]; dup {
 			return nil, fmt.Errorf("registry: duplicate id %q", e.ID)
@@ -131,8 +144,8 @@ func load(data []byte) (*Registry, error) {
 			if _, ok := validSources[ev.Source]; !ok {
 				return nil, fmt.Errorf("registry: %q: capability %q: invalid evidence source %q", e.ID, capName, ev.Source)
 			}
-			if ev.Reference == "" {
-				return nil, fmt.Errorf("registry: %q: capability %q: missing evidence reference", e.ID, capName)
+			if strings.TrimSpace(ev.Reference) == "" {
+				return nil, fmt.Errorf("registry: %q: capability %q: missing or whitespace-only evidence reference", e.ID, capName)
 			}
 			if _, err := time.Parse("2006-01-02", ev.VerifiedAt); err != nil {
 				return nil, fmt.Errorf("registry: %q: capability %q: invalid verified_at %q (want YYYY-MM-DD)", e.ID, capName, ev.VerifiedAt)

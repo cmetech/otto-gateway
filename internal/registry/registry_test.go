@@ -49,6 +49,17 @@ func TestLoad_Rejects(t *testing.T) {
 		"invalid_date":                `[{"id":"m","capabilities":{"completion":"supported","tools":"unknown","vision":"unknown","reasoning":"unknown"},"evidence":{"completion":{"source":"kiro_declared","reference":"x","verified_at":"07-16-2026"}}}]`,
 		"bad_source":                  `[{"id":"m","capabilities":{"completion":"supported","tools":"unknown","vision":"unknown","reasoning":"unknown"},"evidence":{"completion":{"source":"a_blog_post","reference":"x","verified_at":"2026-07-16"}}}]`,
 		"evidence_for_unknown_cap":    `[{"id":"m","capabilities":{"completion":"unknown","tools":"unknown","vision":"unknown","reasoning":"unknown"},"evidence":{"completion":{"source":"kiro_declared","reference":"x","verified_at":"2026-07-16"}}}]`,
+		// A single Decode ignores trailing content; the loader must reject it so a
+		// malformed embedded file cannot ship with a silently-dropped second document.
+		"trailing_data": `[{"id":"m","capabilities":{"completion":"unknown","tools":"unknown","vision":"unknown","reasoning":"unknown"},"evidence":{}}]{"ignored":true}`,
+		// A null root decodes to a nil slice; the loader must fail fast rather than
+		// certify an empty (all-unknown) registry.
+		"null_root": `null`,
+		// Whitespace-only id must be rejected like an empty id.
+		"whitespace_id": `[{"id":"   ","capabilities":{"completion":"unknown","tools":"unknown","vision":"unknown","reasoning":"unknown"},"evidence":{}}]`,
+		// A supported capability whose evidence reference is whitespace-only is not
+		// auditable — reject it exactly like an empty reference.
+		"whitespace_reference": `[{"id":"m","capabilities":{"completion":"supported","tools":"unknown","vision":"unknown","reasoning":"unknown"},"evidence":{"completion":{"source":"kiro_declared","reference":"   ","verified_at":"2026-07-16"}}}]`,
 	}
 	for name, js := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -63,6 +74,19 @@ func TestLoad_UnknownCapsNeedNoEvidence(t *testing.T) {
 	js := `[{"id":"m","capabilities":{"completion":"unknown","tools":"unknown","vision":"unknown","reasoning":"unknown"},"evidence":{}}]`
 	if _, err := load([]byte(js)); err != nil {
 		t.Errorf("all-unknown entry should load, got: %v", err)
+	}
+}
+
+// TestLoad_EmptyArrayOK locks the decision that an empty (but present) array is a
+// valid degenerate registry — distinct from a null root, which must fail. An empty
+// registry means every live model renders all-unknown.
+func TestLoad_EmptyArrayOK(t *testing.T) {
+	reg, err := load([]byte(`[]`))
+	if err != nil {
+		t.Fatalf("empty array should load, got: %v", err)
+	}
+	if len(reg.entries) != 0 {
+		t.Errorf("empty array should index zero entries, got %d", len(reg.entries))
 	}
 }
 
