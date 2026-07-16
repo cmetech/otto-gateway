@@ -133,11 +133,12 @@ jobs:
           cache: true
 
       - name: make cross (all four targets)
-        # `make cross` produces:
-        #   bin/otto-gateway-darwin-arm64
-        #   bin/otto-gateway-darwin-amd64
-        #   bin/otto-gateway-linux-amd64
-        #   bin/otto-gateway-windows-amd64.exe
+        # `make cross` produces (Makefile BINARY=gateway; the source package
+        # is cmd/otto-gateway but the shipped binary basename is "gateway"):
+        #   bin/gateway-darwin-arm64
+        #   bin/gateway-darwin-amd64
+        #   bin/gateway-linux-amd64
+        #   bin/gateway-windows-amd64.exe
         # All CGO_ENABLED=0 + -ldflags="-s -w" + statically linked.
         # ≤25 MB per binary (BLD-04 contract; current artifacts ~11 MB).
         run: make cross
@@ -146,10 +147,10 @@ jobs:
         run: |
           set -euo pipefail
           for bin in \
-            bin/otto-gateway-darwin-arm64 \
-            bin/otto-gateway-darwin-amd64 \
-            bin/otto-gateway-linux-amd64 \
-            bin/otto-gateway-windows-amd64.exe; do
+            bin/gateway-darwin-arm64 \
+            bin/gateway-darwin-amd64 \
+            bin/gateway-linux-amd64 \
+            bin/gateway-windows-amd64.exe; do
             test -f "$bin" || { echo "missing: $bin" >&2; exit 1; }
             size_bytes=$(stat -c%s "$bin")
             size_mb=$(( size_bytes / 1024 / 1024 ))
