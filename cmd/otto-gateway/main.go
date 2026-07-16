@@ -927,14 +927,14 @@ func resolveGatewayID(logger *slog.Logger) string {
 		return ulid.Make().String() // no writable location — ephemeral id
 	}
 	path := filepath.Join(dir, "gateway-id")
-	if b, err := os.ReadFile(path); err == nil {
+	if b, err := os.ReadFile(path); err == nil { //nolint:gosec // G703: path is internally derived (GW_HOME / os.UserConfigDir), not request-tainted
 		if id := strings.TrimSpace(string(b)); id != "" {
 			return id
 		}
 	}
 	id := ulid.Make().String()
-	if mkErr := os.MkdirAll(dir, 0o755); mkErr == nil {
-		if wErr := os.WriteFile(path, []byte(id+"\n"), 0o644); wErr == nil {
+	if mkErr := os.MkdirAll(dir, 0o755); mkErr == nil { //nolint:gosec // G301: user config dir; gateway-id is a non-secret device identifier
+		if wErr := os.WriteFile(path, []byte(id+"\n"), 0o644); wErr == nil { //nolint:gosec // G306: gateway-id file is intentionally world-readable (non-secret)
 			return id
 		}
 	}

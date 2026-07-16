@@ -112,11 +112,11 @@ func (rw *remoteWriter) tickOnce(ctx context.Context, cfg remoteWriteConfig) {
 func (rw *remoteWriter) scrapeAndConvert(ctx context.Context, cfg remoteWriteConfig) ([]promwrite.TimeSeries, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rw.scrapeURL, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("build scrape request: %w", err)
 	}
 	resp, err := rw.httpc.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("scrape %s: %w", rw.scrapeURL, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
@@ -158,7 +158,10 @@ func (rw *remoteWriter) push(ctx context.Context, cfg remoteWriteConfig, series 
 			"Authorization": "Basic " + basicAuth(cfg.User, cfg.Token),
 		}),
 	)
-	return err
+	if err != nil {
+		return fmt.Errorf("remote write: %w", err)
+	}
+	return nil
 }
 
 // resolveInstance derives the per-gateway `instance` label: the gateway_id from

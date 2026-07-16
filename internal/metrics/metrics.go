@@ -162,8 +162,8 @@ type skillLimiter struct {
 	limit int
 }
 
-func newSkillLimiter(limit int) *skillLimiter {
-	return &skillLimiter{seen: make(map[string]struct{}), limit: limit}
+func newSkillLimiter() *skillLimiter {
+	return &skillLimiter{seen: make(map[string]struct{}), limit: MaxSkillCardinality}
 }
 
 // bucket returns a bounded, sanitized skill label: "none" for an empty header,
@@ -272,8 +272,8 @@ func New(info BuildInfo, pool func() PoolStats, sessions func() SessionStats, wo
 			Help: "Total LLM chat requests, by API surface, invoking skill " +
 				"(X-GW-Skill, or X-Flow-Name alias), and client (X-GW-Client).",
 		}, []string{"surface", "skill", "client"}),
-		skills:  newSkillLimiter(MaxSkillCardinality),
-		clients: newSkillLimiter(MaxSkillCardinality),
+		skills:  newSkillLimiter(),
+		clients: newSkillLimiter(),
 
 		kiroCredits: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "gw_kiro_credits_total",
@@ -297,13 +297,13 @@ func New(info BuildInfo, pool func() PoolStats, sessions func() SessionStats, wo
 			Name: "gw_kiro_mcp_server_init_total",
 			Help: "Total kiro MCP-server init outcomes, by server and result (ok|fail).",
 		}, []string{"server", "result"}),
-		mcpServers: newSkillLimiter(MaxSkillCardinality),
+		mcpServers: newSkillLimiter(),
 
 		modelReqs: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "gw_model_requests_total",
 			Help: "Total LLM requests by requested model (canonical request Model; empty/auto → auto).",
 		}, []string{"model"}),
-		models: newSkillLimiter(MaxSkillCardinality),
+		models: newSkillLimiter(),
 	}
 	reggw.MustRegister(
 		buildInfo, m.reqTotal, m.reqDur, m.inFlight, m.llmTotal,

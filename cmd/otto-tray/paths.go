@@ -56,7 +56,7 @@ func gwTrayConfigPath(gwHome string) string { return filepath.Join(gwHome, "tray
 
 // resolveInstallDirFrom returns the code install dir given the tray executable
 // path. Walks up from bin/; steps over the macOS "Gateway Tray.app" bundle.
-func resolveInstallDirFrom(execPath string) (string, error) {
+func resolveInstallDirFrom(execPath string) (string, error) { //nolint:unparam // error kept for caller symmetry; EvalSymlinks failure is intentionally swallowed (falls back to execPath)
 	resolved, err := filepath.EvalSymlinks(execPath)
 	if err != nil {
 		resolved = execPath

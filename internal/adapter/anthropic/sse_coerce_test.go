@@ -26,7 +26,7 @@ import (
 // driveTextChunks feeds the supplied text fragments as ChunkKindText
 // chunks through runSSEEmitterLoop against the supplied emitter, closing
 // the channel so finalizeStream runs. Returns the recorded wire body.
-func driveTextChunks(t *testing.T, e *sseEmitter, cf *countingFlusher, stop canonical.StopReason, fragments ...string) string {
+func driveTextChunks(t *testing.T, e *sseEmitter, cf *countingFlusher, stop canonical.StopReason, fragments ...string) string { //nolint:unparam // test helper intentionally general over stop reason
 	t.Helper()
 	ch := make(chan canonical.Chunk, len(fragments))
 	for _, f := range fragments {

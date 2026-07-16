@@ -27,7 +27,7 @@ import (
 // driveChunks feeds arbitrary canonical chunks through runSSEEmitterLoop
 // against the supplied emitter, closing the channel so finalizeStream
 // runs. Returns the recorded wire body.
-func driveChunks(t *testing.T, e *sseEmitter, cf *countingFlusher, stop canonical.StopReason, chunks ...canonical.Chunk) string {
+func driveChunks(t *testing.T, e *sseEmitter, cf *countingFlusher, stop canonical.StopReason, chunks ...canonical.Chunk) string { //nolint:unparam // test helper intentionally general over stop reason
 	t.Helper()
 	ch := make(chan canonical.Chunk, len(chunks))
 	for _, c := range chunks {
