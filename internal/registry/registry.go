@@ -159,7 +159,82 @@ func contains(ss []string, s string) bool {
 	return false
 }
 
-// Enrich is implemented in Task 2. Placeholder keeps the package compiling.
+// Enrich fuses the live Kiro catalog with the registry. auto is emitted first
+// (normalized, all-unknown); any live "auto" is dropped. Each explicit live
+// model gets its registered states or all-unknown when unregistered. Registry
+// entries absent from the live catalog are omitted. Inputs are never mutated.
 func (r *Registry) Enrich(live []canonical.ModelInfo, now time.Time) canonical.CapabilityCatalog {
-	return canonical.CapabilityCatalog{RegistryRevision: r.revision, GeneratedAt: now}
+	out := canonical.CapabilityCatalog{
+		RegistryRevision: r.revision,
+		GeneratedAt:      now,
+		Entries:          make([]canonical.ModelCapability, 0, 1+len(live)),
+	}
+	out.Entries = append(out.Entries, autoEntry())
+
+	for _, m := range live {
+		if m.ID == "" || m.ID == "auto" { // dedupe auto, skip empty
+			continue
+		}
+		entry := canonical.ModelCapability{
+			ID:            m.ID,
+			Available:     true,
+			SelectionMode: "explicit",
+			Capabilities:  allUnknown(),
+			Evidence:      map[string]canonical.Evidence{},
+		}
+		if stored, ok := r.entries[m.ID]; ok {
+			entry.Name = pickName(m.Name, stored.name, m.ID)
+			entry.Capabilities = cloneCaps(stored.capabilities)
+			entry.Evidence = cloneEvidence(stored.evidence)
+		} else {
+			entry.Name = pickName(m.Name, "", m.ID)
+		}
+		out.Entries = append(out.Entries, entry)
+	}
+	return out
+}
+
+func autoEntry() canonical.ModelCapability {
+	return canonical.ModelCapability{
+		ID:            "auto",
+		Name:          "Automatic",
+		Available:     true,
+		SelectionMode: "automatic",
+		Capabilities:  allUnknown(),
+		Evidence:      map[string]canonical.Evidence{},
+	}
+}
+
+func allUnknown() map[string]canonical.CapabilityState {
+	m := make(map[string]canonical.CapabilityState, len(canonical.RequiredCapabilities))
+	for _, k := range canonical.RequiredCapabilities {
+		m[k] = canonical.CapUnknown
+	}
+	return m
+}
+
+func pickName(live, registry, id string) string {
+	if live != "" {
+		return live
+	}
+	if registry != "" {
+		return registry
+	}
+	return id
+}
+
+func cloneCaps(src map[string]canonical.CapabilityState) map[string]canonical.CapabilityState {
+	out := make(map[string]canonical.CapabilityState, len(src))
+	for k, v := range src {
+		out[k] = v
+	}
+	return out
+}
+
+func cloneEvidence(src map[string]canonical.Evidence) map[string]canonical.Evidence {
+	out := make(map[string]canonical.Evidence, len(src))
+	for k, v := range src {
+		out[k] = v
+	}
+	return out
 }

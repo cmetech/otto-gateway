@@ -3,6 +3,9 @@ package registry
 import (
 	"strings"
 	"testing"
+	"time"
+
+	"otto-gateway/internal/canonical"
 )
 
 // validEntry returns a minimal valid single-entry registry as JSON bytes,
@@ -81,5 +84,136 @@ func TestLoad_EmbeddedRegistryValid(t *testing.T) {
 	// The shipped registry.json must always load.
 	if _, err := Load(); err != nil {
 		t.Fatalf("embedded registry.json invalid: %v", err)
+	}
+}
+
+func testRegistry(t *testing.T) *Registry {
+	t.Helper()
+	reg, err := load(validRegistryJSON()) // has entry "m1"
+	if err != nil {
+		t.Fatal(err)
+	}
+	return reg
+}
+
+func findEntry(cat canonical.CapabilityCatalog, id string) (canonical.ModelCapability, bool) {
+	for _, e := range cat.Entries {
+		if e.ID == id {
+			return e, true
+		}
+	}
+	return canonical.ModelCapability{}, false
+}
+
+func TestEnrich_AutoFirstAndAutomatic(t *testing.T) {
+	cat := testRegistry(t).Enrich([]canonical.ModelInfo{{ID: "m1"}}, time.Unix(0, 0))
+	if len(cat.Entries) == 0 || cat.Entries[0].ID != "auto" {
+		t.Fatalf("auto not first: %+v", cat.Entries)
+	}
+	auto := cat.Entries[0]
+	if auto.SelectionMode != "automatic" || auto.Name != "Automatic" || !auto.Available {
+		t.Errorf("auto entry wrong: %+v", auto)
+	}
+	for _, k := range canonical.RequiredCapabilities {
+		if auto.Capabilities[k] != canonical.CapUnknown {
+			t.Errorf("auto cap %q: got %q, want unknown", k, auto.Capabilities[k])
+		}
+	}
+	if len(auto.Evidence) != 0 {
+		t.Errorf("auto evidence should be empty, got %+v", auto.Evidence)
+	}
+}
+
+func TestEnrich_DropsLiveAuto(t *testing.T) {
+	cat := testRegistry(t).Enrich([]canonical.ModelInfo{{ID: "auto", Name: "Live Auto"}, {ID: "m1"}}, time.Unix(0, 0))
+	autoCount := 0
+	for _, e := range cat.Entries {
+		if e.ID == "auto" {
+			autoCount++
+		}
+	}
+	if autoCount != 1 {
+		t.Errorf("auto emitted %d times, want exactly 1", autoCount)
+	}
+	if cat.Entries[0].Name != "Automatic" {
+		t.Errorf("live auto name leaked: %q", cat.Entries[0].Name)
+	}
+}
+
+func TestEnrich_RegisteredCarriesStates(t *testing.T) {
+	cat := testRegistry(t).Enrich([]canonical.ModelInfo{{ID: "m1"}}, time.Unix(0, 0))
+	m1, ok := findEntry(cat, "m1")
+	if !ok {
+		t.Fatal("m1 missing")
+	}
+	if m1.SelectionMode != "explicit" || !m1.Available {
+		t.Errorf("m1 mode/available wrong: %+v", m1)
+	}
+	if m1.Capabilities["completion"] != canonical.CapSupported {
+		t.Errorf("m1 completion: got %q, want supported", m1.Capabilities["completion"])
+	}
+	if m1.Capabilities["vision"] != canonical.CapUnsupported {
+		t.Errorf("m1 vision: got %q, want unsupported", m1.Capabilities["vision"])
+	}
+	if _, ok := m1.Evidence["vision"]; !ok {
+		t.Errorf("m1 vision evidence missing")
+	}
+}
+
+func TestEnrich_UnregisteredAllUnknown(t *testing.T) {
+	cat := testRegistry(t).Enrich([]canonical.ModelInfo{{ID: "ghost", Name: "Ghost"}}, time.Unix(0, 0))
+	g, ok := findEntry(cat, "ghost")
+	if !ok {
+		t.Fatal("ghost missing")
+	}
+	for _, k := range canonical.RequiredCapabilities {
+		if g.Capabilities[k] != canonical.CapUnknown {
+			t.Errorf("ghost cap %q: got %q, want unknown", k, g.Capabilities[k])
+		}
+	}
+	if len(g.Evidence) != 0 {
+		t.Errorf("ghost evidence should be empty")
+	}
+	if g.Name != "Ghost" {
+		t.Errorf("ghost live name not used: %q", g.Name)
+	}
+}
+
+func TestEnrich_ExactMatchOnly(t *testing.T) {
+	// "m1x" must NOT fuzzy-match registry entry "m1".
+	cat := testRegistry(t).Enrich([]canonical.ModelInfo{{ID: "m1x"}}, time.Unix(0, 0))
+	e, _ := findEntry(cat, "m1x")
+	if e.Capabilities["completion"] != canonical.CapUnknown {
+		t.Errorf("m1x fuzzy-matched m1; completion=%q", e.Capabilities["completion"])
+	}
+}
+
+func TestEnrich_StaleRegistryOnlyOmitted(t *testing.T) {
+	cat := testRegistry(t).Enrich([]canonical.ModelInfo{{ID: "other"}}, time.Unix(0, 0))
+	if _, ok := findEntry(cat, "m1"); ok {
+		t.Errorf("registry-only m1 emitted despite absent from live catalog")
+	}
+}
+
+func TestEnrich_LiveNameWins(t *testing.T) {
+	cat := testRegistry(t).Enrich([]canonical.ModelInfo{{ID: "m1", Name: "Live Name"}}, time.Unix(0, 0))
+	m1, _ := findEntry(cat, "m1")
+	if m1.Name != "Live Name" {
+		t.Errorf("live name should win: got %q", m1.Name)
+	}
+}
+
+func TestEnrich_EmptyCatalogAutoOnly(t *testing.T) {
+	cat := testRegistry(t).Enrich(nil, time.Unix(0, 0))
+	if len(cat.Entries) != 1 || cat.Entries[0].ID != "auto" {
+		t.Errorf("empty catalog should be auto-only, got %+v", cat.Entries)
+	}
+}
+
+func TestEnrich_DoesNotMutateInput(t *testing.T) {
+	live := []canonical.ModelInfo{{ID: "m1", Name: "orig"}}
+	_ = testRegistry(t).Enrich(live, time.Unix(0, 0))
+	if live[0].Name != "orig" || live[0].ID != "m1" {
+		t.Errorf("input mutated: %+v", live)
 	}
 }
