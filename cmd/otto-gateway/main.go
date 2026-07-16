@@ -56,6 +56,7 @@ import (
 	"otto-gateway/internal/plugin/pii"
 	"otto-gateway/internal/pool"
 	"otto-gateway/internal/procstat"
+	"otto-gateway/internal/registry"
 	"otto-gateway/internal/server"
 	"otto-gateway/internal/session"
 	"otto-gateway/internal/version"
@@ -615,10 +616,17 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 		if a.pool != nil {
 			cat = a.pool
 		}
+		// Load the embedded capability registry once. A load error is a
+		// build/ship error (invalid embedded JSON) — fail fast at startup.
+		capReg, err := registry.Load()
+		if err != nil {
+			return nil, func() {}, fmt.Errorf("model capability registry: %w", err)
+		}
 		openaiAdapter = openai.New(openai.Config{
 			Logger:            logger,
 			Engine:            eng,
 			ModelCatalog:      cat,
+			ModelCapabilities: modelCapabilityCatalog{catalog: cat, reg: capReg},
 			Registry:          registryForAdapters,
 			EngineForSession:  openaiEngineForSession,
 			KiroCWD:           cfg.KiroCWD,
@@ -1437,6 +1445,25 @@ func (a openaiEngineAdapter) CollectFromRun(ctx context.Context, run openai.RunH
 		return nil, fmt.Errorf("openai engine collect from run: %w", err)
 	}
 	return resp, nil
+}
+
+// modelCapabilityCatalog combines the live pool catalog with the embedded
+// capability registry for GET /v1/model-capabilities. It satisfies
+// openai.ModelCapabilityCatalog. catalog may be nil (KIRO_CMD unset) → Enrich
+// receives an empty live list and returns auto-only.
+type modelCapabilityCatalog struct {
+	catalog openai.ModelCatalog
+	reg     *registry.Registry
+}
+
+// ModelCapabilities satisfies openai.ModelCapabilityCatalog by merging the
+// live pool catalog (if any) with the embedded registry.
+func (m modelCapabilityCatalog) ModelCapabilities() canonical.CapabilityCatalog {
+	var live []canonical.ModelInfo
+	if m.catalog != nil {
+		live = m.catalog.Models()
+	}
+	return m.reg.Enrich(live, time.Now())
 }
 
 // ollamaEngineAdapter wraps a concrete *engine.Engine and adapts its Run
