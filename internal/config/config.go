@@ -104,11 +104,12 @@ type Config struct {
 	KiroCWD string
 	// ToolAliases maps kiro's native built-in tool name (its ACP `kind`, e.g.
 	// "execute") to the caller-offered tool name it should be surfaced as
-	// (e.g. "run_shell"). Loaded from KIRO_TOOL_ALIASES as comma-separated
+	// (e.g. "terminal"). Loaded from KIRO_TOOL_ALIASES as comma-separated
 	// `from:to` pairs. When the caller offers tools, a native tool call whose
 	// (aliased) name matches an offered tool is surfaced structurally under
-	// that name; native calls with no match are dropped. Empty by default —
-	// aliases are deployment-specific because host tool names vary.
+	// that name; native calls with no match are dropped. Defaults to the
+	// Hermes client's tool names (defaultKiroToolAliases); set KIRO_TOOL_ALIASES
+	// to override, or to the empty string to disable aliasing.
 	ToolAliases map[string]string
 	// Debug enables debug-level logging (default false).
 	Debug bool
@@ -338,7 +339,13 @@ func Load() (Config, error) {
 	kiroCmd := getEnvStr("KIRO_CMD", "kiro-cli")
 	kiroArgs := getEnvStrSlice("KIRO_ARGS", []string{"acp"})
 	kiroCWD := getEnvStr("KIRO_CWD", "")
-	toolAliases, toolAliasErr := parseToolAliases(getEnvStr("KIRO_TOOL_ALIASES", ""))
+	// Use LookupEnv (not getEnvStr) so an explicitly-set empty value disables
+	// aliasing, while a truly-unset var falls back to the Hermes default.
+	rawToolAliases, toolAliasesSet := os.LookupEnv("KIRO_TOOL_ALIASES")
+	if !toolAliasesSet {
+		rawToolAliases = defaultKiroToolAliases
+	}
+	toolAliases, toolAliasErr := parseToolAliases(rawToolAliases)
 	if toolAliasErr != nil {
 		errs = append(errs, fmt.Errorf("KIRO_TOOL_ALIASES: %w", toolAliasErr))
 	}
@@ -1151,9 +1158,21 @@ func validatePIIEntities(names []string) error {
 	return nil
 }
 
+// defaultKiroToolAliases maps kiro's native built-in tool names to the Hermes
+// client's default tool names, so out of the box a denied kiro built-in
+// surfaces structurally as the equivalent Hermes tool instead of being dropped.
+// execute/shell → terminal is confirmed against a real kiro capture (kiro's
+// shell built-in emits kind "execute"/toolName "shell" with args {command};
+// Hermes' `terminal` takes a `command` arg). fs_read/fs_write → read_file/
+// write_file are best-effort: ResolveNativeToolName only consults an alias when
+// kiro actually emits that native name, so an entry kiro never emits is inert
+// and can never misroute. Primary clients are Hermes-based; override (or set to
+// the empty string to disable) via KIRO_TOOL_ALIASES in overrides.env.
+const defaultKiroToolAliases = "execute:terminal,shell:terminal,fs_read:read_file,fs_write:write_file"
+
 // parseToolAliases parses the KIRO_TOOL_ALIASES env value into a
 // from→to tool-name map. Shape: "from:to,from:to,..." e.g.
-// "execute:run_shell,fs_read:read_file". `from` is kiro's native built-in
+// "execute:terminal,fs_read:read_file". `from` is kiro's native built-in
 // tool name (its ACP `kind`); `to` is the caller-offered tool name it
 // should surface as. Returns (nil, nil) for empty input. Malformed pairs
 // (missing side, empty side) are errors; a later `from` wins on duplicate
