@@ -9,7 +9,9 @@
 package acp
 
 import (
+	"bytes"
 	"encoding/json"
+	"log/slog"
 	"reflect"
 	"strings"
 	"testing"
@@ -368,6 +370,55 @@ func TestTranslateUpdate_InnerUnmarshalFailure_DropsNotification(t *testing.T) {
 	if ok {
 		t.Errorf("translateUpdate(malformed inner update): ok=true, want false (got chunk %+v)", chunk)
 	}
+}
+
+// TestTranslateUpdate_UnknownDiscriminator_LogsDebug locks the observability
+// fix: a non-empty discriminator the switch does not recognize is surfaced as
+// text (data-loss avoidance) AND logged at Debug, so a new kiro chunk type
+// (e.g. a future reasoning discriminator) leaves a breadcrumb instead of
+// silently rendering as answer content. An empty discriminator (a body.text-only
+// notification) must NOT log — that is the expected text-carrying shape.
+func TestTranslateUpdate_UnknownDiscriminator_LogsDebug(t *testing.T) {
+	t.Parallel()
+
+	newLogger := func(buf *bytes.Buffer) *slog.Logger {
+		return slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	}
+
+	t.Run("unknown_discriminator_logs", func(t *testing.T) {
+		t.Parallel()
+		var buf bytes.Buffer
+		parsed := sessionUpdateParams{
+			Update: json.RawMessage(`{"sessionUpdate":"agent_reasoning_chunk","content":{"type":"text","text":"thinking..."}}`),
+		}
+		got, ok := translateUpdate(newLogger(&buf), parsed)
+		if !ok || got.Kind != canonical.ChunkKindText {
+			t.Fatalf("want ok text chunk, got ok=%v kind=%v", ok, got.Kind)
+		}
+		if got.Text == nil || got.Text.Content != "thinking..." {
+			t.Errorf("content lost on fallback: %+v", got.Text)
+		}
+		out := buf.String()
+		if !strings.Contains(out, "unrecognized session/update discriminator") ||
+			!strings.Contains(out, "agent_reasoning_chunk") {
+			t.Errorf("expected Debug log naming the discriminator; got: %q", out)
+		}
+	})
+
+	t.Run("empty_discriminator_does_not_log", func(t *testing.T) {
+		t.Parallel()
+		var buf bytes.Buffer
+		parsed := sessionUpdateParams{
+			Update: json.RawMessage(`{"text":"bare text"}`),
+		}
+		got, ok := translateUpdate(newLogger(&buf), parsed)
+		if !ok || got.Text == nil || got.Text.Content != "bare text" {
+			t.Fatalf("want bare text surfaced; got ok=%v text=%+v", ok, got.Text)
+		}
+		if buf.Len() != 0 {
+			t.Errorf("empty discriminator should not log; got: %q", buf.String())
+		}
+	})
 }
 
 // TestParseStopReason_MappingTable locks the wire-string → canonical.StopReason

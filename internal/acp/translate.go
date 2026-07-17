@@ -399,10 +399,21 @@ func translateUpdate(logger *slog.Logger, u sessionUpdateParams) (canonical.Chun
 		}, true
 	default:
 		// Preserve Phase 1 "fall back to text to avoid data loss" policy
-		// (CONTEXT.md §Claude's Discretion). Unknown discriminators land
-		// here; handleNotification logs a Debug. Empty discriminator with
-		// non-empty `text` (e.g., a notification carrying only `body.text`)
-		// also lands here and surfaces the text.
+		// (CONTEXT.md §Claude's Discretion). Two things land here: (1) an
+		// unrecognized-but-well-formed discriminator, and (2) an empty
+		// discriminator carrying only `body.text`. Both surface as text.
+		//
+		// Log the FIRST case at Debug — a non-empty discriminator we don't
+		// recognize is a new kiro chunk type (e.g. a future reasoning
+		// discriminator) silently rendered as answer text; without this line it
+		// leaves no breadcrumb at all. (An earlier comment here claimed
+		// handleNotification logged this; it did not — that log never existed.)
+		// The empty-discriminator case (2) is expected and stays quiet.
+		if logger != nil && discriminator != "" {
+			logger.Debug("acp: unrecognized session/update discriminator — surfaced as text",
+				"discriminator", discriminator,
+				"raw", truncateForLog(firstNonEmpty(string(u.Update), content), 200))
+		}
 		return canonical.Chunk{
 			Kind: canonical.ChunkKindText,
 			Text: &canonical.TextChunk{Content: content},
