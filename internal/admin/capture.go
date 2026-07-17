@@ -3,6 +3,7 @@ package admin
 import (
 	"encoding/json"
 	"io"
+	"mime"
 	"net/http"
 )
 
@@ -49,6 +50,11 @@ func (h *handler) acpCapturePostHandler(w http.ResponseWriter, req *http.Request
 	}
 	if !src.AllowRuntimeToggle() {
 		writeJSONErr(w, http.StatusForbidden, "runtime toggle disabled; start the gateway with ACP_CAPTURE_RUNTIME=true")
+		return
+	}
+	mt, _, _ := mime.ParseMediaType(req.Header.Get("Content-Type"))
+	if mt != "application/json" {
+		writeJSONErr(w, http.StatusUnsupportedMediaType, "Content-Type must be application/json")
 		return
 	}
 	var body acpCaptureActionRequest

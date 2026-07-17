@@ -35,6 +35,7 @@ func doCapturePost(t *testing.T, src admin.AcpCaptureSource, body string) *httpt
 	t.Helper()
 	h := admin.Handler(admin.Deps{AcpCapture: src})
 	req := httptest.NewRequest(http.MethodPost, "/api/acp-capture", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec
@@ -191,5 +192,25 @@ func TestAcpCaptureGet_ExtendedShape(t *testing.T) {
 	}
 	if !got.Enabled || !got.AllowRuntimeToggle || got.Count != 1 || got.Size != 512 || len(got.Frames) != 1 {
 		t.Fatalf("extended GET shape wrong: %+v", got)
+	}
+}
+
+// TestAcpCapturePost_RejectsNonJSONContentType: a POST without an
+// application/json Content-Type must be rejected with 415 before the body is
+// decoded or any mutator runs — this closes off a cross-origin "simple
+// request" (text/plain) form-POST that would otherwise bypass CORS
+// preflight and blind-toggle capture.
+func TestAcpCapturePost_RejectsNonJSONContentType(t *testing.T) {
+	src := &fakeCaptureSource{allow: true}
+	h := admin.Handler(admin.Deps{AcpCapture: src})
+	req := httptest.NewRequest(http.MethodPost, "/api/acp-capture", strings.NewReader(`{"action":"enable"}`))
+	req.Header.Set("Content-Type", "text/plain")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("expected 415 for non-JSON Content-Type, got %d; body=%s", rec.Code, rec.Body.String())
+	}
+	if src.enableN != 0 {
+		t.Fatalf("enable applied despite non-JSON Content-Type: enableN=%d", src.enableN)
 	}
 }
