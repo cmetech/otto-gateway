@@ -12,9 +12,33 @@ import (
 	"otto-gateway/internal/admin"
 )
 
-type fakeCaptureSource struct{ frames []admin.CaptureFrame }
+type fakeCaptureSource struct {
+	frames   []admin.CaptureFrame
+	enabled  bool
+	allow    bool
+	size     int
+	enableN  int
+	disableN int
+	clearN   int
+}
 
-func (f fakeCaptureSource) Snapshot() []admin.CaptureFrame { return f.frames }
+func (f *fakeCaptureSource) Snapshot() []admin.CaptureFrame { return f.frames }
+func (f *fakeCaptureSource) Enabled() bool                  { return f.enabled }
+func (f *fakeCaptureSource) AllowRuntimeToggle() bool       { return f.allow }
+func (f *fakeCaptureSource) Count() int                     { return len(f.frames) }
+func (f *fakeCaptureSource) Size() int                      { return f.size }
+func (f *fakeCaptureSource) Enable()                        { f.enableN++; f.enabled = true }
+func (f *fakeCaptureSource) Disable()                       { f.disableN++; f.enabled = false }
+func (f *fakeCaptureSource) Clear()                         { f.clearN++; f.frames = nil }
+
+func doCapturePost(t *testing.T, src admin.AcpCaptureSource, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	h := admin.Handler(admin.Deps{AcpCapture: src})
+	req := httptest.NewRequest(http.MethodPost, "/api/acp-capture", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
 
 func doGet(t *testing.T, h http.Handler, path string) *httptest.ResponseRecorder {
 	t.Helper()
@@ -26,7 +50,7 @@ func doGet(t *testing.T, h http.Handler, path string) *httptest.ResponseRecorder
 // TestAcpCapture_Enabled: with a source wired, the endpoint returns enabled:true
 // and the frames as JSON.
 func TestAcpCapture_Enabled(t *testing.T) {
-	src := fakeCaptureSource{frames: []admin.CaptureFrame{
+	src := &fakeCaptureSource{enabled: true, frames: []admin.CaptureFrame{
 		{Seq: 1, Ts: time.Unix(1700000000, 0).UTC(), Method: "session/update", Params: `{"x":1}`, Bytes: 7},
 	}}
 	h := admin.Handler(admin.Deps{AcpCapture: src})
@@ -82,7 +106,7 @@ func TestAbout_AcpCaptureRow(t *testing.T) {
 	const offRow = `<dt>ACP capture</dt><dd>off</dd>`
 
 	// Wired source → on.
-	hOn := admin.Handler(admin.Deps{AcpCapture: fakeCaptureSource{}})
+	hOn := admin.Handler(admin.Deps{AcpCapture: &fakeCaptureSource{enabled: true}})
 	recOn := doGet(t, hOn, "/about")
 	if recOn.Code != http.StatusOK {
 		t.Fatalf("GET /about (wired): status = %d, want 200", recOn.Code)
@@ -116,5 +140,56 @@ func TestDocs_AcpCaptureRows(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("Docs page env table missing %q row", want)
 		}
+	}
+}
+
+func TestAcpCapturePost_EnableWhenAllowed(t *testing.T) {
+	src := &fakeCaptureSource{allow: true, size: 512}
+	rec := doCapturePost(t, src, `{"action":"enable"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("enable: got %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if src.enableN != 1 || !src.enabled {
+		t.Fatalf("enable not applied: enableN=%d enabled=%v", src.enableN, src.enabled)
+	}
+}
+
+func TestAcpCapturePost_ForbiddenWhenToggleDisallowed(t *testing.T) {
+	src := &fakeCaptureSource{allow: false}
+	rec := doCapturePost(t, src, `{"action":"enable"}`)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 when allow=false, got %d", rec.Code)
+	}
+	if src.enableN != 0 {
+		t.Fatalf("enable applied despite 403: enableN=%d", src.enableN)
+	}
+}
+
+func TestAcpCapturePost_UnknownAction400(t *testing.T) {
+	src := &fakeCaptureSource{allow: true}
+	rec := doCapturePost(t, src, `{"action":"frobnicate"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for unknown action, got %d", rec.Code)
+	}
+}
+
+func TestAcpCaptureGet_ExtendedShape(t *testing.T) {
+	src := &fakeCaptureSource{allow: true, enabled: true, size: 512, frames: []admin.CaptureFrame{{Seq: 1, Method: "session/update"}}}
+	h := admin.Handler(admin.Deps{AcpCapture: src})
+	req := httptest.NewRequest(http.MethodGet, "/api/acp-capture", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	var got struct {
+		Enabled            bool                 `json:"enabled"`
+		AllowRuntimeToggle bool                 `json:"allowRuntimeToggle"`
+		Count              int                  `json:"count"`
+		Size               int                  `json:"size"`
+		Frames             []admin.CaptureFrame `json:"frames"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !got.Enabled || !got.AllowRuntimeToggle || got.Count != 1 || got.Size != 512 || len(got.Frames) != 1 {
+		t.Fatalf("extended GET shape wrong: %+v", got)
 	}
 }
