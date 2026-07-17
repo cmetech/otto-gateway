@@ -34,7 +34,7 @@ func (f *fakeCaptureSource) Clear()                         { f.clearN++; f.fram
 func doCapturePost(t *testing.T, src admin.AcpCaptureSource, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	h := admin.Handler(admin.Deps{AcpCapture: src})
-	req := httptest.NewRequest(http.MethodPost, "/api/acp-capture", strings.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/acp-capture", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -177,7 +177,7 @@ func TestAcpCapturePost_UnknownAction400(t *testing.T) {
 func TestAcpCaptureGet_ExtendedShape(t *testing.T) {
 	src := &fakeCaptureSource{allow: true, enabled: true, size: 512, frames: []admin.CaptureFrame{{Seq: 1, Method: "session/update"}}}
 	h := admin.Handler(admin.Deps{AcpCapture: src})
-	req := httptest.NewRequest(http.MethodGet, "/api/acp-capture", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/acp-capture", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	var got struct {
@@ -203,7 +203,7 @@ func TestAcpCaptureGet_ExtendedShape(t *testing.T) {
 func TestAcpCapturePost_RejectsNonJSONContentType(t *testing.T) {
 	src := &fakeCaptureSource{allow: true}
 	h := admin.Handler(admin.Deps{AcpCapture: src})
-	req := httptest.NewRequest(http.MethodPost, "/api/acp-capture", strings.NewReader(`{"action":"enable"}`))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/acp-capture", strings.NewReader(`{"action":"enable"}`))
 	req.Header.Set("Content-Type", "text/plain")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)

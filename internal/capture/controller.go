@@ -43,8 +43,18 @@ func (c *Controller) Disable() { c.enabled.Store(false) }
 // Clear purges the buffered frames on demand.
 func (c *Controller) Clear() { c.ring.Clear() }
 
-func (c *Controller) Enabled() bool            { return c.enabled.Load() }
+// Enabled reports whether recording is currently on.
+func (c *Controller) Enabled() bool { return c.enabled.Load() }
+
+// AllowRuntimeToggle reports whether runtime toggling is permitted (the
+// ACP_CAPTURE_RUNTIME opt-in).
 func (c *Controller) AllowRuntimeToggle() bool { return c.allowToggle }
-func (c *Controller) Count() int               { return c.ring.Len() }
-func (c *Controller) Size() int                { return c.ring.Cap() }
-func (c *Controller) Snapshot() []Frame        { return c.ring.Snapshot() }
+
+// Count returns the number of buffered frames.
+func (c *Controller) Count() int { return c.ring.Len() }
+
+// Size returns the ring's fixed frame capacity.
+func (c *Controller) Size() int { return c.ring.Cap() }
+
+// Snapshot returns a copy of the buffered frames, oldest first.
+func (c *Controller) Snapshot() []Frame { return c.ring.Snapshot() }
