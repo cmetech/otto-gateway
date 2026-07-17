@@ -414,14 +414,19 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 		},
 	)
 
-	// Track 0 tool-call wire capture: construct the ring only when enabled, so
-	// the acp OnRawFrame hooks stay nil (zero cost) otherwise. Shared across the
-	// pool and the session registry; read by the admin endpoint.
+	// Track 0 tool-call wire capture. Construct a Controller when capture is on
+	// at startup (ACP_CAPTURE) OR when runtime toggling is permitted
+	// (ACP_CAPTURE_RUNTIME) — in the latter case the ring is allocated but the
+	// atomic gate starts in ACP_CAPTURE's state. When neither is set the
+	// controller is nil, the record func is nil, and the acp OnRawFrame hook
+	// stays unset (zero cost). Shared across the pool + session registry; read
+	// and toggled by the admin endpoint.
 	const acpCaptureFrameCapBytes = 8 * 1024 // per-frame params byte cap
-	var acpCaptureRing *capture.Ring
-	if cfg.AcpCapture {
-		acpCaptureRing = capture.NewRing(cfg.AcpCaptureSize, acpCaptureFrameCapBytes)
-		logger.Info("acp raw-frame capture enabled",
+	var acpCapture *capture.Controller
+	if cfg.AcpCapture || cfg.AcpCaptureRuntime {
+		acpCapture = capture.NewController(cfg.AcpCaptureSize, acpCaptureFrameCapBytes, cfg.AcpCapture, cfg.AcpCaptureRuntime)
+		logger.Info("acp raw-frame capture wired",
+			"enabled", cfg.AcpCapture, "runtimeToggle", cfg.AcpCaptureRuntime,
 			"size", cfg.AcpCaptureSize, "endpoint", "/admin/api/acp-capture")
 	}
 
@@ -433,9 +438,9 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 			KiroArgs:       cfg.KiroArgs,
 			KiroCWD:        cfg.KiroCWD,
 			PingInterval:   cfg.PingInterval,
-			Metrics:        gwMetrics,                         // kiro usage-metrics parity: forward slot usage events
-			Capture:        captureRecordFunc(acpCaptureRing), // Track 0 (nil ring → nil func → no capture)
-			MaxToolDenials: cfg.MaxToolDenials,                // Track 3a: circuit breaker threshold
+			Metrics:        gwMetrics,                        // kiro usage-metrics parity: forward slot usage events
+			Capture:        controllerRecordFunc(acpCapture), // Track 0 (nil controller → nil func → no capture)
+			MaxToolDenials: cfg.MaxToolDenials,               // Track 3a: circuit breaker threshold
 		})
 
 		// POOL-02: warmup BEFORE the HTTP listener accepts traffic.
@@ -478,7 +483,7 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 			PingInterval:   cfg.PingInterval,
 			RecyclePct:     cfg.RecyclePct, // Track 2: proactive context recycle at CTX_RECYCLE_PCT
 			Metrics:        gwMetrics,      // kiro usage-metrics parity: forward per-session usage events
-			Capture:        captureRecordFunc(acpCaptureRing),
+			Capture:        controllerRecordFunc(acpCapture),
 			MaxToolDenials: cfg.MaxToolDenials, // Track 3a: circuit breaker threshold
 		})
 		a.registry.Start(context.Background())
@@ -787,7 +792,7 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 		Start:        time.Now(),
 		PoolDetail:   adminPoolDetail,
 		Registry:     adminRegistry,
-		AcpCapture:   adminAcpCapture(acpCaptureRing),
+		AcpCapture:   adminAcpCapture(acpCapture),
 		Proc:         adminProcSampler{pool: a.pool},
 		LogPaths:     logPaths,
 		LogPathOrder: logPathOrder,
@@ -944,21 +949,25 @@ func resolveGatewayID(logger *slog.Logger) string {
 	return id
 }
 
-// captureRecordFunc returns the ring's Record method, or nil when capture is
-// disabled (nil ring) so the acp OnRawFrame hook stays unset.
-func captureRecordFunc(ring *capture.Ring) func(method string, params json.RawMessage) {
-	if ring == nil {
+// controllerRecordFunc returns the controller's gated Record method, or nil
+// when capture is entirely unconfigured (nil controller) so the acp OnRawFrame
+// hook stays unset (zero cost). When the controller exists but is currently
+// disabled, Record is still wired and the atomic gate makes it a no-op — this
+// is what lets the admin endpoint enable capture without re-wiring.
+func controllerRecordFunc(c *capture.Controller) func(method string, params json.RawMessage) {
+	if c == nil {
 		return nil
 	}
-	return ring.Record
+	return c.Record
 }
 
-// acpCaptureAdapter adapts *capture.Ring to admin.AcpCaptureSource, converting
-// capture.Frame into admin's own CaptureFrame wire type (TRST-04 boundary).
-type acpCaptureAdapter struct{ ring *capture.Ring }
+// acpCaptureAdapter adapts *capture.Controller to admin.AcpCaptureSource,
+// converting capture.Frame into admin's own CaptureFrame wire type (TRST-04
+// boundary — admin never imports internal/capture).
+type acpCaptureAdapter struct{ ctrl *capture.Controller }
 
 func (a acpCaptureAdapter) Snapshot() []admin.CaptureFrame {
-	frames := a.ring.Snapshot()
+	frames := a.ctrl.Snapshot()
 	out := make([]admin.CaptureFrame, len(frames))
 	for i, f := range frames {
 		out[i] = admin.CaptureFrame{
@@ -968,13 +977,21 @@ func (a acpCaptureAdapter) Snapshot() []admin.CaptureFrame {
 	return out
 }
 
-// adminAcpCapture wraps the ring as an admin.AcpCaptureSource, or returns nil
-// when capture is disabled so the endpoint renders enabled:false.
-func adminAcpCapture(ring *capture.Ring) admin.AcpCaptureSource {
-	if ring == nil {
+func (a acpCaptureAdapter) Enabled() bool            { return a.ctrl.Enabled() }
+func (a acpCaptureAdapter) AllowRuntimeToggle() bool { return a.ctrl.AllowRuntimeToggle() }
+func (a acpCaptureAdapter) Count() int               { return a.ctrl.Count() }
+func (a acpCaptureAdapter) Size() int                { return a.ctrl.Size() }
+func (a acpCaptureAdapter) Enable()                  { a.ctrl.Enable() }
+func (a acpCaptureAdapter) Disable()                 { a.ctrl.Disable() }
+func (a acpCaptureAdapter) Clear()                   { a.ctrl.Clear() }
+
+// adminAcpCapture wraps the controller as an admin.AcpCaptureSource, or returns
+// nil when capture is unconfigured so the endpoint renders enabled:false.
+func adminAcpCapture(c *capture.Controller) admin.AcpCaptureSource {
+	if c == nil {
 		return nil
 	}
-	return acpCaptureAdapter{ring: ring}
+	return acpCaptureAdapter{ctrl: c}
 }
 
 // poolDetailAdapter wraps *pool.Pool to satisfy server.PoolDetailSource.
