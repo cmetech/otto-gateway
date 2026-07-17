@@ -80,6 +80,28 @@ func (r *Ring) Snapshot() []Frame {
 	return out
 }
 
+// Clear empties the ring: Snapshot returns nothing until new frames are
+// recorded. The backing slice is retained; next/count/seq reset under the lock.
+func (r *Ring) Clear() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.next = 0
+	r.count = 0
+	r.seq = 0
+}
+
+// Len returns the number of buffered frames.
+func (r *Ring) Len() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.count
+}
+
+// Cap returns the ring's fixed frame capacity.
+func (r *Ring) Cap() int {
+	return len(r.buf)
+}
+
 // truncateUTF8 clips s to at most maxLen bytes without splitting a rune. Walks
 // back from the cap to the previous rune-start byte (cost <= utf8.UTFMax-1);
 // mirrors the stderrDrainLoop truncation in internal/acp/client.go.

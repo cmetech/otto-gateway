@@ -78,6 +78,30 @@ func TestRing_ConcurrentRecord(t *testing.T) {
 	}
 }
 
+func TestRing_ClearAndLen(t *testing.T) {
+	r := NewRing(4, 1024)
+	if r.Cap() != 4 {
+		t.Fatalf("Cap: got %d, want 4", r.Cap())
+	}
+	r.Record("session/update", json.RawMessage(`{"a":1}`))
+	r.Record("session/update", json.RawMessage(`{"b":2}`))
+	if r.Len() != 2 {
+		t.Fatalf("Len after 2 records: got %d, want 2", r.Len())
+	}
+	r.Clear()
+	if r.Len() != 0 {
+		t.Fatalf("Len after Clear: got %d, want 0", r.Len())
+	}
+	if got := r.Snapshot(); len(got) != 0 {
+		t.Fatalf("Snapshot after Clear: got %d frames, want 0", len(got))
+	}
+	// Recording works after Clear.
+	r.Record("session/update", json.RawMessage(`{"c":3}`))
+	if r.Len() != 1 {
+		t.Fatalf("Len after post-Clear record: got %d, want 1", r.Len())
+	}
+}
+
 func isValidUTF8(s string) bool {
 	for _, r := range s {
 		if r == '�' {
