@@ -491,6 +491,26 @@ prompt/response content, only enable capture when the gateway is bound to
 `localhost` or the port is firewalled to trusted hosts. Frames are never
 written to disk by the gateway.
 
+### Runtime toggle (no restart)
+
+Set `ACP_CAPTURE_RUNTIME=true` at startup to permit enabling/disabling capture
+from the `/admin` dashboard without a restart. When set:
+
+- The dashboard shows an **ACP Capture (diagnostics)** panel with **Enable/Disable**
+  and **Clear** buttons.
+- `ACP_CAPTURE` seeds the initial state (capture can start on or off).
+- Enabling starts a fresh buffer (auto-clear); disabling keeps the buffer
+  readable; Clear purges it on demand. Frames remain memory-only (lost on restart).
+
+`POST /admin/api/acp-capture` with `{"action":"enable"|"disable"|"clear"}` drives
+this; it returns **403** unless `ACP_CAPTURE_RUNTIME=true`.
+
+**Security:** this is the admin surface's only state-changing route, and `/admin`
+is auth-exempt / not IP-allowlisted. Capture records SENSITIVE prompt/response
+content. Only set `ACP_CAPTURE_RUNTIME=true` where `/admin` is localhost or
+firewalled. Leave it unset (the default) otherwise — capture is then env-only, as
+before, requiring a restart to change.
+
 ### GW_LOG dependency
 
 The log tail panel reads from the file pointed at by `GW_LOG`
