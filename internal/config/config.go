@@ -205,6 +205,10 @@ type Config struct {
 	// AcpCaptureSize bounds the capture ring (frames). Default 512. Loaded from
 	// ACP_CAPTURE_SIZE; must be > 0.
 	AcpCaptureSize int
+	// AcpCaptureRuntime permits enabling/disabling ACP capture at runtime from
+	// the /admin dashboard (no restart). Off by default. Loaded from
+	// ACP_CAPTURE_RUNTIME. SENSITIVE — see docs/operating.md.
+	AcpCaptureRuntime bool
 
 	// MaxToolDenials is the Track 3a circuit-breaker threshold: after this many
 	// built-in-tool permission denials in one turn, the turn is cancelled.
@@ -575,6 +579,11 @@ func Load() (Config, error) {
 		errs = append(errs, fmt.Errorf("ACP_CAPTURE_SIZE: must be > 0, got %d", acpCaptureSize))
 	}
 
+	acpCaptureRuntime, err := getEnvBool("ACP_CAPTURE_RUNTIME", false)
+	if err != nil {
+		errs = append(errs, err)
+	}
+
 	maxToolDenials, err := getEnvInt("MAX_TOOL_DENIALS", 4)
 	if err != nil {
 		errs = append(errs, err)
@@ -848,6 +857,7 @@ func Load() (Config, error) {
 		RecyclePct:                recyclePct,
 		AcpCapture:                acpCapture,
 		AcpCaptureSize:            acpCaptureSize,
+		AcpCaptureRuntime:         acpCaptureRuntime,
 		MaxToolDenials:            maxToolDenials,
 		EnabledHooks:              enabledHooks,
 		PIIRedactionEnabled:       piiEnabled,

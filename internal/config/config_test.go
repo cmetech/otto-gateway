@@ -625,6 +625,29 @@ func TestLoad_ChatTrace_AllowsChatTraceHookInAllowlist_WhenDisabled(t *testing.T
 	}
 }
 
+// --- ACP_CAPTURE_RUNTIME coverage -------------------------------------------
+
+func TestLoad_AcpCaptureRuntime(t *testing.T) {
+	t.Setenv("ACP_CAPTURE_RUNTIME", "true")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.AcpCaptureRuntime {
+		t.Fatal("ACP_CAPTURE_RUNTIME=true did not set cfg.AcpCaptureRuntime")
+	}
+}
+
+func TestLoad_AcpCaptureRuntime_DefaultsFalse(t *testing.T) {
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.AcpCaptureRuntime {
+		t.Fatal("ACP_CAPTURE_RUNTIME unset should default to false")
+	}
+}
+
 // --- STREAM_IDLE_TIMEOUT_SEC coverage (quick 260531-ruv) ---------------
 
 func TestLoad_StreamIdleTimeoutSec_Default(t *testing.T) {
