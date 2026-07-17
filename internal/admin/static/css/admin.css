@@ -209,6 +209,50 @@ body {
 }
 
 /* -----------------------------------------------------------------------
+ * Generic status pill (ACP Capture panel — Task 6). Mirrors .gw-status-pill
+ * sizing but with neutral/on/off modifiers instead of health semantics.
+ * ----------------------------------------------------------------------- */
+
+.gw-pill {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: var(--gw-radius-pill);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--gw-accent-fg);
+  background: var(--gw-fg-muted);
+  white-space: nowrap;
+}
+
+.gw-pill-on {
+  background: var(--gw-healthy);
+}
+
+.gw-pill-off {
+  background: var(--gw-fg-muted);
+}
+
+/* ACP Capture panel card: inline row of pill/count/controls/link/note. */
+.gw-acp-capture-card {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--gw-space-sm);
+}
+
+.gw-acp-capture-controls {
+  display: inline-flex;
+  gap: var(--gw-space-sm);
+}
+
+.gw-acp-capture-note {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--gw-fg-muted);
+}
+
+/* -----------------------------------------------------------------------
  * Live dot (8px circle, semantic color background)
  * ----------------------------------------------------------------------- */
 

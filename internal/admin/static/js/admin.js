@@ -1114,6 +1114,81 @@
     openLogStream();
   }
 
+  // --- ACP Capture (diagnostics) panel ---------------------------------
+  // Reads/controls GET+POST /admin/api/acp-capture. The panel stays hidden
+  // unless the endpoint reports a capture source; controls stay hidden unless
+  // allowRuntimeToggle is true (ACP_CAPTURE_RUNTIME opt-in).
+  function acpCaptureUrl() {
+    // Same-origin, mount-agnostic: the dashboard is served at /admin, assets at
+    // /admin/static, so a relative "api/acp-capture" resolves under /admin.
+    return 'api/acp-capture';
+  }
+
+  function renderAcpCapture(state) {
+    var section = document.querySelector('[data-acp-capture]');
+    if (!section) return;
+    // Panel stays hidden unless the endpoint reported a capture source
+    // (hasSource is set by the fetch/post callbacks below).
+    section.hidden = !state || !state.hasSource;
+    if (!state || !state.hasSource) return;
+
+    var pill = section.querySelector('[data-acp-capture-pill]');
+    if (pill) {
+      pill.textContent = state.enabled ? 'CAPTURING' : 'off';
+      pill.className = 'gw-pill ' + (state.enabled ? 'gw-pill-on' : 'gw-pill-off');
+    }
+    var count = section.querySelector('[data-acp-capture-count]');
+    if (count) count.textContent = (state.count || 0) + ' / ' + (state.size || 0) + ' frames';
+
+    var controls = section.querySelector('[data-acp-capture-controls]');
+    var note = section.querySelector('[data-acp-capture-note]');
+    if (controls) controls.hidden = !state.allowRuntimeToggle;
+    if (note) note.hidden = !!state.allowRuntimeToggle;
+
+    var toggle = section.querySelector('[data-acp-capture-toggle]');
+    if (toggle) toggle.textContent = state.enabled ? 'Disable' : 'Enable';
+  }
+
+  function fetchAcpCapture() {
+    fetch(acpCaptureUrl(), { headers: { 'Accept': 'application/json' } })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (j) {
+        if (!j) { renderAcpCapture({ hasSource: false }); return; }
+        j.hasSource = true;
+        renderAcpCapture(j);
+      })
+      .catch(function () { renderAcpCapture({ hasSource: false }); });
+  }
+
+  function postAcpCapture(action) {
+    fetch(acpCaptureUrl(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: action })
+    })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (j) {
+        if (j) { j.hasSource = true; renderAcpCapture(j); }
+        else { fetchAcpCapture(); }
+      })
+      .catch(function () { fetchAcpCapture(); });
+  }
+
+  function initAcpCapture() {
+    var section = document.querySelector('[data-acp-capture]');
+    if (!section) return;
+    var toggle = section.querySelector('[data-acp-capture-toggle]');
+    var clear = section.querySelector('[data-acp-capture-clear]');
+    if (toggle) toggle.addEventListener('click', function () {
+      var capturing = toggle.textContent === 'Disable';
+      postAcpCapture(capturing ? 'disable' : 'enable');
+    });
+    if (clear) clear.addEventListener('click', function () { postAcpCapture('clear'); });
+    fetchAcpCapture();
+    // Refresh the frame count alongside the existing snapshot cadence.
+    setInterval(fetchAcpCapture, 30000);
+  }
+
   // ---------------------------------------------------------------------------
   // Initialisation on DOMContentLoaded
   // ---------------------------------------------------------------------------
@@ -1130,6 +1205,9 @@
 
     // Initialise SSE log tail (Plan 03).
     initLogTail();
+
+    // Initialise ACP Capture diagnostics panel (Task 6).
+    initAcpCapture();
   });
 
 })();

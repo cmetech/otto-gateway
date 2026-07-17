@@ -163,6 +163,23 @@
     </div>
   </section>
 
+  <!-- Section 5: ACP Capture (diagnostics) — hidden until admin.js confirms availability -->
+  <section aria-labelledby="acp-capture-heading" data-acp-capture hidden>
+    <h2 id="acp-capture-heading" class="gw-h2">ACP Capture (diagnostics)</h2>
+    <div class="gw-acp-capture-card">
+      <span class="gw-pill" data-acp-capture-pill>—</span>
+      <span data-acp-capture-count>0 / 0 frames</span>
+      <span class="gw-acp-capture-controls" data-acp-capture-controls hidden>
+        <button type="button" class="gw-btn" data-acp-capture-toggle>Enable</button>
+        <button type="button" class="gw-btn" data-acp-capture-clear>Clear</button>
+      </span>
+      <a href="api/acp-capture" data-acp-capture-raw>raw JSON</a>
+      <p class="gw-acp-capture-note" data-acp-capture-note hidden>
+        Read-only: start the gateway with <code>ACP_CAPTURE_RUNTIME=true</code> to toggle here.
+      </p>
+    </div>
+  </section>
+
 </main>
 
 <!-- Config island: bakes in version/commit at render time; pollMs is the
