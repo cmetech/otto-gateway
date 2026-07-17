@@ -210,6 +210,28 @@ func (r *Registry) Enrich(live []canonical.ModelInfo, now time.Time) canonical.C
 		} else {
 			entry.Name = pickName(m.Name, "", m.ID)
 		}
+		// Live-catalog membership IS the evidence for completion: kiro only
+		// lists selectable chat models in session/new availableModels, so any
+		// model that reached this loop is completion-capable by definition
+		// (docs/reference/model_capabilities.md §evidence — kiro_declared).
+		// Force completion=supported for every live model whose completion is
+		// still unknown — i.e. live models absent from the static registry.
+		// Without this a valid kiro-served model renders completion="unknown"
+		// and capability-gated clients grey it out or reject it (the Hermes
+		// model picker greys it; MoA selection 409s and snaps back to a
+		// default). Registered entries already declare completion=supported, so
+		// only the unregistered branch changes; tools/vision/reasoning stay
+		// unknown until independently verified, and the synthetic "auto" entry
+		// (added outside this loop) is untouched.
+		if entry.Capabilities["completion"] == canonical.CapUnknown {
+			entry.Capabilities["completion"] = canonical.CapSupported
+			entry.Evidence["completion"] = canonical.Evidence{
+				Source:     "kiro_declared",
+				Reference:  "kiro session/new availableModels (live catalog)",
+				VerifiedAt: now.Format("2006-01-02"),
+				Notes:      "Present in the live Kiro catalog (selectable chat model).",
+			}
+		}
 		out.Entries = append(out.Entries, entry)
 	}
 	return out

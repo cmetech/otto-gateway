@@ -115,12 +115,22 @@ The endpoint fuses two independent sources with two independent jobs:
 
 The fusion rule (`(*Registry).Enrich`) is asymmetric by design:
 
-- **A live-but-unregistered model is returned, never omitted**, with all four
-  capabilities `"unknown"` and empty evidence. A model that exists but hasn't
-  been researched yet is still a real, selectable model — the client needs to
-  see it, just honestly labeled as unverified. This is covered by
-  `TestModelCapabilities_UnknownModel` (`internal/adapter/openai/modelcaps_test.go`)
-  and the registry-level "a live unregistered model becomes all-unknown" test.
+- **A live-but-unregistered model is returned, never omitted**, with
+  `completion: "supported"` and its other three capabilities (`tools`,
+  `vision`, `reasoning`) left `"unknown"`. Live-catalog membership is itself the
+  evidence for completion — kiro only lists selectable chat models in
+  `session/new availableModels`, so anything it serves is completion-capable by
+  definition; `Enrich` therefore attaches a `kiro_declared` completion evidence
+  entry (reference `"kiro session/new availableModels (live catalog)"`) to every
+  live model whose completion would otherwise be unknown. The other three
+  capabilities stay honestly unverified until researched. This means a
+  capability-gated client can select any live model for chat while still
+  treating tool/vision/reasoning use as unverified — and, crucially, a valid
+  kiro model that hasn't been hand-added to `registry.json` is no longer greyed
+  out or rejected. Covered by the registry-level
+  `TestEnrich_UnregisteredLiveModelCompletionSupported` test. (The adapter-level
+  `TestModelCapabilities_UnknownModel` is a wire-serialization test over a fake
+  catalog — the synthetic `auto` entry still exercises all-unknown rendering.)
 - **A registry model absent from the live catalog is omitted, never shown as
   stale-available.** If Kiro stops offering a model, its registry entry (if
   one still exists) is silently dropped from the response rather than

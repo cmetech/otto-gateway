@@ -184,19 +184,28 @@ func TestEnrich_RegisteredCarriesStates(t *testing.T) {
 	}
 }
 
-func TestEnrich_UnregisteredAllUnknown(t *testing.T) {
+func TestEnrich_UnregisteredLiveModelCompletionSupported(t *testing.T) {
+	// A live model absent from the static registry is completion=supported,
+	// because live-catalog membership is itself the kiro_declared evidence for
+	// completion. Its other three capabilities remain unverified (unknown).
 	cat := testRegistry(t).Enrich([]canonical.ModelInfo{{ID: "ghost", Name: "Ghost"}}, time.Unix(0, 0))
 	g, ok := findEntry(cat, "ghost")
 	if !ok {
 		t.Fatal("ghost missing")
 	}
-	for _, k := range canonical.RequiredCapabilities {
+	if g.Capabilities["completion"] != canonical.CapSupported {
+		t.Errorf("ghost completion: got %q, want supported", g.Capabilities["completion"])
+	}
+	if ev, ok := g.Evidence["completion"]; !ok || ev.Source != "kiro_declared" {
+		t.Errorf("ghost completion evidence missing/wrong: %+v", g.Evidence["completion"])
+	}
+	for _, k := range []string{"tools", "vision", "reasoning"} {
 		if g.Capabilities[k] != canonical.CapUnknown {
 			t.Errorf("ghost cap %q: got %q, want unknown", k, g.Capabilities[k])
 		}
 	}
-	if len(g.Evidence) != 0 {
-		t.Errorf("ghost evidence should be empty")
+	if len(g.Evidence) != 1 {
+		t.Errorf("ghost evidence should carry only completion, got %d entries: %+v", len(g.Evidence), g.Evidence)
 	}
 	if g.Name != "Ghost" {
 		t.Errorf("ghost live name not used: %q", g.Name)
@@ -204,11 +213,17 @@ func TestEnrich_UnregisteredAllUnknown(t *testing.T) {
 }
 
 func TestEnrich_ExactMatchOnly(t *testing.T) {
-	// "m1x" must NOT fuzzy-match registry entry "m1".
+	// "m1x" must NOT fuzzy-match registry entry "m1": it inherits none of m1's
+	// verified states. m1 declares vision=unsupported, so m1x's vision must stay
+	// unknown (proving no fuzzy inheritance). completion is supported via the
+	// live-catalog rule, NOT via any match to m1.
 	cat := testRegistry(t).Enrich([]canonical.ModelInfo{{ID: "m1x"}}, time.Unix(0, 0))
 	e, _ := findEntry(cat, "m1x")
-	if e.Capabilities["completion"] != canonical.CapUnknown {
-		t.Errorf("m1x fuzzy-matched m1; completion=%q", e.Capabilities["completion"])
+	if e.Capabilities["vision"] != canonical.CapUnknown {
+		t.Errorf("m1x fuzzy-matched m1; vision=%q, want unknown", e.Capabilities["vision"])
+	}
+	if e.Capabilities["completion"] != canonical.CapSupported {
+		t.Errorf("m1x completion via live rule: got %q, want supported", e.Capabilities["completion"])
 	}
 }
 
