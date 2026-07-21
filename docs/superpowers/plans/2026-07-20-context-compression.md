@@ -3547,7 +3547,7 @@ git commit -m "feat(metrics): gw_compress_* counters via pull-style RegisterComp
 **Interfaces:**
 - Consumes: `compress.Hook` (Task 5), `Config.Compress*` (Task 6), `Metrics.RegisterCompression` (Task 10).
 
-- [ ] **Step 1: Construct the hook and insert it in the chain** (in `newApp`, after the `jsonFormatHook := ...` line; import: `"otto-gateway/internal/plugin/compress"`)
+- [x] **Step 1: Construct the hook and insert it in the chain** (in `newApp`, after the `jsonFormatHook := ...` line; import: `"otto-gateway/internal/plugin/compress"`)
 
 ```go
 	// Context compression (CompressionHook). Chain position: after
@@ -3594,7 +3594,7 @@ Chain literal — insert between `piiHook` and `loggingHook`:
 		},
 ```
 
-- [ ] **Step 2: Register metrics** (immediately after the `gwMetrics := metrics.New(...)` call completes, ~:364)
+- [x] **Step 2: Register metrics** (immediately after the `gwMetrics := metrics.New(...)` call completes, ~:364)
 
 ```go
 	gwMetrics.RegisterCompression(compressHook.Stats)
@@ -3602,7 +3602,7 @@ Chain literal — insert between `piiHook` and `loggingHook`:
 
 (If `compressHook` is out of scope at that point in `newApp`, hoist its declaration — both sites are inside `newApp`.)
 
-- [ ] **Step 3: Update the chain-order regression test**
+- [x] **Step 3: Update the chain-order regression test**
 
 `cmd/otto-gateway/main_test.go` `TestApp_DefaultHookChain_AllFiveHooksPresent` (:216-274) asserts the exact five-hook order with `LoggingHook` at index 4 — it MUST be updated in this commit or the gate fails. Rename to `TestApp_DefaultHookChain_AllSixHooksPresent`, update the doc comment (the v1.8.2 ENABLED_HOOKS regression story still applies — extend it to note CompressionHook joined in this feature), and change `wantOrder` to:
 
@@ -3619,12 +3619,12 @@ Chain literal — insert between `piiHook` and `loggingHook`:
 
 Also add an explicit-allowlist case (the very bug that test guards): `ENABLED_HOOKS` set to the five legacy names must yield a chain WITHOUT CompressionHook (two-knob model — chain membership is the hard kill switch), mirroring how the existing test constructs cfg.
 
-- [ ] **Step 4: Build and run the full gate**
+- [x] **Step 4: Build and run the full gate**
 
 Run: `go build ./... && make vet && make test`
 Expected: clean build, vet clean, all tests pass. The ONLY pre-existing test intentionally modified by this plan is the chain-order test (this task); any other failure — including the untouched REL-CFG-03 regression — is a regression to fix, not to accommodate.
 
-- [ ] **Step 5: Manual smoke check**
+- [x] **Step 5: Manual smoke check**
 
 Start the gateway with `COMPRESSION_ENABLED=1 COMPRESS_TRIGGER_TOKENS=100 COMPRESS_BUDGET_TOKENS=50` (both knobs — the boot validation requires budget <= trigger, so trigger alone with the default 4000 budget refuses to start), then:
 1. `GET /health/hooks` → a `CompressionHook` row with kind `Pre` and the config map from `Describe()`.
@@ -3633,7 +3633,7 @@ Start the gateway with `COMPRESSION_ENABLED=1 COMPRESS_TRIGGER_TOKENS=100 COMPRE
 4. Model `auto+compress` with `COMPRESSION_ENABLED=0` (unset) → counter increments (suffix forced it on).
 5. Restart with `COMPRESS_BUDGET_TOKENS=10 COMPRESS_TRIGGER_TOKENS=100`, send a transcript whose history shares no words with the final question → response OK, history messages NOT elided (zero-evidence stop), and `/health/hooks` shows `budget_unmet` > 0.
 
-- [ ] **Step 6: Document** (append to the env-var reference in `docs/operating.md`)
+- [x] **Step 6: Document** (append to the env-var reference in `docs/operating.md`)
 
 ```markdown
 ### Context compression (CompressionHook)
@@ -3655,7 +3655,7 @@ Failure posture — precise guarantee: compression never fails a request. Stage 
 Known interaction: with `PII_REDACTION_MODE=encrypt` (or any per-entity encrypt action), middle-truncation of a stale tool result can clip an embedded ciphertext token, which disables round-trip decryption of that token in the response (the request still succeeds). A boot-time warning is logged whenever encrypt mode is active — even if `COMPRESSION_ENABLED=false` — because the header and model-suffix toggles can enable compression per request.
 ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add cmd/otto-gateway/main.go cmd/otto-gateway/main_test.go docs/operating.md

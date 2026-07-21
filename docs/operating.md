@@ -359,6 +359,24 @@ export DEBUG=true
 ./scripts/gw start
 ```
 
+### Context compression (CompressionHook)
+
+| Env | Default | Meaning |
+|---|---|---|
+| `COMPRESSION_ENABLED` | `false` | Process-wide default for CompressionHook. Per-request overrides: `X-Compression` header (wins; accepts `1`/`true`/`on` and `0`/`false`/`off`, other values ignored), or a `+compress`/`-compress` model-name suffix (e.g. `qwen-2.5+compress` — for callers like LangFlow that cannot send headers). Caveat: a real model id ending in `-compress` is parsed as a disable directive (no escape syntax). `ENABLED_HOOKS` remains the hard kill switch; explicit allowlists must include `CompressionHook`. |
+| `COMPRESS_TRIGGER_TOKENS` | `6000` | Below this estimated transcript size (UTF-8 bytes/4) compression is a no-op. |
+| `COMPRESS_BUDGET_TOKENS` | `4000` | Target size. Re-checked between stages: once met, no further (lossier) stage runs; a transcript already at/under budget is never modified. **Best-effort**, not guaranteed: protected-tail/pinned messages and tool-call carriers are never elided, and stage 4 elides nothing when no message shares a token with the question — so a run can end still over budget (counted in `/health/hooks` as `budget_unmet`). Must be <= trigger. |
+| `COMPRESS_PROTECT_TAIL` | `4` | The last N messages are never modified. Regardless of this value — even at `0` — the following are never modified: system prompt, tool schemas, tool-call pairing, the current inbound turn (including a trailing tool result on any surface), and the most recent user question. |
+| `COMPRESS_TOOL_KEEP` | `1200` | Head+tail bytes kept when middle-truncating stale tool results. Bounded 1..4194304. |
+
+Pipeline: blank-line/trailing-space cleanup → stale tool-result truncation → exact-duplicate collapse → local BM25 lexical relevance pruning against the user's most recent question — with the budget re-checked between stages, so later (lossier) stages are skipped the moment the target is met. Everything runs in-process: no network call, external model, or additional configuration. Stage 1 is **low-loss normalization**, not lossless — it strips trailing whitespace and collapses 3+ blank lines (so exact-output fixtures relying on those bytes are altered), but never rewrites interior whitespace, so code indentation in old messages survives byte-for-byte.
+
+Stage 4 ranks by **exact lexical overlap** (identifiers, error strings, names — not synonyms or paraphrases) and has a hard safety rule: if no eligible message shares a single token with the user's question, nothing is elided — the transcript proceeds over budget rather than pruning blind, and `/health/hooks` counts it under `budget_unmet`. Further limitations to know: machine-generated PII tokens — encrypted `[PII:…]`, hashed `[ENTITY:h-…]`, and numbered `[ENTITY_N]` replacements — are stripped before ranking (they are neither noise nor evidence; a question consisting only of redacted values disables stage 4 for that request, as does a question with more than 4,096 unique terms — stage 4 never ranks on a truncated query). Bare `[ENTITY]` replacements and masked values are not stripped (indistinguishable from ordinary text). Unsegmented CJK text tokenizes into sentence-sized runs (no word segmentation), so stage 4 is largely inert for such history — stages 1–3 still apply.
+
+Failure posture — precise guarantee: compression never fails a request. Stage 4 performs no I/O, so there is no endpoint-failure path; the hook's panic recovery still guarantees `(nil, nil)`, and an internal panic forwards the request with whatever stages had already completed applied (stages run in place). Observability: `/health/hooks` (config + lifetime counters, including `budget_unmet`), `gw_compress_runs_total` and `gw_compress_tokens_saved_estimate_total` on `/metrics`.
+
+Known interaction: with `PII_REDACTION_MODE=encrypt` (or any per-entity encrypt action), middle-truncation of a stale tool result can clip an embedded ciphertext token, which disables round-trip decryption of that token in the response (the request still succeeds). A boot-time warning is logged whenever encrypt mode is active — even if `COMPRESSION_ENABLED=false` — because the header and model-suffix toggles can enable compression per request.
+
 ## How `status` Works
 
 The `status` subcommand combines two checks:

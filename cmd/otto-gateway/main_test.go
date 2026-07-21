@@ -198,22 +198,30 @@ func TestApp_WarmupBeforeListen(t *testing.T) {
 	}
 }
 
-// TestApp_DefaultHookChain_AllFiveHooksPresent — regression guard for
+// TestApp_DefaultHookChain_AllSixHooksPresent — regression guard for
 // the v1.8.2 install-template bug where ENABLED_HOOKS=RequestIDHook,
 // AuthHook,PIIRedactionHook,LoggingHook silently filtered
 // JSONFormatSteeringHook out of the chain, breaking LangFlow Ollama
 // JSON-format steering.
 //
 // Default cfg (no ENABLED_HOOKS override) MUST yield a chain with all
-// five registered hooks at /health/hooks, in registration order:
+// six registered hooks at /health/hooks, in registration order:
 //
 //	RequestIDHook, AuthHook, JSONFormatSteeringHook,
-//	PIIRedactionHook, LoggingHook.
+//	PIIRedactionHook, CompressionHook, LoggingHook.
+//
+// CompressionHook (context-compression feature) joined the default
+// chain after JSONFormatSteeringHook did; it is subject to the same
+// two-knob model — an explicit ENABLED_HOOKS allowlist that predates
+// CompressionHook (e.g. the five legacy names) silently drops it from
+// the chain, mirroring the original JSONFormatSteeringHook bug this
+// test guards against. See TestApp_ExplicitAllowlist_OmitsCompressionHook
+// below for that case.
 //
 // Runs under the degraded KIRO_CMD="" posture (no pool / no engine);
 // /health/hooks is wired off the chain directly so it serves the
 // full picture even without an upstream worker.
-func TestApp_DefaultHookChain_AllFiveHooksPresent(t *testing.T) {
+func TestApp_DefaultHookChain_AllSixHooksPresent(t *testing.T) {
 	cfg := config.Config{
 		HTTPAddr:                  ":0",
 		KiroCmd:                   "", // degraded mode — same posture as TestApp_NoKiroCmd_StartsHealthOnly
@@ -259,6 +267,7 @@ func TestApp_DefaultHookChain_AllFiveHooksPresent(t *testing.T) {
 		"AuthHook",
 		"JSONFormatSteeringHook",
 		"PIIRedactionHook",
+		"CompressionHook",
 		"LoggingHook",
 	}
 	if len(body.Hooks) < len(wantOrder) {
@@ -269,6 +278,65 @@ func TestApp_DefaultHookChain_AllFiveHooksPresent(t *testing.T) {
 		if body.Hooks[i].Name != want {
 			t.Errorf("hooks[%d].name: got %q, want %q (registration order)",
 				i, body.Hooks[i].Name, want)
+		}
+	}
+}
+
+// TestApp_ExplicitAllowlist_OmitsCompressionHook — the two-knob-model
+// case TestApp_DefaultHookChain_AllSixHooksPresent's doc comment
+// references: an explicit ENABLED_HOOKS allowlist listing only the five
+// legacy hook names (predating CompressionHook) must yield a chain
+// WITHOUT CompressionHook. ENABLED_HOOKS is the hard kill switch — an
+// allowlist that does not name a hook omits it, silently, by design.
+func TestApp_ExplicitAllowlist_OmitsCompressionHook(t *testing.T) {
+	cfg := config.Config{
+		HTTPAddr:                  ":0",
+		KiroCmd:                   "", // degraded mode — same posture as TestApp_NoKiroCmd_StartsHealthOnly
+		PoolSize:                  1,
+		PingInterval:              60 * time.Second,
+		OllamaPathPrefix:          "/api",
+		OpenAIPathPrefix:          "/v1",
+		AnthropicPathPrefix:       "/v1",
+		JSONFormatSteeringEnabled: true, // hook is in the chain regardless; enabled controls work-doing
+		EnabledHooks: []string{
+			"RequestIDHook",
+			"AuthHook",
+			"JSONFormatSteeringHook",
+			"PIIRedactionHook",
+			"LoggingHook",
+		},
+	}
+	logger := testutil.Logger(t)
+
+	a, cleanup, err := newApp(context.Background(), cfg, logger)
+	if err != nil {
+		t.Fatalf("newApp: %v", err)
+	}
+	defer cleanup()
+	if a.srv == nil {
+		t.Fatal("a.srv: nil — server must be constructable in degraded mode")
+	}
+
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/health/hooks", nil)
+	w := httptest.NewRecorder()
+	a.srv.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("/health/hooks status: got %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+
+	var body struct {
+		Hooks []struct {
+			Name string `json:"name"`
+			Kind string `json:"kind"`
+		} `json:"hooks"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("decode /health/hooks: %v", err)
+	}
+
+	for _, h := range body.Hooks {
+		if h.Name == "CompressionHook" {
+			t.Fatalf("CompressionHook present in chain despite explicit ENABLED_HOOKS allowlist that omits it; hooks=%+v", body.Hooks)
 		}
 	}
 }

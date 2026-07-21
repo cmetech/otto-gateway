@@ -52,6 +52,7 @@ import (
 	"otto-gateway/internal/engine"
 	"otto-gateway/internal/metrics"
 	"otto-gateway/internal/plugin"
+	"otto-gateway/internal/plugin/compress"
 	"otto-gateway/internal/plugin/jsonformat"
 	"otto-gateway/internal/plugin/pii"
 	"otto-gateway/internal/pool"
@@ -270,6 +271,32 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 	// block (which contains no PII shapes) is never accidentally redacted.
 	jsonFormatHook := jsonformat.New(cfg.JSONFormatSteeringEnabled)
 
+	// Context compression (CompressionHook). Chain position: after
+	// piiHook (compress redacted text — never resurface raw PII into
+	// stubs), before loggingHook (log what is actually sent).
+	// COMPRESSION_ENABLED is the default; X-Compression header and
+	// +compress/-compress model suffixes override per request.
+	compressHook := &compress.Hook{
+		Enabled:       cfg.CompressionEnabled,
+		TriggerTokens: cfg.CompressTriggerTokens,
+		BudgetTokens:  cfg.CompressBudgetTokens,
+		ProtectTail:   cfg.CompressProtectTail,
+		ToolKeep:      cfg.CompressToolKeep,
+		Logger:        logger,
+	}
+	// Known interaction: middle-truncation can clip AES-GCM ciphertext
+	// tokens inside stale tool results, disabling their round-trip
+	// decryption (the request itself is unharmed). Gate: PII must be
+	// actually DOING encryption (PIIRedactionEnabled — the hook's real
+	// work gate, pii.go:428) — mode alone defaults to "encrypt" even when
+	// PII is off, and warning then would be noise (review 2 MINOR-7).
+	// NOT gated on cfg.CompressionEnabled: the header and +compress
+	// suffix enable compression per request even when the env default is
+	// off, and the boot warning must cover that advertised use case.
+	if cfg.PIIRedactionEnabled && (cfg.PIIRedactionMode == "encrypt" || hasEncryptAction(cfg.PIIEntityActions)) {
+		logger.Warn("PII encrypt mode active with CompressionHook available; when compression is enabled (env, X-Compression header, or +compress model suffix), truncated stale tool results may clip ciphertext tokens (see docs/operating.md)")
+	}
+
 	loggingHook := &plugin.LoggingHook{Logger: logger}
 	chain := plugin.Chain{
 		Pre: []engine.PreHook{
@@ -280,6 +307,9 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 			// Phase 08.2 D-07.
 			jsonFormatHook,
 			piiHook,
+			// Compression runs after PII (operates on redacted text) and
+			// before logging (log the transcript actually sent).
+			compressHook,
 			loggingHook,
 		},
 		Post: []engine.PostHook{
@@ -413,6 +443,7 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 			return out
 		},
 	)
+	gwMetrics.RegisterCompression(compressHook.Stats)
 
 	// Track 0 tool-call wire capture. Construct a Controller when capture is on
 	// at startup (ACP_CAPTURE) OR when runtime toggling is permitted
