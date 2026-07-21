@@ -5,6 +5,11 @@
   <section class="gw-summary-strip" aria-labelledby="summary-heading">
     <h1 id="summary-heading" class="sr-only">Gateway status overview</h1>
 
+    <!-- All 10 stat tiles live in one grid wrapper so they render as a
+         single even row (or exactly 5+5 on narrower viewports) instead of
+         flex-wrapping one orphan tile onto a second line. -->
+    <div class="gw-summary-items">
+
     <!-- Status pill -->
     <div class="gw-summary-item">
       <span class="gw-summary-label">Status</span>
@@ -86,6 +91,8 @@
         <span class="gw-summary-value" data-gw-mem>—</span>
         <span class="gw-spark-host" data-gw-mem-spark></span>
       </span>
+    </div>
+
     </div>
 
     <!-- Live indicator zone (right-aligned) -->

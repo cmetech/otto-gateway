@@ -253,21 +253,31 @@
   // layout consistency with a null values array, which renders an empty,
   // invisible sparkline) and — unlike CPU/Mem — always render, even when
   // stat_ok is false, so the row is never empty for a live (non-vacant) card.
+  // buildSlotPerf renders the per-slot perf block as TWO rows so the card
+  // width stays stable: row 1 is CPU/Mem (or the "perf n/a" placeholder on
+  // platforms without procstat), row 2 is TURNS/UP. A single flex row of four
+  // cells widened the live cards and squeezed the vacant ones (the grid's 1fr
+  // tracks cannot shrink below content min-width).
   function buildSlotPerf(slot, maxTurns) {
     var el = document.createElement('div');
     el.className = 'gw-slot-perf';
+    var row1 = document.createElement('div');
+    row1.className = 'gw-slot-perf-row';
     if (slot.stat_ok) {
       var key = slotKey(slot.label);
-      el.append(perfStat('CPU', fmtPct(latestCPUPct(key)), sparkValues(key, 'cpu'), 'is-cpu'));
-      el.append(perfStat('Mem', formatBytes(slot.rss_bytes), sparkValues(key, 'rss'), 'is-mem'));
+      row1.append(perfStat('CPU', fmtPct(latestCPUPct(key)), sparkValues(key, 'cpu'), 'is-cpu'));
+      row1.append(perfStat('Mem', formatBytes(slot.rss_bytes), sparkValues(key, 'rss'), 'is-mem'));
     } else {
       var na = document.createElement('span');
       na.className = 'gw-perf-na';
       na.textContent = 'perf n/a';
-      el.append(na);
+      row1.append(na);
     }
-    el.append(perfStat('TURNS', formatTurnsCell(slot.turns, maxTurns), null, null));
-    el.append(perfStat('UP', formatUpCell(slot.spawned_at), null, null));
+    var row2 = document.createElement('div');
+    row2.className = 'gw-slot-perf-row';
+    row2.append(perfStat('TURNS', formatTurnsCell(slot.turns, maxTurns), null, null));
+    row2.append(perfStat('UP', formatUpCell(slot.spawned_at), null, null));
+    el.append(row1, row2);
     return el;
   }
 
