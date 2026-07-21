@@ -91,16 +91,25 @@ func TestAdmin_PageHandler(t *testing.T) {
 		t.Errorf("body missing gray off-chip for unset CompressionState")
 	}
 
-	// Summary strip data-* hooks per behavior contract.
+	// Summary strip data-* hooks per behavior contract. Pool and
+	// Stateful-sessions tiles were removed from the strip (v2.16.2 —
+	// both are already covered by the Pool Slots grid and Active
+	// Sessions table on the same page), so their hooks must be GONE.
 	for _, attr := range []string{
 		"data-pill",
 		"data-uptime",
-		"data-pool-summary",
-		"data-sessions-count",
 		"data-last-updated",
 	} {
 		if !strings.Contains(body, attr) {
 			t.Errorf("body missing required attribute hook %q", attr)
+		}
+	}
+	for _, attr := range []string{
+		"data-pool-summary",
+		"data-sessions-count",
+	} {
+		if strings.Contains(body, attr) {
+			t.Errorf("body still contains removed summary-strip hook %q", attr)
 		}
 	}
 

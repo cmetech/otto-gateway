@@ -5,8 +5,8 @@
   <section class="gw-summary-strip" aria-labelledby="summary-heading">
     <h1 id="summary-heading" class="sr-only">Gateway status overview</h1>
 
-    <!-- All 10 stat tiles live in one grid wrapper so they render as a
-         single even row (or exactly 5+5 on narrower viewports) instead of
+    <!-- All 8 stat tiles live in one grid wrapper so they render as a
+         single even row (or exactly 4+4 on narrower viewports) instead of
          flex-wrapping one orphan tile onto a second line. -->
     <div class="gw-summary-items">
 
@@ -55,22 +55,6 @@
     <div class="gw-summary-item">
       <span class="gw-summary-label">Compression</span>
       <span class="gw-summary-value">{{if eq .CompressionState "on"}}<span class="gw-pill gw-pill-on">on</span>{{else if eq .CompressionState "per-request"}}<span class="gw-pill gw-pill-req" title="Off by default; the X-Compression header or a +compress model suffix enables it per request">per-request</span>{{else}}<span class="gw-pill gw-pill-off" title="CompressionHook is not in the ENABLED_HOOKS allowlist — no request can compress">off</span>{{end}}</span>
-    </div>
-
-    <!-- Pool counts (hydrated by JS on first poll) -->
-    <div class="gw-summary-item">
-      <span class="gw-summary-label">Pool</span>
-      <span class="gw-summary-value" data-pool-summary>—</span>
-    </div>
-
-    <!-- Stateful sessions count (hydrated by JS on first poll).
-         Counts entries in session.Registry -- only X-Session-Id stateful
-         sessions, NOT every in-flight request. Stateless requests show
-         up as a "busy" pool slot instead. Label disambiguates from the
-         slot-level ACP session id on the pool cards. -->
-    <div class="gw-summary-item">
-      <span class="gw-summary-label">Stateful sessions</span>
-      <span class="gw-summary-value" data-sessions-count>—</span>
     </div>
 
     <!-- Gateway process CPU (hydrated by JS; live percent derived from the

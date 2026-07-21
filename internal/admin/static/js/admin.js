@@ -565,15 +565,6 @@
     // Uptime.
     setText('data-uptime', humanizeUptime(snap.uptime_seconds || 0));
 
-    // Pool summary: "<alive>/<size> alive · <busy> busy"
-    var pool = snap.pool || {};
-    setText('data-pool-summary',
-      (pool.alive || 0) + '/' + (pool.size || 0) + ' alive · ' + (pool.busy || 0) + ' busy');
-
-    // Sessions count.
-    var sessions = snap.sessions || [];
-    setText('data-sessions-count', sessions.length);
-
     // Live dot based on status.
     if (snap.status === 'ok') {
       updateDot('is-yellow'); // yellow pulse = healthy

@@ -137,21 +137,21 @@ body {
   gap: var(--gw-space-lg);
 }
 
-/* The 10 stat tiles render inside one grid wrapper: a single even row on
- * wide viewports, exactly 5+5 below 1280px. This replaces bare flex-wrap,
+/* The 8 stat tiles render inside one grid wrapper: a single even row on
+ * wide viewports, exactly 4+4 below 1280px. This replaces bare flex-wrap,
  * which let one orphan tile (Gateway Mem) drop alone onto a second line.
  * minmax(0, 1fr) keeps every column the same width regardless of content. */
 .gw-summary-items {
   flex: 1 1 auto;
   min-width: 0;
   display: grid;
-  grid-template-columns: repeat(10, minmax(0, 1fr));
+  grid-template-columns: repeat(8, minmax(0, 1fr));
   gap: var(--gw-space-base);
 }
 
 @media (max-width: 1279px) {
   .gw-summary-items {
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 }
 
