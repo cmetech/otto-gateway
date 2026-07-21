@@ -218,20 +218,27 @@ func TestPool_WorkerRecycleAtThreshold(t *testing.T) {
 		t.Fatalf("Warmup(): %v", err)
 	}
 
-	// Capture the pre-recycle SpawnedAt so we can assert it strictly advances
-	// once the recycle respawn completes (dashboard "UP" cell must reset).
+	// Capture the pre-recycle SpawnedAt + Pid so we can assert both change
+	// once the recycle respawn completes (dashboard "UP" cell resets, and
+	// the pid visibly confirms the worker was actually replaced — the label
+	// stays "slot-0" by design).
 	preRows := p.Detail()
 	var preSpawnedAt time.Time
+	var prePid int
 	for _, r := range preRows {
 		if r.Label == "slot-0" {
 			if r.SpawnedAt == nil {
 				t.Fatal("pre-recycle Detail(): slot-0 SpawnedAt is nil")
 			}
 			preSpawnedAt = *r.SpawnedAt
+			prePid = r.Pid
 		}
 	}
 	if preSpawnedAt.IsZero() {
 		t.Fatal("pre-recycle SpawnedAt not captured for slot-0")
+	}
+	if prePid != 1001 {
+		t.Fatalf("pre-recycle Detail(): slot-0 Pid = %d; want 1001 (oldClient)", prePid)
 	}
 
 	sid, err := p.NewSession(context.Background(), "")
@@ -282,6 +289,15 @@ func TestPool_WorkerRecycleAtThreshold(t *testing.T) {
 		if !r.SpawnedAt.After(preSpawnedAt) {
 			t.Errorf("post-recycle Detail(): slot-0 SpawnedAt = %v; want strictly after pre-recycle %v",
 				*r.SpawnedAt, preSpawnedAt)
+		}
+		// The pid is the operator-visible confirmation that a recycle
+		// actually happened — the label is stable by design, so the pid
+		// changing (1001 → 1002, newClient) is the only thing that moves.
+		if r.Pid != 1002 {
+			t.Errorf("post-recycle Detail(): slot-0 Pid = %d; want 1002 (newClient)", r.Pid)
+		}
+		if r.Pid == prePid {
+			t.Errorf("post-recycle Detail(): slot-0 Pid unchanged at %d; want it to differ from pre-recycle", r.Pid)
 		}
 	}
 }

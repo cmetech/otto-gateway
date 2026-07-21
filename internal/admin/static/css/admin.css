@@ -397,6 +397,14 @@ body {
   color: var(--gw-fg);
 }
 
+/* pid suffix appended to the slot label — muted so the stable label stays
+   the visual anchor; the pid is a secondary, changing detail an operator
+   checks to confirm a recycle actually replaced the worker. */
+.gw-slot-pid {
+  font: 400 13px/1.4 var(--gw-font-ui);
+  color: var(--gw-fg-muted);
+}
+
 .gw-slot-status {
   font-size: 14px;
   color: var(--gw-fg-muted);

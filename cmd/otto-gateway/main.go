@@ -1144,6 +1144,7 @@ func (a adminPoolDetailAdapter) Detail() []admin.SnapshotSlot {
 			CurrentSessionID: r.CurrentSessionID,
 			Turns:            r.Turns,
 			SpawnedAt:        r.SpawnedAt,
+			Pid:              r.Pid,
 		}
 	}
 	return out

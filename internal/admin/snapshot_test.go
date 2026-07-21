@@ -31,8 +31,11 @@ func TestAdmin_SnapshotHandler(t *testing.T) {
 		KiroWorkerMaxTurns: 8177,
 		PoolDetail: &stubPool{
 			slots: []SnapshotSlot{
-				{Label: "slot-0", Alive: true, Busy: false, CurrentSessionID: nil, Turns: 3, SpawnedAt: &spawnedAt},
-				{Label: "slot-1", Alive: true, Busy: true, CurrentSessionID: &sid, Turns: 0, SpawnedAt: nil},
+				// 54321 is a distinctive Pid value not appearing elsewhere in
+				// this payload, so a passing assertion can't be a coincidental
+				// field-order match.
+				{Label: "slot-0", Alive: true, Busy: false, CurrentSessionID: nil, Turns: 3, SpawnedAt: &spawnedAt, Pid: 54321},
+				{Label: "slot-1", Alive: true, Busy: true, CurrentSessionID: &sid, Turns: 0, SpawnedAt: nil, Pid: 0},
 			},
 		},
 		Registry: &stubRegistry{
@@ -121,6 +124,9 @@ func TestAdmin_SnapshotHandler(t *testing.T) {
 	if slot0.SpawnedAt == nil {
 		t.Error("slot-0 spawned_at: want non-nil")
 	}
+	if slot0.Pid != 54321 {
+		t.Errorf("slot-0 pid: want 54321, got %d", slot0.Pid)
+	}
 	if slot1 == nil {
 		t.Fatal("pool.slots: slot-1 missing")
 	}
@@ -129,6 +135,9 @@ func TestAdmin_SnapshotHandler(t *testing.T) {
 	}
 	if slot1.SpawnedAt != nil {
 		t.Errorf("slot-1 spawned_at: want nil, got %v", *slot1.SpawnedAt)
+	}
+	if slot1.Pid != 0 {
+		t.Errorf("slot-1 pid: want 0, got %d", slot1.Pid)
 	}
 
 	// sessions assertions

@@ -17,6 +17,12 @@ import "time"
 // CurrentSessionID convention: a slot that has never been spawned (not
 // reachable via Detail() in practice, since rows only exist for
 // initialized slots) would render `"spawned_at": null`.
+//
+// Pid was added additively (quick 260721-*, worker pid on slot cards) so
+// operators can visually confirm a recycle completed — the label is
+// stable by design, but the pid changes to the new worker's OS pid. 0
+// when unknown (dead, respawning, or nil-client slot) — same skip
+// condition WorkerProcs uses.
 type AgentSlot struct {
 	Label            string     `json:"label"`
 	Alive            bool       `json:"alive"`
@@ -24,6 +30,7 @@ type AgentSlot struct {
 	CurrentSessionID *string    `json:"current_session_id"`
 	Turns            int        `json:"turns"`
 	SpawnedAt        *time.Time `json:"spawned_at"`
+	Pid              int        `json:"pid"`
 }
 
 // Detail returns a point-in-time snapshot of per-slot state for
@@ -33,10 +40,36 @@ type AgentSlot struct {
 // zero-length slice rather than nil so the handler always encodes
 // `"slots": []` (not `"slots": null`).
 //
-// Concurrency: holds p.mu for the snapshot; no slot.Client method calls
-// under the lock. Mirrors the stats.go discipline (short critical
-// section).
+// Concurrency: the row snapshot (everything except Pid) is built entirely
+// under p.mu, mirroring the stats.go discipline (short critical section,
+// no slot.Client method calls under the lock). Pid is filled in a SECOND
+// pass, after p.mu is released, using the exact two-phase pattern
+// WorkerProcs uses: snapshot {row index, client} pairs for eligible slots
+// under the lock, then call the (cheap, non-blocking) Client.Pid() getter
+// outside it. This upholds the pool invariant that no slot.Client method
+// ever runs while p.mu is held.
 func (p *Pool) Detail() []AgentSlot {
+	rows, pending := p.detailSnapshotLocked()
+	for _, pl := range pending {
+		if pid := pl.client.Pid(); pid > 0 {
+			rows[pl.index].Pid = pid
+		}
+	}
+	return rows
+}
+
+// pidLookup is one eligible-for-pid row's {index into rows, client} pair,
+// collected under p.mu by detailSnapshotLocked for Detail's second,
+// lock-free pass.
+type pidLookup struct {
+	index  int
+	client PoolClient
+}
+
+// detailSnapshotLocked builds the row snapshot (everything but Pid) and the
+// list of rows eligible for a pid lookup, all under p.mu. Split out of
+// Detail so the locked and unlocked phases stay visibly separate.
+func (p *Pool) detailSnapshotLocked() ([]AgentSlot, []pidLookup) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -50,6 +83,7 @@ func (p *Pool) Detail() []AgentSlot {
 	}
 
 	rows := make([]AgentSlot, 0, len(p.all))
+	pending := make([]pidLookup, 0, len(p.all))
 	for _, slot := range p.all {
 		if slot == nil {
 			continue
@@ -82,8 +116,14 @@ func (p *Pool) Detail() []AgentSlot {
 			row.SpawnedAt = &spawnedAtCopy
 		}
 		rows = append(rows, row)
+		// Same eligibility condition as WorkerProcs: a mid-recycle slot's
+		// Client is the terminated OLD process (stale-sample/pid-reuse
+		// hazard), and a nil Client has never been spawned.
+		if !slot.dead && !slot.respawning && slot.Client != nil {
+			pending = append(pending, pidLookup{index: len(rows) - 1, client: slot.Client})
+		}
 	}
-	return rows
+	return rows, pending
 }
 
 // WorkerProc pairs a slot's stable label with the live OS pid of the kiro-cli

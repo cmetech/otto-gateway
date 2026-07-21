@@ -85,6 +85,12 @@ type SnapshotSlot struct {
 	// recycle completes (quick 260721-ovm).
 	Turns     int        `json:"turns"`
 	SpawnedAt *time.Time `json:"spawned_at"`
+
+	// Pid is the current worker's OS process id — mirrors pool.AgentSlot.Pid.
+	// 0 when unknown (dead, respawning, or nil-client slot). The label is
+	// stable by design across a recycle; the pid changing is the operator's
+	// visual confirmation that the worker underneath actually got replaced.
+	Pid int `json:"pid"`
 }
 
 // SnapshotSess is the per-session detail row in the admin snapshot.

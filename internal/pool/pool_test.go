@@ -1300,10 +1300,10 @@ func TestPool_Detail_HealthyPool(t *testing.T) {
 		// attempt so Turns is deterministic (1) instead of retrying per
 		// defaultCatalogRetry (which would otherwise probe 3x on an empty
 		// catalog before the warmup ctx deadline cuts the retries off).
-		{newSessionFn: makeWarmupOnly("warm-0", "run-0"), models: []canonical.ModelInfo{{ID: "auto"}}},
-		{newSessionFn: makeWarmupOnly("warm-1", "run-1")},
-		{newSessionFn: makeWarmupOnly("warm-2", "run-2")},
-		{newSessionFn: makeWarmupOnly("warm-3", "run-3")},
+		{newSessionFn: makeWarmupOnly("warm-0", "run-0"), models: []canonical.ModelInfo{{ID: "auto"}}, pid: 2001},
+		{newSessionFn: makeWarmupOnly("warm-1", "run-1"), pid: 2002},
+		{newSessionFn: makeWarmupOnly("warm-2", "run-2"), pid: 2003},
+		{newSessionFn: makeWarmupOnly("warm-3", "run-3"), pid: 2004},
 	}
 	p := warmedPoolWithFakes(t, clients)
 	defer func() { _ = p.Close() }()
@@ -1340,6 +1340,10 @@ func TestPool_Detail_HealthyPool(t *testing.T) {
 			t.Errorf("row[%d].SpawnedAt = nil; want non-nil after initSlot", i)
 		} else if row.SpawnedAt.IsZero() {
 			t.Errorf("row[%d].SpawnedAt = zero time; want a real timestamp", i)
+		}
+		wantPid := clients[i].pid
+		if row.Pid != wantPid {
+			t.Errorf("row[%d].Pid = %d; want %d (fake client's pid)", i, row.Pid, wantPid)
 		}
 	}
 }
@@ -1488,9 +1492,9 @@ func TestPool_Detail_NilSafeOnEmptyPool(t *testing.T) {
 
 // TestPool_Detail_FieldShape_MatchesD15 — JSON tags lock the D-15 wire
 // contract. Build failure if downstream consumers depend on the old shape.
-// Turns/SpawnedAt were added additively (worker-recycling dashboard stats,
-// quick 260721-ovm) — this lock test was updated deliberately alongside that
-// change; it is not a stale assertion.
+// Turns/SpawnedAt/Pid were added additively (worker-recycling dashboard
+// stats, quick 260721-ovm and follow-up) — this lock test was updated
+// deliberately alongside those changes; it is not a stale assertion.
 func TestPool_Detail_FieldShape_MatchesD15(t *testing.T) {
 	rt := reflect.TypeOf(pool.AgentSlot{})
 	wantTags := map[string]string{
@@ -1500,6 +1504,7 @@ func TestPool_Detail_FieldShape_MatchesD15(t *testing.T) {
 		"CurrentSessionID": "current_session_id",
 		"Turns":            "turns",
 		"SpawnedAt":        "spawned_at",
+		"Pid":              "pid",
 	}
 	if rt.NumField() != len(wantTags) {
 		t.Fatalf("AgentSlot field count = %d; want %d (extra/missing fields break D-15 wire)",

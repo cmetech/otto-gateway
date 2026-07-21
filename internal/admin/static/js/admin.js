@@ -295,10 +295,22 @@
   // renderSlots: DOM-patch the pool-slot grid from snapshot pool.slots[]
   // ---------------------------------------------------------------------------
 
+  // buildSlotLabel renders the slot label plus, when known, the current
+  // worker's OS pid as muted trailing text: "slot-0 · pid 36986". The pid is
+  // the operator's visual confirmation that a recycle actually replaced the
+  // worker — the label itself is stable by design and never changes.
+  // slot.pid is 0/absent for vacant and dead/respawning slots, so those
+  // cards render unchanged (no pid suffix).
   function buildSlotLabel(slot) {
     var el = document.createElement('div');
     el.className = 'gw-slot-label';
     el.textContent = slot.label || ('Slot ' + slot.id);
+    if (slot.pid > 0) {
+      var pid = document.createElement('span');
+      pid.className = 'gw-slot-pid';
+      pid.textContent = ' · pid ' + slot.pid;
+      el.append(pid);
+    }
     return el;
   }
 
