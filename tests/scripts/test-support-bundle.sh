@@ -106,6 +106,7 @@ GW_INSTALL_DIR="$FAKE_ROOT" \
     PII_HASH_KEY="$SECRET_HASH_LITERAL" \
     PII_ENCRYPT_KEY="$SECRET_ENCRYPT_LITERAL" \
     HTTP_ADDR="127.0.0.1:18080" \
+    KIRO_WORKER_MAX_TURNS=20 \
     bash "$WRAPPER" support --out "$OUT_DIR" >"$STDOUT_FILE" 2>"$STDERR_FILE"
 RC=$?
 set -e
@@ -194,6 +195,13 @@ else
 fi
 if grep -q "AUTH_TOKEN=$SECRET_TOKEN_LITERAL" "$BUNDLE_ROOT/env/effective.env" 2>/dev/null; then
     fail_with "env/effective.env LEAKED the full AUTH_TOKEN literal"
+fi
+
+# env/effective.env must capture the non-secret KIRO_WORKER_MAX_TURNS value.
+if grep -q '^KIRO_WORKER_MAX_TURNS=20$' "$BUNDLE_ROOT/env/effective.env"; then
+    ok "env/effective.env captured KIRO_WORKER_MAX_TURNS"
+else
+    fail_with "env/effective.env missing KIRO_WORKER_MAX_TURNS"
 fi
 
 # MANIFEST.txt must declare the redaction notice + list the bundle contents.

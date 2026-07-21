@@ -88,6 +88,7 @@ try {
     $env:PII_HASH_KEY      = $SecretHash
     $env:PII_ENCRYPT_KEY   = $SecretEncrypt
     $env:HTTP_ADDR         = '127.0.0.1:18080'
+    $env:KIRO_WORKER_MAX_TURNS = '20'
     $env:GW_ENV_FILE       = 'NUL'      # neutralize project-local .env discovery
     $env:GW_OVERRIDES_FILE = 'NUL'
 
@@ -168,6 +169,12 @@ try {
     }
     if ((Test-Path $envFile) -and (Select-String -Path $envFile -SimpleMatch -Pattern "AUTH_TOKEN=$SecretToken" -Quiet)) {
         FailWith 'env\effective.env LEAKED the full AUTH_TOKEN literal'
+    }
+
+    if ((Test-Path $envFile) -and (Select-String -Path $envFile -Pattern '^KIRO_WORKER_MAX_TURNS=20$' -Quiet)) {
+        Ok 'env\effective.env captured KIRO_WORKER_MAX_TURNS'
+    } else {
+        FailWith 'env\effective.env missing KIRO_WORKER_MAX_TURNS'
     }
 
     $manifestFile = Join-Path $BundleRoot 'MANIFEST.txt'

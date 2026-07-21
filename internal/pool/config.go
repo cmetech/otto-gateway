@@ -150,6 +150,9 @@ type Config struct {
 	// to each slot's acp.Config.MaxToolDenials. Loaded from MAX_TOOL_DENIALS
 	// (default 4); 0 causes the permission handler to fall back to 4 defensively.
 	MaxToolDenials int
+	// MaxWorkerTurns schedules a worker respawn after this many successful
+	// session/new calls. Zero disables scheduled recycling.
+	MaxWorkerTurns int
 }
 
 // applyDefaults fills in zero-value Config fields. Size floors to 1

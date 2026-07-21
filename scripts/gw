@@ -1802,7 +1802,7 @@ print_env() {
              PII_ENABLED_ENTITIES PII_ENTITY_ACTIONS PII_HASH_KEY \
              PII_ENCRYPT_KEY AUTH_TOKEN ALLOWED_IPS \
              AUTH_TRUST_XFF HTTP_ADDR KIRO_CMD KIRO_ARGS KIRO_CWD \
-             POOL_SIZE STREAM_IDLE_TIMEOUT_SEC DEBUG; do
+             POOL_SIZE KIRO_WORKER_MAX_TURNS STREAM_IDLE_TIMEOUT_SEC DEBUG; do
         v="${!k:-}"
         if [[ -z "$v" ]]; then
             continue
@@ -1901,7 +1901,7 @@ EOF
                  PII_ENABLED_ENTITIES PII_ENTITY_ACTIONS PII_HASH_KEY \
                  PII_ENCRYPT_KEY AUTH_TOKEN ALLOWED_IPS \
                  AUTH_TRUST_XFF HTTP_ADDR KIRO_CMD KIRO_ARGS KIRO_CWD \
-                 POOL_SIZE STREAM_IDLE_TIMEOUT_SEC DEBUG CHAT_TRACE \
+                 POOL_SIZE KIRO_WORKER_MAX_TURNS STREAM_IDLE_TIMEOUT_SEC DEBUG CHAT_TRACE \
                  GW_ENV_FILE_LOADED GW_OVERRIDES_FILE_LOADED; do
             v="${!k:-}"
             [[ -z "$v" ]] && continue

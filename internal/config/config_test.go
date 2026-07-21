@@ -306,6 +306,41 @@ func TestLoad_PoolSize_Malformed(t *testing.T) {
 	}
 }
 
+// --- KIRO_WORKER_MAX_TURNS coverage --------------------------------------
+
+func TestLoad_KiroWorkerMaxTurns(t *testing.T) {
+	cases := []struct {
+		name    string
+		value   string
+		want    int
+		wantErr string
+	}{
+		{name: "default disabled", value: "", want: 0},
+		{name: "enabled", value: "20", want: 20},
+		{name: "negative", value: "-1", wantErr: "KIRO_WORKER_MAX_TURNS: must be >= 0"},
+		{name: "above cap", value: "10001", wantErr: "KIRO_WORKER_MAX_TURNS: sanity cap exceeded (max 10000)"},
+		{name: "malformed", value: "twenty", wantErr: "KIRO_WORKER_MAX_TURNS"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("KIRO_WORKER_MAX_TURNS", tc.value)
+			cfg, err := config.Load()
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("Load() error = %v; want substring %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load(): %v", err)
+			}
+			if cfg.KiroWorkerMaxTurns != tc.want {
+				t.Fatalf("KiroWorkerMaxTurns = %d; want %d", cfg.KiroWorkerMaxTurns, tc.want)
+			}
+		})
+	}
+}
+
 // --- OLLAMA_PATH_PREFIX / OPENAI_PATH_PREFIX coverage -------------------
 
 func TestLoad_OllamaPathPrefix_Default(t *testing.T) {

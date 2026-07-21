@@ -127,6 +127,9 @@ type Config struct {
 	// POOL-01: default 4 for Node parity; Phase 2 shipped a default of 1).
 	// Set-but-unparseable yields a Load() error.
 	PoolSize int
+	// KiroWorkerMaxTurns is the number of successful session/new calls a warm
+	// pool worker may serve before scheduled process recycling. Zero disables.
+	KiroWorkerMaxTurns int
 	// BodyReadTimeout is the per-request HTTP body-read deadline applied to
 	// chat-body POST handlers (REL-HTTP-04 / Plan 16-02). Plan 16-05 owns
 	// the config-side parsing of HTTP_BODY_READ_TIMEOUT_SEC; Plan 16-02
@@ -515,6 +518,17 @@ func Load() (Config, error) {
 	}
 	if poolSize > 256 {
 		errs = append(errs, fmt.Errorf("POOL_SIZE: sanity cap exceeded (max 256), got %d", poolSize))
+	}
+
+	maxWorkerTurns, err := getEnvInt("KIRO_WORKER_MAX_TURNS", 0)
+	if err != nil {
+		errs = append(errs, err)
+	}
+	if maxWorkerTurns < 0 {
+		errs = append(errs, fmt.Errorf("KIRO_WORKER_MAX_TURNS: must be >= 0, got %d", maxWorkerTurns))
+	}
+	if maxWorkerTurns > 10_000 {
+		errs = append(errs, fmt.Errorf("KIRO_WORKER_MAX_TURNS: sanity cap exceeded (max 10000), got %d", maxWorkerTurns))
 	}
 
 	ollamaPath := getEnvStr("OLLAMA_PATH_PREFIX", "/api")
@@ -915,6 +929,7 @@ func Load() (Config, error) {
 		AuthToken:                 authTokens,
 		AllowedIPs:                allowedIPs,
 		PoolSize:                  poolSize,
+		KiroWorkerMaxTurns:        maxWorkerTurns,
 		BodyReadTimeout:           time.Duration(bodyReadTimeoutSec) * time.Second,
 		StreamIdleTimeoutSec:      streamIdleTimeoutSec,
 		OllamaPathPrefix:          ollamaPath,

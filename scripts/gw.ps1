@@ -1551,7 +1551,7 @@ function Show-Env {
         'PII_ENABLED_ENTITIES','PII_ENTITY_ACTIONS','PII_HASH_KEY',
         'PII_ENCRYPT_KEY','AUTH_TOKEN','ALLOWED_IPS',
         'AUTH_TRUST_XFF','HTTP_ADDR','KIRO_CMD','KIRO_ARGS','KIRO_CWD',
-        'POOL_SIZE','DEBUG'
+        'POOL_SIZE','KIRO_WORKER_MAX_TURNS','DEBUG'
     )
     foreach ($k in $keys) {
         $v = [Environment]::GetEnvironmentVariable($k, 'Process')
@@ -1616,7 +1616,7 @@ function Invoke-Support {
             'PII_ENABLED_ENTITIES','PII_ENTITY_ACTIONS','PII_HASH_KEY',
             'PII_ENCRYPT_KEY','AUTH_TOKEN','ALLOWED_IPS',
             'AUTH_TRUST_XFF','HTTP_ADDR','KIRO_CMD','KIRO_ARGS','KIRO_CWD',
-            'POOL_SIZE','STREAM_IDLE_TIMEOUT_SEC','DEBUG','CHAT_TRACE',
+            'POOL_SIZE','KIRO_WORKER_MAX_TURNS','STREAM_IDLE_TIMEOUT_SEC','DEBUG','CHAT_TRACE',
             'GW_ENV_FILE_LOADED','GW_OVERRIDES_FILE_LOADED'
         )
         $effLines = New-Object System.Collections.Generic.List[string]

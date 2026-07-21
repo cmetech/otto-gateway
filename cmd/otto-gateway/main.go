@@ -494,6 +494,7 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 			Metrics:        gwMetrics,                        // kiro usage-metrics parity: forward slot usage events
 			Capture:        controllerRecordFunc(acpCapture), // Track 0 (nil controller → nil func → no capture)
 			MaxToolDenials: cfg.MaxToolDenials,               // Track 3a: circuit breaker threshold
+			MaxWorkerTurns: cfg.KiroWorkerMaxTurns,           // worker recycling: scheduled respawn threshold
 		})
 
 		// POOL-02: warmup BEFORE the HTTP listener accepts traffic.
