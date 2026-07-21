@@ -389,6 +389,17 @@ func TestInvariants_ToolResultInToolCallsMessage_TruncateNotElide(t *testing.T) 
 	if strings.Contains(flattenText(got), "elided as low-relevance") {
 		t.Fatal("ToolCalls-carrying message was elided by stage 4")
 	}
+	// Review follow-up: assert stage 2 actually SHRANK the ToolResult
+	// content (not just left it structurally intact) — pins the
+	// regression where stage 2 becomes a no-op for ToolCalls-carrying
+	// messages instead of truncating them.
+	content := got.Content[0].ToolResult.Content
+	if len(content) >= len(fat) {
+		t.Fatalf("ToolResult.Content was not shrunk by stage 2: got %d bytes, original %d bytes", len(content), len(fat))
+	}
+	if !strings.Contains(content, "chars omitted") {
+		t.Fatalf("ToolResult.Content missing the middleTruncate elision marker: %q", content)
+	}
 }
 
 // TestInvariants_BothPinsSurviveByteForByte_ZeroTailUnattainableBudget is a

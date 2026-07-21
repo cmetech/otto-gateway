@@ -45,6 +45,11 @@ func (h *Hook) Name() string { return "CompressionHook" }
 // Describe publishes config + lifetime counters for /health/hooks
 // (OBSV-04). Everything here is static config or an atomic counter —
 // nothing sensitive (stage 4 is local; there is no endpoint to leak).
+// Note "runs" and "budget_unmet" answer different questions: runs counts
+// only net-shrinking compressions (compress's `saved > 0` gate below),
+// while budget_unmet counts every enabled run that crossed TriggerTokens
+// and ended over BudgetTokens regardless of whether anything shrank — so
+// budget_unmet can legitimately exceed runs.
 func (h *Hook) Describe() (string, map[string]any) {
 	return "Pre", map[string]any{
 		"enabled":          h.Enabled,
