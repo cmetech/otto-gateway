@@ -26,14 +26,31 @@ import (
 // reached step 4 would have read the NEW client's Done() channel,
 // silently misbinding the OLD watcher to the NEW client.
 //
-// Lifecycle ordering with respawnSlot (Task 2): respawnSlot closes the
-// OLD client FIRST, which makes the OLD client's Done() fire. The OLD
-// watcher's <-done branch wins (now bound to the OLD client's Done
-// channel because we captured it before swapping slot.Client), marks
-// slot.dead = true transiently, and exits. respawnSlot then resets
-// slot.dead = false under p.mu and spawns a FRESH watcher with the
-// NEW client's done channel.
-func (p *Pool) startExitWatcher(slot *Slot, done <-chan struct{}) {
+// Lifecycle ordering with respawnSlot (recycle-race fix): respawnSlot
+// closes the OLD client FIRST, which makes the OLD client's Done() fire
+// while the OLD watcher is still parked on it. That Done firing is a
+// PLANNED teardown, not a crash, so the OLD watcher must NOT dead-mark the
+// slot — respawnSlot is about to swap in a fresh, healthy worker. Two
+// guards, checked under p.mu in the <-done branch, distinguish planned
+// teardown from a genuine crash:
+//   - slot.respawning: set true by respawnSlot before it closes the OLD
+//     client, cleared in the swap critical section. Covers the window where
+//     the OLD watcher wakes BEFORE the swap.
+//   - slot.Client != watchedClient: the identity check. Covers the window
+//     where the OLD watcher wakes AFTER the swap (respawning already
+//     cleared) — slot.Client now points at the NEW client, so an OLD-client
+//     watcher sees a mismatch. Pointer/interface identity only; no client
+//     method is ever called under p.mu.
+//
+// Either guard tripping means "planned teardown": skip the dead-mark and
+// emit a Debug line instead of the operator-facing "pool: slot died" INFO.
+// Genuine crash teardowns (ping-escalation, readLoop EOF) and the ordinary
+// lazy path have respawning==false AND a matching client, so they take the
+// original dead-marking behavior unchanged.
+//
+// watchedClient is the client whose Done() the caller captured for `done`;
+// both call sites (initSlot, respawnSlot) pass the same client.
+func (p *Pool) startExitWatcher(slot *Slot, watchedClient PoolClient, done <-chan struct{}) {
 	// D-18-07 REL-HTTP-07: capture logger BEFORE goroutine launch.
 	exitWatcherLogger := p.cfg.Logger
 	go func() {
@@ -61,13 +78,26 @@ func (p *Pool) startExitWatcher(slot *Slot, done <-chan struct{}) {
 		select {
 		case <-done:
 			// acp.Client tore down its subprocess (Close, ping failure,
-			// or readLoop EOF). Mark the slot dead — Pool.NewSession's
-			// dead-slot branch picks it up on the next Acquire.
+			// or readLoop EOF). Decide crash-vs-planned under p.mu using the
+			// two guards, then emit AFTER unlock (never log under the lock).
 			p.mu.Lock()
-			slot.dead = true
+			planned := slot.respawning || slot.Client != watchedClient
+			if !planned {
+				// Genuine crash: mark the slot dead — Pool.NewSession's
+				// dead-slot branch picks it up on the next Acquire.
+				slot.dead = true
+			}
+			label := slot.Label
 			p.mu.Unlock()
 			if p.cfg.Logger != nil {
-				p.cfg.Logger.Info("pool: slot died", "label", slot.Label)
+				if planned {
+					// Recycle/respawn closed the OLD client deliberately; this
+					// is not a crash. Debug-only so operators alerting on
+					// "pool: slot died" get no false crash signal per recycle.
+					p.cfg.Logger.Debug("pool: watcher observed planned teardown", "label", label)
+				} else {
+					p.cfg.Logger.Info("pool: slot died", "label", label)
+				}
 			}
 		case <-p.closing:
 			// Pool.Close fired — exit cleanly. The pool's closeAll path

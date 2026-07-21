@@ -52,8 +52,10 @@ func TestExitWatcher_FiresOnClientDone(t *testing.T) {
 	wc := newWatcherTestClient()
 	slot := &Slot{Label: "watcher-test-0", Client: wc}
 
-	// WR-01: callers now capture Done() at spawn time.
-	p.startExitWatcher(slot, wc.Done())
+	// WR-01: callers now capture Done() at spawn time. Recycle-race fix:
+	// callers also pass the watched client for the planned-teardown identity
+	// check; here the slot's client and the watched client are the same.
+	p.startExitWatcher(slot, wc, wc.Done())
 
 	// Trigger client death.
 	close(wc.doneCh)
@@ -86,8 +88,9 @@ func TestExitWatcher_ExitsOnPoolClose(t *testing.T) {
 	wc := newWatcherTestClient()
 	slot := &Slot{Label: "watcher-close-0", Client: wc}
 
-	// WR-01: callers now capture Done() at spawn time.
-	p.startExitWatcher(slot, wc.Done())
+	// WR-01: callers now capture Done() at spawn time. Recycle-race fix: pass
+	// the watched client for the planned-teardown identity check.
+	p.startExitWatcher(slot, wc, wc.Done())
 
 	// Trigger pool shutdown; watcher should pick <-p.closing branch.
 	if err := p.Close(); err != nil {

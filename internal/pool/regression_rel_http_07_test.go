@@ -163,7 +163,7 @@ func TestRegression_REL_HTTP_07_PoolExitWatcher(t *testing.T) {
 
 	wc := newPanicTestClient()
 	slot := &Slot{Label: "panic-test-0", Client: wc}
-	p.startExitWatcher(slot, wc.Done())
+	p.startExitWatcher(slot, wc, wc.Done())
 
 	rec := awaitPanicRecord(t, buf, "pool-exit-watcher")
 	assertPanicShape(t, rec, "test-18-02-pool-exit-watcher")

@@ -9,8 +9,11 @@
 package pool_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -110,21 +113,26 @@ func pollUntil(timeout time.Duration, fn func() bool) bool {
 }
 
 // runOneRequest drives NewSession → Prompt → drain → Result for a slot with the
-// default (immediately-closed) fake stream. Returns any error from the path.
+// default (immediately-closed) fake stream. It is invoked from a non-test
+// goroutine by the shutdown-interleaving tests, so it uses t.Errorf + early
+// return (t.Fatalf may only be called from the goroutine running the test).
 func runOneRequest(t *testing.T, p *pool.Pool) {
 	t.Helper()
 	ctx := context.Background()
 	sid, err := p.NewSession(ctx, "")
 	if err != nil {
-		t.Fatalf("NewSession(): %v", err)
+		t.Errorf("NewSession(): %v", err)
+		return
 	}
 	stream, err := p.Prompt(ctx, sid, nil)
 	if err != nil {
-		t.Fatalf("Prompt(): %v", err)
+		t.Errorf("Prompt(): %v", err)
+		return
 	}
 	drainChunks(stream.Chunks())
 	if _, err := stream.Result(); err != nil {
-		t.Fatalf("Result(): %v", err)
+		t.Errorf("Result(): %v", err)
+		return
 	}
 }
 
@@ -634,4 +642,114 @@ func TestPool_WorkerRecycleConcurrentCloseNoRaceNoLeak(t *testing.T) {
 		t.Fatalf("Close(): %v", err)
 	}
 	wg.Wait()
+}
+
+// syncBuf is a goroutine-safe io.Writer over a bytes.Buffer so the exit-watcher
+// goroutine's slog output can be inspected from the test goroutine without a
+// data race (the -race gate would otherwise flag concurrent Write/String).
+type syncBuf struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuf) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuf) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// TestPool_WorkerRecycle_StaleWatcherDoesNotDeadMark is the regression test for
+// the recycle exit-watcher race (final-review IMPORTANT-1/2): a stale OLD
+// exit-watcher, waking AFTER respawnSlot has swapped in a fresh healthy worker,
+// must NOT dead-mark that worker nor emit the operator-facing "pool: slot died"
+// crash signal.
+//
+// Determinism (no sleeps-as-sync): the exit-watcher panic probe seam runs at
+// every watcher-goroutine start, BEFORE its select. We install a probe that
+// parks every watcher on a gate channel, so the OLD watcher cannot observe its
+// (already-fired) Done() until we open the gate — which we do only AFTER the
+// recycle swap has completed (Recycles()==1). This places the OLD watcher's
+// wakeup deterministically in the post-swap window that the identity guard
+// covers. Red-check: reverting the guard in exit_watcher.go's <-done branch
+// (unconditional dead-mark + "pool: slot died") makes this test fail on both
+// the SlotAlive assertion and the "pool: slot died" log assertion.
+func TestPool_WorkerRecycle_StaleWatcherDoesNotDeadMark(t *testing.T) {
+	logBuf := &syncBuf{}
+	logger := slog.New(slog.NewJSONHandler(logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	// Park every exit-watcher at goroutine start, before its select.
+	gate := make(chan struct{})
+	restore := pool.SetExitWatcherPanicProbeForTest(func() { <-gate })
+	t.Cleanup(restore)
+	var gateOnce sync.Once
+	openGate := func() { gateOnce.Do(func() { close(gate) }) }
+
+	oldClient := &fakeClient{models: []canonical.ModelInfo{{ID: "auto"}}, pid: 1001}
+	newClient := &fakeClient{pid: 1002}
+	p := pool.New(pool.Config{
+		Logger:         logger,
+		Size:           1,
+		MaxWorkerTurns: 1, // one completed request recycles the worker
+		Factory:        &fakeClientFactory{clients: []pool.PoolClient{oldClient, newClient}},
+	})
+	// Always release the gate (so parked watchers can exit) and Close the pool,
+	// even on an early t.Fatalf, so the goleak gate stays clean.
+	t.Cleanup(func() {
+		openGate()
+		_ = p.Close()
+	})
+
+	if err := p.Warmup(context.Background()); err != nil {
+		t.Fatalf("Warmup(): %v", err)
+	}
+
+	// One request drives turns to 1 → background recycle: respawnSlot closes the
+	// OLD client, swaps in the NEW client, and resets dead=false /
+	// respawning=false.
+	runOneRequest(t, p)
+	if !pollUntil(2*time.Second, func() bool { return p.Recycles() == 1 }) {
+		t.Fatalf("Recycles() = %d; want 1 (recycle did not complete)", p.Recycles())
+	}
+	if alive, ok := p.SlotAlive("slot-0"); !ok || !alive {
+		t.Fatalf("slot-0 alive=(%v, ok=%v) before gate open; want alive,true", alive, ok)
+	}
+
+	// Simulate the OLD client's Done() firing as a result of the recycle's
+	// Close. The real acp.Client fires Done() from Close(); the fakeClient does
+	// not, so we fire it explicitly here — AFTER the swap — to model the stale
+	// OLD watcher waking in the post-swap window.
+	oldClient.fireDone()
+
+	// Open the gate: the OLD watcher now reaches its select and observes the
+	// OLD client's now-fired Done(). With the guard this is a planned teardown
+	// (slot.Client is the NEW client → identity mismatch) and must be skipped.
+	openGate()
+
+	// Deterministic sync point: wait until the OLD watcher has processed its
+	// <-done branch, observable via the log line it emits — the planned-teardown
+	// Debug on the fixed path, or "pool: slot died" on the buggy path.
+	if !pollUntil(2*time.Second, func() bool {
+		s := logBuf.String()
+		return strings.Contains(s, "planned teardown") || strings.Contains(s, "pool: slot died")
+	}) {
+		t.Fatal("OLD watcher never processed its Done() branch after gate open")
+	}
+
+	// The freshly recycled worker must still be alive and un-respawned, and no
+	// false crash signal may have been logged.
+	if alive, ok := p.SlotAlive("slot-0"); !ok || !alive {
+		t.Errorf("slot-0 alive=(%v, ok=%v) after stale watcher fired; want alive,true — recycle race dead-marked a healthy worker", alive, ok)
+	}
+	if got := p.Respawns(); got != 0 {
+		t.Errorf("Respawns() = %d; want 0 (recycled worker must not be torn down via the lazy path)", got)
+	}
+	if s := logBuf.String(); strings.Contains(s, "pool: slot died") {
+		t.Errorf(`log contains "pool: slot died" — stale OLD watcher emitted a false crash signal for a planned recycle`)
+	}
 }

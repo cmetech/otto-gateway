@@ -131,6 +131,15 @@ type Slot struct {
 	// releaseOrRecycle recycles the worker once turns reaches
 	// cfg.MaxWorkerTurns.
 	turns int
+	// respawning is set true by respawnSlot (step 0, under p.mu) BEFORE it
+	// closes the OLD client, and cleared in the step-4 swap critical section
+	// (or on a spawn/init error return). It exists solely to arm the OLD
+	// exit-watcher — still parked on the OLD client's Done() — against the
+	// recycle respawn race: when that OLD Done() fires (because respawnSlot
+	// closed it), the watcher sees respawning==true and skips its dead-mark +
+	// "pool: slot died" log instead of dead-marking a slot that is being
+	// deliberately recycled. Guarded by p.mu, same discipline as dead/turns.
+	respawning bool
 }
 
 // Pool is a fixed-size warm pool of kiro-cli slots that satisfies
@@ -485,7 +494,7 @@ func (p *Pool) initSlot(ctx context.Context, label string) (*Slot, error) {
 	// goroutine cannot lazily re-evaluate slot.Client.Done() against a
 	// later-swapped client. Safe here without p.mu — the slot has
 	// just been allocated and no other goroutine holds a reference.
-	p.startExitWatcher(slot, client.Done())
+	p.startExitWatcher(slot, client, client.Done())
 	return slot, nil
 }
 
@@ -525,6 +534,18 @@ func (p *Pool) slotAlive(slot *Slot) bool {
 // traffic there, not a pool incident); the success log reason and the
 // counter incremented (respawns vs recycles) also depend on cause.
 func (p *Pool) respawnSlot(ctx context.Context, slot *Slot, cause respawnCause) error {
+	// Step 0 (recycle-race fix): mark the slot respawning UNDER p.mu before
+	// touching the OLD client. The recycle path is the first respawnSlot
+	// caller on an ALIVE slot whose OLD exit-watcher is still parked on the
+	// OLD client's Done(). Closing that client (step 1) fires the OLD Done;
+	// the watcher, guarded by this same flag, then skips its dead-mark +
+	// "pool: slot died" log rather than dead-marking a worker we are
+	// deliberately recycling. Cleared in the step-4 swap critical section on
+	// success, or on each spawn/init error return below (callers own
+	// dead-marking on failure — we only clear the recycle-race flag here).
+	p.mu.Lock()
+	slot.respawning = true
+	p.mu.Unlock()
 	// D-18-05 REL-OBSV-02: capture OLD pid BEFORE Close so the
 	// lazy-respawn-success INFO log (emitted after step 4) can report
 	// the previous-pid → new-pid pair for operator correlation against
@@ -552,6 +573,9 @@ func (p *Pool) respawnSlot(ctx context.Context, slot *Slot, cause respawnCause) 
 		// "respawn failed" incident. This suppression is lazy-only: the
 		// scheduled recycler (respawnCauseRecycle) has no caller-owned ctx
 		// to abort on, so a ctx error there is a genuine spawn failure.
+		p.mu.Lock()
+		slot.respawning = false
+		p.mu.Unlock()
 		if cause == respawnCauseLazy &&
 			(errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
 			return fmt.Errorf("pool: respawn slot %s aborted: %w", slot.Label, err)
@@ -563,6 +587,9 @@ func (p *Pool) respawnSlot(ctx context.Context, slot *Slot, cause respawnCause) 
 	// orphaning a subprocess + writer/reader goroutine trio.
 	if err := newClient.Initialize(ctx); err != nil {
 		_ = newClient.Close()
+		p.mu.Lock()
+		slot.respawning = false
+		p.mu.Unlock()
 		// WR-07: same ctx-cancellation distinction as Spawn above (lazy-only).
 		if cause == respawnCauseLazy &&
 			(errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
@@ -590,13 +617,19 @@ func (p *Pool) respawnSlot(ctx context.Context, slot *Slot, cause respawnCause) 
 	p.mu.Lock()
 	slot.Client = newClient
 	slot.dead = false
+	// Clear the recycle-race flag in the same critical section that swaps the
+	// client: from here on the OLD watcher (if it has not yet observed the OLD
+	// Done) is disarmed by the identity check instead — slot.Client now points
+	// at newClient, so an OLD-client watcher wakeup sees slot.Client != its
+	// watchedClient and skips.
+	slot.respawning = false
 	// Reset the turn counter for the fresh worker in the same critical section
 	// that swaps the client — covers both the lazy dead-slot path and the
 	// Task 3 scheduled recycle (design §2 Part B "Counter reset").
 	slot.turns = 0
 	newDone := newClient.Done()
 	// Step 5: spawn a fresh exit-watcher for the NEW client (under p.mu).
-	p.startExitWatcher(slot, newDone)
+	p.startExitWatcher(slot, newClient, newDone)
 	newPid := newClient.Pid()
 	label := slot.Label
 	p.mu.Unlock()
@@ -872,9 +905,9 @@ func (p *Pool) Close() error {
 // closeAll closes every slot's Client and marks the pool closed.
 //
 // Idempotency contract (WR-06): closeAll IS internally idempotent for
-// repeated calls because the first invocation nils p.all under p.mu,
-// so a second call's `slots := p.all` reads nil and the iteration
-// is a no-op. The public Close wraps closeAll in sync.Once so callers
+// repeated calls because the first invocation nils p.all under p.mu, so a
+// second call snapshots an empty `targets` slice and the close loop is a
+// no-op. The public Close wraps closeAll in sync.Once so callers
 // see firstErr from the original invocation; Warmup's partial-failure
 // path calls closeAll directly without going through closeOnce, which
 // is why the closeAll body must tolerate being followed by Pool.Close
@@ -1360,8 +1393,22 @@ func (p *Pool) releaseOrRecycle(slot *Slot) {
 	p.mu.Lock()
 	turns := slot.turns
 	if p.cfg.MaxWorkerTurns == 0 || turns < p.cfg.MaxWorkerTurns || p.closed {
-		p.slots <- slot
+		// Guarded non-blocking send, matching the file's re-queue convention
+		// (pool.go respawn re-queue arms + recycleSlot): the buffered channel
+		// cannot block (cap == slot count), and the default arm keeps a future
+		// duplicate-requeue bug from deadlocking under p.mu — it drops rather
+		// than blocking. The drop is recorded under the lock and logged AFTER
+		// unlock (never log a slot method / hot line under p.mu).
+		var requeueDropped bool
+		select {
+		case p.slots <- slot:
+		default:
+			requeueDropped = true
+		}
 		p.mu.Unlock()
+		if requeueDropped && p.cfg.Logger != nil {
+			p.cfg.Logger.Error("pool: release requeue failed", "label", slot.Label)
+		}
 		return
 	}
 	// Commit: Add(1) inside the same critical section that read p.closed.
@@ -1418,15 +1465,18 @@ func (p *Pool) recycleSlot(slot *Slot, turns int) {
 	}
 	// Guarded non-blocking send, mirroring the pool.go re-queue pattern: the
 	// buffered channel cannot block (cap == slot count), and the default arm
-	// is a defensive drop against any future duplicate-requeue bug.
+	// is a defensive drop against any future duplicate-requeue bug. Capture
+	// the drop under the lock; emit the log AFTER unlock (never log under p.mu).
+	var requeueDropped bool
 	select {
 	case p.slots <- slot:
 	default:
-		if p.cfg.Logger != nil {
-			p.cfg.Logger.Error("pool: recycle requeue failed", "label", slot.Label)
-		}
+		requeueDropped = true
 	}
 	p.mu.Unlock()
+	if requeueDropped && p.cfg.Logger != nil {
+		p.cfg.Logger.Error("pool: recycle requeue failed", "label", slot.Label)
+	}
 }
 
 // poolStreamWrapper adapts *acp.Stream (Chunks is a FIELD; Result
