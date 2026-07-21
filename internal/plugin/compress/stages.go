@@ -212,29 +212,38 @@ func dupKey(m canonical.Message) string {
 	return b.String()
 }
 
+// duplicateStubMarker replaces a collapsed message's prose. NON-referential
+// on purpose (review LOW-5): the marker used to point at the earlier
+// occurrence by index ("#N"), but stage 4 can later elide message #N,
+// leaving a dangling reference in what the model sees. The stub only
+// needs to tell the model "this content already appeared", not exactly
+// where.
+const duplicateStubMarker = "[duplicate of an earlier message omitted]"
+
 // collapseDuplicates is stage 3: replace exact structural repeats (same
-// dupKey, VISIBLE acpProse length >= minDupLen) with a short stub
-// pointing at the first occurrence. Agent loops re-send identical blobs
-// turn after turn — this is where the big wins usually are. Eligibility
-// is role-aware (review MEDIUM-3): a message whose only prose lives on a
-// carrier ACP never renders for its role (e.g. RoleUser Thinking) has NO
-// visible prose to collapse — stubbing it would ADD a visible section the
-// wire previously rendered nothing for, which is compression making the
-// prompt BIGGER.
+// dupKey, VISIBLE acpProse length >= minDupLen) with a short, non-
+// referential stub. Agent loops re-send identical blobs turn after turn —
+// this is where the big wins usually are. Eligibility is role-aware
+// (review MEDIUM-3): a message whose only prose lives on a carrier ACP
+// never renders for its role (e.g. RoleUser Thinking) has NO visible
+// prose to collapse — stubbing it would ADD a visible section the wire
+// previously rendered nothing for, which is compression making the
+// prompt BIGGER. seen only needs first-occurrence REGISTRATION (not the
+// index) now that the stub no longer references it by number.
 func collapseDuplicates(msgs []canonical.Message, mutable func(int) bool) {
-	seen := make(map[string]int)
+	seen := make(map[string]struct{})
 	for i := range msgs {
 		key := dupKey(msgs[i])
 		if !mutable(i) || len(acpProse(msgs[i])) < minDupLen {
 			if _, ok := seen[key]; !ok {
-				seen[key] = i
+				seen[key] = struct{}{}
 			}
 			continue
 		}
-		if first, ok := seen[key]; ok {
-			replaceText(&msgs[i], fmt.Sprintf("[duplicate of earlier message #%d omitted]", first+1))
+		if _, ok := seen[key]; ok {
+			replaceText(&msgs[i], duplicateStubMarker)
 		} else {
-			seen[key] = i
+			seen[key] = struct{}{}
 		}
 	}
 }

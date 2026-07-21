@@ -178,7 +178,7 @@ func TestCollapseDuplicates(t *testing.T) {
 	if flattenText(msgs[0]) != big {
 		t.Error("first occurrence must survive")
 	}
-	if got := flattenText(msgs[2]); !strings.Contains(got, "duplicate of earlier message #1") {
+	if got := flattenText(msgs[2]); !strings.Contains(got, "duplicate of an earlier message omitted") {
 		t.Errorf("duplicate not collapsed: %q", got)
 	}
 	if flattenText(msgs[3]) != big {
@@ -236,7 +236,7 @@ func TestCollapseDuplicates_DifferentCiphertextIsNotDuplicate(t *testing.T) {
 	m3 := textMsg(canonical.RoleUser, pre+"[PII:Email:AAAAaaaa1111_-]")
 	msgs2 := []canonical.Message{m1, m3}
 	collapseDuplicates(msgs2, func(int) bool { return true })
-	if !strings.Contains(flattenText(msgs2[1]), "duplicate of earlier message #1") {
+	if !strings.Contains(flattenText(msgs2[1]), "duplicate of an earlier message omitted") {
 		t.Error("byte-identical messages failed to collapse")
 	}
 }
@@ -259,7 +259,7 @@ func TestCollapseDuplicates_DifferentToolCallIDIsNotDuplicate(t *testing.T) {
 	// Same ID (a true resend) still collapses.
 	msgs2 := []canonical.Message{mk("call_A"), mk("call_A")}
 	collapseDuplicates(msgs2, func(int) bool { return true })
-	if !strings.Contains(flattenText(msgs2[1]), "duplicate of earlier message #1") {
+	if !strings.Contains(flattenText(msgs2[1]), "duplicate of an earlier message omitted") {
 		t.Error("identical-ID duplicate failed to collapse")
 	}
 }
