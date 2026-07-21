@@ -57,6 +57,27 @@ on Win10/11 — Microsoft removed the APIs, so this is the correct deliverable).
 - Visual check of both icons: macOS template flips white/black with the bar;
   the blue ico is legible on dark taskbar and light Start menu at 16/32/48px.
 
+## Follow-up (same session): tray stops reading brand.json entirely
+The icon change removed the *icon's* brand.json read, but the tray still read it
+in `resolveDesktopIdentity` (for the Co-Worker Start/Stop menu) via
+`refineBrandIdentity`. On a machine with a legacy OTTO desktop app whose
+`resources\brand.json` names "OTTO", the pre-v2.14.2 tray repainted itself with
+the OTTO template a beat after startup — the reported "new icon, then old icon
+replaces it." Per operator: `brand.json` must stay (the desktop Hermes client
+owns and consumes it); only the **tray** must stop reading it.
+
+- `resolveDesktopIdentity` now resolves the desktop app from fixed OTTO defaults
+  and takes no `readFile` — it never opens `brand.json`. Discovery already relied
+  on the OTTO-default path/exe name, so Co-Worker Start/Stop is unchanged for the
+  current app.
+- Removed `refineBrandIdentity`, `brandJSONDoc`, `brandJSONPathForApp`,
+  `releasesRepoRe`; dropped `os.ReadFile` from all 6 call sites; updated
+  `brand_test.go` / `desktop_test.go`. Grep confirms zero `brand.json` reads left
+  in the tray.
+- Net effect: v2.14.2's tray never touches `brand.json`, so the flip cannot
+  happen regardless of what OTTO app is installed. No installer file-deletion
+  needed (the file stays for the Hermes client).
+
 ## Notes / follow-ups
 - **Branch:** committed on `feat/context-compression` (GSD quick config did not
   auto-branch). Unrelated to that feature — consider moving to a dedicated branch

@@ -2,14 +2,13 @@
 
 package main
 
-import (
-	"encoding/json"
-	"regexp"
-)
+import "regexp"
 
 // brandIdentity is everything the desktop actions need to know about the
-// brand. Defaults are OTTO; refineBrandIdentity may overlay a display name
-// from the installed app's brand.json (Plan-6 discoverable descriptor).
+// installed desktop app. The tray uses fixed OTTO defaults and deliberately
+// does NOT read the app's brand.json — that descriptor belongs to the desktop
+// Hermes client, which owns and consumes it (the tray reading it used to drive
+// a spurious icon swap; see quick task 260721-an5).
 type brandIdentity struct {
 	DisplayName  string // "OTTO"
 	WinExeName   string // "OTTO.exe"
@@ -21,11 +20,6 @@ type brandIdentity struct {
 // displayNameRe bounds a brand display name to safe characters BEFORE it is
 // used to build a process name / kill target passed to exec (gosec G204).
 var displayNameRe = regexp.MustCompile(`^[A-Za-z0-9 ._-]{1,64}$`)
-
-// releasesRepoRe bounds releasesRepo to a plain "owner/repo" GitHub slug
-// BEFORE it is adopted into InstallRepo (fail-safe: no unvalidated string
-// reaches an install-target field).
-var releasesRepoRe = regexp.MustCompile(`^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$`)
 
 func validateDisplayName(name string) bool { return displayNameRe.MatchString(name) }
 
@@ -40,30 +34,3 @@ func identityFromDisplayName(name string) brandIdentity {
 }
 
 func defaultBrandIdentity() brandIdentity { return identityFromDisplayName("OTTO") }
-
-// brandJSONDoc is the subset of the Plan-6 brand.json the tray consumes.
-type brandJSONDoc struct {
-	DisplayName  string `json:"displayName"`
-	ReleasesRepo string `json:"releasesRepo"`
-}
-
-// refineBrandIdentity overlays a validated brand.json onto the defaults.
-// Any error / invalid content keeps the base identity (fail-safe).
-func refineBrandIdentity(base brandIdentity, brandJSONPath string, readFile func(string) ([]byte, error)) brandIdentity {
-	data, err := readFile(brandJSONPath)
-	if err != nil {
-		return base
-	}
-	var doc brandJSONDoc
-	if json.Unmarshal(data, &doc) != nil {
-		return base
-	}
-	out := base
-	if validateDisplayName(doc.DisplayName) {
-		out = identityFromDisplayName(doc.DisplayName)
-	}
-	if releasesRepoRe.MatchString(doc.ReleasesRepo) {
-		out.InstallRepo = doc.ReleasesRepo // used for display only in v1; install URL is constant
-	}
-	return out
-}

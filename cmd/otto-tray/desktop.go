@@ -38,32 +38,16 @@ func installedAppPath(goos string, id brandIdentity, env func(string) string, ho
 	return ""
 }
 
-// brandJSONPathForApp returns where brand.json ships in the packaged app's
-// resources (electron-builder extraResources), relative to the launchable
-// path returned by installedAppPath.
-func brandJSONPathForApp(goos, appPath string) string {
-	if goos == "darwin" {
-		return filepath.Join(appPath, "Contents", "Resources", "brand.json")
-	}
-	// windows: appPath = ...\<Brand>\<Brand>.exe → resources\brand.json beside it
-	return filepath.Join(filepath.Dir(appPath), "resources", "brand.json")
-}
-
-// resolveDesktopIdentity finds the installed app (with OTTO defaults) and, if
-// found, refines the identity from its bundled brand.json. Returns the
-// (possibly refined) identity and the app path ("" if not installed).
+// resolveDesktopIdentity finds the installed desktop app using fixed OTTO
+// defaults and returns that identity plus the app path ("" if not installed).
+// It deliberately does NOT read the app's brand.json: that descriptor is owned
+// by the desktop Hermes client, and the tray reading it previously caused a
+// spurious icon swap (quick task 260721-an5). Discovery already relies on the
+// OTTO-default path/exe name, so dropping the brand.json refinement changes no
+// behavior for the current app.
 //
 //nolint:unparam // goos is runtime.GOOS in production (varies darwin/windows across builds) and is parameterized so both OS branches are unit-tested on one box
-func resolveDesktopIdentity(goos string, env func(string) string, home string, exists func(string) bool, readFile func(string) ([]byte, error)) (brandIdentity, string) {
+func resolveDesktopIdentity(goos string, env func(string) string, home string, exists func(string) bool) (brandIdentity, string) {
 	id := defaultBrandIdentity()
-	appPath := installedAppPath(goos, id, env, home, exists)
-	if appPath == "" {
-		return id, ""
-	}
-	id = refineBrandIdentity(id, brandJSONPathForApp(goos, appPath), readFile)
-	// Re-resolve the path under the refined identity (name may have changed).
-	if p := installedAppPath(goos, id, env, home, exists); p != "" {
-		appPath = p
-	}
-	return id, appPath
+	return id, installedAppPath(goos, id, env, home, exists)
 }

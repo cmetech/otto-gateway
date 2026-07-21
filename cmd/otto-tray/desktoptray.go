@@ -23,19 +23,18 @@ func desktopLabel(suffix string) string {
 }
 
 // makeDesktopProbe returns a per-tick evidence gatherer: resolve the installed
-// app (with brand.json refinement), record its path, and check liveness. The
-// Installing flag is overlaid from the tray's atomic bool so an in-flight
-// install shows the spinner state.
+// app (from fixed OTTO defaults; no brand.json read), record its path, and
+// check liveness. The Installing flag is overlaid from the tray's atomic bool
+// so an in-flight install shows the spinner state.
 func (s *trayState) makeDesktopProbe() func() desktopInput {
 	env := os.Getenv
 	home, _ := os.UserHomeDir()
-	readFile := os.ReadFile
 	exists := func(p string) bool { _, err := os.Stat(p); return err == nil }
 	return func() desktopInput {
 		if s.desktopInstalling.Load() {
 			return desktopInput{Installing: true}
 		}
-		id, appPath := resolveDesktopIdentity(runtime.GOOS, env, home, exists, readFile)
+		id, appPath := resolveDesktopIdentity(runtime.GOOS, env, home, exists)
 		if appPath == "" {
 			return desktopInput{Installed: false}
 		}
@@ -130,7 +129,7 @@ func (s *trayState) handleDesktopStart() {
 	if p != nil {
 		appPath = *p
 	}
-	_, freshPath := resolveDesktopIdentity(runtime.GOOS, os.Getenv, homeDir(), statExists, os.ReadFile)
+	_, freshPath := resolveDesktopIdentity(runtime.GOOS, os.Getenv, homeDir(), statExists)
 	// Stale-path guard: the cached path may point at an app that was moved
 	// or uninstalled since the last poll. Re-resolve before launching so we
 	// never spawn a dead path.
@@ -148,7 +147,7 @@ func (s *trayState) handleDesktopStart() {
 }
 
 func (s *trayState) handleDesktopStop() {
-	id, _ := resolveDesktopIdentity(runtime.GOOS, os.Getenv, homeDir(), statExists, os.ReadFile)
+	id, _ := resolveDesktopIdentity(runtime.GOOS, os.Getenv, homeDir(), statExists)
 	if !confirmDialog("Stop "+desktopLabel(""),
 		"Stop the Co-Worker app? Any unsaved work in it may be lost.", "Stop", "Cancel") {
 		return

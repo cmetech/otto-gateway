@@ -74,7 +74,7 @@ func openInFileManager(path string, reveal bool) error {
 }
 
 func (s *trayState) handleOpenAppFolder() {
-	id, appPath := resolveDesktopIdentity(runtime.GOOS, os.Getenv, homeDir(), statExists, os.ReadFile)
+	id, appPath := resolveDesktopIdentity(runtime.GOOS, os.Getenv, homeDir(), statExists)
 	if appPath == "" {
 		notify("Open App Folder", id.DisplayName+" desktop app not found. Install it first.")
 		return
@@ -86,7 +86,7 @@ func (s *trayState) handleOpenAppFolder() {
 }
 
 func (s *trayState) handleOpenDataFolder() {
-	id, _ := resolveDesktopIdentity(runtime.GOOS, os.Getenv, homeDir(), statExists, os.ReadFile)
+	id, _ := resolveDesktopIdentity(runtime.GOOS, os.Getenv, homeDir(), statExists)
 	home := resolveHermesHome(runtime.GOOS, os.Getenv, homeDir(), brandSlug(id), readUserEnvVar)
 	if !statExists(home) {
 		notify("Open Data Folder", "Not found: "+home)

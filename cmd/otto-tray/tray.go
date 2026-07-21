@@ -112,7 +112,7 @@ func (s *trayState) onReady(isFirstRun bool) func() {
 		s.miCopyHealth = systray.AddMenuItem("Copy health URL", "")
 		s.miCopyGatewayID = systray.AddMenuItem("Copy Gateway ID", "Copy this gateway's ID to quote when contacting support")
 		systray.AddSeparator()
-		did, _ := resolveDesktopIdentity(runtime.GOOS, os.Getenv, homeDir(), statExists, os.ReadFile)
+		did, _ := resolveDesktopIdentity(runtime.GOOS, os.Getenv, homeDir(), statExists)
 		s.miDesktopHeader = systray.AddMenuItem(desktopLabel("· …"), "")
 		s.miDesktopHeader.Disable()
 		s.miDesktopInstall = systray.AddMenuItem("Install "+desktopLabel("")+"…", "Download and run the Co-Worker installer")

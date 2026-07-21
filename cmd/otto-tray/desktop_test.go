@@ -43,13 +43,9 @@ func TestInstalledAppPath(t *testing.T) {
 func TestResolveDesktopIdentity(t *testing.T) {
 	const present = "/Applications/OTTO.app"
 	exists := func(p string) bool { return p == present }
-	readFile := func(p string) ([]byte, error) {
-		if p == brandJSONPathForApp("darwin", present) {
-			return []byte(`{"displayName":"OTTO"}`), nil
-		}
-		return nil, errMissing
-	}
-	id, appPath := resolveDesktopIdentity("darwin", func(string) string { return "" }, "/Users/me", exists, readFile)
+	// The tray resolves the desktop app from fixed OTTO defaults and never
+	// reads brand.json (quick task 260721-an5).
+	id, appPath := resolveDesktopIdentity("darwin", func(string) string { return "" }, "/Users/me", exists)
 	if id.DisplayName != "OTTO" {
 		t.Fatalf("expected DisplayName OTTO, got %q", id.DisplayName)
 	}
@@ -58,18 +54,8 @@ func TestResolveDesktopIdentity(t *testing.T) {
 	}
 
 	notFound := func(string) bool { return false }
-	_, appPath = resolveDesktopIdentity("darwin", func(string) string { return "" }, "/Users/me", notFound, readFile)
+	_, appPath = resolveDesktopIdentity("darwin", func(string) string { return "" }, "/Users/me", notFound)
 	if appPath != "" {
 		t.Fatalf("expected empty appPath when not installed, got %q", appPath)
-	}
-}
-
-func TestBrandJSONPathForApp(t *testing.T) {
-	if p := brandJSONPathForApp("darwin", "/Applications/OTTO.app"); p != "/Applications/OTTO.app/Contents/Resources/brand.json" {
-		t.Fatalf("darwin brand.json path: %q", p)
-	}
-	win := brandJSONPathForApp("windows", `C:\P\OTTO\OTTO.exe`)
-	if filepath.Base(win) != "brand.json" || filepath.Base(filepath.Dir(win)) != "resources" {
-		t.Fatalf("windows brand.json path: %q", win)
 	}
 }
