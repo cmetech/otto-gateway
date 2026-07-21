@@ -37,35 +37,43 @@ func genMessage(t *rapid.T) canonical.Message {
 		switch rapid.IntRange(0, 4).Draw(t, "kind") {
 		case 0:
 			m.Content = append(m.Content, canonical.ContentPart{
-				Kind: canonical.ContentKindText, Text: rapid.StringN(0, 1000, 2000).Draw(t, "text")})
+				Kind: canonical.ContentKindText, Text: rapid.StringN(0, 1000, 2000).Draw(t, "text"),
+			})
 		case 1:
 			m.Content = append(m.Content, canonical.ContentPart{
-				Kind: canonical.ContentKindThinking, Text: rapid.StringN(0, 1000, 2000).Draw(t, "think")})
+				Kind: canonical.ContentKindThinking, Text: rapid.StringN(0, 1000, 2000).Draw(t, "think"),
+			})
 		case 2:
 			m.Content = append(m.Content, canonical.ContentPart{
 				Kind:  canonical.ContentKindImage,
-				Image: &canonical.ImagePart{MIME: "image/png", DataBase64: rapid.StringN(0, 64, 64).Draw(t, "img")}})
+				Image: &canonical.ImagePart{MIME: "image/png", DataBase64: rapid.StringN(0, 64, 64).Draw(t, "img")},
+			})
 		case 3:
 			m.Content = append(m.Content, canonical.ContentPart{
 				Kind: canonical.ContentKindToolUse,
 				ToolUse: &canonical.ToolUsePart{
 					ID:    rapid.StringN(1, 8, 8).Draw(t, "tuid"),
 					Name:  rapid.StringN(1, 12, 12).Draw(t, "tuname"),
-					Input: map[string]any{"arg": rapid.StringN(0, 500, 1000).Draw(t, "tuarg")}}})
+					Input: map[string]any{"arg": rapid.StringN(0, 500, 1000).Draw(t, "tuarg")},
+				},
+			})
 		case 4:
 			m.Content = append(m.Content, canonical.ContentPart{
 				Kind: canonical.ContentKindToolResult,
 				ToolResult: &canonical.ToolResultPart{
 					ToolUseID: rapid.StringN(1, 8, 8).Draw(t, "trid"),
 					IsError:   rapid.Bool().Draw(t, "trerr"),
-					Content:   rapid.StringN(0, 1000, 2000).Draw(t, "trtext")}})
+					Content:   rapid.StringN(0, 1000, 2000).Draw(t, "trtext"),
+				},
+			})
 		}
 	}
 	if rapid.Bool().Draw(t, "hasToolCalls") {
 		m.ToolCalls = []canonical.ToolCall{{
 			ID:        rapid.StringN(1, 8, 8).Draw(t, "tcid2"),
 			Name:      rapid.StringN(1, 12, 12).Draw(t, "tcname"),
-			Arguments: map[string]any{"q": rapid.StringN(0, 200, 400).Draw(t, "tcarg")}}}
+			Arguments: map[string]any{"q": rapid.StringN(0, 200, 400).Draw(t, "tcarg")},
+		}}
 	}
 	if rapid.Bool().Draw(t, "hasToolCallID") {
 		m.ToolCallID = rapid.StringN(1, 8, 8).Draw(t, "tcallid")
@@ -312,7 +320,8 @@ func TestInvariants_ThinkingPlusToolUseCrossesTrigger_StructurallyUnchanged(t *t
 		Content: []canonical.ContentPart{
 			{Kind: canonical.ContentKindThinking, Text: thinking},
 			{Kind: canonical.ContentKindToolUse, ToolUse: &canonical.ToolUsePart{
-				ID: "t1", Name: "grep", Input: map[string]any{"arg": fatArg}}},
+				ID: "t1", Name: "grep", Input: map[string]any{"arg": fatArg},
+			}},
 		},
 	}
 	req := &canonical.ChatRequest{Messages: []canonical.Message{

@@ -124,10 +124,14 @@ func TestEstMessageTokens_RoleKindMatrix(t *testing.T) {
 	// carriers ACP never serializes for a role must count ZERO there.
 	big := strings.Repeat("x", 4000) // 1000 tokens
 	thinking := canonical.ContentPart{Kind: canonical.ContentKindThinking, Text: big}
-	toolResult := canonical.ContentPart{Kind: canonical.ContentKindToolResult,
-		ToolResult: &canonical.ToolResultPart{ToolUseID: "t", Content: big}}
-	toolUse := canonical.ContentPart{Kind: canonical.ContentKindToolUse,
-		ToolUse: &canonical.ToolUsePart{ID: "t", Name: "grep", Input: map[string]any{"q": big}}}
+	toolResult := canonical.ContentPart{
+		Kind:       canonical.ContentKindToolResult,
+		ToolResult: &canonical.ToolResultPart{ToolUseID: "t", Content: big},
+	}
+	toolUse := canonical.ContentPart{
+		Kind:    canonical.ContentKindToolUse,
+		ToolUse: &canonical.ToolUsePart{ID: "t", Name: "grep", Input: map[string]any{"q": big}},
+	}
 	cases := []struct {
 		name    string
 		m       canonical.Message

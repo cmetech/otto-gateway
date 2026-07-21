@@ -322,7 +322,8 @@ func TestBefore_LaterStagesSkippedOnceBudgetMet(t *testing.T) {
 			textMsg(canonical.RoleUser, fluffy),
 			{Role: canonical.RoleTool, Content: []canonical.ContentPart{{
 				Kind:       canonical.ContentKindToolResult,
-				ToolResult: &canonical.ToolResultPart{ToolUseID: "t1", Content: toolPayload}}}},
+				ToolResult: &canonical.ToolResultPart{ToolUseID: "t1", Content: toolPayload},
+			}}},
 			textMsg(canonical.RoleAssistant, dup),
 			textMsg(canonical.RoleAssistant, dup),
 			textMsg(canonical.RoleUser, "current question"),

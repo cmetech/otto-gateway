@@ -54,7 +54,8 @@ var piiRankingTokenRe = func() *regexp.Regexp {
 	return regexp.MustCompile(
 		`\[PII:[A-Za-z0-9_]+:[A-Za-z0-9_-]+\]` + // encrypt wire token (matches pii.decryptTokenRe)
 			`|\[(?:` + alt + `):h-[A-Za-z0-9_-]+\]` + // hash-mode token, real entities only
-			`|\[(?:` + alt + `)_[0-9]+\]`) // countered replace token, real entities only
+			`|\[(?:` + alt + `)_[0-9]+\]`,
+	) // countered replace token, real entities only
 }()
 
 // stripPII REMOVES synthetic PII tokens from ranking text (replaced by

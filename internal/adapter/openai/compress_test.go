@@ -29,8 +29,10 @@ import (
 // the stripped base" assertion applies uniformly, including the
 // "header wins over suffix" row where the header disagrees with the
 // suffix's own directive.
-const compressTestModel = "qwen-2.5+compress"
-const compressStrippedModel = "qwen-2.5"
+const (
+	compressTestModel     = "qwen-2.5+compress"
+	compressStrippedModel = "qwen-2.5"
+)
 
 // compressHeaderCase is one row of the X-Compression header-stamp table
 // shared by the subtests below.
