@@ -542,7 +542,7 @@ git commit -m "feat(compress): +compress/-compress model-suffix directive parsin
 **Interfaces:**
 - Produces (used by Task 5 hook and Task 9 adapters): `WithHeaderDirective(ctx context.Context, on bool) context.Context`, `HeaderDirectiveFromContext(ctx context.Context) (on bool, ok bool)`, `ParseHeaderValue(v string) (on bool, ok bool)`. Follows the `pii.WithSummary` precedent: ctx helpers live in the hook's own package; adapters stamp, the hook reads. Key-collision safety via unexported struct key (same argument as `plugin/surface.go`).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```go
 // internal/plugin/compress/ctx_test.go
@@ -604,12 +604,12 @@ func TestParseHeaderValue(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `go test ./internal/plugin/compress/ -run TestHeaderDirective -v`
 Expected: FAIL — `undefined: HeaderDirectiveFromContext`.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 ```go
 // internal/plugin/compress/ctx.go
@@ -665,12 +665,12 @@ func ParseHeaderValue(v string) (on bool, ok bool) {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `go test ./internal/plugin/compress/ -run TestHeaderDirective -v`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/plugin/compress/ctx.go internal/plugin/compress/ctx_test.go
