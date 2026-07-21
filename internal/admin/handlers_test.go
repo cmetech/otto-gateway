@@ -217,10 +217,14 @@ func TestAdmin_DocsEnvTable_WorkerRecycle(t *testing.T) {
 	defer goleak.VerifyNone(t)
 
 	deps := Deps{
-		Logger:             testutil.Logger(t),
-		Version:            "1.2.3",
-		Commit:             "abc1234",
-		KiroWorkerMaxTurns: 20,
+		Logger:  testutil.Logger(t),
+		Version: "1.2.3",
+		Commit:  "abc1234",
+		// Distinctive value that does NOT appear in the row's own description
+		// text (which hardcodes "20" for the laptop template), so this test
+		// actually exercises the live CurrentValue wiring rather than being
+		// satisfied by the static copy.
+		KiroWorkerMaxTurns: 37,
 	}
 	h := Handler(deps)
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/docs", nil)
@@ -232,7 +236,7 @@ func TestAdmin_DocsEnvTable_WorkerRecycle(t *testing.T) {
 	body := rec.Body.String()
 	for _, want := range []string{
 		"KIRO_WORKER_MAX_TURNS",
-		"20",
+		"37",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("/docs missing %q", want)
