@@ -33,15 +33,50 @@ func normalizeWhitespace(text string) string {
 	return tripleNLRe.ReplaceAllString(text, "\n\n")
 }
 
+// normalizeCarrierChunk applies stage 1 to one chunk of a multi-part
+// ACP carrier. Same-kind parts are joined DIRECTLY on the wire
+// (canonical.JoinTextParts), so a non-final chunk's last line CONTINUES
+// into the next chunk — stripping its trailing whitespace would merge
+// words in the joined prompt ("foo " + "bar" → "foobar"). Non-final
+// chunks therefore keep their final partial line byte-for-byte; only
+// complete lines (through the last '\n') are normalized.
+func normalizeCarrierChunk(text string, lastChunk bool) string {
+	if lastChunk {
+		return normalizeWhitespace(text)
+	}
+	i := strings.LastIndexByte(text, '\n')
+	if i < 0 {
+		return text // single partial line continuing into the next chunk
+	}
+	return normalizeWhitespace(text[:i+1]) + text[i+1:]
+}
+
 // normalizeMessageWhitespace applies stage 1 to every prose-bearing part
 // (Text, Thinking — both serialized as prose sections — and ToolResult
-// content).
+// content). Text and Thinking parts are carrier-aware (review HIGH-1):
+// same-kind parts of one message are joined DIRECTLY by ACP
+// (canonical.JoinTextParts / JoinThinkingParts), so only the LAST part of
+// each kind gets full normalization; earlier parts keep their trailing
+// partial line untouched so the joined prompt is unaffected. ToolResult
+// content is its own ACP section per part, so it is always fully
+// normalized.
 func normalizeMessageWhitespace(m *canonical.Message) {
+	lastText, lastThinking := -1, -1
+	for j := range m.Content {
+		switch m.Content[j].Kind {
+		case canonical.ContentKindText:
+			lastText = j
+		case canonical.ContentKindThinking:
+			lastThinking = j
+		}
+	}
 	for j := range m.Content {
 		p := &m.Content[j]
 		switch p.Kind {
-		case canonical.ContentKindText, canonical.ContentKindThinking:
-			p.Text = normalizeWhitespace(p.Text)
+		case canonical.ContentKindText:
+			p.Text = normalizeCarrierChunk(p.Text, j == lastText)
+		case canonical.ContentKindThinking:
+			p.Text = normalizeCarrierChunk(p.Text, j == lastThinking)
 		case canonical.ContentKindToolResult:
 			if p.ToolResult != nil {
 				tr := *p.ToolResult // copy-on-write: alias-proof

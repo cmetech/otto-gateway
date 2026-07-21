@@ -50,6 +50,59 @@ func TestNormalizeWhitespace_AcceptedLossBoundary(t *testing.T) {
 	}
 }
 
+func TestNormalizeMessageWhitespace_MultipartJoinPreserved(t *testing.T) {
+	// Review HIGH-1: same-kind parts are joined DIRECTLY by ACP
+	// (canonical.JoinTextParts / JoinThinkingParts) — normalizing each
+	// part independently must not strip the trailing whitespace that
+	// glues a non-final part to the next one.
+	m := canonical.Message{
+		Role: canonical.RoleAssistant,
+		Content: []canonical.ContentPart{
+			{Kind: canonical.ContentKindText, Text: "foo "},
+			{Kind: canonical.ContentKindText, Text: "bar"},
+			{Kind: canonical.ContentKindThinking, Text: "alpha "},
+			{Kind: canonical.ContentKindThinking, Text: "beta"},
+		},
+	}
+	normalizeMessageWhitespace(&m)
+	if got := canonical.JoinTextParts(m.Content); got != "foo bar" {
+		t.Errorf("joined text = %q, want %q", got, "foo bar")
+	}
+	if got := canonical.JoinThinkingParts(m.Content); got != "alpha beta" {
+		t.Errorf("joined thinking = %q, want %q", got, "alpha beta")
+	}
+}
+
+func TestNormalizeMessageWhitespace_InteriorLinesOfNonFinalPartNormalized(t *testing.T) {
+	// The non-final part's COMPLETE lines (through the last '\n') are
+	// still normalized; only its final PARTIAL line (continuing into the
+	// next part) is left untouched.
+	m := canonical.Message{
+		Role: canonical.RoleAssistant,
+		Content: []canonical.ContentPart{
+			{Kind: canonical.ContentKindText, Text: "l1  \nl2 "},
+			{Kind: canonical.ContentKindText, Text: "x"},
+		},
+	}
+	normalizeMessageWhitespace(&m)
+	if got := canonical.JoinTextParts(m.Content); got != "l1\nl2 x" {
+		t.Errorf("joined text = %q, want %q", got, "l1\nl2 x")
+	}
+}
+
+func TestNormalizeMessageWhitespace_LastPartFullyNormalized(t *testing.T) {
+	m := canonical.Message{
+		Role: canonical.RoleAssistant,
+		Content: []canonical.ContentPart{
+			{Kind: canonical.ContentKindText, Text: "end  "},
+		},
+	}
+	normalizeMessageWhitespace(&m)
+	if got := canonical.JoinTextParts(m.Content); got != "end" {
+		t.Errorf("joined text = %q, want %q", got, "end")
+	}
+}
+
 func TestMiddleTruncate(t *testing.T) {
 	short := strings.Repeat("a", 100)
 	if got := middleTruncate(short, 50); got != short {
