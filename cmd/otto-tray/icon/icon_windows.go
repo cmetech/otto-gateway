@@ -35,7 +35,9 @@ var Warning []byte
 //go:embed error.ico
 var Error []byte
 
-// Loop24 is the raw ICO bytes of the loop24 brand mark (colored, multi-size).
+// Gateway is the raw ICO bytes of the generic Gateway glyph (a routing/proxy
+// mark, medium blue). Windows has no template-icon system, so this fixed color
+// is chosen to read on both the dark default taskbar and the light Start menu.
 //
-//go:embed loop24.ico
-var Loop24 []byte
+//go:embed gateway.ico
+var Gateway []byte

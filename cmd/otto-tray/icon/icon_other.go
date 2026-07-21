@@ -6,6 +6,10 @@
 // from a linux CI host succeeds without needing the embed assets.
 package icon
 
-// Template is empty on non-tray platforms — no asset is needed since
-// the tray binary will never call into this package on linux/etc.
-var Template []byte
+// Template and Gateway are empty on non-tray platforms — no asset is
+// needed since the tray binary will never call into this package on
+// linux/etc.
+var (
+	Template []byte
+	Gateway  []byte
+)

@@ -16,28 +16,20 @@ import (
 	"otto-gateway/cmd/otto-tray/icon"
 )
 
-// setBaseIcon sets the idle/startup brand glyph (OTTO vs loop24). Windows uses
-// colored ICOs for every state, so this is a plain SetIcon either way.
-func setBaseIcon(loop24 bool) {
-	if loop24 {
-		systray.SetIcon(icon.Loop24)
-		return
-	}
-	systray.SetIcon(icon.Template)
+// setBaseIcon sets the idle/startup Gateway glyph. Windows has no template-icon
+// system, so this is a plain SetIcon with the colored .ico.
+func setBaseIcon() {
+	systray.SetIcon(icon.Gateway)
 }
 
 // setIconForState updates the system-tray icon to reflect the current FSM state.
 // Windows does not use template images so all states use SetIcon with .ico assets.
-// The Running/idle icon carries the brand glyph (OTTO vs loop24); Warning/Error
-// keep the status icons. Assets: cmd/otto-tray/icon/{Running,Warning,Error,loop24}.ico.
-func setIconForState(state State, loop24 bool) {
+// The Running/idle icon is the Gateway glyph; Warning/Error keep the status
+// icons. Assets: cmd/otto-tray/icon/{gateway,Warning,Error}.ico.
+func setIconForState(state State) {
 	switch state {
 	case StateRunning:
-		if loop24 {
-			systray.SetIcon(icon.Loop24)
-		} else {
-			systray.SetIcon(icon.Running)
-		}
+		systray.SetIcon(icon.Gateway)
 	case StateStarting, StateDegraded:
 		systray.SetIcon(icon.Warning)
 	default: // StateError, StateStopped, StateUnknown

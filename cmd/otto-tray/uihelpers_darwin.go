@@ -16,30 +16,21 @@ import (
 	"otto-gateway/cmd/otto-tray/icon"
 )
 
-// setBaseIcon sets the idle/startup brand glyph. OTTO uses a template image
-// (monochrome, adapts to the bar theme); loop24 uses SetIcon with the colored
-// blue mark (deliberately does NOT adapt — it stays brand-blue).
-func setBaseIcon(loop24 bool) {
-	if loop24 {
-		systray.SetIcon(icon.Loop24)
-		return
-	}
-	systray.SetTemplateIcon(icon.Template, icon.Template)
+// setBaseIcon sets the idle/startup Gateway glyph as a template image
+// (monochrome, adapts to the bar theme — white on dark bars, black on light).
+func setBaseIcon() {
+	systray.SetTemplateIcon(icon.Gateway, icon.Gateway)
 }
 
 // setIconForState updates the menu-bar icon to reflect the current FSM state.
-// The Running/idle icon carries the brand glyph (OTTO template vs loop24 colored
-// mark); Starting/Degraded and Error/Stopped/Unknown keep the colored status PNGs
-// (health beats brand — SetTemplateIcon would strip the color that is the signal).
-// Icon assets: cmd/otto-tray/icon/{Running,Warning,Error,loop24}.* (embedded).
-func setIconForState(state State, loop24 bool) {
+// The Running/idle icon is the Gateway template glyph; Starting/Degraded and
+// Error/Stopped/Unknown keep the colored status PNGs (health beats brand —
+// SetTemplateIcon would strip the color that is the signal).
+// Icon assets: cmd/otto-tray/icon/{gateway,Warning,Error}.* (embedded).
+func setIconForState(state State) {
 	switch state {
 	case StateRunning:
-		if loop24 {
-			systray.SetIcon(icon.Loop24)
-		} else {
-			systray.SetTemplateIcon(icon.Running, icon.Running)
-		}
+		systray.SetTemplateIcon(icon.Gateway, icon.Gateway)
 	case StateStarting, StateDegraded:
 		systray.SetIcon(icon.Warning)
 	default: // StateError, StateStopped, StateUnknown

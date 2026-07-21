@@ -32,9 +32,6 @@ func (s *trayState) makeDesktopProbe() func() desktopInput {
 	readFile := os.ReadFile
 	exists := func(p string) bool { _, err := os.Stat(p); return err == nil }
 	return func() desktopInput {
-		// Refresh the tray-icon brand each tick so a desktop installed/branded
-		// after the tray started flips the icon within a couple of ticks.
-		s.brandLoop24.Store(brandUsesLoop24(runtime.GOOS, env, home, exists, readFile))
 		if s.desktopInstalling.Load() {
 			return desktopInput{Installing: true}
 		}

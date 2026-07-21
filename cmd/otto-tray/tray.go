@@ -79,10 +79,6 @@ type trayState struct {
 	// each cycle by runRemoteWriter and flipped by the Advanced-menu checkbox so
 	// enable/disable takes effect without a tray restart.
 	metricsRWEnabled atomic.Bool
-
-	// brandLoop24 selects the tray icon: true → loop24 mark (default when the
-	// desktop brand.json is absent), false → OTTO. Updated by the desktop poller.
-	brandLoop24 atomic.Bool
 }
 
 func newTrayState(installDir, gwHome string, cfg TrayConfig) *trayState {
@@ -99,8 +95,7 @@ func newTrayState(installDir, gwHome string, cfg TrayConfig) *trayState {
 
 func (s *trayState) onReady(isFirstRun bool) func() {
 	return func() {
-		s.brandLoop24.Store(brandUsesLoop24(runtime.GOOS, os.Getenv, homeDir(), statExists, os.ReadFile))
-		setBaseIcon(s.brandLoop24.Load())
+		setBaseIcon()
 		systray.SetTooltip("Gateway")
 		platformOnReady()
 
@@ -257,7 +252,7 @@ func (s *trayState) applyState(out stateOutput) {
 
 	// T-3 fix (REL-TRAY-03): always-visible state signal on every FSM transition (D-11).
 	// Icon and tooltip are the primary gateway-death signal; notify() is secondary.
-	setIconForState(out.State, s.brandLoop24.Load())
+	setIconForState(out.State)
 	systray.SetTooltip(tooltipForState(out.State, out.Detail))
 
 	header := fmt.Sprintf("Gateway · %s", out.State)
