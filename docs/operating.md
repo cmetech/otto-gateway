@@ -233,6 +233,8 @@ above — this table is the underlying contract every knob maps to.
 | `KIRO_CMD` | `kiro-cli` | kiro-cli binary name or full path. If unset, the gateway starts without ACP worker processes. |
 | `KIRO_ARGS` | `acp` | Arguments passed to kiro-cli (space-separated) |
 | `KIRO_CWD` | _(empty)_ | Default working directory for kiro-cli subprocesses |
+| `POOL_SIZE` | `4` (binary default) | Number of warm kiro-cli subprocesses kept in the pool. The laptop wrapper template (`scripts/.env.example`, copied to `.env` by `gw init`/`upgrade-env`) sets `2`, sized for single-user laptops; shared hosts should raise it in `overrides.env`, which `gw upgrade-env` never touches. |
+| `KIRO_WORKER_MAX_TURNS` | `0` (binary default; disabled) | Successful pool-worker `session/new` calls before scheduled process recycling — bounds per-process memory/context growth independent of the context-usage-triggered session recycle. The laptop wrapper template sets `20`; shared hosts override in `overrides.env`. Accepts `0`–`10000`; negative or out-of-range values cause a boot error. |
 | `DEBUG` | `false` | Enable debug-level JSON logging. Accepts `1`, `true`, `0`, or `false`. |
 | `PING_INTERVAL` | `60000` | ACP ping interval. Default: 60 s. Integer values are treated as milliseconds (e.g., `60000` = 60 s); Go duration strings are also accepted (e.g., `"90s"`, `"2m"`). |
 

@@ -66,6 +66,7 @@ type PoolStats struct {
 
 	// Track 4b monotonic event counters (pool-owned).
 	SlotRespawns     uint64
+	SlotRecycles     uint64 // worker recycling: scheduled respawns (KIRO_WORKER_MAX_TURNS)
 	PingEscalations  uint64
 	PingSuspendSkips uint64
 }

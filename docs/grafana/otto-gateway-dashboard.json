@@ -2182,7 +2182,7 @@
     {
       "id": 33,
       "type": "timeseries",
-      "title": "Slot Respawns & Ping Escalations",
+      "title": "Slot Respawns, Recycles & Ping Escalations",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROM}"
@@ -2212,10 +2212,22 @@
             "uid": "${DS_PROM}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(gw_acp_ping_escalations_total{job=\"otto-gateway\", instance=~\"$gateway\"}[$__rate_interval]))",
+          "expr": "sum(rate(gw_pool_slot_recycles_total{job=\"otto-gateway\", instance=~\"$gateway\"}[$__rate_interval]))",
           "range": true,
           "instant": false,
           "refId": "B",
+          "legendFormat": "scheduled recycles/s"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(gw_acp_ping_escalations_total{job=\"otto-gateway\", instance=~\"$gateway\"}[$__rate_interval]))",
+          "range": true,
+          "instant": false,
+          "refId": "C",
           "legendFormat": "ping escalations/s"
         },
         {
@@ -2227,7 +2239,7 @@
           "expr": "sum(rate(gw_acp_ping_suspend_skips_total{job=\"otto-gateway\", instance=~\"$gateway\"}[$__rate_interval]))",
           "range": true,
           "instant": false,
-          "refId": "C",
+          "refId": "D",
           "legendFormat": "suspend skips/s"
         }
       ],
@@ -2281,7 +2293,7 @@
           "sort": "desc"
         }
       },
-      "description": "Pool self-healing activity \u2014 spikes flag flapping workers."
+      "description": "Respawns are unplanned crash recovery; scheduled recycles are turn-budget maintenance (KIRO_WORKER_MAX_TURNS) \u2014 spikes in respawns flag flapping workers."
     },
     {
       "id": 34,

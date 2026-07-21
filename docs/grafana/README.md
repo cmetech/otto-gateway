@@ -30,7 +30,7 @@ by one gateway (≈ one user's machine), one API surface, one invoking skill, et
 | Usage — Who & How | requests by surface / skill / client / model, requests-by-gateway, top-skills & top-clients tables |
 | HTTP Traffic & Latency | rate by route/status, p50/p95/p99, latency heatmap |
 | Kiro Engine Usage | credits & turns rate, turn-duration quantiles, context-window usage gauge + trend, MCP init outcomes |
-| Pool & Session Health | slots alive/busy, active sessions, session lifecycle, respawns/ping escalations, per-gateway health matrix |
+| Pool & Session Health | slots alive/busy, active sessions, session lifecycle, respawns/scheduled recycles/ping escalations, per-gateway health matrix |
 | Resource Usage | gateway process CPU%/RSS, per-worker CPU%/RSS, open FDs |
 | Fleet Inventory | per-gateway version / commit / gateway_id table |
 

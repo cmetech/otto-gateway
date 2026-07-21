@@ -69,16 +69,17 @@ func TestMetrics_PoolAndSessionGauges(t *testing.T) {
 	}
 }
 
-// TestMetrics_EventCounters (Track 4b): respawns, ping escalations/suspend-skips,
-// session reaps surface as monotonic counters.
+// TestMetrics_EventCounters (Track 4b): respawns, scheduled recycles, ping
+// escalations/suspend-skips, session reaps surface as monotonic counters.
 func TestMetrics_EventCounters(t *testing.T) {
 	m := testMetrics(
-		metrics.PoolStats{SlotRespawns: 5, PingEscalations: 2, PingSuspendSkips: 7},
+		metrics.PoolStats{SlotRespawns: 5, SlotRecycles: 3, PingEscalations: 2, PingSuspendSkips: 7},
 		metrics.SessionStats{Reaped: 3},
 	)
 	body := scrape(t, m)
 	for _, want := range []string{
 		`gw_pool_slot_respawns_total{gateway_id="gw-test-123"} 5`,
+		`gw_pool_slot_recycles_total{gateway_id="gw-test-123"} 3`,
 		`gw_acp_ping_escalations_total{gateway_id="gw-test-123"} 2`,
 		`gw_acp_ping_suspend_skips_total{gateway_id="gw-test-123"} 7`,
 		`gw_sessions_reaped_total{gateway_id="gw-test-123"} 3`,

@@ -275,12 +275,13 @@ panels.append(panel("timeseries", "Session Lifecycle Rate", 0, y, 12, 8,
      (f"sum(rate(gw_sessions_reaped_total{SEL}[$__rate_interval]))", "reaped/s")],
     fieldconfig=ts_field("short"), options=ts_opts(),
     desc="Created / recycled (context threshold) / reaped (idle)."))
-panels.append(panel("timeseries", "Slot Respawns & Ping Escalations", 12, y, 12, 8,
+panels.append(panel("timeseries", "Slot Respawns, Recycles & Ping Escalations", 12, y, 12, 8,
     [(f"sum(rate(gw_pool_slot_respawns_total{SEL}[$__rate_interval]))", "respawns/s"),
+     (f"sum(rate(gw_pool_slot_recycles_total{SEL}[$__rate_interval]))", "scheduled recycles/s"),
      (f"sum(rate(gw_acp_ping_escalations_total{SEL}[$__rate_interval]))", "ping escalations/s"),
      (f"sum(rate(gw_acp_ping_suspend_skips_total{SEL}[$__rate_interval]))", "suspend skips/s")],
     fieldconfig=ts_field("short"), options=ts_opts(),
-    desc="Pool self-healing activity — spikes flag flapping workers."))
+    desc="Respawns are unplanned crash recovery; scheduled recycles are turn-budget maintenance (KIRO_WORKER_MAX_TURNS) — spikes in respawns flag flapping workers."))
 y += 8
 panels.append(panel("table", "Gateway Health Matrix", 0, y, 24, 8,
     [(f"gw_pool_healthy{SEL}", "healthy"),

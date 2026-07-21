@@ -20,6 +20,7 @@ type poolCollector struct {
 
 	// Track 4b monotonic counters.
 	slotRespawns     *prometheus.Desc
+	slotRecycles     *prometheus.Desc
 	pingEscalations  *prometheus.Desc
 	pingSuspendSkips *prometheus.Desc
 	sessionsReaped   *prometheus.Desc
@@ -46,6 +47,12 @@ func newPoolCollector(pool func() PoolStats, sessions func() SessionStats) *pool
 		sessionsActive: prometheus.NewDesc("gw_sessions_active", "Active stateful sessions.", nil, nil),
 		slotRespawns: prometheus.NewDesc("gw_pool_slot_respawns_total",
 			"Total lazy slot respawns since start.", nil, nil),
+		slotRecycles: prometheus.NewDesc(
+			"gw_pool_slot_recycles_total",
+			"Total scheduled worker recycles (KIRO_WORKER_MAX_TURNS).",
+			nil,
+			nil,
+		),
 		pingEscalations: prometheus.NewDesc("gw_acp_ping_escalations_total",
 			"Total liveness-ping failures escalated to a worker teardown.", nil, nil),
 		pingSuspendSkips: prometheus.NewDesc("gw_acp_ping_suspend_skips_total",
@@ -62,7 +69,7 @@ func newPoolCollector(pool func() PoolStats, sessions func() SessionStats) *pool
 func (c *poolCollector) Describe(ch chan<- *prometheus.Desc) {
 	for _, d := range []*prometheus.Desc{
 		c.size, c.alive, c.busy, c.healthy, c.spawnFailing, c.lastSpawnErrTS,
-		c.lastProgressTS, c.sessionsActive, c.slotRespawns, c.pingEscalations,
+		c.lastProgressTS, c.sessionsActive, c.slotRespawns, c.slotRecycles, c.pingEscalations,
 		c.pingSuspendSkips, c.sessionsReaped, c.sessionsCreated, c.sessionsRecycled,
 	} {
 		ch <- d
@@ -87,6 +94,7 @@ func (c *poolCollector) Collect(ch chan<- prometheus.Metric) {
 	gauge(c.lastProgressTS, s.LastProgressUnixSec)
 	gauge(c.sessionsActive, float64(sess.Active))
 	counter(c.slotRespawns, float64(s.SlotRespawns))
+	counter(c.slotRecycles, float64(s.SlotRecycles))
 	counter(c.pingEscalations, float64(s.PingEscalations))
 	counter(c.pingSuspendSkips, float64(s.PingSuspendSkips))
 	counter(c.sessionsReaped, float64(sess.Reaped))

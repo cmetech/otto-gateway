@@ -172,6 +172,12 @@ type Deps struct {
 	KiroCmd              string
 	KiroArgs             []string
 	KiroCwd              string
+	// KiroWorkerMaxTurns is a read-only snapshot of cfg.KiroWorkerMaxTurns
+	// (KIRO_WORKER_MAX_TURNS) — the number of successful pool-worker
+	// session/new calls before scheduled process recycling. 0 disables
+	// recycling. Surfaced on /admin/docs so an operator can confirm the
+	// wrapper-template value took effect without grepping env.
+	KiroWorkerMaxTurns int
 	// KiroToolAliases is a read-only snapshot of the KIRO_TOOL_ALIASES map
 	// (kiro native tool name → caller-offered tool name, e.g. execute →
 	// run_shell). Surfaced on /admin/docs so an operator can confirm the
@@ -628,6 +634,12 @@ func (h *handler) docsHandler(w http.ResponseWriter, r *http.Request) {
 		{Name: "KIRO_ARGS", Default: "acp", Description: "Whitespace-split argv passed to KIRO_CMD.", CurrentValue: kiroArgsCurrent},
 		{Name: "KIRO_CWD", Default: "(empty)", Description: "Working directory for the kiro-cli subprocess. Empty = inherit gateway cwd.", CurrentValue: kiroCwdCurrent},
 		{Name: "KIRO_TOOL_ALIASES", Default: "execute:terminal,shell:terminal,fs_read:read_file,fs_write:write_file", Description: "Comma-split from:to pairs mapping kiro's native built-in tool name (its ACP kind, e.g. execute / shell / fs_read) to a caller-offered tool name (e.g. terminal). When the caller offers tools, kiro emits a native tool_call for its own built-in; the gateway surfaces it structurally under the aliased offered name. Native built-ins with no alias to an offered tool are dropped. Defaults to the Hermes client's tool names; set to an empty value to disable aliasing. Put overrides in overrides.env.", CurrentValue: toolAliasesCurrent},
+		{
+			Name:         "KIRO_WORKER_MAX_TURNS",
+			Default:      "0 (disabled)",
+			Description:  "Successful pool-worker session/new calls before scheduled process recycling. The gw laptop template sets 20; shared hosts override in overrides.env.",
+			CurrentValue: strconv.Itoa(h.deps.KiroWorkerMaxTurns),
+		},
 		{Name: "POOL_SIZE", Default: "4", Description: "Number of warm kiro-cli subprocesses kept in the pool.", CurrentValue: strconv.Itoa(h.deps.PoolSize)},
 		{Name: "SESSION_TTL_MS", Default: "1800000 (30m)", Description: "Idle stateful-session reap threshold. Accepts ms-integer (Node parity) or Go duration string.", CurrentValue: h.deps.SessionTTL.String()},
 		{Name: "STREAM_IDLE_TIMEOUT_SEC", Default: "30", Description: "Server-side idle-stream watchdog (0 disables, negative = boot error).", CurrentValue: streamIdleCurrent},
