@@ -233,7 +233,7 @@ func (h *PIIRedactionHook) decryptEntities() []string {
 	}
 	if h.NER != nil {
 		allow := h.enabledEntitiesSet()
-		for _, name := range []string{"PERSON", "LOCATION"} {
+		for _, name := range nerEntityNames {
 			if allow != nil {
 				if _, ok := allow[name]; !ok {
 					continue
