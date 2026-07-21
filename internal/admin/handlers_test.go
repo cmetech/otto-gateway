@@ -65,15 +65,29 @@ func TestAdmin_PageHandler(t *testing.T) {
 	}
 
 	// Feature-flag visibility (quick 260531-ebi): the summary strip must show
-	// the literal Debug + Chat-trace labels and their rendered on/off state.
-	// Debug and ChatTrace are both true above, so both render "on".
-	for _, want := range []string{"Debug", "Chat-trace"} {
+	// the literal Debug + Chat-trace + Compression labels and their rendered
+	// on/off state. Debug and ChatTrace are both true above, so both render
+	// "on"; CompressionActive is false, so it renders "off".
+	for _, want := range []string{"Debug", "Chat-trace", "Compression"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing required feature-flag label %q", want)
 		}
 	}
 	if !strings.Contains(body, ">on<") {
 		t.Errorf("body missing rendered 'on' state for an enabled feature flag")
+	}
+
+	// Chip semantics: green (gw-pill-on) = on, gray (gw-pill-off) = off —
+	// EXCEPT Chat-trace, whose ON state is SENSITIVE (raw prompts on disk)
+	// and renders the amber warning chip instead of green.
+	if !strings.Contains(body, `gw-pill gw-pill-on">on<`) {
+		t.Errorf("body missing green on-chip for enabled Debug flag")
+	}
+	if !strings.Contains(body, `gw-pill gw-pill-warn">on<`) {
+		t.Errorf("body missing amber warning chip for enabled (SENSITIVE) Chat-trace flag")
+	}
+	if !strings.Contains(body, `gw-pill gw-pill-off">off<`) {
+		t.Errorf("body missing gray off-chip for disabled Compression flag")
 	}
 
 	// Summary strip data-* hooks per behavior contract.
@@ -95,6 +109,54 @@ func TestAdmin_PageHandler(t *testing.T) {
 	}
 	if !strings.Contains(body, "pollMs") {
 		t.Errorf("body missing pollMs in config island")
+	}
+}
+
+// TestAdmin_CompressionFlagSurfacing verifies the CompressionActive dep
+// (effective posture: hook in filtered chain AND COMPRESSION_ENABLED)
+// drives both the dashboard summary chip and the /about Feature Flags row.
+func TestAdmin_CompressionFlagSurfacing(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	for _, active := range []bool{true, false} {
+		deps := Deps{
+			Logger:            testutil.Logger(t),
+			Version:           "1.2.3",
+			Commit:            "abc1234",
+			CompressionActive: active,
+		}
+		h := Handler(deps)
+
+		get := func(path string) string {
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, path, nil)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("GET %s (active=%v): want 200, got %d", path, active, rec.Code)
+			}
+			return rec.Body.String()
+		}
+
+		dash := get("/")
+		wantChip := `gw-pill gw-pill-off">off<`
+		if active {
+			wantChip = `gw-pill gw-pill-on">on<`
+		}
+		if !strings.Contains(dash, "Compression") || !strings.Contains(dash, wantChip) {
+			t.Errorf("dashboard (active=%v): missing Compression chip %q", active, wantChip)
+		}
+
+		about := get("/about")
+		if !strings.Contains(about, "<dt>Compression</dt>") {
+			t.Errorf("about (active=%v): missing Compression feature-flag row", active)
+		}
+		wantState := "<dt>Compression</dt><dd>off</dd>"
+		if active {
+			wantState = "<dt>Compression</dt><dd>on</dd>"
+		}
+		if !strings.Contains(about, wantState) {
+			t.Errorf("about (active=%v): Compression row missing state %q", active, wantState)
+		}
 	}
 }
 

@@ -367,6 +367,23 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 	}
 	chain = filteredChain
 
+	// Effective compression posture for the admin UI (dashboard summary
+	// strip + /admin/about Feature Flags): on only when CompressionHook
+	// survived the ENABLED_HOOKS filter AND COMPRESSION_ENABLED=true. An
+	// explicit legacy allowlist silently drops the hook, and showing a
+	// green chip then would claim a capability no request can use.
+	// Per-request overrides (X-Compression header, +compress suffix) are
+	// invisible to a boot-time flag by design.
+	compressionActive := false
+	if cfg.CompressionEnabled {
+		for _, h := range chain.Pre {
+			if h == engine.PreHook(compressHook) {
+				compressionActive = true
+				break
+			}
+		}
+	}
+
 	// hookErrors is the per-hook last-error tracker shared by every
 	// engine instance (the global engine + every per-session engine
 	// factory below). The engine's safe-call wrappers call into
@@ -830,6 +847,10 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 		Debug:        cfg.Debug,
 		ShutdownCh:   sharedShutdownCh,
 		ChatTrace:    cfg.ChatTrace,
+
+		// Effective posture (hook in filtered chain AND env default on) —
+		// computed above, next to the ENABLED_HOOKS chain filter.
+		CompressionActive: compressionActive,
 
 		// Quick 260601-aix — chat-trace location + retention surfaced on /admin/docs.
 		ChatTraceFile:       cfg.ChatTraceFile,

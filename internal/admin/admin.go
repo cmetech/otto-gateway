@@ -124,6 +124,14 @@ type Deps struct {
 	Debug        bool
 	ChatTrace    bool
 
+	// CompressionActive mirrors the EFFECTIVE process-wide compression
+	// posture: CompressionHook survived the ENABLED_HOOKS chain filter
+	// AND COMPRESSION_ENABLED=true. Per-request overrides (X-Compression
+	// header, +compress/-compress model suffix) can still flip individual
+	// requests in either direction; this flag is the boot-time default
+	// the dashboard summary strip and /admin/about Feature Flags surface.
+	CompressionActive bool
+
 	// ShutdownCh is closed by the HTTP server's RegisterOnShutdown callback when
 	// graceful shutdown begins. sseLoop selects on this channel and exits within
 	// one poll interval, preventing the admin SSE connection from blocking the
@@ -276,19 +284,21 @@ func Handler(deps Deps) http.Handler {
 // committing 200 OK with truncated HTML on the wire.
 func (h *handler) dashboardHandler(w http.ResponseWriter, r *http.Request) {
 	data := struct {
-		Version   string
-		Commit    string
-		GatewayID string
-		Debug     bool
-		ChatTrace bool
-		TabActive string
+		Version           string
+		Commit            string
+		GatewayID         string
+		Debug             bool
+		ChatTrace         bool
+		CompressionActive bool
+		TabActive         string
 	}{
-		Version:   h.deps.Version,
-		Commit:    h.deps.Commit,
-		GatewayID: h.deps.GatewayID,
-		Debug:     h.deps.Debug,
-		ChatTrace: h.deps.ChatTrace,
-		TabActive: "dashboard",
+		Version:           h.deps.Version,
+		Commit:            h.deps.Commit,
+		GatewayID:         h.deps.GatewayID,
+		Debug:             h.deps.Debug,
+		ChatTrace:         h.deps.ChatTrace,
+		CompressionActive: h.deps.CompressionActive,
+		TabActive:         "dashboard",
 	}
 	var buf bytes.Buffer
 	if err := dashboardTemplate.ExecuteTemplate(&buf, "base", data); err != nil {
@@ -338,6 +348,10 @@ type aboutData struct {
 	// aboutHandler from Deps.AcpCapture != nil — the canonical "capture
 	// wired" signal (see capture.go: a nil source means capture is off).
 	AcpCaptureEnabled bool
+
+	// CompressionActive mirrors Deps.CompressionActive (effective
+	// process-wide compression posture; see the Deps field doc).
+	CompressionActive bool
 
 	// PII view-model fields. Populated by aboutHandler from the cfg
 	// snapshot in Deps. EntityActions is rendered as a sorted slice
@@ -446,6 +460,7 @@ func (h *handler) aboutHandler(w http.ResponseWriter, r *http.Request) {
 		Debug:                h.deps.Debug,
 		ChatTrace:            h.deps.ChatTrace,
 		AcpCaptureEnabled:    h.deps.AcpCapture != nil && h.deps.AcpCapture.Enabled(),
+		CompressionActive:    h.deps.CompressionActive,
 		KiroCmd:              kiroCmd,
 		KiroArgs:             kiroArgs,
 		KiroCwd:              kiroCwd,

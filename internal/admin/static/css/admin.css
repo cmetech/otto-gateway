@@ -233,6 +233,13 @@ body {
   background: var(--gw-fg-muted);
 }
 
+/* Amber "on but sensitive" variant — used by the dashboard summary strip
+ * for Chat-trace, whose ON state writes raw prompts to disk (matches the
+ * About page's SENSITIVE badge posture rather than a green endorsement). */
+.gw-pill-warn {
+  background: var(--gw-warning);
+}
+
 /* ACP Capture panel card: inline row of pill/count/controls/link/note. */
 .gw-acp-capture-card {
   display: flex;

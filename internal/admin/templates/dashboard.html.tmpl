@@ -23,18 +23,31 @@
       <span class="gw-summary-value text-mono">{{.Version}}</span>
     </div>
 
-    <!-- Debug logging enablement (baked in at render time — does not poll) -->
+    <!-- Debug logging enablement (baked in at render time — does not poll).
+         Chip semantics: green = on, gray = off. -->
     <div class="gw-summary-item">
       <span class="gw-summary-label">Debug</span>
-      <span class="gw-summary-value">{{if .Debug}}on{{else}}off{{end}}</span>
+      <span class="gw-summary-value"><span class="gw-pill {{if .Debug}}gw-pill-on{{else}}gw-pill-off{{end}}">{{if .Debug}}on{{else}}off{{end}}</span></span>
     </div>
 
     <!-- Chat-trace enablement (baked in at render time — does not poll).
          SENSITIVE: when on, raw prompts are written to disk. Surfaced as a
-         safety affordance so operators are not surprised by it. -->
+         safety affordance so operators are not surprised by it — hence the
+         AMBER (warning) chip when on, matching the About page's SENSITIVE
+         badge, rather than green. -->
     <div class="gw-summary-item">
       <span class="gw-summary-label">Chat-trace</span>
-      <span class="gw-summary-value">{{if .ChatTrace}}on{{else}}off{{end}}</span>
+      <span class="gw-summary-value"><span class="gw-pill {{if .ChatTrace}}gw-pill-warn{{else}}gw-pill-off{{end}}">{{if .ChatTrace}}on{{else}}off{{end}}</span></span>
+    </div>
+
+    <!-- Compression EFFECTIVE posture (baked in at render time — does not
+         poll): on only when CompressionHook survived the ENABLED_HOOKS
+         filter AND COMPRESSION_ENABLED=true. Per-request overrides
+         (X-Compression header, +compress model suffix) are not reflected
+         here. Chip semantics: green = on, gray = off. -->
+    <div class="gw-summary-item">
+      <span class="gw-summary-label">Compression</span>
+      <span class="gw-summary-value"><span class="gw-pill {{if .CompressionActive}}gw-pill-on{{else}}gw-pill-off{{end}}">{{if .CompressionActive}}on{{else}}off{{end}}</span></span>
     </div>
 
     <!-- Pool counts (hydrated by JS on first poll) -->
