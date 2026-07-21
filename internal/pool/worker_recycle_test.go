@@ -712,7 +712,8 @@ func TestPool_WorkerRecycle_StaleWatcherDoesNotDeadMark(t *testing.T) {
 		t.Fatalf("Warmup(): %v", err)
 	}
 
-	// One request drives turns to 1 → background recycle: respawnSlot closes the
+	// One request drives turns to 2 (warmup probe consumed turn 1) → background
+	// recycle: respawnSlot closes the
 	// OLD client, swaps in the NEW client, and resets dead=false /
 	// respawning=false.
 	runOneRequest(t, p)
