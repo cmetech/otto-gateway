@@ -3465,7 +3465,7 @@ git commit -m "feat(adapters): compress model-suffix split and X-Compression hea
 - Consumes: nothing new.
 - Produces (used by Task 11): `(m *Metrics) RegisterCompression(stats func() (runs, savedTokens int64))` — registers `gw_compress_runs_total` and `gw_compress_tokens_saved_estimate_total` CounterFuncs that pull from the hook's atomics at scrape time (no background goroutine — same pull posture as `newPoolCollector`).
 
-- [ ] **Step 1: Write the failing test** (append to `internal/metrics/metrics_test.go` — note it is the EXTERNAL `package metrics_test`; reuse its `testMetrics` + `scrape` helpers. Two constraints verified against the repo, review MAJOR-10: the pull collector invokes the pool/session closures unconditionally at scrape time, so nil closures panic — `testMetrics` supplies non-nil ones; and `New` wraps every series with the constant `gateway_id` label, so assertions must use the labeled form)
+- [x] **Step 1: Write the failing test** (append to `internal/metrics/metrics_test.go` — note it is the EXTERNAL `package metrics_test`; reuse its `testMetrics` + `scrape` helpers. Two constraints verified against the repo, review MAJOR-10: the pull collector invokes the pool/session closures unconditionally at scrape time, so nil closures panic — `testMetrics` supplies non-nil ones; and `New` wraps every series with the constant `gateway_id` label, so assertions must use the labeled form)
 
 ```go
 // TestRegisterCompression_SeriesExposed: the compression counters attach
@@ -3486,12 +3486,12 @@ func TestRegisterCompression_SeriesExposed(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `go test ./internal/metrics/ -run TestRegisterCompression -v`
 Expected: FAIL — `m.RegisterCompression undefined`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In the `Metrics` struct add a field:
 
@@ -3522,12 +3522,12 @@ func (m *Metrics) RegisterCompression(stats func() (runs, savedTokens int64)) {
 }
 ```
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 Run: `go test ./internal/metrics/ -v`
 Expected: PASS (new + existing).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/metrics/

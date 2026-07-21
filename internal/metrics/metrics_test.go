@@ -216,3 +216,20 @@ func TestMetrics_Middleware_SkipsMetricsPath(t *testing.T) {
 		t.Error("/metrics scrape must not be counted as a request")
 	}
 }
+
+// TestRegisterCompression_SeriesExposed: the compression counters attach
+// post-New via the retained wrapped registerer and read the hook's stats
+// closure at scrape time, carrying the gateway_id constant label like
+// every other series.
+func TestRegisterCompression_SeriesExposed(t *testing.T) {
+	m := testMetrics(metrics.PoolStats{}, metrics.SessionStats{})
+	m.RegisterCompression(func() (int64, int64) { return 7, 4242 })
+
+	body := scrape(t, m)
+	if !strings.Contains(body, `gw_compress_runs_total{gateway_id="gw-test-123"} 7`) {
+		t.Errorf("runs counter missing/wrong:\n%s", body)
+	}
+	if !strings.Contains(body, `gw_compress_tokens_saved_estimate_total{gateway_id="gw-test-123"} 4242`) {
+		t.Errorf("saved-tokens counter missing/wrong:\n%s", body)
+	}
+}

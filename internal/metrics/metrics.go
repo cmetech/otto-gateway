@@ -103,6 +103,10 @@ type Metrics struct {
 	// OnModelRequest hook).
 	modelReqs *prometheus.CounterVec
 	models    *skillLimiter
+
+	// hookReg is the gateway_id-wrapped registerer retained so optional
+	// feature series (RegisterCompression) can attach after New.
+	hookReg prometheus.Registerer
 }
 
 // RecordTurnMeter records one completed kiro turn: increments the turn counter,
@@ -253,7 +257,8 @@ func New(info BuildInfo, pool func() PoolStats, sessions func() SessionStats, wo
 	buildInfo.WithLabelValues(info.Version, info.Commit).Set(1)
 
 	m := &Metrics{
-		reg: reg,
+		reg:     reg,
+		hookReg: reggw,
 		reqTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "gw_http_requests_total",
 			Help: "Total HTTP requests handled, by method, matched route, and status.",
@@ -317,6 +322,23 @@ func New(info BuildInfo, pool func() PoolStats, sessions func() SessionStats, wo
 		reggw.MustRegister(newWorkerCollector(workers, procstat.Read))
 	}
 	return m
+}
+
+// RegisterCompression exposes the CompressionHook counters as pull-style
+// CounterFuncs (read at scrape time from the hook's atomics — no
+// background goroutine, matching the pool collector posture). Call at
+// most once, after New, when the compression feature is wired.
+func (m *Metrics) RegisterCompression(stats func() (runs, savedTokens int64)) {
+	m.hookReg.MustRegister(
+		prometheus.NewCounterFunc(prometheus.CounterOpts{
+			Name: "gw_compress_runs_total",
+			Help: "Requests where CompressionHook reduced the transcript.",
+		}, func() float64 { r, _ := stats(); return float64(r) }),
+		prometheus.NewCounterFunc(prometheus.CounterOpts{
+			Name: "gw_compress_tokens_saved_estimate_total",
+			Help: "Estimated tokens removed from transcripts (UTF-8 bytes/4 heuristic).",
+		}, func() float64 { _, s := stats(); return float64(s) }),
+	)
 }
 
 // Handler serves the Prometheus exposition format. Mount at GET /metrics.
