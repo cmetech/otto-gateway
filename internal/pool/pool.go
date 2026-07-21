@@ -77,6 +77,35 @@ func SetExitWatcherPanicProbeForTest(v func()) func() {
 	return func() { setPanicProbe(&exitWatcherPanicProbe, prev) }
 }
 
+// respawnCause classifies why respawnSlot is being invoked so the two
+// call sites (lazy dequeue-time recovery, and the future scheduled
+// recycler from Task 3) can diverge on error classification, success
+// log reason, and counters while sharing one implementation.
+type respawnCause uint8
+
+const (
+	// respawnCauseLazy is the existing dequeue-time recovery path
+	// (Pool.NewSession's dead-slot branch). WR-07 ctx-cancel suppression
+	// applies only to this cause — a caller-owned ctx cancelling mid-spawn
+	// is expected traffic, not a pool incident.
+	respawnCauseLazy respawnCause = iota
+	// respawnCauseRecycle is the Task 3 background scheduled-recycle path.
+	// It does not carry a caller-owned ctx, so ctx-cancellation is treated
+	// as a genuine spawn error rather than suppressed.
+	respawnCauseRecycle
+)
+
+// successReason returns the byte-exact log "reason" field for a
+// successful respawn. lazy-respawn-success is locked per CONTEXT.md
+// §D-18-05 (TestRegression_REL_OBSV_02 asserts it verbatim) and MUST
+// NOT change for respawnCauseLazy.
+func (c respawnCause) successReason() string {
+	if c == respawnCauseRecycle {
+		return "recycle-respawn-success"
+	}
+	return "lazy-respawn-success"
+}
+
 // Slot is one warm kiro-cli connection owned by the pool. Client is
 // typed as the PoolClient interface (Codex M-2) so tests can inject
 // fake clients; production uses *acp.Client via the default factory.
@@ -194,16 +223,23 @@ type Pool struct {
 
 	// Track 4b monotonic event counters, surfaced via the Prometheus
 	// pull-collector. respawns bumps on each successful lazy respawn;
+	// recycles bumps on each successful scheduled-recycle respawn (Task 3);
 	// pingEscalations / pingSuspendSkips are incremented by the per-slot
 	// acp.Client via the OnPing* hooks wired in initSlot (aggregated here so
 	// the counts survive slot respawns).
 	respawns         atomic.Uint64
+	recycles         atomic.Uint64
 	pingEscalations  atomic.Uint64
 	pingSuspendSkips atomic.Uint64
 }
 
 // Respawns returns the total successful lazy slot respawns since start.
 func (p *Pool) Respawns() uint64 { return p.respawns.Load() }
+
+// Recycles returns the total successful scheduled-recycle slot respawns
+// since start (Task 3's background recycler). Distinct from Respawns,
+// which counts only the dequeue-time lazy recovery path.
+func (p *Pool) Recycles() uint64 { return p.recycles.Load() }
 
 // PingEscalations returns the total liveness-ping escalations (worker teardowns).
 func (p *Pool) PingEscalations() uint64 { return p.pingEscalations.Load() }
@@ -440,7 +476,14 @@ func (p *Pool) slotAlive(slot *Slot) bool {
 // On any failure the wrapped error is returned; the caller is expected
 // to re-queue the slot via the same release path as the ctx-cancel
 // branch (D-03; the removeSlot path was removed as dead code in Phase 17).
-func (p *Pool) respawnSlot(ctx context.Context, slot *Slot) error {
+//
+// cause distinguishes the lazy dequeue-time recovery path (respawnCauseLazy,
+// Pool.NewSession's dead-slot branch) from the Task 3 scheduled-recycle path
+// (respawnCauseRecycle): WR-07 ctx-cancellation suppression applies only to
+// respawnCauseLazy (a caller-owned ctx cancelling mid-spawn is expected
+// traffic there, not a pool incident); the success log reason and the
+// counter incremented (respawns vs recycles) also depend on cause.
+func (p *Pool) respawnSlot(ctx context.Context, slot *Slot, cause respawnCause) error {
 	// D-18-05 REL-OBSV-02: capture OLD pid BEFORE Close so the
 	// lazy-respawn-success INFO log (emitted after step 4) can report
 	// the previous-pid → new-pid pair for operator correlation against
@@ -465,8 +508,11 @@ func (p *Pool) respawnSlot(ctx context.Context, slot *Slot) error {
 		// WR-07: distinguish ctx-cancellation (caller disconnect, the
 		// normal D-02 abort path) from genuine spawn failures so
 		// operator logs do not surface every cancelled request as a
-		// "respawn failed" incident.
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		// "respawn failed" incident. This suppression is lazy-only: the
+		// scheduled recycler (respawnCauseRecycle) has no caller-owned ctx
+		// to abort on, so a ctx error there is a genuine spawn failure.
+		if cause == respawnCauseLazy &&
+			(errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
 			return fmt.Errorf("pool: respawn slot %s aborted: %w", slot.Label, err)
 		}
 		p.recordSpawnErr(err)
@@ -476,8 +522,9 @@ func (p *Pool) respawnSlot(ctx context.Context, slot *Slot) error {
 	// orphaning a subprocess + writer/reader goroutine trio.
 	if err := newClient.Initialize(ctx); err != nil {
 		_ = newClient.Close()
-		// WR-07: same ctx-cancellation distinction as Spawn above.
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		// WR-07: same ctx-cancellation distinction as Spawn above (lazy-only).
+		if cause == respawnCauseLazy &&
+			(errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
 			return fmt.Errorf("pool: respawn slot %s aborted: %w", slot.Label, err)
 		}
 		p.recordSpawnErr(err)
@@ -509,10 +556,13 @@ func (p *Pool) respawnSlot(ctx context.Context, slot *Slot) error {
 	label := slot.Label
 	p.mu.Unlock()
 
-	// D-18-05 REL-OBSV-02: log the lazy-respawn-success AFTER unlock so the
-	// critical section stays narrow. Reason byte-exact "lazy-respawn-success"
-	// per CONTEXT.md §D-18-05; field key for slot label is "label" mirroring
-	// the death log at exit_watcher.go:42 (RESEARCH.md Pattern 3 / Pitfall 5).
+	// D-18-05 REL-OBSV-02: log the success record AFTER unlock so the
+	// critical section stays narrow. Reason is byte-exact
+	// "lazy-respawn-success" for respawnCauseLazy per CONTEXT.md §D-18-05
+	// (TestRegression_REL_OBSV_02 asserts it verbatim); respawnCauseRecycle
+	// uses the distinct "recycle-respawn-success" reason (Task 3). Field key
+	// for slot label is "label" mirroring the death log at
+	// exit_watcher.go:42 (RESEARCH.md Pattern 3 / Pitfall 5).
 	//
 	// WR-07: previous_pid=0 indicates a non-spawned (NewWithConn / test
 	// fake) client whose Pid() returns 0. In production every slot is
@@ -525,10 +575,17 @@ func (p *Pool) respawnSlot(ctx context.Context, slot *Slot) error {
 			"label", label,
 			"worker_pid", newPid,
 			"previous_pid", previousPid,
-			"reason", "lazy-respawn-success",
+			"reason", cause.successReason(),
 		)
 	}
-	p.respawns.Add(1) // Track 4b: successful lazy respawn
+	// Track 4b: exactly one counter increments per successful respawn,
+	// selected by cause — respawns stays lazy-only (gw_pool_slot_respawns_total
+	// semantics are preserved byte-exact); recycles is new (Task 3/4).
+	if cause == respawnCauseRecycle {
+		p.recycles.Add(1)
+	} else {
+		p.respawns.Add(1)
+	}
 	return nil
 }
 
@@ -774,7 +831,23 @@ func (p *Pool) Close() error {
 // behaviour rests on it.
 func (p *Pool) closeAll() error {
 	p.mu.Lock()
-	slots := p.all
+	// Snapshot immutable {label, client} pairs UNDER p.mu rather than the
+	// []*Slot pointers themselves. *Slot.Client is mutated by respawnSlot
+	// under this same lock (Step 4/lazy respawn, and Task 3's scheduled
+	// recycler); reading slot.Client AFTER unlocking would race an
+	// in-flight respawnSlot's locked write to slot.Client — an
+	// unsynchronized interface-value read. Capturing the label+client pair
+	// here means the close loop below never dereferences slot.Client again.
+	type closeTarget struct {
+		label  string
+		client PoolClient
+	}
+	targets := make([]closeTarget, 0, len(p.all))
+	for _, slot := range p.all {
+		if slot != nil && slot.Client != nil {
+			targets = append(targets, closeTarget{label: slot.Label, client: slot.Client})
+		}
+	}
 	p.all = nil
 	p.closed = true
 	// Drain in-flight sessions: collect (sid, client) pairs to cancel
@@ -817,14 +890,13 @@ func (p *Pool) closeAll() error {
 	// Reverse allocation order so the most-recently-spawned (and
 	// therefore likely most-recently-touched) subprocess shuts down
 	// first — matches the typical "close last-opened first" stdlib
-	// idiom.
-	for i := len(slots) - 1; i >= 0; i-- {
-		s := slots[i]
-		if s == nil || s.Client == nil {
-			continue
-		}
-		if err := s.Client.Close(); err != nil && firstErr == nil {
-			firstErr = fmt.Errorf("pool: close %s: %w", s.Label, err)
+	// idiom. Closes the captured client values directly — never
+	// dereferences slot.Client here (that would reopen the race this
+	// snapshot exists to close).
+	for i := len(targets) - 1; i >= 0; i-- {
+		t := targets[i]
+		if err := t.client.Close(); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("pool: close %s: %w", t.label, err)
 		}
 	}
 	return firstErr
@@ -924,7 +996,7 @@ func (p *Pool) NewSession(ctx context.Context, cwd string) (string, error) {
 	// observes the flag, respawns synchronously, and on failure drops
 	// the slot from p.all so the pool effective size shrinks (D-03).
 	if !p.slotAlive(slot) {
-		if err := p.respawnSlot(ctx, slot); err != nil {
+		if err := p.respawnSlot(ctx, slot, respawnCauseLazy); err != nil {
 			// WR-07 / audit pool-respawn-ctx-cancel-shrinks-pool-permanently:
 			// distinguish caller-disconnect ctx cancellation from genuine
 			// spawn failures. A laptop reconnecting after sleep with

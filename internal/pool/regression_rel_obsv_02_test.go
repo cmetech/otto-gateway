@@ -116,6 +116,12 @@ func TestRegression_REL_OBSV_02(t *testing.T) {
 		t.Errorf("previous_pid = %v, want %v (OLD client pid)", got, want)
 	}
 	if got, want := recovered["reason"], "lazy-respawn-success"; got != want {
-		t.Errorf("reason = %q, want %q (byte-exact per CONTEXT.md §D-18-05)", got, want)
+		t.Fatalf("reason = %v; want %q", got, want)
+	}
+	if got := p.Respawns(); got != 1 {
+		t.Fatalf("Respawns() = %d; want 1", got)
+	}
+	if got := p.Recycles(); got != 0 {
+		t.Fatalf("Recycles() = %d; want 0", got)
 	}
 }
