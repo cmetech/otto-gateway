@@ -794,8 +794,8 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 	// The tailer's inode-tracking reopen (internal/admin/tail.go) keeps
 	// streaming across timberjack's daily rotation without UI interruption.
 	var adminPoolDetail admin.PoolDetailSource
-	if poolDetailForServer != nil {
-		adminPoolDetail = adminPoolDetailAdapter{src: poolDetailForServer, pool: a.pool}
+	if a.pool != nil {
+		adminPoolDetail = adminPoolDetailAdapter{pool: a.pool}
 	}
 	var adminRegistry admin.RegistryStatsSource
 	if registryForServer != nil {
@@ -1115,18 +1115,26 @@ func (r registryStatsAdapter) Detail() []server.AgentSession {
 	return out
 }
 
-// adminPoolDetailAdapter bridges from server.PoolDetailSource (returning
-// []server.AgentSlot) to admin.PoolDetailSource (returning []admin.SnapshotSlot).
-// admin owns its own wire types (TRST-04: admin must not import internal/server),
+// adminPoolDetailAdapter bridges from *pool.Pool (via Detail(), returning
+// []pool.AgentSlot) to admin.PoolDetailSource (returning []admin.SnapshotSlot).
+// admin owns its own wire types (TRST-04: admin must not import internal/pool),
 // so this adapter does the per-row field copy at the cmd boundary. Cost is
 // O(POOL_SIZE) per snapshot poll — negligible vs JSON marshalling overhead.
+//
+// Reads a.pool.Detail() directly rather than going through
+// server.PoolDetailSource ([]server.AgentSlot): server.AgentSlot is the
+// separate, locked D-14/D-15 /health/agents wire contract and intentionally
+// does not carry the Turns/SpawnedAt fields the admin dashboard's per-slot
+// TURNS/UP cells need (quick 260721-ovm). pool.AgentSlot has both.
 type adminPoolDetailAdapter struct {
-	src  server.PoolDetailSource
 	pool *pool.Pool
 }
 
 func (a adminPoolDetailAdapter) Detail() []admin.SnapshotSlot {
-	rows := a.src.Detail()
+	if a.pool == nil {
+		return nil
+	}
+	rows := a.pool.Detail()
 	out := make([]admin.SnapshotSlot, len(rows))
 	for i, r := range rows {
 		out[i] = admin.SnapshotSlot{
@@ -1134,6 +1142,8 @@ func (a adminPoolDetailAdapter) Detail() []admin.SnapshotSlot {
 			Alive:            r.Alive,
 			Busy:             r.Busy,
 			CurrentSessionID: r.CurrentSessionID,
+			Turns:            r.Turns,
+			SpawnedAt:        r.SpawnedAt,
 		}
 	}
 	return out

@@ -1,5 +1,7 @@
 package pool
 
+import "time"
+
 // AgentSlot is the per-slot detail row consumed by Plan 05-03's
 // /health/agents handler (D-15). The JSON tags are the load-bearing
 // wire contract; downstream consumers — agentsHandler in
@@ -7,11 +9,21 @@ package pool
 // snake_case shape verbatim. CurrentSessionID is *string so a slot with
 // no active session renders as `"current_session_id": null` instead of
 // `"current_session_id": ""` — matches the D-15 example shape.
+//
+// Turns and SpawnedAt were added additively (quick 260721-ovm, worker-
+// recycling dashboard stats) so the admin dashboard can render per-slot
+// TURNS and UP (uptime) cells that reset together when a recycle
+// completes. SpawnedAt is *time.Time, null when zero, mirroring the
+// CurrentSessionID convention: a slot that has never been spawned (not
+// reachable via Detail() in practice, since rows only exist for
+// initialized slots) would render `"spawned_at": null`.
 type AgentSlot struct {
-	Label            string  `json:"label"`
-	Alive            bool    `json:"alive"`
-	Busy             bool    `json:"busy"`
-	CurrentSessionID *string `json:"current_session_id"`
+	Label            string     `json:"label"`
+	Alive            bool       `json:"alive"`
+	Busy             bool       `json:"busy"`
+	CurrentSessionID *string    `json:"current_session_id"`
+	Turns            int        `json:"turns"`
+	SpawnedAt        *time.Time `json:"spawned_at"`
 }
 
 // Detail returns a point-in-time snapshot of per-slot state for
@@ -51,6 +63,7 @@ func (p *Pool) Detail() []AgentSlot {
 			// existing yellow "RECOVERING" tier (degraded at size>=2), which
 			// is the intended operator signal.
 			Alive: !slot.dead && !slot.respawning,
+			Turns: slot.turns,
 		}
 		if sid, ok := slotToSID[slot]; ok {
 			// Defensive copy of the string into a fresh pointer so the
@@ -60,6 +73,13 @@ func (p *Pool) Detail() []AgentSlot {
 			sidCopy := sid
 			row.Busy = true
 			row.CurrentSessionID = &sidCopy
+		}
+		if !slot.spawnedAt.IsZero() {
+			// Same defensive-copy rationale as CurrentSessionID above: the row
+			// must own its data, never alias slot.spawnedAt directly (Detail's
+			// contract is that internal pool state is never aliased out).
+			spawnedAtCopy := slot.spawnedAt
+			row.SpawnedAt = &spawnedAtCopy
 		}
 		rows = append(rows, row)
 	}

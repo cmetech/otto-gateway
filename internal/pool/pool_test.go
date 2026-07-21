@@ -1296,7 +1296,11 @@ func makeWarmupOnly(warmupSid, runSid string) func(context.Context, string) (str
 // TestPool_Detail_HealthyPool — D-15: pool size 4, all alive, none busy.
 func TestPool_Detail_HealthyPool(t *testing.T) {
 	clients := []*fakeClient{
-		{newSessionFn: makeWarmupOnly("warm-0", "run-0")},
+		// slot-0's catalog probe must return a non-empty catalog on the first
+		// attempt so Turns is deterministic (1) instead of retrying per
+		// defaultCatalogRetry (which would otherwise probe 3x on an empty
+		// catalog before the warmup ctx deadline cuts the retries off).
+		{newSessionFn: makeWarmupOnly("warm-0", "run-0"), models: []canonical.ModelInfo{{ID: "auto"}}},
 		{newSessionFn: makeWarmupOnly("warm-1", "run-1")},
 		{newSessionFn: makeWarmupOnly("warm-2", "run-2")},
 		{newSessionFn: makeWarmupOnly("warm-3", "run-3")},
@@ -1321,6 +1325,21 @@ func TestPool_Detail_HealthyPool(t *testing.T) {
 		}
 		if row.CurrentSessionID != nil {
 			t.Errorf("row[%d].CurrentSessionID = %v; want nil", i, *row.CurrentSessionID)
+		}
+		// Only slot-0 runs the D-13 model-catalog probe during Warmup (one
+		// session/new call, i==0 branch) — other slots are spawned+initialized
+		// but never probed, so their Turns stay 0.
+		wantTurns := 0
+		if i == 0 {
+			wantTurns = 1
+		}
+		if row.Turns != wantTurns {
+			t.Errorf("row[%d].Turns = %d; want %d", i, row.Turns, wantTurns)
+		}
+		if row.SpawnedAt == nil {
+			t.Errorf("row[%d].SpawnedAt = nil; want non-nil after initSlot", i)
+		} else if row.SpawnedAt.IsZero() {
+			t.Errorf("row[%d].SpawnedAt = zero time; want a real timestamp", i)
 		}
 	}
 }
@@ -1469,6 +1488,9 @@ func TestPool_Detail_NilSafeOnEmptyPool(t *testing.T) {
 
 // TestPool_Detail_FieldShape_MatchesD15 — JSON tags lock the D-15 wire
 // contract. Build failure if downstream consumers depend on the old shape.
+// Turns/SpawnedAt were added additively (worker-recycling dashboard stats,
+// quick 260721-ovm) — this lock test was updated deliberately alongside that
+// change; it is not a stale assertion.
 func TestPool_Detail_FieldShape_MatchesD15(t *testing.T) {
 	rt := reflect.TypeOf(pool.AgentSlot{})
 	wantTags := map[string]string{
@@ -1476,6 +1498,8 @@ func TestPool_Detail_FieldShape_MatchesD15(t *testing.T) {
 		"Alive":            "alive",
 		"Busy":             "busy",
 		"CurrentSessionID": "current_session_id",
+		"Turns":            "turns",
+		"SpawnedAt":        "spawned_at",
 	}
 	if rt.NumField() != len(wantTags) {
 		t.Fatalf("AgentSlot field count = %d; want %d (extra/missing fields break D-15 wire)",

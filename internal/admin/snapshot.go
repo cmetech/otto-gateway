@@ -52,6 +52,12 @@ type SnapshotPool struct {
 	Busy         int            `json:"busy"`
 	SpawnFailing bool           `json:"spawn_failing"`
 	Slots        []SnapshotSlot `json:"slots"`
+
+	// MaxTurns mirrors Deps.KiroWorkerMaxTurns (KIRO_WORKER_MAX_TURNS) — the
+	// scheduled-recycle threshold. 0 means recycling is disabled. The
+	// dashboard's per-slot TURNS cell renders "N / MAX" when MaxTurns > 0,
+	// else just "N" (quick 260721-ovm).
+	MaxTurns int `json:"max_turns"`
 }
 
 // SnapshotSlot is the per-slot detail row in the admin snapshot.
@@ -71,6 +77,14 @@ type SnapshotSlot struct {
 	CPUSeconds float64 `json:"cpu_seconds"`
 	RSSBytes   uint64  `json:"rss_bytes"`
 	StatOK     bool    `json:"stat_ok"`
+
+	// Turns is the slot's current session/new count toward MaxTurns —
+	// mirrors pool.AgentSlot.Turns. SpawnedAt is the current worker's spawn
+	// time (nil when unknown), mirroring pool.AgentSlot.SpawnedAt. Both power
+	// the dashboard's per-slot TURNS/UP cells and reset together when a
+	// recycle completes (quick 260721-ovm).
+	Turns     int        `json:"turns"`
+	SpawnedAt *time.Time `json:"spawned_at"`
 }
 
 // SnapshotSess is the per-session detail row in the admin snapshot.
@@ -136,6 +150,9 @@ func (h *handler) snapshotHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Pool detail — nil-safe.
 	snap.Pool.Slots = []SnapshotSlot{} // ensure non-nil JSON array
+	// MaxTurns is independent of PoolDetail — Deps.KiroWorkerMaxTurns is a
+	// config-derived value the dashboard needs even if PoolDetail is nil.
+	snap.Pool.MaxTurns = h.deps.KiroWorkerMaxTurns
 	if h.deps.PoolDetail != nil {
 		slots := h.deps.PoolDetail.Detail()
 		snap.Pool.Slots = slots

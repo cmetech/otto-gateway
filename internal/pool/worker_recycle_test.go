@@ -218,6 +218,22 @@ func TestPool_WorkerRecycleAtThreshold(t *testing.T) {
 		t.Fatalf("Warmup(): %v", err)
 	}
 
+	// Capture the pre-recycle SpawnedAt so we can assert it strictly advances
+	// once the recycle respawn completes (dashboard "UP" cell must reset).
+	preRows := p.Detail()
+	var preSpawnedAt time.Time
+	for _, r := range preRows {
+		if r.Label == "slot-0" {
+			if r.SpawnedAt == nil {
+				t.Fatal("pre-recycle Detail(): slot-0 SpawnedAt is nil")
+			}
+			preSpawnedAt = *r.SpawnedAt
+		}
+	}
+	if preSpawnedAt.IsZero() {
+		t.Fatal("pre-recycle SpawnedAt not captured for slot-0")
+	}
+
 	sid, err := p.NewSession(context.Background(), "")
 	if err != nil {
 		t.Fatalf("NewSession(): %v", err)
@@ -247,6 +263,26 @@ func TestPool_WorkerRecycleAtThreshold(t *testing.T) {
 	// The old worker was torn down as part of the recycle respawn.
 	if got := oldClient.closeCallCount(); got < 1 {
 		t.Fatalf("old client closeCalls = %d; want >= 1", got)
+	}
+
+	// Detail() must reflect the completed recycle: turns reset to 0 and
+	// spawned_at advanced past the pre-recycle worker's spawn time (dashboard
+	// operators watch both reset together when a recycle completes).
+	postRows := p.Detail()
+	for _, r := range postRows {
+		if r.Label != "slot-0" {
+			continue
+		}
+		if r.Turns != 0 {
+			t.Errorf("post-recycle Detail(): slot-0 Turns = %d; want 0", r.Turns)
+		}
+		if r.SpawnedAt == nil {
+			t.Fatal("post-recycle Detail(): slot-0 SpawnedAt is nil")
+		}
+		if !r.SpawnedAt.After(preSpawnedAt) {
+			t.Errorf("post-recycle Detail(): slot-0 SpawnedAt = %v; want strictly after pre-recycle %v",
+				*r.SpawnedAt, preSpawnedAt)
+		}
 	}
 }
 

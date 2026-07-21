@@ -21,14 +21,18 @@ func TestAdmin_SnapshotHandler(t *testing.T) {
 
 	sid := "sess-abc"
 	model := "model-xyz"
+	spawnedAt := time.Now().Add(-5 * time.Minute)
+	// 8177 is a distinctive MaxTurns value not appearing elsewhere in this
+	// payload, so a passing assertion can't be a coincidental field-order match.
 	deps := Deps{
-		Logger:  testutil.Logger(t),
-		Version: "1.2.3",
-		Commit:  "abc1234",
+		Logger:             testutil.Logger(t),
+		Version:            "1.2.3",
+		Commit:             "abc1234",
+		KiroWorkerMaxTurns: 8177,
 		PoolDetail: &stubPool{
 			slots: []SnapshotSlot{
-				{Label: "slot-0", Alive: true, Busy: false, CurrentSessionID: nil},
-				{Label: "slot-1", Alive: true, Busy: true, CurrentSessionID: &sid},
+				{Label: "slot-0", Alive: true, Busy: false, CurrentSessionID: nil, Turns: 3, SpawnedAt: &spawnedAt},
+				{Label: "slot-1", Alive: true, Busy: true, CurrentSessionID: &sid, Turns: 0, SpawnedAt: nil},
 			},
 		},
 		Registry: &stubRegistry{
@@ -95,6 +99,36 @@ func TestAdmin_SnapshotHandler(t *testing.T) {
 	}
 	if snap.Pool.Slots == nil {
 		t.Error("pool.slots: want non-nil JSON array")
+	}
+	if snap.Pool.MaxTurns != 8177 {
+		t.Errorf("pool.max_turns: want 8177, got %d", snap.Pool.MaxTurns)
+	}
+	var slot0, slot1 *SnapshotSlot
+	for i := range snap.Pool.Slots {
+		switch snap.Pool.Slots[i].Label {
+		case "slot-0":
+			slot0 = &snap.Pool.Slots[i]
+		case "slot-1":
+			slot1 = &snap.Pool.Slots[i]
+		}
+	}
+	if slot0 == nil {
+		t.Fatal("pool.slots: slot-0 missing")
+	}
+	if slot0.Turns != 3 {
+		t.Errorf("slot-0 turns: want 3, got %d", slot0.Turns)
+	}
+	if slot0.SpawnedAt == nil {
+		t.Error("slot-0 spawned_at: want non-nil")
+	}
+	if slot1 == nil {
+		t.Fatal("pool.slots: slot-1 missing")
+	}
+	if slot1.Turns != 0 {
+		t.Errorf("slot-1 turns: want 0, got %d", slot1.Turns)
+	}
+	if slot1.SpawnedAt != nil {
+		t.Errorf("slot-1 spawned_at: want nil, got %v", *slot1.SpawnedAt)
 	}
 
 	// sessions assertions

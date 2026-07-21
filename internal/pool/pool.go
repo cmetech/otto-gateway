@@ -150,6 +150,14 @@ type Slot struct {
 	// "pool: slot died" log instead of dead-marking a slot that is being
 	// deliberately recycled. Guarded by p.mu, same discipline as dead/turns.
 	respawning bool
+	// spawnedAt is the wall-clock time the CURRENT worker (slot.Client) was
+	// spawned — set in initSlot at slot construction and re-set in
+	// respawnSlot's step-4 swap critical section (same statement block that
+	// resets turns to 0), so a fresh worker always gets a fresh clock. Read
+	// by Detail() to power the dashboard's per-slot "UP" (uptime) cell —
+	// turns and uptime reset together exactly when a recycle completes.
+	// Guarded by p.mu, same discipline as dead/turns/respawning.
+	spawnedAt time.Time
 }
 
 // Pool is a fixed-size warm pool of kiro-cli slots that satisfies
@@ -519,7 +527,7 @@ func (p *Pool) initSlot(ctx context.Context, label string) (*Slot, error) {
 		_ = client.Close()
 		return nil, fmt.Errorf("pool: initialize %s: %w", label, err)
 	}
-	slot := &Slot{Label: label, Client: client}
+	slot := &Slot{Label: label, Client: client, spawnedAt: time.Now()}
 	// WR-01: capture Done() at the spawn site so the watcher
 	// goroutine cannot lazily re-evaluate slot.Client.Done() against a
 	// later-swapped client. Safe here without p.mu — the slot has
@@ -715,6 +723,10 @@ func (p *Pool) respawnSlot(ctx context.Context, slot *Slot, cause respawnCause) 
 	// that swaps the client — covers both the lazy dead-slot path and the
 	// Task 3 scheduled recycle (design §2 Part B "Counter reset").
 	slot.turns = 0
+	// Fresh worker, fresh clock: reset spawnedAt in the SAME critical section
+	// as the turns reset so the dashboard's TURNS and UP cells always reset
+	// together for an operator watching a recycle complete.
+	slot.spawnedAt = time.Now()
 	newDone := newClient.Done()
 	// Step 5: spawn a fresh exit-watcher for the NEW client (under p.mu).
 	p.startExitWatcher(slot, newClient, newDone)

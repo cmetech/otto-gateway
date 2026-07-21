@@ -211,8 +211,49 @@
     return cell;
   }
 
-  // buildSlotPerf is the per-worker CPU/Mem block appended to each slot card.
-  function buildSlotPerf(slot) {
+  // formatTurnsCell renders the TURNS stat cell text: "N / MAX" when a
+  // recycle threshold is configured (maxTurns > 0), else just "N" (recycling
+  // disabled — KIRO_WORKER_MAX_TURNS=0).
+  function formatTurnsCell(turns, maxTurns) {
+    var n = turns || 0;
+    if (maxTurns > 0) return n + ' / ' + maxTurns;
+    return '' + n;
+  }
+
+  // formatUptime renders a millisecond duration compactly: "38s", "4m 12s",
+  // "3h 08m", "2d 4h". Distinct from relativeTime (which suffixes "ago" for
+  // last-used timestamps) — this is an ELAPSED duration, not a point in time.
+  function formatUptime(ms) {
+    var s = Math.max(0, Math.floor(ms / 1000));
+    if (s < 60) return s + 's';
+    var m = Math.floor(s / 60);
+    if (s < 3600) return m + 'm ' + (s % 60) + 's';
+    var h = Math.floor(s / 3600);
+    if (s < 86400) {
+      var mm = Math.floor((s % 3600) / 60);
+      return h + 'h ' + (mm < 10 ? '0' + mm : mm) + 'm';
+    }
+    var d = Math.floor(s / 86400);
+    var remH = Math.floor((s % 86400) / 3600);
+    return d + 'd ' + remH + 'h';
+  }
+
+  // formatUpCell renders the UP stat cell text from a slot's spawned_at ISO
+  // timestamp (null/absent → no worker has been spawned yet, or the field
+  // predates this feature — either way "n/a").
+  function formatUpCell(spawnedAt) {
+    if (!spawnedAt) return 'n/a';
+    var t = Date.parse(spawnedAt);
+    if (isNaN(t)) return 'n/a';
+    return formatUptime(Date.now() - t);
+  }
+
+  // buildSlotPerf is the per-worker CPU/Mem/TURNS/UP block appended to each
+  // slot card. TURNS and UP have no sparkline history (perfStat is reused for
+  // layout consistency with a null values array, which renders an empty,
+  // invisible sparkline) and — unlike CPU/Mem — always render, even when
+  // stat_ok is false, so the row is never empty for a live (non-vacant) card.
+  function buildSlotPerf(slot, maxTurns) {
     var el = document.createElement('div');
     el.className = 'gw-slot-perf';
     if (slot.stat_ok) {
@@ -225,6 +266,8 @@
       na.textContent = 'perf n/a';
       el.append(na);
     }
+    el.append(perfStat('TURNS', formatTurnsCell(slot.turns, maxTurns), null, null));
+    el.append(perfStat('UP', formatUpCell(slot.spawned_at), null, null));
     return el;
   }
 
@@ -340,28 +383,29 @@
   // slotCardChildren is the single builder for a card's child nodes, shared
   // by buildSlotCard (initial render) and updateSlotCard (in-place update)
   // so the two paths cannot drift. Vacant slots get no perf block — they
-  // have no worker to report CPU/RSS for.
-  function slotCardChildren(slot, poolFailed) {
+  // have no worker to report CPU/RSS/TURNS/UP for. maxTurns is threaded down
+  // to buildSlotPerf for the TURNS cell's "N / MAX" rendering.
+  function slotCardChildren(slot, poolFailed, maxTurns) {
     var children = [
       buildSlotLabel(slot),
       buildSlotBadges(slot, poolFailed),
       buildSlotMeta(slot, poolFailed)
     ];
-    if (!slot.vacant) children.push(buildSlotPerf(slot));
+    if (!slot.vacant) children.push(buildSlotPerf(slot, maxTurns));
     return children;
   }
 
-  function buildSlotCard(slot, poolFailed) {
+  function buildSlotCard(slot, poolFailed, maxTurns) {
     var article = document.createElement('article');
     article.className = slotCardClass(slot, poolFailed);
-    article.append.apply(article, slotCardChildren(slot, poolFailed));
+    article.append.apply(article, slotCardChildren(slot, poolFailed, maxTurns));
     return article;
   }
 
-  function updateSlotCard(article, slot, poolFailed) {
+  function updateSlotCard(article, slot, poolFailed, maxTurns) {
     article.className = slotCardClass(slot, poolFailed);
     // Replace children in place.
-    article.replaceChildren.apply(article, slotCardChildren(slot, poolFailed));
+    article.replaceChildren.apply(article, slotCardChildren(slot, poolFailed, maxTurns));
   }
 
   // renderSlots DOM-patches the pool-slot grid. It always renders at least 4
@@ -370,7 +414,9 @@
   // padding is purely a display concern — the snapshot wire shape is
   // untouched and ingestPerf (which drives sparklines) keeps reading the
   // unpadded snapshot array, so vacant cards never produce perf samples.
-  function renderSlots(slots, poolFailed, poolSize) {
+  // maxTurns is snap.pool.max_turns (KIRO_WORKER_MAX_TURNS), threaded down
+  // to every slot card's TURNS cell.
+  function renderSlots(slots, poolFailed, poolSize, maxTurns) {
     var grid = document.querySelector('[data-slot-grid]');
     var empty = document.querySelector('[data-slot-grid-empty]');
     if (!grid) return;
@@ -391,12 +437,12 @@
     if (grid.children.length !== displaySlots.length) {
       // Array length changed — full rebuild.
       grid.replaceChildren.apply(grid, displaySlots.map(function (slot) {
-        return buildSlotCard(slot, poolFailed);
+        return buildSlotCard(slot, poolFailed, maxTurns);
       }));
     } else {
       // Same count — update in place.
       for (var j = 0; j < displaySlots.length; j++) {
-        updateSlotCard(grid.children[j], displaySlots[j], poolFailed);
+        updateSlotCard(grid.children[j], displaySlots[j], poolFailed, maxTurns);
       }
     }
   }
@@ -548,7 +594,8 @@
         renderSlots(
           snap.pool ? snap.pool.slots : [],
           poolFailed,
-          snap.pool ? snap.pool.size : 0
+          snap.pool ? snap.pool.size : 0,
+          snap.pool ? snap.pool.max_turns : 0
         );
         renderSessions(snap.sessions || []);
         // Quick 260529-ll2 — populate the source dropdown from
