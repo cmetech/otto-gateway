@@ -412,7 +412,7 @@ git commit -m "feat(compress): token estimation and text walkers for compression
 **Interfaces:**
 - Produces (used by Task 9 adapters and Task 5 hook): `SplitCompressDirective(model string) (base string, directive *bool)` (exported), `MetadataKey = "compress"` (exported const — the `canonical.ChatRequest.Metadata` key carrying the parsed suffix directive as a `bool`).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```go
 // internal/plugin/compress/directive_test.go
@@ -461,12 +461,12 @@ func TestSplitCompressDirective(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `go test ./internal/plugin/compress/ -run TestSplitCompressDirective -v`
 Expected: FAIL — `undefined: SplitCompressDirective`.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 ```go
 // internal/plugin/compress/directive.go
@@ -519,12 +519,12 @@ func SplitCompressDirective(model string) (string, *bool) {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `go test ./internal/plugin/compress/ -run TestSplitCompressDirective -v`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/plugin/compress/directive.go internal/plugin/compress/directive_test.go
