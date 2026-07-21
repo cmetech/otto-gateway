@@ -266,7 +266,12 @@
   function buildSlotBadges(slot, poolFailed) {
     var el = document.createElement('div');
     el.className = 'gw-slot-badges';
-    if (!slot.alive) {
+    if (slot.vacant) {
+      var vacant = document.createElement('span');
+      vacant.className = 'gw-badge is-vacant';
+      vacant.textContent = 'VACANT';
+      el.append(vacant);
+    } else if (!slot.alive) {
       var notAlive = document.createElement('span');
       if (poolFailed) {
         notAlive.className = 'gw-badge is-dead';
@@ -294,7 +299,9 @@
   function buildSlotMeta(slot, poolFailed) {
     var el = document.createElement('div');
     el.className = 'gw-slot-meta';
-    if (!slot.alive) {
+    if (slot.vacant) {
+      el.textContent = 'Not provisioned (POOL_SIZE=' + slot.pool_size + ')';
+    } else if (!slot.alive) {
       if (poolFailed) {
         el.classList.add('is-dead');
         el.textContent = 'Failed — check logs';
@@ -316,26 +323,54 @@
     return el;
   }
 
+  // slotCardClass computes the FULL card class string in one shot — never
+  // incrementally mutated via classList — so a vacant→real (or any state)
+  // transition through the in-place update path can never leave a stale
+  // class behind.
+  function slotCardClass(slot, poolFailed) {
+    var classes = ['gw-slot-card'];
+    if (slot.vacant) {
+      classes.push('is-vacant');
+    } else if (!slot.alive) {
+      classes.push(poolFailed ? 'is-dead' : 'is-recovering');
+    }
+    return classes.join(' ');
+  }
+
+  // slotCardChildren is the single builder for a card's child nodes, shared
+  // by buildSlotCard (initial render) and updateSlotCard (in-place update)
+  // so the two paths cannot drift. Vacant slots get no perf block — they
+  // have no worker to report CPU/RSS for.
+  function slotCardChildren(slot, poolFailed) {
+    var children = [
+      buildSlotLabel(slot),
+      buildSlotBadges(slot, poolFailed),
+      buildSlotMeta(slot, poolFailed)
+    ];
+    if (!slot.vacant) children.push(buildSlotPerf(slot));
+    return children;
+  }
+
   function buildSlotCard(slot, poolFailed) {
     var article = document.createElement('article');
-    article.className = 'gw-slot-card';
-    if (!slot.alive) {
-      article.classList.add(poolFailed ? 'is-dead' : 'is-recovering');
-    }
-    article.append(buildSlotLabel(slot), buildSlotBadges(slot, poolFailed), buildSlotMeta(slot, poolFailed), buildSlotPerf(slot));
+    article.className = slotCardClass(slot, poolFailed);
+    article.append.apply(article, slotCardChildren(slot, poolFailed));
     return article;
   }
 
   function updateSlotCard(article, slot, poolFailed) {
-    article.classList.remove('is-dead', 'is-recovering');
-    if (!slot.alive) {
-      article.classList.add(poolFailed ? 'is-dead' : 'is-recovering');
-    }
+    article.className = slotCardClass(slot, poolFailed);
     // Replace children in place.
-    article.replaceChildren(buildSlotLabel(slot), buildSlotBadges(slot, poolFailed), buildSlotMeta(slot, poolFailed), buildSlotPerf(slot));
+    article.replaceChildren.apply(article, slotCardChildren(slot, poolFailed));
   }
 
-  function renderSlots(slots, poolFailed) {
+  // renderSlots DOM-patches the pool-slot grid. It always renders at least 4
+  // cards: real slots first, then client-only vacant placeholders padded up
+  // to 4 so the grid stays visually balanced for small POOL_SIZE values. The
+  // padding is purely a display concern — the snapshot wire shape is
+  // untouched and ingestPerf (which drives sparklines) keeps reading the
+  // unpadded snapshot array, so vacant cards never produce perf samples.
+  function renderSlots(slots, poolFailed, poolSize) {
     var grid = document.querySelector('[data-slot-grid]');
     var empty = document.querySelector('[data-slot-grid-empty]');
     if (!grid) return;
@@ -348,15 +383,20 @@
 
     if (empty) empty.hidden = true;
 
-    if (grid.children.length !== slots.length) {
+    var displaySlots = slots.slice();
+    for (var i = displaySlots.length; i < 4; i++) {
+      displaySlots.push({ vacant: true, label: 'slot-' + i, pool_size: poolSize });
+    }
+
+    if (grid.children.length !== displaySlots.length) {
       // Array length changed — full rebuild.
-      grid.replaceChildren.apply(grid, slots.map(function (slot) {
+      grid.replaceChildren.apply(grid, displaySlots.map(function (slot) {
         return buildSlotCard(slot, poolFailed);
       }));
     } else {
       // Same count — update in place.
-      for (var i = 0; i < slots.length; i++) {
-        updateSlotCard(grid.children[i], slots[i], poolFailed);
+      for (var j = 0; j < displaySlots.length; j++) {
+        updateSlotCard(grid.children[j], displaySlots[j], poolFailed);
       }
     }
   }
@@ -505,7 +545,11 @@
         // serve right now (status "down") or a current spawn failure is flagged;
         // otherwise it is a transient recycle rendered yellow "Recovering…".
         var poolFailed = snap.status === 'down' || !!(snap.pool && snap.pool.spawn_failing);
-        renderSlots(snap.pool ? snap.pool.slots : [], poolFailed);
+        renderSlots(
+          snap.pool ? snap.pool.slots : [],
+          poolFailed,
+          snap.pool ? snap.pool.size : 0
+        );
         renderSessions(snap.sessions || []);
         // Quick 260529-ll2 — populate the source dropdown from
         // snap.log_sources. populateLogSources no-ops when the list is

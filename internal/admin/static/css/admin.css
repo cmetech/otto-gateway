@@ -384,6 +384,14 @@ body {
   padding: calc(var(--gw-space-base) - 1px);
 }
 
+/* Vacant: a client-only padding placeholder for POOL_SIZE < 4 so the grid
+ * stays visually balanced. Dashed + dimmed distinguishes it at a glance
+ * from a real (solid-border) slot in any state. */
+.gw-slot-card.is-vacant {
+  border-style: dashed;
+  opacity: 0.58;
+}
+
 .gw-slot-label {
   font: 600 16px/1.4 var(--gw-font-ui);
   color: var(--gw-fg);
@@ -505,6 +513,11 @@ body {
 .gw-badge.is-recovering {
   background: rgba(255, 140, 10, 0.12);
   color: var(--gw-warning);
+}
+
+.gw-badge.is-vacant {
+  background: rgba(128, 128, 128, 0.1);
+  color: var(--gw-fg-muted);
 }
 
 /* Session ID short display */
