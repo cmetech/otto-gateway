@@ -1402,6 +1402,13 @@ func (p *Pool) releaseSlotForSession(sid string) {
 // only deadline; a respawn that blows it is a genuine failure (respawnSlot's
 // recycle cause routes the resulting context.DeadlineExceeded through
 // recordSpawnErr).
+//
+// Scope caveat (Finding 4): the factory Spawn (acpClientFactory.Spawn,
+// config.go) discards this ctx, so the budget bounds only the ctx-aware,
+// RPC-level Initialize step — it CANNOT interrupt a process exec start that
+// blocks inside Spawn. This is a pre-existing property of every spawn path
+// (warmup, lazy, recycle), not specific to recycling; making exec ctx-aware is
+// out of scope.
 const recycleRespawnTimeout = 30 * time.Second
 
 // releaseOrRecycle is the Task 3 replacement for the bare `p.slots <- slot`
@@ -1473,6 +1480,10 @@ func (p *Pool) releaseOrRecycle(slot *Slot) {
 // returns the fresh slot to the free queue or, on a respawn failure, requeues
 // it dead so the next acquirer's lazy path retries. On shutdown it drops the
 // slot rather than pushing it — closeAll owns cleanup via the p.all snapshot.
+//
+// The 30s budget (recycleRespawnTimeout) bounds only the ctx-aware Initialize
+// step; it cannot interrupt a process exec start that blocks inside the
+// factory Spawn, which discards the ctx (Finding 4 — see recycleRespawnTimeout).
 func (p *Pool) recycleSlot(slot *Slot, turns int) {
 	defer p.recycleWG.Done()
 	// Shutdown won the race after commit-to-recycle: drop the slot without

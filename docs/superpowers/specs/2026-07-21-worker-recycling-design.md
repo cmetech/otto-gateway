@@ -217,7 +217,12 @@ gains an explicit cause — `respawnCauseLazy` (today's dequeue-time path) vs
    recycle cause there is no caller to disconnect — a
    `context.DeadlineExceeded` from the 30 s budget is a genuine failure
    and goes through `recordSpawnErr` so `LastSpawnError` /
-   `gw_pool_spawn_failing` see it.
+   `gw_pool_spawn_failing` see it. **Scope of the 30 s budget (Finding 4):**
+   the factory `Spawn` (`acpClientFactory.Spawn`) discards its `ctx`, so the
+   budget bounds only the ctx-aware, RPC-level `Initialize` step — it cannot
+   interrupt a process exec start that blocks inside `Spawn`. This is a
+   pre-existing property of every spawn path (warmup, lazy, recycle), not
+   specific to recycling; making exec ctx-aware is out of scope.
 2. **Log reason:** the success INFO log emits
    `reason="lazy-respawn-success"` (byte-stable, unchanged) or
    `reason="recycle-respawn-success"` respectively, so downstream log
