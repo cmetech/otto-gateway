@@ -757,3 +757,53 @@ func TestLoad_JSONFormatSteeringEnabled(t *testing.T) {
 		}
 	})
 }
+
+// --- CompressionHook env knobs (Task 6) ---------------------------------
+
+func TestLoad_CompressionDefaults(t *testing.T) {
+	// t.Setenv: cannot use t.Parallel().
+	t.Setenv("COMPRESSION_ENABLED", "")
+	t.Setenv("COMPRESS_TRIGGER_TOKENS", "")
+	t.Setenv("COMPRESS_BUDGET_TOKENS", "")
+	t.Setenv("COMPRESS_PROTECT_TAIL", "")
+	t.Setenv("COMPRESS_TOOL_KEEP", "")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+	if cfg.CompressionEnabled {
+		t.Error("CompressionEnabled default must be false")
+	}
+	if cfg.CompressTriggerTokens != 6000 || cfg.CompressBudgetTokens != 4000 ||
+		cfg.CompressProtectTail != 4 || cfg.CompressToolKeep != 1200 {
+		t.Errorf("compress defaults wrong: %+v", cfg)
+	}
+}
+
+func TestLoad_CompressionValidation(t *testing.T) {
+	// t.Setenv: cannot use t.Parallel().
+	cases := []struct{ key, val, wantSub string }{
+		{"COMPRESS_TRIGGER_TOKENS", "0", "COMPRESS_TRIGGER_TOKENS"},
+		{"COMPRESS_BUDGET_TOKENS", "-1", "COMPRESS_BUDGET_TOKENS"},
+		{"COMPRESS_PROTECT_TAIL", "-2", "COMPRESS_PROTECT_TAIL"},
+		{"COMPRESS_TOOL_KEEP", "0", "COMPRESS_TOOL_KEEP"},
+		{"COMPRESS_TOOL_KEEP", "9223372036854775807", "COMPRESS_TOOL_KEEP"}, // upper bound (overflow guard)
+	}
+	for _, c := range cases {
+		t.Run(c.key+"="+c.val, func(t *testing.T) {
+			t.Setenv(c.key, c.val)
+			if _, err := config.Load(); err == nil || !strings.Contains(err.Error(), c.wantSub) {
+				t.Errorf("want boot error naming %s, got %v", c.wantSub, err)
+			}
+		})
+	}
+}
+
+func TestLoad_CompressBudgetOverTriggerIsBootError(t *testing.T) {
+	// t.Setenv: cannot use t.Parallel().
+	t.Setenv("COMPRESS_TRIGGER_TOKENS", "1000")
+	t.Setenv("COMPRESS_BUDGET_TOKENS", "2000")
+	if _, err := config.Load(); err == nil || !strings.Contains(err.Error(), "COMPRESS_BUDGET_TOKENS") {
+		t.Errorf("budget > trigger must be a boot error, got %v", err)
+	}
+}

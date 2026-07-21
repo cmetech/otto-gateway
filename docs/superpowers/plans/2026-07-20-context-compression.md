@@ -2063,7 +2063,7 @@ git commit -m "feat(compress): CompressionHook PreHook with 3-level toggle and h
 
 **Scope note (third-pass rework):** this task does NOT touch the embedding surface. `EMBEDDING_MODEL_DEFAULT` remains reserved exactly as today — the REL-CFG-03 warn-and-ignore block in `config.go` and its regression test (`regression_rel_cfg_03_test.go`) stay byte-for-byte untouched, as does `CLAUDE.md`'s "(reserved, not yet implemented)" annotation. No `EMBEDDINGS_URL` exists.
 
-- [ ] **Step 1: Write the failing tests** (append to `internal/config/config_test.go`; use the same `t.Setenv` + `Load()`/`LoadArgs` helpers the existing tests in that file use — read two neighboring tests first and mirror their setup exactly)
+- [x] **Step 1: Write the failing tests** (append to `internal/config/config_test.go`; use the same `t.Setenv` + `Load()`/`LoadArgs` helpers the existing tests in that file use — read two neighboring tests first and mirror their setup exactly)
 
 ```go
 func TestLoad_CompressionDefaults(t *testing.T) {
@@ -2108,12 +2108,12 @@ func TestLoad_CompressBudgetOverTriggerIsBootError(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `go test ./internal/config/ -run TestLoad_Compress -v`
 Expected: FAIL — `cfg.CompressionEnabled undefined`.
 
-- [ ] **Step 3: Add struct fields** (insert after `JSONFormatSteeringEnabled bool` at config.go:290)
+- [x] **Step 3: Add struct fields** (insert after `JSONFormatSteeringEnabled bool` at config.go:290)
 
 ```go
 	// CompressionEnabled is the process-wide DEFAULT for CompressionHook
@@ -2149,7 +2149,7 @@ Expected: FAIL — `cfg.CompressionEnabled undefined`.
 
 (No embedding-related fields. Stage 4 is local BM25 — nothing to configure.)
 
-- [ ] **Step 4: Add the parse + validation block** (place after the `jsonFormatSteeringEnabled` parse block, before the `return Config{` at :836; follow the `errs = append(errs, ...)` accumulation pattern used throughout)
+- [x] **Step 4: Add the parse + validation block** (place after the `jsonFormatSteeringEnabled` parse block, before the `return Config{` at :836; follow the `errs = append(errs, ...)` accumulation pattern used throughout)
 
 ```go
 	// Context compression (CompressionHook) knobs. Fail-fast posture
@@ -2197,7 +2197,7 @@ Expected: FAIL — `cfg.CompressionEnabled undefined`.
 
 Leave the REL-CFG-03 warn block at config.go:757-773 and `regression_rel_cfg_03_test.go` completely untouched — `EMBEDDING_MODEL_DEFAULT` stays reserved.
 
-- [ ] **Step 5: Add fields to the `return Config{` literal** (after `JSONFormatSteeringEnabled: jsonFormatSteeringEnabled,` at :870)
+- [x] **Step 5: Add fields to the `return Config{` literal** (after `JSONFormatSteeringEnabled: jsonFormatSteeringEnabled,` at :870)
 
 ```go
 		CompressionEnabled:    compressionEnabled,
@@ -2207,12 +2207,12 @@ Leave the REL-CFG-03 warn block at config.go:757-773 and `regression_rel_cfg_03_
 		CompressToolKeep:      compressToolKeep,
 ```
 
-- [ ] **Step 6: Run tests to verify they pass**
+- [x] **Step 6: Run tests to verify they pass**
 
 Run: `go test ./internal/config/ -v -run TestLoad_Compress`
 Expected: PASS. Also run `go test ./internal/config/` in full — no existing test may change or break (including the untouched REL-CFG-03 regression).
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add internal/config/config.go internal/config/config_test.go

@@ -289,6 +289,35 @@ type Config struct {
 	// JSON_FORMAT_STEERING_ENABLED.
 	JSONFormatSteeringEnabled bool
 
+	// CompressionEnabled is the process-wide DEFAULT for CompressionHook
+	// (two-knob model: ENABLED_HOOKS controls chain membership; this
+	// controls default work-doing). Unlike the PII knob this is a
+	// default, not a gate — a per-request X-Compression header or a
+	// +compress/-compress model suffix overrides it per request in
+	// either direction. Default false. Loaded from COMPRESSION_ENABLED.
+	CompressionEnabled bool
+
+	// CompressTriggerTokens: below this estimated transcript size
+	// (UTF-8 bytes/4 heuristic) compression is a no-op — not worth the work.
+	// Node-parity default 6000. Loaded from COMPRESS_TRIGGER_TOKENS.
+	CompressTriggerTokens int
+
+	// CompressBudgetTokens: stage 4 (local BM25 relevance pruning) elides
+	// lowest-relevance messages until the estimate is at or under this.
+	// Must be <= CompressTriggerTokens (boot error otherwise).
+	// Node-parity default 4000. Loaded from COMPRESS_BUDGET_TOKENS.
+	CompressBudgetTokens int
+
+	// CompressProtectTail: the last N messages pass through verbatim —
+	// the most recent context is where the action is. Node-parity
+	// default 4. Loaded from COMPRESS_PROTECT_TAIL.
+	CompressProtectTail int
+
+	// CompressToolKeep: stale tool results keep this many bytes of head
+	// AND tail around an elision marker. Node-parity default 1200.
+	// Loaded from COMPRESS_TOOL_KEEP.
+	CompressToolKeep int
+
 	// ChatTrace enables the ChatTraceHook NDJSON tracer (quick 260529-ll2).
 	// Default false. When true, main.go constructs a dedicated
 	// timberjack rotator at ChatTraceFile and prepends ChatTraceHook to
@@ -722,6 +751,48 @@ func Load() (Config, error) {
 		errs = append(errs, err)
 	}
 
+	// Context compression (CompressionHook) knobs. Fail-fast posture
+	// matches POOL_SIZE / STREAM_IDLE_TIMEOUT_SEC: nonsensical values are
+	// boot errors, not silent coercions.
+	compressionEnabled, err := getEnvBool("COMPRESSION_ENABLED", false)
+	if err != nil {
+		errs = append(errs, err)
+	}
+	compressTrigger, err := getEnvInt("COMPRESS_TRIGGER_TOKENS", 6000)
+	if err != nil {
+		errs = append(errs, err)
+	}
+	if compressTrigger <= 0 {
+		errs = append(errs, fmt.Errorf("COMPRESS_TRIGGER_TOKENS: must be > 0, got %d", compressTrigger))
+	}
+	compressBudget, err := getEnvInt("COMPRESS_BUDGET_TOKENS", 4000)
+	if err != nil {
+		errs = append(errs, err)
+	}
+	if compressBudget <= 0 {
+		errs = append(errs, fmt.Errorf("COMPRESS_BUDGET_TOKENS: must be > 0, got %d", compressBudget))
+	}
+	if compressBudget > 0 && compressTrigger > 0 && compressBudget > compressTrigger {
+		errs = append(errs, fmt.Errorf("COMPRESS_BUDGET_TOKENS: must be <= COMPRESS_TRIGGER_TOKENS (%d), got %d", compressTrigger, compressBudget))
+	}
+	compressProtectTail, err := getEnvInt("COMPRESS_PROTECT_TAIL", 4)
+	if err != nil {
+		errs = append(errs, err)
+	}
+	if compressProtectTail < 0 {
+		errs = append(errs, fmt.Errorf("COMPRESS_PROTECT_TAIL: must be >= 0, got %d", compressProtectTail))
+	}
+	compressToolKeep, err := getEnvInt("COMPRESS_TOOL_KEEP", 1200)
+	if err != nil {
+		errs = append(errs, err)
+	}
+	// Upper bound: request bodies cap at 4 MiB, so any keep beyond that
+	// is nonsensical — and unbounded values would make keep*2 arithmetic
+	// overflow-prone downstream (review 2 MINOR-2).
+	if compressToolKeep <= 0 || compressToolKeep > 4<<20 {
+		errs = append(errs, fmt.Errorf("COMPRESS_TOOL_KEEP: must be in 1..%d, got %d", 4<<20, compressToolKeep))
+	}
+
 	// Quick 260529-ll2 — ChatTraceHook env knobs. Two-knob: CHAT_TRACE
 	// toggles work-doing; CHAT_TRACE_FILE / CHAT_TRACE_MAX_AGE_DAYS
 	// tune the rotator. The writable-parent check only runs when
@@ -868,6 +939,11 @@ func Load() (Config, error) {
 		PIIEncryptKey:             piiEncryptKey,
 		PIINEREnabled:             piiNEREnabled,
 		JSONFormatSteeringEnabled: jsonFormatSteeringEnabled,
+		CompressionEnabled:        compressionEnabled,
+		CompressTriggerTokens:     compressTrigger,
+		CompressBudgetTokens:      compressBudget,
+		CompressProtectTail:       compressProtectTail,
+		CompressToolKeep:          compressToolKeep,
 		ChatTrace:                 chatTrace,
 		ChatTraceFile:             chatTraceFile,
 		// D-18-08 REL-OBSV-04: AdminTailPath shares the same source as
