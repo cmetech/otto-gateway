@@ -209,10 +209,12 @@ func TestPrune_HashModePIITokensAreNeverLexicalEvidence(t *testing.T) {
 	// (pii.ApplyMode). Alice's and Bob's DIFFERENT hashed emails share
 	// the synthetic tokens "email"/"h" — those must never authorize
 	// pruning. Covers global hash mode and per-entity hash actions
-	// (different entities, same grammar).
+	// (different entities, same grammar). USPHONE (not "PHONE") is the
+	// real recognizer name (pii.Recognizers) — review LOW-4 constrained
+	// the hash-mode grammar to the actual entity vocabulary.
 	msgs := []canonical.Message{
 		textMsg(canonical.RoleUser, pad("important unrelated context", "fillerh")),
-		textMsg(canonical.RoleUser, pad("note about", "fillerk")+" [EMAIL:h-bbbbbbbb] [PHONE:h-cccccccc]"),
+		textMsg(canonical.RoleUser, pad("note about", "fillerk")+" [EMAIL:h-bbbbbbbb] [USPHONE:h-cccccccc]"),
 		textMsg(canonical.RoleUser, "[EMAIL:h-aaaaaaaa]"), // question = Alice's hashed email only
 	}
 	snap := []string{flattenText(msgs[0]), flattenText(msgs[1])}
@@ -292,6 +294,29 @@ func TestPrune_RoleIgnoredContentIsNotEvidence(t *testing.T) {
 	pruneByRelevance(context.Background(), msgsB, func(i int) bool { return i < 1 }, 1, 1)
 	if flattenText(msgsB[0]) != snapB {
 		t.Error("RoleTool ToolResult part (invisible on the wire) acted as ranking evidence")
+	}
+}
+
+func TestStripPII_VocabularyConstrained(t *testing.T) {
+	// Review LOW-4: the hash/countered-replace grammars must be built
+	// from the REAL recognizer entity vocabulary (pii.SourceAuditNames),
+	// not an arbitrary [A-Z][A-Z0-9_]* alphabet — otherwise ordinary
+	// bracketed identifiers like [ISO_9001]/[ERROR_404]/[RFC_2616] get
+	// stripped as if they were synthetic PII tokens (fail-closed but
+	// lossy).
+	kept := []string{"[ISO_9001]", "[ERROR_404]", "[RFC_2616]", "[FOO:h-abc]", "[EMAIL]"}
+	for _, s := range kept {
+		if got := stripPII(s); got != s {
+			t.Errorf("stripPII(%q) = %q, want unchanged", s, got)
+		}
+	}
+	stripped := []string{
+		"[EMAIL_2]", "[SIP_URI_3]", "[EMAIL:h-abcdefgh]", "[USPHONE:h-x_y-z1]", "[PII:Email:AAAAaaaa1111_-]",
+	}
+	for _, s := range stripped {
+		if got := stripPII(s); got == s {
+			t.Errorf("stripPII(%q) = %q, want stripped", s, got)
+		}
 	}
 }
 

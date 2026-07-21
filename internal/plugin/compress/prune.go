@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"otto-gateway/internal/canonical"
+	"otto-gateway/internal/plugin/pii"
 )
 
 // minCandidateLen: messages with less relevance text than this (UTF-8
@@ -25,14 +26,32 @@ const minCandidateLen = 200
 //	hash:               [ENTITY:h-xxxxxxxx]
 //	replace (counter):  [ENTITY_2]
 //
+// The hash and countered-replace alternatives are built from the REAL
+// recognizer entity vocabulary (pii.SourceAuditNames, upper-cased exactly
+// as pii.ApplyMode upper-cases entity names) rather than an arbitrary
+// [A-Z][A-Z0-9_]* alphabet — review LOW-4: the previous grammar stripped
+// ordinary bracketed identifiers ("[ISO_9001]", "[ERROR_404]",
+// "[RFC_2616]") that merely LOOK like PII tokens but name no recognizer.
+// Fail-closed but lossy; constraining to the actual registry removes the
+// loss without weakening the safety property (an entity NOT in the
+// registry can never be one of pii's synthetic tokens).
+//
 // Documented residual (accepted): bare replace tokens "[EMAIL]" and
 // mask-mode output are indistinguishable from ordinary bracketed text /
 // prose and are NOT stripped — a bare entity token is a single weak,
 // idf-discounted term; drop mode emits nothing to strip.
-var piiRankingTokenRe = regexp.MustCompile(
-	`\[PII:[A-Za-z0-9_]+:[A-Za-z0-9_-]+\]` + // encrypt wire token
-		`|\[[A-Z][A-Z0-9_]*:h-[A-Za-z0-9_-]+\]` + // hash-mode token
-		`|\[[A-Z][A-Z0-9_]*_[0-9]+\]`) // countered replace token
+var piiRankingTokenRe = func() *regexp.Regexp {
+	names := make([]string, 0, 16)
+	for _, n := range pii.SourceAuditNames() {
+		names = append(names, regexp.QuoteMeta(strings.ToUpper(n)))
+	}
+	sort.Slice(names, func(i, j int) bool { return len(names[i]) > len(names[j]) }) // longest-first alternation
+	alt := strings.Join(names, "|")
+	return regexp.MustCompile(
+		`\[PII:[A-Za-z0-9_]+:[A-Za-z0-9_-]+\]` + // encrypt wire token (matches pii.decryptTokenRe)
+			`|\[(?:` + alt + `):h-[A-Za-z0-9_-]+\]` + // hash-mode token, real entities only
+			`|\[(?:` + alt + `)_[0-9]+\]`) // countered replace token, real entities only
+}()
 
 // stripPII REMOVES synthetic PII tokens from ranking text (replaced by
 // a space so neighbors don't merge into one token). Removal, not
