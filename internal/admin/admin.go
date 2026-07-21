@@ -124,13 +124,30 @@ type Deps struct {
 	Debug        bool
 	ChatTrace    bool
 
-	// CompressionActive mirrors the EFFECTIVE process-wide compression
-	// posture: CompressionHook survived the ENABLED_HOOKS chain filter
-	// AND COMPRESSION_ENABLED=true. Per-request overrides (X-Compression
-	// header, +compress/-compress model suffix) can still flip individual
-	// requests in either direction; this flag is the boot-time default
-	// the dashboard summary strip and /admin/about Feature Flags surface.
-	CompressionActive bool
+	// CompressionState is the EFFECTIVE process-wide compression posture
+	// shown on the dashboard summary strip and /admin/about Feature
+	// Flags. Three values:
+	//   "on"          — CompressionHook survived the ENABLED_HOOKS chain
+	//                   filter AND COMPRESSION_ENABLED=true (every
+	//                   eligible request compresses by default).
+	//   "per-request" — hook is in the chain but COMPRESSION_ENABLED is
+	//                   false: nothing compresses by default, but the
+	//                   X-Compression header or a +compress model suffix
+	//                   still enables it for individual requests.
+	//   "off" / ""    — hook excluded by an explicit ENABLED_HOOKS
+	//                   allowlist: NO request can compress regardless of
+	//                   header/suffix/env.
+	// Computed in cmd/otto-gateway next to the chain filter.
+	CompressionState string
+
+	// Compression env-knob snapshots for the /admin/docs env-var table
+	// (current-value column). CompressionEnabled is the raw
+	// COMPRESSION_ENABLED default — distinct from CompressionState above.
+	CompressionEnabled    bool
+	CompressTriggerTokens int
+	CompressBudgetTokens  int
+	CompressProtectTail   int
+	CompressToolKeep      int
 
 	// ShutdownCh is closed by the HTTP server's RegisterOnShutdown callback when
 	// graceful shutdown begins. sseLoop selects on this channel and exits within
@@ -282,23 +299,35 @@ func Handler(deps Deps) http.Handler {
 // execution failure (corrupted embed, panic recovered as error) can
 // still emit a clean 500 Internal Server Error envelope rather than
 // committing 200 OK with truncated HTML on the wire.
+// compressionState normalizes Deps.CompressionState for templates: only
+// the documented "on" / "per-request" values pass through; anything else
+// (including the zero value from callers predating the field) renders as
+// "off" so a wiring gap can never claim compression is available.
+func (h *handler) compressionState() string {
+	switch h.deps.CompressionState {
+	case "on", "per-request":
+		return h.deps.CompressionState
+	}
+	return "off"
+}
+
 func (h *handler) dashboardHandler(w http.ResponseWriter, r *http.Request) {
 	data := struct {
-		Version           string
-		Commit            string
-		GatewayID         string
-		Debug             bool
-		ChatTrace         bool
-		CompressionActive bool
-		TabActive         string
+		Version          string
+		Commit           string
+		GatewayID        string
+		Debug            bool
+		ChatTrace        bool
+		CompressionState string
+		TabActive        string
 	}{
-		Version:           h.deps.Version,
-		Commit:            h.deps.Commit,
-		GatewayID:         h.deps.GatewayID,
-		Debug:             h.deps.Debug,
-		ChatTrace:         h.deps.ChatTrace,
-		CompressionActive: h.deps.CompressionActive,
-		TabActive:         "dashboard",
+		Version:          h.deps.Version,
+		Commit:           h.deps.Commit,
+		GatewayID:        h.deps.GatewayID,
+		Debug:            h.deps.Debug,
+		ChatTrace:        h.deps.ChatTrace,
+		CompressionState: h.compressionState(),
+		TabActive:        "dashboard",
 	}
 	var buf bytes.Buffer
 	if err := dashboardTemplate.ExecuteTemplate(&buf, "base", data); err != nil {
@@ -349,9 +378,9 @@ type aboutData struct {
 	// wired" signal (see capture.go: a nil source means capture is off).
 	AcpCaptureEnabled bool
 
-	// CompressionActive mirrors Deps.CompressionActive (effective
-	// process-wide compression posture; see the Deps field doc).
-	CompressionActive bool
+	// CompressionState mirrors Deps.CompressionState normalized to one of
+	// "on" / "per-request" / "off" (see the Deps field doc).
+	CompressionState string
 
 	// PII view-model fields. Populated by aboutHandler from the cfg
 	// snapshot in Deps. EntityActions is rendered as a sorted slice
@@ -460,7 +489,7 @@ func (h *handler) aboutHandler(w http.ResponseWriter, r *http.Request) {
 		Debug:                h.deps.Debug,
 		ChatTrace:            h.deps.ChatTrace,
 		AcpCaptureEnabled:    h.deps.AcpCapture != nil && h.deps.AcpCapture.Enabled(),
-		CompressionActive:    h.deps.CompressionActive,
+		CompressionState:     h.compressionState(),
 		KiroCmd:              kiroCmd,
 		KiroArgs:             kiroArgs,
 		KiroCwd:              kiroCwd,
@@ -616,7 +645,13 @@ func (h *handler) docsHandler(w http.ResponseWriter, r *http.Request) {
 		{Name: "OPENAI_PATH_PREFIX", Default: "/v1", Description: "Route prefix mounting the OpenAI surface.", CurrentValue: h.deps.OpenAIPathPrefix},
 		{Name: "ANTHROPIC_PATH_PREFIX", Default: "/v1", Description: "Route prefix mounting the Anthropic surface (shared with OpenAI; endpoint-level disambiguation).", CurrentValue: h.deps.AnthropicPathPrefix},
 		{Name: "ENABLED_SURFACES", Default: "ollama,anthropic,openai", Description: "Comma-split list of HTTP surfaces constructed at boot.", CurrentValue: "(see startup log)"},
-		{Name: "ENABLED_HOOKS", Default: "(empty = all)", Description: "Comma-split allowlist of plugin hook names. Empty = all hooks in the chain enabled (permissive default).", CurrentValue: "(see startup log)"},
+		{Name: "ENABLED_HOOKS", Default: "(empty = all)", Description: "Comma-split allowlist of plugin hook names. Empty = all 6 hooks in the chain enabled (permissive default). An explicit allowlist must include CompressionHook for any compression toggle to work.", CurrentValue: "(see startup log)"},
+		{Name: "JSON_FORMAT_STEERING_ENABLED", Default: "true", Description: "Work-gate for JSONFormatSteeringHook: appends a hard JSON-steering system-prompt block when the request carries a structured-output format (Ollama format:\"json\" / format:<schema> — Node shim GEN_RULES parity).", CurrentValue: "(see startup log)"},
+		{Name: "COMPRESSION_ENABLED", Default: "false", Description: "Process-wide DEFAULT for CompressionHook (transcript compression). Per-request overrides win in either direction: X-Compression header (1/true/on | 0/false/off) or a +compress/-compress model-name suffix. Set in overrides.env since .env is regenerated by `gw upgrade-env`.", CurrentValue: boolOnOff(h.deps.CompressionEnabled)},
+		{Name: "COMPRESS_TRIGGER_TOKENS", Default: "6000", Description: "Below this estimated transcript size (UTF-8 bytes/4 heuristic) compression is a no-op.", CurrentValue: strconv.Itoa(h.deps.CompressTriggerTokens)},
+		{Name: "COMPRESS_BUDGET_TOKENS", Default: "4000", Description: "Compression target size; must be <= COMPRESS_TRIGGER_TOKENS (boot error otherwise). Best-effort — protected/pinned messages and tool-call carriers are never elided; unmet runs count as budget_unmet in /health/hooks.", CurrentValue: strconv.Itoa(h.deps.CompressBudgetTokens)},
+		{Name: "COMPRESS_PROTECT_TAIL", Default: "4", Description: "The last N messages pass through verbatim. The system prompt, tool schemas, tool-call pairing, current inbound turn, and latest user question are never modified regardless.", CurrentValue: strconv.Itoa(h.deps.CompressProtectTail)},
+		{Name: "COMPRESS_TOOL_KEEP", Default: "1200", Description: "Head+tail bytes kept when middle-truncating stale tool results (bounded 1..4194304).", CurrentValue: strconv.Itoa(h.deps.CompressToolKeep)},
 		{Name: "PII_REDACTION_ENABLED", Default: "true", Description: "Master switch for PIIRedactionHook (secure-by-default). Set false to keep the hook in the chain but inert.", CurrentValue: "(see startup log)"},
 		{Name: "PII_REDACTION_MODE", Default: "encrypt", Description: "One of replace / mask / hash / drop / encrypt. Default 'encrypt': PII flows to the worker as AES-256-GCM ciphertext and is decrypted back to plaintext before the client sees the response (round-trip). mode=hash REQUIRES PII_HASH_KEY; mode=encrypt (or any PII_ENTITY_ACTIONS entry of the form Entity:encrypt) REQUIRES PII_ENCRYPT_KEY. Boot error otherwise.", CurrentValue: "(see startup log)"},
 		{Name: "PII_NER_ENABLED", Default: "true", Description: "Master switch for the prose-based NER recognizer that emits PERSON and LOCATION spans alongside the regex recognizers. Default true (secure-by-default); set false to skip the runtime tokenizer/tagger allocation. English-only; weaker on Asian / multilingual names.", CurrentValue: "(see startup log)"},

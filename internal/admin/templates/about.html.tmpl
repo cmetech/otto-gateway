@@ -32,7 +32,7 @@
         <dt>Debug</dt><dd>{{if .Debug}}on{{else}}off{{end}}</dd>
         <dt>Chat trace</dt><dd>{{if .ChatTrace}}on <span class="gw-badge is-warning">SENSITIVE</span>{{else}}off{{end}}</dd>
         <dt>ACP capture</dt><dd>{{if .AcpCaptureEnabled}}on <span class="gw-badge is-warning">SENSITIVE</span>{{else}}off{{end}}</dd>
-        <dt>Compression</dt><dd>{{if .CompressionActive}}on{{else}}off{{end}}</dd>
+        <dt>Compression</dt><dd>{{.CompressionState}}{{if eq .CompressionState "per-request"}} <span class="gw-badge is-muted" title="Off by default; the X-Compression header or a +compress model suffix enables it per request">header/suffix only</span>{{end}}</dd>
       </dl>
     </article>
     <article class="gw-card">

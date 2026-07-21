@@ -79,15 +79,16 @@ func TestAdmin_PageHandler(t *testing.T) {
 
 	// Chip semantics: green (gw-pill-on) = on, gray (gw-pill-off) = off —
 	// EXCEPT Chat-trace, whose ON state is SENSITIVE (raw prompts on disk)
-	// and renders the amber warning chip instead of green.
+	// and renders the amber warning chip instead of green. The zero-value
+	// CompressionState must fail closed to the gray "off" chip.
 	if !strings.Contains(body, `gw-pill gw-pill-on">on<`) {
 		t.Errorf("body missing green on-chip for enabled Debug flag")
 	}
 	if !strings.Contains(body, `gw-pill gw-pill-warn">on<`) {
 		t.Errorf("body missing amber warning chip for enabled (SENSITIVE) Chat-trace flag")
 	}
-	if !strings.Contains(body, `gw-pill gw-pill-off">off<`) {
-		t.Errorf("body missing gray off-chip for disabled Compression flag")
+	if !strings.Contains(body, "gw-pill gw-pill-off") {
+		t.Errorf("body missing gray off-chip for unset CompressionState")
 	}
 
 	// Summary strip data-* hooks per behavior contract.
@@ -112,18 +113,32 @@ func TestAdmin_PageHandler(t *testing.T) {
 	}
 }
 
-// TestAdmin_CompressionFlagSurfacing verifies the CompressionActive dep
-// (effective posture: hook in filtered chain AND COMPRESSION_ENABLED)
-// drives both the dashboard summary chip and the /about Feature Flags row.
+// TestAdmin_CompressionFlagSurfacing verifies the three-state
+// CompressionState dep drives both the dashboard summary chip and the
+// /about Feature Flags row: "on" (green — hook in chain, env default on),
+// "per-request" (purple — hook in chain, env off, header/suffix enable
+// individual requests), "off" (gray — hook excluded from ENABLED_HOOKS).
+// Unknown/zero values must fail closed to "off".
 func TestAdmin_CompressionFlagSurfacing(t *testing.T) {
 	defer goleak.VerifyNone(t)
 
-	for _, active := range []bool{true, false} {
+	cases := []struct {
+		state     string // Deps.CompressionState as wired by main.go
+		wantChip  string // dashboard chip markup
+		wantAbout string // /about Feature Flags dd prefix
+	}{
+		{"on", `gw-pill gw-pill-on">on<`, "<dt>Compression</dt><dd>on</dd>"},
+		{"per-request", `gw-pill gw-pill-req"`, "<dt>Compression</dt><dd>per-request "},
+		{"off", `gw-pill gw-pill-off"`, "<dt>Compression</dt><dd>off</dd>"},
+		{"", `gw-pill gw-pill-off"`, "<dt>Compression</dt><dd>off</dd>"},      // zero value fails closed
+		{"bogus", `gw-pill gw-pill-off"`, "<dt>Compression</dt><dd>off</dd>"}, // unknown fails closed
+	}
+	for _, c := range cases {
 		deps := Deps{
-			Logger:            testutil.Logger(t),
-			Version:           "1.2.3",
-			Commit:            "abc1234",
-			CompressionActive: active,
+			Logger:           testutil.Logger(t),
+			Version:          "1.2.3",
+			Commit:           "abc1234",
+			CompressionState: c.state,
 		}
 		h := Handler(deps)
 
@@ -132,30 +147,65 @@ func TestAdmin_CompressionFlagSurfacing(t *testing.T) {
 			rec := httptest.NewRecorder()
 			h.ServeHTTP(rec, req)
 			if rec.Code != http.StatusOK {
-				t.Fatalf("GET %s (active=%v): want 200, got %d", path, active, rec.Code)
+				t.Fatalf("GET %s (state=%q): want 200, got %d", path, c.state, rec.Code)
 			}
 			return rec.Body.String()
 		}
 
 		dash := get("/")
-		wantChip := `gw-pill gw-pill-off">off<`
-		if active {
-			wantChip = `gw-pill gw-pill-on">on<`
+		if !strings.Contains(dash, "Compression") || !strings.Contains(dash, c.wantChip) {
+			t.Errorf("dashboard (state=%q): missing Compression chip %q", c.state, c.wantChip)
 		}
-		if !strings.Contains(dash, "Compression") || !strings.Contains(dash, wantChip) {
-			t.Errorf("dashboard (active=%v): missing Compression chip %q", active, wantChip)
+		if c.state == "per-request" && !strings.Contains(dash, ">per-request<") {
+			t.Errorf("dashboard (state=%q): chip text is not the literal per-request word", c.state)
 		}
 
 		about := get("/about")
-		if !strings.Contains(about, "<dt>Compression</dt>") {
-			t.Errorf("about (active=%v): missing Compression feature-flag row", active)
+		if !strings.Contains(about, c.wantAbout) {
+			t.Errorf("about (state=%q): Feature Flags row missing %q", c.state, c.wantAbout)
 		}
-		wantState := "<dt>Compression</dt><dd>off</dd>"
-		if active {
-			wantState = "<dt>Compression</dt><dd>on</dd>"
-		}
-		if !strings.Contains(about, wantState) {
-			t.Errorf("about (active=%v): Compression row missing state %q", active, wantState)
+	}
+}
+
+// TestAdmin_DocsEnvTable_CompressionRows verifies the /docs environment
+// variable table includes the compression knobs (and the JSONFormat
+// steering gate) with live current values from Deps.
+func TestAdmin_DocsEnvTable_CompressionRows(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	deps := Deps{
+		Logger:                testutil.Logger(t),
+		Version:               "1.2.3",
+		Commit:                "abc1234",
+		CompressionEnabled:    true,
+		CompressTriggerTokens: 6000,
+		CompressBudgetTokens:  4000,
+		CompressProtectTail:   4,
+		CompressToolKeep:      1200,
+	}
+	h := Handler(deps)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/docs", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /docs: want 200, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"JSON_FORMAT_STEERING_ENABLED",
+		"COMPRESSION_ENABLED",
+		"COMPRESS_TRIGGER_TOKENS",
+		"COMPRESS_BUDGET_TOKENS",
+		"COMPRESS_PROTECT_TAIL",
+		"COMPRESS_TOOL_KEEP",
+		// Endpoint-reference + tray coverage added in the same docs pass.
+		"/health/hooks",
+		"/metrics",
+		"gateway-tray.exe",
+		"Gateway Tray",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("/docs missing %q", want)
 		}
 	}
 }

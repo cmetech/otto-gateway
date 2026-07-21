@@ -47,6 +47,7 @@
       <dt>Chat trace file</dt><dd><code>{{.ChatTraceFile}}</code>{{if not .ChatTraceEnabled}} <span class="gw-badge">disabled</span>{{end}}</dd>
       <dt>Chat trace retention</dt><dd>{{.ChatTraceMaxAgeDays}} days (timberjack MaxAge)</dd>
       <dt>Admin static assets</dt><dd>Embedded in the binary via <code>embed.FS</code> (no on-disk lookup at runtime).</dd>
+      <dt>Tray app binary</dt><dd>Windows: <code>%LOCALAPPDATA%\Gateway\bin\gateway-tray.exe</code> (i.e. <code>$GW_INSTALL_DIR\bin\gateway-tray.exe</code>). macOS: <code>$GW_INSTALL_DIR/Gateway Tray.app</code> (wraps <code>bin/gateway-tray</code>). Not shipped on Linux. The Windows installer also creates a per-user Start Menu shortcut, <code>Gateway Tray.lnk</code>.</dd>
       <dt>Wrapper env files</dt><dd><code>.env</code> (generated template; load-first) then <code>overrides.env</code> (operator-owned secrets/customisations; load-second wins). See <code>scripts/gw upgrade-env</code>.</dd>
       <dt>Log destination</dt><dd>Structured slog JSON to stdout/stderr by default. Set <code>LOG_FILE</code> to also write a rotated file.</dd>
     </dl>
@@ -83,6 +84,13 @@
 .\scripts\gw.ps1 migrate-to-overrides -Yes
 .\scripts\gw.ps1 version</pre>
     <p>Subcommand surface (identical on both wrappers): <code>init</code>, <code>start</code>, <code>stop</code>, <code>restart</code>, <code>status</code>, <code>logs</code>, <code>run</code>, <code>env</code>, <code>upgrade-env</code>, <code>migrate-to-overrides</code>, <code>version</code>.</p>
+    <h3 class="gw-h3">Starting the Gateway Tray</h3>
+    <p>The tray is a separate menu-bar / system-tray app that can start, stop, and monitor the gateway. The installer stops any running tray during install and starts it again afterwards, so it is normally already running after an install or upgrade. Autostart at login is opt-in from the tray's own menu.</p>
+    <dl class="gw-about-dl">
+      <dt>Windows — Start menu</dt><dd>Start → search "<strong>Gateway Tray</strong>" (the installer creates <code>Gateway Tray.lnk</code> under your per-user Start Menu Programs). Right-click → <em>Pin to Start</em> or <em>Pin to taskbar</em> for one-click launch.</dd>
+      <dt>Windows — CLI</dt><dd><pre class="gw-code-block">Start-Process "$env:LOCALAPPDATA\Gateway\bin\gateway-tray.exe"</pre></dd>
+      <dt>macOS — CLI / Finder</dt><dd><pre class="gw-code-block">open "$HOME/Library/Application Support/Gateway/Gateway Tray.app"</pre> (or open the app bundle from Finder; substitute your <code>GW_INSTALL_DIR</code> if relocated).</dd>
+    </dl>
     <h3 class="gw-h3">Picking up new env vars after an upgrade</h3>
     <p>Installing a new gateway build <strong>preserves your existing <code>.env</code></strong> — it does not add newly-introduced keys (e.g. <code>KIRO_TOOL_ALIASES</code>). Because of the two-file model, the generated <code>.env</code> is a byte-for-byte copy of the <code>.env.example</code> template and <code>overrides.env</code> is operator-owned and loaded last (wins on shared keys). To reconcile after an upgrade:</p>
     <pre class="gw-code-block">gw upgrade-env --dry-run    # diff installed .env against the new template
@@ -195,18 +203,24 @@ curl -sf http://127.0.0.1:18080/health/hooks | jq    # confirm PIIRedactionHook 
       <li><code>GET /admin/about</code> — About page</li>
       <li><code>GET /admin/docs</code> — This page</li>
       <li><code>GET /admin/api/snapshot</code> — Unified pool + session JSON</li>
+      <li><code>GET /admin/api/acp-capture</code> — ACP capture ring JSON (404 unless <code>ACP_CAPTURE</code> wired; SENSITIVE)</li>
+      <li><code>POST /admin/api/acp-capture</code> — Runtime enable/disable/clear of the capture ring (403 unless <code>ACP_CAPTURE_RUNTIME=true</code>)</li>
       <li><code>GET /admin/logs/stream?source=&lt;name&gt;</code> — SSE log tail</li>
       <li><code>GET /admin/static/*</code> — Embedded CSS / JS / icons</li>
     </ul>
     <h3 class="gw-h3">Public API surfaces</h3>
     <ul class="gw-docs-endpoint-list">
-      <li>Ollama: prefix <code>{{.OllamaPathPrefix}}</code> &mdash; <code>/version</code>, <code>/tags</code>, <code>/chat</code>, <code>/generate</code></li>
-      <li>OpenAI: prefix <code>{{.OpenAIPathPrefix}}</code> &mdash; <code>/chat/completions</code></li>
-      <li>Anthropic: prefix <code>{{.AnthropicPathPrefix}}</code> &mdash; <code>/messages</code></li>
+      <li>Ollama: prefix <code>{{.OllamaPathPrefix}}</code> &mdash; <code>POST /chat</code>, <code>POST /generate</code>, <code>GET /tags</code>, <code>POST /show</code>, <code>GET /ps</code>, plus Node-parity stubs <code>POST /pull</code> / <code>/push</code> / <code>/create</code> / <code>/copy</code>, <code>DELETE /delete</code>. <code>GET {{.OllamaPathPrefix}}/version</code> is auth-exempt (registered on the outer router).</li>
+      <li>OpenAI: prefix <code>{{.OpenAIPathPrefix}}</code> &mdash; <code>POST /chat/completions</code> (SSE streaming), <code>POST /completions</code> (JSON-only; <code>stream:true</code> is downgraded), <code>GET /models</code>, <code>GET /model-capabilities</code></li>
+      <li>Anthropic: prefix <code>{{.AnthropicPathPrefix}}</code> &mdash; <code>POST /messages</code></li>
     </ul>
-    <h3 class="gw-h3">Internal</h3>
+    <h3 class="gw-h3">Internal / observability</h3>
     <ul class="gw-docs-endpoint-list">
-      <li><code>GET /health</code> — D-12 locked health probe (do not consume from wrappers; use <code>/admin/api/snapshot</code> instead).</li>
+      <li><code>GET /health</code> — D-12 locked health probe (do not consume from wrappers; use <code>/admin/api/snapshot</code> instead). Auth-exempt.</li>
+      <li><code>GET /health/agents</code> — Per-slot pool detail with full session ids (D-17/D-18). Auth-exempt.</li>
+      <li><code>GET /health/hooks</code> — Hook-chain inventory: every registered hook with kind, config, and lifetime counters (e.g. CompressionHook's <code>runs</code> / <code>tokens_saved_est</code> / <code>budget_unmet</code>; PIIRedactionHook's mode / <code>decrypt_active</code>). View-only — mutating verbs return 405; restart to change config. Auth-exempt.</li>
+      <li><code>GET /health/pool</code> — Pool health summary. View-only (405 on mutating verbs). Auth-exempt.</li>
+      <li><code>GET /metrics</code> — Prometheus exposition (<code>gw_*</code> series incl. <code>gw_compress_runs_total</code>, <code>gw_compress_tokens_saved_estimate_total</code>). Wrapped in the IP allowlist when <code>ALLOWED_IPS</code> is set (not fully exempt — usage shape leaks); passthrough otherwise.</li>
     </ul>
   </section>
 
@@ -279,7 +293,7 @@ PII_ENTITY_ACTIONS=PERSON:mask,LOCATION:drop</pre>
 
     <h3 class="gw-h3">Context compression (CompressionHook)</h3>
     <p>CompressionHook runs after PIIRedactionHook (it compresses already-redacted text) and before LoggingHook (logs show the transcript actually sent). Pipeline, cheapest first with the budget re-checked between stages: blank-line/trailing-space cleanup → stale tool-result truncation → exact-duplicate collapse → local BM25 lexical relevance pruning against the user's most recent question. Everything runs in-process — no network call or external model. Compression never fails a request: any internal failure forwards the request with whatever stages had already applied.</p>
-    <p>Toggle precedence: <code>X-Compression</code> header (accepts <code>1</code>/<code>true</code>/<code>on</code> and <code>0</code>/<code>false</code>/<code>off</code>; other values ignored) &gt; <code>+compress</code>/<code>-compress</code> model-name suffix (e.g. <code>auto+compress</code> — for callers like LangFlow that cannot send headers) &gt; <code>COMPRESSION_ENABLED</code> env default. <code>ENABLED_HOOKS</code> remains the hard kill switch: an explicit allowlist must include <code>CompressionHook</code> or none of the toggles do anything (the dashboard's Compression chip reflects this effective posture).</p>
+    <p>Toggle precedence: <code>X-Compression</code> header (accepts <code>1</code>/<code>true</code>/<code>on</code> and <code>0</code>/<code>false</code>/<code>off</code>; other values ignored) &gt; <code>+compress</code>/<code>-compress</code> model-name suffix (e.g. <code>auto+compress</code> — for callers like LangFlow that cannot send headers) &gt; <code>COMPRESSION_ENABLED</code> env default. <code>ENABLED_HOOKS</code> remains the hard kill switch: an explicit allowlist must include <code>CompressionHook</code> or none of the toggles do anything. The dashboard's Compression chip shows the resulting three-state posture: <strong>on</strong> (green — hook in chain, <code>COMPRESSION_ENABLED=true</code>), <strong>per-request</strong> (purple — hook in chain, env default off, header/suffix still enable individual requests), <strong>off</strong> (gray — hook excluded from <code>ENABLED_HOOKS</code>; nothing can compress).</p>
     <dl class="gw-about-dl">
       <dt><code>COMPRESSION_ENABLED</code></dt><dd>default <code>false</code> — process-wide default; per-request header/suffix overrides win in either direction.</dd>
       <dt><code>COMPRESS_TRIGGER_TOKENS</code></dt><dd>default <code>6000</code> — below this estimated transcript size (UTF-8 bytes/4 heuristic) compression is a no-op.</dd>

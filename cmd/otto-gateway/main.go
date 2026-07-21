@@ -368,19 +368,24 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 	chain = filteredChain
 
 	// Effective compression posture for the admin UI (dashboard summary
-	// strip + /admin/about Feature Flags): on only when CompressionHook
-	// survived the ENABLED_HOOKS filter AND COMPRESSION_ENABLED=true. An
-	// explicit legacy allowlist silently drops the hook, and showing a
-	// green chip then would claim a capability no request can use.
-	// Per-request overrides (X-Compression header, +compress suffix) are
-	// invisible to a boot-time flag by design.
-	compressionActive := false
-	if cfg.CompressionEnabled {
-		for _, h := range chain.Pre {
-			if h == engine.PreHook(compressHook) {
-				compressionActive = true
-				break
+	// strip + /admin/about Feature Flags), three states:
+	//   "off"         — CompressionHook excluded by an explicit
+	//                   ENABLED_HOOKS allowlist: no request can compress
+	//                   regardless of header/suffix/env.
+	//   "on"          — hook in the filtered chain AND
+	//                   COMPRESSION_ENABLED=true.
+	//   "per-request" — hook in the chain but env default off: the
+	//                   X-Compression header or a +compress model suffix
+	//                   still enables individual requests.
+	compressionState := "off"
+	for _, h := range chain.Pre {
+		if h == engine.PreHook(compressHook) {
+			if cfg.CompressionEnabled {
+				compressionState = "on"
+			} else {
+				compressionState = "per-request"
 			}
+			break
 		}
 	}
 
@@ -848,9 +853,15 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 		ShutdownCh:   sharedShutdownCh,
 		ChatTrace:    cfg.ChatTrace,
 
-		// Effective posture (hook in filtered chain AND env default on) —
-		// computed above, next to the ENABLED_HOOKS chain filter.
-		CompressionActive: compressionActive,
+		// Effective posture ("on" / "per-request" / "off") — computed
+		// above, next to the ENABLED_HOOKS chain filter. Knob snapshots
+		// feed the /admin/docs env-var table's current-value column.
+		CompressionState:      compressionState,
+		CompressionEnabled:    cfg.CompressionEnabled,
+		CompressTriggerTokens: cfg.CompressTriggerTokens,
+		CompressBudgetTokens:  cfg.CompressBudgetTokens,
+		CompressProtectTail:   cfg.CompressProtectTail,
+		CompressToolKeep:      cfg.CompressToolKeep,
 
 		// Quick 260601-aix — chat-trace location + retention surfaced on /admin/docs.
 		ChatTraceFile:       cfg.ChatTraceFile,

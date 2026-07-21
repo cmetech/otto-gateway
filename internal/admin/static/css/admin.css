@@ -240,6 +240,15 @@ body {
   background: var(--gw-warning);
 }
 
+/* Purple "per-request" variant — used by the Compression chip when the
+ * hook is in the chain but COMPRESSION_ENABLED is false: nothing
+ * compresses by default, yet the X-Compression header or a +compress
+ * model suffix still enables individual requests. Distinct from green
+ * (fully on) and gray (hook excluded — nothing can compress). */
+.gw-pill-req {
+  background: var(--gw-activity);
+}
+
 /* ACP Capture panel card: inline row of pill/count/controls/link/note. */
 .gw-acp-capture-card {
   display: flex;

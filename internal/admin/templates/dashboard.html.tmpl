@@ -41,13 +41,15 @@
     </div>
 
     <!-- Compression EFFECTIVE posture (baked in at render time — does not
-         poll): on only when CompressionHook survived the ENABLED_HOOKS
-         filter AND COMPRESSION_ENABLED=true. Per-request overrides
-         (X-Compression header, +compress model suffix) are not reflected
-         here. Chip semantics: green = on, gray = off. -->
+         poll). THREE states: "on" (green) = hook in chain AND
+         COMPRESSION_ENABLED=true; "per-request" (purple) = hook in chain
+         but env default off — the X-Compression header or a +compress
+         model suffix still enables individual requests; "off" (gray) =
+         CompressionHook excluded by an explicit ENABLED_HOOKS allowlist,
+         so NO request can compress. -->
     <div class="gw-summary-item">
       <span class="gw-summary-label">Compression</span>
-      <span class="gw-summary-value"><span class="gw-pill {{if .CompressionActive}}gw-pill-on{{else}}gw-pill-off{{end}}">{{if .CompressionActive}}on{{else}}off{{end}}</span></span>
+      <span class="gw-summary-value">{{if eq .CompressionState "on"}}<span class="gw-pill gw-pill-on">on</span>{{else if eq .CompressionState "per-request"}}<span class="gw-pill gw-pill-req" title="Off by default; the X-Compression header or a +compress model suffix enables it per request">per-request</span>{{else}}<span class="gw-pill gw-pill-off" title="CompressionHook is not in the ENABLED_HOOKS allowlist — no request can compress">off</span>{{end}}</span>
     </div>
 
     <!-- Pool counts (hydrated by JS on first poll) -->
