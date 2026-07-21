@@ -47,7 +47,7 @@
 - Produces: `pool.Config.MaxWorkerTurns int`.
 - Consumed by Task 3: `Pool.cfg.MaxWorkerTurns` controls recycle admission.
 
-- [ ] **Step 1: Add failing environment-configuration tests**
+- [x] **Step 1: Add failing environment-configuration tests**
 
 Add table-driven coverage beside the `POOL_SIZE` tests:
 
@@ -86,13 +86,13 @@ func TestLoad_KiroWorkerMaxTurns(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run the focused test and confirm the red state**
+- [x] **Step 2: Run the focused test and confirm the red state**
 
 Run: `go test ./internal/config -run TestLoad_KiroWorkerMaxTurns -count=1`
 
 Expected: build failure because `config.Config` has no `KiroWorkerMaxTurns` field.
 
-- [ ] **Step 3: Parse, validate, return, and wire the new setting**
+- [x] **Step 3: Parse, validate, return, and wire the new setting**
 
 Add the public config field and parse it immediately after `POOL_SIZE`:
 
@@ -127,13 +127,13 @@ MaxWorkerTurns int
 MaxWorkerTurns: cfg.KiroWorkerMaxTurns,
 ```
 
-- [ ] **Step 4: Run configuration tests**
+- [x] **Step 4: Run configuration tests**
 
 Run: `go test ./internal/config ./cmd/otto-gateway -count=1`
 
 Expected: PASS.
 
-- [ ] **Step 5: Activate the script-distribution defaults and diagnostics**
+- [x] **Step 5: Activate the script-distribution defaults and diagnostics**
 
 Replace the commented pool suggestion with:
 
@@ -158,7 +158,7 @@ fi
 
 Use the PowerShell equivalent `Select-String -Quiet -Pattern '^KIRO_WORKER_MAX_TURNS=20$'` in `test-support-bundle.ps1`.
 
-- [ ] **Step 6: Run wrapper tests**
+- [x] **Step 6: Run wrapper tests**
 
 Run: `bash tests/scripts/test-support-bundle.sh`
 
@@ -168,7 +168,7 @@ Run when PowerShell is available: `pwsh -NoProfile -File tests/scripts/test-supp
 
 Expected: all assertions pass.
 
-- [ ] **Step 7: Commit configuration and rollout changes**
+- [x] **Step 7: Commit configuration and rollout changes**
 
 ```bash
 git add internal/config/config.go internal/config/config_test.go internal/pool/config.go cmd/otto-gateway/main.go scripts/.env.example scripts/gw scripts/gw.ps1 tests/scripts/test-support-bundle.sh tests/scripts/test-support-bundle.ps1
@@ -193,7 +193,7 @@ git commit -m "feat(pool): configure worker turn recycling"
 - Consumed by Task 3: the background recycler calls `respawnSlot` with `respawnCauseRecycle`.
 - Consumed by Task 4: metrics wiring reads `Pool.Recycles()`.
 
-- [ ] **Step 1: Lock the lazy-respawn contract with failing assertions**
+- [x] **Step 1: Lock the lazy-respawn contract with failing assertions**
 
 Extend the existing observability regression test so a lazy respawn still asserts:
 
@@ -209,13 +209,13 @@ if got := p.Recycles(); got != 0 {
 }
 ```
 
-- [ ] **Step 2: Confirm the new accessor is red**
+- [x] **Step 2: Confirm the new accessor is red**
 
 Run: `go test -race ./internal/pool -run TestRegression_REL_OBSV_02 -count=1`
 
 Expected: build failure because `Recycles` and the race-safe snapshot implementation do not exist.
 
-- [ ] **Step 3: Add respawn causes and distinct success accounting**
+- [x] **Step 3: Add respawn causes and distinct success accounting**
 
 Add:
 
@@ -257,7 +257,7 @@ if cause == respawnCauseRecycle {
 }
 ```
 
-- [ ] **Step 4: Snapshot immutable clients under `Pool.mu`**
+- [x] **Step 4: Snapshot immutable clients under `Pool.mu`**
 
 Inside `closeAll`, replace the `[]*Slot` post-unlock traversal with values captured under the lock:
 
@@ -278,13 +278,13 @@ p.closed = true
 
 After unlocking, close `targets` in reverse order and report errors with the captured label. Never dereference `slot.Client` in that loop.
 
-- [ ] **Step 5: Run pool race and regression tests**
+- [x] **Step 5: Run pool race and regression tests**
 
 Run: `go test -race ./internal/pool -run 'TestRegression_REL_OBSV_02|TestPool_DeadSlot' -count=20`
 
 Expected: PASS with no race report; lazy reason remains byte-exact and only `Respawns()` increments. Task 3 adds the direct concurrent Close/respawn regression once the background respawn path exists.
 
-- [ ] **Step 6: Commit the respawn foundation**
+- [x] **Step 6: Commit the respawn foundation**
 
 ```bash
 git add internal/pool/pool.go internal/pool/regression_rel_obsv_02_test.go
@@ -316,7 +316,7 @@ git commit -m "refactor(pool): distinguish recycle respawns"
 - Produces: `func (p *Pool) releaseOrRecycle(*Slot)` used by prompt, cancel/error, and self-heal releases.
 - Produces: `Slot.turns int`, guarded by `Pool.mu`.
 
-- [ ] **Step 1: Add failing turn-count and threshold tests**
+- [x] **Step 1: Add failing turn-count and threshold tests**
 
 Use the existing `fakeClient`/`fakeClientFactory` harness in `worker_recycle_test.go`. Add test-only accessors in `export_test.go`:
 
@@ -398,13 +398,13 @@ func TestPool_WorkerRecycleAtThreshold(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run the focused suite and confirm the red state**
+- [x] **Step 2: Run the focused suite and confirm the red state**
 
 Run: `go test -race ./internal/pool -run 'TestPool_WorkerTurns|TestPool_WorkerRecycle|TestPool_CatalogProbeCounts' -count=1`
 
 Expected: build failures for missing `turns`, `releaseOrRecycle`, and the test accessors.
 
-- [ ] **Step 3: Count every successful pool-worker session**
+- [x] **Step 3: Count every successful pool-worker session**
 
 Add `turns int` to `Slot`. Change catalog helpers to accept the slot:
 
@@ -434,7 +434,7 @@ p.mu.Unlock()
 
 Reset `slot.turns = 0` in the same respawn swap critical section that assigns the fresh client and clears `slot.dead`.
 
-- [ ] **Step 4: Implement atomic recycle admission and the worker goroutine**
+- [x] **Step 4: Implement atomic recycle admission and the worker goroutine**
 
 Add `recycleWG sync.WaitGroup` and the test hook to `Pool`. Implement `releaseOrRecycle` so the threshold decision and positive `Add` happen in one lock acquisition:
 
@@ -502,7 +502,7 @@ func (p *Pool) recycleSlot(slot *Slot, turns int) {
 
 Replace the two serving releases and the self-heal defer with `releaseOrRecycle`. Preserve existing release debug logs and `advanceProgress` calls.
 
-- [ ] **Step 5: Fix `probeWG` admission and Close wait order**
+- [x] **Step 5: Fix `probeWG` admission and Close wait order**
 
 After the `catalogProbing` CAS, admit a self-heal probe under `p.mu`:
 
@@ -526,7 +526,7 @@ p.recycleWG.Wait()
 
 The order is required because a finishing self-heal probe can call `releaseOrRecycle` and register recycle work before `probeWG.Done`.
 
-- [ ] **Step 6: Add deterministic shutdown interleaving tests**
+- [x] **Step 6: Add deterministic shutdown interleaving tests**
 
 Use `SetRecycleLaunchHookForTesting` with entered/release channels to prove `Close` waits after recycle admission but before goroutine launch. Add a gated factory to cover Close during spawn and Close after client swap. Each case must assert:
 
@@ -543,13 +543,13 @@ case <-time.After(time.Second):
 
 Also assert the replacement fake’s `closeCalls == 1` or greater, no slot is pushed by the recycle goroutine after shutdown, and the package goleak gate remains clean.
 
-- [ ] **Step 7: Run the pool suite repeatedly under the race detector**
+- [x] **Step 7: Run the pool suite repeatedly under the race detector**
 
 Run: `go test -race ./internal/pool -count=20`
 
 Expected: PASS with no race or goleak report.
 
-- [ ] **Step 8: Commit worker lifecycle behavior**
+- [x] **Step 8: Commit worker lifecycle behavior**
 
 ```bash
 git add internal/pool/pool.go internal/pool/export_test.go internal/pool/worker_recycle_test.go internal/pool/model_discovery_test.go
@@ -581,7 +581,7 @@ git commit -m "feat(pool): recycle workers after bounded turns"
 - Produces: Prometheus counter `gw_pool_slot_recycles_total`.
 - Produces: `admin.Deps.KiroWorkerMaxTurns int` for the docs current-value column.
 
-- [ ] **Step 1: Add failing metrics and admin-doc assertions**
+- [x] **Step 1: Add failing metrics and admin-doc assertions**
 
 Extend `TestMetrics_EventCounters`:
 
@@ -600,13 +600,13 @@ Require:
 
 Add an admin docs test using `Deps{KiroWorkerMaxTurns: 20}` and require both `KIRO_WORKER_MAX_TURNS` and `20` in `/docs`.
 
-- [ ] **Step 2: Run focused tests and confirm the red state**
+- [x] **Step 2: Run focused tests and confirm the red state**
 
 Run: `go test ./internal/metrics ./internal/admin -run 'TestMetrics_EventCounters|TestAdmin_DocsEnvTable_WorkerRecycle' -count=1`
 
 Expected: build failures for missing `SlotRecycles` and `KiroWorkerMaxTurns`.
 
-- [ ] **Step 3: Expose the scheduled-recycle counter**
+- [x] **Step 3: Expose the scheduled-recycle counter**
 
 Add `SlotRecycles uint64` to `metrics.PoolStats`. Add a `slotRecycles *prometheus.Desc` field to `poolCollector`, initialize it with:
 
@@ -625,7 +625,7 @@ Include it in `Describe` and emit it as a counter in `Collect`. Wire the pull sn
 SlotRecycles: a.pool.Recycles(),
 ```
 
-- [ ] **Step 4: Document the environment knob with its live value**
+- [x] **Step 4: Document the environment knob with its live value**
 
 Add `KiroWorkerMaxTurns int` to `admin.Deps`, wire `cfg.KiroWorkerMaxTurns`, and add the sorted environment row:
 
@@ -640,7 +640,7 @@ Add `KiroWorkerMaxTurns int` to `admin.Deps`, wire `cfg.KiroWorkerMaxTurns`, and
 
 Add `POOL_SIZE` and `KIRO_WORKER_MAX_TURNS` rows to `docs/operating.md`, explicitly distinguishing binary defaults from wrapper-template values. Add the env name to the compatibility list in `CLAUDE.md`.
 
-- [ ] **Step 5: Add scheduled recycles to the generated Grafana dashboard**
+- [x] **Step 5: Add scheduled recycles to the generated Grafana dashboard**
 
 Add this target between respawns and ping escalations:
 
@@ -656,7 +656,7 @@ Expected: `docs/grafana/otto-gateway-dashboard.json` is regenerated and contains
 
 Update the dashboard README’s Pool & Session Health row to mention scheduled worker recycles.
 
-- [ ] **Step 6: Run observability and docs tests**
+- [x] **Step 6: Run observability and docs tests**
 
 Run: `go test ./internal/metrics ./internal/admin ./cmd/otto-gateway -count=1`
 
@@ -666,7 +666,7 @@ Run: `rg -n 'KIRO_WORKER_MAX_TURNS|gw_pool_slot_recycles_total' internal docs sc
 
 Expected: matches in configuration docs, metrics collector/tests, wrapper diagnostics, Grafana generator, and generated dashboard.
 
-- [ ] **Step 7: Commit observability and documentation**
+- [x] **Step 7: Commit observability and documentation**
 
 ```bash
 git add internal/metrics/metrics.go internal/metrics/collector.go internal/metrics/metrics_test.go internal/admin/admin.go internal/admin/handlers_test.go cmd/otto-gateway/main.go docs/operating.md scripts/gen_grafana_dashboard.py docs/grafana/otto-gateway-dashboard.json docs/grafana/README.md CLAUDE.md
@@ -688,13 +688,13 @@ git commit -m "feat(metrics): expose scheduled worker recycles"
 - Produces: client-only placeholder objects `{vacant: true, label: string, pool_size: number}`.
 - No server type or JSON field changes.
 
-- [ ] **Step 1: Capture a pre-change dashboard baseline**
+- [x] **Step 1: Capture a pre-change dashboard baseline**
 
 Run: `go test ./internal/admin -count=1`
 
 Expected: PASS before asset changes.
 
-- [ ] **Step 2: Compute card classes wholesale**
+- [x] **Step 2: Compute card classes wholesale**
 
 Add:
 
@@ -712,7 +712,7 @@ function slotCardClass(slot, poolFailed) {
 
 Make both `buildSlotCard` and `updateSlotCard` assign `article.className = slotCardClass(slot, poolFailed)`; remove incremental class-list mutation.
 
-- [ ] **Step 3: Render vacant content without performance elements**
+- [x] **Step 3: Render vacant content without performance elements**
 
 Handle `slot.vacant` before alive/dead branches in badge and meta builders:
 
@@ -742,7 +742,7 @@ function slotCardChildren(slot, poolFailed) {
 
 Use `article.append.apply(article, children)` for initial build and `article.replaceChildren.apply(article, children)` for update.
 
-- [ ] **Step 4: Pad the logical list and pass pool size**
+- [x] **Step 4: Pad the logical list and pass pool size**
 
 Change `renderSlots` to accept `poolSize`, preserve the size-zero empty state, and pad a copy:
 
@@ -765,7 +765,7 @@ renderSlots(
 
 `ingestPerf` continues to read the unpadded snapshot array, so vacant cards never create samples.
 
-- [ ] **Step 5: Style vacant cards and badges**
+- [x] **Step 5: Style vacant cards and badges**
 
 Add:
 
@@ -783,13 +783,13 @@ Add:
 
 Verify existing responsive grid rules remain unchanged.
 
-- [ ] **Step 6: Run static/admin regression tests**
+- [x] **Step 6: Run static/admin regression tests**
 
 Run: `go test ./internal/admin -count=1`
 
 Expected: PASS; embedded JS and CSS endpoints still serve successfully.
 
-- [ ] **Step 7: Perform the documented manual matrix**
+- [x] **Step 7: Perform the documented manual matrix**
 
 With the browser dashboard left open across restarts, verify:
 
@@ -799,7 +799,7 @@ With the browser dashboard left open across restarts, verify:
 4. Restart from `POOL_SIZE=2` to `POOL_SIZE=3`: `slot-2` changes from vacant to real through the in-place path and its class is exactly `gw-slot-card` plus its current live state, never `is-vacant`.
 5. Vacant cards contain no `.gw-slot-perf` or `.gw-spark` descendants in browser developer tools.
 
-- [ ] **Step 8: Commit dashboard changes**
+- [x] **Step 8: Commit dashboard changes**
 
 ```bash
 git add internal/admin/static/js/admin.js internal/admin/static/css/admin.css
@@ -816,19 +816,19 @@ git commit -m "feat(admin): render vacant pool slots"
 **Interfaces:**
 - Verifies all interfaces produced by Tasks 1–5 compose in the gateway binary.
 
-- [ ] **Step 1: Format all changed Go files**
+- [x] **Step 1: Format all changed Go files**
 
 Run: `go run mvdan.cc/gofumpt@latest -w internal/config internal/pool internal/metrics internal/admin cmd/otto-gateway`
 
 Expected: command exits zero.
 
-- [ ] **Step 2: Run the full race-enabled test suite**
+- [x] **Step 2: Run the full race-enabled test suite**
 
 Run: `go test -race ./...`
 
 Expected: PASS with no race or goleak report.
 
-- [ ] **Step 3: Run vet, build, and pinned lint**
+- [x] **Step 3: Run vet, build, and pinned lint**
 
 Run: `go vet ./...`
 
@@ -842,7 +842,7 @@ Run: `go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2 run 
 
 Expected: exit zero with no findings.
 
-- [ ] **Step 4: Verify generated and rollout artifacts**
+- [x] **Step 4: Verify generated and rollout artifacts**
 
 Run: `git diff --check`
 
@@ -856,7 +856,7 @@ Run: `rg -n 'gw_pool_slot_recycles_total' internal/metrics scripts/gen_grafana_d
 
 Expected: collector, test, generator, and generated-dashboard matches.
 
-- [ ] **Step 5: Inspect the final commit series and worktree**
+- [x] **Step 5: Inspect the final commit series and worktree**
 
 Run: `git status --short`
 
