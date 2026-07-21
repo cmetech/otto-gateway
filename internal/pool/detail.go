@@ -44,7 +44,13 @@ func (p *Pool) Detail() []AgentSlot {
 		}
 		row := AgentSlot{
 			Label: slot.Label,
-			Alive: !slot.dead,
+			// Finding 1 (worker-recycling review): a slot mid-recycle is
+			// respawning==true, dead==false — its OLD worker has been closed
+			// and the replacement is still spawning, so it is not serving.
+			// Report it not-alive; the dashboard then renders it in the
+			// existing yellow "RECOVERING" tier (degraded at size>=2), which
+			// is the intended operator signal.
+			Alive: !slot.dead && !slot.respawning,
 		}
 		if sid, ok := slotToSID[slot]; ok {
 			// Defensive copy of the string into a fresh pointer so the
@@ -73,6 +79,11 @@ type WorkerProc struct {
 // sampling. Dead, nil, and not-yet-spawned slots (pid <= 0) are skipped so a
 // caller only sees processes it can actually read.
 //
+// Finding 1 (worker-recycling review): respawning slots are skipped too — the
+// slot's Pid() is the terminated OLD process (respawnSlot has already closed it
+// and not yet swapped the replacement), so sampling it is a stale-sample or
+// pid-reuse hazard.
+//
 // Concurrency mirrors Detail: the (label, Client) pairs are snapshotted under
 // p.mu, then the lock is released BEFORE any slot.Client.Pid() call — upholding
 // the pool invariant that no slot.Client method runs while p.mu is held. Pid()
@@ -87,7 +98,7 @@ func (p *Pool) WorkerProcs() []WorkerProc {
 	p.mu.Lock()
 	pending := make([]labelled, 0, len(p.all))
 	for _, slot := range p.all {
-		if slot == nil || slot.dead || slot.Client == nil {
+		if slot == nil || slot.dead || slot.respawning || slot.Client == nil {
 			continue
 		}
 		pending = append(pending, labelled{label: slot.Label, client: slot.Client})

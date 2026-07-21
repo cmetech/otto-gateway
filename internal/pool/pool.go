@@ -367,6 +367,26 @@ func (p *Pool) Warmup(ctx context.Context) error {
 		p.mu.Lock()
 		p.all = append(p.all, slot)
 		p.mu.Unlock()
+		// Finding 2 (worker-recycling review): the slot-0 catalog capture
+		// above accumulates one turn per successful probe (probeCatalogOnce),
+		// and an empty-catalog retry can accumulate several — so a slot can
+		// already be at/above MaxWorkerTurns before it ever serves a request.
+		// Publishing it as-is would let the worn worker serve MaxWorkerTurns'
+		// worth of extra requests. Recycle it synchronously here (boot-time
+		// latency only; counts as a scheduled recycle in logs/counters) so the
+		// first request lands on a fresh worker with turns reset to 0. The
+		// self-heal probe path already returns via releaseOrRecycle and needs
+		// no equivalent. On respawn error keep Warmup's fail-fast semantics,
+		// mirroring the initSlot failure arm above.
+		p.mu.Lock()
+		turns := slot.turns
+		p.mu.Unlock()
+		if p.cfg.MaxWorkerTurns > 0 && turns >= p.cfg.MaxWorkerTurns {
+			if err := p.respawnSlot(ctx, slot, respawnCauseRecycle); err != nil {
+				_ = p.closeAll()
+				return fmt.Errorf("pool: warmup recycle slot %d: %w", i, err)
+			}
+		}
 		// Send into the buffered slots channel. Cannot block — channel
 		// capacity equals cfg.Size and we have at most cfg.Size slots.
 		p.slots <- slot
@@ -757,9 +777,9 @@ func (p *Pool) advanceProgress() {
 
 // Stats returns a point-in-time snapshot of pool occupancy. Size is
 // the configured pool size; Alive counts slots with a live client
-// (non-nil Client AND !dead — matches Detail's per-slot view, see
-// CR-03); Busy is len(all) - len(slots) — the count of checked-out
-// slots.
+// (non-nil Client AND !dead AND !respawning — matches Detail's per-slot
+// view, see CR-03); Busy is len(all) - len(slots) — the count of
+// checked-out slots.
 //
 // CR-03 fix: previously Alive counted any slot with `s.Client != nil`.
 // Phase 5's dead-slot detection (exit_watcher) sets `slot.dead = true`
@@ -768,12 +788,18 @@ func (p *Pool) advanceProgress() {
 // alive even when N were dead awaiting lazy respawn — disagreeing
 // with /health/agents (which already uses !slot.dead). Use the same
 // !dead test here so the two endpoints stay consistent.
+//
+// Finding 1 (worker-recycling review): a slot mid-recycle is
+// respawning==true but dead==false (respawnSlot has closed the OLD
+// worker and is spawning the replacement). It is NOT serving requests,
+// so exclude it from Alive too — otherwise every health surface reports
+// a recycling worker as serving while its process is being torn down.
 func (p *Pool) Stats() Stats {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	alive := 0
 	for _, s := range p.all {
-		if s != nil && s.Client != nil && !s.dead {
+		if s != nil && s.Client != nil && !s.dead && !s.respawning {
 			alive++
 		}
 	}
@@ -794,7 +820,7 @@ func (p *Pool) Stats() Stats {
 // signal alongside the diagnostic context for why it isn't.
 type HealthSummary struct {
 	Size           int       // configured cfg.Size
-	Alive          int       // !dead && Client != nil count
+	Alive          int       // !dead && !respawning && Client != nil count
 	Busy           int       // checked-out count
 	Healthy        bool      // Size == 0 (degraded by design) OR Alive > 0
 	LastSpawnError string    // most recent genuine respawn failure; empty if none
@@ -817,7 +843,9 @@ func (p *Pool) HealthSummary() HealthSummary {
 	defer p.mu.Unlock()
 	alive := 0
 	for _, s := range p.all {
-		if s != nil && s.Client != nil && !s.dead {
+		// Finding 1: a recycling worker (respawning==true, dead==false) is
+		// mid-teardown and not serving — exclude it, same as Stats/Detail.
+		if s != nil && s.Client != nil && !s.dead && !s.respawning {
 			alive++
 		}
 	}
@@ -1383,16 +1411,32 @@ const recycleRespawnTimeout = 30 * time.Second
 // critical section so an accepted Add is always ordered before Close's
 // recycleWG.Wait (review finding H-1 — the load-bearing shutdown property).
 //
-// When recycling is disabled (MaxWorkerTurns == 0), the worker is below
-// threshold, or the pool is closed, the slot returns to the free queue exactly
+// When the pool is closed the slot is DROPPED (Finding 3 hardening — closeAll
+// owns cleanup; requeueing a closed client races a fast-path acquire into a
+// confusing 500). Otherwise, when recycling is disabled (MaxWorkerTurns == 0)
+// or the worker is below threshold, the slot returns to the free queue exactly
 // as before (the buffered send cannot block — channel capacity equals slot
-// count). Otherwise the slot is handed, exclusively, to a background
-// recycleSlot goroutine; the slot never re-enters p.slots on this path (the
-// goroutine either pushes it back after respawn or drops it on shutdown).
+// count). Past threshold on a live pool the slot is handed, exclusively, to a
+// background recycleSlot goroutine; the slot never re-enters p.slots on this
+// path (the goroutine either pushes it back after respawn or drops it on
+// shutdown).
 func (p *Pool) releaseOrRecycle(slot *Slot) {
 	p.mu.Lock()
+	// Finding 3 (worker-recycling hardening): a post-shutdown release DROPS the
+	// slot without requeue — closeAll owns cleanup via the p.all snapshot, and a
+	// post-close push would let a racing fast-path acquire (NewSession's
+	// non-blocking `<-p.slots` try) dequeue a closed client and surface a
+	// confusing 500 instead of the clean "pool: closed" the <-p.closing arm
+	// returns. Checked FIRST so the requeue paths below are only reached while
+	// the pool is live. (Pre-existing release behavior pushed here; this is a
+	// hardening added post-review, matching the recycle goroutine's own
+	// <-p.closing drop.)
+	if p.closed {
+		p.mu.Unlock()
+		return
+	}
 	turns := slot.turns
-	if p.cfg.MaxWorkerTurns == 0 || turns < p.cfg.MaxWorkerTurns || p.closed {
+	if p.cfg.MaxWorkerTurns == 0 || turns < p.cfg.MaxWorkerTurns {
 		// Guarded non-blocking send, matching the file's re-queue convention
 		// (pool.go respawn re-queue arms + recycleSlot): the buffered channel
 		// cannot block (cap == slot count), and the default arm keeps a future

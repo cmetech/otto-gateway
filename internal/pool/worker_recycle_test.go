@@ -693,9 +693,12 @@ func TestPool_WorkerRecycle_StaleWatcherDoesNotDeadMark(t *testing.T) {
 	oldClient := &fakeClient{models: []canonical.ModelInfo{{ID: "auto"}}, pid: 1001}
 	newClient := &fakeClient{pid: 1002}
 	p := pool.New(pool.Config{
-		Logger:         logger,
-		Size:           1,
-		MaxWorkerTurns: 1, // one completed request recycles the worker
+		Logger: logger,
+		Size:   1,
+		// Threshold 2 so the warmup catalog turn (turns=1) stays below it and
+		// does NOT trigger the Finding-2 warmup-time recycle; the one completed
+		// request (turns=2) is then the sole recycle this test exercises.
+		MaxWorkerTurns: 2,
 		Factory:        &fakeClientFactory{clients: []pool.PoolClient{oldClient, newClient}},
 	})
 	// Always release the gate (so parked watchers can exit) and Close the pool,
@@ -751,5 +754,224 @@ func TestPool_WorkerRecycle_StaleWatcherDoesNotDeadMark(t *testing.T) {
 	}
 	if s := logBuf.String(); strings.Contains(s, "pool: slot died") {
 		t.Errorf(`log contains "pool: slot died" — stale OLD watcher emitted a false crash signal for a planned recycle`)
+	}
+}
+
+// TestPool_WorkerRecycle_RecyclingSlotReportsUnavailable is the Finding-1
+// regression guard: while a worker is mid-recycle (respawning==true,
+// dead==false — respawnSlot has closed the OLD worker and is spawning the
+// replacement) every health surface must report it unavailable, and every
+// surface must recover once the respawn completes.
+//
+// Determinism (no sleeps as sync): the gatedRecycleFactory blocks the recycle
+// Spawn and signals spawnEntered from inside it. respawnSlot sets
+// respawning=true UNDER p.mu (step 0) before calling Spawn, so receiving
+// spawnEntered places us deterministically in the mid-recycle window.
+// Red-check: reverting the `!s.respawning` predicates (Stats/HealthSummary),
+// detail.go's `Alive` term, and WorkerProcs' skip makes the four during-recycle
+// assertions fail (Alive counts 1, Detail row Alive==true, WorkerProcs returns
+// the terminated OLD pid).
+func TestPool_WorkerRecycle_RecyclingSlotReportsUnavailable(t *testing.T) {
+	oldClient := &fakeClient{models: []canonical.ModelInfo{{ID: "auto"}}, pid: 1001}
+	newClient := &fakeClient{pid: 1002}
+	gf := &gatedRecycleFactory{
+		clients:      []pool.PoolClient{oldClient, newClient},
+		spawnEntered: make(chan struct{}),
+		gate:         make(chan struct{}),
+	}
+	p := pool.New(pool.Config{
+		Logger: testutil.Logger(t),
+		Size:   1,
+		// Threshold 2: warmup catalog turn (=1) stays below it; the one request
+		// drives turns to 2 and triggers the background recycle we gate on.
+		MaxWorkerTurns: 2,
+		Factory:        gf,
+	})
+	var gateOnce sync.Once
+	openGate := func() { gateOnce.Do(func() { close(gf.gate) }) }
+	// Always release the gate (so the parked recycle Spawn can finish) and Close,
+	// even on early t.Fatalf, so recycleWG.Wait cannot hang and goleak stays clean.
+	t.Cleanup(func() {
+		openGate()
+		_ = p.Close()
+	})
+	if err := p.Warmup(context.Background()); err != nil {
+		t.Fatalf("Warmup(): %v", err)
+	}
+
+	// One request drives turns to 2 → background recycle. The recycle goroutine
+	// marks the slot respawning, closes the OLD worker, and parks inside the
+	// gated Spawn — the deterministic mid-recycle window.
+	runOneRequest(t, p)
+	<-gf.spawnEntered
+
+	// Every health surface must report the recycling slot as unavailable.
+	if got := p.Stats().Alive; got != 0 {
+		t.Errorf("Stats().Alive during recycle = %d; want 0", got)
+	}
+	hs := p.HealthSummary()
+	if hs.Alive != 0 {
+		t.Errorf("HealthSummary().Alive during recycle = %d; want 0", hs.Alive)
+	}
+	if hs.Healthy {
+		t.Error("HealthSummary().Healthy during recycle = true; want false (size-1 pool, only worker recycling)")
+	}
+	detail := p.Detail()
+	if len(detail) != 1 {
+		t.Fatalf("Detail() len = %d; want 1", len(detail))
+	}
+	if detail[0].Alive {
+		t.Error("Detail()[0].Alive during recycle = true; want false")
+	}
+	if procs := p.WorkerProcs(); len(procs) != 0 {
+		t.Errorf("WorkerProcs() during recycle = %v; want empty (respawning slot excluded — stale/terminated pid)", procs)
+	}
+
+	// Release the gate; the recycle completes and every surface recovers.
+	openGate()
+	if !pollUntil(2*time.Second, func() bool { return p.Recycles() == 1 }) {
+		t.Fatalf("Recycles() = %d; want 1 (recycle did not complete)", p.Recycles())
+	}
+	if !pollUntil(time.Second, func() bool { return p.Stats().Alive == 1 }) {
+		t.Fatalf("Stats().Alive after recovery = %d; want 1", p.Stats().Alive)
+	}
+	if hs := p.HealthSummary(); hs.Alive != 1 || !hs.Healthy {
+		t.Errorf("HealthSummary() after recovery = {Alive:%d Healthy:%v}; want {1 true}", hs.Alive, hs.Healthy)
+	}
+	if detail := p.Detail(); len(detail) != 1 || !detail[0].Alive {
+		t.Errorf("Detail() after recovery = %+v; want a single alive row", detail)
+	}
+	if !pollUntil(time.Second, func() bool {
+		procs := p.WorkerProcs()
+		return len(procs) == 1 && procs[0].Pid == 1002
+	}) {
+		t.Errorf("WorkerProcs() after recovery = %v; want single row with the NEW pid 1002", p.WorkerProcs())
+	}
+}
+
+// TestPool_WarmupRecyclesSlotAtThreshold is the Finding-2 (a) guard: with
+// MaxWorkerTurns=1 the single warmup catalog probe already puts slot-0 at the
+// threshold, so Warmup must recycle it SYNCHRONOUSLY before publishing —
+// otherwise the worn worker would serve one request. After Warmup returns the
+// recycle counter is 1, the published slot is the SECOND client with turns
+// reset, and the first user request lands on that fresh client.
+func TestPool_WarmupRecyclesSlotAtThreshold(t *testing.T) {
+	firstClient := &fakeClient{models: []canonical.ModelInfo{{ID: "auto"}}, pid: 1001}
+	secondClient := &fakeClient{models: []canonical.ModelInfo{{ID: "auto"}}, pid: 1002}
+	p := pool.New(pool.Config{
+		Logger:         testutil.Logger(t),
+		Size:           1,
+		MaxWorkerTurns: 1,
+		Factory:        &fakeClientFactory{clients: []pool.PoolClient{firstClient, secondClient}},
+	})
+	t.Cleanup(func() { _ = p.Close() })
+	if err := p.Warmup(context.Background()); err != nil {
+		t.Fatalf("Warmup(): %v", err)
+	}
+
+	if got := p.Recycles(); got != 1 {
+		t.Fatalf("Recycles() after Warmup = %d; want 1 (synchronous warmup recycle at threshold)", got)
+	}
+	if turns, ok := p.SlotTurns("slot-0"); !ok || turns != 0 {
+		t.Fatalf("SlotTurns(slot-0) after Warmup = (%d, %v); want (0, true)", turns, ok)
+	}
+	if got := firstClient.closeCallCount(); got < 1 {
+		t.Errorf("first client closeCalls = %d; want >= 1 (torn down by the warmup recycle)", got)
+	}
+
+	// The first user request must be served by the fresh (second) client.
+	sid, err := p.NewSession(context.Background(), "")
+	if err != nil {
+		t.Fatalf("NewSession(): %v", err)
+	}
+	if sid == "" {
+		t.Fatal("NewSession returned empty sid")
+	}
+	if got := secondClient.newSessionCount(); got < 1 {
+		t.Errorf("second client newSessionCount = %d; want >= 1 (serves the first request)", got)
+	}
+	// The first client saw only its single warmup catalog session/new.
+	if got := firstClient.newSessionCount(); got != 1 {
+		t.Errorf("first client newSessionCount = %d; want 1 (warmup catalog probe only)", got)
+	}
+}
+
+// TestPool_WarmupRecyclesOnEmptyCatalogOvershoot is the Finding-2 (b) guard: an
+// empty-catalog warmup runs the full retry schedule, and every probe is a
+// counted turn, so the accumulated count can OVERSHOOT the threshold. Warmup
+// must still recycle exactly once at publish and reset the fresh worker's
+// counter. Four probe attempts (three zero-delay retries) → turns=4 with
+// MaxWorkerTurns=2.
+func TestPool_WarmupRecyclesOnEmptyCatalogOvershoot(t *testing.T) {
+	firstClient := &fakeClient{
+		// session/new succeeds but the model list stays empty, so
+		// captureCatalogWithRetry runs every attempt — each a counted turn.
+		availableModelsFn: func() []canonical.ModelInfo { return nil },
+	}
+	secondClient := &fakeClient{}
+	p := pool.New(pool.Config{
+		Logger:         testutil.Logger(t),
+		Size:           1,
+		MaxWorkerTurns: 2,
+		Factory:        &fakeClientFactory{clients: []pool.PoolClient{firstClient, secondClient}},
+	})
+	// Three zero-delay retries → four probe attempts → turns == 4, no real sleeps.
+	p.SetCatalogRetryForTesting([]time.Duration{0, 0, 0})
+	t.Cleanup(func() { _ = p.Close() })
+	if err := p.Warmup(context.Background()); err != nil {
+		t.Fatalf("Warmup(): %v", err)
+	}
+
+	if got := firstClient.newSessionCount(); got != 4 {
+		t.Fatalf("first client newSessionCount = %d; want 4 (four empty-catalog probe attempts)", got)
+	}
+	if got := p.Recycles(); got != 1 {
+		t.Fatalf("Recycles() after Warmup = %d; want 1 (single synchronous recycle despite overshoot)", got)
+	}
+	if turns, ok := p.SlotTurns("slot-0"); !ok || turns != 0 {
+		t.Fatalf("SlotTurns(slot-0) after Warmup = (%d, %v); want (0, true) (fresh worker counter reset)", turns, ok)
+	}
+}
+
+// TestPool_ReleaseAfterCloseDropsSlot is the Finding-3 hardening guard: a
+// release that completes AFTER Close must DROP the slot, not requeue it — a
+// post-close push would let a racing fast-path acquire dequeue a closed client
+// and surface a confusing 500 instead of "pool: closed". Deterministic: Cancel
+// runs the release path synchronously, so after it returns the drop has
+// definitely happened.
+//
+// Red-check: reverting the `if p.closed { return }` restructure in
+// releaseOrRecycle (back to the pre-existing `|| p.closed` push branch) makes
+// this test fail — the slot is requeued and WaitForSlotRelease observes it.
+func TestPool_ReleaseAfterCloseDropsSlot(t *testing.T) {
+	fc := &fakeClient{models: []canonical.ModelInfo{{ID: "auto"}}}
+	p := pool.New(pool.Config{
+		Logger:  testutil.Logger(t),
+		Size:    1,
+		Factory: &fakeClientFactory{clients: []pool.PoolClient{fc}},
+	})
+	t.Cleanup(func() { _ = p.Close() }) // idempotent — safe after the explicit Close below
+	if err := p.Warmup(context.Background()); err != nil {
+		t.Fatalf("Warmup(): %v", err)
+	}
+
+	// Check out the only slot (dequeued into sessionSlots).
+	sid, err := p.NewSession(context.Background(), "")
+	if err != nil {
+		t.Fatalf("NewSession(): %v", err)
+	}
+
+	// Close the pool while the slot is checked out; closeAll owns teardown via
+	// its p.all snapshot.
+	if err := p.Close(); err != nil {
+		t.Fatalf("Close(): %v", err)
+	}
+
+	// Complete the release path AFTER Close. releaseOrRecycle must observe
+	// p.closed and drop rather than requeue.
+	p.Cancel(sid) // releaseSlotForSession → releaseOrRecycle (p.closed → drop)
+
+	if s, ok := p.WaitForSlotRelease(100 * time.Millisecond); ok {
+		t.Fatalf("slot %q was requeued after Close; want dropped (closeAll owns cleanup)", s.Label)
 	}
 }

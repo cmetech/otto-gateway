@@ -197,6 +197,17 @@ go func() {
 }()
 ```
 
+**Post-shutdown drop symmetry (hardening added post-review).** The recycle
+goroutine's `<-p.closing` branch above drops the slot rather than pushing it.
+`releaseOrRecycle` ALSO drops (returns without requeue) when it observes
+`p.closed` under `p.mu` — checked *first*, before the below-threshold push and
+the recycle commit. Previously this path pushed the slot back (matching the
+pre-recycling release behavior), but a post-close push lets a racing fast-path
+`NewSession` (the non-blocking `<-p.slots` try) dequeue a closed client and
+surface a confusing 500 instead of the clean "pool: closed" the `<-p.closing`
+acquire arm returns. Dropping is safe: `closeAll` owns teardown via its `p.all`
+`{label, client}` snapshot.
+
 **Respawn cause parameter (review findings M-3 + M-6):** `respawnSlot`
 gains an explicit cause — `respawnCauseLazy` (today's dequeue-time path) vs
 `respawnCauseRecycle`. The cause controls three things:
