@@ -595,6 +595,18 @@ func (p *Pool) respawnSlot(ctx context.Context, slot *Slot, cause respawnCause) 
 		// to abort on, so a ctx error there is a genuine spawn failure.
 		p.mu.Lock()
 		slot.respawning = false
+		// Finding 2 (round-3 review): on the BACKGROUND recycle cause, mark the
+		// slot dead in the SAME critical section that clears respawning — an
+		// atomic respawning→dead transition. Step 1 already closed the OLD
+		// client, so the slot's worker is gone; recycleSlot only marks dead in a
+		// LATER p.mu section. Between the two, a health snapshot would see
+		// !dead && !respawning and count the already-closed old worker as alive
+		// (stale PID in WorkerProcs). Marking dead here leaves no such window.
+		// (Lazy path: slot was already dead on entry, so no gap; the warmup
+		// sync-recycle failure aborts boot, so it never surfaces via health.)
+		if cause == respawnCauseRecycle {
+			slot.dead = true
+		}
 		p.mu.Unlock()
 		if cause == respawnCauseLazy &&
 			(errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
@@ -609,6 +621,14 @@ func (p *Pool) respawnSlot(ctx context.Context, slot *Slot, cause respawnCause) 
 		_ = newClient.Close()
 		p.mu.Lock()
 		slot.respawning = false
+		// Finding 2 (round-3 review): atomic respawning→dead transition on the
+		// background recycle cause — same rationale as the Spawn-error section
+		// above (the OLD client was closed in step 1; without this a health
+		// snapshot between here and recycleSlot's later dead-mark would see the
+		// closed worker as alive).
+		if cause == respawnCauseRecycle {
+			slot.dead = true
+		}
 		p.mu.Unlock()
 		// WR-07: same ctx-cancellation distinction as Spawn above (lazy-only).
 		if cause == respawnCauseLazy &&
@@ -1567,6 +1587,11 @@ func (p *Pool) recycleSlot(slot *Slot, turns int) {
 	if err != nil {
 		// Respawn failed: mark dead so the next acquirer's slotAlive() check
 		// trips the lazy respawn path (same recovery as the dequeue-time path).
+		// Finding 2 (round-3 review): respawnSlot's recycle-cause error paths
+		// now ALSO set slot.dead=true atomically with clearing respawning, so
+		// this is a defensive (idempotent) re-assertion — dead is already true
+		// by the time we get here. Kept so the recovery invariant is explicit
+		// at the release site.
 		slot.dead = true
 	}
 	// Guarded non-blocking send, mirroring the pool.go re-queue pattern: the

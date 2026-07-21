@@ -116,6 +116,21 @@ func (p *Pool) SlotTurns(label string) (int, bool) {
 	return 0, false
 }
 
+// SlotRespawning returns the respawning flag for the slot with the given label
+// (held under p.mu). The bool is false when no slot matches. Finding 2
+// (round-3) accessor: lets a test assert the terminal (dead=true,
+// respawning=false) invariant after a failed background recycle.
+func (p *Pool) SlotRespawning(label string) (respawning, found bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, slot := range p.all {
+		if slot != nil && slot.Label == label {
+			return slot.respawning, true
+		}
+	}
+	return false, false
+}
+
 // SetRecycleLaunchHookForTesting installs the test-only seam fired by
 // releaseOrRecycle after recycle admission and before the goroutine launch.
 // Task 3 shutdown-interleaving tests use it to wedge Close between the

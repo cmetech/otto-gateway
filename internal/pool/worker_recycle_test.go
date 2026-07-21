@@ -1153,3 +1153,51 @@ func TestPool_NewSession_RacesClose_SuccessReturnsClosed(t *testing.T) {
 		t.Fatalf("Cancel calls = %v; want to include \"sess-late\" (orphan session cancelled)", fc.cancelCallList())
 	}
 }
+
+// TestPool_WorkerRecycleFailure_AtomicDeadNotRespawning is the Finding 2
+// (round-3) guard. A failed BACKGROUND recycle used to clear respawning in
+// respawnSlot's error section but mark dead only later in recycleSlot; between
+// the two a health snapshot saw !dead && !respawning and counted the already-
+// closed old worker as alive (stale PID in WorkerProcs). respawnSlot now sets
+// dead=true in the SAME critical section that clears respawning on the recycle
+// cause, so the transition is atomic.
+//
+// What this pins: the TERMINAL invariant (dead=true ∧ respawning=false) after a
+// failed recycle. The transient no-window property (never !dead && !respawning
+// mid-recycle) is not directly wedgeable without a new seam between respawnSlot
+// and recycleSlot; it is enforced structurally by the same-critical-section
+// code and this end-state assertion together. The old code also reached this
+// same terminal state, so this test does not red-check — it locks the invariant
+// against regressions (e.g. moving the dead-mark back out of the atomic section).
+func TestPool_WorkerRecycleFailure_AtomicDeadNotRespawning(t *testing.T) {
+	oldClient := &fakeClient{models: []canonical.ModelInfo{{ID: "auto"}}}
+	ff := &stepFactory{steps: []stepResult{
+		{client: oldClient},                        // warmup
+		{err: errors.New("recycle spawn: no fds")}, // background recycle respawn FAILS
+	}}
+	p := pool.New(pool.Config{
+		Logger:         testutil.Logger(t),
+		Size:           1,
+		MaxWorkerTurns: 2,
+		Factory:        ff,
+	})
+	defer func() { _ = p.Close() }()
+	if err := p.Warmup(context.Background()); err != nil {
+		t.Fatalf("Warmup(): %v", err)
+	}
+	runOneRequest(t, p) // turns -> 2 -> background recycle respawn fails
+
+	if !pollUntil(time.Second, func() bool {
+		alive, ok := p.SlotAlive("slot-0")
+		return ok && !alive
+	}) {
+		t.Fatal("slot did not become dead after failed recycle respawn")
+	}
+	respawning, ok := p.SlotRespawning("slot-0")
+	if !ok {
+		t.Fatal("slot-0 not found")
+	}
+	if respawning {
+		t.Fatal("slot still respawning after failed recycle; want (dead=true, respawning=false) — atomic transition regressed")
+	}
+}
