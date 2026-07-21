@@ -1103,6 +1103,27 @@ func (p *Pool) NewSession(ctx context.Context, cwd string) (string, error) {
 	}
 	p.debugLog("pool.acquire", "slot", slot.Label)
 
+	// Finding 1 (round-3 review): reject a slot acquired after Close. Two
+	// pre-existing gaps let a post-Close NewSession get here holding a CLOSED
+	// slot: (a) closeAll does not drain idle slots from p.slots and the
+	// fast-path acquire above (`select { case slot = <-p.slots: ... default }`)
+	// has no closing/closed arm, so an idle closed slot is dequeued outright;
+	// (b) the blocking select's <-p.closing arm can lose to an already-buffered
+	// slot. Either way, without this check slotAlive() passes (the OLD
+	// watcher exited via <-p.closing WITHOUT dead-marking) and
+	// slot.Client.NewSession runs on a closed client → a confusing
+	// `pool: new-session: acp: client closed` 500 instead of the clean
+	// "pool: closed". Check p.closed under p.mu BEFORE any slot.Client call
+	// (slotAlive / NewSession) and DROP the slot on close — do NOT requeue:
+	// closeAll owns cleanup via the p.all snapshot, and a requeue would feed a
+	// closed client to a racing fast-path acquire.
+	p.mu.Lock()
+	closed := p.closed
+	p.mu.Unlock()
+	if closed {
+		return "", errors.New("pool: closed")
+	}
+
 	// Phase 5 D-01/D-02/D-03: dead-slot detection + lazy synchronous
 	// re-spawn. The per-slot exit-watcher (exit_watcher.go) flips
 	// slot.dead to true when slot.Client.Done() fires; this branch
@@ -1205,11 +1226,41 @@ func (p *Pool) NewSession(ctx context.Context, cwd string) (string, error) {
 	if err != nil {
 		// Release the slot synchronously — no sessionSlots entry was
 		// recorded yet so we can put it back directly.
-		p.slots <- slot
+		//
+		// Finding 1 (round-3 review): make the requeue closed-aware. If Close
+		// raced this NewSession (which then failed BECAUSE the client was
+		// closing), an unconditional push would re-queue a closed client for a
+		// racing fast-path acquire. Requeue under p.mu only while live; on
+		// close, DROP (closeAll owns cleanup via the p.all snapshot). Guarded
+		// non-blocking send per the file's requeue convention.
+		p.mu.Lock()
+		if !p.closed {
+			select {
+			case p.slots <- slot:
+			default:
+				// Unreachable in steady state (cap == slot count); the default
+				// arm drops rather than deadlocking under p.mu.
+			}
+		}
+		p.mu.Unlock()
 		return "", fmt.Errorf("pool: new-session: %w", err)
 	}
 
 	p.mu.Lock()
+	// Finding 1 (round-3 review): if Close raced the SUCCESSFUL NewSession, do
+	// NOT register the session — closeAll already snapshotted the clients to
+	// close and drained the sessionSlots map, so a late registration here would
+	// leak an untracked session on a closing client. Release the lock,
+	// best-effort Cancel the just-created session OUTSIDE p.mu (no client call
+	// under the lock — same discipline as everywhere else), drop the slot, and
+	// return the clean "pool: closed". The slot is exclusively owned here (it
+	// was dequeued from p.slots and never registered) so slot.Client is stable
+	// without the lock.
+	if p.closed {
+		p.mu.Unlock()
+		slot.Client.Cancel(sid)
+		return "", errors.New("pool: closed")
+	}
 	p.sessionSlots[sid] = slot
 	// Count this successful session/new (design §2 Part B, review finding
 	// M-4): a failed NewSession returned above without reaching here, so it

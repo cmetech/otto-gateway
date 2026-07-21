@@ -976,3 +976,180 @@ func TestPool_ReleaseAfterCloseDropsSlot(t *testing.T) {
 		t.Fatalf("slot %q was requeued after Close; want dropped (closeAll owns cleanup)", s.Label)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Finding 1 (round-3 review): NewSession rejects closed slots post-Close.
+// ---------------------------------------------------------------------------
+
+// gatedNewSessionClient builds a fakeClient whose FIRST NewSession (the warmup
+// catalog probe) returns immediately, but every subsequent NewSession signals
+// `entered` and blocks on `gate` before returning `result()`. The Finding 1
+// race tests use it to park a request-path NewSession INSIDE the client call
+// while Close runs, then release it to drive the closed-aware requeue (error
+// variant) and the closed-aware register-suppression (success variant). The
+// gate is released strictly after Close returns, so the acquire + fast-path
+// p.closed check already passed while the pool was live — no sleep-as-sync.
+func gatedNewSessionClient(result func() (string, error)) (fc *fakeClient, entered <-chan struct{}, gate chan struct{}) {
+	ent := make(chan struct{}, 1)
+	g := make(chan struct{})
+	var n atomic.Int32
+	fc = &fakeClient{models: []canonical.ModelInfo{{ID: "auto"}}}
+	fc.newSessionFn = func(_ context.Context, _ string) (string, error) {
+		if n.Add(1) == 1 {
+			return "sess-warmup", nil // warmup catalog probe: return immediately
+		}
+		ent <- struct{}{}
+		<-g
+		return result()
+	}
+	return fc, ent, g
+}
+
+// TestPool_NewSession_AfterClose_FastPathDropsClosedSlot pins Finding 1(a): an
+// idle slot left buffered in p.slots after Close (closeAll does not drain it)
+// must NOT be handed to a client call. The fast-path acquire dequeues it, the
+// new p.closed check drops it, and NewSession returns exactly "pool: closed"
+// with no client method invoked and no requeue.
+//
+// Red-check (production reverted): the fast-path has no closed arm, slotAlive
+// passes (the watcher exited via <-p.closing without dead-marking), and the
+// default fakeClient.NewSession succeeds → NewSession returns a sid + nil error,
+// failing the `want error` assertion (and newSessionCount would advance).
+func TestPool_NewSession_AfterClose_FastPathDropsClosedSlot(t *testing.T) {
+	fc := &fakeClient{models: []canonical.ModelInfo{{ID: "auto"}}}
+	p := pool.New(pool.Config{
+		Logger:  testutil.Logger(t),
+		Size:    1,
+		Factory: &fakeClientFactory{clients: []pool.PoolClient{fc}},
+	})
+	if err := p.Warmup(context.Background()); err != nil {
+		t.Fatalf("Warmup(): %v", err)
+	}
+	baseline := fc.newSessionCount() // warmup catalog probe consumed exactly 1
+	if err := p.Close(); err != nil {
+		t.Fatalf("Close(): %v", err)
+	}
+
+	_, err := p.NewSession(context.Background(), "")
+	if err == nil {
+		t.Fatal("NewSession after Close: want error, got nil")
+	}
+	if err.Error() != "pool: closed" {
+		t.Fatalf("NewSession after Close error = %q; want exactly \"pool: closed\"", err.Error())
+	}
+	if got := fc.newSessionCount(); got != baseline {
+		t.Fatalf("newSessionCount = %d; want %d (no client method invoked on the dequeued closed slot)", got, baseline)
+	}
+	if s, ok := p.WaitForSlotRelease(100 * time.Millisecond); ok {
+		t.Fatalf("closed slot %q was requeued to p.slots; want dropped", s.Label)
+	}
+}
+
+// TestPool_NewSession_RacesClose_NoRequeueOnError pins Finding 1(b) error
+// variant: a NewSession that acquired a live slot, then had its in-flight
+// client NewSession fail BECAUSE Close raced it, must DROP the slot (closed-
+// aware requeue) rather than push a closed client back for a fast-path acquire.
+//
+// Red-check (production reverted): the error-path requeue is the unconditional
+// `p.slots <- slot`, so the closed slot lands back in p.slots and
+// WaitForSlotRelease observes it → the `want dropped` assertion fails.
+func TestPool_NewSession_RacesClose_NoRequeueOnError(t *testing.T) {
+	fc, entered, gate := gatedNewSessionClient(func() (string, error) {
+		return "", errors.New("newsession boom")
+	})
+	p := pool.New(pool.Config{
+		Logger:  testutil.Logger(t),
+		Size:    1,
+		Factory: &fakeClientFactory{clients: []pool.PoolClient{fc}},
+	})
+	if err := p.Warmup(context.Background()); err != nil {
+		t.Fatalf("Warmup(): %v", err)
+	}
+
+	type result struct {
+		sid string
+		err error
+	}
+	resC := make(chan result, 1)
+	go func() {
+		sid, err := p.NewSession(context.Background(), "")
+		resC <- result{sid, err}
+	}()
+	<-entered // NewSession acquired the slot (fast-path closed check passed) and is parked in the client call
+	if err := p.Close(); err != nil {
+		t.Fatalf("Close(): %v", err)
+	}
+	close(gate) // client NewSession now returns its error, under p.closed
+
+	res := <-resC
+	if res.err == nil {
+		t.Fatal("NewSession: want error, got nil")
+	}
+	if !strings.Contains(res.err.Error(), "new-session") {
+		t.Fatalf("NewSession error = %q; want the wrapped new-session error", res.err.Error())
+	}
+	if s, ok := p.WaitForSlotRelease(100 * time.Millisecond); ok {
+		t.Fatalf("failed-NewSession slot %q was requeued after Close; want dropped", s.Label)
+	}
+}
+
+// TestPool_NewSession_RacesClose_SuccessReturnsClosed pins Finding 1(b) success
+// variant: a NewSession whose in-flight client call SUCCEEDS after Close must
+// not register the orphan session — it releases the lock, best-effort Cancels
+// the just-created session, drops the slot, and returns "pool: closed".
+//
+// Red-check (production reverted): the register critical section has no
+// p.closed guard, so the session is registered and (sid, nil) returned → both
+// the `want "pool: closed"` and `SessionSlotsLen == 0` assertions fail, and no
+// Cancel is issued for the orphan session.
+func TestPool_NewSession_RacesClose_SuccessReturnsClosed(t *testing.T) {
+	fc, entered, gate := gatedNewSessionClient(func() (string, error) {
+		return "sess-late", nil
+	})
+	p := pool.New(pool.Config{
+		Logger:  testutil.Logger(t),
+		Size:    1,
+		Factory: &fakeClientFactory{clients: []pool.PoolClient{fc}},
+	})
+	if err := p.Warmup(context.Background()); err != nil {
+		t.Fatalf("Warmup(): %v", err)
+	}
+
+	type result struct {
+		sid string
+		err error
+	}
+	resC := make(chan result, 1)
+	go func() {
+		sid, err := p.NewSession(context.Background(), "")
+		resC <- result{sid, err}
+	}()
+	<-entered
+	if err := p.Close(); err != nil {
+		t.Fatalf("Close(): %v", err)
+	}
+	close(gate) // client NewSession returns success AFTER Close
+
+	res := <-resC
+	if res.err == nil {
+		t.Fatalf("NewSession: want \"pool: closed\", got sid=%q nil err", res.sid)
+	}
+	if res.err.Error() != "pool: closed" {
+		t.Fatalf("NewSession error = %q; want exactly \"pool: closed\"", res.err.Error())
+	}
+	if res.sid != "" {
+		t.Fatalf("NewSession sid = %q; want empty on closed pool", res.sid)
+	}
+	if got := p.SessionSlotsLen(); got != 0 {
+		t.Fatalf("SessionSlotsLen() = %d; want 0 (orphan session not registered on closed pool)", got)
+	}
+	var cancelledLate bool
+	for _, c := range fc.cancelCallList() {
+		if c == "sess-late" {
+			cancelledLate = true
+		}
+	}
+	if !cancelledLate {
+		t.Fatalf("Cancel calls = %v; want to include \"sess-late\" (orphan session cancelled)", fc.cancelCallList())
+	}
+}
