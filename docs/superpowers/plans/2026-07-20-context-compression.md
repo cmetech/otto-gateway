@@ -3305,7 +3305,7 @@ git commit -m "feat(compress): stage-4 BM25 relevance pruning with pin separatio
 
 **Response model-echo contract (third-pass MINOR):** every response — streaming and non-streaming, on all five endpoints — echoes the caller's ORIGINAL directive-bearing model string (`qwen-2.5+compress`), never the stripped base. This is what the current renderers already do (they pass `wire.Model`: openai handlers.go:246-251/:344/:446, anthropic handlers.go:298-303/:405, ollama handlers.go:219/:364-369/:529/:636-644) — the contract exists to FREEZE it: clients correlate and cache by response model, so a later change that echoes `req.Model` on one branch but `wire.Model` on another would give the same request two identities. Implementation rule: renderers keep using the wire model; `req.Model` (stripped) is engine-internal only. Tested per surface, per branch, in Step 1's handler-level tables.
 
-- [ ] **Step 1: Write the failing tests** (one per adapter; the anthropic one is the critical interaction test)
+- [x] **Step 1: Write the failing tests** (one per adapter; the anthropic one is the critical interaction test)
 
 ```go
 // append to internal/adapter/anthropic/wire_test.go
@@ -3374,12 +3374,12 @@ func TestWireToChatRequest_CompressSuffixThenNormalize(t *testing.T) {
 
 Write these as real table tests mirroring each file's existing tests — read the neighboring test first, reuse its fixture builder, add the cases.
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `go test ./internal/adapter/... -run Compress -v`
 Expected: FAIL — Model keeps its suffix, Metadata empty.
 
-- [ ] **Step 3: Implement the suffix split at all 5 builder sites**
+- [x] **Step 3: Implement the suffix split at all 5 builder sites**
 
 Anthropic (`wire.go` ~:170) — replace:
 
@@ -3427,7 +3427,7 @@ OpenAI `handleCompletions` (handlers.go ~:389) — the fifth site; apply the ide
 	}
 ```
 
-- [ ] **Step 4: Implement the header stamp in all 3 `stampPluginCtx` helpers** (append before `return ctx` in each; identical code, matching the existing mirrored-helper convention):
+- [x] **Step 4: Implement the header stamp in all 3 `stampPluginCtx` helpers** (append before `return ctx` in each; identical code, matching the existing mirrored-helper convention):
 
 ```go
 	// X-Compression: strict tri-state ("1"/"true"/"on" enable,
@@ -3441,12 +3441,12 @@ OpenAI `handleCompletions` (handlers.go ~:389) — the fifth site; apply the ide
 
 Add the `compress` import to each handlers.go.
 
-- [ ] **Step 5: Run the adapter suites**
+- [x] **Step 5: Run the adapter suites**
 
 Run: `go test ./internal/adapter/... -v -run 'Compress|WireToChatRequest'`
 Expected: PASS, plus zero regressions in each adapter's full suite: `go test ./internal/adapter/...`
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add internal/adapter/

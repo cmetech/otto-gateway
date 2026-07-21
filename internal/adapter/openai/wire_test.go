@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"otto-gateway/internal/canonical"
+	"otto-gateway/internal/plugin/compress"
 )
 
 // TestWire covers wireToChatRequest: content polymorphism, role mapping,
@@ -560,6 +561,43 @@ func TestWire_ToolCallRoundTrip(t *testing.T) {
 	}
 	if len(tool.Content) != 1 || tool.Content[0].Text != "18C sunny" {
 		t.Errorf("tool content: %+v", tool.Content)
+	}
+}
+
+// TestWireToChatRequest_CompressSuffix covers Task 9 Step 1: the
+// +compress/-compress model-suffix directive is stripped from req.Model
+// and recorded in req.Metadata[compress.MetadataKey]; absence of the
+// suffix leaves req.Model untouched and Metadata carries no compress key.
+func TestWireToChatRequest_CompressSuffix(t *testing.T) {
+	tests := []struct {
+		name          string
+		model         string
+		wantModel     string
+		wantHasKey    bool
+		wantDirective bool
+	}{
+		{"plus_compress", "qwen-2.5+compress", "qwen-2.5", true, true},
+		{"minus_compress", "qwen-2.5-compress", "qwen-2.5", true, false},
+		{"no_suffix", "qwen-2.5", "qwen-2.5", false, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			wire := &chatCompletionRequest{
+				Model:    tc.model,
+				Messages: []chatMessage{{Role: "user", Content: jsonRaw(`"hi"`)}},
+			}
+			req := wireToChatRequest(wire, fakeHTTPRequest(t))
+			if req.Model != tc.wantModel {
+				t.Errorf("Model: got %q, want %q", req.Model, tc.wantModel)
+			}
+			got, ok := req.Metadata[compress.MetadataKey].(bool)
+			if ok != tc.wantHasKey {
+				t.Errorf("Metadata[%q] present: got %v, want %v", compress.MetadataKey, ok, tc.wantHasKey)
+			}
+			if tc.wantHasKey && got != tc.wantDirective {
+				t.Errorf("Metadata[%q]: got %v, want %v", compress.MetadataKey, got, tc.wantDirective)
+			}
+		})
 	}
 }
 

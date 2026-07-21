@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"otto-gateway/internal/canonical"
+	"otto-gateway/internal/plugin/compress"
 )
 
 // onePixelPNGBase64 is a 1×1 transparent PNG encoded as base64 (66 bytes
@@ -102,6 +103,67 @@ func TestWireToChatRequest(t *testing.T) {
 			}
 			tc.assert(t, got)
 		})
+	}
+}
+
+// TestWireToChatRequest_CompressSuffix covers Task 9 Step 1: the
+// +compress/-compress model-suffix directive is stripped from Model and
+// recorded in Metadata[compress.MetadataKey] on BOTH canonical-request
+// builders (/api/chat's wireToChatRequest and /api/generate's
+// wireGenerateToChatRequest); absence of the suffix leaves Model
+// untouched with no compress key in Metadata.
+func TestWireToChatRequest_CompressSuffix(t *testing.T) {
+	tests := []struct {
+		name          string
+		model         string
+		wantModel     string
+		wantHasKey    bool
+		wantDirective bool
+	}{
+		{"plus_compress", "qwen-2.5+compress", "qwen-2.5", true, true},
+		{"minus_compress", "qwen-2.5-compress", "qwen-2.5", true, false},
+		{"no_suffix", "qwen-2.5", "qwen-2.5", false, false},
+	}
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/chat", nil)
+	for _, tc := range tests {
+		t.Run("chat/"+tc.name, func(t *testing.T) {
+			body := ollamaChatRequest{
+				Model:    tc.model,
+				Messages: []ollamaMessage{{Role: "user", Content: "hi"}},
+			}
+			got, err := wireToChatRequest(&body, r)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			assertCompressMetadata(t, got, tc.wantModel, tc.wantHasKey, tc.wantDirective)
+		})
+		t.Run("generate/"+tc.name, func(t *testing.T) {
+			body := ollamaGenerateRequest{
+				Model:  tc.model,
+				Prompt: "hi",
+			}
+			got, err := wireGenerateToChatRequest(&body, r)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			assertCompressMetadata(t, got, tc.wantModel, tc.wantHasKey, tc.wantDirective)
+		})
+	}
+}
+
+// assertCompressMetadata is the shared assertion body for
+// TestWireToChatRequest_CompressSuffix's chat/generate subtests.
+func assertCompressMetadata(t *testing.T, got *canonical.ChatRequest, wantModel string, wantHasKey, wantDirective bool) {
+	t.Helper()
+	if got.Model != wantModel {
+		t.Errorf("Model: got %q, want %q", got.Model, wantModel)
+	}
+	val, ok := got.Metadata[compress.MetadataKey].(bool)
+	if ok != wantHasKey {
+		t.Errorf("Metadata[%q] present: got %v, want %v", compress.MetadataKey, ok, wantHasKey)
+	}
+	if wantHasKey && val != wantDirective {
+		t.Errorf("Metadata[%q]: got %v, want %v", compress.MetadataKey, val, wantDirective)
 	}
 }
 

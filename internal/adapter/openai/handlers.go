@@ -11,6 +11,7 @@ import (
 	"otto-gateway/internal/canonical"
 	"otto-gateway/internal/engine"
 	"otto-gateway/internal/plugin"
+	"otto-gateway/internal/plugin/compress"
 	"otto-gateway/internal/plugin/pii"
 	"otto-gateway/internal/session"
 )
@@ -42,6 +43,13 @@ func stampPluginCtx(ctx context.Context, r *http.Request) context.Context {
 	}
 	ctx = plugin.WithRequestID(ctx, reqID)
 	ctx = pii.WithSummary(ctx, pii.NewSummary())
+	// X-Compression: strict tri-state ("1"/"true"/"on" enable,
+	// "0"/"false"/"off" disable); invalid values are ignored and absence
+	// falls through to the model-suffix directive / COMPRESSION_ENABLED
+	// default. Never treat unrecognized text as enable.
+	if on, ok := compress.ParseHeaderValue(r.Header.Get("X-Compression")); ok {
+		ctx = compress.WithHeaderDirective(ctx, on)
+	}
 	return ctx
 }
 
@@ -386,10 +394,17 @@ func (a *Adapter) handleCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Fifth builder site (review MAJOR-3): /v1/completions builds its
+	// canonical.ChatRequest inline rather than via wireToChatRequest, so
+	// the model-suffix split must be applied here directly too.
+	baseModel, compressDir := compress.SplitCompressDirective(wire.Model)
 	req := &canonical.ChatRequest{
-		Model:              wire.Model,
+		Model:              baseModel,
 		Messages:           msgs,
 		WorkingDirOverride: r.Header.Get("X-Working-Dir"),
+	}
+	if compressDir != nil {
+		req.Metadata = map[string]any{compress.MetadataKey: *compressDir}
 	}
 
 	// Phase 8 PLUG-03 — same bearer-credential ctx-stamp as

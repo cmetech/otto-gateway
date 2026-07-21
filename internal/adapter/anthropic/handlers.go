@@ -9,6 +9,7 @@ import (
 	"otto-gateway/internal/auth"
 	"otto-gateway/internal/canonical"
 	"otto-gateway/internal/plugin"
+	"otto-gateway/internal/plugin/compress"
 	"otto-gateway/internal/plugin/pii"
 	"otto-gateway/internal/session"
 )
@@ -25,6 +26,13 @@ func stampPluginCtx(ctx context.Context, r *http.Request) context.Context {
 	}
 	ctx = plugin.WithRequestID(ctx, reqID)
 	ctx = pii.WithSummary(ctx, pii.NewSummary())
+	// X-Compression: strict tri-state ("1"/"true"/"on" enable,
+	// "0"/"false"/"off" disable); invalid values are ignored and absence
+	// falls through to the model-suffix directive / COMPRESSION_ENABLED
+	// default. Never treat unrecognized text as enable.
+	if on, ok := compress.ParseHeaderValue(r.Header.Get("X-Compression")); ok {
+		ctx = compress.WithHeaderDirective(ctx, on)
+	}
 	return ctx
 }
 

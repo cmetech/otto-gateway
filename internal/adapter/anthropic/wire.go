@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"otto-gateway/internal/canonical"
+	"otto-gateway/internal/plugin/compress"
 )
 
 // claudeModelHyphenVersionRe matches Anthropic-style Claude model IDs that use
@@ -166,8 +167,12 @@ type anthropicToolChoiceObject struct {
 // boundary so this parameter is always populated when called from
 // handleMessages.
 func wireToChatRequest(w *anthropicMessagesRequest, r *http.Request, logger *slog.Logger) *canonical.ChatRequest {
+	// +compress/-compress must be stripped BEFORE hyphen-version
+	// normalization — claudeModelHyphenVersionRe is $-anchored and would
+	// not fire on a suffixed name, leaking the hyphen form to SetModel.
+	baseModel, compressDir := compress.SplitCompressDirective(w.Model)
 	req := &canonical.ChatRequest{
-		Model:              normalizeClaudeModelID(w.Model),
+		Model:              normalizeClaudeModelID(baseModel),
 		Stream:             w.Stream,
 		MaxTokens:          w.MaxTokens,
 		Temperature:        w.Temperature,
@@ -271,6 +276,13 @@ func wireToChatRequest(w *anthropicMessagesRequest, r *http.Request, logger *slo
 	//   - empty / absent / unknown shape (numeric, etc.) -> nil
 	//     (accept-and-ignore per D-10 permissive decode).
 	req.ToolChoice = decodeAnthropicToolChoice(w.ToolChoice)
+
+	if compressDir != nil {
+		if req.Metadata == nil {
+			req.Metadata = make(map[string]any, 1)
+		}
+		req.Metadata[compress.MetadataKey] = *compressDir
+	}
 
 	return req
 }

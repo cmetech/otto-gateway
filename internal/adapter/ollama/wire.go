@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"otto-gateway/internal/canonical"
+	"otto-gateway/internal/plugin/compress"
 )
 
 // decodeFormat decodes the Ollama wire `format` field (json.RawMessage) into
@@ -319,12 +320,18 @@ func wireToChatRequest(w *ollamaChatRequest, r *http.Request) (*canonical.ChatRe
 		return nil, err
 	}
 
+	// +compress/-compress must be stripped before the base model reaches
+	// the engine — see compress.SplitCompressDirective doc comment.
+	baseModel, compressDir := compress.SplitCompressDirective(w.Model)
 	req := &canonical.ChatRequest{
-		Model:              w.Model,
+		Model:              baseModel,
 		Stream:             streamEnabled(w.Stream),
 		Think:              w.Think,
 		WorkingDirOverride: r.Header.Get("X-Working-Dir"),
 		Format:             format,
+	}
+	if compressDir != nil {
+		req.Metadata = map[string]any{compress.MetadataKey: *compressDir}
 	}
 
 	// Extract the FIRST system message — the engine's buildBlocks
@@ -424,13 +431,19 @@ func wireGenerateToChatRequest(w *ollamaGenerateRequest, r *http.Request) (*cano
 		return nil, err
 	}
 
+	// +compress/-compress must be stripped before the base model reaches
+	// the engine — see compress.SplitCompressDirective doc comment.
+	baseModel, compressDir := compress.SplitCompressDirective(w.Model)
 	req := &canonical.ChatRequest{
-		Model:              w.Model,
+		Model:              baseModel,
 		System:             w.System,
 		Stream:             streamEnabled(w.Stream),
 		Think:              w.Think,
 		WorkingDirOverride: r.Header.Get("X-Working-Dir"),
 		Format:             format,
+	}
+	if compressDir != nil {
+		req.Metadata = map[string]any{compress.MetadataKey: *compressDir}
 	}
 
 	var parts []canonical.ContentPart

@@ -35,6 +35,10 @@ type fakeEngine struct {
 	lastReq  *canonical.ChatRequest
 	collectN int
 	runN     int
+	// lastCtx captures the ctx the handler passed into the engine so
+	// Task 9 X-Compression header-stamp tests can observe
+	// compress.HeaderDirectiveFromContext(lastCtx).
+	lastCtx context.Context
 
 	// Quick 260530-df2 — RunPostHooks observation. postErr is returned
 	// to the caller (the handler / CollectAnthropicChat) so tests can
@@ -48,9 +52,10 @@ type fakeEngine struct {
 	postN        int
 }
 
-func (f *fakeEngine) Collect(_ context.Context, req *canonical.ChatRequest) (*canonical.ChatResponse, error) {
+func (f *fakeEngine) Collect(ctx context.Context, req *canonical.ChatRequest) (*canonical.ChatResponse, error) {
 	f.collectN++
 	f.lastReq = req
+	f.lastCtx = ctx
 	if f.collectErr != nil {
 		return nil, f.collectErr
 	}
@@ -76,17 +81,19 @@ func (f *fakeEngine) RunPostHooks(_ context.Context, _ *canonical.ChatRequest, r
 // drive the T-5b re-route path (stream flipped to false by a Pre hook
 // post-Run) can set collectResp and assert the handler renders the
 // non-streaming JSON shape.
-func (f *fakeEngine) CollectFromRun(_ context.Context, _ RunHandle, req *canonical.ChatRequest) (*canonical.ChatResponse, error) {
+func (f *fakeEngine) CollectFromRun(ctx context.Context, _ RunHandle, req *canonical.ChatRequest) (*canonical.ChatResponse, error) {
 	f.lastReq = req
+	f.lastCtx = ctx
 	if f.collectErr != nil {
 		return nil, f.collectErr
 	}
 	return f.collectResp, nil
 }
 
-func (f *fakeEngine) Run(_ context.Context, req *canonical.ChatRequest) (RunHandle, error) {
+func (f *fakeEngine) Run(ctx context.Context, req *canonical.ChatRequest) (RunHandle, error) {
 	f.runN++
 	f.lastReq = req
+	f.lastCtx = ctx
 	if f.runErr != nil {
 		return nil, f.runErr
 	}

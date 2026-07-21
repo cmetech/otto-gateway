@@ -170,13 +170,24 @@ type fakeEngine struct {
 	postN        int
 	lastPostResp *canonical.ChatResponse
 	postErr      error
+
+	// lastReq / lastCtx capture the canonical request and ctx the
+	// handler passed into the engine so Task 9 X-Compression
+	// header-stamp tests can observe compress.HeaderDirectiveFromContext
+	// and the stripped model.
+	lastReq *canonical.ChatRequest
+	lastCtx context.Context
 }
 
-func (f *fakeEngine) Collect(_ context.Context, _ *canonical.ChatRequest) (*canonical.ChatResponse, error) {
+func (f *fakeEngine) Collect(ctx context.Context, req *canonical.ChatRequest) (*canonical.ChatResponse, error) {
+	f.lastReq = req
+	f.lastCtx = ctx
 	return f.collectResp, f.collectErr
 }
 
-func (f *fakeEngine) Run(_ context.Context, _ *canonical.ChatRequest) (RunHandle, error) {
+func (f *fakeEngine) Run(ctx context.Context, req *canonical.ChatRequest) (RunHandle, error) {
+	f.lastReq = req
+	f.lastCtx = ctx
 	if f.runErr != nil {
 		return nil, f.runErr
 	}

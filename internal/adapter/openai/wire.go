@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"otto-gateway/internal/canonical"
+	"otto-gateway/internal/plugin/compress"
 )
 
 // ----------------------------------------------------------------------------
@@ -134,8 +135,11 @@ type openAIContentPart struct {
 // layer (validation lives in handleChatCompletions which checks messages
 // non-empty before calling).
 func wireToChatRequest(w *chatCompletionRequest, r *http.Request) *canonical.ChatRequest {
+	// +compress/-compress must be stripped before the base model reaches
+	// the engine — see compress.SplitCompressDirective doc comment.
+	baseModel, compressDir := compress.SplitCompressDirective(w.Model)
 	req := &canonical.ChatRequest{
-		Model:              w.Model,
+		Model:              baseModel,
 		Stream:             w.Stream,
 		WorkingDirOverride: r.Header.Get("X-Working-Dir"),
 	}
@@ -237,6 +241,13 @@ func wireToChatRequest(w *chatCompletionRequest, r *http.Request) *canonical.Cha
 	// type), accept-and-ignore — leave ToolChoice nil. Mirrors the
 	// decodeMessageContent string-or-array discipline.
 	req.ToolChoice = decodeToolChoice(w.ToolChoice)
+
+	if compressDir != nil {
+		if req.Metadata == nil {
+			req.Metadata = make(map[string]any, 1)
+		}
+		req.Metadata[compress.MetadataKey] = *compressDir
+	}
 
 	return req
 }

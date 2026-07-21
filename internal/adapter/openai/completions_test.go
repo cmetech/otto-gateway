@@ -464,9 +464,14 @@ type captureEngine struct {
 	collectResp *canonical.ChatResponse
 	collectErr  error
 	captureReq  **canonical.ChatRequest
+	// lastCtx captures the ctx Collect received so Task 9
+	// X-Compression header-stamp tests can observe
+	// compress.HeaderDirectiveFromContext(lastCtx).
+	lastCtx context.Context
 }
 
-func (c *captureEngine) Collect(_ context.Context, req *canonical.ChatRequest) (*canonical.ChatResponse, error) {
+func (c *captureEngine) Collect(ctx context.Context, req *canonical.ChatRequest) (*canonical.ChatResponse, error) {
+	c.lastCtx = ctx
 	if c.captureReq != nil {
 		*c.captureReq = req
 	}

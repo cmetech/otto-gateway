@@ -26,6 +26,10 @@ type fakeEngine struct {
 	// lastReq captures the canonical request the handler synthesized
 	// so tests can assert wire→canonical translation passed through.
 	lastReq *canonical.ChatRequest
+	// lastCtx captures the ctx the handler passed into the engine so
+	// Task 9 X-Compression header-stamp tests can observe
+	// compress.HeaderDirectiveFromContext(lastCtx).
+	lastCtx context.Context
 
 	// runChunks is the set of canonical.Chunk values Engine.Run sends during
 	// streaming tests. Nil means the stream closes immediately (done:true only).
@@ -53,8 +57,9 @@ func (f *fakeEngine) RunPostHooks(_ context.Context, _ *canonical.ChatRequest, r
 	return f.postErr
 }
 
-func (f *fakeEngine) Collect(_ context.Context, req *canonical.ChatRequest) (*canonical.ChatResponse, error) {
+func (f *fakeEngine) Collect(ctx context.Context, req *canonical.ChatRequest) (*canonical.ChatResponse, error) {
 	f.lastReq = req
+	f.lastCtx = ctx
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -66,8 +71,9 @@ func (f *fakeEngine) Collect(_ context.Context, req *canonical.ChatRequest) (*ca
 // runChunks). Tests exercising the T-5b re-route path (stream flipped to
 // false by a Pre hook post-Run) set f.resp and assert the handler
 // renders the non-streaming JSON shape.
-func (f *fakeEngine) CollectFromRun(_ context.Context, _ RunHandle, req *canonical.ChatRequest) (*canonical.ChatResponse, error) {
+func (f *fakeEngine) CollectFromRun(ctx context.Context, _ RunHandle, req *canonical.ChatRequest) (*canonical.ChatResponse, error) {
 	f.lastReq = req
+	f.lastCtx = ctx
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -82,7 +88,9 @@ func (f *fakeEngine) CollectFromRun(_ context.Context, _ RunHandle, req *canonic
 // Run builds a fakeRunHandle populated with runChunks and closes the channel,
 // enabling streaming handler tests. runErr, if non-nil, causes Run to return
 // an error directly (before streaming begins).
-func (f *fakeEngine) Run(_ context.Context, _ *canonical.ChatRequest) (RunHandle, error) {
+func (f *fakeEngine) Run(ctx context.Context, req *canonical.ChatRequest) (RunHandle, error) {
+	f.lastReq = req
+	f.lastCtx = ctx
 	if f.runErr != nil {
 		return nil, f.runErr
 	}

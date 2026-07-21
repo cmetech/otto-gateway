@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"otto-gateway/internal/canonical"
+	"otto-gateway/internal/plugin/compress"
 )
 
 // captureLogger returns a logger whose output is captured in the
@@ -649,4 +650,64 @@ func TestWireToChatRequest_ToolChoice_Unknown(t *testing.T) {
 	if req.ToolChoice != nil {
 		t.Errorf("req.ToolChoice: got %+v, want nil (unknown shape accept-and-ignore)", req.ToolChoice)
 	}
+}
+
+// ----------------------------------------------------------------------------
+// Task 9 — compress model-suffix directive (Step 1 wire-level tests)
+// ----------------------------------------------------------------------------
+
+// TestWireToChatRequest_CompressSuffixThenNormalize is the critical
+// interaction test: the +compress/-compress directive MUST be stripped
+// BEFORE hyphen-version normalization, else claudeModelHyphenVersionRe's
+// $-anchor never fires on the suffixed name and the hyphenated ID leaks
+// through to SetModel (see compress.SplitCompressDirective doc comment).
+func TestWireToChatRequest_CompressSuffixThenNormalize(t *testing.T) {
+	logger, _ := captureLogger()
+
+	t.Run("plus_compress_stripped_before_normalize", func(t *testing.T) {
+		wire := &anthropicMessagesRequest{
+			Model:     "claude-sonnet-4-6+compress",
+			MaxTokens: 256,
+			Messages:  []anthropicWireMessage{{Role: "user", Content: json.RawMessage(`"hi"`)}},
+		}
+		req := wireToChatRequest(wire, newTestRequest(t, ""), logger)
+		if req.Model != "claude-sonnet-4.6" {
+			t.Errorf("Model: got %q, want claude-sonnet-4.6 (suffix stripped BEFORE hyphen normalize)", req.Model)
+		}
+		got, ok := req.Metadata[compress.MetadataKey].(bool)
+		if !ok || !got {
+			t.Errorf("Metadata[%q]: got %v (present=%v), want true", compress.MetadataKey, got, ok)
+		}
+	})
+
+	t.Run("minus_compress", func(t *testing.T) {
+		wire := &anthropicMessagesRequest{
+			Model:     "claude-sonnet-4-6-compress",
+			MaxTokens: 256,
+			Messages:  []anthropicWireMessage{{Role: "user", Content: json.RawMessage(`"hi"`)}},
+		}
+		req := wireToChatRequest(wire, newTestRequest(t, ""), logger)
+		if req.Model != "claude-sonnet-4.6" {
+			t.Errorf("Model: got %q, want claude-sonnet-4.6", req.Model)
+		}
+		got, ok := req.Metadata[compress.MetadataKey].(bool)
+		if !ok || got {
+			t.Errorf("Metadata[%q]: got %v (present=%v), want false", compress.MetadataKey, got, ok)
+		}
+	})
+
+	t.Run("no_suffix_no_metadata_key", func(t *testing.T) {
+		wire := &anthropicMessagesRequest{
+			Model:     "claude-sonnet-4-6",
+			MaxTokens: 256,
+			Messages:  []anthropicWireMessage{{Role: "user", Content: json.RawMessage(`"hi"`)}},
+		}
+		req := wireToChatRequest(wire, newTestRequest(t, ""), logger)
+		if req.Model != "claude-sonnet-4.6" {
+			t.Errorf("Model: got %q, want claude-sonnet-4.6", req.Model)
+		}
+		if _, ok := req.Metadata[compress.MetadataKey]; ok {
+			t.Errorf("Metadata[%q]: got present, want absent (no suffix)", compress.MetadataKey)
+		}
+	})
 }
