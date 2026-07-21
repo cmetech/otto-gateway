@@ -21,6 +21,16 @@ import (
 // should reference canonical.ErrPoolExhausted directly.
 var ErrPoolExhausted = canonical.ErrPoolExhausted
 
+// errRespawnPoolClosed is the sentinel respawnSlot wraps when it observes
+// the pool closed at the step-4 swap point (round-4 review: successful lazy
+// respawn racing shutdown). It is NOT a spawn failure — recordSpawnErr is
+// deliberately skipped for it — and it is distinct from the ctx-cancellation
+// aborts so callers can classify a shutdown abort without mis-logging a pool
+// incident. Callers key their clean shutdown return off the p.closed check
+// that produced it (see NewSession's requeue arms and recycleSlot's closed
+// branch), so this sentinel is primarily for clarity + future errors.Is use.
+var errRespawnPoolClosed = errors.New("pool: respawn aborted: pool closed")
+
 // D-18-07 REL-HTTP-07 test-only panic-injection seams. The relevant
 // goroutine invokes its probe once near the top of its body; tests
 // install `func() { panic(...) }` to drive the defer-recover branch.
@@ -661,6 +671,38 @@ func (p *Pool) respawnSlot(ctx context.Context, slot *Slot, cause respawnCause) 
 	// p.mu is safe — the spawned goroutine simply parks on the lock
 	// until we unlock.
 	p.mu.Lock()
+	// Round-4 review (shutdown race): Pool.Close can run to completion while
+	// this respawn's Spawn/Initialize blocks. closeAll snapshots {label,
+	// client} under this SAME p.mu (the OLD client), closes it, and sets
+	// p.closed — and lazy respawns are NOT recycleWG-tracked, so Close does not
+	// wait for us. Without this guard the swap below would install newClient
+	// AFTER closeAll's snapshot, leaking the fresh kiro-cli subprocess past
+	// shutdown (NewSession's post-acquire closed check only best-effort
+	// Cancels the session — a notification, not a worker teardown). Because
+	// closeAll sets p.closed AND snapshots clients under one p.mu, exactly one
+	// side closes the replacement: we snapshot the OLD client BEFORE the swap
+	// (the swap no longer happens when closed), so respawnSlot owns closing
+	// newClient here. Do NOT recordSpawnErr — a shutdown abort is not a spawn
+	// failure (it must not bump lastSpawnErr).
+	if p.closed {
+		// Clear the recycle-race flag so no slot is left permanently
+		// "respawning"; on the recycle cause also mark dead in the same
+		// critical section, matching the atomic respawning→dead transition of
+		// the spawn/init error arms above (step 1 already closed the OLD
+		// client). On the lazy cause the slot was already dead on entry. Post-
+		// shutdown the state is largely moot (closeAll nilled p.all), but keep
+		// the invariant intact.
+		slot.respawning = false
+		if cause == respawnCauseRecycle {
+			slot.dead = true
+		}
+		p.mu.Unlock()
+		// Close the fresh client OUTSIDE p.mu (never a client call under the
+		// lock). closeAll never sees newClient — it was not swapped in — so
+		// this is the sole close of it; no double-close.
+		_ = newClient.Close()
+		return fmt.Errorf("pool: respawn slot %s aborted: %w", slot.Label, errRespawnPoolClosed)
+	}
 	slot.Client = newClient
 	slot.dead = false
 	// Clear the recycle-race flag in the same critical section that swaps the

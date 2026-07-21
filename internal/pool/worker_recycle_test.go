@@ -1201,3 +1201,99 @@ func TestPool_WorkerRecycleFailure_AtomicDeadNotRespawning(t *testing.T) {
 		t.Fatal("slot still respawning after failed recycle; want (dead=true, respawning=false) — atomic transition regressed")
 	}
 }
+
+// TestPool_RespawnCloseRace_ClosesReplacement is the round-4 review guard: a
+// SUCCESSFUL lazy respawn that finishes spawning AFTER Pool.Close ran to
+// completion must close the fresh replacement client itself (its swap-under-mu
+// sees p.closed and aborts) instead of leaking the fresh kiro-cli process.
+// Lazy respawns are NOT recycleWG-tracked, so Close does not wait for the
+// parked Spawn — the only thing that reaps the replacement is respawnSlot's own
+// p.closed branch at the step-4 swap point.
+//
+// Determinism (no sleeps as sync): the gatedRecycleFactory dispenses the warmup
+// client immediately, then blocks the SECOND Spawn (the lazy respawn) and
+// signals spawnEntered from inside it — so receiving spawnEntered places us
+// deterministically with respawnSlot parked in Spawn (the OLD client already
+// closed) while Close runs. The gate is released only after Close returns.
+//
+// Red-check (production reverted): without the p.closed guard in respawnSlot's
+// step-4 critical section, the swap installs newClient after closeAll's
+// snapshot, so nothing closes it — newClient.closeCallCount stays 0 and this
+// test fails on the closeCalls assertion.
+func TestPool_RespawnCloseRace_ClosesReplacement(t *testing.T) {
+	oldClient := &fakeClient{models: []canonical.ModelInfo{{ID: "auto"}}, pid: 1001}
+	newClient := &fakeClient{pid: 1002}
+	gf := &gatedRecycleFactory{
+		clients:      []pool.PoolClient{oldClient, newClient},
+		spawnEntered: make(chan struct{}),
+		gate:         make(chan struct{}),
+	}
+	p := pool.New(pool.Config{
+		Logger: testutil.Logger(t),
+		Size:   1,
+		// MaxWorkerTurns unset (0): no recycling — exercise the LAZY respawn path.
+		Factory: gf,
+	})
+	p.SetCatalogRetryForTesting(nil) // exactly one warmup catalog probe, no backoff
+	if err := p.Warmup(context.Background()); err != nil {
+		t.Fatalf("Warmup(): %v", err)
+	}
+
+	// Kill the warmup worker so the next acquire takes the lazy respawn path.
+	oldClient.fireDone()
+	if !pollUntil(time.Second, func() bool { return p.Stats().Alive == 0 }) {
+		t.Fatal("slot did not flip dead after Done() fire")
+	}
+
+	// NewSession acquires the dead slot and enters the synchronous lazy respawn;
+	// respawnSlot closes the OLD client (step 1) then parks in the gated Spawn.
+	type result struct {
+		sid string
+		err error
+	}
+	resC := make(chan result, 1)
+	go func() {
+		sid, err := p.NewSession(context.Background(), "")
+		resC <- result{sid, err}
+	}()
+	<-gf.spawnEntered // respawnSlot is parked inside the replacement Spawn
+
+	// Close runs to completion while the respawn's Spawn is parked. Lazy
+	// respawns are not recycleWG-tracked, so Close must NOT block on it.
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- p.Close() }()
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("Close(): %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Close did not finish while the lazy respawn Spawn was parked (lazy respawns must not be waited on)")
+	}
+
+	// Release the gate: Spawn returns newClient → Initialize → the step-4 swap
+	// observes p.closed and must close the fresh client rather than leak it.
+	close(gf.gate)
+
+	res := <-resC
+	if res.err == nil {
+		t.Fatalf("NewSession: want a shutdown error, got sid=%q nil err", res.sid)
+	}
+	if !strings.Contains(res.err.Error(), "closed") {
+		t.Fatalf("NewSession error = %q; want a pool-closed shutdown error", res.err.Error())
+	}
+	if res.sid != "" {
+		t.Fatalf("NewSession sid = %q; want empty on the shutdown race", res.sid)
+	}
+
+	// The replacement client must have been closed exactly once by respawnSlot's
+	// p.closed branch — closeAll never saw it (it was never swapped into p.all).
+	if !pollUntil(time.Second, func() bool { return newClient.closeCallCount() == 1 }) {
+		t.Fatalf("replacement client closeCalls = %d; want 1 (respawnSlot closed it on the shutdown-race branch — otherwise the fresh kiro-cli process leaks past Close)", newClient.closeCallCount())
+	}
+
+	// No slot was requeued — the dead-slot branch saw p.closed and dropped.
+	if s, ok := p.WaitForSlotRelease(100 * time.Millisecond); ok {
+		t.Fatalf("slot %q was requeued after Close; want no requeue on the shutdown race (closeAll owns cleanup)", s.Label)
+	}
+}
