@@ -155,10 +155,13 @@ handled at that turn's own release.)
 H-1).** Under `p.mu`, `releaseOrRecycle`:
 
 1. reads `slot.turns`;
-2. if `MaxWorkerTurns == 0 || turns < MaxWorkerTurns || p.closed` → push to
-   `p.slots` (today's behavior; the buffered send cannot block — capacity
-   equals slot count);
-3. otherwise **commits**: `p.recycleWG.Add(1)` *inside this critical
+2. if `p.closed` → **DROP** the slot (`return`, no requeue — `closeAll` owns
+   cleanup via the `p.all` snapshot; a post-close push would feed a closed
+   client to a racing fast-path acquire, surfacing a confusing 500 instead of
+   the clean `pool: closed`);
+3. else if `MaxWorkerTurns == 0 || turns < MaxWorkerTurns` → push to `p.slots`
+   (the buffered send cannot block — capacity equals slot count);
+4. otherwise **commits**: `p.recycleWG.Add(1)` *inside this critical
    section*, then unlock and launch the goroutine.
 
 Because `closeAll` sets `p.closed` under the same mutex, every accepted

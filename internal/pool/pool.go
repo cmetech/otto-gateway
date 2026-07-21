@@ -583,8 +583,12 @@ func (p *Pool) respawnSlot(ctx context.Context, slot *Slot, cause respawnCause) 
 	if slot.Client != nil {
 		_ = slot.Client.Close()
 	}
-	// Step 2: spawn NEW client. ctx is honored — caller cancellation
-	// during a slow kiro-cli spawn aborts the respawn promptly (D-02).
+	// Step 2: spawn NEW client. ctx bounds Initialize (step 3), NOT the
+	// process start (Finding 3 / L-4 contract): acpClientFactory.Spawn
+	// discards ctx — a blocked kiro-cli process start is not interruptible.
+	// The D-02 caller-cancellation abort therefore applies at the
+	// Initialize / RPC layer, where ctx is honored; a slow exec here runs to
+	// completion (or OS failure) regardless of ctx.
 	newClient, err := p.cfg.Factory.Spawn(ctx, p.acpSlotConfig())
 	if err != nil {
 		// WR-07: distinguish ctx-cancellation (caller disconnect, the
