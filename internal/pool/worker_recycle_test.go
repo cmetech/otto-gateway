@@ -696,6 +696,166 @@ func TestPool_WorkerRecycleConcurrentCloseNoRaceNoLeak(t *testing.T) {
 	wg.Wait()
 }
 
+// gatedSizedFactory is the multi-slot analogue of gatedRecycleFactory: the
+// first warmupCount Spawns (the pool's warmup) return immediately, and every
+// subsequent (recycle) Spawn signals spawnEntered — buffered, so the send never
+// blocks and doubles as a race-free "a recycle reached Spawn" probe — then
+// blocks on gate. Needed because gatedRecycleFactory only lets a SINGLE warmup
+// spawn through, which cannot warm a size-2 pool.
+type gatedSizedFactory struct {
+	mu           sync.Mutex
+	clients      []pool.PoolClient
+	idx          int
+	warmupCount  int
+	spawned      int
+	spawnEntered chan struct{}
+	gate         chan struct{}
+}
+
+func (ff *gatedSizedFactory) Spawn(ctx context.Context, _ acp.Config) (pool.PoolClient, error) {
+	ff.mu.Lock()
+	n := ff.spawned
+	ff.spawned++
+	ff.mu.Unlock()
+	if n >= ff.warmupCount {
+		ff.spawnEntered <- struct{}{} // buffered: non-blocking arrival probe
+		select {
+		case <-ff.gate:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return ff.next()
+}
+
+func (ff *gatedSizedFactory) next() (pool.PoolClient, error) {
+	ff.mu.Lock()
+	defer ff.mu.Unlock()
+	if ff.idx >= len(ff.clients) {
+		return nil, errors.New("gatedSizedFactory: script exhausted")
+	}
+	c := ff.clients[ff.idx]
+	ff.idx++
+	return c, nil
+}
+
+// TestPool_ScheduledRecycle_SerializedAcrossSlots pins the single-recycle-in-
+// flight guard (design §5, "thundering respawn"): a size-2 pool must never take
+// both workers down for maintenance at once. While slot-0's scheduled recycle is
+// in flight (parked inside the gated Spawn), slot-1 crossing its own turn
+// threshold must DEFER — the worker re-enters the free queue and keeps serving —
+// so the pool never drops below one live worker. Once slot-0's recycle
+// completes, slot-1 recycles on its next threshold crossing.
+//
+// Determinism (no sleeps as sync): the gated factory parks slot-0's recycle
+// Spawn and signals spawnEntered from inside it; slot-1's deferral is emitted
+// synchronously on the release path (Result() is drained inline in
+// runOneRequest), so the deferred_concurrent Debug log is present the instant
+// the request returns. Requests are issued one at a time, so the buffered free
+// queue is strictly FIFO and slot routing is deterministic.
+//
+// Red-check: removing the `recyclesInFlight > 0` defer arm in releaseOrRecycle
+// makes slot-1's threshold crossing COMMIT a second recycle — the
+// deferred_concurrent log never appears (step 2 fails), a second
+// "pool: slot recycling" line and a second spawnEntered fire.
+func TestPool_ScheduledRecycle_SerializedAcrossSlots(t *testing.T) {
+	logBuf := &syncBuf{}
+	logger := slog.New(slog.NewJSONHandler(logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	w0 := &fakeClient{models: []canonical.ModelInfo{{ID: "auto"}}, pid: 1000} // slot-0 warmup (catalog source)
+	w1 := &fakeClient{pid: 1010}                                              // slot-1 warmup
+	r0 := &fakeClient{pid: 1001}                                              // slot-0 recycle replacement
+	r1 := &fakeClient{pid: 1002}                                              // slot-1 recycle replacement
+	// Spares keep a neutered-guard red-check run from exhausting the script.
+	spare1 := &fakeClient{pid: 1003}
+	spare2 := &fakeClient{pid: 1004}
+	gf := &gatedSizedFactory{
+		clients:      []pool.PoolClient{w0, w1, r0, r1, spare1, spare2},
+		warmupCount:  2,
+		spawnEntered: make(chan struct{}, 8),
+		gate:         make(chan struct{}),
+	}
+	p := pool.New(pool.Config{
+		Logger:         logger,
+		Size:           2,
+		MaxWorkerTurns: 2,
+		Factory:        gf,
+	})
+	var gateOnce sync.Once
+	openGate := func() { gateOnce.Do(func() { close(gf.gate) }) }
+	// Always open the gate (so any parked recycle Spawn can finish) and Close, even
+	// on an early t.Fatalf, so recycleWG.Wait cannot hang and goleak stays clean.
+	t.Cleanup(func() {
+		openGate()
+		_ = p.Close()
+	})
+	if err := p.Warmup(context.Background()); err != nil {
+		t.Fatalf("Warmup(): %v", err)
+	}
+	// After warmup: slot-0 turns=1 (catalog probe), slot-1 turns=0. With
+	// MaxWorkerTurns=2 neither recycles at warmup. Free queue = [slot-0, slot-1].
+
+	// Step 1: drive slot A (slot-0, turns 1→2) over threshold. Its release commits
+	// the recycle, whose Spawn parks inside the gate.
+	runOneRequest(t, p)
+	<-gf.spawnEntered // slot-0's recycle Spawn is parked.
+	if got := p.Recycles(); got != 0 {
+		t.Fatalf("Recycles() with A parked = %d; want 0 (A mid-spawn, not yet complete)", got)
+	}
+	if n := strings.Count(logBuf.String(), "pool: slot recycling"); n != 1 {
+		t.Fatalf(`"pool: slot recycling" count with A parked = %d; want 1 (A only)`, n)
+	}
+
+	// Step 2: drive slot B (slot-1) over threshold while A is parked. slot-1 takes
+	// two requests: turns 0→1 (below threshold → plain requeue), then 1→2
+	// (threshold crossed → must DEFER because A's recycle is already in flight).
+	runOneRequest(t, p)
+	runOneRequest(t, p)
+
+	// The deferral is emitted synchronously on the release path, so it is present
+	// the instant the request returns — no poll needed.
+	if !strings.Contains(logBuf.String(), "pool.recycle.deferred_concurrent") {
+		t.Fatal(`missing "pool.recycle.deferred_concurrent" — B's threshold recycle was not deferred while A was in flight`)
+	}
+	// No SECOND recycle was scheduled: still exactly one "pool: slot recycling",
+	// no second spawnEntered, and Recycles() still 0 (A parked).
+	if n := strings.Count(logBuf.String(), "pool: slot recycling"); n != 1 {
+		t.Fatalf(`"pool: slot recycling" count after B deferred = %d; want 1 (B must not have launched a recycle)`, n)
+	}
+	select {
+	case <-gf.spawnEntered:
+		t.Fatal("a second recycle Spawn entered while one was already in flight — guard failed to serialize")
+	default:
+	}
+	if got := p.Recycles(); got != 0 {
+		t.Fatalf("Recycles() after B deferred = %d; want 0", got)
+	}
+
+	// Product property: B still SERVES while A is down for maintenance (no outage).
+	// The only available worker is slot-1, so a completing request proves it.
+	runOneRequest(t, p)
+
+	// Step 3: release the gate → A's recycle completes.
+	openGate()
+	if !pollUntil(2*time.Second, func() bool { return p.Recycles() == 1 }) {
+		t.Fatalf("Recycles() after gate release = %d; want 1 (A completed)", p.Recycles())
+	}
+	if turns, ok := p.SlotTurns("slot-0"); !ok || turns != 0 {
+		t.Fatalf("SlotTurns(slot-0) after recycle = (%d, %v); want (0, true) (fresh worker)", turns, ok)
+	}
+
+	// Step 4: drive slot B over threshold again → NOW it recycles (guard clear).
+	// FIFO front is slot-1 (slot-0 was re-queued behind it in step 3).
+	runOneRequest(t, p)
+	<-gf.spawnEntered // slot-1's recycle Spawn (gate already closed → proceeds).
+	if !pollUntil(2*time.Second, func() bool { return p.Recycles() == 2 }) {
+		t.Fatalf("Recycles() after B recycles = %d; want 2", p.Recycles())
+	}
+	if n := strings.Count(logBuf.String(), "pool: slot recycling"); n != 2 {
+		t.Fatalf(`"pool: slot recycling" count at end = %d; want 2 (A then B, serialized)`, n)
+	}
+}
+
 // syncBuf is a goroutine-safe io.Writer over a bytes.Buffer so the exit-watcher
 // goroutine's slog output can be inspected from the test goroutine without a
 // data race (the -race gate would otherwise flag concurrent Write/String).

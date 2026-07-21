@@ -359,10 +359,16 @@ per CI parity.
 
 ## 5. Risks / open items
 
-1. **Thundering respawn:** with `POOL_SIZE=2`, both workers can recycle
-   concurrently, briefly leaving zero free slots. Accepted for desktop
-   (bounded by `AcquireTimeout` 503 + retry); revisit with jitter/
-   singleflight only if observed in practice.
+1. **Thundering respawn:** ~~with `POOL_SIZE=2`, both workers can recycle
+   concurrently, briefly leaving zero free slots.~~ **Mitigated:** a
+   single-recycle-in-flight guard (`Pool.recyclesInFlight`, an int under
+   `p.mu` decided atomically with the `recycleWG.Add` commit in
+   `releaseOrRecycle`) caps concurrent scheduled recycles at one, so at most
+   one worker is ever down for maintenance at a time and a `POOL_SIZE=2` pool
+   always keeps a live worker. Deferral is lossless: a worker crossing the
+   threshold while a recycle is already in flight is returned to the free
+   queue and re-trips at its next release (serving a few turns past the soft
+   budget is harmless).
 2. **Turn ≠ memory:** a 5-token turn and a 200 k-token workflow turn count
    equally. Default 20 is a tunable guess; observe dashboard RSS to tune.
    RSS trigger remains a possible v2.

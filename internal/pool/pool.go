@@ -210,6 +210,19 @@ type Pool struct {
 	// finding H-1).
 	recycleWG sync.WaitGroup
 
+	// recyclesInFlight is the count of scheduled recycles currently admitted
+	// (from the recycleWG.Add commit in releaseOrRecycle until the recycleSlot
+	// goroutine exits). It is an int under p.mu — NOT a separate atomic —
+	// because the "is a recycle already in flight?" decision must be atomic
+	// with the commit that increments it (two concurrent releases crossing the
+	// threshold at once must not both admit). It bounds concurrent scheduled
+	// recycles to ONE so a small pool (e.g. POOL_SIZE=2) never takes both
+	// workers down for maintenance simultaneously (design §5 "thundering
+	// respawn"). Warmup's synchronous threshold recycle does NOT touch this —
+	// it calls respawnSlot directly (boot-time, sequential); only the
+	// releaseOrRecycle → recycleSlot scheduled path is gated.
+	recyclesInFlight int
+
 	// recycleLaunchHook is a test-only seam (guarded by p.mu) fired by
 	// releaseOrRecycle AFTER recycle admission (post-unlock) and BEFORE the
 	// recycle goroutine launch, letting shutdown-interleaving tests wedge
@@ -1593,8 +1606,39 @@ func (p *Pool) releaseOrRecycle(slot *Slot) {
 		}
 		return
 	}
-	// Commit: Add(1) inside the same critical section that read p.closed.
+	// Single-recycle-in-flight guard (design §5, "thundering respawn"): at
+	// most ONE scheduled recycle may be in flight at a time so a small pool
+	// (e.g. POOL_SIZE=2) never has both workers down for maintenance at once.
+	// When a recycle is already in flight, DEFER this one — return the slot to
+	// the free queue via the same guarded send as the below-threshold arm. The
+	// worker keeps serving and re-trips the threshold at its next release;
+	// serving a few turns past the soft budget is harmless. The read of
+	// recyclesInFlight and the increment below both sit in this one p.mu
+	// critical section, so two releases crossing the threshold at once cannot
+	// both admit. Logged at Debug AFTER unlock (never a hot line under p.mu).
+	if p.recyclesInFlight > 0 {
+		var requeueDropped bool
+		select {
+		case p.slots <- slot:
+		default:
+			requeueDropped = true
+		}
+		p.mu.Unlock()
+		if requeueDropped {
+			if p.cfg.Logger != nil {
+				p.cfg.Logger.Error("pool: release requeue failed", "label", slot.Label)
+			}
+			return
+		}
+		p.debugLog("pool.recycle.deferred_concurrent", "label", slot.Label, "turns", turns)
+		return
+	}
+	// Commit: Add(1) + mark the recycle in flight inside the same critical
+	// section that read p.closed AND recyclesInFlight. The recycleWG.Add keeps
+	// the H-1 shutdown-ordering property; the recyclesInFlight bump rides the
+	// same lock so the admit decision is atomic with the commit.
 	p.recycleWG.Add(1)
+	p.recyclesInFlight++
 	hook := p.recycleLaunchHook
 	p.mu.Unlock()
 
@@ -1617,6 +1661,21 @@ func (p *Pool) releaseOrRecycle(slot *Slot) {
 // factory Spawn, which discards the ctx (Finding 4 — see recycleRespawnTimeout).
 func (p *Pool) recycleSlot(slot *Slot, turns int) {
 	defer p.recycleWG.Done()
+	// Release the single-recycle-in-flight slot on EVERY exit path (early
+	// <-p.closing drop, closed-branch drop, error requeue, success requeue) so
+	// the next threshold crossing can admit its recycle. Structured as a defer
+	// that takes p.mu solely for the decrement: p.mu is NOT held at any return
+	// point in this function (the closed and success branches both unlock
+	// before returning, and the early closing-drop returns before any lock),
+	// so this can never deadlock against a lock recycleSlot already holds.
+	// Ordered after recycleWG.Done in the defer list so it runs FIRST (LIFO) —
+	// the decrement is a live-pool admission signal, independent of the
+	// shutdown drain, so its ordering vs recycleWG.Done does not matter.
+	defer func() {
+		p.mu.Lock()
+		p.recyclesInFlight--
+		p.mu.Unlock()
+	}()
 	// Shutdown won the race after commit-to-recycle: drop the slot without
 	// respawning. closeAll finds the (old) client via p.all. (review H-1)
 	select {
