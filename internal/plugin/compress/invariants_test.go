@@ -172,6 +172,13 @@ func TestInvariants_Property(t *testing.T) {
 			structural[i] = structuralKey(t, msgs[i])
 		}
 		toolsSnap := mustJSON(t, tools)
+		// Reviewer-mandated invariant: compression cannot INCREASE any
+		// individual message's estMessageTokens (message count/order are
+		// already asserted fixed above/below).
+		tokensBefore := make([]int, len(msgs))
+		for i := range msgs {
+			tokensBefore[i] = estMessageTokens(msgs[i])
+		}
 
 		resp, err := h.Before(context.Background(), req)
 		if resp != nil || err != nil {
@@ -194,6 +201,11 @@ func TestInvariants_Property(t *testing.T) {
 		for i := range req.Messages {
 			if got := structuralKey(t, req.Messages[i]); got != structural[i] {
 				t.Fatalf("structural fields changed on msg %d:\n got %s\nwant %s", i, got, structural[i])
+			}
+		}
+		for i := range req.Messages {
+			if got := estMessageTokens(req.Messages[i]); got > tokensBefore[i] {
+				t.Fatalf("estMessageTokens INCREASED on msg %d: %d -> %d (compression must never grow a message)", i, tokensBefore[i], got)
 			}
 		}
 	})
@@ -245,6 +257,10 @@ func TestInvariants_Stage4ForcedProperty(t *testing.T) {
 			structural[i] = structuralKey(t, msgs[i])
 		}
 		querySnap := mustJSON(t, msgs[len(msgs)-1])
+		tokensBefore := make([]int, len(msgs))
+		for i := range msgs {
+			tokensBefore[i] = estMessageTokens(msgs[i])
+		}
 
 		h := &Hook{Enabled: true, TriggerTokens: 1, BudgetTokens: 1, ProtectTail: 0, ToolKeep: 1, Logger: slog.Default()}
 		req := &canonical.ChatRequest{Messages: msgs}
@@ -266,6 +282,11 @@ func TestInvariants_Stage4ForcedProperty(t *testing.T) {
 		}
 		if got := mustJSON(t, req.Messages[len(req.Messages)-1]); got != querySnap {
 			t.Fatal("pinned question mutated under forced pruning")
+		}
+		for i := range req.Messages {
+			if got := estMessageTokens(req.Messages[i]); got > tokensBefore[i] {
+				t.Fatalf("estMessageTokens INCREASED on msg %d under forced pruning: %d -> %d", i, tokensBefore[i], got)
+			}
 		}
 	})
 }

@@ -288,12 +288,16 @@ func TestCollapseDuplicates_MultipartNotConfusedWithFlatText(t *testing.T) {
 }
 
 func TestReplaceText_PreservesStructure(t *testing.T) {
+	// RoleTool: Text is the only VISIBLE prose carrier (build_acp.go:198-
+	// 203 renders only joinTextParts for RoleTool). Thinking and the
+	// ToolResult part are INVISIBLE on this role and must pass through
+	// untouched — never converted into a visible carrier.
 	m := canonical.Message{
 		Role:       canonical.RoleTool,
 		ToolCallID: "call-9",
 		Content: []canonical.ContentPart{
 			{Kind: canonical.ContentKindText, Text: "old text"},
-			{Kind: canonical.ContentKindThinking, Text: "old thinking"}, // prose — dropped, not structural
+			{Kind: canonical.ContentKindThinking, Text: "old thinking"},
 			{Kind: canonical.ContentKindImage, Image: &canonical.ImagePart{DataBase64: "imgdata"}},
 			{Kind: canonical.ContentKindToolResult, ToolResult: &canonical.ToolResultPart{ToolUseID: "t2", Content: "old result"}},
 		},
@@ -302,8 +306,17 @@ func TestReplaceText_PreservesStructure(t *testing.T) {
 	if m.ToolCallID != "call-9" {
 		t.Error("ToolCallID lost")
 	}
-	if flattenText(m) != "[stub]" {
-		t.Errorf("flattened = %q, want only the stub once", flattenText(m))
+	if acpProse(m) != "[stub]" {
+		t.Errorf("acpProse(m) = %q, want %q", acpProse(m), "[stub]")
+	}
+	if len(m.Content) != 4 {
+		t.Fatalf("part count changed: %d, want 4", len(m.Content))
+	}
+	if m.Content[0].Kind != canonical.ContentKindText || m.Content[0].Text != "[stub]" {
+		t.Errorf("Text part = %+v, want stub", m.Content[0])
+	}
+	if m.Content[1].Kind != canonical.ContentKindThinking || m.Content[1].Text != "old thinking" {
+		t.Errorf("Thinking part mutated: %+v, want untouched (invisible on RoleTool)", m.Content[1])
 	}
 	foundImage := false
 	for _, p := range m.Content {
@@ -315,8 +328,83 @@ func TestReplaceText_PreservesStructure(t *testing.T) {
 		t.Error("image part dropped")
 	}
 	for _, p := range m.Content {
-		if p.Kind == canonical.ContentKindToolResult && p.ToolResult.ToolUseID != "t2" {
-			t.Error("ToolResult.ToolUseID lost")
+		if p.Kind == canonical.ContentKindToolResult {
+			if p.ToolResult == nil || p.ToolResult.ToolUseID != "t2" {
+				t.Error("ToolResult.ToolUseID lost")
+			}
+			if p.ToolResult.Content != "old result" {
+				t.Errorf("ToolResult.Content mutated: %q, want untouched (invisible on RoleTool)", p.ToolResult.Content)
+			}
 		}
+	}
+}
+
+func TestReplaceText_RoleAssistant_ThinkingVisibleDropped(t *testing.T) {
+	// RoleAssistant: both Text ([Assistant]) and Thinking ([Reasoning])
+	// are VISIBLE — the first encountered (Text) gets the stub; the
+	// second visible carrier (Thinking) is DROPPED, not converted.
+	m := canonical.Message{
+		Role: canonical.RoleAssistant,
+		Content: []canonical.ContentPart{
+			{Kind: canonical.ContentKindText, Text: "old text"},
+			{Kind: canonical.ContentKindThinking, Text: "old thinking"},
+		},
+	}
+	replaceText(&m, "[stub]")
+	if acpProse(m) != "[stub]" {
+		t.Errorf("acpProse(m) = %q, want %q", acpProse(m), "[stub]")
+	}
+	for _, p := range m.Content {
+		if p.Kind == canonical.ContentKindThinking {
+			t.Errorf("visible Thinking part not dropped: %+v", p)
+		}
+	}
+}
+
+func TestReplaceText_RoleUser_StubLandsInToolResult(t *testing.T) {
+	// RoleUser: ToolResult parts render BEFORE the [User] text section
+	// (build_acp.go:204-213) and are the first visible carrier here — the
+	// stub lands in ToolResult.Content; the subsequent Text part drops.
+	m := canonical.Message{
+		Role: canonical.RoleUser,
+		Content: []canonical.ContentPart{
+			{Kind: canonical.ContentKindToolResult, ToolResult: &canonical.ToolResultPart{ToolUseID: "t1", Content: "old result"}},
+			{Kind: canonical.ContentKindText, Text: "old text"},
+		},
+	}
+	replaceText(&m, "[stub]")
+	if acpProse(m) != "[stub]" {
+		t.Errorf("acpProse(m) = %q, want %q", acpProse(m), "[stub]")
+	}
+	if len(m.Content) != 1 || m.Content[0].Kind != canonical.ContentKindToolResult || m.Content[0].ToolResult.Content != "[stub]" {
+		t.Errorf("stub did not land in ToolResult.Content: %+v", m.Content)
+	}
+	for _, p := range m.Content {
+		if p.Kind == canonical.ContentKindText {
+			t.Errorf("Text part not dropped: %+v", p)
+		}
+	}
+}
+
+func TestCollapseDuplicates_InvisibleProseNotEligible(t *testing.T) {
+	// Review MEDIUM-3: a RoleUser message whose only prose is Thinking
+	// (ACP never renders Thinking for RoleUser — estMessageTokens is 0,
+	// build_acp.go:204-213) has NO visible prose and must not be eligible
+	// for duplicate collapse — collapsing it would ADD a visible [User]
+	// stub section where the wire previously rendered nothing at all.
+	big := strings.Repeat("thought ", 50) // > minDupLen
+	msgs := []canonical.Message{
+		{Role: canonical.RoleUser, Content: []canonical.ContentPart{{Kind: canonical.ContentKindThinking, Text: big}}},
+		{Role: canonical.RoleUser, Content: []canonical.ContentPart{{Kind: canonical.ContentKindThinking, Text: big}}},
+	}
+	if got := estMessageTokens(msgs[0]); got != 0 {
+		t.Fatalf("test setup: RoleUser Thinking-only message should estimate 0 tokens, got %d", got)
+	}
+	collapseDuplicates(msgs, func(int) bool { return true })
+	if len(msgs[1].Content) != 1 || msgs[1].Content[0].Kind != canonical.ContentKindThinking || msgs[1].Content[0].Text != big {
+		t.Error("invisible-prose duplicate was collapsed — compression would ADD a visible stub the wire never had")
+	}
+	if estMessageTokens(msgs[0]) != 0 || estMessageTokens(msgs[1]) != 0 {
+		t.Error("estMessageTokens changed for invisible-prose message")
 	}
 }

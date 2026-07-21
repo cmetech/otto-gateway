@@ -230,6 +230,71 @@ func TestPrune_HashModePIITokensAreNeverLexicalEvidence(t *testing.T) {
 	}
 }
 
+func TestPrune_CrossPartTokenMergeIsNotEvidence(t *testing.T) {
+	// Review HIGH-2: relevanceText must not concatenate Thinking+Text
+	// across part boundaries with no separator — an assistant message
+	// [Thinking "data", Text "base "+filler] must never rank as
+	// containing "database" (ACP renders "[Assistant]\nbase…\n\n
+	// [Reasoning]\ndata\n\n", not a merged token — build_acp.go:171-215).
+	msgs := []canonical.Message{
+		{
+			Role: canonical.RoleAssistant,
+			Content: []canonical.ContentPart{
+				{Kind: canonical.ContentKindThinking, Text: "data"},
+				{Kind: canonical.ContentKindText, Text: pad("base", "fillerd")},
+			},
+		},
+		textMsg(canonical.RoleUser, "database"),
+	}
+	snap := flattenText(msgs[0])
+	pruneByRelevance(context.Background(), msgs, func(i int) bool { return i < 1 }, 1, 1)
+	if flattenText(msgs[0]) != snap {
+		t.Error("cross-part token merge (Thinking+Text) fabricated evidence for the zero-overlap safety stop")
+	}
+}
+
+func TestPrune_RoleIgnoredContentIsNotEvidence(t *testing.T) {
+	// Review HIGH-2: content ACP never renders for a role must not count
+	// as ranking evidence — a message that "matches" only via a carrier
+	// invisible on that role's wire section must still hit the
+	// zero-evidence safety stop.
+	query := "database"
+
+	// (a) RoleUser Thinking carries the query term; Text is unrelated —
+	// ACP never renders Thinking for RoleUser (build_acp.go:204-213).
+	userThinking := canonical.Message{
+		Role: canonical.RoleUser,
+		Content: []canonical.ContentPart{
+			{Kind: canonical.ContentKindThinking, Text: "database "},
+			{Kind: canonical.ContentKindText, Text: pad("chatter unrelated stuff", "fillert")},
+		},
+	}
+	msgsA := []canonical.Message{userThinking, textMsg(canonical.RoleUser, query)}
+	snapA := flattenText(msgsA[0])
+	pruneByRelevance(context.Background(), msgsA, func(i int) bool { return i < 1 }, 1, 1)
+	if flattenText(msgsA[0]) != snapA {
+		t.Error("RoleUser Thinking (invisible on the wire) acted as ranking evidence")
+	}
+
+	// (b) RoleTool candidate whose ToolResult PART content carries the
+	// query term; Text is unrelated — ACP never renders ToolResult parts
+	// on a RoleTool message (only its Text parts via [Tool result],
+	// build_acp.go:198-203).
+	toolMsg := canonical.Message{
+		Role: canonical.RoleTool,
+		Content: []canonical.ContentPart{
+			{Kind: canonical.ContentKindToolResult, ToolResult: &canonical.ToolResultPart{ToolUseID: "t1", Content: "database "}},
+			{Kind: canonical.ContentKindText, Text: pad("chatter unrelated stuff", "fillerh")},
+		},
+	}
+	msgsB := []canonical.Message{toolMsg, textMsg(canonical.RoleUser, query)}
+	snapB := flattenText(msgsB[0])
+	pruneByRelevance(context.Background(), msgsB, func(i int) bool { return i < 1 }, 1, 1)
+	if flattenText(msgsB[0]) != snapB {
+		t.Error("RoleTool ToolResult part (invisible on the wire) acted as ranking evidence")
+	}
+}
+
 func TestPrune_OverCapQueryFailsClosed(t *testing.T) {
 	// Revision-5 MAJOR: a >maxQueryTerms question must make stage 4 a
 	// no-op — never rank on the first-4096-unique-terms prefix. The

@@ -110,30 +110,67 @@ func hasQueryTerms(m canonical.Message) bool {
 	return false
 }
 
-// queryText builds the BM25 query from a message's Text parts ONLY —
-// ToolResult content is excluded so history is ranked against the
-// user's question, not against tool output (a mixed Anthropic
-// tool_result+Text turn contributes only its Text). Encrypted PII
-// tokens are stripped so they can never form query terms.
+// queryText builds the BM25 query from a message's Text parts ONLY,
+// joined DIRECTLY exactly as canonical.JoinTextParts (and therefore
+// build_acp's [User] section) does — ToolResult content is excluded so
+// history is ranked against the user's question, not against tool output
+// (a mixed Anthropic tool_result+Text turn contributes only its Text).
+// Encrypted PII tokens are stripped so they can never form query terms.
+// A direct join (no inserted separator) can only MISS evidence relative
+// to the previous '\n'-joined form, never fabricate it — and it exactly
+// mirrors what the wire renders (review HIGH-2).
 func queryText(m canonical.Message) string {
-	var b strings.Builder
-	for _, p := range m.Content {
-		if p.Kind == canonical.ContentKindText {
-			b.WriteString(p.Text)
-			b.WriteByte('\n')
-		}
-	}
-	return stripPII(b.String())
+	return stripPII(canonical.JoinTextParts(m.Content))
 }
 
-// relevanceText builds a candidate's scoring document: Text, Thinking,
-// and ToolResult prose (flattenText). Everything stays in-process —
-// stage 4 is local BM25, nothing leaves the gateway — so thinking may
-// participate in ranking even though the PII hook never redacts it.
-// Encrypted PII tokens are stripped: they must be neither noise nor
-// evidence (revision-4 MAJOR).
+// acpProse projects the prose a message actually contributes to the ACP
+// prompt, mirroring build_acp's per-role branches and section order
+// (build_acp.go:171-215): assistant = joined Text then joined Thinking;
+// tool = joined Text; user = each ToolResult part's Content then joined
+// Text; system = nothing. Sections are separated by '\n' so tokens can
+// never straddle two sections; chunks WITHIN one carrier are joined
+// directly, exactly as the wire does (a real merged token is real
+// evidence). Carriers ACP ignores for the role contribute nothing —
+// content invisible on the wire must be neither ranking evidence nor
+// grounds for duplicate collapse (review HIGH-2 / MEDIUM-3).
+func acpProse(m canonical.Message) string {
+	var sections []string
+	switch m.Role {
+	case canonical.RoleSystem:
+		// Never serialized (req.System carries it) — no evidence.
+	case canonical.RoleAssistant:
+		if t := canonical.JoinTextParts(m.Content); t != "" {
+			sections = append(sections, t)
+		}
+		if th := canonical.JoinThinkingParts(m.Content); th != "" {
+			sections = append(sections, th)
+		}
+	case canonical.RoleTool:
+		if t := canonical.JoinTextParts(m.Content); t != "" {
+			sections = append(sections, t)
+		}
+	default: // RoleUser
+		for _, p := range m.Content {
+			if p.Kind == canonical.ContentKindToolResult && p.ToolResult != nil && p.ToolResult.Content != "" {
+				sections = append(sections, p.ToolResult.Content)
+			}
+		}
+		if t := canonical.JoinTextParts(m.Content); t != "" {
+			sections = append(sections, t)
+		}
+	}
+	return strings.Join(sections, "\n")
+}
+
+// relevanceText builds a candidate's scoring document from acpProse — the
+// ROLE-AWARE, section-ordered, separator-joined prose the message
+// actually contributes to the ACP prompt (review HIGH-2). Everything
+// stays in-process — stage 4 is local BM25, nothing leaves the gateway —
+// so an assistant's Thinking may participate in ranking even though the
+// PII hook never redacts it. Encrypted PII tokens are stripped: they must
+// be neither noise nor evidence (revision-4 MAJOR).
 func relevanceText(m canonical.Message) string {
-	return stripPII(flattenText(m))
+	return stripPII(acpProse(m))
 }
 
 // pruneByRelevance is stage 4: score every eligible candidate against

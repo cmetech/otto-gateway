@@ -213,14 +213,19 @@ func dupKey(m canonical.Message) string {
 }
 
 // collapseDuplicates is stage 3: replace exact structural repeats (same
-// dupKey, flattened length >= minDupLen) with a short stub pointing at
-// the first occurrence. Agent loops re-send identical blobs turn after
-// turn — this is where the big wins usually are.
+// dupKey, VISIBLE acpProse length >= minDupLen) with a short stub
+// pointing at the first occurrence. Agent loops re-send identical blobs
+// turn after turn — this is where the big wins usually are. Eligibility
+// is role-aware (review MEDIUM-3): a message whose only prose lives on a
+// carrier ACP never renders for its role (e.g. RoleUser Thinking) has NO
+// visible prose to collapse — stubbing it would ADD a visible section the
+// wire previously rendered nothing for, which is compression making the
+// prompt BIGGER.
 func collapseDuplicates(msgs []canonical.Message, mutable func(int) bool) {
 	seen := make(map[string]int)
 	for i := range msgs {
 		key := dupKey(msgs[i])
-		if !mutable(i) || len(flattenText(msgs[i])) < minDupLen {
+		if !mutable(i) || len(acpProse(msgs[i])) < minDupLen {
 			if _, ok := seen[key]; !ok {
 				seen[key] = i
 			}
@@ -234,42 +239,67 @@ func collapseDuplicates(msgs []canonical.Message, mutable func(int) bool) {
 	}
 }
 
-// replaceText swaps a message's prose content for a stub while preserving
-// everything structural: ToolCallID, ToolCalls, image parts, ToolUse
-// parts, and ToolResult part identity (ToolUseID / IsError). Thinking
-// parts are DROPPED — they are prose ([Reasoning] on the wire), and
-// leaving them would defeat the elision (flattenText counts them). For a
-// message with a ToolResult part the stub lands INSIDE ToolResult.Content
-// so the anthropic adapter still emits a well-formed tool_result block.
+// replaceText swaps a message's VISIBLE prose content for a stub while
+// preserving everything structural: ToolCallID, ToolCalls, image parts,
+// ToolUse parts, and ToolResult part identity (ToolUseID / IsError).
+//
+// Visibility is ROLE-AWARE (review HIGH-2 / MEDIUM-3), mirroring
+// build_acp's per-role branches (acpProse, build_acp.go:171-215): Text is
+// visible for every serialized role; Thinking is visible ONLY for
+// RoleAssistant ([Reasoning] renders only there — never for RoleUser/
+// RoleTool); ToolResult.Content is visible ONLY for RoleUser (build_acp's
+// user branch renders ToolResult parts; a ToolResult part riding a
+// RoleAssistant or RoleTool message is never serialized). The FIRST
+// visible prose part encountered gets the stub (a Text-kind part for
+// Text/Thinking, or tr.Content for ToolResult); subsequent visible prose
+// is dropped (Text/Thinking) or emptied (ToolResult.Content = "") — the
+// stub already stands in for the whole message's prose. Carriers
+// INVISIBLE for this message's role pass through completely UNTOUCHED:
+// they cost nothing on the wire, so turning one into a visible carrier
+// would make the serialized prompt BIGGER, not smaller. There is no
+// "nothing replaced" fallback — every caller only invokes replaceText on
+// a message that already has >= minDupLen/minCandidateLen bytes of
+// VISIBLE prose, so a visible carrier to stub always exists; introducing
+// one that didn't previously exist on the wire would be pure regression.
 func replaceText(m *canonical.Message, stub string) {
 	replaced := false
 	out := make([]canonical.ContentPart, 0, len(m.Content))
 	for _, p := range m.Content {
 		switch p.Kind {
-		case canonical.ContentKindText, canonical.ContentKindThinking:
+		case canonical.ContentKindText:
 			if !replaced {
 				out = append(out, canonical.ContentPart{Kind: canonical.ContentKindText, Text: stub})
 				replaced = true
 			}
-			// subsequent text/thinking parts drop — the stub stands in
-		case canonical.ContentKindToolResult:
-			if p.ToolResult != nil {
-				tr := *p.ToolResult
-				if !replaced {
-					tr.Content = stub
-					replaced = true
-				} else {
-					tr.Content = ""
-				}
-				p.ToolResult = &tr
+			// subsequent Text parts drop — the stub stands in
+		case canonical.ContentKindThinking:
+			if m.Role != canonical.RoleAssistant {
+				out = append(out, p) // invisible on this role — untouched
+				continue
 			}
+			if !replaced {
+				out = append(out, canonical.ContentPart{Kind: canonical.ContentKindText, Text: stub})
+				replaced = true
+				continue
+			}
+			// subsequent visible Thinking parts drop
+		case canonical.ContentKindToolResult:
+			if p.ToolResult == nil || m.Role != canonical.RoleUser {
+				out = append(out, p) // invisible on this role — untouched
+				continue
+			}
+			tr := *p.ToolResult
+			if !replaced {
+				tr.Content = stub
+				replaced = true
+			} else {
+				tr.Content = ""
+			}
+			p.ToolResult = &tr
 			out = append(out, p)
 		default:
 			out = append(out, p) // images, ToolUse: structural, pass through
 		}
-	}
-	if !replaced {
-		out = append(out, canonical.ContentPart{Kind: canonical.ContentKindText, Text: stub})
 	}
 	m.Content = out
 }
