@@ -303,6 +303,12 @@ func TestAdmin_StaticServes_JS(t *testing.T) {
 		t.Errorf("Content-Type: want application/javascript or text/javascript, got %q", contentType)
 	}
 
+	// Embedded assets are tiny and can change between releases; no-cache forces
+	// revalidation so operators pick up JS/CSS changes without a hard refresh.
+	if cc := rec.Header().Get("Cache-Control"); cc != "no-cache" {
+		t.Errorf("Cache-Control: want %q, got %q", "no-cache", cc)
+	}
+
 	body := rec.Body.String()
 	if !strings.Contains(body, "GW_ADMIN_CONFIG") {
 		t.Errorf("JS body missing GW_ADMIN_CONFIG reference")

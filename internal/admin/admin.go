@@ -284,6 +284,11 @@ func Handler(deps Deps) http.Handler {
 		// regardless of whether the handler is mounted or called directly.
 		// This makes the FileServer mount-path-agnostic.
 		filePath := chi.URLParam(req, "*")
+		// no-cache (not no-store): the embedded assets are tiny, so forcing a
+		// revalidation round-trip on every load is cheap, and it means an
+		// operator's dashboard picks up a new JS/CSS build without a hard
+		// refresh instead of serving a stale cached copy indefinitely.
+		w.Header().Set("Cache-Control", "no-cache")
 		// G703 exemption: embed.FS rejects '..' traversal per Go 1.16+ spec;
 		// staticFS is rooted at internal/admin/static/ (operator-public assets only).
 		http.ServeFileFS(w, req, staticFS, filePath) //nolint:gosec // G703: embed.FS rejects '..' per Go 1.16+ spec; staticFS rooted at internal/admin/static/
