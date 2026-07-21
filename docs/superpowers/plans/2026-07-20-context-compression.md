@@ -2683,7 +2683,7 @@ git commit -m "feat(compress): deterministic stdlib BM25 scorer for stage-4 rele
 
 **Design decisions (third-pass MAJOR-1, amended by revision-4):** current-turn protection and relevance-query selection are SEPARATE concepts, because tool-result turns use different canonical roles per surface — OpenAI/Ollama map wire `role:"tool"` to `RoleTool` (openai/wire.go:188-206, ollama/wire.go:382-393), while Anthropic carries `tool_result` blocks inside a `RoleUser` message (anthropic/wire.go:346-356). `findPinned` therefore returns two indices: the latest non-system message (the current inbound turn — pinned so a current `RoleTool` result is never compressed even at `ProtectTail=0`), and the latest `RoleUser` message whose **RAW** Text parts yield at least one tokenizer term (revision-4 MINOR: `p.Text != ""` accepted whitespace/punctuation-only Text; revision-5 MAJOR: selection must be raw, not sanitized — a PII-only current question must be SELECTED, then produce an empty sanitized query so stage 4 no-ops, rather than being skipped in favor of an older question whose stale evidence would authorize pruning). Both are pinned across every stage. **Every machine-generated PII token grammar is STRIPPED from ranking text** — encrypt `[PII:Entity:…]`, hash `[ENTITY:h-…]`, countered replace `[ENTITY_N]` (revision-4/-5 MAJORs): placeholder/hash shapes tokenize into shared `pii`/`email`/`h` terms — synthetic evidence that could bypass the zero-overlap safety stop and elide genuinely relevant context. Documented residual: bare `[ENTITY]` replace tokens and mask-mode output are indistinguishable from ordinary text and are not stripped.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```go
 // internal/plugin/compress/prune_test.go
@@ -3009,12 +3009,12 @@ func BenchmarkPruneManyMessages(b *testing.B) {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `go test ./internal/plugin/compress/ -run 'TestFindPinned|TestPrune' -v`
 Expected: FAIL — `undefined: findPinned`, `undefined: pruneByRelevance`.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 ```go
 // internal/plugin/compress/prune.go
@@ -3274,12 +3274,12 @@ func carriesToolCall(m canonical.Message) bool {
 }
 ```
 
-- [ ] **Step 4: Run the package suite**
+- [x] **Step 4: Run the package suite**
 
 Run: `go test ./internal/plugin/compress/ -v`
 Expected: PASS (bm25 + prune + all earlier-task tests).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/plugin/compress/prune.go internal/plugin/compress/prune_test.go
