@@ -157,7 +157,7 @@ On Windows substitute `.\scripts\gw.ps1 <command>` and drop `-f` (the PowerShell
 
 The install drops `bin/gateway-tray` (or `bin/gateway-tray.exe`) alongside `bin/gateway` on macOS and Windows, inside `GW_INSTALL_DIR`. The tray app is **optional** — every operation it exposes is also available via the wrappers on the command line. Linux installs do not ship the tray.
 
-Launch it:
+**The installer launches the tray for you** at the end of a successful install (stopping any running instance first, then starting the new one), so on a fresh install the icon should already be in your menu bar / system tray. On Windows the installer also drops a **Gateway Tray** shortcut in the Start Menu (under *All Apps*, and searchable) — pin it to Start with right-click → *Pin to Start* if you like (Windows does not allow apps to pin themselves). The commands below are for **re-launching** it manually if you quit it:
 
 - **macOS:** `open "$GW_INSTALL_DIR/Gateway Tray.app"` (or double-click `Gateway Tray.app` in Finder — default location `~/Library/Application Support/Gateway/Gateway Tray.app`). The install script generates a minimal `.app` wrapper around the binary with `LSUIElement=true` so the icon goes to the menu bar with no Dock entry. Running the raw `$GW_INSTALL_DIR/bin/gateway-tray` binary via `open` won't work — `open` falls back to Terminal for unwrapped Mach-O executables and the menu-bar item never appears.
 - **Windows:** `Start-Process "$env:LOCALAPPDATA\Gateway\bin\gateway-tray.exe"`, or double-click `%LOCALAPPDATA%\Gateway\bin\gateway-tray.exe` in Explorer.

@@ -325,9 +325,18 @@ PLIST
     printf '  %s start     # launch the gateway\n' "$cmd"
     printf '  %s status    # verify it is up\n' "$cmd"
     if [ -d "$GW_INSTALL_DIR/Gateway Tray.app" ]; then
-        printf "  open '%s/Gateway Tray.app'   # or, launch the menu-bar app\n" "$GW_INSTALL_DIR"
+        printf "  open '%s/Gateway Tray.app'   # re-launch the menu-bar app\n" "$GW_INSTALL_DIR"
     fi
     printf '  curl -sf http://127.0.0.1:18080/health\n'
+
+    # Auto-start the menu-bar tray after install. A running instance was already
+    # stopped before extraction ('killall gateway-tray', above), so this is the
+    # "start" half of stop-then-start: the tray ends up running whether or not
+    # it was before. Best-effort — never fail the install if 'open' errors.
+    if [ -d "$GW_INSTALL_DIR/Gateway Tray.app" ]; then
+        info "Starting Gateway Tray ..."
+        open "$GW_INSTALL_DIR/Gateway Tray.app" 2>/dev/null || true
+    fi
 }
 
 main "$@"

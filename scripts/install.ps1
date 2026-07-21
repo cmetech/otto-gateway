@@ -188,9 +188,39 @@ try {
     Write-Host "  gw status    # verify it is up"
     $trayExe = Join-Path $InstallDir 'bin\gateway-tray.exe'
     if (Test-Path $trayExe) {
-        Write-Host "  Start-Process `"$trayExe`"   # or, launch the tray app"
+        Write-Host "  Start-Process `"$trayExe`"   # re-launch the tray app"
     }
     Write-Host "  Invoke-RestMethod http://127.0.0.1:18080/health"
+
+    if (Test-Path $trayExe) {
+        # Start Menu shortcut: appears in All Apps + search. Programmatic
+        # pin-to-tile is not supported on Win10/11, so a shortcut is the
+        # deliverable (users can right-click -> Pin to Start). IconLocation
+        # points at the exe, which carries the Gateway icon via the embedded
+        # Windows resource (cmd/otto-tray/rsrc_windows_amd64.syso).
+        try {
+            $programs = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'
+            $lnk = Join-Path $programs 'Gateway Tray.lnk'
+            $wsh = New-Object -ComObject WScript.Shell
+            $sc = $wsh.CreateShortcut($lnk)
+            $sc.TargetPath = $trayExe
+            $sc.WorkingDirectory = (Split-Path $trayExe)
+            $sc.IconLocation = "$trayExe,0"
+            $sc.Description = 'Gateway menu-bar / system-tray app'
+            $sc.Save()
+            [Runtime.InteropServices.Marshal]::ReleaseComObject($wsh) | Out-Null
+            Ok "created Start Menu shortcut: $lnk"
+        } catch {
+            Warn "could not create Start Menu shortcut: $($_.Exception.Message)"
+        }
+
+        # Auto-start the tray after install. Any running instance was already
+        # stopped before extraction (Stop-Process gateway-tray, above), so this
+        # is the "start" half of stop-then-start: the tray ends up running
+        # whether or not it was before. Best-effort.
+        Info "Starting Gateway Tray ..."
+        try { Start-Process -FilePath $trayExe -WorkingDirectory (Split-Path $trayExe) } catch { }
+    }
 } finally {
     Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
 }
