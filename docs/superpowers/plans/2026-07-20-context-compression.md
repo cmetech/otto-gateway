@@ -2234,7 +2234,7 @@ git commit -m "feat(config): compression env knobs with fail-fast validation"
 
 **Design (revision-4 CRITICAL + MAJOR):** the scorer is **sparse and single-pass**. The naive shape — materialize every token, build a full term-frequency map per document, then scan every document map once per unique query term — is `O(uniqueQueryTerms × candidates)` map operations, and a valid 4-MiB request with a megabyte-scale question can force billions of them synchronously inside `Before`. Instead: unique query terms get **stable integer IDs in first-seen order**, bounded by `maxQueryTerms` — and exceeding the bound **fails closed** (`overflow` → stage 4 no-op; revision-5 MAJOR: ranking on a truncated prefix would let an attacker-chosen preamble authorize pruning while the real question past the cap is discarded); each document is scanned exactly ONCE with a zero-allocation streaming tokenizer (tokens are substrings of one lowered copy), accumulating only query-term matches sparsely; `df` updates once per matched term per doc; scoring then iterates each doc's matched IDs in **ascending order**, which makes floating-point accumulation order-deterministic (the naive map-range accumulation could flip near-tied scores between runs). Total cost: `O(queryTokens + totalDocTokens + matches·log(matches))`. `bm25Rank` takes `ctx` and checks cancellation between documents and every `cancelCheckEvery` tokens within one — on cancellation it returns nil and stage 4 becomes a no-op.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```go
 // internal/plugin/compress/bm25_test.go
@@ -2434,12 +2434,12 @@ func BenchmarkBM25RankAdversarial(b *testing.B) {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `go test ./internal/plugin/compress/ -run 'TestTokenize|TestBM25|TestNewQueryIndex' -v`
 Expected: FAIL — `undefined: tokenize`, `undefined: newQueryIndex`, `undefined: bm25Rank`.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 ```go
 // internal/plugin/compress/bm25.go
@@ -2657,12 +2657,12 @@ func bm25Rank(ctx context.Context, qi *queryIndex, docs []string) []float64 {
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `go test ./internal/plugin/compress/ -run 'TestTokenize|TestBM25|TestNewQueryIndex' -v`
 Expected: PASS. Also run `go test ./internal/plugin/compress/ -bench BenchmarkBM25RankAdversarial -benchtime 1x` once and eyeball that doubling qterms at fixed docs does NOT double-times-docs the ns/op.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/plugin/compress/bm25.go internal/plugin/compress/bm25_test.go
