@@ -1243,7 +1243,7 @@ git commit -m "feat(compress): deterministic stages — whitespace, tool-result 
 
 **Ordering note:** this task calls `tokenize`/`findPinned`/`pruneByRelevance`, which are FREE functions delivered by Tasks 7–8 — execute in order **1, 2, 3, 4, 7, 8, 5, 6, 9, 10, 11** and every task compiles green with no temporary stubs.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```go
 // internal/plugin/compress/hook_test.go
@@ -1850,12 +1850,12 @@ func TestInvariants_Stage4ForcedProperty(t *testing.T) {
 
 **Plus targeted (non-generated) regression cases** in the same file — rapid generation alone can miss rare shapes, so pin the exact review scenarios: (1) a message that is 100% thinking + fat ToolUse Input and zero plain text must CROSS THE TRIGGER (the estimator counts both) while remaining **structurally unchanged** — ToolUse input is never compressed and such a message is excluded from stages 2-4, so the only permitted change is blank-line cleanup of the thinking prose (review 2 MAJOR-10 corrected this oracle: the original "must shrink" was unsatisfiable); (2) an over-budget transcript whose only fat lives in a ToolResult inside a ToolCalls-carrying message (stage 2 may truncate the result; stage 4 must not elide the message); (3) `ProtectTail=0` with an unattainable budget (both pinned messages must survive byte-for-byte — pairs with the Task 5 pin tests).
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `go test ./internal/plugin/compress/ -run 'TestBefore|TestDescribe|TestInvariants' -v`
 Expected: FAIL — `undefined: Hook`.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 ```go
 // internal/plugin/compress/hook.go
@@ -2038,12 +2038,12 @@ func (h *Hook) compress(ctx context.Context, req *canonical.ChatRequest) {
 
 (No stub needed: `pruneByRelevance` and `findPinned` are free functions from Tasks 7–8, which execute before this task.)
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `go test ./internal/plugin/compress/ -v`
 Expected: PASS, including the rapid property test.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/plugin/compress/hook.go internal/plugin/compress/hook_test.go internal/plugin/compress/invariants_test.go
