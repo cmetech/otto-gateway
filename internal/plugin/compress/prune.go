@@ -27,14 +27,18 @@ const minCandidateLen = 200
 //	replace (counter):  [ENTITY_2]
 //
 // The hash and countered-replace alternatives are built from the REAL
-// recognizer entity vocabulary (pii.SourceAuditNames, upper-cased exactly
+// PII token entity vocabulary (pii.TokenEntityNames, upper-cased exactly
 // as pii.ApplyMode upper-cases entity names) rather than an arbitrary
 // [A-Z][A-Z0-9_]* alphabet — review LOW-4: the previous grammar stripped
 // ordinary bracketed identifiers ("[ISO_9001]", "[ERROR_404]",
 // "[RFC_2616]") that merely LOOK like PII tokens but name no recognizer.
-// Fail-closed but lossy; constraining to the actual registry removes the
-// loss without weakening the safety property (an entity NOT in the
-// registry can never be one of pii's synthetic tokens).
+// Fail-closed but lossy; constraining to the actual vocabulary removes
+// the loss without weakening the safety property (an entity NOT in that
+// vocabulary can never be one of pii's synthetic tokens). The vocabulary
+// covers BOTH the regex recognizers AND the NER-emitted PERSON/LOCATION
+// entities (review HIGH, follow-up): NER hash/replace tokens flow through
+// the identical pii.ApplyMode grammars and must be stripped too, or a
+// PERSON/LOCATION token would leak as shared synthetic ranking evidence.
 //
 // Documented residual (accepted): bare replace tokens "[EMAIL]" and
 // mask-mode output are indistinguishable from ordinary bracketed text /
@@ -42,7 +46,7 @@ const minCandidateLen = 200
 // idf-discounted term; drop mode emits nothing to strip.
 var piiRankingTokenRe = func() *regexp.Regexp {
 	names := make([]string, 0, 16)
-	for _, n := range pii.SourceAuditNames() {
+	for _, n := range pii.TokenEntityNames() {
 		names = append(names, regexp.QuoteMeta(strings.ToUpper(n)))
 	}
 	sort.Slice(names, func(i, j int) bool { return len(names[i]) > len(names[j]) }) // longest-first alternation

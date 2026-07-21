@@ -312,11 +312,21 @@ func TestStripPII_VocabularyConstrained(t *testing.T) {
 	}
 	stripped := []string{
 		"[EMAIL_2]", "[SIP_URI_3]", "[EMAIL:h-abcdefgh]", "[USPHONE:h-x_y-z1]", "[PII:Email:AAAAaaaa1111_-]",
+		// NER-emitted entities (PERSON, LOCATION) flow through the same
+		// pii.ApplyMode grammars as the regex recognizers — they must be
+		// stripped too, or machine-generated PII tokens built from NER
+		// output would leak as shared synthetic ranking evidence.
+		"[PERSON:h-abcdefgh]", "[LOCATION:h-abcdefgh]", "[PERSON_1]", "[LOCATION_1]",
 	}
 	for _, s := range stripped {
 		if got := stripPII(s); got == s {
 			t.Errorf("stripPII(%q) = %q, want stripped", s, got)
 		}
+	}
+	// Bare replace-mode token: indistinguishable from ordinary bracketed
+	// text and NOT stripped (documented residual, same as bare [EMAIL]).
+	if got := stripPII("[PERSON]"); got != "[PERSON]" {
+		t.Errorf("stripPII([PERSON]) = %q, want unchanged", got)
 	}
 }
 

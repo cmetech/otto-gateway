@@ -38,6 +38,15 @@ import (
 	"github.com/jdkato/prose/v2"
 )
 
+// nerEntityNames lists the entity names Detect's label-mapping switch
+// below can emit (PERSON for prose's "PERSON" label; LOCATION for its
+// "GPE"/"LOC"/"LOCATION" labels). Defined once, adjacent to that switch,
+// so TokenEntityNames (recognizers.go) — which must cover every name
+// pii.ApplyMode can be called with, including these NER names — cannot
+// silently drift from it. If the switch below ever emits a new name,
+// add it here too.
+var nerEntityNames = []string{"PERSON", "LOCATION"}
+
 // nerEngine wraps prose under a sync.Once. The Document is NOT cached
 // across calls — prose Documents are constructed per-text — but the
 // sync.Once gates whatever one-time global state prose may lazy-init.
@@ -91,6 +100,8 @@ func (n *nerEngine) Detect(text string) []span {
 			continue
 		}
 		var name string
+		// Emitted names must match nerEntityNames above (kept adjacent
+		// on purpose) and TokenEntityNames' authoritative vocabulary.
 		switch e.Label {
 		case "PERSON":
 			name = "PERSON"

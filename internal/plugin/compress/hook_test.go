@@ -272,6 +272,38 @@ func TestBefore_PIIOnlyCurrentQuestion_NeverUsesStaleEvidence(t *testing.T) {
 	}
 }
 
+func TestBefore_PIIOnlyCurrentQuestion_NERHashToken_NeverUsesStaleEvidence(t *testing.T) {
+	// Same defect class as TestBefore_PIIOnlyCurrentQuestion_NeverUsesStaleEvidence,
+	// but for NER-emitted (PERSON/LOCATION) hash tokens rather than a
+	// regex-recognizer token: with PII_NER_ENABLED + hash mode, a
+	// PERSON-only current question must not be treated as carrying
+	// evidence just because its hash token wasn't stripped — the
+	// tokenizer would otherwise emit shared synthetic terms
+	// ("person"/"h") that give stage 4 false positive lexical overlap
+	// with an unrelated history message, bypassing the zero-evidence
+	// safety stop.
+	unrelated := strings.Repeat("the quarterly infrastructure budget review notes ", 8)
+	// Padded past minCandidateLen (200 bytes) so it is an eligible stage-4
+	// candidate — a bare "[PERSON:h-bbbbbbbb]" is too short to reach the
+	// scorer at all, which would mask the defect rather than reproduce it.
+	withNERHash := strings.Repeat("internal engineering standup topics covered today ", 5) + "[PERSON:h-bbbbbbbb]"
+	req := &canonical.ChatRequest{Messages: []canonical.Message{
+		textMsg(canonical.RoleUser, unrelated),
+		textMsg(canonical.RoleAssistant, withNERHash),
+		textMsg(canonical.RoleUser, "[PERSON:h-aaaaaaaa]"), // current question — NER hash token only
+	}}
+	h := newTestHook()
+	h.ProtectTail = 0
+	h.BudgetTokens = 1
+	h.TriggerTokens = 1
+	_, _ = h.Before(context.Background(), req)
+	for i := range req.Messages {
+		if strings.Contains(flattenText(req.Messages[i]), "elided as low-relevance") {
+			t.Fatalf("msg %d elided using NER-hash-token evidence from a PII-only question", i)
+		}
+	}
+}
+
 func TestBefore_LaterStagesSkippedOnceBudgetMet(t *testing.T) {
 	// Review 2 MAJOR-1: if stage 1 (blank-line cleanup) alone reaches the
 	// budget, stages 2-3 must not run — the fat tool result stays

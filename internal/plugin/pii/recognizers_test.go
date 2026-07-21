@@ -513,6 +513,39 @@ func TestRecognizers_RegistryShape(t *testing.T) {
 	}
 }
 
+// TestTokenEntityNames_SupersetOfSourceAuditNames asserts TokenEntityNames
+// is exactly SourceAuditNames plus the two NER-emitted entity names
+// (PERSON, LOCATION) — the authoritative vocabulary of every entity name
+// that can appear inside a machine-generated PII token, consumed by
+// compress's ranking-token stripper. Written to survive future recognizer
+// additions: it re-derives "want" from the live SourceAuditNames() call
+// rather than hardcoding the regex recognizer list.
+func TestTokenEntityNames_SupersetOfSourceAuditNames(t *testing.T) {
+	source := SourceAuditNames()
+	got := TokenEntityNames()
+
+	wantExtra := []string{"PERSON", "LOCATION"}
+	if len(got) != len(source)+len(wantExtra) {
+		t.Fatalf("TokenEntityNames len: got %d, want %d (SourceAuditNames %d + extras %d)",
+			len(got), len(source)+len(wantExtra), len(source), len(wantExtra))
+	}
+
+	inGot := make(map[string]bool, len(got))
+	for _, n := range got {
+		inGot[n] = true
+	}
+	for _, n := range source {
+		if !inGot[n] {
+			t.Errorf("TokenEntityNames missing SourceAuditNames entry %q", n)
+		}
+	}
+	for _, n := range wantExtra {
+		if !inGot[n] {
+			t.Errorf("TokenEntityNames missing NER-emitted entity %q", n)
+		}
+	}
+}
+
 // TestRecognizers_CompiledAtPackageInit_NoPerRequestCompile is a source-
 // level guard. recognizers.go MUST use regexp.MustCompile (init-time);
 // regexp.Compile inside the file is forbidden (would imply runtime

@@ -434,3 +434,24 @@ func SourceAuditNames() []string {
 	}
 	return out
 }
+
+// TokenEntityNames returns the AUTHORITATIVE list of every entity name
+// that can appear inside a machine-generated PII token: every regex
+// Recognizer name (SourceAuditNames) plus the NER-emitted entity names
+// (nerEntityNames, ner.go — PERSON and LOCATION), which config
+// explicitly allows in PII_ENTITY_ACTIONS / PII_ENABLED_ENTITIES (see
+// config.go's "NER-emitted entity names (Task 11)" comment) and which
+// flow through the same pii.ApplyMode grammars as regex-recognizer
+// entities ([PERSON_1], [PERSON:h-xxxx]).
+//
+// Consumed by internal/plugin/compress's ranking-token stripper
+// (piiRankingTokenRe in prune.go) to build the hash-mode and
+// countered-replace-mode token alternatives: it must cover EVERY entity
+// name pii.ApplyMode can be called with, or a token built from a name
+// missing here — e.g. an NER-emitted PERSON/LOCATION hash token — will
+// not be recognized as a synthetic PII token and can leak into ranking
+// as spurious shared evidence between otherwise-unrelated messages.
+func TokenEntityNames() []string {
+	names := SourceAuditNames()
+	return append(names, nerEntityNames...)
+}
