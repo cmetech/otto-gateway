@@ -693,7 +693,7 @@ git commit -m "feat(compress): X-Compression header ctx stamp helpers"
 
 **Design decision (review MAJOR-1, wording tightened per third-pass MINOR):** stage 1 does NOT collapse horizontal whitespace runs. The Node gateway's `[ \t]{2,}` → `" "` pass destroys Python/YAML/Makefile indentation in any older code snippet, and build_acp forwards that text verbatim to the model — semantic corruption, not compression. Stage 1 is limited to stripping trailing whitespace at line ends and collapsing 3+ consecutive newlines to 2. Call this **low-loss normalization, not lossless**: it DOES alter exact bytes, and content whose meaning depends on them (Markdown two-trailing-space hard breaks, exact-output fixtures, patches, triple-quoted strings with trailing spaces or 3+ blank lines) is changed. That boundary is accepted, deliberate, and pinned by regression fixtures — never describe stage 1 as lossless in code or docs. This is a deliberate divergence from Node.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```go
 // internal/plugin/compress/stages_test.go
@@ -967,12 +967,12 @@ func TestReplaceText_PreservesStructure(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `go test ./internal/plugin/compress/ -run 'TestNormalize|TestMiddle|TestTruncate|TestCollapse|TestReplace' -v`
 Expected: FAIL — undefined functions.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 ```go
 // internal/plugin/compress/stages.go
@@ -1216,12 +1216,12 @@ func replaceText(m *canonical.Message, stub string) {
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `go test ./internal/plugin/compress/ -v`
 Expected: PASS (all tests so far).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/plugin/compress/stages.go internal/plugin/compress/stages_test.go
