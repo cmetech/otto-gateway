@@ -101,3 +101,27 @@ func (p *Pool) SetSpawnErrForTesting(msg string, at time.Time) {
 	p.lastSpawnErrAt = at
 	p.mu.Unlock()
 }
+
+// SlotTurns returns the turn count for the slot with the given label (held
+// under p.mu). The bool is false when no slot matches. Task 3 accessor for the
+// turn-accounting tests.
+func (p *Pool) SlotTurns(label string) (int, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, slot := range p.all {
+		if slot != nil && slot.Label == label {
+			return slot.turns, true
+		}
+	}
+	return 0, false
+}
+
+// SetRecycleLaunchHookForTesting installs the test-only seam fired by
+// releaseOrRecycle after recycle admission and before the goroutine launch.
+// Task 3 shutdown-interleaving tests use it to wedge Close between the
+// commit-to-recycle and the recycle goroutine start.
+func (p *Pool) SetRecycleLaunchHookForTesting(hook func()) {
+	p.mu.Lock()
+	p.recycleLaunchHook = hook
+	p.mu.Unlock()
+}

@@ -122,6 +122,15 @@ type Slot struct {
 	// the watcher acquires p.mu only for the assignment, never holds it
 	// across slot.Client method calls.
 	dead bool
+	// turns counts every successful session/new executed on this slot's
+	// worker — the request path (Pool.NewSession) AND catalog probes
+	// (probeCatalogOnce) — because each session/new is the event that
+	// accumulates kiro-cli process memory (worker-recycling design §2
+	// Part B, review finding M-4). Guarded by p.mu, same discipline as
+	// dead. respawnSlot resets it to 0 in its swap critical section;
+	// releaseOrRecycle recycles the worker once turns reaches
+	// cfg.MaxWorkerTurns.
+	turns int
 }
 
 // Pool is a fixed-size warm pool of kiro-cli slots that satisfies
@@ -164,6 +173,22 @@ type Pool struct {
 	// probeWG tracks in-flight self-heal probe goroutines so Close waits for
 	// them (goleak-clean; probes are otherwise untracked bare goroutines).
 	probeWG sync.WaitGroup
+
+	// recycleWG tracks in-flight background recycle goroutines (Task 3) so
+	// Close waits them out (goleak-clean). recycleWG.Add(1) happens INSIDE
+	// the same p.mu critical section that checks p.closed (releaseOrRecycle),
+	// and closeAll sets p.closed under the same mutex — so an accepted Add
+	// can never be ordered after Close's recycleWG.Wait(). This is THE
+	// load-bearing shutdown-ordering property (design §2 Part B / review
+	// finding H-1).
+	recycleWG sync.WaitGroup
+
+	// recycleLaunchHook is a test-only seam (guarded by p.mu) fired by
+	// releaseOrRecycle AFTER recycle admission (post-unlock) and BEFORE the
+	// recycle goroutine launch, letting shutdown-interleaving tests wedge
+	// Close between the commit-to-recycle and the goroutine start. Nil in
+	// production.
+	recycleLaunchHook func()
 
 	// sessionSlots maps active session ids to their owning slot. Populated
 	// by NewSession (Task 2), consumed by SetModel / Prompt / Cancel.
@@ -322,7 +347,7 @@ func (p *Pool) Warmup(ctx context.Context) error {
 			// demand (see selfHealCatalog) beats one that won't start. Slot
 			// spawn/Initialize failures (initSlot, above) keep their fail-fast
 			// semantics; only an empty/uncooperative catalog degrades here.
-			if models := p.captureCatalogWithRetry(ctx, slot.Client); len(models) > 0 {
+			if models := p.captureCatalogWithRetry(ctx, slot); len(models) > 0 {
 				p.mu.Lock()
 				p.models = models
 				p.mu.Unlock()
@@ -349,13 +374,19 @@ func (p *Pool) Warmup(ctx context.Context) error {
 // model catalog it exposes, cancelling the throwaway probe session afterward
 // (D-05 slot-stateless: engine.Run makes fresh sessions per request). Shared by
 // Warmup (retry loop) and the lazy self-heal path so the two cannot drift.
-func (p *Pool) probeCatalogOnce(ctx context.Context, client PoolClient) ([]canonical.ModelInfo, error) {
-	sid, err := client.NewSession(ctx, p.cfg.KiroCWD)
+func (p *Pool) probeCatalogOnce(ctx context.Context, slot *Slot) ([]canonical.ModelInfo, error) {
+	sid, err := slot.Client.NewSession(ctx, p.cfg.KiroCWD)
 	if err != nil {
 		return nil, err //nolint:wrapcheck // caller decides whether to retry/degrade; error is transient
 	}
-	models := client.AvailableModels()
-	client.Cancel(sid)
+	// Every successful session/new on a pool worker counts as a turn — the
+	// event that accumulates kiro memory (design §2 Part B, review finding
+	// M-4). Guarded by p.mu, same discipline as slot.dead.
+	p.mu.Lock()
+	slot.turns++
+	p.mu.Unlock()
+	models := slot.Client.AvailableModels()
+	slot.Client.Cancel(sid)
 	return models, nil
 }
 
@@ -363,9 +394,9 @@ func (p *Pool) probeCatalogOnce(ctx context.Context, client PoolClient) ([]canon
 // resilient discovery). A NewSession error OR an empty catalog triggers a retry;
 // after the schedule is exhausted (or ctx is cancelled) it returns nil so the
 // caller degrades to self-heal. len(catalogRetry) retries → up to len+1 attempts.
-func (p *Pool) captureCatalogWithRetry(ctx context.Context, client PoolClient) []canonical.ModelInfo {
+func (p *Pool) captureCatalogWithRetry(ctx context.Context, slot *Slot) []canonical.ModelInfo {
 	for attempt := 0; ; attempt++ {
-		if models, err := p.probeCatalogOnce(ctx, client); err == nil && len(models) > 0 {
+		if models, err := p.probeCatalogOnce(ctx, slot); err == nil && len(models) > 0 {
 			return models
 		}
 		if attempt >= len(p.catalogRetry) {
@@ -388,14 +419,19 @@ func (p *Pool) selfHealCatalog() {
 	if !p.catalogProbing.CompareAndSwap(false, true) {
 		return // a probe is already in flight
 	}
-	// Don't start a probe on a closing pool (avoids a probe outliving Close).
-	select {
-	case <-p.closing:
+	// Admit the probe under p.mu so probeWG.Add is ordered against closeAll's
+	// p.closed set — the same discipline releaseOrRecycle uses for
+	// recycleWG.Add (review finding H-1). The prior check-p.closing-then-Add
+	// split had a window where Close could observe probeWG as already drained,
+	// Wait through, and this Add(1) would then leak a goroutine past shutdown.
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
 		p.catalogProbing.Store(false)
 		return
-	default:
 	}
 	p.probeWG.Add(1)
+	p.mu.Unlock()
 	go func() {
 		defer p.probeWG.Done()
 		defer p.catalogProbing.Store(false)
@@ -408,13 +444,18 @@ func (p *Pool) selfHealCatalog() {
 		default:
 			return // no free slot right now; a later read retries
 		}
-		defer func() { p.slots <- slot }()
+		// Return the slot via releaseOrRecycle so a probe-bloated worker is
+		// recycled rather than exempt (design §2 Part B). This defer runs
+		// before the catalogProbing.Store / probeWG.Done defers (LIFO), so any
+		// recycleWG.Add it registers is visible before probeWG.Done — which is
+		// why Close waits probeWG before recycleWG.
+		defer func() { p.releaseOrRecycle(slot) }()
 		if !p.slotAlive(slot) {
 			return
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), catalogProbeTimeout)
 		defer cancel()
-		if models, err := p.probeCatalogOnce(ctx, slot.Client); err == nil && len(models) > 0 {
+		if models, err := p.probeCatalogOnce(ctx, slot); err == nil && len(models) > 0 {
 			p.mu.Lock()
 			p.models = models
 			p.mu.Unlock()
@@ -549,6 +590,10 @@ func (p *Pool) respawnSlot(ctx context.Context, slot *Slot, cause respawnCause) 
 	p.mu.Lock()
 	slot.Client = newClient
 	slot.dead = false
+	// Reset the turn counter for the fresh worker in the same critical section
+	// that swaps the client — covers both the lazy dead-slot path and the
+	// Task 3 scheduled recycle (design §2 Part B "Counter reset").
+	slot.turns = 0
 	newDone := newClient.Done()
 	// Step 5: spawn a fresh exit-watcher for the NEW client (under p.mu).
 	p.startExitWatcher(slot, newDone)
@@ -800,6 +845,13 @@ func (p *Pool) Close() error {
 		// cannot outlive Close (goleak-clean). closing is already closed, so
 		// no new probe will start (selfHealCatalog's closing-check).
 		p.probeWG.Wait()
+		// Task 3: wait out any in-flight background recycle goroutine so it
+		// cannot outlive Close (goleak-clean). Ordered AFTER probeWG because a
+		// finishing self-heal probe returns its slot via releaseOrRecycle and
+		// can therefore register recycle work (recycleWG.Add) as it completes;
+		// draining probes first guarantees all such late Adds are visible
+		// before we wait on recycleWG.
+		p.recycleWG.Wait()
 		// WR-01 (phase 16 review): the prior `p.warnOnce = sync.Once{}`
 		// reassignment was a data race against in-flight NewSession
 		// callers that had passed the non-blocking `<-p.slots` try and
@@ -1098,6 +1150,10 @@ func (p *Pool) NewSession(ctx context.Context, cwd string) (string, error) {
 
 	p.mu.Lock()
 	p.sessionSlots[sid] = slot
+	// Count this successful session/new (design §2 Part B, review finding
+	// M-4): a failed NewSession returned above without reaching here, so it
+	// does not increment.
+	slot.turns++
 	p.mu.Unlock()
 	return sid, nil
 }
@@ -1159,7 +1215,10 @@ func (p *Pool) Prompt(ctx context.Context, sid string, blocks []canonical.Block)
 			// to p.slots. Skip the send to avoid double-release.
 			return
 		}
-		p.slots <- s
+		// Task 3: releaseOrRecycle decides atomically (under p.mu) whether to
+		// return the slot to the free queue or hand it to a background recycle
+		// goroutine once slot.turns has reached cfg.MaxWorkerTurns.
+		p.releaseOrRecycle(s)
 		p.debugLog("pool.release", "slot", s.Label, "session_id", sid)
 		// D-05a (REL-CFG-04): slot release is one of the
 		// forward-progress signals consumed by Plan 16-02's
@@ -1268,11 +1327,106 @@ func (p *Pool) releaseSlotForSession(sid string) {
 	}
 	p.mu.Unlock()
 	if ok {
-		p.slots <- slot
+		// Task 3: same recycle-vs-release decision as the Prompt happy-path
+		// release closure.
+		p.releaseOrRecycle(slot)
 		p.debugLog("pool.release", "slot", slot.Label, "session_id", sid)
 		// D-05a (REL-CFG-04): forward-progress signal.
 		p.advanceProgress()
 	}
+}
+
+// recycleRespawnTimeout bounds a single background recycle respawn. Unlike the
+// lazy dequeue-time path there is no caller-owned ctx, so this budget is the
+// only deadline; a respawn that blows it is a genuine failure (respawnSlot's
+// recycle cause routes the resulting context.DeadlineExceeded through
+// recordSpawnErr).
+const recycleRespawnTimeout = 30 * time.Second
+
+// releaseOrRecycle is the Task 3 replacement for the bare `p.slots <- slot`
+// on the post-serving release paths (Prompt happy-path release,
+// releaseSlotForSession, and the self-heal probe return). It makes the
+// recycle-vs-release decision AND the recycleWG.Add commit in one p.mu
+// critical section so an accepted Add is always ordered before Close's
+// recycleWG.Wait (review finding H-1 — the load-bearing shutdown property).
+//
+// When recycling is disabled (MaxWorkerTurns == 0), the worker is below
+// threshold, or the pool is closed, the slot returns to the free queue exactly
+// as before (the buffered send cannot block — channel capacity equals slot
+// count). Otherwise the slot is handed, exclusively, to a background
+// recycleSlot goroutine; the slot never re-enters p.slots on this path (the
+// goroutine either pushes it back after respawn or drops it on shutdown).
+func (p *Pool) releaseOrRecycle(slot *Slot) {
+	p.mu.Lock()
+	turns := slot.turns
+	if p.cfg.MaxWorkerTurns == 0 || turns < p.cfg.MaxWorkerTurns || p.closed {
+		p.slots <- slot
+		p.mu.Unlock()
+		return
+	}
+	// Commit: Add(1) inside the same critical section that read p.closed.
+	p.recycleWG.Add(1)
+	hook := p.recycleLaunchHook
+	p.mu.Unlock()
+
+	// Test-only seam (nil in production): fired AFTER admission and BEFORE the
+	// goroutine launch, outside p.mu so it can never deadlock against the pool.
+	if hook != nil {
+		hook()
+	}
+	go p.recycleSlot(slot, turns)
+}
+
+// recycleSlot owns the slot exclusively for the duration of a background
+// recycle: it respawns the worker (cause=recycle, 30s budget) and then either
+// returns the fresh slot to the free queue or, on a respawn failure, requeues
+// it dead so the next acquirer's lazy path retries. On shutdown it drops the
+// slot rather than pushing it — closeAll owns cleanup via the p.all snapshot.
+func (p *Pool) recycleSlot(slot *Slot, turns int) {
+	defer p.recycleWG.Done()
+	// Shutdown won the race after commit-to-recycle: drop the slot without
+	// respawning. closeAll finds the (old) client via p.all. (review H-1)
+	select {
+	case <-p.closing:
+		return
+	default:
+	}
+	if p.cfg.Logger != nil {
+		p.cfg.Logger.Info("pool: slot recycling", "label", slot.Label, "turns", turns)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), recycleRespawnTimeout)
+	defer cancel()
+	err := p.respawnSlot(ctx, slot, respawnCauseRecycle)
+
+	p.mu.Lock()
+	if p.closed {
+		// closeAll may have snapshotted the {label, client} pair BEFORE our
+		// swap; capture the current client under p.mu and close it ourselves.
+		// A double-close against closeAll's copy is safe (Close is idempotent).
+		// (review finding H-2)
+		client := slot.Client
+		p.mu.Unlock()
+		if err == nil && client != nil {
+			_ = client.Close()
+		}
+		return
+	}
+	if err != nil {
+		// Respawn failed: mark dead so the next acquirer's slotAlive() check
+		// trips the lazy respawn path (same recovery as the dequeue-time path).
+		slot.dead = true
+	}
+	// Guarded non-blocking send, mirroring the pool.go re-queue pattern: the
+	// buffered channel cannot block (cap == slot count), and the default arm
+	// is a defensive drop against any future duplicate-requeue bug.
+	select {
+	case p.slots <- slot:
+	default:
+		if p.cfg.Logger != nil {
+			p.cfg.Logger.Error("pool: recycle requeue failed", "label", slot.Label)
+		}
+	}
+	p.mu.Unlock()
 }
 
 // poolStreamWrapper adapts *acp.Stream (Chunks is a FIELD; Result
