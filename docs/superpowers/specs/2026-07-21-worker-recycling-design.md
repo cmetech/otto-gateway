@@ -1,7 +1,7 @@
 # Pool Worker Recycling + Desktop Pool Defaults + Vacant Slot Tiles — Design
 
 **Date:** 2026-07-21
-**Status:** Draft — pending adversarial review
+**Status:** Rev 2 — adversarial review findings folded in (see §6)
 **Scope:** otto-gateway (Go), admin dashboard (static JS/CSS), desktop env template
 
 ---
@@ -37,6 +37,11 @@ escalates.
 
 **Consequence:** every request appends another abandoned session's state to
 whichever worker served it. Worker RSS is monotonic with request count.
+
+The catalog paths accumulate the same way (review finding M-4): the warmup
+catalog capture and every lazy self-heal probe (`probeCatalogOnce`,
+`pool.go:316`) each run a real `session/new` whose retained state `Cancel`
+does not free.
 
 ### 1.3 Why the primary client makes this worse
 
@@ -79,7 +84,7 @@ insufficient.
 
 ## 2. Proposed solution (three parts)
 
-### Part A — Desktop env template defaults (config-only)
+### Part A — Env template defaults (config-only)
 
 In `scripts/.env.example`:
 
@@ -89,127 +94,185 @@ In `scripts/.env.example`:
   bloat.
 - Add `KIRO_WORKER_MAX_TURNS=20` (see Part B).
 
-Existing installs pick both up via `gw upgrade-env` (the template is the
-upgrade source — `scripts/gw:138-150`). The **binary defaults are
-unchanged** (`POOL_SIZE=4`, recycling disabled), so server/LangFlow
-deployments that don't use the template see zero behavior change.
+**Rollout posture (review finding M-5, explicitly accepted):**
+`scripts/.env.example` is the single wrapper template, and `gw upgrade-env`
+regenerates `.env` byte-for-byte from it — so **every** script-based
+deployment receives these values on its next `upgrade-env`, not only desktop
+installs. This is accepted deliberately: the gw-script distribution of this
+gateway is laptop-oriented, and any shared/server deployment that needs a
+larger pool already has the supported mechanism for it — `overrides.env`,
+which `upgrade-env` never touches and which wins over `.env`. The template
+comments must state this explicitly next to the two keys ("sized for
+single-user laptops; raise via overrides.env for shared hosts").
 
-Implementation must also check the env-var allowlists in `scripts/gw`
-(~line 1805/1904) and `scripts/gw.ps1` (~line 1554/1619) — if those lists
-gate which keys are loaded/exported, `KIRO_WORKER_MAX_TURNS` must be added.
+The binary defaults are unchanged (`POOL_SIZE=4`, recycling disabled), so
+deployments that bypass the gw scripts see zero behavior change.
+
+`scripts/gw` / `scripts/gw.ps1` env-key lists (~gw:1805/1904,
+~gw.ps1:1554/1619) do **not** gate loading — they drive `gw env` display and
+support-bundle reporting (review confirmed). `KIRO_WORKER_MAX_TURNS` is
+still added to both lists so it shows up in diagnostics.
 
 ### Part B — Turn-count worker recycling (Go)
 
 **New env knob:** `KIRO_WORKER_MAX_TURNS` — int ≥ 0, default **0 =
 disabled**. Parsed in `internal/config/config.go` with the same fail-fast
-validation style as `POOL_SIZE` (reject negative; sanity-cap large values,
-e.g. max 10_000). Threaded to `pool.Config.MaxWorkerTurns` and wired in
+validation style as `POOL_SIZE` (reject negative; sanity-cap at 10_000).
+Threaded to `pool.Config.MaxWorkerTurns` and wired in
 `cmd/otto-gateway/main.go`.
 
 **Turn counting:** `Slot` gains a `turns int` field, guarded by `p.mu`
-(same discipline as `slot.dead`). Incremented in `Pool.NewSession` inside
-the existing `p.mu.Lock()` critical section that records
-`p.sessionSlots[sid] = slot` — i.e. a "turn" is a successfully created kiro
-session, which is exactly the event that accumulates memory in the worker.
-A failed `session/new` does not increment.
+(same discipline as `slot.dead`). A "turn" is **every successful
+`session/new` executed on a pool worker** — the event that accumulates
+memory — regardless of which path issued it (review finding M-4):
+
+- `Pool.NewSession`: increment inside the existing `p.mu` critical section
+  that records `p.sessionSlots[sid] = slot`. Failed `session/new` does not
+  increment.
+- Catalog probes: `probeCatalogOnce` takes the `*Slot` (not the bare
+  `PoolClient`) and increments `slot.turns` under `p.mu` on successful
+  `session/new`. This covers both the warmup retry loop
+  (`captureCatalogWithRetry`) and the lazy self-heal path
+  (`selfHealCatalog`). The self-heal path already holds the slot
+  exclusively (dequeued from `p.slots`), and warmup owns the freshly-built
+  slot; neither needs new synchronization beyond the counter's `p.mu`.
+  Self-heal returns its slot via the same `releaseOrRecycle` helper below,
+  so a probe-bloated worker is also recycled rather than exempt.
 
 **Recycle trigger:** a new helper `releaseOrRecycle(slot)` replaces the bare
-`p.slots <- slot` on the two post-serving release paths:
+`p.slots <- slot` on the post-serving release paths:
 
-1. the `release()` closure inside `Pool.Prompt` (pool.go:1077), and
-2. `releaseSlotForSession` (pool.go:1191, used by the Prompt-error path and
-   `Pool.Cancel`).
+1. the `release()` closure inside `Pool.Prompt` (pool.go:1077),
+2. `releaseSlotForSession` (pool.go:1191 — Prompt-error path and
+   `Pool.Cancel`), and
+3. the self-heal probe's deferred slot return (pool.go:375).
 
-Under `p.mu` it reads `slot.turns`; if `MaxWorkerTurns > 0 && turns >=
-MaxWorkerTurns && !p.closed`, the slot takes the recycle path; otherwise it
-is pushed to `p.slots` exactly as today. (The `NewSession`-error release at
-pool.go:1023 keeps the direct push: no session was created there, and any
-prior threshold crossing was already handled at that turn's own release.)
+(The `NewSession`-error release at pool.go:1023 keeps the direct push: no
+session was created there, and any prior threshold crossing was already
+handled at that turn's own release.)
 
-**Eager background respawn:** the recycle path hands the slot to a
-goroutine tracked by a new `recycleWG sync.WaitGroup` (mirroring the
-existing `probeWG` pattern):
+**Commit-to-recycle is a single `p.mu` critical section (review finding
+H-1).** Under `p.mu`, `releaseOrRecycle`:
+
+1. reads `slot.turns`;
+2. if `MaxWorkerTurns == 0 || turns < MaxWorkerTurns || p.closed` → push to
+   `p.slots` (today's behavior; the buffered send cannot block — capacity
+   equals slot count);
+3. otherwise **commits**: `p.recycleWG.Add(1)` *inside this critical
+   section*, then unlock and launch the goroutine.
+
+Because `closeAll` sets `p.closed` under the same mutex, every accepted
+`Add` is ordered before `Pool.Close`'s `recycleWG.Wait()` — the
+Add-after-Wait escape is structurally impossible. (The existing `probeWG`
+pattern checks `p.closing` and `Add`s in separate steps and is NOT a safe
+template; as an adjacent hardening, `selfHealCatalog`'s `Add` moves under
+the same discipline while we are in `Close`.)
+
+**Eager background respawn goroutine:**
 
 ```
 go func() {
-    defer recycleWG.Done()
-    if <-p.closing already closed → push slot back, exit   // closeAll owns cleanup
+    defer p.recycleWG.Done()
+    select { case <-p.closing:  // shutdown won the race after commit:
+        return                   // DROP the slot — do not push. closeAll
+    default: }                   // finds the old client via p.all. (H-1)
+
+    log INFO "pool: slot recycling" {label, turns}
     ctx := context.WithTimeout(Background, recycleRespawnTimeout /* 30s */)
-    err := p.respawnSlot(ctx, slot)          // existing battle-tested path:
-                                             // close OLD client (memory reclaimed),
-                                             // spawn+Initialize NEW, swap under p.mu,
-                                             // fresh exit-watcher, INFO log, respawns++
-    under p.mu:
-        if p.closed:
-            if err == nil → _ = slot.Client.Close()   // don't leak the fresh process
-            exit                                       // do NOT push; pool is gone
-        if err != nil → slot.dead = true               // lazy path retries at next acquire
-        push slot to p.slots (non-blocking send, same
-            guarded pattern as pool.go:970-981)
+    err := p.respawnSlot(ctx, slot, respawnCauseRecycle)
+
+    p.mu.Lock()
+    if p.closed {
+        // closeAll may have snapshotted before our swap: capture the
+        // current client UNDER p.mu and close it ourselves. Double-close
+        // with closeAll's copy is safe (Close is idempotent). (H-2)
+        c := slot.Client
+        p.mu.Unlock()
+        if err == nil && c != nil { _ = c.Close() }
+        return                   // do not push; the pool is gone
+    }
+    if err != nil { slot.dead = true }  // lazy path retries at next acquire
+    p.slots <- slot              // guarded non-blocking send, same
+    p.mu.Unlock()                // pattern as pool.go:970-981
 }()
 ```
 
-Key properties:
+**Respawn cause parameter (review findings M-3 + M-6):** `respawnSlot`
+gains an explicit cause — `respawnCauseLazy` (today's dequeue-time path) vs
+`respawnCauseRecycle`. The cause controls three things:
 
-- **No request latency:** requests never wait on a spawn. During the ~1-2 s
-  respawn the pool simply has one fewer free slot; a concurrent burst that
-  needs the slot parks in the existing bounded-acquire path
-  (`AcquireTimeout` → 503) exactly as if the slot were busy.
-- **Capacity invariant:** the goroutine has exclusive ownership of the slot
-  (it was never returned to the free channel), so the slot re-enters
-  `p.slots` exactly once — on success, or dead-marked on failure so the
-  existing lazy respawn retries. The pool never shrinks.
+1. **Error classification:** the WR-07 "ctx-cancel is a benign caller
+   disconnect" suppression applies **only** to the lazy cause. On the
+   recycle cause there is no caller to disconnect — a
+   `context.DeadlineExceeded` from the 30 s budget is a genuine failure
+   and goes through `recordSpawnErr` so `LastSpawnError` /
+   `gw_pool_spawn_failing` see it.
+2. **Log reason:** the success INFO log emits
+   `reason="lazy-respawn-success"` (byte-stable, unchanged) or
+   `reason="recycle-respawn-success"` respectively, so downstream log
+   consumers can distinguish crash recovery from scheduled recycling.
+3. **Counter:** the lazy cause increments the existing `respawns`
+   counter (`gw_pool_slot_respawns_total`, help text stays truthful:
+   "Total lazy slot respawns"); the recycle cause increments a new
+   `recycles atomic.Uint64` surfaced as `gw_pool_slot_recycles_total`
+   ("Total scheduled worker recycles (KIRO_WORKER_MAX_TURNS)").
+
+**`closeAll` data-race fix (review finding H-2, pre-existing but made
+routine by background recycling):** today `closeAll` snapshots `[]*Slot`
+under `p.mu` but reads `s.Client` *after* unlocking (pool.go:826), while
+`respawnSlot` writes `slot.Client` under `p.mu` (pool.go:503) —
+an unsynchronized interface-value read/write. Fix: under `p.mu`, snapshot
+immutable `{label, client}` pairs (the discipline `closeAll`'s own
+inflight-cancel block already uses at pool.go:786-795), then close the
+captured clients after unlocking. Any client swapped in *after* that
+snapshot is owned by the recycle goroutine's `p.closed` branch above —
+between the two, every client is closed exactly ≥ once and none leaks.
+
+**Other properties (unchanged from rev 1):**
+
+- **No request latency:** requests never wait on a spawn; during the ~1-2 s
+  respawn the pool has one fewer free slot, bounded by the existing
+  `AcquireTimeout` → 503 path.
+- **Capacity invariant:** the goroutine owns the slot exclusively (never
+  entered the free channel), so the slot re-enters `p.slots` exactly once —
+  or is deliberately dropped on shutdown where `closeAll` owns cleanup.
 - **Counter reset:** `respawnSlot` resets `slot.turns = 0` inside its
-  existing `p.mu` swap block — covering both the eager path and the
-  pre-existing lazy dead-slot path (a crashed worker's replacement starts
-  at zero).
-- **Shutdown safety:** `Pool.Close` adds `recycleWG.Wait()` after
-  `closeAll()` (alongside `probeWG.Wait()`). Interleavings:
-  - Swap happens **before** `closeAll`'s snapshot iteration → `closeAll`
-    closes the NEW client (slot is in `p.all` throughout). No leak.
-  - Swap happens **after** → the goroutine's `p.closed` check closes the
-    NEW client itself. No leak. (Double-close is safe; `Client.Close` is
-    idempotent.)
-  - Goroutine parked before respawn when `p.closing` fires → pushes the
-    slot back untouched and exits; `closeAll` owns the old client.
-- **Observability:** `respawnSlot`'s existing INFO log fires
-  (`pool: slot recovered`, previous_pid → new_pid) and the existing
-  `respawns` counter increments. Additionally the recycle path logs
-  `pool: slot recycled` at INFO with `label` and `turns` before invoking
-  respawn, so operators can distinguish recycles from crash recoveries.
-
-**Explicit non-interactions:**
-
-- The stateful session registry is untouched (dedicated clients, not pool
-  slots).
-- The warmup catalog probe (`probeCatalogOnce`) creates one throwaway
-  session on slot 0 via `slot.Client.NewSession` directly — it does not go
-  through `Pool.NewSession`, so it does not count as a turn.
-- The Track 4b ping-escalation and exit-watcher paths are unchanged; a
-  worker that dies mid-recycle-respawn surfaces as a failed respawn
-  (dead-marked, lazy retry).
+  existing `p.mu` swap block — covering the eager path and the pre-existing
+  lazy dead-slot path.
+- **Non-interactions:** stateful session registry untouched; ping/exit-
+  watcher paths unchanged (a worker dying mid-recycle surfaces as a failed
+  respawn → dead-marked → lazy retry).
 
 ### Part C — Dashboard vacant slot tiles (static JS/CSS only)
 
-Requirement: the slot grid should always render at least 4 tiles so the
-layout stays balanced, with unprovisioned slots clearly marked.
+Requirement: the slot grid always renders at least 4 tiles so the layout
+stays balanced, with unprovisioned slots clearly marked.
 
 - `renderSlots` (`internal/admin/static/js/admin.js:339`) pads its logical
   list: after the real `pool.slots[]` rows, append `4 - len` placeholder
   objects `{vacant: true, label: "slot-N"}` (continuing the index) when
   `0 < len < 4`. Pools of size ≥ 4 render exactly as today. A size-0 pool
   keeps today's empty-state message (no padding).
-- `buildSlotCard` / `updateSlotCard` branch on `slot.vacant`: card class
-  `is-vacant`, muted `VACANT` badge, meta text
+- Vacant cards: muted `VACANT` badge, meta text
   `Not provisioned (POOL_SIZE=N)` (N = `snap.pool.size`), no CPU/Mem perf
   block, no sparkline sampling.
+- **Stale-class prevention by construction (review finding L-1):** card
+  state classes are not incrementally added/removed. A single
+  `slotCardClass(slot, poolFailed)` helper computes the full class string
+  (`gw-slot-card` + `is-vacant` / `is-dead` / `is-recovering`), and BOTH
+  `buildSlotCard` and `updateSlotCard` assign `article.className`
+  wholesale. A pool-size change across restarts (2 → 3 with the grid
+  length pinned at 4, which takes the in-place `updateSlotCard` path)
+  therefore cannot retain `is-vacant` on a now-real slot, or vice versa.
 - CSS: `.gw-slot-card.is-vacant` — dashed border, reduced opacity, muted
-  badge color, honoring both light/dark themes like existing badge tiers.
-- The in-place DOM-patch diff (`grid.children.length !== slots.length`)
-  compares against the **padded** list, so tile count is stable at ≥ 4 and
-  in-place updates keep working.
+  badge color, honoring light/dark themes like existing badge tiers.
 - **No wire change:** `/admin/api/snapshot` shape is untouched; padding is
   purely client-side derived from `pool.size`.
+- Automated DOM testing was considered and declined: the repo has no JS
+  test infrastructure, and a node/jsdom harness for one transition
+  assertion is disproportionate given the wholesale-className design
+  removes the stale-class failure mode structurally. The 2→3 transition is
+  part of the documented manual test matrix instead (§4).
 
 ---
 
@@ -219,13 +282,14 @@ layout stays balanced, with unprovisioned slots clearly marked.
 |---|---|
 | `internal/config/config.go` | Parse + validate `KIRO_WORKER_MAX_TURNS` (default 0) |
 | `internal/pool/config.go` | `MaxWorkerTurns` field |
-| `internal/pool/pool.go` | `Slot.turns`, increment in `NewSession`, `releaseOrRecycle` helper on both release paths, recycle goroutine + `recycleWG`, `Close` drain, `respawnSlot` resets `turns` |
+| `internal/pool/pool.go` | `Slot.turns`; increment in `NewSession` + `probeCatalogOnce` (takes `*Slot`); `releaseOrRecycle` on all three release paths; recycle goroutine + `recycleWG` (Add under `p.mu`); `respawnSlot` cause param + `turns` reset; `recycles` counter; `closeAll` `{label, client}` snapshot fix; `selfHealCatalog` Add-ordering hardening; `Close` drains `recycleWG` |
+| `internal/pool/stats.go` / `internal/metrics/collector.go` (+ registration) | `Recycles()` accessor; `gw_pool_slot_recycles_total` |
 | `cmd/otto-gateway/main.go` | Wire config → pool.Config |
-| `internal/admin/static/js/admin.js` | Vacant-tile padding + rendering |
+| `internal/admin/static/js/admin.js` | Vacant-tile padding; `slotCardClass` wholesale className |
 | `internal/admin/static/css/admin.css` | `.is-vacant` styling |
-| `scripts/.env.example` | `POOL_SIZE=2` active, `KIRO_WORKER_MAX_TURNS=20` |
-| `scripts/gw`, `scripts/gw.ps1` | Add `KIRO_WORKER_MAX_TURNS` to env-key lists (verify whether lists gate loading) |
-| docs env table (admin docs template / endpoint reference) | Document the new knob |
+| `scripts/.env.example` | `POOL_SIZE=2` active, `KIRO_WORKER_MAX_TURNS=20`, rollout comment |
+| `scripts/gw`, `scripts/gw.ps1` | Add `KIRO_WORKER_MAX_TURNS` to diagnostics/env-report key lists |
+| docs env table (admin docs template / endpoint reference) | Document the new knob + new metric |
 | `CLAUDE.md` env list | Note `KIRO_WORKER_MAX_TURNS` (net-new) |
 
 ---
@@ -235,49 +299,69 @@ layout stays balanced, with unprovisioned slots clearly marked.
 Go (all `-race`, goleak-gated via existing testmain):
 
 1. Config: default 0; valid value; negative → fail-fast error; cap.
-2. Turn counting: N successful `NewSession` calls on a slot → `turns == N`;
-   failed `NewSession` does not increment.
+2. Turn counting: N successful `NewSession` calls → `turns == N`; failed
+   `NewSession` does not increment; **catalog probes (warmup + self-heal)
+   increment** (M-4).
 3. Recycle trigger: with `MaxWorkerTurns=2` and a fake factory, the slot is
    NOT returned to the free channel at the threshold release; a replacement
    client is spawned; the slot re-enters the free channel with `turns == 0`;
-   old client's `Close` was called.
-4. Disabled (0): threshold never trips, zero behavioral diff (existing
-   tests keep passing).
-5. Respawn failure: factory returns error → slot re-enters channel dead;
-   next `NewSession` takes the existing lazy-respawn path.
-6. Shutdown races: `Close` during in-flight recycle (before spawn, after
-   spawn/before swap, after swap) — no goroutine leak, no client leak,
-   `Close` returns.
-7. Release paths: recycle triggers from both the `Prompt` happy-path
-   release and `Pool.Cancel`'s `releaseSlotForSession`.
+   old client's `Close` was called; `recycles` counter == 1 and `respawns`
+   unchanged (M-6).
+4. Disabled (0): threshold never trips; existing tests keep passing.
+5. Respawn failure: factory error → slot re-enters channel dead; next
+   `NewSession` takes the lazy path. **Deadline on the recycle cause is
+   recorded via `recordSpawnErr`** (M-3); ctx-cancel on the lazy cause
+   remains suppressed (WR-07 regression guard).
+6. Shutdown races (H-1/H-2), using a test seam that pauses between
+   commit-to-recycle and goroutine launch, and a factory that blocks in
+   Spawn:
+   a. Close after commit, before goroutine start → `Wait` blocks until the
+      goroutine's closing-branch drop; no push, no leak.
+   b. Close mid-spawn → fresh client closed by the goroutine's `p.closed`
+      branch; goleak clean.
+   c. Close after swap, before push → no leak; `closeAll`'s captured-pair
+      snapshot + goroutine branch cover both orders.
+   d. `-race` on concurrent `closeAll` + `respawnSlot` (the H-2 fix's
+      regression test — fails on the current unsynchronized `s.Client`
+      read if reverted).
+7. Release paths: recycle triggers from the `Prompt` happy-path release,
+   `Pool.Cancel`'s `releaseSlotForSession`, and the self-heal probe return.
 
-Dashboard: manual verification against a live `POOL_SIZE=2` gateway
-(2 real + 2 vacant tiles; ≥ 4 slots unchanged; size-0 empty state
-unchanged). Existing admin regression tests must stay green.
+Dashboard — manual matrix against a live gateway (no JS test infra; see
+Part C rationale): `POOL_SIZE=2` → 2 real + 2 vacant; `POOL_SIZE=4` →
+unchanged; `POOL_SIZE=0` → empty-state unchanged; restart 2→3 → tile 3
+transitions vacant→real with no `is-vacant` residue (in-place update
+path). Existing admin regression tests stay green.
 
 Lint gates before push: `golangci-lint` (v2.12.2) + `gofumpt` via `go run`,
 per CI parity.
 
 ---
 
-## 5. Risks / open questions for review
+## 5. Risks / open items
 
-1. **Thundering respawn:** with `POOL_SIZE=2` and both workers crossing the
-   threshold on consecutive releases, both could respawn concurrently,
-   briefly leaving zero free slots. Acceptable for desktop (bounded by
-   `AcquireTimeout` 503 + retry); worth confirming for shared deployments —
-   mitigation if needed later: stagger via a singleflight or jittered
-   threshold, deliberately NOT in v1.
+1. **Thundering respawn:** with `POOL_SIZE=2`, both workers can recycle
+   concurrently, briefly leaving zero free slots. Accepted for desktop
+   (bounded by `AcquireTimeout` 503 + retry); revisit with jitter/
+   singleflight only if observed in practice.
 2. **Turn ≠ memory:** a 5-token turn and a 200 k-token workflow turn count
-   equally. Turn-count is a proxy; the default (20) is a guess to be tuned
-   with dashboard RSS observation. RSS trigger remains a possible v2.
-3. **respawnSlot reuse:** the eager path calls `respawnSlot` from a
-   goroutine while the slot is NOT in the free channel — same exclusive-
-   ownership precondition as today's caller (`NewSession` after dequeue).
-   Reviewers should confirm no hidden assumption that the caller holds a
-   request context (we pass a background ctx + 30 s timeout; the WR-07
-   ctx-cancel special-casing in `respawnSlot` becomes dead code on this
-   path, which is fine).
-4. **Vacant tile count hard-coded at 4:** per product decision (UI balance).
-   If `POOL_SIZE` ever exceeds 4 the grid simply shows them all; padding
-   only applies below 4.
+   equally. Default 20 is a tunable guess; observe dashboard RSS to tune.
+   RSS trigger remains a possible v2.
+3. **Template rollout is fleet-wide for script installs** (M-5): accepted
+   and documented in Part A; shared hosts pin via `overrides.env`.
+4. **Vacant tile count hard-coded at 4:** per product decision (UI
+   balance); pools > 4 render all slots, padding only applies below 4.
+
+---
+
+## 6. Adversarial review resolution log (rev 1 → rev 2)
+
+| Finding | Severity | Resolution |
+|---|---|---|
+| `recycleWG.Add` orderable after `Close.Wait` | HIGH | Add moved inside the `p.mu` commit-to-recycle critical section; early-closing branch drops the slot instead of pushing; `selfHealCatalog` hardened to same discipline |
+| `closeAll` unsynchronized `s.Client` read vs `respawnSlot` write | HIGH | `closeAll` snapshots `{label, client}` pairs under `p.mu`; recycle goroutine's `p.closed` branch captures+closes under the same discipline; dedicated `-race` regression test |
+| 30 s recycle deadline mis-classified as benign by WR-07 | MEDIUM | `respawnSlot` cause parameter; deadline on recycle cause → `recordSpawnErr` |
+| Catalog probes create uncounted sessions | MEDIUM | Every successful `session/new` on a worker counts; `probeCatalogOnce` takes `*Slot`; self-heal returns via `releaseOrRecycle` |
+| Template rollout not desktop-scoped | MEDIUM | Accepted + documented (Part A); `overrides.env` is the shared-host escape hatch; key added to gw/gw.ps1 diagnostic lists |
+| `reason="lazy-respawn-success"` / respawns counter semantically false for recycles | MEDIUM | Cause-driven log reason + separate `gw_pool_slot_recycles_total`; existing metric help stays truthful |
+| Vacant-card stale classes on in-place update | LOW | Wholesale `className` assignment via shared `slotCardClass` (stale classes impossible by construction); automated JS test declined as disproportionate — documented manual matrix instead |
