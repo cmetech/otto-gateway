@@ -534,11 +534,13 @@ func (p *Pool) slotAlive(slot *Slot) bool {
 // Ordering is load-bearing (05-RESEARCH.md Pitfall 2 + 05-PATTERNS.md
 // §"Insertion 2"):
 //  1. Close the OLD client first. This fires the OLD client's Done(),
-//     so the OLD exit-watcher's <-slot.Client.Done() branch wins and
-//     the OLD watcher exits cleanly via slot.dead = true (which is
-//     about to be reset anyway).
-//  2. Spawn the NEW client (honors ctx — D-02: ctx-canceled caller
-//     does not block on a slow kiro-cli spawn).
+//     so the OLD exit-watcher wakes; the step-0 respawning flag (plus
+//     the watcher's client-identity check) makes it treat the close as
+//     a planned teardown — no dead-mark, no "pool: slot died" log.
+//  2. Spawn the NEW client. The ctx bounds only the ctx-aware
+//     Initialize/RPC layer below — acpClientFactory.Spawn discards it,
+//     so a blocked process exec start is not interruptible (pre-existing
+//     property of every spawn path; D-02 aborts apply at Initialize).
 //  3. Initialize the NEW client (mirrors initSlot).
 //  4. Under p.mu: replace slot.Client and reset slot.dead = false.
 //  5. Spawn a fresh exit-watcher for the NEW client.
