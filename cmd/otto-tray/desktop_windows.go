@@ -24,14 +24,14 @@ func platformDesktopRunning(candidate desktopCandidate) (bool, error) {
 }
 
 func platformDesktopProcessIDs(candidate desktopCandidate) ([]uint32, error) {
-	processes, err := enumerateWindowsProcesses()
+	entries, err := enumerateWindowsProcessEntries()
 	if err != nil {
 		return nil, err
 	}
-	return matchingWindowsProcessIDs(candidate.ExecutablePath, processes), nil
+	return windowsCandidateProcessIDs(candidate, entries, queryWindowsProcessPath, windowsProcessGone)
 }
 
-func enumerateWindowsProcesses() ([]desktopProcess, error) {
+func enumerateWindowsProcessEntries() ([]desktopProcessEntry, error) {
 	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
 	if err != nil {
 		return nil, fmt.Errorf("create process snapshot: %w", err)
@@ -47,11 +47,12 @@ func enumerateWindowsProcesses() ([]desktopProcess, error) {
 		return nil, fmt.Errorf("start process enumeration: %w", err)
 	}
 
-	var processes []desktopProcess
+	var entries []desktopProcessEntry
 	for {
-		if executablePath, ok := queryWindowsProcessPath(entry.ProcessID); ok {
-			processes = append(processes, desktopProcess{PID: entry.ProcessID, ExecutablePath: executablePath})
-		}
+		entries = append(entries, desktopProcessEntry{
+			PID:       entry.ProcessID,
+			ImageName: windows.UTF16ToString(entry.ExeFile[:]),
+		})
 		if err := windows.Process32Next(snapshot, &entry); err != nil {
 			if errors.Is(err, windows.ERROR_NO_MORE_FILES) {
 				break
@@ -59,20 +60,27 @@ func enumerateWindowsProcesses() ([]desktopProcess, error) {
 			return nil, fmt.Errorf("continue process enumeration: %w", err)
 		}
 	}
-	return processes, nil
+	return entries, nil
 }
 
-func queryWindowsProcessPath(pid uint32) (string, bool) {
+func queryWindowsProcessPath(pid uint32) (string, error) {
 	process, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
 	if err != nil {
-		return "", false
+		return "", err
 	}
 	defer windows.CloseHandle(process) //nolint:errcheck // handle is closed on every return path
 
 	buffer := make([]uint16, 32768)
 	size := uint32(len(buffer))
 	if err := windows.QueryFullProcessImageName(process, 0, &buffer[0], &size); err != nil {
-		return "", false
+		return "", err
 	}
-	return windows.UTF16ToString(buffer[:size]), true
+	return windows.UTF16ToString(buffer[:size]), nil
+}
+
+func windowsProcessGone(err error) bool {
+	// With a nonzero PID sourced from the snapshot, ERROR_INVALID_PARAMETER
+	// means the process disappeared before OpenProcess. Fail closed on every
+	// other error, including ERROR_ACCESS_DENIED and query-handle failures.
+	return errors.Is(err, windows.ERROR_INVALID_PARAMETER)
 }

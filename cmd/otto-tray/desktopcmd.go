@@ -39,9 +39,9 @@ func desktopStartCommand(goos, appPath string) (string, []string) {
 	return appPath, nil // windows: run the exe directly
 }
 
-type desktopProcess struct {
-	PID            uint32
-	ExecutablePath string
+type desktopProcessEntry struct {
+	PID       uint32
+	ImageName string
 }
 
 func normalizeWindowsExecutablePath(executablePath string) string {
@@ -57,22 +57,34 @@ func normalizeWindowsExecutablePath(executablePath string) string {
 	return strings.ToLower(pathpkg.Clean(executablePath))
 }
 
-func matchingWindowsProcessIDs(executablePath string, processes []desktopProcess) []uint32 {
-	want := normalizeWindowsExecutablePath(executablePath)
-	if want == "" || want == "." {
-		return nil
-	}
+func windowsCandidateProcessIDs(
+	candidate desktopCandidate,
+	entries []desktopProcessEntry,
+	queryPath func(uint32) (string, error),
+	processGone func(error) bool,
+) ([]uint32, error) {
+	wantPath := normalizeWindowsExecutablePath(candidate.ExecutablePath)
 	var pids []uint32
-	for _, process := range processes {
-		if process.PID != 0 && normalizeWindowsExecutablePath(process.ExecutablePath) == want {
-			pids = append(pids, process.PID)
+	for _, entry := range entries {
+		if entry.PID == 0 || !strings.EqualFold(entry.ImageName, candidate.Identity.WinExeName) {
+			continue
+		}
+		executablePath, err := queryPath(entry.PID)
+		if err != nil {
+			if processGone != nil && processGone(err) {
+				continue
+			}
+			return nil, fmt.Errorf("query candidate process %d path: %w", entry.PID, err)
+		}
+		if wantPath != "" && wantPath != "." && normalizeWindowsExecutablePath(executablePath) == wantPath {
+			pids = append(pids, entry.PID)
 		}
 	}
-	return pids
+	return pids, nil
 }
 
 func macExecutablePattern(executablePath string) string {
-	return "^" + regexp.QuoteMeta(executablePath) + "$"
+	return "^" + regexp.QuoteMeta(executablePath) + "([[:space:]]|$)"
 }
 
 // desktopStopCommand builds a graceful (force=false) or forced (force=true)
