@@ -146,7 +146,7 @@ func (s *trayState) onReady(isFirstRun bool) func() {
 		go s.uiLoop()
 
 		dtick := time.NewTicker(3 * time.Second).C
-		go runDesktopPoller(ctx, s.makeDesktopProbe(), dtick, s.desktopCh)
+		go runLegacyDesktopPoller(ctx, s.makeDesktopProbe(), dtick, s.desktopCh)
 		go s.desktopUILoop()
 
 		// Grafana Cloud metrics remote-write agent (quick 260715-q5m). Shares the

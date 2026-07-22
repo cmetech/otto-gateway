@@ -39,7 +39,8 @@ func (s *trayState) makeDesktopProbe() func() desktopInput {
 			return desktopInput{Installed: false}
 		}
 		s.desktopAppPath.Store(&appPath)
-		return desktopInput{Installed: true, Running: isDesktopRunning(id)}
+		running, _ := isDesktopRunning(id)
+		return desktopInput{Installed: true, Running: running}
 	}
 }
 
@@ -157,11 +158,13 @@ func (s *trayState) handleDesktopStop() {
 	res := runCmd(15*time.Second, "", name, args...)
 	// forced fallback if still alive shortly after
 	time.Sleep(1500 * time.Millisecond)
-	if isDesktopRunning(id) {
+	running, _ := isDesktopRunning(id)
+	if running {
 		fname, fargs := desktopStopCommand(runtime.GOOS, id, true)
 		res = runCmd(15*time.Second, "", fname, fargs...)
 	}
-	if res.Err != nil && isDesktopRunning(id) {
+	running, _ = isDesktopRunning(id)
+	if res.Err != nil && running {
 		notify(desktopLabel(""), "Failed to stop: "+firstLine(res.Stderr))
 	}
 }
