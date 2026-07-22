@@ -45,11 +45,11 @@ func EnsureACPProxy(root string) (path string, created bool, err error) {
 		return path, false, nil
 	}
 
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return path, false, fmt.Errorf("create acp_proxy agent directory: %w", err)
 	}
 
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if errors.Is(err, fs.ErrExist) {
 		exists, inspectErr := regularFileExists(path)
 		if inspectErr != nil {

@@ -57,6 +57,20 @@ func TestEnsureACPProxyCreatesToolLessAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
+	fileInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat agent file: %v", err)
+	}
+	if got := fileInfo.Mode().Perm(); got != 0o600 {
+		t.Errorf("agent file mode = %04o, want 0600", got)
+	}
+	dirInfo, err := os.Stat(filepath.Dir(path))
+	if err != nil {
+		t.Fatalf("Stat agent directory: %v", err)
+	}
+	if got := dirInfo.Mode().Perm(); got != 0o750 {
+		t.Errorf("agent directory mode = %04o, want 0750", got)
+	}
 	var cfg struct {
 		Name           string         `json:"name"`
 		Description    string         `json:"description"`

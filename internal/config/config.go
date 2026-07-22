@@ -453,7 +453,7 @@ func Load() (Config, error) {
 		}
 	}
 	if kiroCWD != "" {
-		stat, sErr := os.Stat(kiroCWD)
+		stat, sErr := os.Stat(kiroCWD) //nolint:gosec // G703: operator-controlled boot path (KIRO_CWD env/flag), used only for directory validation
 		switch {
 		case os.IsNotExist(sErr) && kiroCWDIsDefault:
 			// Startup materializes the gateway-owned workspace before any Kiro
