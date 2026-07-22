@@ -208,28 +208,35 @@ body {
  * Status pill (filled, semantic color at 100%, accent-fg text)
  * ----------------------------------------------------------------------- */
 
+/* Square badge look (matches .gw-badge on the pool slot cards): tinted
+ * transparent background + semantic-color text, uppercase, input radius —
+ * NOT the filled rounded pill (aligned per dashboard chip-style request). */
 .gw-status-pill {
   display: inline-block;
-  padding: 4px 12px;
-  border-radius: var(--gw-radius-pill);
-  font-size: 14px;
+  padding: 4px 8px;
+  border-radius: var(--gw-radius-input);
+  font-size: 12px;
   font-weight: 600;
+  text-transform: uppercase;
   line-height: 1;
-  color: var(--gw-accent-fg);
-  background: var(--gw-fg-muted);
+  color: var(--gw-fg-muted);
+  background: rgba(156, 163, 175, 0.12);
   white-space: nowrap;
 }
 
 .gw-status-pill.is-healthy {
-  background: var(--gw-healthy);
+  background: rgba(15, 195, 115, 0.12);
+  color: var(--gw-healthy);
 }
 
 .gw-status-pill.is-degraded {
-  background: var(--gw-warning);
+  background: rgba(255, 140, 10, 0.12);
+  color: var(--gw-warning);
 }
 
 .gw-status-pill.is-down {
-  background: var(--gw-failed);
+  background: rgba(255, 50, 50, 0.12);
+  color: var(--gw-failed);
 }
 
 /* -----------------------------------------------------------------------
@@ -239,29 +246,33 @@ body {
 
 .gw-pill {
   display: inline-block;
-  padding: 4px 12px;
-  border-radius: var(--gw-radius-pill);
-  font-size: 14px;
+  padding: 4px 8px;
+  border-radius: var(--gw-radius-input);
+  font-size: 12px;
   font-weight: 600;
+  text-transform: uppercase;
   line-height: 1;
-  color: var(--gw-accent-fg);
-  background: var(--gw-fg-muted);
+  color: var(--gw-fg-muted);
+  background: rgba(156, 163, 175, 0.12);
   white-space: nowrap;
 }
 
 .gw-pill-on {
-  background: var(--gw-healthy);
+  background: rgba(15, 195, 115, 0.12);
+  color: var(--gw-healthy);
 }
 
 .gw-pill-off {
-  background: var(--gw-fg-muted);
+  background: rgba(156, 163, 175, 0.12);
+  color: var(--gw-fg-muted);
 }
 
 /* Amber "on but sensitive" variant — used by the dashboard summary strip
  * for Chat-trace, whose ON state writes raw prompts to disk (matches the
  * About page's SENSITIVE badge posture rather than a green endorsement). */
 .gw-pill-warn {
-  background: var(--gw-warning);
+  background: rgba(255, 140, 10, 0.12);
+  color: var(--gw-warning);
 }
 
 /* Purple "per-request" variant — used by the Compression chip when the
@@ -270,7 +281,8 @@ body {
  * model suffix still enables individual requests. Distinct from green
  * (fully on) and gray (hook excluded — nothing can compress). */
 .gw-pill-req {
-  background: var(--gw-activity);
+  background: rgba(175, 120, 210, 0.12);
+  color: var(--gw-activity);
 }
 
 /* ACP Capture panel card: inline row of pill/count/controls/link/note. */
