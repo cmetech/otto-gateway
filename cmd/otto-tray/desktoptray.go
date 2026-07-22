@@ -22,62 +22,126 @@ func desktopLabel(suffix string) string {
 	return strings.TrimSpace(s)
 }
 
-// makeDesktopProbe returns a per-tick evidence gatherer: resolve the installed
-// app (from fixed OTTO defaults; no brand.json read), record its path, and
-// check liveness. The Installing flag is overlaid from the tray's atomic bool
-// so an in-flight install shows the spinner state.
-func (s *trayState) makeDesktopProbe() func() desktopInput {
-	env := os.Getenv
-	home, _ := os.UserHomeDir()
-	exists := func(p string) bool { _, err := os.Stat(p); return err == nil }
-	return func() desktopInput {
-		if s.desktopInstalling.Load() {
-			return desktopInput{Installing: true}
+type desktopMenuModel struct {
+	Header          string
+	AppFolderTitle  string
+	DataFolderTitle string
+	FoldersEnabled  bool
+	InstallVisible  bool
+	InstallEnabled  bool
+	StartVisible    bool
+	StartEnabled    bool
+	StopVisible     bool
+	StopEnabled     bool
+}
+
+func desktopMenuForOutput(out desktopOutput) desktopMenuModel {
+	model := desktopMenuModel{
+		Header:          desktopLabel("· detecting…"),
+		AppFolderTitle:  "Open Co-Worker App Folder",
+		DataFolderTitle: "Open Co-Worker Data Folder",
+	}
+
+	switch out.State {
+	case DesktopNotInstalled:
+		model.Header = desktopLabel("· not installed")
+		model.InstallVisible = true
+		model.InstallEnabled = true
+	case DesktopInstalling:
+		model.Header = desktopLabel("· installing…")
+		model.InstallVisible = true
+	case DesktopStopped:
+		model.Header = desktopLabel("· not running")
+		if out.Candidate != nil {
+			model.Header = desktopLabel("· " + out.Candidate.Identity.DisplayName + " not running")
+			model.StartVisible = true
+			model.StartEnabled = true
 		}
-		id, appPath := resolveDesktopIdentity(runtime.GOOS, env, home, exists)
-		if appPath == "" {
-			return desktopInput{Installed: false}
+	case DesktopRunning:
+		model.Header = desktopLabel("· running")
+		if out.Candidate != nil {
+			name := out.Candidate.Identity.DisplayName
+			model.Header = desktopLabel("· " + name + " running")
+			model.AppFolderTitle = "Open " + name + " App Folder"
+			model.DataFolderTitle = "Open " + name + " Data Folder"
+			model.FoldersEnabled = true
+			model.StopVisible = true
+			model.StopEnabled = true
 		}
-		s.desktopAppPath.Store(&appPath)
-		running, _ := isDesktopRunning(id)
-		return desktopInput{Installed: true, Running: running}
+	case DesktopAmbiguous:
+		model.Header = desktopLabel("· multiple apps detected")
+	case DesktopDetectionError:
+		model.Header = desktopLabel("· detection error")
+	}
+
+	return model
+}
+
+func (s *trayState) makeDesktopProbe() func() desktopOutput {
+	return func() desktopOutput {
+		candidates, err := discoverDesktopCandidates(runtime.GOOS, os.Getenv, homeDir(), productionDesktopDiscoveryDeps)
+		if err != nil {
+			return desktopOutput{State: DesktopDetectionError, Detail: err.Error()}
+		}
+		return resolveDesktopCandidates(candidates, isDesktopRunning, s.desktopInstalling.Load())
 	}
 }
 
 func (s *trayState) desktopUILoop() {
-	for st := range s.desktopCh {
-		s.applyDesktopState(st)
+	for out := range s.desktopCh {
+		s.applyDesktopOutput(out)
 	}
 }
 
-// applyDesktopState updates the desktop menu section for the given state.
-// Install is shown only when not installed; Start/Stop are enabled by state.
-func (s *trayState) applyDesktopState(st DesktopState) {
-	switch st {
-	case DesktopNotInstalled:
-		s.miDesktopHeader.SetTitle(desktopLabel("· not installed"))
+func (s *trayState) applyDesktopOutput(out desktopOutput) {
+	snapshot := out
+	if out.Candidate != nil {
+		candidate := *out.Candidate
+		snapshot.Candidate = &candidate
+	}
+	s.desktopCurrent.Store(&snapshot)
+
+	model := desktopMenuForOutput(snapshot)
+	s.miDesktopHeader.SetTitle(model.Header)
+	s.miOpenAppFolder.SetTitle(model.AppFolderTitle)
+	s.miOpenDataFolder.SetTitle(model.DataFolderTitle)
+	if model.FoldersEnabled {
+		s.miOpenAppFolder.Enable()
+		s.miOpenDataFolder.Enable()
+	} else {
+		s.miOpenAppFolder.Disable()
+		s.miOpenDataFolder.Disable()
+	}
+
+	if model.InstallVisible {
 		s.miDesktopInstall.Show()
+	} else {
+		s.miDesktopInstall.Hide()
+	}
+	if model.InstallEnabled {
 		s.miDesktopInstall.Enable()
-		s.miDesktopStart.Hide()
-		s.miDesktopStop.Hide()
-	case DesktopInstalling:
-		s.miDesktopHeader.SetTitle(desktopLabel("· installing…"))
-		s.miDesktopInstall.Show()
+	} else {
 		s.miDesktopInstall.Disable()
-		s.miDesktopStart.Hide()
-		s.miDesktopStop.Hide()
-	case DesktopStopped:
-		s.miDesktopHeader.SetTitle(desktopLabel("· not running"))
-		s.miDesktopInstall.Hide()
+	}
+	if model.StartVisible {
 		s.miDesktopStart.Show()
-		s.miDesktopStart.Enable()
-		s.miDesktopStop.Hide()
-	case DesktopRunning:
-		s.miDesktopHeader.SetTitle(desktopLabel("· running"))
-		s.miDesktopInstall.Hide()
+	} else {
 		s.miDesktopStart.Hide()
+	}
+	if model.StartEnabled {
+		s.miDesktopStart.Enable()
+	} else {
+		s.miDesktopStart.Disable()
+	}
+	if model.StopVisible {
 		s.miDesktopStop.Show()
+	} else {
+		s.miDesktopStop.Hide()
+	}
+	if model.StopEnabled {
 		s.miDesktopStop.Enable()
+	} else {
+		s.miDesktopStop.Disable()
 	}
 }
 
@@ -110,7 +174,11 @@ func runDesktopInstall(d desktopInstallDeps) {
 
 func (s *trayState) handleDesktopInstall() {
 	s.desktopInstalling.Store(true)
-	defer s.desktopInstalling.Store(false)
+	requestDesktopRefresh(s.desktopRefreshCh)
+	defer func() {
+		s.desktopInstalling.Store(false)
+		requestDesktopRefresh(s.desktopRefreshCh)
+	}()
 	name, args := desktopInstallCommand(runtime.GOOS)
 	runDesktopInstall(desktopInstallDeps{
 		confirm: func() bool {
@@ -121,34 +189,34 @@ func (s *trayState) handleDesktopInstall() {
 		notify: notify,
 		label:  desktopLabel(""),
 	})
-	// next poll re-detects → state flips to stopped/running
 }
 
 func (s *trayState) handleDesktopStart() {
-	p := s.desktopAppPath.Load()
-	appPath := ""
-	if p != nil {
-		appPath = *p
+	out := s.desktopCurrent.Load()
+	if out == nil || out.State != DesktopStopped || out.Candidate == nil {
+		return
 	}
-	_, freshPath := resolveDesktopIdentity(runtime.GOOS, os.Getenv, homeDir(), statExists)
-	// Stale-path guard: the cached path may point at an app that was moved
-	// or uninstalled since the last poll. Re-resolve before launching so we
-	// never spawn a dead path.
+	appPath := out.Candidate.AppPath
 	if appPath == "" || !statExists(appPath) {
-		appPath = freshPath
-	}
-	if appPath == "" {
+		s.publishDesktopOutput(desktopOutput{State: DesktopNotInstalled})
+		requestDesktopRefresh(s.desktopRefreshCh)
 		notify(desktopLabel(""), "Desktop app not found. Install it first.")
 		return
 	}
 	name, args := desktopStartCommand(runtime.GOOS, appPath)
 	if err := spawnDetached("", name, args...); err != nil {
 		notify(desktopLabel(""), "Failed to start: "+err.Error())
+		return
 	}
+	requestDesktopRefresh(s.desktopRefreshCh)
 }
 
 func (s *trayState) handleDesktopStop() {
-	id, _ := resolveDesktopIdentity(runtime.GOOS, os.Getenv, homeDir(), statExists)
+	out := s.desktopCurrent.Load()
+	if out == nil || out.State != DesktopRunning || out.Candidate == nil {
+		return
+	}
+	id := out.Candidate.Identity
 	if !confirmDialog("Stop "+desktopLabel(""),
 		"Stop the Co-Worker app? Any unsaved work in it may be lost.", "Stop", "Cancel") {
 		return
@@ -158,15 +226,31 @@ func (s *trayState) handleDesktopStop() {
 	res := runCmd(15*time.Second, "", name, args...)
 	// forced fallback if still alive shortly after
 	time.Sleep(1500 * time.Millisecond)
-	running, _ := isDesktopRunning(id)
+	running, err := isDesktopRunning(id)
+	if err != nil {
+		s.publishDesktopOutput(desktopOutput{State: DesktopDetectionError, Detail: err.Error()})
+		requestDesktopRefresh(s.desktopRefreshCh)
+		notify(desktopLabel(""), "Could not verify whether the Co-Worker stopped: "+err.Error())
+		return
+	}
 	if running {
 		fname, fargs := desktopStopCommand(runtime.GOOS, id, true)
 		res = runCmd(15*time.Second, "", fname, fargs...)
 	}
-	running, _ = isDesktopRunning(id)
-	if res.Err != nil && running {
-		notify(desktopLabel(""), "Failed to stop: "+firstLine(res.Stderr))
+	if res.Err != nil {
+		running, err = isDesktopRunning(id)
+		if err != nil {
+			s.publishDesktopOutput(desktopOutput{State: DesktopDetectionError, Detail: err.Error()})
+			notify(desktopLabel(""), "Could not verify whether the Co-Worker stopped: "+err.Error())
+		} else if running {
+			notify(desktopLabel(""), "Failed to stop: "+firstLine(res.Stderr))
+		}
 	}
+	requestDesktopRefresh(s.desktopRefreshCh)
+}
+
+func (s *trayState) publishDesktopOutput(out desktopOutput) {
+	s.desktopCh <- out
 }
 
 // small helpers reused by handlers

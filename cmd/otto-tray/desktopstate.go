@@ -25,46 +25,6 @@ type desktopOutput struct {
 	Detail    string
 }
 
-// desktopInput is the raw per-tick evidence. computeDesktopState is pure.
-type desktopInput struct {
-	Installed  bool
-	Running    bool
-	Installing bool // overlaid by the install handler while a run is in-flight
-}
-
-// computeDesktopState: installing wins (transient), then not-installed,
-// then running vs stopped.
-func computeDesktopState(in desktopInput) DesktopState {
-	if in.Installing {
-		return DesktopInstalling
-	}
-	if !in.Installed {
-		return DesktopNotInstalled
-	}
-	if in.Running {
-		return DesktopRunning
-	}
-	return DesktopStopped
-}
-
-// runLegacyDesktopPoller preserves the pre-resolution poller until the tray UI
-// caller migrates to desktopOutput in the next task.
-func runLegacyDesktopPoller(ctx context.Context, probe func() desktopInput, tick <-chan time.Time, out chan<- DesktopState) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-tick:
-			s := computeDesktopState(probe())
-			select {
-			case out <- s:
-			case <-ctx.Done():
-				return
-			}
-		}
-	}
-}
-
 // runDesktopPoller serializes periodic and manual probes in this goroutine.
 // Manual refresh clears the trusted UI state before gathering fresh evidence.
 func runDesktopPoller(

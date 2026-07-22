@@ -60,13 +60,15 @@ type trayState struct {
 	miQuit          *systray.MenuItem
 
 	// desktop-app management (parallel to the gateway controls)
-	desktopCh         chan DesktopState
+	desktopCh         chan desktopOutput
+	desktopRefreshCh  chan struct{}
 	desktopInstalling atomic.Bool
-	desktopAppPath    atomic.Pointer[string]
+	desktopCurrent    atomic.Pointer[desktopOutput]
 	miDesktopHeader   *systray.MenuItem
 	miDesktopInstall  *systray.MenuItem
 	miDesktopStart    *systray.MenuItem
 	miDesktopStop     *systray.MenuItem
+	miDesktopRefresh  *systray.MenuItem
 
 	// advanced ▸ open-folder links + metrics remote-write toggle
 	miAdvanced          *systray.MenuItem
@@ -83,13 +85,14 @@ type trayState struct {
 
 func newTrayState(installDir, gwHome string, cfg TrayConfig) *trayState {
 	return &trayState{
-		installDir:   installDir,
-		gwHome:       gwHome,
-		cfg:          cfg,
-		dashboardURL: resolveDashboardURL(gwHome),
-		current:      StateUnknown,
-		stateCh:      make(chan stateOutput, 4),
-		desktopCh:    make(chan DesktopState, 4),
+		installDir:       installDir,
+		gwHome:           gwHome,
+		cfg:              cfg,
+		dashboardURL:     resolveDashboardURL(gwHome),
+		current:          StateUnknown,
+		stateCh:          make(chan stateOutput, 4),
+		desktopCh:        make(chan desktopOutput, 4),
+		desktopRefreshCh: make(chan struct{}, 1),
 	}
 }
 
@@ -112,16 +115,17 @@ func (s *trayState) onReady(isFirstRun bool) func() {
 		s.miCopyHealth = systray.AddMenuItem("Copy health URL", "")
 		s.miCopyGatewayID = systray.AddMenuItem("Copy Gateway ID", "Copy this gateway's ID to quote when contacting support")
 		systray.AddSeparator()
-		did, _ := resolveDesktopIdentity(runtime.GOOS, os.Getenv, homeDir(), statExists)
-		s.miDesktopHeader = systray.AddMenuItem(desktopLabel("· …"), "")
+		s.miDesktopHeader = systray.AddMenuItem(desktopLabel("· detecting…"), "")
 		s.miDesktopHeader.Disable()
 		s.miDesktopInstall = systray.AddMenuItem("Install "+desktopLabel("")+"…", "Download and run the Co-Worker installer")
 		s.miDesktopStart = systray.AddMenuItem("Start "+desktopLabel(""), "")
 		s.miDesktopStop = systray.AddMenuItem("Stop "+desktopLabel(""), "")
 		systray.AddSeparator()
 		s.miAdvanced = systray.AddMenuItem("Advanced", "")
-		s.miOpenAppFolder = s.miAdvanced.AddSubMenuItem("Open App Folder", "Reveal the installed desktop app folder")
-		s.miOpenDataFolder = s.miAdvanced.AddSubMenuItem("Open Data Folder (."+brandSlug(did)+")", "Open the "+did.DisplayName+" data folder")
+		s.miOpenAppFolder = s.miAdvanced.AddSubMenuItem("Open Co-Worker App Folder", "Reveal the running Co-Worker app folder")
+		s.miOpenDataFolder = s.miAdvanced.AddSubMenuItem("Open Co-Worker Data Folder", "Open the running Co-Worker data folder")
+		s.miDesktopRefresh = s.miAdvanced.AddSubMenuItem("Refresh Co-Worker Detection", "Detect installed and running Co-Worker apps now")
+		s.applyDesktopOutput(desktopOutput{State: DesktopDetecting})
 		s.miOpenGatewayFolder = s.miAdvanced.AddSubMenuItem("Open Gateway Folder (~/.gw)", "Open the Gateway data folder")
 		rwInitial := resolveMetricsRWEnabled(s.cfg, s.gwHome)
 		s.metricsRWEnabled.Store(rwInitial)
@@ -146,8 +150,9 @@ func (s *trayState) onReady(isFirstRun bool) func() {
 		go s.uiLoop()
 
 		dtick := time.NewTicker(3 * time.Second).C
-		go runLegacyDesktopPoller(ctx, s.makeDesktopProbe(), dtick, s.desktopCh)
+		go runDesktopPoller(ctx, s.makeDesktopProbe(), dtick, s.desktopRefreshCh, s.desktopCh)
 		go s.desktopUILoop()
+		requestDesktopRefresh(s.desktopRefreshCh)
 
 		// Grafana Cloud metrics remote-write agent (quick 260715-q5m). Shares the
 		// poller ctx so it stops on tray exit. Reads its interval/endpoint/token
@@ -190,6 +195,7 @@ func (s *trayState) wireCallbacks() {
 	s.miDesktopInstall.Click(func() { go s.handleDesktopInstall() })
 	s.miDesktopStart.Click(func() { go s.handleDesktopStart() })
 	s.miDesktopStop.Click(func() { go s.handleDesktopStop() })
+	s.miDesktopRefresh.Click(func() { requestDesktopRefresh(s.desktopRefreshCh) })
 
 	s.miOpenAppFolder.Click(func() { go s.handleOpenAppFolder() })
 	s.miOpenDataFolder.Click(func() { go s.handleOpenDataFolder() })

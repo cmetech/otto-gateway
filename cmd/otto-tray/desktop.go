@@ -200,17 +200,3 @@ func installedAppPath(goos string, id brandIdentity, env func(string) string, ho
 	}
 	return ""
 }
-
-// resolveDesktopIdentity finds the installed desktop app using fixed OTTO
-// defaults and returns that identity plus the app path ("" if not installed).
-// It deliberately does NOT read the app's brand.json: that descriptor is owned
-// by the desktop Hermes client, and the tray reading it previously caused a
-// spurious icon swap (quick task 260721-an5). Discovery already relies on the
-// OTTO-default path/exe name, so dropping the brand.json refinement changes no
-// behavior for the current app.
-//
-//nolint:unparam // goos is runtime.GOOS in production (varies darwin/windows across builds) and is parameterized so both OS branches are unit-tested on one box
-func resolveDesktopIdentity(goos string, env func(string) string, home string, exists func(string) bool) (brandIdentity, string) {
-	id := defaultBrandIdentity()
-	return id, installedAppPath(goos, id, env, home, exists)
-}

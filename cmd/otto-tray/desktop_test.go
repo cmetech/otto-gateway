@@ -42,26 +42,6 @@ func TestInstalledAppPath(t *testing.T) {
 	}
 }
 
-func TestResolveDesktopIdentity(t *testing.T) {
-	const present = "/Applications/OTTO.app"
-	exists := func(p string) bool { return p == present }
-	// The tray resolves the desktop app from fixed OTTO defaults and never
-	// reads brand.json (quick task 260721-an5).
-	id, appPath := resolveDesktopIdentity("darwin", func(string) string { return "" }, "/Users/me", exists)
-	if id.DisplayName != "OTTO" {
-		t.Fatalf("expected DisplayName OTTO, got %q", id.DisplayName)
-	}
-	if appPath != present {
-		t.Fatalf("expected appPath %q, got %q", present, appPath)
-	}
-
-	notFound := func(string) bool { return false }
-	_, appPath = resolveDesktopIdentity("darwin", func(string) string { return "" }, "/Users/me", notFound)
-	if appPath != "" {
-		t.Fatalf("expected empty appPath when not installed, got %q", appPath)
-	}
-}
-
 func TestDiscoverDesktopCandidatesWindowsLoop24(t *testing.T) {
 	root := filepath.Join("C:", "Users", "me", "AppData", "Local")
 	appDir := filepath.Join(root, "Programs", "LOOP24")

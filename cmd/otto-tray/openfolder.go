@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,29 +13,55 @@ import (
 	"strings"
 )
 
-// brandSlug lowercases the brand display name → "otto" / "loop24".
-func brandSlug(id brandIdentity) string { return strings.ToLower(id.DisplayName) }
+var (
+	errDesktopNotRunning   = errors.New("Co-Worker is no longer running")
+	errDesktopRevalidation = errors.New("could not verify Co-Worker process")
+)
+
+type desktopFolderKind int
+
+const (
+	desktopAppFolder desktopFolderKind = iota
+	desktopDataFolder
+)
 
 // resolveHermesHome mirrors hermes-agent's resolution (main.ts / hermes_constants.py):
 // env HERMES_HOME → (windows) HKCU\Environment\HERMES_HOME → default per-OS/brand.
 // winReg returns "" off windows / when unset. Pure (all inputs injected) for tests.
-func resolveHermesHome(goos string, env func(string) string, home, slug string, winReg func(string) string) string {
-	if v := strings.TrimSpace(env("HERMES_HOME")); v != "" {
+func resolveHermesHome(
+	goos string,
+	env func(string) string,
+	home, slug, brandHomeDir string,
+	winReg func(string) string,
+	exists func(string) bool,
+) string {
+	localAppData := strings.TrimSpace(env("LOCALAPPDATA"))
+	isForeignPopulatedDefault := func(path string) bool {
+		if goos != "windows" || localAppData == "" || path == "" {
+			return false
+		}
+		cleanPath := filepath.Clean(path)
+		cleanLocal := filepath.Clean(localAppData)
+		return strings.EqualFold(filepath.Dir(cleanPath), cleanLocal) &&
+			!strings.EqualFold(filepath.Base(cleanPath), slug) &&
+			exists(filepath.Join(cleanPath, "hermes-agent"))
+	}
+	if v := strings.TrimSpace(env("HERMES_HOME")); v != "" && !isForeignPopulatedDefault(v) {
 		return v
 	}
 	if goos == "windows" {
-		if v := strings.TrimSpace(winReg("HERMES_HOME")); v != "" {
+		if v := strings.TrimSpace(winReg("HERMES_HOME")); v != "" && !isForeignPopulatedDefault(v) {
 			return v
 		}
-		if la := strings.TrimSpace(env("LOCALAPPDATA")); la != "" {
-			return filepath.Join(la, slug)
+		if localAppData != "" {
+			return filepath.Join(localAppData, slug)
 		}
 		if up := strings.TrimSpace(env("USERPROFILE")); up != "" {
 			return filepath.Join(up, "AppData", "Local", slug)
 		}
 		return filepath.Join(home, "AppData", "Local", slug)
 	}
-	return filepath.Join(home, "."+slug)
+	return filepath.Join(home, brandHomeDir)
 }
 
 // appFolderTarget maps the resolved app path to what to open.
@@ -73,28 +100,91 @@ func openInFileManager(path string, reveal bool) error {
 	return nil
 }
 
-func (s *trayState) handleOpenAppFolder() {
-	id, appPath := resolveDesktopIdentity(runtime.GOOS, os.Getenv, homeDir(), statExists)
-	if appPath == "" {
-		notify("Open App Folder", id.DisplayName+" desktop app not found. Install it first.")
-		return
+func runningDesktopCandidate(out *desktopOutput, running func(brandIdentity) (bool, error)) (*desktopCandidate, error) {
+	if out == nil || out.State != DesktopRunning || out.Candidate == nil {
+		return nil, errDesktopNotRunning
 	}
-	target, reveal := appFolderTarget(runtime.GOOS, appPath)
-	if err := openInFileManager(target, reveal); err != nil {
-		notify("Open App Folder", "Could not open: "+err.Error())
+	alive, err := running(out.Candidate.Identity)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", errDesktopRevalidation, err)
+	}
+	if !alive {
+		return nil, errDesktopNotRunning
+	}
+	return out.Candidate, nil
+}
+
+func runOpenDesktopFolder(
+	kind desktopFolderKind,
+	out *desktopOutput,
+	goos string,
+	env func(string) string,
+	home string,
+	winReg func(string) string,
+	exists func(string) bool,
+	running func(brandIdentity) (bool, error),
+	open func(string, bool) error,
+) error {
+	candidate, err := runningDesktopCandidate(out, running)
+	if err != nil {
+		return err
+	}
+
+	switch kind {
+	case desktopAppFolder:
+		target, reveal := appFolderTarget(goos, candidate.AppPath)
+		return open(target, reveal)
+	case desktopDataFolder:
+		target := resolveHermesHome(goos, env, home, candidate.Slug, candidate.HomeDir, winReg, exists)
+		if !exists(target) {
+			return fmt.Errorf("Co-Worker data folder not found: %s", target)
+		}
+		return open(target, false)
+	default:
+		return fmt.Errorf("unknown Co-Worker folder kind %d", kind)
 	}
 }
 
+func (s *trayState) handleOpenAppFolder() {
+	s.handleOpenDesktopFolder(desktopAppFolder, "Open Co-Worker App Folder")
+}
+
 func (s *trayState) handleOpenDataFolder() {
-	id, _ := resolveDesktopIdentity(runtime.GOOS, os.Getenv, homeDir(), statExists)
-	home := resolveHermesHome(runtime.GOOS, os.Getenv, homeDir(), brandSlug(id), readUserEnvVar)
-	if !statExists(home) {
-		notify("Open Data Folder", "Not found: "+home)
+	s.handleOpenDesktopFolder(desktopDataFolder, "Open Co-Worker Data Folder")
+}
+
+func (s *trayState) handleOpenDesktopFolder(kind desktopFolderKind, title string) {
+	out := s.desktopCurrent.Load()
+	err := runOpenDesktopFolder(
+		kind,
+		out,
+		runtime.GOOS,
+		os.Getenv,
+		homeDir(),
+		readUserEnvVar,
+		statExists,
+		isDesktopRunning,
+		openInFileManager,
+	)
+	if err == nil {
 		return
 	}
-	if err := openInFileManager(home, false); err != nil {
-		notify("Open Data Folder", "Could not open: "+err.Error())
+
+	switch {
+	case errors.Is(err, errDesktopNotRunning):
+		stopped := desktopOutput{State: DesktopStopped}
+		if out != nil {
+			stopped.Candidate = out.Candidate
+		}
+		s.publishDesktopOutput(stopped)
+	case errors.Is(err, errDesktopRevalidation):
+		s.publishDesktopOutput(desktopOutput{State: DesktopDetectionError, Detail: err.Error()})
+	default:
+		notify(title, "Could not open: "+err.Error())
+		return
 	}
+	requestDesktopRefresh(s.desktopRefreshCh)
+	notify(title, err.Error())
 }
 
 func (s *trayState) handleOpenGatewayFolder() {

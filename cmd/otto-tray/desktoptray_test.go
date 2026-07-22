@@ -3,6 +3,9 @@
 package main
 
 import (
+	"errors"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -14,6 +17,93 @@ func TestDesktopLabel(t *testing.T) {
 	}
 	if got := desktopLabel(""); got != "Co-Worker" {
 		t.Errorf("default: got %q", got)
+	}
+}
+
+func TestDesktopMenuForOutput(t *testing.T) {
+	loop := &desktopCandidate{Identity: identityFromDisplayName("LOOP24"), Slug: "loop24", HomeDir: ".loop24"}
+	tests := []struct {
+		name           string
+		out            desktopOutput
+		header         string
+		foldersEnabled bool
+		appTitle       string
+		dataTitle      string
+		installVisible bool
+		installEnabled bool
+		startVisible   bool
+		stopVisible    bool
+	}{
+		{name: "detecting", out: desktopOutput{State: DesktopDetecting}, header: "Co-Worker · detecting…", appTitle: "Open Co-Worker App Folder", dataTitle: "Open Co-Worker Data Folder"},
+		{name: "not installed", out: desktopOutput{State: DesktopNotInstalled}, header: "Co-Worker · not installed", appTitle: "Open Co-Worker App Folder", dataTitle: "Open Co-Worker Data Folder", installVisible: true, installEnabled: true},
+		{name: "installing", out: desktopOutput{State: DesktopInstalling}, header: "Co-Worker · installing…", appTitle: "Open Co-Worker App Folder", dataTitle: "Open Co-Worker Data Folder", installVisible: true},
+		{name: "stopped", out: desktopOutput{State: DesktopStopped, Candidate: loop}, header: "Co-Worker · LOOP24 not running", appTitle: "Open Co-Worker App Folder", dataTitle: "Open Co-Worker Data Folder", startVisible: true},
+		{name: "running", out: desktopOutput{State: DesktopRunning, Candidate: loop}, header: "Co-Worker · LOOP24 running", foldersEnabled: true, appTitle: "Open LOOP24 App Folder", dataTitle: "Open LOOP24 Data Folder", stopVisible: true},
+		{name: "ambiguous", out: desktopOutput{State: DesktopAmbiguous}, header: "Co-Worker · multiple apps detected", appTitle: "Open Co-Worker App Folder", dataTitle: "Open Co-Worker Data Folder"},
+		{name: "detection error", out: desktopOutput{State: DesktopDetectionError}, header: "Co-Worker · detection error", appTitle: "Open Co-Worker App Folder", dataTitle: "Open Co-Worker Data Folder"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := desktopMenuForOutput(tc.out)
+			if got.Header != tc.header || got.FoldersEnabled != tc.foldersEnabled ||
+				got.AppFolderTitle != tc.appTitle || got.DataFolderTitle != tc.dataTitle ||
+				got.InstallVisible != tc.installVisible || got.InstallEnabled != tc.installEnabled ||
+				got.StartVisible != tc.startVisible || got.StartEnabled != tc.startVisible ||
+				got.StopVisible != tc.stopVisible || got.StopEnabled != tc.stopVisible {
+				t.Fatalf("desktopMenuForOutput(%q) = %+v", tc.out.State, got)
+			}
+		})
+	}
+}
+
+func TestMakeDesktopProbeDiscoversRunningCandidate(t *testing.T) {
+	oldDeps := productionDesktopDiscoveryDeps
+	oldRunning := desktopRunningFn
+	defer func() {
+		productionDesktopDiscoveryDeps = oldDeps
+		desktopRunningFn = oldRunning
+	}()
+
+	var descriptor, executable string
+	if runtime.GOOS == "windows" {
+		appDir := filepath.Join("C:", "Users", "me", "AppData", "Local", "Programs", "LOOP24")
+		descriptor = filepath.Join(appDir, "resources", "brand.json")
+		executable = filepath.Join(appDir, "LOOP24.exe")
+	} else {
+		appDir := filepath.Join(string(filepath.Separator), "Applications", "LOOP24.app")
+		descriptor = filepath.Join(appDir, "Contents", "Resources", "brand.json")
+		executable = filepath.Join(appDir, "Contents", "MacOS", "LOOP24")
+	}
+	productionDesktopDiscoveryDeps = desktopDiscoveryDeps{
+		glob: func(string) ([]string, error) { return []string{descriptor}, nil },
+		readFile: func(string) ([]byte, error) {
+			return []byte(`{"schemaVersion":1,"slug":"loop24","displayName":"LOOP24","homeDir":".loop24","gateway":"otto"}`), nil
+		},
+		exists: func(path string) bool { return path == executable },
+	}
+	desktopRunningFn = func(id brandIdentity) (bool, error) {
+		return id.DisplayName == "LOOP24", nil
+	}
+
+	got := (&trayState{}).makeDesktopProbe()()
+	if got.State != DesktopRunning || got.Candidate == nil || got.Candidate.Slug != "loop24" {
+		t.Fatalf("probe output = %+v", got)
+	}
+}
+
+func TestMakeDesktopProbeReportsDiscoveryError(t *testing.T) {
+	oldDeps := productionDesktopDiscoveryDeps
+	defer func() { productionDesktopDiscoveryDeps = oldDeps }()
+	wantErr := errors.New("descriptor scan failed")
+	productionDesktopDiscoveryDeps = desktopDiscoveryDeps{
+		glob:     func(string) ([]string, error) { return nil, wantErr },
+		readFile: func(string) ([]byte, error) { return nil, nil },
+		exists:   func(string) bool { return false },
+	}
+
+	got := (&trayState{}).makeDesktopProbe()()
+	if got.State != DesktopDetectionError || got.Detail == "" || got.Candidate != nil {
+		t.Fatalf("probe output = %+v", got)
 	}
 }
 
