@@ -93,15 +93,24 @@ func (s *trayState) desktopUILoop() {
 	}
 }
 
-func (s *trayState) applyDesktopOutput(out desktopOutput) {
+func immutableDesktopOutput(out desktopOutput) desktopOutput {
 	snapshot := out
 	if out.Candidate != nil {
 		candidate := *out.Candidate
 		snapshot.Candidate = &candidate
 	}
+	return snapshot
+}
+
+func (s *trayState) applyDesktopOutput(out desktopOutput) {
+	snapshot := immutableDesktopOutput(out)
 	s.desktopCurrent.Store(&snapshot)
 
 	model := desktopMenuForOutput(snapshot)
+	s.desktopMenuCache.Apply(model, s.renderDesktopMenu)
+}
+
+func (s *trayState) renderDesktopMenu(model desktopMenuModel) {
 	s.miDesktopHeader.SetTitle(model.Header)
 	s.miOpenAppFolder.SetTitle(model.AppFolderTitle)
 	s.miOpenDataFolder.SetTitle(model.DataFolderTitle)

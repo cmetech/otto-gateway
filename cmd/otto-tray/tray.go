@@ -29,13 +29,42 @@ func runTray(installDir, gwHome string, cfg TrayConfig, isFirstRun bool) {
 	systray.Run(state.onReady(isFirstRun), state.onExit)
 }
 
+type gatewayMenuModel struct {
+	State          State
+	Tooltip        string
+	Header         string
+	Subheader      string
+	StartEnabled   bool
+	StopEnabled    bool
+	RestartEnabled bool
+}
+
+func gatewayMenuForOutput(out stateOutput, dashboardURL string) gatewayMenuModel {
+	header := fmt.Sprintf("Gateway · %s", out.State)
+	if out.Detail != "" {
+		header += " (" + out.Detail + ")"
+	}
+	canStart := out.State == StateStopped || out.State == StateError
+	return gatewayMenuModel{
+		State:          out.State,
+		Tooltip:        tooltipForState(out.State, out.Detail),
+		Header:         header,
+		Subheader:      dashboardURL,
+		StartEnabled:   canStart,
+		StopEnabled:    !canStart,
+		RestartEnabled: !canStart,
+	}
+}
+
 type trayState struct {
-	mu           sync.Mutex
-	installDir   string
-	gwHome       string
-	cfg          TrayConfig
-	dashboardURL string
-	current      State
+	mu               sync.Mutex
+	installDir       string
+	gwHome           string
+	cfg              TrayConfig
+	dashboardURL     string
+	current          State
+	gatewayMenuCache menuRenderCache[gatewayMenuModel]
+	desktopMenuCache menuRenderCache[desktopMenuModel]
 	// startedAt holds the moment the operator last clicked Start /
 	// Restart. The poller reads it through a *time.Time alias so a
 	// stale read between the click and the next tick still produces
@@ -256,30 +285,30 @@ func (s *trayState) applyState(out stateOutput) {
 	s.current = out.State
 	s.mu.Unlock()
 
-	// T-3 fix (REL-TRAY-03): always-visible state signal on every FSM transition (D-11).
-	// Icon and tooltip are the primary gateway-death signal; notify() is secondary.
-	setIconForState(out.State)
-	systray.SetTooltip(tooltipForState(out.State, out.Detail))
-
-	header := fmt.Sprintf("Gateway · %s", out.State)
-	if out.Detail != "" {
-		header += " (" + out.Detail + ")"
-	}
-	s.miHeader.SetTitle(header)
-	s.miSubheader.SetTitle(s.dashboardURL)
-
-	canStart := out.State == StateStopped || out.State == StateError
-	if canStart {
-		s.miStart.Enable()
-		s.miStop.Disable()
-		s.miRestart.Disable()
-	} else {
-		s.miStart.Disable()
-		s.miStop.Enable()
-		s.miRestart.Enable()
-	}
+	model := gatewayMenuForOutput(out, s.dashboardURL)
+	s.gatewayMenuCache.Apply(model, s.renderGatewayMenu)
 
 	s.notifyTransition(prev, out.State)
+}
+
+func (s *trayState) renderGatewayMenu(model gatewayMenuModel) {
+	// T-3 fix (REL-TRAY-03): always-visible state signal on every FSM transition (D-11).
+	// Icon and tooltip are the primary gateway-death signal; notify() is secondary.
+	setIconForState(model.State)
+	systray.SetTooltip(model.Tooltip)
+	s.miHeader.SetTitle(model.Header)
+	s.miSubheader.SetTitle(model.Subheader)
+	setMenuItemEnabled(s.miStart, model.StartEnabled)
+	setMenuItemEnabled(s.miStop, model.StopEnabled)
+	setMenuItemEnabled(s.miRestart, model.RestartEnabled)
+}
+
+func setMenuItemEnabled(item *systray.MenuItem, enabled bool) {
+	if enabled {
+		item.Enable()
+		return
+	}
+	item.Disable()
 }
 
 // notifyTransition emits a user-facing notification on

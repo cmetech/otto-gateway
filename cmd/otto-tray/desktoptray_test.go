@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -53,6 +54,42 @@ func TestDesktopMenuForOutput(t *testing.T) {
 				t.Fatalf("desktopMenuForOutput(%q) = %+v", tc.out.State, got)
 			}
 		})
+	}
+}
+
+func TestDesktopUnchangedMenuStillStoresLatestSnapshot(t *testing.T) {
+	var cache menuRenderCache[desktopMenuModel]
+	var current atomic.Pointer[desktopOutput]
+	renders := 0
+	apply := func(out desktopOutput) {
+		snapshot := immutableDesktopOutput(out)
+		current.Store(&snapshot)
+		cache.Apply(desktopMenuForOutput(snapshot), func(desktopMenuModel) {
+			renders++
+		})
+	}
+
+	firstCandidate := desktopCandidate{
+		Identity:       identityFromDisplayName("LOOP24"),
+		ExecutablePath: "/Applications/LOOP24-old.app/Contents/MacOS/LOOP24",
+	}
+	secondCandidate := desktopCandidate{
+		Identity:       identityFromDisplayName("LOOP24"),
+		ExecutablePath: "/Applications/LOOP24-new.app/Contents/MacOS/LOOP24",
+	}
+	apply(desktopOutput{State: DesktopRunning, Candidate: &firstCandidate})
+	apply(desktopOutput{State: DesktopRunning, Candidate: &secondCandidate})
+	secondCandidate.ExecutablePath = "/mutated/after/apply"
+
+	if renders != 1 {
+		t.Fatalf("menu rendered %d times, want 1", renders)
+	}
+	got := current.Load()
+	if got == nil || got.Candidate == nil {
+		t.Fatalf("stored snapshot = %+v", got)
+	}
+	if got.Candidate.ExecutablePath != "/Applications/LOOP24-new.app/Contents/MacOS/LOOP24" {
+		t.Fatalf("stored executable path = %q", got.Candidate.ExecutablePath)
 	}
 }
 
