@@ -128,6 +128,20 @@ func TestLoadArgs_FlagWins_WhitespaceSlice_KiroArgs(t *testing.T) {
 	}
 }
 
+func TestLoadArgs_FlagWins_KiroCWD(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := config.LoadArgs([]string{"--kiro-cwd", root})
+	if err != nil {
+		t.Fatalf("LoadArgs() returned unexpected error: %v", err)
+	}
+	if cfg.KiroCWD != root {
+		t.Errorf("KiroCWD: got %q, want %q", cfg.KiroCWD, root)
+	}
+	if cfg.KiroCWDIsDefault {
+		t.Error("KiroCWDIsDefault: got true, want false for explicit --kiro-cwd")
+	}
+}
+
 func TestLoadArgs_FlagWins_CommaSlice_EnabledSurfaces(t *testing.T) {
 	// t.Setenv: cannot use t.Parallel().
 	t.Setenv("ENABLED_SURFACES", "")

@@ -19,6 +19,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	gatewayembed "otto-gateway/internal/embed"
 )
 
 // helpUsage renders the canonical --help text using a FlagSet
@@ -98,10 +100,16 @@ type Config struct {
 	HTTPAddr string
 	// KiroCmd is the kiro-cli binary name or path (default "kiro-cli").
 	KiroCmd string
-	// KiroArgs is the list of arguments passed to kiro-cli (default ["acp"]).
+	// KiroArgs is the list of arguments passed to kiro-cli (default
+	// ["acp", "--agent", "acp_proxy"]).
 	KiroArgs []string
-	// KiroCWD is the working directory for the kiro-cli subprocess (default "").
+	// KiroCWD is the working directory for the kiro-cli subprocess (default:
+	// the gateway-owned persistent directory).
 	KiroCWD string
+	// KiroCWDIsDefault reports that KiroCWD came from the gateway-owned
+	// default, not an explicit KIRO_CWD or --kiro-cwd override. Startup uses
+	// this ownership bit to avoid modifying operator-controlled workspaces.
+	KiroCWDIsDefault bool
 	// ToolAliases maps kiro's native built-in tool name (its ACP `kind`, e.g.
 	// "execute") to the caller-offered tool name it should be surfaced as
 	// (e.g. "terminal"). Loaded from KIRO_TOOL_ALIASES as comma-separated
@@ -373,8 +381,17 @@ func Load() (Config, error) {
 
 	httpAddr := getEnvStr("HTTP_ADDR", "127.0.0.1:18080")
 	kiroCmd := getEnvStr("KIRO_CMD", "kiro-cli")
-	kiroArgs := getEnvStrSlice("KIRO_ARGS", []string{"acp"})
-	kiroCWD := getEnvStr("KIRO_CWD", "")
+	kiroArgs := getEnvStrSlice("KIRO_ARGS", []string{"acp", "--agent", "acp_proxy"})
+	rawKiroCWD := strings.TrimSpace(os.Getenv("KIRO_CWD"))
+	kiroCWDIsDefault := rawKiroCWD == ""
+	kiroCWD := rawKiroCWD
+	if kiroCWDIsDefault {
+		var cwdErr error
+		kiroCWD, cwdErr = gatewayembed.GatewayDir()
+		if cwdErr != nil {
+			errs = append(errs, fmt.Errorf("config: KIRO_CWD default: %w", cwdErr))
+		}
+	}
 	// Use LookupEnv (not getEnvStr) so an explicitly-set empty value disables
 	// aliasing, while a truly-unset var falls back to the Hermes default.
 	rawToolAliases, toolAliasesSet := os.LookupEnv("KIRO_TOOL_ALIASES")
@@ -438,6 +455,9 @@ func Load() (Config, error) {
 	if kiroCWD != "" {
 		stat, sErr := os.Stat(kiroCWD)
 		switch {
+		case os.IsNotExist(sErr) && kiroCWDIsDefault:
+			// Startup materializes the gateway-owned workspace before any Kiro
+			// subprocess is created. Explicit missing paths remain errors below.
 		case sErr != nil:
 			errs = append(errs, fmt.Errorf("config: KIRO_CWD (%q): directory does not exist", kiroCWD))
 		case !stat.IsDir():
@@ -923,6 +943,7 @@ func Load() (Config, error) {
 		KiroCmd:                   kiroCmd,
 		KiroArgs:                  kiroArgs,
 		KiroCWD:                   kiroCWD,
+		KiroCWDIsDefault:          kiroCWDIsDefault,
 		ToolAliases:               toolAliases,
 		Debug:                     debug,
 		PingInterval:              pingInterval,
@@ -1093,6 +1114,7 @@ func LoadArgs(args []string) (Config, error) {
 			cfg.KiroCmd = *kiroCmd
 		case "kiro-cwd":
 			cfg.KiroCWD = *kiroCWD
+			cfg.KiroCWDIsDefault = false
 		case "ollama-path-prefix":
 			cfg.OllamaPathPrefix = *ollamaPath
 		case "anthropic-path-prefix":

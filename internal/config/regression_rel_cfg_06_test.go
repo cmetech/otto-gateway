@@ -26,6 +26,7 @@ import (
 	"testing"
 
 	"otto-gateway/internal/config"
+	gatewayembed "otto-gateway/internal/embed"
 )
 
 // silenceForCFG06 sets the minimum env state required for config.Load()
@@ -48,7 +49,7 @@ func silenceForCFG06(t *testing.T) {
 //	D: KIRO_CWD = <path-to-a-regular-file> → "not a directory"
 //	E: KIRO_CWD = "~/sub" with $HOME set and ~/sub created → no error,
 //	   cfg.KiroCWD equals filepath.Join(home, "sub")
-//	F: KIRO_CWD unset, KIRO_CMD = "go" → no KIRO_CWD error (Cwd is optional)
+//	F: KIRO_CWD unset, KIRO_CMD = "go" → gateway-owned default cwd
 //	G: KIRO_CWD = "~" alone → expands to HOME exactly
 func TestRegression_REL_CFG_06(t *testing.T) {
 	// Case A
@@ -144,8 +145,8 @@ func TestRegression_REL_CFG_06(t *testing.T) {
 		}
 	})
 
-	// Case F — KIRO_CWD unset / empty is the default and optional
-	t.Run("F_KIRO_CWD_empty_is_optional", func(t *testing.T) {
+	// Case F — KIRO_CWD unset / empty resolves to the gateway-owned default.
+	t.Run("F_KIRO_CWD_empty_uses_gateway_default", func(t *testing.T) {
 		silenceForCFG06(t)
 		t.Setenv("KIRO_CMD", "go")
 		t.Setenv("KIRO_CWD", "")
@@ -154,8 +155,12 @@ func TestRegression_REL_CFG_06(t *testing.T) {
 		if err != nil {
 			t.Fatalf("expected no error with empty KIRO_CWD, got: %v", err)
 		}
-		if cfg.KiroCWD != "" {
-			t.Errorf("expected cfg.KiroCWD to remain empty, got %q", cfg.KiroCWD)
+		want, dirErr := gatewayembed.GatewayDir()
+		if dirErr != nil {
+			t.Fatalf("GatewayDir: %v", dirErr)
+		}
+		if cfg.KiroCWD != want || !cfg.KiroCWDIsDefault {
+			t.Errorf("cfg.KiroCWD = %q default=%v, want %q default=true", cfg.KiroCWD, cfg.KiroCWDIsDefault, want)
 		}
 	})
 

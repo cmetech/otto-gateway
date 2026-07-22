@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"otto-gateway/internal/config"
+	gatewayembed "otto-gateway/internal/embed"
 )
 
 func TestLoadDefaults(t *testing.T) {
@@ -30,11 +31,16 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.KiroCmd != "go" {
 		t.Errorf("KiroCmd: got %q, want %q (TestMain stamped)", cfg.KiroCmd, "go")
 	}
-	if len(cfg.KiroArgs) != 1 || cfg.KiroArgs[0] != "acp" {
-		t.Errorf("KiroArgs: got %v, want [acp]", cfg.KiroArgs)
+	wantArgs := []string{"acp", "--agent", "acp_proxy"}
+	if !reflect.DeepEqual(cfg.KiroArgs, wantArgs) {
+		t.Errorf("KiroArgs: got %v, want %v", cfg.KiroArgs, wantArgs)
 	}
-	if cfg.KiroCWD != "" {
-		t.Errorf("KiroCWD: got %q, want empty", cfg.KiroCWD)
+	wantCWD, err := gatewayembed.GatewayDir()
+	if err != nil {
+		t.Fatalf("GatewayDir: %v", err)
+	}
+	if cfg.KiroCWD != wantCWD || !cfg.KiroCWDIsDefault {
+		t.Errorf("KiroCWD: got %q default=%v, want %q default=true", cfg.KiroCWD, cfg.KiroCWDIsDefault, wantCWD)
 	}
 	if cfg.Debug != false {
 		t.Errorf("Debug: got %v, want false", cfg.Debug)
@@ -74,6 +80,9 @@ func TestLoadEnvOverrides(t *testing.T) {
 	}
 	if cfg.KiroCWD != tmpDir {
 		t.Errorf("KiroCWD: got %q, want %q", cfg.KiroCWD, tmpDir)
+	}
+	if cfg.KiroCWDIsDefault {
+		t.Error("KiroCWDIsDefault: got true, want false for explicit KIRO_CWD")
 	}
 	if !cfg.Debug {
 		t.Error("Debug: got false, want true")
