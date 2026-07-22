@@ -2,13 +2,15 @@
 
 package main
 
-import "regexp"
+import (
+	"encoding/json"
+	"regexp"
+	"strings"
+)
 
 // brandIdentity is everything the desktop actions need to know about the
-// installed desktop app. The tray uses fixed OTTO defaults and deliberately
-// does NOT read the app's brand.json — that descriptor belongs to the desktop
-// Hermes client, which owns and consumes it (the tray reading it used to drive
-// a spurious icon swap; see quick task 260721-an5).
+// installed desktop app. Validated descriptors drive desktop actions only;
+// they never influence the tray's fixed Gateway icon.
 type brandIdentity struct {
 	DisplayName  string // "OTTO"
 	WinExeName   string // "OTTO.exe"
@@ -21,7 +23,31 @@ type brandIdentity struct {
 // used to build a process name / kill target passed to exec (gosec G204).
 var displayNameRe = regexp.MustCompile(`^[A-Za-z0-9 ._-]{1,64}$`)
 
+type brandDescriptor struct {
+	SchemaVersion int    `json:"schemaVersion"`
+	Slug          string `json:"slug"`
+	DisplayName   string `json:"displayName"`
+	HomeDir       string `json:"homeDir"`
+	Gateway       string `json:"gateway"`
+	ReleasesRepo  string `json:"releasesRepo"`
+}
+
+var brandSlugRe = regexp.MustCompile(`^[a-z][a-z0-9-]{0,63}$`)
+
 func validateDisplayName(name string) bool { return displayNameRe.MatchString(name) }
+
+func parseBrandDescriptor(data []byte) (brandDescriptor, bool) {
+	var doc brandDescriptor
+	if json.Unmarshal(data, &doc) != nil ||
+		doc.SchemaVersion != 1 ||
+		!brandSlugRe.MatchString(doc.Slug) ||
+		!validateDisplayName(doc.DisplayName) ||
+		doc.HomeDir != "."+doc.Slug ||
+		!strings.EqualFold(doc.Gateway, "otto") {
+		return brandDescriptor{}, false
+	}
+	return doc, true
+}
 
 func identityFromDisplayName(name string) brandIdentity {
 	return brandIdentity{

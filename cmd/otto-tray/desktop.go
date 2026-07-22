@@ -2,7 +2,157 @@
 
 package main
 
-import "path/filepath"
+import (
+	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+type desktopCandidate struct {
+	Identity       brandIdentity
+	Slug           string
+	HomeDir        string
+	AppPath        string
+	DescriptorPath string
+}
+
+type desktopDiscoveryDeps struct {
+	glob     func(string) ([]string, error)
+	readFile func(string) ([]byte, error)
+	exists   func(string) bool
+}
+
+var productionDesktopDiscoveryDeps = desktopDiscoveryDeps{
+	glob:     filepath.Glob,
+	readFile: os.ReadFile,
+	exists:   statExists,
+}
+
+func desktopDescriptorPatterns(goos string, env func(string) string, home string) []string {
+	if goos == "windows" {
+		var patterns []string
+		for _, key := range []string{"LOCALAPPDATA", "PROGRAMFILES", "PROGRAMFILES(X86)"} {
+			root := env(key)
+			if root == "" {
+				continue
+			}
+			patterns = append(patterns,
+				filepath.Join(root, "Programs", "*", "resources", "brand.json"),
+				filepath.Join(root, "*", "resources", "brand.json"),
+			)
+		}
+		return patterns
+	}
+
+	patterns := []string{
+		filepath.Join("/Applications", "*.app", "Contents", "Resources", "brand.json"),
+	}
+	if home != "" {
+		patterns = append(patterns,
+			filepath.Join(home, "Applications", "*.app", "Contents", "Resources", "brand.json"),
+		)
+	}
+	return patterns
+}
+
+func discoverDesktopCandidates(
+	goos string,
+	env func(string) string,
+	home string,
+	deps desktopDiscoveryDeps,
+) ([]desktopCandidate, error) {
+	pathKey := func(path string) string {
+		path = filepath.Clean(path)
+		if goos == "windows" {
+			return strings.ToLower(path)
+		}
+		return path
+	}
+
+	var descriptorPaths []string
+	seenDescriptors := make(map[string]struct{})
+	for _, pattern := range desktopDescriptorPatterns(goos, env, home) {
+		matches, err := deps.glob(pattern)
+		if err != nil {
+			return nil, fmt.Errorf("glob desktop descriptors %q: %w", pattern, err)
+		}
+		for _, path := range matches {
+			key := pathKey(path)
+			if _, seen := seenDescriptors[key]; seen {
+				continue
+			}
+			seenDescriptors[key] = struct{}{}
+			descriptorPaths = append(descriptorPaths, path)
+		}
+	}
+
+	candidates := make([]desktopCandidate, 0, len(descriptorPaths)+1)
+	seenApps := make(map[string]struct{})
+	for _, descriptorPath := range descriptorPaths {
+		data, err := deps.readFile(descriptorPath)
+		if err != nil {
+			return nil, fmt.Errorf("read desktop descriptor %q: %w", descriptorPath, err)
+		}
+		doc, ok := parseBrandDescriptor(data)
+		if !ok {
+			slog.Debug("desktop descriptor rejected",
+				"descriptor", descriptorPath,
+				"reason", "validation failed")
+			continue
+		}
+
+		id := identityFromDisplayName(doc.DisplayName)
+		appPath, executablePath := desktopPathsForDescriptor(goos, descriptorPath, id)
+		if !deps.exists(executablePath) {
+			slog.Debug("desktop descriptor rejected",
+				"descriptor", descriptorPath,
+				"reason", "expected executable missing")
+			continue
+		}
+
+		key := pathKey(appPath)
+		if _, seen := seenApps[key]; seen {
+			continue
+		}
+		seenApps[key] = struct{}{}
+		candidates = append(candidates, desktopCandidate{
+			Identity:       id,
+			Slug:           doc.Slug,
+			HomeDir:        doc.HomeDir,
+			AppPath:        appPath,
+			DescriptorPath: descriptorPath,
+		})
+	}
+
+	legacyID := defaultBrandIdentity()
+	if legacyPath := installedAppPath(goos, legacyID, env, home, deps.exists); legacyPath != "" {
+		key := pathKey(legacyPath)
+		if _, represented := seenApps[key]; !represented {
+			candidates = append(candidates, desktopCandidate{
+				Identity: legacyID,
+				Slug:     "otto",
+				HomeDir:  ".otto",
+				AppPath:  legacyPath,
+			})
+		}
+	}
+
+	return candidates, nil
+}
+
+func desktopPathsForDescriptor(goos, descriptorPath string, id brandIdentity) (appPath, executablePath string) {
+	if goos == "windows" {
+		appPath = filepath.Dir(filepath.Dir(descriptorPath))
+		executablePath = filepath.Join(appPath, id.WinExeName)
+		return executablePath, executablePath
+	}
+
+	appPath = filepath.Dir(filepath.Dir(filepath.Dir(descriptorPath)))
+	executablePath = filepath.Join(appPath, "Contents", "MacOS", id.DisplayName)
+	return appPath, executablePath
+}
 
 // desktopAppCandidates returns launchable-path candidates, most-preferred
 // first. Pure (branches on goos) so both OSes are tested on one box.

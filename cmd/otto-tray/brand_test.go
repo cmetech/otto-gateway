@@ -34,3 +34,23 @@ func TestIdentityFromDisplayName(t *testing.T) {
 		t.Fatalf("bad derivation: %+v", id)
 	}
 }
+
+func TestParseBrandDescriptor(t *testing.T) {
+	valid := []byte(`{"schemaVersion":1,"slug":"loop24","displayName":"LOOP24","homeDir":".loop24","gateway":"otto","releasesRepo":"cmetech/loop24"}`)
+	doc, ok := parseBrandDescriptor(valid)
+	if !ok || doc.Slug != "loop24" || doc.DisplayName != "LOOP24" || doc.HomeDir != ".loop24" {
+		t.Fatalf("valid descriptor = (%+v, %v)", doc, ok)
+	}
+	invalid := [][]byte{
+		[]byte(`{"schemaVersion":2,"slug":"loop24","displayName":"LOOP24","homeDir":".loop24","gateway":"otto"}`),
+		[]byte(`{"schemaVersion":1,"slug":"../loop24","displayName":"LOOP24","homeDir":".../loop24","gateway":"otto"}`),
+		[]byte(`{"schemaVersion":1,"slug":"loop24","displayName":"bad;name","homeDir":".loop24","gateway":"otto"}`),
+		[]byte(`{"schemaVersion":1,"slug":"loop24","displayName":"LOOP24","homeDir":".otto","gateway":"otto"}`),
+		[]byte(`{"schemaVersion":1,"slug":"loop24","displayName":"LOOP24","homeDir":".loop24","gateway":"other"}`),
+	}
+	for _, raw := range invalid {
+		if _, ok := parseBrandDescriptor(raw); ok {
+			t.Errorf("accepted invalid descriptor %s", raw)
+		}
+	}
+}
