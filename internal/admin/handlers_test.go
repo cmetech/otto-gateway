@@ -253,6 +253,32 @@ func TestAdmin_DocsEnvTable_WorkerRecycle(t *testing.T) {
 	}
 }
 
+func TestAdmin_DocsEnvTable_KiroACPProxyDefaults(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	h := Handler(Deps{
+		Logger:  testutil.Logger(t),
+		Version: "1.2.3",
+		Commit:  "abc1234",
+	})
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/docs", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /docs: want 200, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"acp --agent acp_proxy",
+		"gateway-managed",
+		".kiro/agents/acp_proxy.json",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("/docs missing %q", want)
+		}
+	}
+}
+
 // TestAdmin_StaticServes verifies GET /static/css/admin.css returns 200
 // with the correct content type and expected CSS custom property.
 func TestAdmin_StaticServes(t *testing.T) {

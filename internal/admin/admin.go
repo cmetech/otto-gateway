@@ -636,8 +636,8 @@ func (h *handler) docsHandler(w http.ResponseWriter, r *http.Request) {
 	envVars := []envVarRow{
 		{Name: "HTTP_ADDR", Default: "127.0.0.1:18080", Description: "HTTP listen address. Set to :18080 to bind all interfaces.", CurrentValue: h.deps.HTTPAddr},
 		{Name: "KIRO_CMD", Default: "kiro-cli", Description: "kiro-cli binary name or path resolved on PATH. Empty value puts the gateway in degraded mode.", CurrentValue: kiroCmdCurrent},
-		{Name: "KIRO_ARGS", Default: "acp", Description: "Whitespace-split argv passed to KIRO_CMD.", CurrentValue: kiroArgsCurrent},
-		{Name: "KIRO_CWD", Default: "(empty)", Description: "Working directory for the kiro-cli subprocess. Empty = inherit gateway cwd.", CurrentValue: kiroCwdCurrent},
+		{Name: "KIRO_ARGS", Default: "acp --agent acp_proxy", Description: "Whitespace-split argv passed to KIRO_CMD. The default selects the embedded tool-less ACP proxy agent.", CurrentValue: kiroArgsCurrent},
+		{Name: "KIRO_CWD", Default: "<gateway-home>", Description: "Working directory for kiro-cli. The default is the gateway-managed workspace containing .kiro/agents/acp_proxy.json; explicit overrides are not modified.", CurrentValue: kiroCwdCurrent},
 		{Name: "KIRO_TOOL_ALIASES", Default: "execute:terminal,shell:terminal,fs_read:read_file,fs_write:write_file", Description: "Comma-split from:to pairs mapping kiro's native built-in tool name (its ACP kind, e.g. execute / shell / fs_read) to a caller-offered tool name (e.g. terminal). When the caller offers tools, kiro emits a native tool_call for its own built-in; the gateway surfaces it structurally under the aliased offered name. Native built-ins with no alias to an offered tool are dropped. Defaults to the Hermes client's tool names; set to an empty value to disable aliasing. Put overrides in overrides.env.", CurrentValue: toolAliasesCurrent},
 		{
 			Name:         "KIRO_WORKER_MAX_TURNS",
