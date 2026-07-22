@@ -26,6 +26,29 @@ func TestMenuRenderCacheSkipsIdenticalModels(t *testing.T) {
 	}
 }
 
+func TestMenuRenderCacheDoesNotCachePanickedRender(t *testing.T) {
+	var cache menuRenderCache[string]
+	calls := 0
+	var recovered any
+	func() {
+		defer func() { recovered = recover() }()
+		cache.Apply("A", func(string) {
+			calls++
+			panic("render failed")
+		})
+	}()
+
+	if recovered == nil {
+		t.Fatal("render panic was not observed")
+	}
+	if !cache.Apply("A", func(string) { calls++ }) {
+		t.Fatal("model was cached despite render panic")
+	}
+	if calls != 2 {
+		t.Fatalf("render callback invoked %d times, want 2", calls)
+	}
+}
+
 func TestGatewayMenuForOutput(t *testing.T) {
 	tests := []struct {
 		name string

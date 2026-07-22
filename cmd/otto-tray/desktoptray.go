@@ -102,12 +102,19 @@ func immutableDesktopOutput(out desktopOutput) desktopOutput {
 	return snapshot
 }
 
-func (s *trayState) applyDesktopOutput(out desktopOutput) {
+func applyDesktopMenuOutput(
+	cache *menuRenderCache[desktopMenuModel],
+	out desktopOutput,
+	store func(*desktopOutput),
+	render func(desktopMenuModel),
+) {
 	snapshot := immutableDesktopOutput(out)
-	s.desktopCurrent.Store(&snapshot)
+	store(&snapshot)
+	cache.Apply(desktopMenuForOutput(snapshot), render)
+}
 
-	model := desktopMenuForOutput(snapshot)
-	s.desktopMenuCache.Apply(model, s.renderDesktopMenu)
+func (s *trayState) applyDesktopOutput(out desktopOutput) {
+	applyDesktopMenuOutput(&s.desktopMenuCache, out, s.desktopCurrent.Store, s.renderDesktopMenu)
 }
 
 func (s *trayState) renderDesktopMenu(model desktopMenuModel) {

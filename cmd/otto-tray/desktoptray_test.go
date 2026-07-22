@@ -5,9 +5,9 @@ package main
 import (
 	"errors"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
-	"sync/atomic"
 	"testing"
 )
 
@@ -59,14 +59,17 @@ func TestDesktopMenuForOutput(t *testing.T) {
 
 func TestDesktopUnchangedMenuStillStoresLatestSnapshot(t *testing.T) {
 	var cache menuRenderCache[desktopMenuModel]
-	var current atomic.Pointer[desktopOutput]
-	renders := 0
-	apply := func(out desktopOutput) {
-		snapshot := immutableDesktopOutput(out)
-		current.Store(&snapshot)
-		cache.Apply(desktopMenuForOutput(snapshot), func(desktopMenuModel) {
-			renders++
-		})
+	var current *desktopOutput
+	var events []string
+	store := func(snapshot *desktopOutput) {
+		current = snapshot
+		events = append(events, "store:"+snapshot.Candidate.ExecutablePath)
+	}
+	render := func(desktopMenuModel) {
+		if current == nil || current.Candidate == nil {
+			t.Fatal("menu rendered before immutable snapshot was stored")
+		}
+		events = append(events, "render:"+current.Candidate.ExecutablePath)
 	}
 
 	firstCandidate := desktopCandidate{
@@ -77,19 +80,23 @@ func TestDesktopUnchangedMenuStillStoresLatestSnapshot(t *testing.T) {
 		Identity:       identityFromDisplayName("LOOP24"),
 		ExecutablePath: "/Applications/LOOP24-new.app/Contents/MacOS/LOOP24",
 	}
-	apply(desktopOutput{State: DesktopRunning, Candidate: &firstCandidate})
-	apply(desktopOutput{State: DesktopRunning, Candidate: &secondCandidate})
+	applyDesktopMenuOutput(&cache, desktopOutput{State: DesktopRunning, Candidate: &firstCandidate}, store, render)
+	applyDesktopMenuOutput(&cache, desktopOutput{State: DesktopRunning, Candidate: &secondCandidate}, store, render)
 	secondCandidate.ExecutablePath = "/mutated/after/apply"
 
-	if renders != 1 {
-		t.Fatalf("menu rendered %d times, want 1", renders)
+	wantEvents := []string{
+		"store:/Applications/LOOP24-old.app/Contents/MacOS/LOOP24",
+		"render:/Applications/LOOP24-old.app/Contents/MacOS/LOOP24",
+		"store:/Applications/LOOP24-new.app/Contents/MacOS/LOOP24",
 	}
-	got := current.Load()
-	if got == nil || got.Candidate == nil {
-		t.Fatalf("stored snapshot = %+v", got)
+	if !reflect.DeepEqual(events, wantEvents) {
+		t.Fatalf("events = %v, want %v", events, wantEvents)
 	}
-	if got.Candidate.ExecutablePath != "/Applications/LOOP24-new.app/Contents/MacOS/LOOP24" {
-		t.Fatalf("stored executable path = %q", got.Candidate.ExecutablePath)
+	if current == nil || current.Candidate == nil {
+		t.Fatalf("stored snapshot = %+v", current)
+	}
+	if current.Candidate.ExecutablePath != "/Applications/LOOP24-new.app/Contents/MacOS/LOOP24" {
+		t.Fatalf("stored executable path = %q", current.Candidate.ExecutablePath)
 	}
 }
 
