@@ -49,6 +49,7 @@ import (
 	"otto-gateway/internal/canonical"
 	"otto-gateway/internal/capture"
 	"otto-gateway/internal/config"
+	gatewayembed "otto-gateway/internal/embed"
 	"otto-gateway/internal/engine"
 	"otto-gateway/internal/metrics"
 	"otto-gateway/internal/plugin"
@@ -67,6 +68,34 @@ import (
 // stall startup forever (threat T-02-36). 30s is generous — typical
 // warmup is <1s.
 const warmupDeadline = 30 * time.Second
+
+// prepareKiroLaunch materializes the embedded acp_proxy agent only for the
+// gateway-owned default workspace, then records the exact subprocess launch
+// configuration before pool warmup. Explicit workspaces are never modified.
+func prepareKiroLaunch(cfg config.Config, logger *slog.Logger) error {
+	agentPath := "(custom workspace — not managed)"
+	status := "not-managed"
+	if cfg.KiroCWDIsDefault {
+		path, created, err := gatewayembed.EnsureACPProxy(cfg.KiroCWD)
+		if err != nil {
+			return fmt.Errorf("prepare acp_proxy agent: %w", err)
+		}
+		agentPath = path
+		status = "preserved"
+		if created {
+			status = "created"
+		}
+	}
+
+	logger.Info("kiro launch configured",
+		"command", cfg.KiroCmd,
+		"args", cfg.KiroArgs,
+		"cwd", cfg.KiroCWD,
+		"agent_config", agentPath,
+		"agent_config_status", status,
+	)
+	return nil
+}
 
 func main() {
 	// Install the SIGINT/SIGTERM handler at the very top of main so the
@@ -485,6 +514,10 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 	}
 
 	if cfg.KiroCmd != "" {
+		if err := prepareKiroLaunch(cfg, logger); err != nil {
+			cleanup()
+			return nil, func() {}, err
+		}
 		a.pool = pool.New(pool.Config{
 			Logger:         logger,
 			Size:           cfg.PoolSize,

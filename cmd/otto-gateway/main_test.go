@@ -1,16 +1,120 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"io/fs"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"otto-gateway/internal/config"
+	gatewayembed "otto-gateway/internal/embed"
 	"otto-gateway/internal/testutil"
 )
+
+func TestPrepareKiroLaunchMaterializesAndLogsDefaultAgent(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "gateway")
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+	cfg := config.Config{
+		KiroCmd:          "kiro-cli",
+		KiroArgs:         []string{"acp", "--agent", "acp_proxy"},
+		KiroCWD:          root,
+		KiroCWDIsDefault: true,
+	}
+
+	if err := prepareKiroLaunch(cfg, logger); err != nil {
+		t.Fatalf("prepareKiroLaunch: %v", err)
+	}
+	if _, err := os.Stat(gatewayembed.ACPProxyPath(root)); err != nil {
+		t.Fatalf("agent file: %v", err)
+	}
+	text := logs.String()
+	for _, want := range []string{
+		"kiro launch configured",
+		"kiro-cli",
+		"acp_proxy",
+		root,
+		gatewayembed.ACPProxyPath(root),
+		"created",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("log missing %q: %s", want, text)
+		}
+	}
+}
+
+func TestPrepareKiroLaunchPreservesDefaultAgent(t *testing.T) {
+	root := t.TempDir()
+	path := gatewayembed.ACPProxyPath(root)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const custom = `{"name":"custom"}`
+	if err := os.WriteFile(path, []byte(custom), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{
+		KiroCmd:          "kiro-cli",
+		KiroArgs:         []string{"acp", "--agent", "acp_proxy"},
+		KiroCWD:          root,
+		KiroCWDIsDefault: true,
+	}
+
+	if err := prepareKiroLaunch(cfg, testutil.Logger(t)); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != custom {
+		t.Fatalf("existing agent was overwritten: %q", body)
+	}
+}
+
+func TestPrepareKiroLaunchDoesNotModifyCustomCWD(t *testing.T) {
+	root := t.TempDir()
+	cfg := config.Config{
+		KiroCmd:          "kiro-cli",
+		KiroArgs:         []string{"acp"},
+		KiroCWD:          root,
+		KiroCWDIsDefault: false,
+	}
+
+	if err := prepareKiroLaunch(cfg, testutil.Logger(t)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".kiro")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("custom cwd was modified: %v", err)
+	}
+}
+
+func TestPrepareKiroLaunchReturnsMaterializationError(t *testing.T) {
+	root := t.TempDir()
+	path := gatewayembed.ACPProxyPath(root)
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{
+		KiroCmd:          "kiro-cli",
+		KiroCWD:          root,
+		KiroCWDIsDefault: true,
+	}
+
+	err := prepareKiroLaunch(cfg, testutil.Logger(t))
+	if err == nil || !strings.Contains(err.Error(), "prepare acp_proxy agent") {
+		t.Fatalf("error = %v, want prepare acp_proxy agent failure", err)
+	}
+}
 
 // TestApp_NoKiroCmd_StartsHealthOnly — when KIRO_CMD is empty, newApp
 // succeeds with pool == nil and the server is constructable. /health
