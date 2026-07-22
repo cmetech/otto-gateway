@@ -171,19 +171,19 @@ func TestResolveHermesHomeWindowsBrandSafety(t *testing.T) {
 
 func TestRunningDesktopCandidateRejectsStaleSnapshot(t *testing.T) {
 	candidate := &desktopCandidate{Identity: identityFromDisplayName("LOOP24"), Slug: "loop24"}
-	if _, err := runningDesktopCandidate(&desktopOutput{State: DesktopStopped, Candidate: candidate}, func(brandIdentity) (bool, error) {
+	if _, err := runningDesktopCandidate(&desktopOutput{State: DesktopStopped, Candidate: candidate}, func(desktopCandidate) (bool, error) {
 		t.Fatal("stopped snapshot must not invoke liveness probe")
 		return false, nil
 	}); err == nil {
 		t.Fatal("stopped candidate was actionable")
 	}
-	if _, err := runningDesktopCandidate(&desktopOutput{State: DesktopRunning, Candidate: candidate}, func(brandIdentity) (bool, error) {
+	if _, err := runningDesktopCandidate(&desktopOutput{State: DesktopRunning, Candidate: candidate}, func(desktopCandidate) (bool, error) {
 		return false, nil
 	}); err == nil {
 		t.Fatal("stale snapshot was actionable")
 	}
 	wantErr := errors.New("process enumeration failed")
-	if _, err := runningDesktopCandidate(&desktopOutput{State: DesktopRunning, Candidate: candidate}, func(brandIdentity) (bool, error) {
+	if _, err := runningDesktopCandidate(&desktopOutput{State: DesktopRunning, Candidate: candidate}, func(desktopCandidate) (bool, error) {
 		return false, wantErr
 	}); !errors.Is(err, wantErr) {
 		t.Fatalf("liveness error = %v, want %v", err, wantErr)
@@ -191,7 +191,7 @@ func TestRunningDesktopCandidateRejectsStaleSnapshot(t *testing.T) {
 }
 
 func TestRunOpenDesktopFolderDoesNotOpenAfterFailedRevalidation(t *testing.T) {
-	candidate := &desktopCandidate{Identity: identityFromDisplayName("LOOP24"), Slug: "loop24", HomeDir: ".loop24", AppPath: "/Applications/LOOP24.app"}
+	candidate := &desktopCandidate{Identity: identityFromDisplayName("LOOP24"), Slug: "loop24", HomeDir: ".loop24", AppPath: "/Applications/LOOP24.app", ExecutablePath: "/Applications/LOOP24.app/Contents/MacOS/LOOP24"}
 	opened := false
 	err := runOpenDesktopFolder(
 		desktopAppFolder,
@@ -201,7 +201,7 @@ func TestRunOpenDesktopFolderDoesNotOpenAfterFailedRevalidation(t *testing.T) {
 		"/Users/me",
 		func(string) string { return "" },
 		func(string) bool { return true },
-		func(brandIdentity) (bool, error) { return false, nil },
+		func(desktopCandidate) (bool, error) { return false, nil },
 		func(string, bool) error { opened = true; return nil },
 	)
 	if err == nil {
@@ -213,11 +213,11 @@ func TestRunOpenDesktopFolderDoesNotOpenAfterFailedRevalidation(t *testing.T) {
 }
 
 func TestRunOpenDesktopFolderUsesResolvedCandidatePaths(t *testing.T) {
-	candidate := &desktopCandidate{Identity: identityFromDisplayName("LOOP24"), Slug: "loop24", HomeDir: ".loop24", AppPath: "/Applications/LOOP24.app"}
+	candidate := &desktopCandidate{Identity: identityFromDisplayName("LOOP24"), Slug: "loop24", HomeDir: ".loop24", AppPath: "/Applications/LOOP24.app", ExecutablePath: "/Applications/LOOP24.app/Contents/MacOS/LOOP24"}
 	out := &desktopOutput{State: DesktopRunning, Candidate: candidate}
-	running := func(id brandIdentity) (bool, error) {
-		if id.DisplayName != "LOOP24" {
-			t.Fatalf("liveness identity = %q", id.DisplayName)
+	running := func(got desktopCandidate) (bool, error) {
+		if got.ExecutablePath != candidate.ExecutablePath {
+			t.Fatalf("liveness executable = %q, want %q", got.ExecutablePath, candidate.ExecutablePath)
 		}
 		return true, nil
 	}

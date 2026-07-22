@@ -81,8 +81,8 @@ func TestMakeDesktopProbeDiscoversRunningCandidate(t *testing.T) {
 		},
 		exists: func(path string) bool { return path == executable },
 	}
-	desktopRunningFn = func(id brandIdentity) (bool, error) {
-		return id.DisplayName == "LOOP24", nil
+	desktopRunningFn = func(candidate desktopCandidate) (bool, error) {
+		return candidate.Identity.DisplayName == "LOOP24" && candidate.ExecutablePath == executable, nil
 	}
 
 	got := (&trayState{}).makeDesktopProbe()()

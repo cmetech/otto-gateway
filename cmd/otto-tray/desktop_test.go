@@ -64,7 +64,8 @@ func TestDiscoverDesktopCandidatesWindowsLoop24(t *testing.T) {
 	if err != nil || len(got) != 1 {
 		t.Fatalf("candidates = %+v, err=%v", got, err)
 	}
-	if got[0].Slug != "loop24" || got[0].Identity.WinExeName != "LOOP24.exe" || got[0].AppPath != exe {
+	if got[0].Slug != "loop24" || got[0].Identity.WinExeName != "LOOP24.exe" ||
+		got[0].AppPath != exe || got[0].ExecutablePath != exe {
 		t.Fatalf("candidate = %+v", got[0])
 	}
 }
@@ -86,9 +87,25 @@ func TestDiscoverDesktopCandidatesMacLoop24(t *testing.T) {
 	if err != nil || len(got) != 1 {
 		t.Fatalf("candidates = %+v, err=%v", got, err)
 	}
-	if got[0].Identity.MacProcMatch != "LOOP24.app/Contents/MacOS/LOOP24" ||
-		got[0].AppPath != app || got[0].DescriptorPath != desc {
+	if got[0].AppPath != app || got[0].ExecutablePath != exe || got[0].DescriptorPath != desc {
 		t.Fatalf("candidate = %+v", got[0])
+	}
+}
+
+func TestDiscoverDesktopCandidatesRejectsRenamedMacBundle(t *testing.T) {
+	home := filepath.Join(string(filepath.Separator), "Users", "me")
+	app := filepath.Join(home, "Applications", "Renamed.app")
+	desc := filepath.Join(app, "Contents", "Resources", "brand.json")
+	exe := filepath.Join(app, "Contents", "MacOS", "LOOP24")
+	got, err := discoverDesktopCandidates("darwin", func(string) string { return "" }, home, desktopDiscoveryDeps{
+		glob: func(string) ([]string, error) { return []string{desc}, nil },
+		readFile: func(string) ([]byte, error) {
+			return []byte(`{"schemaVersion":1,"slug":"loop24","displayName":"LOOP24","homeDir":".loop24","gateway":"otto"}`), nil
+		},
+		exists: func(path string) bool { return path == exe },
+	})
+	if err != nil || len(got) != 0 {
+		t.Fatalf("renamed macOS bundle accepted: candidates=%+v, err=%v", got, err)
 	}
 }
 
@@ -270,7 +287,8 @@ func TestDiscoverDesktopCandidatesLegacyOTTOFallback(t *testing.T) {
 	if err != nil || len(got) != 1 {
 		t.Fatalf("candidates = %+v, err=%v", got, err)
 	}
-	if got[0].Slug != "otto" || got[0].HomeDir != ".otto" || got[0].AppPath != exe || got[0].DescriptorPath != "" {
+	if got[0].Slug != "otto" || got[0].HomeDir != ".otto" || got[0].AppPath != exe ||
+		got[0].ExecutablePath != exe || got[0].DescriptorPath != "" {
 		t.Fatalf("fallback candidate = %+v", got[0])
 	}
 }

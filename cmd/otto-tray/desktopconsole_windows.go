@@ -9,7 +9,7 @@ import (
 
 // createNoWindow is CREATE_NO_WINDOW: run a console child with no console
 // window allocated. Paired with HideWindow so a GUI systray parent never
-// flashes a console when it spawns tasklist/taskkill/powershell each poll tick.
+// flashes a console when it spawns taskkill or powershell.
 const createNoWindow = 0x08000000
 
 // hideConsole suppresses the console window Windows would otherwise allocate

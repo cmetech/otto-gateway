@@ -216,17 +216,27 @@ func (s *trayState) handleDesktopStop() {
 	if out == nil || out.State != DesktopRunning || out.Candidate == nil {
 		return
 	}
-	id := out.Candidate.Identity
+	candidate := *out.Candidate
 	if !confirmDialog("Stop "+desktopLabel(""),
 		"Stop the Co-Worker app? Any unsaved work in it may be lost.", "Stop", "Cancel") {
 		return
 	}
-	// graceful first
-	name, args := desktopStopCommand(runtime.GOOS, id, false)
+	pids, err := desktopStopPIDs(runtime.GOOS, candidate)
+	if err != nil {
+		s.publishDesktopOutput(desktopOutput{State: DesktopDetectionError, Detail: err.Error()})
+		requestDesktopRefresh(s.desktopRefreshCh)
+		notify(desktopLabel(""), "Could not verify the Co-Worker process: "+err.Error())
+		return
+	}
+	name, args := desktopStopCommand(runtime.GOOS, candidate, pids, false)
+	if name == "" {
+		requestDesktopRefresh(s.desktopRefreshCh)
+		return
+	}
 	res := runCmd(15*time.Second, "", name, args...)
 	// forced fallback if still alive shortly after
 	time.Sleep(1500 * time.Millisecond)
-	running, err := isDesktopRunning(id)
+	running, err := isDesktopRunning(candidate)
 	if err != nil {
 		s.publishDesktopOutput(desktopOutput{State: DesktopDetectionError, Detail: err.Error()})
 		requestDesktopRefresh(s.desktopRefreshCh)
@@ -234,11 +244,22 @@ func (s *trayState) handleDesktopStop() {
 		return
 	}
 	if running {
-		fname, fargs := desktopStopCommand(runtime.GOOS, id, true)
+		pids, err = desktopStopPIDs(runtime.GOOS, candidate)
+		if err != nil {
+			s.publishDesktopOutput(desktopOutput{State: DesktopDetectionError, Detail: err.Error()})
+			requestDesktopRefresh(s.desktopRefreshCh)
+			notify(desktopLabel(""), "Could not verify the Co-Worker process: "+err.Error())
+			return
+		}
+		fname, fargs := desktopStopCommand(runtime.GOOS, candidate, pids, true)
+		if fname == "" {
+			requestDesktopRefresh(s.desktopRefreshCh)
+			return
+		}
 		res = runCmd(15*time.Second, "", fname, fargs...)
 	}
 	if res.Err != nil {
-		running, err = isDesktopRunning(id)
+		running, err = isDesktopRunning(candidate)
 		if err != nil {
 			s.publishDesktopOutput(desktopOutput{State: DesktopDetectionError, Detail: err.Error()})
 			notify(desktopLabel(""), "Could not verify whether the Co-Worker stopped: "+err.Error())
@@ -247,6 +268,13 @@ func (s *trayState) handleDesktopStop() {
 		}
 	}
 	requestDesktopRefresh(s.desktopRefreshCh)
+}
+
+func desktopStopPIDs(goos string, candidate desktopCandidate) ([]uint32, error) {
+	if goos != "windows" {
+		return nil, nil
+	}
+	return desktopProcessIDs(candidate)
 }
 
 func (s *trayState) publishDesktopOutput(out desktopOutput) {

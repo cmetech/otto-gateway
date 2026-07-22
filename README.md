@@ -134,17 +134,23 @@ See [Optional: launch the menu-bar / system-tray app](docs/operator-quickstart.m
 in the operator quickstart for what it does and how to remove its login-item
 registration.
 
-The tray also has an **OTTO Desktop** section for managing the OTTO desktop
-coworker app (separate from the gateway):
+The tray also has a **Co-Worker** section for managing a compatible desktop app
+(separate from the gateway):
 
-- **Install OTTO Desktop…** — shown when the app isn't installed; runs the
+- **Install Co-Worker…** — shown when no compatible app is installed; runs the
   published OTTO desktop installer (`irm …/cmetech/otto/main/install.ps1 | iex`
   on Windows, `curl …/install.sh | sh` on macOS).
-- **Start / Stop OTTO Desktop** — launch the installed app, or stop it (Stop
-  asks for confirmation first). The header shows whether it's running.
+- **Start / Stop Co-Worker** — launch or stop the one selected app (Stop asks
+  for confirmation first). Detection accepts validated compatible `brand.json`
+  descriptors and selects exactly one running app. A lone stopped app remains
+  available to start; ambiguous results or detection errors disable branded
+  actions.
+- **Open App/Data Folder** actions are enabled for the selected running app.
+  **Open Gateway Folder** remains available independently.
 
-v1 notes: it assumes the **OTTO** brand (identity is refined from the installed
-app's `brand.json` when present) and detects "running" by process name.
+Detection refreshes periodically and can also be refreshed manually from the
+tray menu. A descriptor-free OTTO install remains supported as a compatibility
+fallback.
 
 ---
 

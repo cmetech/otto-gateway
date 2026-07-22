@@ -7,6 +7,9 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	pathpkg "path"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -36,20 +39,64 @@ func desktopStartCommand(goos, appPath string) (string, []string) {
 	return appPath, nil // windows: run the exe directly
 }
 
+type desktopProcess struct {
+	PID            uint32
+	ExecutablePath string
+}
+
+func normalizeWindowsExecutablePath(executablePath string) string {
+	executablePath = strings.TrimSpace(executablePath)
+	executablePath = strings.ReplaceAll(executablePath, `\`, "/")
+	lowerPath := strings.ToLower(executablePath)
+	switch {
+	case strings.HasPrefix(lowerPath, `//?/unc/`):
+		executablePath = "//" + executablePath[len(`//?/unc/`):]
+	case strings.HasPrefix(lowerPath, `//?/`):
+		executablePath = executablePath[len(`//?/`):]
+	}
+	return strings.ToLower(pathpkg.Clean(executablePath))
+}
+
+func matchingWindowsProcessIDs(executablePath string, processes []desktopProcess) []uint32 {
+	want := normalizeWindowsExecutablePath(executablePath)
+	if want == "" || want == "." {
+		return nil
+	}
+	var pids []uint32
+	for _, process := range processes {
+		if process.PID != 0 && normalizeWindowsExecutablePath(process.ExecutablePath) == want {
+			pids = append(pids, process.PID)
+		}
+	}
+	return pids
+}
+
+func macExecutablePattern(executablePath string) string {
+	return "^" + regexp.QuoteMeta(executablePath) + "$"
+}
+
 // desktopStopCommand builds a graceful (force=false) or forced (force=true)
-// stop. id fields derive from a validateDisplayName-checked name.
-func desktopStopCommand(goos string, id brandIdentity, force bool) (string, []string) {
+// stop for the selected candidate. Windows PIDs must come from the exact-path
+// process lookup; macOS targets the candidate's exact bundle/executable paths.
+func desktopStopCommand(goos string, candidate desktopCandidate, pids []uint32, force bool) (string, []string) {
 	if goos == "windows" {
-		args := []string{"/IM", id.WinExeName, "/T"}
+		if len(pids) == 0 {
+			return "", nil
+		}
+		args := make([]string, 0, len(pids)*2+2)
+		for _, pid := range pids {
+			args = append(args, "/PID", strconv.FormatUint(uint64(pid), 10))
+		}
+		args = append(args, "/T")
 		if force {
 			args = append(args, "/F")
 		}
 		return "taskkill", args
 	}
 	if force {
-		return "pkill", []string{"-f", id.MacProcMatch}
+		return "pkill", []string{"-f", macExecutablePattern(candidate.ExecutablePath)}
 	}
-	return "osascript", []string{"-e", `quit app "` + escapeAppleScriptArg(id.DisplayName) + `"`}
+	return "osascript", []string{"-e", `tell application "` + escapeAppleScriptArg(candidate.AppPath) + `" to quit`}
 }
 
 // escapeAppleScriptArg escapes a string for embedding inside an AppleScript

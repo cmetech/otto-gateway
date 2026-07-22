@@ -6,16 +6,22 @@ package main
 // package var so tests can substitute a stub and so each platform file can
 // assign its own implementation in init(). isDesktopRunning is the caller-facing
 // entry.
-var desktopRunningFn = func(id brandIdentity) (bool, error) { return false, nil }
+var desktopRunningFn = func(desktopCandidate) (bool, error) { return false, nil }
 
-func isDesktopRunning(id brandIdentity) (bool, error) { return desktopRunningFn(id) }
+var desktopProcessIDsFn = func(desktopCandidate) ([]uint32, error) { return nil, nil }
+
+func isDesktopRunning(candidate desktopCandidate) (bool, error) { return desktopRunningFn(candidate) }
+
+func desktopProcessIDs(candidate desktopCandidate) ([]uint32, error) {
+	return desktopProcessIDsFn(candidate)
+}
 
 // resolveDesktopCandidates selects a candidate only when the installed and
 // running evidence identifies one unambiguously. Liveness failures invalidate
 // the whole result because a partial process snapshot is not trustworthy.
 func resolveDesktopCandidates(
 	candidates []desktopCandidate,
-	isRunning func(brandIdentity) (bool, error),
+	isRunning func(desktopCandidate) (bool, error),
 	installing bool,
 ) desktopOutput {
 	if installing {
@@ -27,7 +33,7 @@ func resolveDesktopCandidates(
 
 	running := make([]desktopCandidate, 0, len(candidates))
 	for _, candidate := range candidates {
-		alive, err := isRunning(candidate.Identity)
+		alive, err := isRunning(candidate)
 		if err != nil {
 			return desktopOutput{State: DesktopDetectionError, Detail: err.Error()}
 		}

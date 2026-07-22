@@ -29,8 +29,7 @@ func strings2(n int) string {
 
 func TestIdentityFromDisplayName(t *testing.T) {
 	id := identityFromDisplayName("OTTO")
-	if id.WinExeName != "OTTO.exe" || id.MacAppName != "OTTO.app" ||
-		id.MacProcMatch != "OTTO.app/Contents/MacOS/OTTO" {
+	if id.WinExeName != "OTTO.exe" || id.MacAppName != "OTTO.app" || id.InstallRepo != "cmetech/otto" {
 		t.Fatalf("bad derivation: %+v", id)
 	}
 }

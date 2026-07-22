@@ -100,11 +100,11 @@ func openInFileManager(path string, reveal bool) error {
 	return nil
 }
 
-func runningDesktopCandidate(out *desktopOutput, running func(brandIdentity) (bool, error)) (*desktopCandidate, error) {
+func runningDesktopCandidate(out *desktopOutput, running func(desktopCandidate) (bool, error)) (*desktopCandidate, error) {
 	if out == nil || out.State != DesktopRunning || out.Candidate == nil {
 		return nil, errDesktopNotRunning
 	}
-	alive, err := running(out.Candidate.Identity)
+	alive, err := running(*out.Candidate)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", errDesktopRevalidation, err)
 	}
@@ -122,7 +122,7 @@ func runOpenDesktopFolder(
 	home string,
 	winReg func(string) string,
 	exists func(string) bool,
-	running func(brandIdentity) (bool, error),
+	running func(desktopCandidate) (bool, error),
 	open func(string, bool) error,
 ) error {
 	candidate, err := runningDesktopCandidate(out, running)

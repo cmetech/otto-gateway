@@ -12,11 +12,10 @@ import (
 // installed desktop app. Validated descriptors drive desktop actions only;
 // they never influence the tray's fixed Gateway icon.
 type brandIdentity struct {
-	DisplayName  string // "OTTO"
-	WinExeName   string // "OTTO.exe"
-	MacAppName   string // "OTTO.app"
-	MacProcMatch string // "OTTO.app/Contents/MacOS/OTTO"
-	InstallRepo  string // "cmetech/otto"
+	DisplayName string // "OTTO"
+	WinExeName  string // "OTTO.exe"
+	MacAppName  string // "OTTO.app"
+	InstallRepo string // "cmetech/otto"
 }
 
 // displayNameRe bounds a brand display name to safe characters BEFORE it is
@@ -51,11 +50,10 @@ func parseBrandDescriptor(data []byte) (brandDescriptor, bool) {
 
 func identityFromDisplayName(name string) brandIdentity {
 	return brandIdentity{
-		DisplayName:  name,
-		WinExeName:   name + ".exe",
-		MacAppName:   name + ".app",
-		MacProcMatch: name + ".app/Contents/MacOS/" + name,
-		InstallRepo:  "cmetech/otto",
+		DisplayName: name,
+		WinExeName:  name + ".exe",
+		MacAppName:  name + ".app",
+		InstallRepo: "cmetech/otto",
 	}
 }
 

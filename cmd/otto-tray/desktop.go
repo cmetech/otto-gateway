@@ -15,6 +15,7 @@ type desktopCandidate struct {
 	Slug           string
 	HomeDir        string
 	AppPath        string
+	ExecutablePath string
 	DescriptorPath string
 }
 
@@ -107,6 +108,12 @@ func discoverDesktopCandidates(
 
 		id := identityFromDisplayName(doc.DisplayName)
 		appPath, executablePath := desktopPathsForDescriptor(goos, descriptorPath, id)
+		if goos == "darwin" && filepath.Base(appPath) != id.MacAppName {
+			slog.Debug("desktop descriptor rejected",
+				"descriptor", descriptorPath,
+				"reason", "bundle name does not match display name")
+			continue
+		}
 		if !deps.exists(executablePath) {
 			slog.Debug("desktop descriptor rejected",
 				"descriptor", descriptorPath,
@@ -124,6 +131,7 @@ func discoverDesktopCandidates(
 			Slug:           doc.Slug,
 			HomeDir:        doc.HomeDir,
 			AppPath:        appPath,
+			ExecutablePath: executablePath,
 			DescriptorPath: descriptorPath,
 		})
 	}
@@ -138,15 +146,23 @@ func discoverDesktopCandidates(
 		_, hasDescriptor := descriptorOwners[ownerKey]
 		if _, represented := seenApps[key]; !represented && !hasDescriptor {
 			candidates = append(candidates, desktopCandidate{
-				Identity: legacyID,
-				Slug:     "otto",
-				HomeDir:  ".otto",
-				AppPath:  legacyPath,
+				Identity:       legacyID,
+				Slug:           "otto",
+				HomeDir:        ".otto",
+				AppPath:        legacyPath,
+				ExecutablePath: desktopExecutablePath(goos, legacyPath, legacyID),
 			})
 		}
 	}
 
 	return candidates, nil
+}
+
+func desktopExecutablePath(goos, appPath string, id brandIdentity) string {
+	if goos == "windows" {
+		return appPath
+	}
+	return filepath.Join(appPath, "Contents", "MacOS", id.DisplayName)
 }
 
 func desktopPathsForDescriptor(goos, descriptorPath string, id brandIdentity) (appPath, executablePath string) {

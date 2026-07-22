@@ -8,10 +8,10 @@ import (
 )
 
 // Regression guard for the v2.1.0 console-flicker bug: every Windows spawn from
-// this GUI app must suppress the console window, or tasklist (every 3s) flashes
-// a terminal. See quick task 260713-pbk.
+// this GUI app must suppress the console window when it runs a console child.
+// See quick task 260713-pbk.
 func TestHideConsole_SuppressesConsoleWindow(t *testing.T) {
-	cmd := exec.Command("tasklist")
+	cmd := exec.Command("taskkill")
 	hideConsole(cmd)
 	if cmd.SysProcAttr == nil {
 		t.Fatal("hideConsole left SysProcAttr nil")
