@@ -5,8 +5,8 @@
   <section class="gw-summary-strip" aria-labelledby="summary-heading">
     <h1 id="summary-heading" class="sr-only">Gateway status overview</h1>
 
-    <!-- All 8 stat tiles live in one grid wrapper so they render as a
-         single even row (or exactly 4+4 on narrower viewports) instead of
+    <!-- All 7 stat tiles live in one grid wrapper so they render as a
+         single even row (or a 4+3 split on narrower viewports) instead of
          flex-wrapping one orphan tile onto a second line. -->
     <div class="gw-summary-items">
 
@@ -22,11 +22,6 @@
       <span class="gw-summary-value" data-uptime>—</span>
     </div>
 
-    <!-- Version (baked in at render time — does not poll) -->
-    <div class="gw-summary-item">
-      <span class="gw-summary-label">Version</span>
-      <span class="gw-summary-value text-mono">{{.Version}}</span>
-    </div>
 
     <!-- Debug logging enablement (baked in at render time — does not poll).
          Chip semantics: green = on, gray = off. -->

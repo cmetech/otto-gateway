@@ -137,15 +137,15 @@ body {
   gap: var(--gw-space-lg);
 }
 
-/* The 8 stat tiles render inside one grid wrapper: a single even row on
- * wide viewports, exactly 4+4 below 1280px. This replaces bare flex-wrap,
+/* The 7 stat tiles render inside one grid wrapper: a single even row on
+ * wide viewports, a 4+3 split below 1280px. This replaces bare flex-wrap,
  * which let one orphan tile (Gateway Mem) drop alone onto a second line.
  * minmax(0, 1fr) keeps every column the same width regardless of content. */
 .gw-summary-items {
   flex: 1 1 auto;
   min-width: 0;
   display: grid;
-  grid-template-columns: repeat(8, minmax(0, 1fr));
+  grid-template-columns: repeat(7, minmax(0, 1fr));
   gap: var(--gw-space-base);
 }
 
@@ -1010,6 +1010,15 @@ body {
 .gw-header-brand {
   font-weight: 600;
   letter-spacing: 0.01em;
+}
+
+/* Version line directly under the header brand — accent color, bare value
+ * (e.g. "v2.16.3"), no label. Rendered on every admin page via base.html. */
+.gw-header-version {
+  font-family: var(--gw-font-mono);
+  font-size: var(--gw-text-xs);
+  line-height: 1.2;
+  color: var(--gw-accent);
 }
 
 /* Gateway ID chip beside the header brand — muted, monospace, selectable so
