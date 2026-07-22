@@ -1,0 +1,14 @@
+{
+  "name": "acp_proxy",
+  "description": "Tool-less generator agent for the OTTO gateway: the CALLER executes all tools via tool_call JSON blocks, so kiro's built-in tools and MCP servers are disabled entirely.",
+  "prompt": null,
+  "mcpServers": {},
+  "tools": [],
+  "toolAliases": {},
+  "allowedTools": [],
+  "resources": [],
+  "hooks": {},
+  "toolsSettings": {},
+  "includeMcpJson": false,
+  "model": null
+}
