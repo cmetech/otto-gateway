@@ -548,10 +548,18 @@ body {
 }
 
 /* Gateway process tiles in the summary strip. */
+/* Gateway CPU/Mem tiles: value with the sparkline stacked UNDERNEATH
+ * (mirrors the pool-slot perf cells) so the value never wraps inside a
+ * narrow tile — "245.3 MB" + inline spark used to overflow and wrap. */
 .gw-summary-perf .gw-perf-inline {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--gw-space-sm);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.gw-summary-perf .gw-summary-value {
+  white-space: nowrap;
 }
 
 .gw-summary-perf .gw-spark-host {
