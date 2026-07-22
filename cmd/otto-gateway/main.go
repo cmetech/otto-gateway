@@ -87,7 +87,8 @@ func prepareKiroLaunch(cfg config.Config, logger *slog.Logger) error {
 		}
 	}
 
-	logger.Info("kiro launch configured",
+	logger.Info(
+		"kiro launch configured",
 		"command", cfg.KiroCmd,
 		"args", cfg.KiroArgs,
 		"cwd", cfg.KiroCWD,
