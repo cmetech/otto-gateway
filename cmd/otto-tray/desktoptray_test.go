@@ -61,15 +61,19 @@ func TestDesktopUnchangedMenuStillStoresLatestSnapshot(t *testing.T) {
 	var cache menuRenderCache[desktopMenuModel]
 	var current *desktopOutput
 	var events []string
+	var operations []string
 	store := func(snapshot *desktopOutput) {
 		current = snapshot
 		events = append(events, "store:"+snapshot.Candidate.ExecutablePath)
 	}
-	render := func(desktopMenuModel) {
+	ops := recordingDesktopMenuRenderOps(&operations)
+	setHeaderTitle := ops.header.setTitle
+	ops.header.setTitle = func(title string) {
 		if current == nil || current.Candidate == nil {
 			t.Fatal("menu rendered before immutable snapshot was stored")
 		}
 		events = append(events, "render:"+current.Candidate.ExecutablePath)
+		setHeaderTitle(title)
 	}
 
 	firstCandidate := desktopCandidate{
@@ -80,8 +84,8 @@ func TestDesktopUnchangedMenuStillStoresLatestSnapshot(t *testing.T) {
 		Identity:       identityFromDisplayName("LOOP24"),
 		ExecutablePath: "/Applications/LOOP24-new.app/Contents/MacOS/LOOP24",
 	}
-	applyDesktopMenuOutput(&cache, desktopOutput{State: DesktopRunning, Candidate: &firstCandidate}, store, render)
-	applyDesktopMenuOutput(&cache, desktopOutput{State: DesktopRunning, Candidate: &secondCandidate}, store, render)
+	applyDesktopMenuOutput(&cache, desktopOutput{State: DesktopRunning, Candidate: &firstCandidate}, store, ops)
+	applyDesktopMenuOutput(&cache, desktopOutput{State: DesktopRunning, Candidate: &secondCandidate}, store, ops)
 	secondCandidate.ExecutablePath = "/mutated/after/apply"
 
 	wantEvents := []string{

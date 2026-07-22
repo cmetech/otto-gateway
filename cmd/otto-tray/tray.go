@@ -56,6 +56,22 @@ func gatewayMenuForOutput(out stateOutput, dashboardURL string) gatewayMenuModel
 	}
 }
 
+func applyGatewayMenuModel(
+	cache *menuRenderCache[gatewayMenuModel],
+	model gatewayMenuModel,
+	ops gatewayMenuRenderOps,
+) bool {
+	return cache.Apply(model, func(model gatewayMenuModel) {
+		ops.setIcon(model.State)
+		ops.setTooltip(model.Tooltip)
+		ops.header.setTitle(model.Header)
+		ops.subheader.setTitle(model.Subheader)
+		ops.start.setEnabled(model.StartEnabled)
+		ops.stop.setEnabled(model.StopEnabled)
+		ops.restart.setEnabled(model.RestartEnabled)
+	})
+}
+
 type trayState struct {
 	mu               sync.Mutex
 	installDir       string
@@ -286,21 +302,35 @@ func (s *trayState) applyState(out stateOutput) {
 	s.mu.Unlock()
 
 	model := gatewayMenuForOutput(out, s.dashboardURL)
-	s.gatewayMenuCache.Apply(model, s.renderGatewayMenu)
+	applyGatewayMenuModel(&s.gatewayMenuCache, model, s.nativeGatewayMenuRenderOps())
 
 	s.notifyTransition(prev, out.State)
 }
 
-func (s *trayState) renderGatewayMenu(model gatewayMenuModel) {
-	// T-3 fix (REL-TRAY-03): always-visible state signal on every FSM transition (D-11).
-	// Icon and tooltip are the primary gateway-death signal; notify() is secondary.
-	setIconForState(model.State)
-	systray.SetTooltip(model.Tooltip)
-	s.miHeader.SetTitle(model.Header)
-	s.miSubheader.SetTitle(model.Subheader)
-	setMenuItemEnabled(s.miStart, model.StartEnabled)
-	setMenuItemEnabled(s.miStop, model.StopEnabled)
-	setMenuItemEnabled(s.miRestart, model.RestartEnabled)
+func (s *trayState) nativeGatewayMenuRenderOps() gatewayMenuRenderOps {
+	return gatewayMenuRenderOps{
+		// T-3 fix (REL-TRAY-03): the icon and tooltip are the primary
+		// gateway-death signal; notify() remains secondary.
+		setIcon:    setIconForState,
+		setTooltip: systray.SetTooltip,
+		header:     nativeMenuItemRenderOps(s.miHeader),
+		subheader:  nativeMenuItemRenderOps(s.miSubheader),
+		start:      nativeMenuItemRenderOps(s.miStart),
+		stop:       nativeMenuItemRenderOps(s.miStop),
+		restart:    nativeMenuItemRenderOps(s.miRestart),
+	}
+}
+
+func nativeMenuItemRenderOps(item *systray.MenuItem) menuItemRenderOps {
+	return menuItemRenderOps{
+		setTitle: item.SetTitle,
+		setEnabled: func(enabled bool) {
+			setMenuItemEnabled(item, enabled)
+		},
+		setVisible: func(visible bool) {
+			setMenuItemVisible(item, visible)
+		},
+	}
 }
 
 func setMenuItemEnabled(item *systray.MenuItem, enabled bool) {
@@ -309,6 +339,14 @@ func setMenuItemEnabled(item *systray.MenuItem, enabled bool) {
 		return
 	}
 	item.Disable()
+}
+
+func setMenuItemVisible(item *systray.MenuItem, visible bool) {
+	if visible {
+		item.Show()
+		return
+	}
+	item.Hide()
 }
 
 // notifyTransition emits a user-facing notification on

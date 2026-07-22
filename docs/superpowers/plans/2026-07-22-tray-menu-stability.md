@@ -264,4 +264,3 @@ git add cmd/otto-tray/menurender.go cmd/otto-tray/menurender_test.go \
   cmd/otto-tray/tray.go cmd/otto-tray/desktoptray.go cmd/otto-tray/desktoptray_test.go
 git commit -m "fix(tray): skip unchanged menu renders"
 ```
-

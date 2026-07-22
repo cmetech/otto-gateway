@@ -2,6 +2,31 @@
 
 package main
 
+type menuItemRenderOps struct {
+	setTitle   func(string)
+	setEnabled func(bool)
+	setVisible func(bool)
+}
+
+type gatewayMenuRenderOps struct {
+	setIcon    func(State)
+	setTooltip func(string)
+	header     menuItemRenderOps
+	subheader  menuItemRenderOps
+	start      menuItemRenderOps
+	stop       menuItemRenderOps
+	restart    menuItemRenderOps
+}
+
+type desktopMenuRenderOps struct {
+	header     menuItemRenderOps
+	appFolder  menuItemRenderOps
+	dataFolder menuItemRenderOps
+	install    menuItemRenderOps
+	start      menuItemRenderOps
+	stop       menuItemRenderOps
+}
+
 type menuRenderCache[T comparable] struct {
 	last T
 	set  bool

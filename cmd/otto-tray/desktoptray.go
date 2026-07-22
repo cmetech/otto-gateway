@@ -102,62 +102,49 @@ func immutableDesktopOutput(out desktopOutput) desktopOutput {
 	return snapshot
 }
 
+func applyDesktopMenuModel(
+	cache *menuRenderCache[desktopMenuModel],
+	model desktopMenuModel,
+	ops desktopMenuRenderOps,
+) bool {
+	return cache.Apply(model, func(model desktopMenuModel) {
+		ops.header.setTitle(model.Header)
+		ops.appFolder.setTitle(model.AppFolderTitle)
+		ops.dataFolder.setTitle(model.DataFolderTitle)
+		ops.appFolder.setEnabled(model.FoldersEnabled)
+		ops.dataFolder.setEnabled(model.FoldersEnabled)
+		ops.install.setVisible(model.InstallVisible)
+		ops.install.setEnabled(model.InstallEnabled)
+		ops.start.setVisible(model.StartVisible)
+		ops.start.setEnabled(model.StartEnabled)
+		ops.stop.setVisible(model.StopVisible)
+		ops.stop.setEnabled(model.StopEnabled)
+	})
+}
+
 func applyDesktopMenuOutput(
 	cache *menuRenderCache[desktopMenuModel],
 	out desktopOutput,
 	store func(*desktopOutput),
-	render func(desktopMenuModel),
+	ops desktopMenuRenderOps,
 ) {
 	snapshot := immutableDesktopOutput(out)
 	store(&snapshot)
-	cache.Apply(desktopMenuForOutput(snapshot), render)
+	applyDesktopMenuModel(cache, desktopMenuForOutput(snapshot), ops)
 }
 
 func (s *trayState) applyDesktopOutput(out desktopOutput) {
-	applyDesktopMenuOutput(&s.desktopMenuCache, out, s.desktopCurrent.Store, s.renderDesktopMenu)
+	applyDesktopMenuOutput(&s.desktopMenuCache, out, s.desktopCurrent.Store, s.nativeDesktopMenuRenderOps())
 }
 
-func (s *trayState) renderDesktopMenu(model desktopMenuModel) {
-	s.miDesktopHeader.SetTitle(model.Header)
-	s.miOpenAppFolder.SetTitle(model.AppFolderTitle)
-	s.miOpenDataFolder.SetTitle(model.DataFolderTitle)
-	if model.FoldersEnabled {
-		s.miOpenAppFolder.Enable()
-		s.miOpenDataFolder.Enable()
-	} else {
-		s.miOpenAppFolder.Disable()
-		s.miOpenDataFolder.Disable()
-	}
-
-	if model.InstallVisible {
-		s.miDesktopInstall.Show()
-	} else {
-		s.miDesktopInstall.Hide()
-	}
-	if model.InstallEnabled {
-		s.miDesktopInstall.Enable()
-	} else {
-		s.miDesktopInstall.Disable()
-	}
-	if model.StartVisible {
-		s.miDesktopStart.Show()
-	} else {
-		s.miDesktopStart.Hide()
-	}
-	if model.StartEnabled {
-		s.miDesktopStart.Enable()
-	} else {
-		s.miDesktopStart.Disable()
-	}
-	if model.StopVisible {
-		s.miDesktopStop.Show()
-	} else {
-		s.miDesktopStop.Hide()
-	}
-	if model.StopEnabled {
-		s.miDesktopStop.Enable()
-	} else {
-		s.miDesktopStop.Disable()
+func (s *trayState) nativeDesktopMenuRenderOps() desktopMenuRenderOps {
+	return desktopMenuRenderOps{
+		header:     nativeMenuItemRenderOps(s.miDesktopHeader),
+		appFolder:  nativeMenuItemRenderOps(s.miOpenAppFolder),
+		dataFolder: nativeMenuItemRenderOps(s.miOpenDataFolder),
+		install:    nativeMenuItemRenderOps(s.miDesktopInstall),
+		start:      nativeMenuItemRenderOps(s.miDesktopStart),
+		stop:       nativeMenuItemRenderOps(s.miDesktopStop),
 	}
 }
 
