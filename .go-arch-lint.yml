@@ -53,6 +53,8 @@ components:
     in: capture/**
   config:
     in: config/**
+  embed:
+    in: embed/**
   engine:
     in: engine/**
   metrics:
@@ -181,6 +183,11 @@ deps:
     mayDependOn:
       - canonical
   config:
+    anyVendorDeps: true
+    mayDependOn:
+      - embed  # Kiro launch defaults resolve the gateway-owned workspace
+               # through the embedded-runtime-asset package.
+  embed:
     anyVendorDeps: true
   engine:
     anyVendorDeps: true
