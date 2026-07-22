@@ -1,11 +1,14 @@
 package admin
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -29,6 +32,46 @@ type stubRegistry struct {
 }
 
 func (r *stubRegistry) Detail() []SnapshotSess { return r.sessions }
+
+func TestAdmin_FaviconUsesGatewayTrayIcon(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	h := Handler(Deps{Logger: testutil.Logger(t)})
+	const faviconLink = `<link rel="icon" href="/admin/static/favicon.ico" sizes="any">`
+
+	for _, page := range []string{"/", "/about", "/docs"} {
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, page, nil)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s: want 200, got %d", page, rec.Code)
+		}
+		if !strings.Contains(rec.Body.String(), faviconLink) {
+			t.Errorf("GET %s: missing favicon link %q", page, faviconLink)
+		}
+	}
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/static/favicon.ico", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /static/favicon.ico: want 200, got %d", rec.Code)
+	}
+	if contentType := rec.Header().Get("Content-Type"); !strings.HasPrefix(contentType, "image/") {
+		t.Errorf("Content-Type: want image/*, got %q", contentType)
+	}
+	if rec.Body.Len() == 0 {
+		t.Fatal("GET /static/favicon.ico: empty body")
+	}
+
+	trayIcon, err := os.ReadFile(filepath.Join("..", "..", "cmd", "otto-tray", "icon", "gateway.ico"))
+	if err != nil {
+		t.Fatalf("read tray gateway.ico: %v", err)
+	}
+	if !bytes.Equal(rec.Body.Bytes(), trayIcon) {
+		t.Fatal("admin favicon bytes differ from tray gateway.ico")
+	}
+}
 
 // TestAdmin_PageHandler verifies GET / returns 200 with text/html and
 // contains the expected HTML structure per behavior contract.
