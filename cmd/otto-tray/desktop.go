@@ -90,7 +90,9 @@ func discoverDesktopCandidates(
 
 	candidates := make([]desktopCandidate, 0, len(descriptorPaths)+1)
 	seenApps := make(map[string]struct{})
+	descriptorOwners := make(map[string]struct{}, len(descriptorPaths))
 	for _, descriptorPath := range descriptorPaths {
+		descriptorOwners[pathKey(desktopOwnerForDescriptor(goos, descriptorPath))] = struct{}{}
 		data, err := deps.readFile(descriptorPath)
 		if err != nil {
 			return nil, fmt.Errorf("read desktop descriptor %q: %w", descriptorPath, err)
@@ -129,7 +131,12 @@ func discoverDesktopCandidates(
 	legacyID := defaultBrandIdentity()
 	if legacyPath := installedAppPath(goos, legacyID, env, home, deps.exists); legacyPath != "" {
 		key := pathKey(legacyPath)
-		if _, represented := seenApps[key]; !represented {
+		ownerKey := key
+		if goos == "windows" {
+			ownerKey = pathKey(filepath.Dir(legacyPath))
+		}
+		_, hasDescriptor := descriptorOwners[ownerKey]
+		if _, represented := seenApps[key]; !represented && !hasDescriptor {
 			candidates = append(candidates, desktopCandidate{
 				Identity: legacyID,
 				Slug:     "otto",
@@ -143,15 +150,21 @@ func discoverDesktopCandidates(
 }
 
 func desktopPathsForDescriptor(goos, descriptorPath string, id brandIdentity) (appPath, executablePath string) {
+	appPath = desktopOwnerForDescriptor(goos, descriptorPath)
 	if goos == "windows" {
-		appPath = filepath.Dir(filepath.Dir(descriptorPath))
 		executablePath = filepath.Join(appPath, id.WinExeName)
 		return executablePath, executablePath
 	}
 
-	appPath = filepath.Dir(filepath.Dir(filepath.Dir(descriptorPath)))
 	executablePath = filepath.Join(appPath, "Contents", "MacOS", id.DisplayName)
 	return appPath, executablePath
+}
+
+func desktopOwnerForDescriptor(goos, descriptorPath string) string {
+	if goos == "windows" {
+		return filepath.Dir(filepath.Dir(descriptorPath))
+	}
+	return filepath.Dir(filepath.Dir(filepath.Dir(descriptorPath)))
 }
 
 // desktopAppCandidates returns launchable-path candidates, most-preferred

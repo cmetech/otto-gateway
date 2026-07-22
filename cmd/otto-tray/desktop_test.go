@@ -237,6 +237,43 @@ func TestDiscoverDesktopCandidatesDescriptorOTTOReplacesLegacyFallback(t *testin
 	}
 }
 
+func TestDiscoverDesktopCandidatesRejectedCanonicalOTTONeverFallsBack(t *testing.T) {
+	root := filepath.Join("C:", "Users", "me", "AppData", "Local")
+	appDir := filepath.Join(root, "Programs", "OTTO")
+	desc := filepath.Join(appDir, "resources", "brand.json")
+	exe := filepath.Join(appDir, "OTTO.exe")
+	tests := []struct {
+		name string
+		raw  string
+	}{
+		{
+			name: "invalid descriptor",
+			raw:  `{"schemaVersion":2,"slug":"otto","displayName":"OTTO","homeDir":".otto","gateway":"otto"}`,
+		},
+		{
+			name: "foreign gateway",
+			raw:  `{"schemaVersion":1,"slug":"otto","displayName":"OTTO","homeDir":".otto","gateway":"other"}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := discoverDesktopCandidates("windows", func(k string) string {
+				if k == "LOCALAPPDATA" {
+					return root
+				}
+				return ""
+			}, "", desktopDiscoveryDeps{
+				glob:     func(string) ([]string, error) { return []string{desc}, nil },
+				readFile: func(string) ([]byte, error) { return []byte(tt.raw), nil },
+				exists:   func(path string) bool { return path == exe },
+			})
+			if err != nil || len(got) != 0 {
+				t.Fatalf("candidates = %+v, err=%v", got, err)
+			}
+		})
+	}
+}
+
 func TestDiscoverDesktopCandidatesLegacyOTTOFallback(t *testing.T) {
 	root := filepath.Join("C:", "Users", "me", "AppData", "Local")
 	exe := filepath.Join(root, "Programs", "OTTO", "OTTO.exe")
