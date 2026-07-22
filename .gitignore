@@ -61,6 +61,7 @@ dist/
 # Agent calls with isolation="worktree". These are throwaway git worktrees
 # that get reaped on shutdown; never commit them.
 .claude/worktrees/
+.worktrees/
 .bg-shell/
 .otto/
 
