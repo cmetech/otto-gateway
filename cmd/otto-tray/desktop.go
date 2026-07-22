@@ -39,7 +39,8 @@ func desktopDescriptorPatterns(goos string, env func(string) string, home string
 			if root == "" {
 				continue
 			}
-			patterns = append(patterns,
+			patterns = append(
+				patterns,
 				filepath.Join(root, "Programs", "*", "resources", "brand.json"),
 				filepath.Join(root, "*", "resources", "brand.json"),
 			)
@@ -51,7 +52,8 @@ func desktopDescriptorPatterns(goos string, env func(string) string, home string
 		filepath.Join("/Applications", "*.app", "Contents", "Resources", "brand.json"),
 	}
 	if home != "" {
-		patterns = append(patterns,
+		patterns = append(
+			patterns,
 			filepath.Join(home, "Applications", "*.app", "Contents", "Resources", "brand.json"),
 		)
 	}
