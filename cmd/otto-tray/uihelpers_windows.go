@@ -22,19 +22,10 @@ func setBaseIcon() {
 	systray.SetIcon(icon.Gateway)
 }
 
-// setIconForState updates the system-tray icon to reflect the current FSM state.
-// Windows does not use template images so all states use SetIcon with .ico assets.
-// The Running/idle icon is the Gateway glyph; Warning/Error keep the status
-// icons. Assets: cmd/otto-tray/icon/{gateway,Warning,Error}.ico.
+// setIconForState keeps the Gateway glyph stable across FSM states. Status is
+// conveyed separately by the tooltip and menu header.
 func setIconForState(state State) {
-	switch state {
-	case StateRunning:
-		systray.SetIcon(icon.Gateway)
-	case StateStarting, StateDegraded:
-		systray.SetIcon(icon.Warning)
-	default: // StateError, StateStopped, StateUnknown
-		systray.SetIcon(icon.Error)
-	}
+	systray.SetIcon(gatewayIconForState(state))
 }
 
 func openURL(url string) {

@@ -22,20 +22,10 @@ func setBaseIcon() {
 	systray.SetTemplateIcon(icon.Gateway, icon.Gateway)
 }
 
-// setIconForState updates the menu-bar icon to reflect the current FSM state.
-// The Running/idle icon is the Gateway template glyph; Starting/Degraded and
-// Error/Stopped/Unknown keep the colored status PNGs (health beats brand —
-// SetTemplateIcon would strip the color that is the signal).
-// Icon assets: cmd/otto-tray/icon/{gateway,Warning,Error}.* (embedded).
+// setIconForState keeps the Gateway glyph stable across FSM states. Status is
+// conveyed separately by the tooltip and menu header.
 func setIconForState(state State) {
-	switch state {
-	case StateRunning:
-		systray.SetTemplateIcon(icon.Gateway, icon.Gateway)
-	case StateStarting, StateDegraded:
-		systray.SetIcon(icon.Warning)
-	default: // StateError, StateStopped, StateUnknown
-		systray.SetIcon(icon.Error)
-	}
+	systray.SetTemplateIcon(gatewayIconForState(state), gatewayIconForState(state))
 }
 
 func openURL(url string) {
