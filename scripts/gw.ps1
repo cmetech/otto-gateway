@@ -101,6 +101,7 @@ $InstallDir = Split-Path -Parent $PSScriptRoot
 # from $InstallDir so binaries/scripts can be replaced on upgrade without
 # touching .env / logs / state / pid.
 $GwHome = if ($env:GW_HOME) { $env:GW_HOME } else { Join-Path $env:USERPROFILE '.gw' }
+$env:GW_HOME = $GwHome
 
 $BinPath    = if ($env:GW_BIN)    { $env:GW_BIN }    else { Join-Path $InstallDir 'bin\gateway.exe' }
 # $StateDir / $PidFile live under $GwHome (config home) rather than %TEMP% —

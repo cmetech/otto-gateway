@@ -57,6 +57,7 @@ unset _gw_source _gw_dir
 # from GW_INSTALL_DIR so binaries/scripts can be replaced on upgrade without
 # touching .env / logs / state / pid.
 GW_HOME="${GW_HOME:-$HOME/.gw}"
+export GW_HOME
 
 GW_BIN="${GW_BIN:-$GW_INSTALL_DIR/bin/gateway}"
 # GW_STATE_DIR / GW_PID live under $GW_HOME (config home) rather than
