@@ -1,7 +1,7 @@
 # Tray Co-Worker Detection Design
 
 **Date:** 2026-07-22  
-**Status:** Awaiting written-spec review  
+**Status:** Approved 2026-07-22
 **Scope:** Gateway tray desktop detection, Advanced folder actions, and tray icon state behavior
 
 ## Problem
