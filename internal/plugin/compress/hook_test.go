@@ -387,7 +387,7 @@ func TestDescribe(t *testing.T) {
 	}
 	for _, k := range []string{
 		"enabled", "trigger_tokens", "budget_tokens", "protect_tail", "tool_keep",
-		"runs", "tokens_saved_est", "budget_unmet",
+		"eligible", "runs", "tokens_saved_est", "budget_unmet", "panic_recoveries",
 	} {
 		if _, ok := cfg[k]; !ok {
 			t.Errorf("Describe config missing %q", k)
