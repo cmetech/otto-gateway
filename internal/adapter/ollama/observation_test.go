@@ -128,6 +128,13 @@ func TestRequestObservation_StreamingIdleTimeoutAfterHeaders(t *testing.T) {
 	})
 }
 
+func TestRequestObservation_StreamingWriteFailureIsInternal(t *testing.T) {
+	err := errors.New("ollama: ndjson write chunk: broken pipe")
+	if got := classifyStreamingError(err); got != "internal_error" {
+		t.Errorf("classifyStreamingError = %q, want internal_error", got)
+	}
+}
+
 func TestRequestObservation_EngineFailures(t *testing.T) {
 	tests := []struct {
 		name    string

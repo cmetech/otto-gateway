@@ -48,7 +48,10 @@ func classifyStreamingError(err error) string {
 	if err == nil {
 		return "success"
 	}
-	if strings.Contains(err.Error(), "response writer is not flusher") {
+	message := err.Error()
+	if strings.Contains(message, "response writer is not flusher") ||
+		strings.Contains(message, "marshal") ||
+		strings.Contains(message, "write") {
 		return "internal_error"
 	}
 	return classifyRequestError(err)

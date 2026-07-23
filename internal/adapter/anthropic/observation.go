@@ -3,6 +3,7 @@ package anthropic
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"otto-gateway/internal/canonical"
 )
@@ -47,6 +48,10 @@ func classifyStreamingError(err error) string {
 		return "success"
 	}
 	if errors.Is(err, errNoFlusher) {
+		return "internal_error"
+	}
+	message := err.Error()
+	if strings.Contains(message, "marshal") || strings.Contains(message, "write") {
 		return "internal_error"
 	}
 	return classifyRequestError(err)

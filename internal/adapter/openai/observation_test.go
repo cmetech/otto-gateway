@@ -114,6 +114,13 @@ func TestRequestObservation_StreamingIdleTimeoutAfterHeaders(t *testing.T) {
 	})
 }
 
+func TestRequestObservation_StreamingWriteFailureIsInternal(t *testing.T) {
+	err := errors.New("openai: write chunk: broken pipe")
+	if got := classifyStreamingError(err); got != "internal_error" {
+		t.Errorf("classifyStreamingError = %q, want internal_error", got)
+	}
+}
+
 func TestRequestObservation_StatefulSession(t *testing.T) {
 	entry := session.NewEntryForTest(fakeACPClient{}, "sid-observed")
 	registry := &fakeSessionRegistry{entry: entry}
