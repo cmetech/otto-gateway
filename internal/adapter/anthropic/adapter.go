@@ -143,6 +143,9 @@ type Config struct {
 	// cfg.ToolAliases; read by CollectAnthropicChat + the SSE emitter to
 	// resolve native tool calls into tool_use blocks.
 	ToolAliases map[string]string
+	// ObserveRequest receives exactly one bounded application outcome for each
+	// recognized Anthropic request. Nil leaves observation disabled.
+	ObserveRequest func(RequestObservation)
 }
 
 // Adapter wires the Anthropic HTTP surface. Construct via New.

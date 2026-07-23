@@ -87,13 +87,18 @@ const messagesBodyCap int64 = 4 << 20
 //     as 500 errAPI with the generic message "internal error" —
 //     never echo err.Error() which may contain request fragments.
 func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
+	observation := newRequestObservation()
+	defer func() { a.observeRequest(observation) }()
+
 	if a.cfg.Engine == nil {
+		observation.Outcome = "upstream_error"
 		writeError(w, http.StatusServiceUnavailable, errAPI, "kiro-cli not configured (set KIRO_CMD)")
 		return
 	}
 
 	// D-07: anthropic-version required.
 	if r.Header.Get("anthropic-version") == "" {
+		observation.Outcome = "invalid_request"
 		writeError(w, http.StatusBadRequest, errInvalidRequest, "anthropic-version header is required")
 		return
 	}
@@ -106,6 +111,7 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// Body decode with 4 MiB cap.
 	var wire anthropicMessagesRequest
 	if err := decodeJSONBody(w, r, messagesBodyCap, &wire); err != nil {
+		observation.Outcome = "invalid_request"
 		if isMaxBytesError(err) {
 			writeError(w, http.StatusRequestEntityTooLarge, errRequestTooLarge, "request body exceeds maximum size")
 			return
@@ -117,17 +123,21 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errInvalidRequest, "invalid JSON: "+err.Error())
 		return
 	}
+	observation.Stream = fmt.Sprintf("%t", wire.Stream)
 
 	// Field validation per Anthropic spec.
 	if wire.Model == "" {
+		observation.Outcome = "invalid_request"
 		writeError(w, http.StatusBadRequest, errInvalidRequest, "`model` is required")
 		return
 	}
 	if wire.MaxTokens <= 0 {
+		observation.Outcome = "invalid_request"
 		writeError(w, http.StatusBadRequest, errInvalidRequest, "`max_tokens` is required and must be > 0")
 		return
 	}
 	if len(wire.Messages) == 0 {
+		observation.Outcome = "invalid_request"
 		writeError(w, http.StatusBadRequest, errInvalidRequest, "`messages` is required and must be a non-empty array")
 		return
 	}
@@ -164,10 +174,15 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// Plan 05-03 D-04..D-11: X-Session-Id branch.
 	eng, entry, sErr := a.resolveEngine(r)
 	if sErr != nil {
+		if errors.Is(sErr, session.ErrSessionMaxExceeded) {
+			observation.Outcome = "pool_exhausted"
+		}
 		a.writeSessionError(w, sErr)
 		return
 	}
+	observation.SessionMode = "stateless"
 	if entry != nil {
+		observation.SessionMode = "stateful"
 		entry.Mu.Lock()
 		// CR-01 fix: Unlock registers FIRST (runs LAST), MarkUsed
 		// SECOND (runs FIRST). MarkUsed writes Entry.LastUsed and must
@@ -187,6 +202,7 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 		defer cancelFn()
 		runHandle, err := eng.Run(streamCtx, req)
 		if err != nil {
+			observation.Outcome = classifyRequestError(err)
 			// Engine.Run failed BEFORE any SSE headers were written —
 			// respond with a normal JSON 500 envelope (T-02-33: never
 			// echo err.Error() which may contain request fragments).
@@ -206,6 +222,7 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 		// 401. Mirrors the non-streaming sibling at handlers.go:220-223
 		// (the same surface, non-streaming path) and collect.go:66-73.
 		if sc := runHandle.ShortCircuitResponse(); sc != nil {
+			observation.Outcome = "authentication"
 			// D-03 / Pitfall 4: nil-guard the watchdog stop function
 			// (watchdog is nil on a short-circuit Run — engine.go:150).
 			if stop := runHandle.StopWatchdog(); stop != nil {
@@ -250,6 +267,7 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 			)
 			resp, cErr := eng.CollectFromRun(streamCtx, runHandle, req)
 			if cErr != nil {
+				observation.Outcome = classifyRequestError(cErr)
 				if errors.Is(cErr, canonical.ErrStreamIdleTimeout) {
 					a.cfg.Logger.Warn(
 						"stream.idle_timeout",
@@ -265,6 +283,7 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if resp != nil && resp.StopReason == canonical.StopError {
+				observation.Outcome = "authentication"
 				// Audit anthropic-rerouted-stream-writes-json-on-short-circuit:
 				// the client wired up the SDK as SSE (wire.Stream was
 				// true at request entry). A JSON 401 envelope here makes
@@ -304,11 +323,15 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 			// non-idempotent hooks (PII decrypt operates on already-
 			// decrypted content) and double-logs idempotent ones.
 			if err := runSyntheticSSEFromResponse(streamCtx, w, resp, wire.Model, a.cfg.Logger); err != nil {
+				observation.Outcome = classifyStreamingError(err)
 				a.cfg.Logger.Debug("anthropic: synthetic SSE terminated", "err", err)
+			} else {
+				observation.Outcome = "success"
 			}
 			return
 		}
 		resp, err := runSSEEmitter(streamCtx, w, runHandle, req.Tools, wire.Model, a.cfg.StreamIdleTimeout, a.cfg.Logger)
+		observation.Outcome = classifyStreamingError(err)
 		if err != nil {
 			// Audit anthropic-flusher-assertion-fail-swallowed: the
 			// no-flusher branch returns BEFORE any bytes are written,
@@ -373,6 +396,7 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// first-class element and the SDK expects it that way.
 	resp, err := CollectAnthropicChat(ctx, eng, req, a.cfg.ToolAliases, a.cfg.StreamIdleTimeout)
 	if err != nil {
+		observation.Outcome = classifyRequestError(err)
 		// D-07 REL-POOL-01: pool exhaustion maps to 503 with Anthropic
 		// overloaded_error body on the non-streaming path.
 		if errors.Is(err, canonical.ErrPoolExhausted) {
@@ -406,11 +430,13 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// bearer); future Pre hooks use the same discriminator. Status
 	// 401 because the only v1 producer is AuthHook.
 	if resp != nil && resp.StopReason == canonical.StopError {
+		observation.Outcome = "authentication"
 		writeError(w, http.StatusUnauthorized, errAuthentication, shortCircuitMessage(resp))
 		return
 	}
 
 	writeJSON(w, chatResponseToMessage(resp, wire.Model))
+	observation.Outcome = "success"
 }
 
 // shortCircuitMessage extracts the user-facing error message from a

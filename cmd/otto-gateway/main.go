@@ -698,6 +698,9 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 			KiroCWD:           cfg.KiroCWD,
 			StreamIdleTimeout: streamIdle, // quick 260531-ruv
 			ToolAliases:       cfg.ToolAliases,
+			ObserveRequest: func(observation anthropic.RequestObservation) {
+				gwMetrics.RecordLLMOutcome("anthropic", observation.Outcome, observation.Stream, observation.SessionMode)
+			},
 		})
 	}
 
