@@ -2,7 +2,10 @@
 // acpSlotConfig() and assert the kiro-usage hooks forward to Config.Metrics.
 package pool
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 type fakeRecorder struct {
 	credits float64
@@ -30,6 +33,8 @@ func (r *fakeRecorder) RecordMCPInit(server string, ok bool) {
 		ok     bool
 	}{server, ok})
 }
+
+func (r *fakeRecorder) RecordPoolAcquire(time.Duration, string) {}
 
 // TestAcpSlotConfig_ForwardsKiroHooksToRecorder: when Config.Metrics is set,
 // each slot's acp.Config carries the per-turn usage hooks that forward to the

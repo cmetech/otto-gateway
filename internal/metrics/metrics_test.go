@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -249,5 +250,26 @@ func TestRegisterCompression_SeriesExposed(t *testing.T) {
 	}
 	if !strings.Contains(body, `gw_compress_panic_recoveries_total{gateway_id="gw-test-123"} 2`) {
 		t.Errorf("panic-recoveries counter missing/wrong:\n%s", body)
+	}
+}
+
+func TestPoolAcquireDuration_SeriesAndBuckets(t *testing.T) {
+	m := testMetrics(metrics.PoolStats{}, metrics.SessionStats{})
+	for _, result := range []string{"immediate", "waited", "timeout", "cancelled", "closed"} {
+		m.RecordPoolAcquire(25*time.Millisecond, result)
+	}
+
+	body := scrape(t, m)
+	for _, result := range []string{"immediate", "waited", "timeout", "cancelled", "closed"} {
+		want := `gw_pool_acquire_duration_seconds_count{gateway_id="gw-test-123",result="` + result + `"} 1`
+		if !strings.Contains(body, want) {
+			t.Errorf("missing acquire result %q:\n%s", result, body)
+		}
+	}
+	for _, bucket := range []string{"0.001", "0.005", "0.01", "0.025", "0.05", "0.1", "0.25", "0.5", "1", "2", "5", "10", "30"} {
+		want := `gw_pool_acquire_duration_seconds_bucket{gateway_id="gw-test-123",result="immediate",le="` + bucket + `"}`
+		if !strings.Contains(body, want) {
+			t.Errorf("missing acquire bucket %s:\n%s", bucket, body)
+		}
 	}
 }

@@ -1136,6 +1136,13 @@ func (p *Pool) closeAll() error {
 // NewSession returns ErrPoolExhausted instead of blocking indefinitely
 // (D-04 / REL-POOL-01). Adapters map this to HTTP 503 + Retry-After: 5.
 func (p *Pool) NewSession(ctx context.Context, cwd string) (string, error) {
+	acquireStarted := time.Now()
+	recordAcquire := func(result string) {
+		if p.cfg.Metrics != nil {
+			p.cfg.Metrics.RecordPoolAcquire(time.Since(acquireStarted), result)
+		}
+	}
+
 	// D-04: bounded acquire — timeoutC fires after AcquireTimeout and
 	// causes NewSession to return ErrPoolExhausted. A nil channel (when
 	// AcquireTimeout == 0) is never selected, preserving the pre-D-04
@@ -1157,6 +1164,7 @@ func (p *Pool) NewSession(ctx context.Context, cwd string) (string, error) {
 	case slot = <-p.slots:
 		// Fast path: slot was immediately available — no saturation,
 		// no Warn, no parking.
+		recordAcquire("immediate")
 	default:
 		// All slots busy — emit ONE Warn per saturation episode then
 		// park. The warnOnce is reset to a fresh sync.Once in Close()
@@ -1180,7 +1188,9 @@ func (p *Pool) NewSession(ctx context.Context, cwd string) (string, error) {
 		select {
 		case slot = <-p.slots:
 			// acquired after parking
+			recordAcquire("waited")
 		case <-ctx.Done():
+			recordAcquire("cancelled")
 			return "", fmt.Errorf("pool: acquire cancelled: %w", ctx.Err())
 		// Audit pool-newsession-blocks-on-closed-pool: post-Close NewSession
 		// used to race between caller-ctx and a slot-release that returned a
@@ -1189,8 +1199,10 @@ func (p *Pool) NewSession(ctx context.Context, cwd string) (string, error) {
 		// "pool: closed" error so operators can distinguish shutdown-induced
 		// failures from real ones in slog.
 		case <-p.closing:
+			recordAcquire("closed")
 			return "", errors.New("pool: closed")
 		case <-timeoutC:
+			recordAcquire("timeout")
 			return "", ErrPoolExhausted
 		}
 	}

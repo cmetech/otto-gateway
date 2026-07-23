@@ -105,6 +105,7 @@ func (acpClientFactory) Spawn(_ context.Context, cfg acp.Config) (PoolClient, er
 type MetricsRecorder interface {
 	RecordTurnMeter(credits float64, turnMs int64, ctxPct float64, hasCtxPct bool)
 	RecordMCPInit(server string, ok bool)
+	RecordPoolAcquire(duration time.Duration, result string)
 }
 
 // Config bundles all pool dependencies. Size defaults to 1 in Phase 2

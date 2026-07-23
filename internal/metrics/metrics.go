@@ -83,13 +83,14 @@ type SessionStats struct {
 // middleware. Construct with New; expose Handler() at GET /metrics and wrap the
 // router with Middleware.
 type Metrics struct {
-	reg      *prometheus.Registry
-	reqTotal *prometheus.CounterVec
-	reqDur   *prometheus.HistogramVec
-	inFlight prometheus.Gauge
-	llmTotal *prometheus.CounterVec
-	skills   *skillLimiter
-	clients  *skillLimiter
+	reg         *prometheus.Registry
+	reqTotal    *prometheus.CounterVec
+	reqDur      *prometheus.HistogramVec
+	inFlight    prometheus.Gauge
+	llmTotal    *prometheus.CounterVec
+	skills      *skillLimiter
+	clients     *skillLimiter
+	poolAcquire *prometheus.HistogramVec
 
 	// Kiro usage (fed by the acp OnTurnMeter/OnContextPct/OnMCPInit hooks via
 	// the RecordX methods — kiro usage-metrics parity build).
@@ -145,6 +146,12 @@ func (m *Metrics) RecordMCPInit(server string, ok bool) {
 // model label is cardinality-capped.
 func (m *Metrics) RecordModelRequest(model string) {
 	m.modelReqs.WithLabelValues(modelBucket(m.models, model)).Inc()
+}
+
+// RecordPoolAcquire observes how long a request waited for a pool slot and the
+// bounded terminal result: immediate, waited, timeout, cancelled, or closed.
+func (m *Metrics) RecordPoolAcquire(duration time.Duration, result string) {
+	m.poolAcquire.WithLabelValues(result).Observe(duration.Seconds())
 }
 
 // modelBucket normalizes + cardinality-caps the model label. Empty or "auto"
@@ -280,6 +287,11 @@ func New(info BuildInfo, pool func() PoolStats, sessions func() SessionStats, wo
 		}, []string{"surface", "skill", "client"}),
 		skills:  newSkillLimiter(),
 		clients: newSkillLimiter(),
+		poolAcquire: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "gw_pool_acquire_duration_seconds",
+			Help:    "Time spent acquiring a warm pool slot, by terminal result.",
+			Buckets: []float64{.001, .005, .01, .025, .05, .1, .25, .5, 1, 2, 5, 10, 30},
+		}, []string{"result"}),
 
 		kiroCredits: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "gw_kiro_credits_total",
@@ -312,7 +324,7 @@ func New(info BuildInfo, pool func() PoolStats, sessions func() SessionStats, wo
 		models: newSkillLimiter(),
 	}
 	reggw.MustRegister(
-		buildInfo, m.reqTotal, m.reqDur, m.inFlight, m.llmTotal,
+		buildInfo, m.reqTotal, m.reqDur, m.inFlight, m.llmTotal, m.poolAcquire,
 		m.kiroCredits, m.kiroTurns, m.kiroTurnDur, m.kiroCtxPct, m.mcpInit, m.modelReqs,
 		newPoolCollector(pool, sessions),
 	)
