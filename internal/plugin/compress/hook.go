@@ -28,8 +28,10 @@ type Hook struct {
 	ToolKeep      int
 	Logger        *slog.Logger
 
-	runs     atomic.Int64
-	savedTok atomic.Int64
+	eligible        atomic.Int64
+	runs            atomic.Int64
+	savedTok        atomic.Int64
+	panicRecoveries atomic.Int64
 
 	// budgetUnmet counts runs that ended still over BudgetTokens — the
 	// budget is best-effort (pinned/protected/tool-carrying messages are
@@ -57,16 +59,35 @@ func (h *Hook) Describe() (string, map[string]any) {
 		"budget_tokens":    h.BudgetTokens,
 		"protect_tail":     h.ProtectTail,
 		"tool_keep":        h.ToolKeep,
+		"eligible":         h.eligible.Load(),
 		"runs":             h.runs.Load(),
 		"tokens_saved_est": h.savedTok.Load(),
 		"budget_unmet":     h.budgetUnmet.Load(),
+		"panic_recoveries": h.panicRecoveries.Load(),
 	}
 }
 
-// Stats returns the lifetime counters (Prometheus CounterFunc seam —
-// see metrics.RegisterCompression).
-func (h *Hook) Stats() (runs, savedTokens int64) {
-	return h.runs.Load(), h.savedTok.Load()
+// StatsSnapshot is an atomic snapshot of the hook's lifetime decisions and
+// outcomes. Each field is loaded independently; callers use it for monotonic
+// observability rather than transactional accounting.
+type StatsSnapshot struct {
+	Eligible        int64
+	Runs            int64
+	SavedTokens     int64
+	BudgetUnmet     int64
+	PanicRecoveries int64
+}
+
+// Stats returns the lifetime counters (Prometheus CounterFunc seam — see
+// metrics.RegisterCompression).
+func (h *Hook) Stats() StatsSnapshot {
+	return StatsSnapshot{
+		Eligible:        h.eligible.Load(),
+		Runs:            h.runs.Load(),
+		SavedTokens:     h.savedTok.Load(),
+		BudgetUnmet:     h.budgetUnmet.Load(),
+		PanicRecoveries: h.panicRecoveries.Load(),
+	}
 }
 
 func (h *Hook) logger() *slog.Logger {
@@ -84,6 +105,7 @@ func (h *Hook) logger() *slog.Logger {
 func (h *Hook) Before(ctx context.Context, req *canonical.ChatRequest) (resp *canonical.ChatResponse, err error) {
 	defer func() {
 		if r := recover(); r != nil {
+			h.panicRecoveries.Add(1)
 			h.logger().ErrorContext(ctx, "compress.panic_recovered", "panic", r)
 			resp, err = nil, nil
 		}
@@ -123,6 +145,7 @@ func (h *Hook) compress(ctx context.Context, req *canonical.ChatRequest) {
 		return // already within budget (possible when budget == trigger) —
 		// never lossily mutate a transcript that already fits
 	}
+	h.eligible.Add(1)
 
 	tailStart := len(msgs) - h.ProtectTail
 	if tailStart < 0 {

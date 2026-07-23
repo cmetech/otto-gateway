@@ -325,20 +325,43 @@ func New(info BuildInfo, pool func() PoolStats, sessions func() SessionStats, wo
 	return m
 }
 
+// CompressionStats is the bounded lifetime snapshot exposed by the
+// CompressionHook. It lives in metrics so feature packages remain independent
+// from this package and the command can bridge between the two.
+type CompressionStats struct {
+	Eligible        int64
+	Runs            int64
+	SavedTokens     int64
+	BudgetUnmet     int64
+	PanicRecoveries int64
+}
+
 // RegisterCompression exposes the CompressionHook counters as pull-style
-// CounterFuncs (read at scrape time from the hook's atomics — no
-// background goroutine, matching the pool collector posture). Call at
-// most once, after New, when the compression feature is wired.
-func (m *Metrics) RegisterCompression(stats func() (runs, savedTokens int64)) {
+// CounterFuncs (read at scrape time from the hook's atomics — no background
+// goroutine, matching the pool collector posture). Call at most once, after
+// New, when the compression feature is wired.
+func (m *Metrics) RegisterCompression(stats func() CompressionStats) {
 	m.hookReg.MustRegister(
+		prometheus.NewCounterFunc(prometheus.CounterOpts{
+			Name: "gw_compress_eligible_total",
+			Help: "Compression-eligible requests whose estimated size reached the trigger and exceeded the budget.",
+		}, func() float64 { return float64(stats().Eligible) }),
 		prometheus.NewCounterFunc(prometheus.CounterOpts{
 			Name: "gw_compress_runs_total",
 			Help: "Requests where CompressionHook reduced the transcript.",
-		}, func() float64 { r, _ := stats(); return float64(r) }),
+		}, func() float64 { return float64(stats().Runs) }),
 		prometheus.NewCounterFunc(prometheus.CounterOpts{
 			Name: "gw_compress_tokens_saved_estimate_total",
 			Help: "Estimated tokens removed from transcripts (UTF-8 bytes/4 heuristic).",
-		}, func() float64 { _, s := stats(); return float64(s) }),
+		}, func() float64 { return float64(stats().SavedTokens) }),
+		prometheus.NewCounterFunc(prometheus.CounterOpts{
+			Name: "gw_compress_budget_unmet_total",
+			Help: "Compression-eligible requests that remained above the configured token budget.",
+		}, func() float64 { return float64(stats().BudgetUnmet) }),
+		prometheus.NewCounterFunc(prometheus.CounterOpts{
+			Name: "gw_compress_panic_recoveries_total",
+			Help: "Panics recovered inside CompressionHook so requests could continue.",
+		}, func() float64 { return float64(stats().PanicRecoveries) }),
 	)
 }
 

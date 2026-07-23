@@ -496,7 +496,16 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 			return out
 		},
 	)
-	gwMetrics.RegisterCompression(compressHook.Stats)
+	gwMetrics.RegisterCompression(func() metrics.CompressionStats {
+		stats := compressHook.Stats()
+		return metrics.CompressionStats{
+			Eligible:        stats.Eligible,
+			Runs:            stats.Runs,
+			SavedTokens:     stats.SavedTokens,
+			BudgetUnmet:     stats.BudgetUnmet,
+			PanicRecoveries: stats.PanicRecoveries,
+		}
+	})
 
 	// Track 0 tool-call wire capture. Construct a Controller when capture is on
 	// at startup (ACP_CAPTURE) OR when runtime toggling is permitted

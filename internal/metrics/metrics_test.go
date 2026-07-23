@@ -224,13 +224,30 @@ func TestMetrics_Middleware_SkipsMetricsPath(t *testing.T) {
 // every other series.
 func TestRegisterCompression_SeriesExposed(t *testing.T) {
 	m := testMetrics(metrics.PoolStats{}, metrics.SessionStats{})
-	m.RegisterCompression(func() (int64, int64) { return 7, 4242 })
+	m.RegisterCompression(func() metrics.CompressionStats {
+		return metrics.CompressionStats{
+			Eligible:        11,
+			Runs:            7,
+			SavedTokens:     4242,
+			BudgetUnmet:     3,
+			PanicRecoveries: 2,
+		}
+	})
 
 	body := scrape(t, m)
+	if !strings.Contains(body, `gw_compress_eligible_total{gateway_id="gw-test-123"} 11`) {
+		t.Errorf("eligible counter missing/wrong:\n%s", body)
+	}
 	if !strings.Contains(body, `gw_compress_runs_total{gateway_id="gw-test-123"} 7`) {
 		t.Errorf("runs counter missing/wrong:\n%s", body)
 	}
 	if !strings.Contains(body, `gw_compress_tokens_saved_estimate_total{gateway_id="gw-test-123"} 4242`) {
 		t.Errorf("saved-tokens counter missing/wrong:\n%s", body)
+	}
+	if !strings.Contains(body, `gw_compress_budget_unmet_total{gateway_id="gw-test-123"} 3`) {
+		t.Errorf("budget-unmet counter missing/wrong:\n%s", body)
+	}
+	if !strings.Contains(body, `gw_compress_panic_recoveries_total{gateway_id="gw-test-123"} 2`) {
+		t.Errorf("panic-recoveries counter missing/wrong:\n%s", body)
 	}
 }

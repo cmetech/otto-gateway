@@ -68,9 +68,9 @@ func TestBefore_CompressesWhenEnabled(t *testing.T) {
 	if req.System != "SYSTEM PROMPT — MUST SURVIVE VERBATIM" {
 		t.Error("System mutated")
 	}
-	runs, saved := h.Stats()
-	if runs != 1 || saved <= 0 {
-		t.Errorf("Stats = (%d, %d), want (1, >0)", runs, saved)
+	stats := h.Stats()
+	if stats.Eligible != 1 || stats.Runs != 1 || stats.SavedTokens <= 0 {
+		t.Errorf("Stats = %+v, want Eligible=1 Runs=1 SavedTokens>0", stats)
 	}
 }
 
@@ -118,7 +118,7 @@ func TestBefore_UnderTriggerIsNoop(t *testing.T) {
 	if estMessagesTokens(req.Messages) != before {
 		t.Error("under-trigger transcript was mutated")
 	}
-	if runs, _ := h.Stats(); runs != 0 {
+	if runs := h.Stats().Runs; runs != 0 {
 		t.Error("no-op counted as a run")
 	}
 }
@@ -136,8 +136,39 @@ func TestBefore_AtBudgetIsNoop(t *testing.T) {
 	if estMessagesTokens(req.Messages) != size {
 		t.Error("transcript at budget was mutated")
 	}
-	if runs, _ := h.Stats(); runs != 0 {
+	if runs := h.Stats().Runs; runs != 0 {
 		t.Error("at-budget no-op counted as a run")
+	}
+}
+
+func TestCompressionHook_StatsTracksEligibleAndBudgetUnmet(t *testing.T) {
+	h := newTestHook()
+	h.ProtectTail = 100
+	h.BudgetTokens = 1
+	req := bigTranscript()
+
+	_, _ = h.Before(context.Background(), req)
+
+	stats := h.Stats()
+	if stats.Eligible != 1 {
+		t.Errorf("Eligible = %d, want 1", stats.Eligible)
+	}
+	if stats.BudgetUnmet != 1 {
+		t.Errorf("BudgetUnmet = %d, want 1", stats.BudgetUnmet)
+	}
+}
+
+func TestCompressionHook_PanicRecoveryIsCounted(t *testing.T) {
+	h := newTestHook()
+	h.ToolKeep = -1 // forces the truncation stage to panic on a mutable tool result
+	req := bigTranscript()
+
+	resp, err := h.Before(context.Background(), req)
+	if resp != nil || err != nil {
+		t.Fatalf("Before = (%v, %v), want (nil, nil)", resp, err)
+	}
+	if got := h.Stats().PanicRecoveries; got != 1 {
+		t.Errorf("PanicRecoveries = %d, want 1", got)
 	}
 }
 
