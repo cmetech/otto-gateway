@@ -69,13 +69,18 @@ func stampPluginCtx(ctx context.Context, r *http.Request) context.Context {
 //     as 500 errAPI with the generic message "internal error" — NEVER
 //     echo err.Error() which may contain request fragments.
 func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
+	observation := newRequestObservation()
+	defer func() { a.observeRequest(observation) }()
+
 	if a.cfg.Engine == nil {
+		observation.Outcome = "upstream_error"
 		writeError(w, http.StatusServiceUnavailable, errAPI, "kiro-cli not configured (set KIRO_CMD)")
 		return
 	}
 
 	var wire chatCompletionRequest
 	if err := decodeJSONBody(w, r, chatBodyCap, &wire); err != nil {
+		observation.Outcome = "invalid_request"
 		if isMaxBytesError(err) {
 			writeError(w, http.StatusRequestEntityTooLarge, errRequestTooLarge, "request body exceeds maximum size")
 			return
@@ -86,8 +91,10 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, errInvalidRequest, "invalid JSON: "+err.Error())
 		return
 	}
+	observation.Stream = fmt.Sprintf("%t", wire.Stream)
 
 	if len(wire.Messages) == 0 {
+		observation.Outcome = "invalid_request"
 		writeError(w, http.StatusBadRequest, errInvalidRequest, "`messages` is required and must be a non-empty array")
 		return
 	}
@@ -102,6 +109,7 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 	// slot until idle-timeout fires. Mirror the wire-level rejection
 	// shape so SDK clients see a consistent invalid_request_error.
 	if len(req.Messages) == 0 && req.System == "" {
+		observation.Outcome = "invalid_request"
 		writeError(w, http.StatusBadRequest, errInvalidRequest, "`messages` decoded to empty content")
 		return
 	}
@@ -125,10 +133,15 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 	// Plan 05-03 D-04..D-11: X-Session-Id branch.
 	eng, entry, sErr := a.resolveEngine(r)
 	if sErr != nil {
+		if errors.Is(sErr, session.ErrSessionMaxExceeded) {
+			observation.Outcome = "pool_exhausted"
+		}
 		a.writeSessionError(w, sErr)
 		return
 	}
+	observation.SessionMode = "stateless"
 	if entry != nil {
+		observation.SessionMode = "stateful"
 		entry.Mu.Lock()
 		// CR-01 fix: Unlock registers FIRST (runs LAST), MarkUsed
 		// SECOND (runs FIRST). MarkUsed writes Entry.LastUsed and must
@@ -158,6 +171,7 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 		defer cancelFn()
 		runHandle, err := eng.Run(streamCtx, req)
 		if err != nil {
+			observation.Outcome = classifyRequestError(err)
 			// engine.Run failed BEFORE any SSE headers were written — safe to
 			// respond with a normal JSON 500 envelope (T-02-33: log raw, generic message).
 			// D-07 REL-POOL-01: pool exhaustion maps to 503 + Retry-After:5 with
@@ -175,6 +189,7 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 		// bad-bearer case emits a benign empty 200 SSE stream instead of
 		// 401. Mirrors the non-streaming sibling at handlers.go:165-168.
 		if sc := runHandle.ShortCircuitResponse(); sc != nil {
+			observation.Outcome = "authentication"
 			// D-03 / Pitfall 4: nil-guard the watchdog stop function
 			// (watchdog is nil on a short-circuit Run — engine.go:150).
 			if stop := runHandle.StopWatchdog(); stop != nil {
@@ -209,6 +224,7 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 			)
 			resp, cErr := eng.CollectFromRun(streamCtx, runHandle, req)
 			if cErr != nil {
+				observation.Outcome = classifyRequestError(cErr)
 				if errors.Is(cErr, canonical.ErrStreamIdleTimeout) {
 					a.cfg.Logger.Warn(
 						"stream.idle_timeout",
@@ -224,6 +240,7 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 				return
 			}
 			if resp != nil && resp.StopReason == canonical.StopError {
+				observation.Outcome = "authentication"
 				writeError(w, http.StatusUnauthorized, errAuthentication, shortCircuitMessage(resp))
 				return
 			}
@@ -252,11 +269,15 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 			// resp — corrupts PII decrypt and double-logs LoggingHook /
 			// ChatTraceHook.
 			if err := runSyntheticSSEFromResponse(streamCtx, w, resp, wire.Model, a.cfg.Logger); err != nil {
+				observation.Outcome = classifyStreamingError(err)
 				a.cfg.Logger.Debug("openai: synthetic SSE terminated", "err", err)
+			} else {
+				observation.Outcome = "success"
 			}
 			return
 		}
 		resp, err := runSSEEmitter(streamCtx, w, runHandle, req, a.cfg.ToolAliases, wire.Model, a.cfg.StreamIdleTimeout, a.cfg.Logger)
+		observation.Outcome = classifyStreamingError(err)
 		if err != nil {
 			// runSSEEmitter has already written SSE headers + at least some frames.
 			// We cannot send a JSON 500 after WriteHeader; log at debug and let
@@ -299,6 +320,7 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 	// Non-streaming path (SC1 curl use case).
 	resp, err := eng.Collect(ctx, req)
 	if err != nil {
+		observation.Outcome = classifyRequestError(err)
 		// D-07 REL-POOL-01: pool exhaustion maps to 503 + Retry-After:5.
 		if errors.Is(err, canonical.ErrPoolExhausted) {
 			writePoolExhaustedOpenAI(w)
@@ -327,6 +349,7 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 	// discriminator. Status 401 because AuthHook is the only v1
 	// producer.
 	if resp != nil && resp.StopReason == canonical.StopError {
+		observation.Outcome = "authentication"
 		writeError(w, http.StatusUnauthorized, errAuthentication, shortCircuitMessage(resp))
 		return
 	}
@@ -350,6 +373,7 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 	}
 
 	writeJSON(w, chatResponseToCompletion(resp, wire.Model))
+	observation.Outcome = "success"
 }
 
 // handleCompletions handles POST /completions (legacy text completion shim — D-03).
@@ -369,13 +393,18 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 // T-03-20: decodeJSONBody + MaxBytesReader(4 MiB) → 413.
 // T-03-21: engine.Collect errors slog'd raw + generic 500 message (T-02-33 carry-forward).
 func (a *Adapter) handleCompletions(w http.ResponseWriter, r *http.Request) {
+	observation := newRequestObservation()
+	defer func() { a.observeRequest(observation) }()
+
 	if a.cfg.Engine == nil {
+		observation.Outcome = "upstream_error"
 		writeError(w, http.StatusServiceUnavailable, errAPI, "kiro-cli not configured (set KIRO_CMD)")
 		return
 	}
 
 	var wire completionWireRequest
 	if err := decodeJSONBody(w, r, chatBodyCap, &wire); err != nil {
+		observation.Outcome = "invalid_request"
 		if isMaxBytesError(err) {
 			writeError(w, http.StatusRequestEntityTooLarge, errRequestTooLarge, "request body exceeds maximum size")
 			return
@@ -387,9 +416,11 @@ func (a *Adapter) handleCompletions(w http.ResponseWriter, r *http.Request) {
 	// D-03: JSON-only shim; stream is silently downgraded.
 	// (Mirror ollama/handlers.go:42-45 pattern.)
 	wire.Stream = false
+	observation.Stream = "false"
 
 	msgs, err := promptToMessages(wire.Prompt)
 	if err != nil {
+		observation.Outcome = "invalid_request"
 		writeError(w, http.StatusBadRequest, errInvalidRequest, err.Error())
 		return
 	}
@@ -421,10 +452,15 @@ func (a *Adapter) handleCompletions(w http.ResponseWriter, r *http.Request) {
 	// Plan 05-03: X-Session-Id branch (same shape as handleChatCompletions).
 	eng, entry, sErr := a.resolveEngine(r)
 	if sErr != nil {
+		if errors.Is(sErr, session.ErrSessionMaxExceeded) {
+			observation.Outcome = "pool_exhausted"
+		}
 		a.writeSessionError(w, sErr)
 		return
 	}
+	observation.SessionMode = "stateless"
 	if entry != nil {
+		observation.SessionMode = "stateful"
 		entry.Mu.Lock()
 		// CR-01 fix: Unlock registers FIRST (runs LAST), MarkUsed
 		// SECOND (runs FIRST). MarkUsed writes Entry.LastUsed and must
@@ -436,6 +472,7 @@ func (a *Adapter) handleCompletions(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := eng.Collect(ctx, req)
 	if err != nil {
+		observation.Outcome = classifyRequestError(err)
 		// Quick 260531-ruv — idle-timeout maps to 504.
 		if errors.Is(err, canonical.ErrStreamIdleTimeout) {
 			a.cfg.Logger.Warn(
@@ -454,11 +491,13 @@ func (a *Adapter) handleCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	// Phase 8 SC1: short-circuit detection — same as handleChatCompletions.
 	if resp != nil && resp.StopReason == canonical.StopError {
+		observation.Outcome = "authentication"
 		writeError(w, http.StatusUnauthorized, errAuthentication, shortCircuitMessage(resp))
 		return
 	}
 
 	writeJSON(w, chatResponseToTextCompletion(resp, wire.Model))
+	observation.Outcome = "success"
 }
 
 // resolveEngine implements the Plan 05-03 X-Session-Id branch for the

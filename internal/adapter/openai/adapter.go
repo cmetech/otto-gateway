@@ -171,6 +171,9 @@ type Config struct {
 	// tool name (alias-primary tool-call design, 2026-07-16). Threaded from
 	// cfg.ToolAliases; read by the SSE emitter to resolve native tool calls.
 	ToolAliases map[string]string
+	// ObserveRequest receives exactly one bounded application outcome for each
+	// recognized OpenAI request. Nil leaves observation disabled.
+	ObserveRequest func(RequestObservation)
 }
 
 // Adapter wires the OpenAI HTTP surface. Construct via New.

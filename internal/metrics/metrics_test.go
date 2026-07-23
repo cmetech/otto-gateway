@@ -155,6 +155,31 @@ func TestMetrics_LLMRequests_MissingSkillIsNone(t *testing.T) {
 	}
 }
 
+func TestMetrics_LLMRequests_CompletionsUsesOpenAISurface(t *testing.T) {
+	m := testMetrics(metrics.PoolStats{}, metrics.SessionStats{})
+	r := chi.NewRouter()
+	r.Use(m.Middleware)
+	r.Post("/v1/completions", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+
+	r.ServeHTTP(httptest.NewRecorder(),
+		httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/completions", nil))
+
+	if !strings.Contains(scrape(t, m), `gw_llm_requests_total{client="none",gateway_id="gw-test-123",skill="none",surface="openai"} 1`) {
+		t.Error("/v1/completions must be counted as an OpenAI LLM request")
+	}
+}
+
+func TestLLMRequestOutcome_SeriesExposed(t *testing.T) {
+	m := testMetrics(metrics.PoolStats{}, metrics.SessionStats{})
+	m.RecordLLMOutcome("openai", "success", "false", "stateless")
+
+	body := scrape(t, m)
+	want := `gw_llm_request_outcomes_total{gateway_id="gw-test-123",outcome="success",session_mode="stateless",stream="false",surface="openai"} 1`
+	if !strings.Contains(body, want) {
+		t.Errorf("LLM application outcome missing:\n%s", body)
+	}
+}
+
 // TestMetrics_LLMRequests_NonChatRouteNotCounted: non-LLM routes do not emit
 // gw_llm_requests_total.
 func TestMetrics_LLMRequests_NonChatRouteNotCounted(t *testing.T) {

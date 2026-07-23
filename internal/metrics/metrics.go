@@ -88,6 +88,7 @@ type Metrics struct {
 	reqDur      *prometheus.HistogramVec
 	inFlight    prometheus.Gauge
 	llmTotal    *prometheus.CounterVec
+	llmOutcome  *prometheus.CounterVec
 	skills      *skillLimiter
 	clients     *skillLimiter
 	poolAcquire *prometheus.HistogramVec
@@ -146,6 +147,13 @@ func (m *Metrics) RecordMCPInit(server string, ok bool) {
 // model label is cardinality-capped.
 func (m *Metrics) RecordModelRequest(model string) {
 	m.modelReqs.WithLabelValues(modelBucket(m.models, model)).Inc()
+}
+
+// RecordLLMOutcome records the adapter-classified final application outcome
+// for one recognized LLM request. Callers provide only the bounded values
+// documented by the dashboard contract.
+func (m *Metrics) RecordLLMOutcome(surface, outcome, stream, sessionMode string) {
+	m.llmOutcome.WithLabelValues(surface, outcome, stream, sessionMode).Inc()
 }
 
 // RecordPoolAcquire observes how long a request waited for a pool slot and the
@@ -231,6 +239,8 @@ func surfaceForRoute(route string) (string, bool) {
 		return "anthropic", true
 	case strings.HasSuffix(route, "/chat/completions"):
 		return "openai", true
+	case strings.HasSuffix(route, "/completions"):
+		return "openai", true
 	case strings.HasSuffix(route, "/api/chat"), strings.HasSuffix(route, "/api/generate"):
 		return "ollama", true
 	default:
@@ -285,6 +295,10 @@ func New(info BuildInfo, pool func() PoolStats, sessions func() SessionStats, wo
 			Help: "Total LLM chat requests, by API surface, invoking skill " +
 				"(X-GW-Skill, or X-Flow-Name alias), and client (X-GW-Client).",
 		}, []string{"surface", "skill", "client"}),
+		llmOutcome: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "gw_llm_request_outcomes_total",
+			Help: "Final LLM request outcomes, including failures after streaming HTTP headers commit.",
+		}, []string{"surface", "outcome", "stream", "session_mode"}),
 		skills:  newSkillLimiter(),
 		clients: newSkillLimiter(),
 		poolAcquire: prometheus.NewHistogramVec(prometheus.HistogramOpts{
@@ -324,7 +338,7 @@ func New(info BuildInfo, pool func() PoolStats, sessions func() SessionStats, wo
 		models: newSkillLimiter(),
 	}
 	reggw.MustRegister(
-		buildInfo, m.reqTotal, m.reqDur, m.inFlight, m.llmTotal, m.poolAcquire,
+		buildInfo, m.reqTotal, m.reqDur, m.inFlight, m.llmTotal, m.llmOutcome, m.poolAcquire,
 		m.kiroCredits, m.kiroTurns, m.kiroTurnDur, m.kiroCtxPct, m.mcpInit, m.modelReqs,
 		newPoolCollector(pool, sessions),
 	)

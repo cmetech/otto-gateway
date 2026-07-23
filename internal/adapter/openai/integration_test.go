@@ -166,6 +166,7 @@ type fakeEngine struct {
 	runChunks   []canonical.Chunk
 	runFinal    *canonical.FinalResult
 	runErr      error
+	keepRunOpen bool
 
 	postN        int
 	lastPostResp *canonical.ChatResponse
@@ -195,7 +196,9 @@ func (f *fakeEngine) Run(ctx context.Context, req *canonical.ChatRequest) (RunHa
 	for _, c := range f.runChunks {
 		ch <- c
 	}
-	close(ch)
+	if !f.keepRunOpen {
+		close(ch)
+	}
 	return &fakeRunHandle{
 		stream: &fakeStream{
 			chunks: ch,
