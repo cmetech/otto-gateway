@@ -37,7 +37,7 @@
     {
       "id": 2,
       "type": "stat",
-      "title": "Gateways Reporting",
+      "title": "Active Gateways (range)",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROM}"
@@ -55,7 +55,7 @@
             "uid": "${DS_PROM}"
           },
           "editorMode": "code",
-          "expr": "count(group by(instance)(gw_build_info{job=\"otto-gateway\", instance=~\"$gateway\"}))",
+          "expr": "count(sum by(instance)(increase(gw_llm_requests_total{job=\"otto-gateway\", instance=~\"$gateway_id\", surface=~\"$surface\", skill=~\"$skill\", client=~\"$client\"}[$__range])) > 0) or vector(0)",
           "range": true,
           "instant": false,
           "refId": "A",
@@ -67,7 +67,6 @@
           "color": {
             "mode": "palette-classic"
           },
-          "unit": "short",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -76,7 +75,8 @@
                 "value": null
               }
             ]
-          }
+          },
+          "unit": "short"
         },
         "overrides": []
       },
@@ -91,10 +91,10 @@
         "orientation": "auto",
         "textMode": "value_and_name",
         "colorMode": "value",
-        "graphMode": "none",
+        "graphMode": "area",
         "justifyMode": "auto"
       },
-      "description": "Distinct gateways (\u2248 user machines) currently sending metrics."
+      "description": "Gateways that served at least one LLM request in the selected range."
     },
     {
       "id": 3,
@@ -117,7 +117,7 @@
             "uid": "${DS_PROM}"
           },
           "editorMode": "code",
-          "expr": "sum(increase(gw_llm_requests_total{job=\"otto-gateway\", instance=~\"$gateway\", surface=~\"$surface\", skill=~\"$skill\", client=~\"$client\"}[$__range]))",
+          "expr": "sum(increase(gw_llm_requests_total{job=\"otto-gateway\", instance=~\"$gateway_id\", surface=~\"$surface\", skill=~\"$skill\", client=~\"$client\"}[$__range])) or vector(0)",
           "range": true,
           "instant": false,
           "refId": "A",
@@ -129,7 +129,6 @@
           "color": {
             "mode": "palette-classic"
           },
-          "unit": "short",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -138,7 +137,8 @@
                 "value": null
               }
             ]
-          }
+          },
+          "unit": "short"
         },
         "overrides": []
       },
@@ -156,12 +156,12 @@
         "graphMode": "area",
         "justifyMode": "auto"
       },
-      "description": "Total chat requests across all surfaces in the selected time range."
+      "description": "Recognized LLM requests in the selected range."
     },
     {
       "id": 4,
       "type": "stat",
-      "title": "Active Sessions",
+      "title": "LLM Application Success",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROM}"
@@ -179,7 +179,7 @@
             "uid": "${DS_PROM}"
           },
           "editorMode": "code",
-          "expr": "sum(gw_sessions_active{job=\"otto-gateway\", instance=~\"$gateway\"})",
+          "expr": "100 * sum(increase(gw_llm_request_outcomes_total{job=\"otto-gateway\", instance=~\"$gateway_id\", surface=~\"$surface\", stream=~\"$streaming\", session_mode=~\"$session_mode\", outcome=\"success\"}[$__range])) / clamp_min(sum(increase(gw_llm_request_outcomes_total{job=\"otto-gateway\", instance=~\"$gateway_id\", surface=~\"$surface\", stream=~\"$streaming\", session_mode=~\"$session_mode\"}[$__range])), 1)",
           "range": true,
           "instant": false,
           "refId": "A",
@@ -189,18 +189,27 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "palette-classic"
+            "mode": "thresholds"
           },
-          "unit": "short",
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
+                "color": "red",
                 "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 95
+              },
+              {
+                "color": "green",
+                "value": 99
               }
             ]
-          }
+          },
+          "unit": "percent",
+          "decimals": 2
         },
         "overrides": []
       },
@@ -218,12 +227,12 @@
         "graphMode": "area",
         "justifyMode": "auto"
       },
-      "description": "Stateful (X-Session-Id) sessions currently registered fleet-wide."
+      "description": "Final application outcomes, including failures after HTTP 200 streaming headers."
     },
     {
       "id": 5,
       "type": "stat",
-      "title": "In-flight Requests",
+      "title": "Gateways with Failures",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROM}"
@@ -241,68 +250,7 @@
             "uid": "${DS_PROM}"
           },
           "editorMode": "code",
-          "expr": "sum(gw_http_in_flight_requests{job=\"otto-gateway\", instance=~\"$gateway\"})",
-          "range": true,
-          "instant": false,
-          "refId": "A",
-          "legendFormat": ""
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "unit": "short",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "orientation": "auto",
-        "textMode": "value_and_name",
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "auto"
-      }
-    },
-    {
-      "id": 6,
-      "type": "stat",
-      "title": "Error Rate",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROM}"
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 3,
-        "x": 12,
-        "y": 1
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROM}"
-          },
-          "editorMode": "code",
-          "expr": "100 * sum(rate(gw_http_requests_total{job=\"otto-gateway\", instance=~\"$gateway\", status=~\"5..\"}[$__rate_interval])) / clamp_min(sum(rate(gw_http_requests_total{job=\"otto-gateway\", instance=~\"$gateway\"}[$__rate_interval])), 0.001)",
+          "expr": "count(sum by(instance)(increase(gw_llm_request_outcomes_total{job=\"otto-gateway\", instance=~\"$gateway_id\", surface=~\"$surface\", stream=~\"$streaming\", session_mode=~\"$session_mode\", outcome!=\"success\"}[$__range])) > 0) or vector(0)",
           "range": true,
           "instant": false,
           "refId": "A",
@@ -314,8 +262,6 @@
           "color": {
             "mode": "thresholds"
           },
-          "unit": "percent",
-          "decimals": 2,
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -332,196 +278,8 @@
                 "value": 5
               }
             ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "orientation": "auto",
-        "textMode": "value_and_name",
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "auto"
-      },
-      "description": "5xx responses as a share of all HTTP traffic (5m)."
-    },
-    {
-      "id": 7,
-      "type": "stat",
-      "title": "Kiro Credits (range)",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROM}"
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 3,
-        "x": 15,
-        "y": 1
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROM}"
           },
-          "editorMode": "code",
-          "expr": "sum(increase(gw_kiro_credits_total{job=\"otto-gateway\", instance=~\"$gateway\"}[$__range]))",
-          "range": true,
-          "instant": false,
-          "refId": "A",
-          "legendFormat": ""
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "unit": "short",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "orientation": "auto",
-        "textMode": "value_and_name",
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "auto"
-      },
-      "description": "kiro credits consumed across the fleet in the range."
-    },
-    {
-      "id": 8,
-      "type": "stat",
-      "title": "Kiro Turns (range)",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROM}"
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 3,
-        "x": 18,
-        "y": 1
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROM}"
-          },
-          "editorMode": "code",
-          "expr": "sum(increase(gw_kiro_turns_total{job=\"otto-gateway\", instance=~\"$gateway\"}[$__range]))",
-          "range": true,
-          "instant": false,
-          "refId": "A",
-          "legendFormat": ""
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "unit": "short",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "orientation": "auto",
-        "textMode": "value_and_name",
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "auto"
-      }
-    },
-    {
-      "id": 9,
-      "type": "stat",
-      "title": "Unhealthy Gateways",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROM}"
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 3,
-        "x": 21,
-        "y": 1
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROM}"
-          },
-          "editorMode": "code",
-          "expr": "count(gw_pool_healthy{job=\"otto-gateway\", instance=~\"$gateway\"} == 0) or vector(0)",
-          "range": true,
-          "instant": false,
-          "refId": "A",
-          "legendFormat": ""
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "unit": "short",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 1
-              }
-            ]
-          }
+          "unit": "short"
         },
         "overrides": []
       },
@@ -539,12 +297,268 @@
         "graphMode": "none",
         "justifyMode": "auto"
       },
-      "description": "Gateways whose pool cannot currently serve."
+      "description": "Distinct gateways with at least one final non-success application outcome."
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Active Sessions",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 12,
+        "y": 1
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "sum(gw_sessions_active{job=\"otto-gateway\", instance=~\"$gateway_id\"}) or vector(0)",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "description": "Stateful X-Session-Id sessions currently registered."
+    },
+    {
+      "id": 7,
+      "type": "stat",
+      "title": "Pool Acquire p95",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 15,
+        "y": 1
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by(le)(rate(gw_pool_acquire_duration_seconds_bucket{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval])))",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "description": "95th percentile wait to acquire a warm worker slot."
+    },
+    {
+      "id": 8,
+      "type": "stat",
+      "title": "Kiro Credits (range)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 18,
+        "y": 1
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "sum(increase(gw_kiro_credits_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__range])) or vector(0)",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "description": "Kiro credits consumed in the selected range."
+    },
+    {
+      "id": 9,
+      "type": "stat",
+      "title": "Unhealthy or Stalled",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 21,
+        "y": 1
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "count(max by(instance)((gw_pool_healthy{job=\"otto-gateway\", instance=~\"$gateway_id\"} == 0) or ((time() - gw_pool_last_progress_timestamp_seconds{job=\"otto-gateway\", instance=~\"$gateway_id\"} > 300) and (gw_pool_last_progress_timestamp_seconds{job=\"otto-gateway\", instance=~\"$gateway_id\"} > 0)))) or vector(0)",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 5
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "description": "Gateways currently unhealthy or with no pool progress for more than five minutes."
     },
     {
       "id": 10,
       "type": "row",
-      "title": "Usage \u2014 Who & How Tools Are Used",
+      "title": "User Activity and Adoption",
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -557,14 +571,14 @@
     {
       "id": 11,
       "type": "timeseries",
-      "title": "LLM Requests by Surface",
+      "title": "Active Gateways Over Time",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROM}"
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
+        "w": 8,
         "x": 0,
         "y": 6
       },
@@ -575,7 +589,166 @@
             "uid": "${DS_PROM}"
           },
           "editorMode": "code",
-          "expr": "sum by(surface)(rate(gw_llm_requests_total{job=\"otto-gateway\", instance=~\"$gateway\", surface=~\"$surface\", skill=~\"$skill\", client=~\"$client\"}[$__rate_interval]))",
+          "expr": "count((sum by(instance)(rate(gw_llm_requests_total{job=\"otto-gateway\", instance=~\"$gateway_id\", surface=~\"$surface\", skill=~\"$skill\", client=~\"$client\"}[$__rate_interval]))) > 0)",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": "active gateways"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "gradientMode": "opacity",
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean",
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Gateways actively serving LLM traffic, not merely reporting inventory."
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Requests per Active Gateway",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 6
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(gw_llm_requests_total{job=\"otto-gateway\", instance=~\"$gateway_id\", surface=~\"$surface\", skill=~\"$skill\", client=~\"$client\"}[$__rate_interval])) / clamp_min(count((sum by(instance)(rate(gw_llm_requests_total{job=\"otto-gateway\", instance=~\"$gateway_id\", surface=~\"$surface\", skill=~\"$skill\", client=~\"$client\"}[$__rate_interval]))) > 0), 1)",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": "requests / active gateway"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "gradientMode": "opacity",
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean",
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Requests by Surface",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 6
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "sum by(surface)(rate(gw_llm_requests_total{job=\"otto-gateway\", instance=~\"$gateway_id\", surface=~\"$surface\", skill=~\"$skill\", client=~\"$client\"}[$__rate_interval]))",
           "range": true,
           "instant": false,
           "refId": "A",
@@ -587,7 +760,6 @@
           "color": {
             "mode": "palette-classic"
           },
-          "unit": "reqps",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -597,6 +769,7 @@
               }
             ]
           },
+          "unit": "reqps",
           "custom": {
             "drawStyle": "line",
             "lineInterpolation": "smooth",
@@ -677,93 +850,12 @@
           "mode": "multi",
           "sort": "desc"
         }
-      },
-      "description": "Request rate split by API surface (anthropic/openai/ollama)."
+      }
     },
     {
-      "id": 12,
-      "type": "timeseries",
-      "title": "LLM Requests by Skill",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROM}"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 6
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROM}"
-          },
-          "editorMode": "code",
-          "expr": "sum by(skill)(rate(gw_llm_requests_total{job=\"otto-gateway\", instance=~\"$gateway\", surface=~\"$surface\", skill=~\"$skill\", client=~\"$client\"}[$__rate_interval]))",
-          "range": true,
-          "instant": false,
-          "refId": "A",
-          "legendFormat": "{{skill}}"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "unit": "reqps",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "smooth",
-            "lineWidth": 2,
-            "fillOpacity": 25,
-            "gradientMode": "opacity",
-            "showPoints": "never",
-            "pointSize": 5,
-            "stacking": {
-              "mode": "normal",
-              "group": "A"
-            },
-            "axisPlacement": "auto",
-            "axisLabel": "",
-            "spanNulls": false
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true,
-          "calcs": [
-            "mean",
-            "lastNotNull",
-            "max"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "description": "Which invoking skill (X-GW-Skill / X-Flow-Name) is driving traffic."
-    },
-    {
-      "id": 13,
+      "id": 14,
       "type": "piechart",
-      "title": "Requests by Client",
+      "title": "Streaming vs Non-streaming",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROM}"
@@ -781,11 +873,11 @@
             "uid": "${DS_PROM}"
           },
           "editorMode": "code",
-          "expr": "sum by(client)(increase(gw_llm_requests_total{job=\"otto-gateway\", instance=~\"$gateway\", surface=~\"$surface\", skill=~\"$skill\", client=~\"$client\"}[$__range]))",
+          "expr": "sum by(stream)(increase(gw_llm_request_outcomes_total{job=\"otto-gateway\", instance=~\"$gateway_id\", surface=~\"$surface\", outcome=~\"$outcome\", stream=~\"$streaming\", session_mode=~\"$session_mode\"}[$__range]))",
           "range": true,
           "instant": false,
           "refId": "A",
-          "legendFormat": "{{client}}"
+          "legendFormat": "{{stream}}"
         }
       ],
       "fieldConfig": {
@@ -793,7 +885,6 @@
           "color": {
             "mode": "palette-classic"
           },
-          "unit": "short",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -802,7 +893,8 @@
                 "value": null
               }
             ]
-          }
+          },
+          "unit": "short"
         },
         "overrides": []
       },
@@ -831,13 +923,12 @@
         "displayLabels": [
           "percent"
         ]
-      },
-      "description": "X-GW-Client attribution over the range."
+      }
     },
     {
-      "id": 14,
+      "id": 15,
       "type": "piechart",
-      "title": "Requests by Model",
+      "title": "Stateful vs Stateless",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROM}"
@@ -855,11 +946,11 @@
             "uid": "${DS_PROM}"
           },
           "editorMode": "code",
-          "expr": "sum by(model)(increase(gw_model_requests_total{job=\"otto-gateway\", instance=~\"$gateway\", model=~\"$model\"}[$__range]))",
+          "expr": "sum by(session_mode)(increase(gw_llm_request_outcomes_total{job=\"otto-gateway\", instance=~\"$gateway_id\", surface=~\"$surface\", outcome=~\"$outcome\", stream=~\"$streaming\", session_mode=~\"$session_mode\"}[$__range]))",
           "range": true,
           "instant": false,
           "refId": "A",
-          "legendFormat": "{{model}}"
+          "legendFormat": "{{session_mode}}"
         }
       ],
       "fieldConfig": {
@@ -867,7 +958,6 @@
           "color": {
             "mode": "palette-classic"
           },
-          "unit": "short",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -876,7 +966,8 @@
                 "value": null
               }
             ]
-          }
+          },
+          "unit": "short"
         },
         "overrides": []
       },
@@ -905,20 +996,19 @@
         "displayLabels": [
           "percent"
         ]
-      },
-      "description": "Requested model (canonical Model; empty/auto\u2192auto)."
+      }
     },
     {
-      "id": 15,
-      "type": "barchart",
-      "title": "Requests by Gateway (across users)",
+      "id": 16,
+      "type": "timeseries",
+      "title": "Requests by Skill",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROM}"
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
+        "w": 6,
         "x": 12,
         "y": 14
       },
@@ -929,225 +1019,11 @@
             "uid": "${DS_PROM}"
           },
           "editorMode": "code",
-          "expr": "sum by(instance)(increase(gw_llm_requests_total{job=\"otto-gateway\", instance=~\"$gateway\", surface=~\"$surface\", skill=~\"$skill\", client=~\"$client\"}[$__range]))",
-          "range": false,
-          "instant": true,
-          "refId": "A",
-          "legendFormat": "{{instance}}"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "unit": "short",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "orientation": "horizontal",
-        "showValue": "auto",
-        "legend": {
-          "showLegend": false,
-          "displayMode": "list",
-          "placement": "bottom"
-        },
-        "xTickLabelRotation": 0,
-        "stacking": "none"
-      },
-      "description": "Total LLM requests per gateway (\u2248 per user) in the range."
-    },
-    {
-      "id": 16,
-      "type": "table",
-      "title": "Top Skills",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROM}"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 22
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROM}"
-          },
-          "editorMode": "code",
-          "expr": "topk(20, sum by(skill)(increase(gw_llm_requests_total{job=\"otto-gateway\", instance=~\"$gateway\", surface=~\"$surface\", skill=~\"$skill\", client=~\"$client\"}[$__range])))",
-          "range": false,
-          "instant": true,
-          "refId": "A",
-          "legendFormat": ""
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "unit": "short",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "showHeader": true,
-        "sortBy": [
-          {
-            "displayName": "Value",
-            "desc": true
-          }
-        ]
-      },
-      "description": "Busiest skills in the range.",
-      "transformations": [
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {
-              "Time": true
-            },
-            "renameByName": {
-              "skill": "Skill",
-              "Value": "Requests"
-            }
-          }
-        }
-      ]
-    },
-    {
-      "id": 17,
-      "type": "table",
-      "title": "Top Clients \u00d7 Surface",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROM}"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 22
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROM}"
-          },
-          "editorMode": "code",
-          "expr": "topk(20, sum by(client, surface)(increase(gw_llm_requests_total{job=\"otto-gateway\", instance=~\"$gateway\", surface=~\"$surface\", skill=~\"$skill\", client=~\"$client\"}[$__range])))",
-          "range": false,
-          "instant": true,
-          "refId": "A",
-          "legendFormat": ""
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "unit": "short",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "showHeader": true,
-        "sortBy": [
-          {
-            "displayName": "Requests",
-            "desc": true
-          }
-        ]
-      },
-      "transformations": [
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {
-              "Time": true
-            },
-            "renameByName": {
-              "client": "Client",
-              "surface": "Surface",
-              "Value": "Requests"
-            }
-          }
-        }
-      ]
-    },
-    {
-      "id": 18,
-      "type": "row",
-      "title": "HTTP Traffic & Latency",
-      "collapsed": false,
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 30
-      },
-      "panels": []
-    },
-    {
-      "id": 19,
-      "type": "timeseries",
-      "title": "Request Rate by Route",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROM}"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 31
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROM}"
-          },
-          "editorMode": "code",
-          "expr": "sum by(route)(rate(gw_http_requests_total{job=\"otto-gateway\", instance=~\"$gateway\"}[$__rate_interval]))",
+          "expr": "sum by(skill)(rate(gw_llm_requests_total{job=\"otto-gateway\", instance=~\"$gateway_id\", surface=~\"$surface\", skill=~\"$skill\", client=~\"$client\"}[$__rate_interval]))",
           "range": true,
           "instant": false,
           "refId": "A",
-          "legendFormat": "{{route}}"
+          "legendFormat": "{{skill}}"
         }
       ],
       "fieldConfig": {
@@ -1155,7 +1031,6 @@
           "color": {
             "mode": "palette-classic"
           },
-          "unit": "reqps",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -1165,6 +1040,7 @@
               }
             ]
           },
+          "unit": "reqps",
           "custom": {
             "drawStyle": "line",
             "lineInterpolation": "smooth",
@@ -1202,18 +1078,18 @@
       }
     },
     {
-      "id": 20,
-      "type": "timeseries",
-      "title": "Request Rate by Status",
+      "id": 17,
+      "type": "piechart",
+      "title": "Requests by Client",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROM}"
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 31
+        "w": 6,
+        "x": 18,
+        "y": 14
       },
       "targets": [
         {
@@ -1222,11 +1098,11 @@
             "uid": "${DS_PROM}"
           },
           "editorMode": "code",
-          "expr": "sum by(status)(rate(gw_http_requests_total{job=\"otto-gateway\", instance=~\"$gateway\"}[$__rate_interval]))",
+          "expr": "sum by(client)(increase(gw_llm_requests_total{job=\"otto-gateway\", instance=~\"$gateway_id\", surface=~\"$surface\", skill=~\"$skill\", client=~\"$client\"}[$__range]))",
           "range": true,
           "instant": false,
           "refId": "A",
-          "legendFormat": "{{status}}"
+          "legendFormat": "{{client}}"
         }
       ],
       "fieldConfig": {
@@ -1234,7 +1110,6 @@
           "color": {
             "mode": "palette-classic"
           },
-          "unit": "reqps",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -1244,56 +1119,50 @@
               }
             ]
           },
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "smooth",
-            "lineWidth": 2,
-            "fillOpacity": 25,
-            "gradientMode": "opacity",
-            "showPoints": "never",
-            "pointSize": 5,
-            "stacking": {
-              "mode": "normal",
-              "group": "A"
-            },
-            "axisPlacement": "auto",
-            "axisLabel": "",
-            "spanNulls": false
-          }
+          "unit": "short"
         },
         "overrides": []
       },
       "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "pieType": "donut",
+        "tooltip": {
+          "mode": "single",
+          "sort": "desc"
+        },
         "legend": {
           "displayMode": "table",
-          "placement": "bottom",
+          "placement": "right",
           "showLegend": true,
-          "calcs": [
-            "mean",
-            "lastNotNull",
-            "max"
+          "values": [
+            "value",
+            "percent"
           ]
         },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "description": "HTTP status distribution over time."
+        "displayLabels": [
+          "percent"
+        ]
+      }
     },
     {
-      "id": 21,
-      "type": "timeseries",
-      "title": "Latency p50 / p95 / p99",
+      "id": 18,
+      "type": "piechart",
+      "title": "Requests by Model",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROM}"
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
+        "w": 6,
         "x": 0,
-        "y": 39
+        "y": 22
       },
       "targets": [
         {
@@ -1302,35 +1171,11 @@
             "uid": "${DS_PROM}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.50, sum by(le)(rate(gw_http_request_duration_seconds_bucket{job=\"otto-gateway\", instance=~\"$gateway\"}[$__rate_interval])))",
+          "expr": "sum by(model)(increase(gw_model_requests_total{job=\"otto-gateway\", instance=~\"$gateway_id\", model=~\"$model\"}[$__range]))",
           "range": true,
           "instant": false,
           "refId": "A",
-          "legendFormat": "p50"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROM}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by(le)(rate(gw_http_request_duration_seconds_bucket{job=\"otto-gateway\", instance=~\"$gateway\"}[$__rate_interval])))",
-          "range": true,
-          "instant": false,
-          "refId": "B",
-          "legendFormat": "p95"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROM}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by(le)(rate(gw_http_request_duration_seconds_bucket{job=\"otto-gateway\", instance=~\"$gateway\"}[$__rate_interval])))",
-          "range": true,
-          "instant": false,
-          "refId": "C",
-          "legendFormat": "p99"
+          "legendFormat": "{{model}}"
         }
       ],
       "fieldConfig": {
@@ -1338,7 +1183,6 @@
           "color": {
             "mode": "palette-classic"
           },
-          "unit": "s",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -1348,6 +1192,264 @@
               }
             ]
           },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "pieType": "donut",
+        "tooltip": {
+          "mode": "single",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "values": [
+            "value",
+            "percent"
+          ]
+        },
+        "displayLabels": [
+          "percent"
+        ]
+      }
+    },
+    {
+      "id": 19,
+      "type": "barchart",
+      "title": "Top Gateways by Request Volume",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 6,
+        "y": 22
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "topk(20, sum by(instance)(increase(gw_llm_requests_total{job=\"otto-gateway\", instance=~\"$gateway_id\", surface=~\"$surface\", skill=~\"$skill\", client=~\"$client\"}[$__range])))",
+          "range": false,
+          "instant": true,
+          "refId": "A",
+          "legendFormat": "{{instance}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal",
+        "showValue": "auto",
+        "legend": {
+          "showLegend": false,
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "xTickLabelRotation": 0,
+        "stacking": "none"
+      }
+    },
+    {
+      "id": 20,
+      "type": "table",
+      "title": "Top Skills",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 12,
+        "y": 22
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "topk(20, sum by(skill)(increase(gw_llm_requests_total{job=\"otto-gateway\", instance=~\"$gateway_id\", surface=~\"$surface\", skill=~\"$skill\", client=~\"$client\"}[$__range])))",
+          "range": false,
+          "instant": true,
+          "refId": "A",
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "displayName": "Value",
+            "desc": true
+          }
+        ]
+      }
+    },
+    {
+      "id": 21,
+      "type": "table",
+      "title": "Top Clients by Surface",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 18,
+        "y": 22
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "topk(20, sum by(client, surface)(increase(gw_llm_requests_total{job=\"otto-gateway\", instance=~\"$gateway_id\", surface=~\"$surface\", skill=~\"$skill\", client=~\"$client\"}[$__range])))",
+          "range": false,
+          "instant": true,
+          "refId": "A",
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "displayName": "Value",
+            "desc": true
+          }
+        ]
+      }
+    },
+    {
+      "id": 22,
+      "type": "timeseries",
+      "title": "Attribution Completeness",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 30
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "100 * sum(rate(gw_llm_requests_total{job=\"otto-gateway\", instance=~\"$gateway_id\", surface=~\"$surface\", skill=\"none\", client=~\"$client\"}[$__rate_interval])) / clamp_min(sum(rate(gw_llm_requests_total{job=\"otto-gateway\", instance=~\"$gateway_id\", surface=~\"$surface\", skill=~\"$skill\", client=~\"$client\"}[$__rate_interval])), 0.001)",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": "skill missing %"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "100 * sum(rate(gw_llm_requests_total{job=\"otto-gateway\", instance=~\"$gateway_id\", surface=~\"$surface\", skill=~\"$skill\", client=\"none\"}[$__rate_interval])) / clamp_min(sum(rate(gw_llm_requests_total{job=\"otto-gateway\", instance=~\"$gateway_id\", surface=~\"$surface\", skill=~\"$skill\", client=~\"$client\"}[$__rate_interval])), 0.001)",
+          "range": true,
+          "instant": false,
+          "refId": "B",
+          "legendFormat": "client missing %"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
           "custom": {
             "drawStyle": "line",
             "lineInterpolation": "smooth",
@@ -1383,12 +1485,25 @@
           "sort": "desc"
         }
       },
-      "description": "Request duration quantiles."
+      "description": "Share of traffic attributed to skill=\"none\" or client=\"none\"."
     },
     {
-      "id": 22,
-      "type": "heatmap",
-      "title": "Latency Distribution (heatmap)",
+      "id": 23,
+      "type": "row",
+      "title": "User Experience and Failures",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 37
+      },
+      "panels": []
+    },
+    {
+      "id": 24,
+      "type": "timeseries",
+      "title": "Application Outcomes Over Time",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROM}"
@@ -1396,8 +1511,8 @@
       "gridPos": {
         "h": 8,
         "w": 12,
-        "x": 12,
-        "y": 39
+        "x": 0,
+        "y": 38
       },
       "targets": [
         {
@@ -1406,7 +1521,421 @@
             "uid": "${DS_PROM}"
           },
           "editorMode": "code",
-          "expr": "sum by(le)(rate(gw_http_request_duration_seconds_bucket{job=\"otto-gateway\", instance=~\"$gateway\"}[$__rate_interval]))",
+          "expr": "100 * sum(rate(gw_llm_request_outcomes_total{job=\"otto-gateway\", instance=~\"$gateway_id\", surface=~\"$surface\", stream=~\"$streaming\", session_mode=~\"$session_mode\", outcome=\"success\"}[$__rate_interval])) / clamp_min(sum(rate(gw_llm_request_outcomes_total{job=\"otto-gateway\", instance=~\"$gateway_id\", surface=~\"$surface\", stream=~\"$streaming\", session_mode=~\"$session_mode\"}[$__rate_interval])), 0.001)",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": "success %"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "100 * sum(rate(gw_llm_request_outcomes_total{job=\"otto-gateway\", instance=~\"$gateway_id\", surface=~\"$surface\", stream=~\"$streaming\", session_mode=~\"$session_mode\", outcome!=\"success\"}[$__rate_interval])) / clamp_min(sum(rate(gw_llm_request_outcomes_total{job=\"otto-gateway\", instance=~\"$gateway_id\", surface=~\"$surface\", stream=~\"$streaming\", session_mode=~\"$session_mode\"}[$__rate_interval])), 0.001)",
+          "range": true,
+          "instant": false,
+          "refId": "B",
+          "legendFormat": "failure %"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "gradientMode": "opacity",
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean",
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Application-level completion, including failures after an HTTP 200 stream begins."
+    },
+    {
+      "id": 25,
+      "type": "timeseries",
+      "title": "Outcomes by Type",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 12,
+        "y": 38
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "sum by(outcome)(rate(gw_llm_request_outcomes_total{job=\"otto-gateway\", instance=~\"$gateway_id\", surface=~\"$surface\", outcome=~\"$outcome\", stream=~\"$streaming\", session_mode=~\"$session_mode\"}[$__rate_interval]))",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": "{{outcome}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 25,
+            "gradientMode": "opacity",
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean",
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 26,
+      "type": "timeseries",
+      "title": "Outcomes by Surface",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 18,
+        "y": 38
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "sum by(surface, outcome)(rate(gw_llm_request_outcomes_total{job=\"otto-gateway\", instance=~\"$gateway_id\", surface=~\"$surface\", outcome=~\"$outcome\", stream=~\"$streaming\", session_mode=~\"$session_mode\"}[$__rate_interval]))",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": "{{surface}} / {{outcome}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "gradientMode": "opacity",
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean",
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 27,
+      "type": "barchart",
+      "title": "Top Affected Gateways",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 46
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "topk(20, sum by(instance)(increase(gw_llm_request_outcomes_total{job=\"otto-gateway\", instance=~\"$gateway_id\", surface=~\"$surface\", stream=~\"$streaming\", session_mode=~\"$session_mode\", outcome!=\"success\"}[$__range])))",
+          "range": false,
+          "instant": true,
+          "refId": "A",
+          "legendFormat": "{{instance}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal",
+        "showValue": "auto",
+        "legend": {
+          "showLegend": false,
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "xTickLabelRotation": 0,
+        "stacking": "none"
+      },
+      "description": "Gateways with the most final application failures in the selected range."
+    },
+    {
+      "id": 28,
+      "type": "timeseries",
+      "title": "HTTP Latency p50 / p95 / p99",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 46
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.50, sum by(le)(rate(gw_http_request_duration_seconds_bucket{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval])))",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": "p50"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by(le)(rate(gw_http_request_duration_seconds_bucket{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval])))",
+          "range": true,
+          "instant": false,
+          "refId": "B",
+          "legendFormat": "p95"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by(le)(rate(gw_http_request_duration_seconds_bucket{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval])))",
+          "range": true,
+          "instant": false,
+          "refId": "C",
+          "legendFormat": "p99"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "gradientMode": "opacity",
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean",
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 29,
+      "type": "heatmap",
+      "title": "HTTP Latency Distribution",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 46
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "sum by(le)(rate(gw_http_request_duration_seconds_bucket{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval]))",
           "range": true,
           "instant": false,
           "refId": "A",
@@ -1419,7 +1948,6 @@
           "color": {
             "mode": "palette-classic"
           },
-          "unit": "s",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -1428,7 +1956,8 @@
                 "value": null
               }
             ]
-          }
+          },
+          "unit": "s"
         },
         "overrides": []
       },
@@ -1450,464 +1979,12 @@
         "legend": {
           "show": true
         }
-      },
-      "description": "Full request-latency histogram over time."
-    },
-    {
-      "id": 23,
-      "type": "row",
-      "title": "Kiro Engine Usage",
-      "collapsed": false,
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 47
-      },
-      "panels": []
-    },
-    {
-      "id": 24,
-      "type": "timeseries",
-      "title": "Credits & Turns Rate",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROM}"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 48
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROM}"
-          },
-          "editorMode": "code",
-          "expr": "sum(rate(gw_kiro_credits_total{job=\"otto-gateway\", instance=~\"$gateway\"}[$__rate_interval]))",
-          "range": true,
-          "instant": false,
-          "refId": "A",
-          "legendFormat": "credits/s"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROM}"
-          },
-          "editorMode": "code",
-          "expr": "sum(rate(gw_kiro_turns_total{job=\"otto-gateway\", instance=~\"$gateway\"}[$__rate_interval]))",
-          "range": true,
-          "instant": false,
-          "refId": "B",
-          "legendFormat": "turns/s"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "unit": "short",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "smooth",
-            "lineWidth": 2,
-            "fillOpacity": 12,
-            "gradientMode": "opacity",
-            "showPoints": "never",
-            "pointSize": 5,
-            "stacking": {
-              "mode": "none",
-              "group": "A"
-            },
-            "axisPlacement": "auto",
-            "axisLabel": "",
-            "spanNulls": false
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true,
-          "calcs": [
-            "mean",
-            "lastNotNull",
-            "max"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
       }
-    },
-    {
-      "id": 25,
-      "type": "timeseries",
-      "title": "Turn Duration p50 / p95",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROM}"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 48
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROM}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.50, sum by(le)(rate(gw_kiro_turn_duration_seconds_bucket{job=\"otto-gateway\", instance=~\"$gateway\"}[$__rate_interval])))",
-          "range": true,
-          "instant": false,
-          "refId": "A",
-          "legendFormat": "p50"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROM}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by(le)(rate(gw_kiro_turn_duration_seconds_bucket{job=\"otto-gateway\", instance=~\"$gateway\"}[$__rate_interval])))",
-          "range": true,
-          "instant": false,
-          "refId": "B",
-          "legendFormat": "p95"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "unit": "s",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "smooth",
-            "lineWidth": 2,
-            "fillOpacity": 12,
-            "gradientMode": "opacity",
-            "showPoints": "never",
-            "pointSize": 5,
-            "stacking": {
-              "mode": "none",
-              "group": "A"
-            },
-            "axisPlacement": "auto",
-            "axisLabel": "",
-            "spanNulls": false
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true,
-          "calcs": [
-            "mean",
-            "lastNotNull",
-            "max"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "description": "kiro turn wall-time quantiles."
-    },
-    {
-      "id": 26,
-      "type": "gauge",
-      "title": "Context Window Usage p95",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROM}"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 6,
-        "x": 0,
-        "y": 56
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROM}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by(le)(rate(gw_kiro_context_usage_percent_bucket{job=\"otto-gateway\", instance=~\"$gateway\"}[$__rate_interval])))",
-          "range": true,
-          "instant": false,
-          "refId": "A",
-          "legendFormat": "p95 ctx %"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "unit": "percent",
-          "min": 0,
-          "max": 100,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 70
-              },
-              {
-                "color": "red",
-                "value": 90
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showThresholdLabels": false,
-        "showThresholdMarkers": true
-      },
-      "description": "End-of-turn context utilization (higher \u21d2 closer to a recycle)."
-    },
-    {
-      "id": 27,
-      "type": "timeseries",
-      "title": "Context Usage p50 / p95",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROM}"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 6,
-        "y": 56
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROM}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.50, sum by(le)(rate(gw_kiro_context_usage_percent_bucket{job=\"otto-gateway\", instance=~\"$gateway\"}[$__rate_interval])))",
-          "range": true,
-          "instant": false,
-          "refId": "A",
-          "legendFormat": "p50"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROM}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by(le)(rate(gw_kiro_context_usage_percent_bucket{job=\"otto-gateway\", instance=~\"$gateway\"}[$__rate_interval])))",
-          "range": true,
-          "instant": false,
-          "refId": "B",
-          "legendFormat": "p95"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "unit": "percent",
-          "min": 0,
-          "max": 100,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 70
-              },
-              {
-                "color": "red",
-                "value": 90
-              }
-            ]
-          },
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "smooth",
-            "lineWidth": 2,
-            "fillOpacity": 12,
-            "gradientMode": "opacity",
-            "showPoints": "never",
-            "pointSize": 5,
-            "stacking": {
-              "mode": "none",
-              "group": "A"
-            },
-            "axisPlacement": "auto",
-            "axisLabel": "",
-            "spanNulls": false
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true,
-          "calcs": [
-            "mean",
-            "lastNotNull",
-            "max"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      }
-    },
-    {
-      "id": 28,
-      "type": "table",
-      "title": "MCP Server Init Outcomes",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROM}"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 6,
-        "x": 18,
-        "y": 56
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROM}"
-          },
-          "editorMode": "code",
-          "expr": "sum by(server, result)(increase(gw_kiro_mcp_server_init_total{job=\"otto-gateway\", instance=~\"$gateway\"}[$__range]))",
-          "range": false,
-          "instant": true,
-          "refId": "A",
-          "legendFormat": ""
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "unit": "short",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "showHeader": true,
-        "sortBy": [
-          {
-            "displayName": "Count",
-            "desc": true
-          }
-        ]
-      },
-      "description": "ok/fail init counts per MCP server.",
-      "transformations": [
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {
-              "Time": true
-            },
-            "renameByName": {
-              "server": "Server",
-              "result": "Result",
-              "Value": "Count"
-            }
-          }
-        }
-      ]
-    },
-    {
-      "id": 29,
-      "type": "row",
-      "title": "Pool & Session Health",
-      "collapsed": false,
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 64
-      },
-      "panels": []
     },
     {
       "id": 30,
       "type": "timeseries",
-      "title": "Pool Slots (alive / busy) by Gateway",
+      "title": "HTTP Request Rate by Status",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROM}"
@@ -1916,7 +1993,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 65
+        "y": 54
       },
       "targets": [
         {
@@ -1925,23 +2002,11 @@
             "uid": "${DS_PROM}"
           },
           "editorMode": "code",
-          "expr": "sum by(instance)(gw_pool_alive{job=\"otto-gateway\", instance=~\"$gateway\"})",
+          "expr": "sum by(status)(rate(gw_http_requests_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval]))",
           "range": true,
           "instant": false,
           "refId": "A",
-          "legendFormat": "alive {{instance}}"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROM}"
-          },
-          "editorMode": "code",
-          "expr": "sum by(instance)(gw_pool_busy{job=\"otto-gateway\", instance=~\"$gateway\"})",
-          "range": true,
-          "instant": false,
-          "refId": "B",
-          "legendFormat": "busy {{instance}}"
+          "legendFormat": "{{status}}"
         }
       ],
       "fieldConfig": {
@@ -1949,7 +2014,6 @@
           "color": {
             "mode": "palette-classic"
           },
-          "unit": "short",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -1959,16 +2023,17 @@
               }
             ]
           },
+          "unit": "reqps",
           "custom": {
             "drawStyle": "line",
             "lineInterpolation": "smooth",
             "lineWidth": 2,
-            "fillOpacity": 12,
+            "fillOpacity": 25,
             "gradientMode": "opacity",
             "showPoints": "never",
             "pointSize": 5,
             "stacking": {
-              "mode": "none",
+              "mode": "normal",
               "group": "A"
             },
             "axisPlacement": "auto",
@@ -1993,13 +2058,12 @@
           "mode": "multi",
           "sort": "desc"
         }
-      },
-      "description": "Warm slots alive vs checked-out, per gateway."
+      }
     },
     {
       "id": 31,
       "type": "timeseries",
-      "title": "Active Sessions by Gateway",
+      "title": "HTTP Request Rate by Route",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROM}"
@@ -2008,7 +2072,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 65
+        "y": 54
       },
       "targets": [
         {
@@ -2017,11 +2081,11 @@
             "uid": "${DS_PROM}"
           },
           "editorMode": "code",
-          "expr": "sum by(instance)(gw_sessions_active{job=\"otto-gateway\", instance=~\"$gateway\"})",
+          "expr": "sum by(route)(rate(gw_http_requests_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval]))",
           "range": true,
           "instant": false,
           "refId": "A",
-          "legendFormat": "{{instance}}"
+          "legendFormat": "{{route}}"
         }
       ],
       "fieldConfig": {
@@ -2029,7 +2093,6 @@
           "color": {
             "mode": "palette-classic"
           },
-          "unit": "short",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -2039,16 +2102,17 @@
               }
             ]
           },
+          "unit": "reqps",
           "custom": {
             "drawStyle": "line",
             "lineInterpolation": "smooth",
             "lineWidth": 2,
-            "fillOpacity": 12,
+            "fillOpacity": 25,
             "gradientMode": "opacity",
             "showPoints": "never",
             "pointSize": 5,
             "stacking": {
-              "mode": "none",
+              "mode": "normal",
               "group": "A"
             },
             "axisPlacement": "auto",
@@ -2077,481 +2141,30 @@
     },
     {
       "id": 32,
-      "type": "timeseries",
-      "title": "Session Lifecycle Rate",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROM}"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 73
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROM}"
-          },
-          "editorMode": "code",
-          "expr": "sum(rate(gw_sessions_created_total{job=\"otto-gateway\", instance=~\"$gateway\"}[$__rate_interval]))",
-          "range": true,
-          "instant": false,
-          "refId": "A",
-          "legendFormat": "created/s"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROM}"
-          },
-          "editorMode": "code",
-          "expr": "sum(rate(gw_sessions_recycled_total{job=\"otto-gateway\", instance=~\"$gateway\"}[$__rate_interval]))",
-          "range": true,
-          "instant": false,
-          "refId": "B",
-          "legendFormat": "recycled/s"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROM}"
-          },
-          "editorMode": "code",
-          "expr": "sum(rate(gw_sessions_reaped_total{job=\"otto-gateway\", instance=~\"$gateway\"}[$__rate_interval]))",
-          "range": true,
-          "instant": false,
-          "refId": "C",
-          "legendFormat": "reaped/s"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "unit": "short",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "smooth",
-            "lineWidth": 2,
-            "fillOpacity": 12,
-            "gradientMode": "opacity",
-            "showPoints": "never",
-            "pointSize": 5,
-            "stacking": {
-              "mode": "none",
-              "group": "A"
-            },
-            "axisPlacement": "auto",
-            "axisLabel": "",
-            "spanNulls": false
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true,
-          "calcs": [
-            "mean",
-            "lastNotNull",
-            "max"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "description": "Created / recycled (context threshold) / reaped (idle)."
-    },
-    {
-      "id": 33,
-      "type": "timeseries",
-      "title": "Slot Respawns, Recycles & Ping Escalations",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROM}"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 73
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROM}"
-          },
-          "editorMode": "code",
-          "expr": "sum(rate(gw_pool_slot_respawns_total{job=\"otto-gateway\", instance=~\"$gateway\"}[$__rate_interval]))",
-          "range": true,
-          "instant": false,
-          "refId": "A",
-          "legendFormat": "respawns/s"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROM}"
-          },
-          "editorMode": "code",
-          "expr": "sum(rate(gw_pool_slot_recycles_total{job=\"otto-gateway\", instance=~\"$gateway\"}[$__rate_interval]))",
-          "range": true,
-          "instant": false,
-          "refId": "B",
-          "legendFormat": "scheduled recycles/s"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROM}"
-          },
-          "editorMode": "code",
-          "expr": "sum(rate(gw_acp_ping_escalations_total{job=\"otto-gateway\", instance=~\"$gateway\"}[$__rate_interval]))",
-          "range": true,
-          "instant": false,
-          "refId": "C",
-          "legendFormat": "ping escalations/s"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROM}"
-          },
-          "editorMode": "code",
-          "expr": "sum(rate(gw_acp_ping_suspend_skips_total{job=\"otto-gateway\", instance=~\"$gateway\"}[$__rate_interval]))",
-          "range": true,
-          "instant": false,
-          "refId": "D",
-          "legendFormat": "suspend skips/s"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "unit": "short",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "smooth",
-            "lineWidth": 2,
-            "fillOpacity": 12,
-            "gradientMode": "opacity",
-            "showPoints": "never",
-            "pointSize": 5,
-            "stacking": {
-              "mode": "none",
-              "group": "A"
-            },
-            "axisPlacement": "auto",
-            "axisLabel": "",
-            "spanNulls": false
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true,
-          "calcs": [
-            "mean",
-            "lastNotNull",
-            "max"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "description": "Respawns are unplanned crash recovery; scheduled recycles are turn-budget maintenance (KIRO_WORKER_MAX_TURNS) \u2014 spikes in respawns flag flapping workers."
-    },
-    {
-      "id": 34,
-      "type": "table",
-      "title": "Gateway Health Matrix",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROM}"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 24,
-        "x": 0,
-        "y": 81
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROM}"
-          },
-          "editorMode": "code",
-          "expr": "gw_pool_healthy{job=\"otto-gateway\", instance=~\"$gateway\"}",
-          "range": false,
-          "instant": true,
-          "refId": "A",
-          "legendFormat": "healthy"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROM}"
-          },
-          "editorMode": "code",
-          "expr": "gw_pool_spawn_failing{job=\"otto-gateway\", instance=~\"$gateway\"}",
-          "range": false,
-          "instant": true,
-          "refId": "B",
-          "legendFormat": "spawn_failing"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROM}"
-          },
-          "editorMode": "code",
-          "expr": "gw_pool_alive{job=\"otto-gateway\", instance=~\"$gateway\"}",
-          "range": false,
-          "instant": true,
-          "refId": "C",
-          "legendFormat": "alive"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROM}"
-          },
-          "editorMode": "code",
-          "expr": "gw_pool_busy{job=\"otto-gateway\", instance=~\"$gateway\"}",
-          "range": false,
-          "instant": true,
-          "refId": "D",
-          "legendFormat": "busy"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROM}"
-          },
-          "editorMode": "code",
-          "expr": "gw_pool_size{job=\"otto-gateway\", instance=~\"$gateway\"}",
-          "range": false,
-          "instant": true,
-          "refId": "E",
-          "legendFormat": "size"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROM}"
-          },
-          "editorMode": "code",
-          "expr": "gw_sessions_active{job=\"otto-gateway\", instance=~\"$gateway\"}",
-          "range": false,
-          "instant": true,
-          "refId": "F",
-          "legendFormat": "sessions"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "custom": {
-            "align": "auto",
-            "cellOptions": {
-              "type": "auto"
-            }
-          }
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Healthy"
-            },
-            "properties": [
-              {
-                "id": "custom.cellOptions",
-                "value": {
-                  "type": "color-background"
-                }
-              },
-              {
-                "id": "thresholds",
-                "value": {
-                  "mode": "absolute",
-                  "steps": [
-                    {
-                      "color": "red",
-                      "value": null
-                    },
-                    {
-                      "color": "green",
-                      "value": 1
-                    }
-                  ]
-                }
-              },
-              {
-                "id": "mappings",
-                "value": [
-                  {
-                    "type": "value",
-                    "options": {
-                      "0": {
-                        "text": "DOWN"
-                      },
-                      "1": {
-                        "text": "OK"
-                      }
-                    }
-                  }
-                ]
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Spawn Failing"
-            },
-            "properties": [
-              {
-                "id": "custom.cellOptions",
-                "value": {
-                  "type": "color-background"
-                }
-              },
-              {
-                "id": "thresholds",
-                "value": {
-                  "mode": "absolute",
-                  "steps": [
-                    {
-                      "color": "green",
-                      "value": null
-                    },
-                    {
-                      "color": "red",
-                      "value": 1
-                    }
-                  ]
-                }
-              },
-              {
-                "id": "mappings",
-                "value": [
-                  {
-                    "type": "value",
-                    "options": {
-                      "0": {
-                        "text": "no"
-                      },
-                      "1": {
-                        "text": "YES"
-                      }
-                    }
-                  }
-                ]
-              }
-            ]
-          }
-        ]
-      },
-      "options": {
-        "showHeader": true,
-        "sortBy": [
-          {
-            "displayName": "healthy",
-            "desc": false
-          }
-        ]
-      },
-      "description": "One row per gateway \u2014 current pool posture at a glance.",
-      "transformations": [
-        {
-          "id": "merge",
-          "options": {}
-        },
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {
-              "Time": true,
-              "job": true,
-              "__name__": true,
-              "commit": true,
-              "version": true,
-              "gateway_id": true
-            },
-            "renameByName": {
-              "instance": "Gateway",
-              "Value #A": "Healthy",
-              "Value #B": "Spawn Failing",
-              "Value #C": "Alive",
-              "Value #D": "Busy",
-              "Value #E": "Size",
-              "Value #F": "Sessions"
-            }
-          }
-        }
-      ]
-    },
-    {
-      "id": 35,
       "type": "row",
-      "title": "Resource Usage \u2014 Gateway Process & Workers",
+      "title": "Gateway Capacity and Pool Health",
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 89
+        "y": 62
       },
       "panels": []
     },
     {
-      "id": 36,
+      "id": 33,
       "type": "timeseries",
-      "title": "Gateway Process CPU %",
+      "title": "Pool Utilization by Gateway",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROM}"
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
+        "w": 8,
         "x": 0,
-        "y": 90
+        "y": 63
       },
       "targets": [
         {
@@ -2560,7 +2173,7 @@
             "uid": "${DS_PROM}"
           },
           "editorMode": "code",
-          "expr": "rate(process_cpu_seconds_total{job=\"otto-gateway\", instance=~\"$gateway\"}[$__rate_interval]) * 100",
+          "expr": "100 * gw_pool_busy{job=\"otto-gateway\", instance=~\"$gateway_id\"} / clamp_min(gw_pool_size{job=\"otto-gateway\", instance=~\"$gateway_id\"}, 1)",
           "range": true,
           "instant": false,
           "refId": "A",
@@ -2572,7 +2185,6 @@
           "color": {
             "mode": "palette-classic"
           },
-          "unit": "percent",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -2582,6 +2194,270 @@
               }
             ]
           },
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "gradientMode": "opacity",
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean",
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 34,
+      "type": "timeseries",
+      "title": "Pool Acquire p50 / p95 / p99",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 63
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.50, sum by(le)(rate(gw_pool_acquire_duration_seconds_bucket{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval])))",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": "p50"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by(le)(rate(gw_pool_acquire_duration_seconds_bucket{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval])))",
+          "range": true,
+          "instant": false,
+          "refId": "B",
+          "legendFormat": "p95"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by(le)(rate(gw_pool_acquire_duration_seconds_bucket{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval])))",
+          "range": true,
+          "instant": false,
+          "refId": "C",
+          "legendFormat": "p99"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "gradientMode": "opacity",
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean",
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 35,
+      "type": "timeseries",
+      "title": "Pool Acquire Results",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 63
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "sum by(result)(rate(gw_pool_acquire_duration_seconds_count{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval]))",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": "{{result}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 25,
+            "gradientMode": "opacity",
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean",
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 36,
+      "type": "timeseries",
+      "title": "Seconds Since Pool Progress",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 71
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "(time() - gw_pool_last_progress_timestamp_seconds{job=\"otto-gateway\", instance=~\"$gateway_id\"}) and (gw_pool_last_progress_timestamp_seconds{job=\"otto-gateway\", instance=~\"$gateway_id\"} > 0)",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": "{{instance}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "s",
           "custom": {
             "drawStyle": "line",
             "lineInterpolation": "smooth",
@@ -2617,21 +2493,21 @@
           "sort": "desc"
         }
       },
-      "description": "Whole-gateway-process CPU (does not include worker subprocesses)."
+      "description": "Zero timestamps are excluded; never-initialized pools do not appear as epoch-sized ages."
     },
     {
       "id": 37,
       "type": "timeseries",
-      "title": "Gateway Process RSS",
+      "title": "Active Sessions by Gateway",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROM}"
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 90
+        "w": 8,
+        "x": 8,
+        "y": 71
       },
       "targets": [
         {
@@ -2640,7 +2516,7 @@
             "uid": "${DS_PROM}"
           },
           "editorMode": "code",
-          "expr": "process_resident_memory_bytes{job=\"otto-gateway\", instance=~\"$gateway\"}",
+          "expr": "gw_sessions_active{job=\"otto-gateway\", instance=~\"$gateway_id\"}",
           "range": true,
           "instant": false,
           "refId": "A",
@@ -2652,7 +2528,6 @@
           "color": {
             "mode": "palette-classic"
           },
-          "unit": "bytes",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -2662,6 +2537,7 @@
               }
             ]
           },
+          "unit": "short",
           "custom": {
             "drawStyle": "line",
             "lineInterpolation": "smooth",
@@ -2701,16 +2577,16 @@
     {
       "id": 38,
       "type": "timeseries",
-      "title": "Per-Worker CPU %",
+      "title": "Session Lifecycle Rate",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROM}"
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 98
+        "w": 8,
+        "x": 16,
+        "y": 71
       },
       "targets": [
         {
@@ -2719,11 +2595,35 @@
             "uid": "${DS_PROM}"
           },
           "editorMode": "code",
-          "expr": "rate(gw_worker_cpu_seconds_total{job=\"otto-gateway\", instance=~\"$gateway\"}[$__rate_interval]) * 100",
+          "expr": "sum(rate(gw_sessions_created_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval]))",
           "range": true,
           "instant": false,
           "refId": "A",
-          "legendFormat": "{{instance}} / {{slot}}"
+          "legendFormat": "created/s"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(gw_sessions_recycled_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval]))",
+          "range": true,
+          "instant": false,
+          "refId": "B",
+          "legendFormat": "recycled/s"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(gw_sessions_reaped_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval]))",
+          "range": true,
+          "instant": false,
+          "refId": "C",
+          "legendFormat": "reaped/s"
         }
       ],
       "fieldConfig": {
@@ -2731,7 +2631,6 @@
           "color": {
             "mode": "palette-classic"
           },
-          "unit": "percent",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -2741,6 +2640,7 @@
               }
             ]
           },
+          "unit": "short",
           "custom": {
             "drawStyle": "line",
             "lineInterpolation": "smooth",
@@ -2775,22 +2675,21 @@
           "mode": "multi",
           "sort": "desc"
         }
-      },
-      "description": "Each kiro-cli worker subprocess, by gateway and slot."
+      }
     },
     {
       "id": 39,
       "type": "timeseries",
-      "title": "Per-Worker RSS",
+      "title": "Respawns, Recycles and Ping Escalations",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROM}"
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 98
+        "w": 16,
+        "x": 0,
+        "y": 79
       },
       "targets": [
         {
@@ -2799,11 +2698,47 @@
             "uid": "${DS_PROM}"
           },
           "editorMode": "code",
-          "expr": "gw_worker_resident_memory_bytes{job=\"otto-gateway\", instance=~\"$gateway\"}",
+          "expr": "sum(rate(gw_pool_slot_respawns_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval]))",
           "range": true,
           "instant": false,
           "refId": "A",
-          "legendFormat": "{{instance}} / {{slot}}"
+          "legendFormat": "respawns/s"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(gw_pool_slot_recycles_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval]))",
+          "range": true,
+          "instant": false,
+          "refId": "B",
+          "legendFormat": "scheduled recycles/s"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(gw_acp_ping_escalations_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval]))",
+          "range": true,
+          "instant": false,
+          "refId": "C",
+          "legendFormat": "ping escalations/s"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(gw_acp_ping_suspend_skips_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval]))",
+          "range": true,
+          "instant": false,
+          "refId": "D",
+          "legendFormat": "suspend skips/s"
         }
       ],
       "fieldConfig": {
@@ -2811,7 +2746,6 @@
           "color": {
             "mode": "palette-classic"
           },
-          "unit": "bytes",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -2821,6 +2755,7 @@
               }
             ]
           },
+          "unit": "short",
           "custom": {
             "drawStyle": "line",
             "lineInterpolation": "smooth",
@@ -2860,16 +2795,16 @@
     {
       "id": 40,
       "type": "timeseries",
-      "title": "Open File Descriptors",
+      "title": "In-flight HTTP Requests",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROM}"
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 106
+        "w": 8,
+        "x": 16,
+        "y": 79
       },
       "targets": [
         {
@@ -2878,7 +2813,7 @@
             "uid": "${DS_PROM}"
           },
           "editorMode": "code",
-          "expr": "process_open_fds{job=\"otto-gateway\", instance=~\"$gateway\"}",
+          "expr": "gw_http_in_flight_requests{job=\"otto-gateway\", instance=~\"$gateway_id\"}",
           "range": true,
           "instant": false,
           "refId": "A",
@@ -2890,7 +2825,6 @@
           "color": {
             "mode": "palette-classic"
           },
-          "unit": "short",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -2900,6 +2834,7 @@
               }
             ]
           },
+          "unit": "short",
           "custom": {
             "drawStyle": "line",
             "lineInterpolation": "smooth",
@@ -2938,17 +2873,17 @@
     },
     {
       "id": 41,
-      "type": "timeseries",
-      "title": "Goroutines (if go_* shipped)",
+      "type": "table",
+      "title": "Gateway Health Matrix",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROM}"
       },
       "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 106
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 87
       },
       "targets": [
         {
@@ -2957,11 +2892,95 @@
             "uid": "${DS_PROM}"
           },
           "editorMode": "code",
-          "expr": "go_goroutines{job=\"otto-gateway\", instance=~\"$gateway\"}",
-          "range": true,
-          "instant": false,
+          "expr": "gw_pool_healthy{job=\"otto-gateway\", instance=~\"$gateway_id\"}",
+          "range": false,
+          "instant": true,
           "refId": "A",
-          "legendFormat": "{{instance}}"
+          "legendFormat": "healthy"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "gw_pool_spawn_failing{job=\"otto-gateway\", instance=~\"$gateway_id\"}",
+          "range": false,
+          "instant": true,
+          "refId": "B",
+          "legendFormat": "spawn failing"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "gw_pool_alive{job=\"otto-gateway\", instance=~\"$gateway_id\"}",
+          "range": false,
+          "instant": true,
+          "refId": "C",
+          "legendFormat": "alive"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "gw_pool_busy{job=\"otto-gateway\", instance=~\"$gateway_id\"}",
+          "range": false,
+          "instant": true,
+          "refId": "D",
+          "legendFormat": "busy"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "gw_pool_size{job=\"otto-gateway\", instance=~\"$gateway_id\"}",
+          "range": false,
+          "instant": true,
+          "refId": "E",
+          "legendFormat": "size"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "gw_sessions_active{job=\"otto-gateway\", instance=~\"$gateway_id\"}",
+          "range": false,
+          "instant": true,
+          "refId": "F",
+          "legendFormat": "sessions"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "(time() - gw_pool_last_progress_timestamp_seconds{job=\"otto-gateway\", instance=~\"$gateway_id\"}) and (gw_pool_last_progress_timestamp_seconds{job=\"otto-gateway\", instance=~\"$gateway_id\"} > 0)",
+          "range": false,
+          "instant": true,
+          "refId": "G",
+          "legendFormat": "progress age"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "(time() - gw_pool_last_spawn_error_timestamp_seconds{job=\"otto-gateway\", instance=~\"$gateway_id\"}) and (gw_pool_last_spawn_error_timestamp_seconds{job=\"otto-gateway\", instance=~\"$gateway_id\"} > 0)",
+          "range": false,
+          "instant": true,
+          "refId": "H",
+          "legendFormat": "spawn error age"
         }
       ],
       "fieldConfig": {
@@ -2969,7 +2988,6 @@
           "color": {
             "mode": "palette-classic"
           },
-          "unit": "short",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -2979,6 +2997,1252 @@
               }
             ]
           },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "displayName": "healthy",
+            "desc": true
+          }
+        ]
+      },
+      "description": "Current serving posture per gateway. Timestamp ages exclude zero values.",
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        }
+      ]
+    },
+    {
+      "id": 42,
+      "type": "row",
+      "title": "Kiro Cost and Context",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 96
+      },
+      "panels": []
+    },
+    {
+      "id": 43,
+      "type": "timeseries",
+      "title": "Credits and Turns Rate",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 97
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(gw_kiro_credits_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval]))",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": "credits/s"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(gw_kiro_turns_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval]))",
+          "range": true,
+          "instant": false,
+          "refId": "B",
+          "legendFormat": "turns/s"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "gradientMode": "opacity",
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean",
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 44,
+      "type": "stat",
+      "title": "Credits per Turn",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 4,
+        "x": 8,
+        "y": 97
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "sum(increase(gw_kiro_credits_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__range])) / clamp_min(sum(increase(gw_kiro_turns_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__range])), 1)",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 45,
+      "type": "stat",
+      "title": "Credits per LLM Request",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 4,
+        "x": 12,
+        "y": 97
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "sum(increase(gw_kiro_credits_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__range])) / clamp_min(sum(increase(gw_llm_requests_total{job=\"otto-gateway\", instance=~\"$gateway_id\", surface=~\"$surface\", skill=~\"$skill\", client=~\"$client\"}[$__range])), 1)",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 46,
+      "type": "timeseries",
+      "title": "Turn Duration p50 / p95",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 97
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.50, sum by(le)(rate(gw_kiro_turn_duration_seconds_bucket{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval])))",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": "p50"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by(le)(rate(gw_kiro_turn_duration_seconds_bucket{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval])))",
+          "range": true,
+          "instant": false,
+          "refId": "B",
+          "legendFormat": "p95"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "gradientMode": "opacity",
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean",
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 47,
+      "type": "gauge",
+      "title": "Context Usage p95",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 0,
+        "y": 105
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by(le)(rate(gw_kiro_context_usage_percent_bucket{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval])))",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": "p95"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 70
+              },
+              {
+                "color": "red",
+                "value": 90
+              }
+            ]
+          },
+          "unit": "percent",
+          "min": 0,
+          "max": 100
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true
+      }
+    },
+    {
+      "id": 48,
+      "type": "timeseries",
+      "title": "Context Usage p50 / p95",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 10,
+        "x": 6,
+        "y": 105
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.50, sum by(le)(rate(gw_kiro_context_usage_percent_bucket{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval])))",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": "p50"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by(le)(rate(gw_kiro_context_usage_percent_bucket{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval])))",
+          "range": true,
+          "instant": false,
+          "refId": "B",
+          "legendFormat": "p95"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 70
+              },
+              {
+                "color": "red",
+                "value": 90
+              }
+            ]
+          },
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "gradientMode": "opacity",
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean",
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 49,
+      "type": "table",
+      "title": "MCP Initialization Outcomes",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 5,
+        "x": 16,
+        "y": 105
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "sum by(server, result)(increase(gw_kiro_mcp_server_init_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__range]))",
+          "range": false,
+          "instant": true,
+          "refId": "A",
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "displayName": "Value",
+            "desc": true
+          }
+        ]
+      }
+    },
+    {
+      "id": 50,
+      "type": "stat",
+      "title": "MCP Failure Rate",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 3,
+        "x": 21,
+        "y": 105
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "100 * sum(increase(gw_kiro_mcp_server_init_total{job=\"otto-gateway\", instance=~\"$gateway_id\", result=\"fail\"}[$__range])) / clamp_min(sum(increase(gw_kiro_mcp_server_init_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__range])), 1)",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 5
+              }
+            ]
+          },
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 51,
+      "type": "row",
+      "title": "Compression Effectiveness",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 113
+      },
+      "panels": []
+    },
+    {
+      "id": 52,
+      "type": "stat",
+      "title": "Compression Eligible",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 3,
+        "x": 0,
+        "y": 114
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "sum(increase(gw_compress_eligible_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__range])) or vector(0)",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "description": "Compression token values use an estimated UTF-8-bytes/4 heuristic; they are not model tokenizer output or billing tokens."
+    },
+    {
+      "id": 53,
+      "type": "stat",
+      "title": "Successful Compression Runs",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 3,
+        "x": 3,
+        "y": 114
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "sum(increase(gw_compress_runs_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__range])) or vector(0)",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "description": "Compression token values use an estimated UTF-8-bytes/4 heuristic; they are not model tokenizer output or billing tokens."
+    },
+    {
+      "id": 54,
+      "type": "stat",
+      "title": "Estimated Tokens Saved",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 3,
+        "x": 6,
+        "y": 114
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "sum(increase(gw_compress_tokens_saved_estimate_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__range])) or vector(0)",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "description": "Compression token values use an estimated UTF-8-bytes/4 heuristic; they are not model tokenizer output or billing tokens."
+    },
+    {
+      "id": 55,
+      "type": "stat",
+      "title": "Estimated Tokens Saved per Run",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 3,
+        "x": 9,
+        "y": 114
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "sum(increase(gw_compress_tokens_saved_estimate_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__range])) / clamp_min(sum(increase(gw_compress_runs_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__range])), 1)",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "description": "Compression token values use an estimated UTF-8-bytes/4 heuristic; they are not model tokenizer output or billing tokens."
+    },
+    {
+      "id": 56,
+      "type": "stat",
+      "title": "Compression Success Ratio",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 3,
+        "x": 12,
+        "y": 114
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "100 * sum(increase(gw_compress_runs_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__range])) / clamp_min(sum(increase(gw_compress_eligible_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__range])), 1)",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "percent",
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "description": "Compression token values use an estimated UTF-8-bytes/4 heuristic; they are not model tokenizer output or billing tokens."
+    },
+    {
+      "id": 57,
+      "type": "stat",
+      "title": "Budget Unmet",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 3,
+        "x": 15,
+        "y": 114
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "sum(increase(gw_compress_budget_unmet_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__range])) or vector(0)",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 5
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "description": "Compression token values use an estimated UTF-8-bytes/4 heuristic; they are not model tokenizer output or billing tokens."
+    },
+    {
+      "id": 58,
+      "type": "stat",
+      "title": "Compression Budget Unmet Ratio",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 3,
+        "x": 18,
+        "y": 114
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "100 * sum(increase(gw_compress_budget_unmet_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__range])) / clamp_min(sum(increase(gw_compress_eligible_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__range])), 1)",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 5
+              }
+            ]
+          },
+          "unit": "percent",
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "description": "Compression token values use an estimated UTF-8-bytes/4 heuristic; they are not model tokenizer output or billing tokens."
+    },
+    {
+      "id": 59,
+      "type": "stat",
+      "title": "Compression Panic Recoveries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 3,
+        "x": 21,
+        "y": 114
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "sum(increase(gw_compress_panic_recoveries_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__range])) or vector(0)",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 5
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "description": "Compression token values use an estimated UTF-8-bytes/4 heuristic; they are not model tokenizer output or billing tokens."
+    },
+    {
+      "id": 60,
+      "type": "timeseries",
+      "title": "Compression Activity Over Time",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 119
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(gw_compress_eligible_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval]))",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": "eligible/s"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(gw_compress_runs_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval]))",
+          "range": true,
+          "instant": false,
+          "refId": "B",
+          "legendFormat": "successful/s"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(gw_compress_budget_unmet_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval]))",
+          "range": true,
+          "instant": false,
+          "refId": "C",
+          "legendFormat": "budget unmet/s"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(gw_compress_panic_recoveries_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval]))",
+          "range": true,
+          "instant": false,
+          "refId": "D",
+          "legendFormat": "panic recoveries/s"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "reqps",
           "custom": {
             "drawStyle": "line",
             "lineInterpolation": "smooth",
@@ -3014,34 +4278,34 @@
           "sort": "desc"
         }
       },
-      "description": "Populated only if GW_METRICS_SERIES_PREFIXES includes go_ (default excludes it)."
+      "description": "Compression token values use an estimated UTF-8-bytes/4 heuristic; they are not model tokenizer output or billing tokens."
     },
     {
-      "id": 42,
+      "id": 61,
       "type": "row",
-      "title": "Fleet Inventory",
+      "title": "Runtime Resources",
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 114
+        "y": 127
       },
       "panels": []
     },
     {
-      "id": 43,
-      "type": "table",
-      "title": "Gateways \u2014 Version & Build",
+      "id": 62,
+      "type": "timeseries",
+      "title": "Gateway CPU",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROM}"
       },
       "gridPos": {
         "h": 8,
-        "w": 24,
+        "w": 12,
         "x": 0,
-        "y": 115
+        "y": 128
       },
       "targets": [
         {
@@ -3050,7 +4314,709 @@
             "uid": "${DS_PROM}"
           },
           "editorMode": "code",
-          "expr": "gw_build_info{job=\"otto-gateway\", instance=~\"$gateway\"}",
+          "expr": "rate(process_cpu_seconds_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval]) * 100",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": "{{instance}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "percent",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "gradientMode": "opacity",
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean",
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 63,
+      "type": "timeseries",
+      "title": "Gateway RSS",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 128
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "process_resident_memory_bytes{job=\"otto-gateway\", instance=~\"$gateway_id\"}",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": "{{instance}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "bytes",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "gradientMode": "opacity",
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean",
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 64,
+      "type": "timeseries",
+      "title": "Worker CPU",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 136
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "rate(gw_worker_cpu_seconds_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval]) * 100",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": "{{instance}} / {{slot}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "percent",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "gradientMode": "opacity",
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean",
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Worker subprocess sampling is unavailable on macOS."
+    },
+    {
+      "id": 65,
+      "type": "timeseries",
+      "title": "Worker RSS",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 136
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "gw_worker_resident_memory_bytes{job=\"otto-gateway\", instance=~\"$gateway_id\"}",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": "{{instance}} / {{slot}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "bytes",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "gradientMode": "opacity",
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean",
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Worker subprocess sampling is unavailable on macOS."
+    },
+    {
+      "id": 66,
+      "type": "timeseries",
+      "title": "Open FD Utilization",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 144
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "100 * process_open_fds{job=\"otto-gateway\", instance=~\"$gateway_id\"} / clamp_min(process_max_fds{job=\"otto-gateway\", instance=~\"$gateway_id\"}, 1)",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": "{{instance}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "gradientMode": "opacity",
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean",
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 67,
+      "type": "timeseries",
+      "title": "Gateway Uptime",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 144
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "time() - process_start_time_seconds{job=\"otto-gateway\", instance=~\"$gateway_id\"}",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": "{{instance}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "gradientMode": "opacity",
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean",
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 68,
+      "type": "stat",
+      "title": "Gateway Restarts (range)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 4,
+        "x": 16,
+        "y": 144
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "sum(changes(process_start_time_seconds{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__range])) or vector(0)",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 5
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 69,
+      "type": "timeseries",
+      "title": "Goroutines (if go_* shipped)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 4,
+        "x": 20,
+        "y": 144
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "go_goroutines{job=\"otto-gateway\", instance=~\"$gateway_id\"}",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": "{{instance}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "gradientMode": "opacity",
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean",
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Requires GW_METRICS_SERIES_PREFIXES to include go_; the default excludes it."
+    },
+    {
+      "id": 70,
+      "type": "row",
+      "title": "Fleet Inventory",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 152
+      },
+      "panels": []
+    },
+    {
+      "id": 71,
+      "type": "stat",
+      "title": "Gateways Reporting Now",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 0,
+        "y": 153
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "count(group by(instance)(gw_build_info{job=\"otto-gateway\", instance=~\"$gateway_id\"}))",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "description": "Reporting installations are inventory, not the same as active gateways serving users."
+    },
+    {
+      "id": 72,
+      "type": "table",
+      "title": "Gateways \u2014 Version and Build",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 18,
+        "x": 6,
+        "y": 153
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "gw_build_info{job=\"otto-gateway\", instance=~\"$gateway_id\"}",
           "range": false,
           "instant": true,
           "refId": "A",
@@ -3062,7 +5028,6 @@
           "color": {
             "mode": "palette-classic"
           },
-          "unit": "short",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -3071,7 +5036,8 @@
                 "value": null
               }
             ]
-          }
+          },
+          "unit": "short"
         },
         "overrides": []
       },
@@ -3080,11 +5046,10 @@
         "sortBy": [
           {
             "displayName": "Gateway",
-            "desc": false
+            "desc": true
           }
         ]
       },
-      "description": "Build identity per reporting gateway.",
       "transformations": [
         {
           "id": "organize",
@@ -3093,8 +5058,7 @@
               "Time": true,
               "Value": true,
               "job": true,
-              "__name__": true,
-              "instance": false
+              "__name__": true
             },
             "indexByName": {
               "instance": 0,
@@ -3118,7 +5082,8 @@
   "style": "dark",
   "tags": [
     "otto-gateway",
-    "observability"
+    "observability",
+    "usage"
   ],
   "templating": {
     "list": [
@@ -3135,21 +5100,21 @@
         "multi": false
       },
       {
-        "name": "gateway",
-        "label": "Gateway",
+        "name": "gateway_id",
+        "label": "Gateway ID",
         "type": "query",
         "datasource": {
           "type": "prometheus",
           "uid": "${DS_PROM}"
         },
         "query": {
-          "query": "label_values(gw_build_info, instance)",
-          "refId": "gateway"
+          "query": "label_values(gw_build_info{job=\"otto-gateway\"}, instance)",
+          "refId": "gateway_id"
         },
-        "definition": "label_values(gw_build_info, instance)",
+        "definition": "label_values(gw_build_info{job=\"otto-gateway\"}, instance)",
         "includeAll": true,
         "multi": true,
-        "allValue": null,
+        "allValue": ".*",
         "refresh": 2,
         "sort": 1,
         "current": {
@@ -3173,13 +5138,103 @@
           "uid": "${DS_PROM}"
         },
         "query": {
-          "query": "label_values(gw_llm_requests_total, surface)",
+          "query": "label_values(gw_llm_request_outcomes_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}, surface)",
           "refId": "surface"
         },
-        "definition": "label_values(gw_llm_requests_total, surface)",
+        "definition": "label_values(gw_llm_request_outcomes_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}, surface)",
         "includeAll": true,
         "multi": true,
-        "allValue": null,
+        "allValue": ".*",
+        "refresh": 2,
+        "sort": 1,
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "options": [],
+        "regex": ""
+      },
+      {
+        "name": "outcome",
+        "label": "Outcome",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROM}"
+        },
+        "query": {
+          "query": "label_values(gw_llm_request_outcomes_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}, outcome)",
+          "refId": "outcome"
+        },
+        "definition": "label_values(gw_llm_request_outcomes_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}, outcome)",
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "refresh": 2,
+        "sort": 1,
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "options": [],
+        "regex": ""
+      },
+      {
+        "name": "streaming",
+        "label": "Streaming",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROM}"
+        },
+        "query": {
+          "query": "label_values(gw_llm_request_outcomes_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}, stream)",
+          "refId": "streaming"
+        },
+        "definition": "label_values(gw_llm_request_outcomes_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}, stream)",
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "refresh": 2,
+        "sort": 1,
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "options": [],
+        "regex": ""
+      },
+      {
+        "name": "session_mode",
+        "label": "Session Mode",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROM}"
+        },
+        "query": {
+          "query": "label_values(gw_llm_request_outcomes_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}, session_mode)",
+          "refId": "session_mode"
+        },
+        "definition": "label_values(gw_llm_request_outcomes_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}, session_mode)",
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
         "refresh": 2,
         "sort": 1,
         "current": {
@@ -3203,13 +5258,13 @@
           "uid": "${DS_PROM}"
         },
         "query": {
-          "query": "label_values(gw_llm_requests_total, skill)",
+          "query": "label_values(gw_llm_requests_total{job=\"otto-gateway\", instance=~\"$gateway_id\", surface=~\"$surface\"}, skill)",
           "refId": "skill"
         },
-        "definition": "label_values(gw_llm_requests_total, skill)",
+        "definition": "label_values(gw_llm_requests_total{job=\"otto-gateway\", instance=~\"$gateway_id\", surface=~\"$surface\"}, skill)",
         "includeAll": true,
         "multi": true,
-        "allValue": null,
+        "allValue": ".*",
         "refresh": 2,
         "sort": 1,
         "current": {
@@ -3233,13 +5288,13 @@
           "uid": "${DS_PROM}"
         },
         "query": {
-          "query": "label_values(gw_llm_requests_total, client)",
+          "query": "label_values(gw_llm_requests_total{job=\"otto-gateway\", instance=~\"$gateway_id\", surface=~\"$surface\"}, client)",
           "refId": "client"
         },
-        "definition": "label_values(gw_llm_requests_total, client)",
+        "definition": "label_values(gw_llm_requests_total{job=\"otto-gateway\", instance=~\"$gateway_id\", surface=~\"$surface\"}, client)",
         "includeAll": true,
         "multi": true,
-        "allValue": null,
+        "allValue": ".*",
         "refresh": 2,
         "sort": 1,
         "current": {
@@ -3263,13 +5318,13 @@
           "uid": "${DS_PROM}"
         },
         "query": {
-          "query": "label_values(gw_model_requests_total, model)",
+          "query": "label_values(gw_model_requests_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}, model)",
           "refId": "model"
         },
-        "definition": "label_values(gw_model_requests_total, model)",
+        "definition": "label_values(gw_model_requests_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}, model)",
         "includeAll": true,
         "multi": true,
-        "allValue": null,
+        "allValue": ".*",
         "refresh": 2,
         "sort": 1,
         "current": {
