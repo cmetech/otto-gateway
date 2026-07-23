@@ -46,6 +46,13 @@ first** — it is the spec of record.
   readiness/update pitfalls, and the active Hermes tool/skill reliability and
   packaging recommendations.
 
+### Planning handoffs
+
+- **`2026-07-23-hermes-computer-use-reliability-planning-prompt.md`** — a
+  self-contained prompt for starting the Hermes computer-use reliability
+  specification, implementation planning, merge-protection, and verification
+  workflow in the branded Hermes repository.
+
 ## Reading order for someone new to the project
 
 1. `briefs/go_port_brief.md` §§0–2 (goals, what exists, why Go) —
