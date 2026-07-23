@@ -39,6 +39,13 @@ first** — it is the spec of record.
   warmup), and the WSL/Windows parity rules. The Go port must
   preserve every "Things that must survive the port" item.
 
+### `superpowers/specs/`
+
+- **`2026-07-23-computer-use-reliability-and-deferred-tray-design.md`** —
+  records the deferred Cua Driver tray lifecycle proposal, the proven Windows
+  readiness/update pitfalls, and the active Hermes tool/skill reliability and
+  packaging recommendations.
+
 ## Reading order for someone new to the project
 
 1. `briefs/go_port_brief.md` §§0–2 (goals, what exists, why Go) —
