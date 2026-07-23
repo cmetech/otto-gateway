@@ -672,6 +672,9 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 			KiroCWD:           cfg.KiroCWD,
 			StreamIdleTimeout: streamIdle, // quick 260531-ruv
 			ToolAliases:       cfg.ToolAliases,
+			ObserveRequest: func(observation ollama.RequestObservation) {
+				gwMetrics.RecordLLMOutcome("ollama", observation.Outcome, observation.Stream, observation.SessionMode)
+			},
 		})
 	}
 

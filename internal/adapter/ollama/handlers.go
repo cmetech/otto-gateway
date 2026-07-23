@@ -92,13 +92,18 @@ const (
 // ----------------------------------------------------------------------------
 
 func (a *Adapter) handleChat(w http.ResponseWriter, r *http.Request) {
+	observation := newRequestObservation()
+	defer func() { a.observeRequest(observation) }()
+
 	if a.cfg.Engine == nil {
+		observation.Outcome = "upstream_error"
 		writeError(w, http.StatusServiceUnavailable, "kiro-cli not configured (set KIRO_CMD)")
 		return
 	}
 
 	var wire ollamaChatRequest
 	if err := decodeJSONBody(w, r, chatBodyCap, &wire); err != nil {
+		observation.Outcome = "invalid_request"
 		if isMaxBytesError(err) {
 			writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
 			return
@@ -106,13 +111,16 @@ func (a *Adapter) handleChat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
+	observation.Stream = fmt.Sprintf("%t", streamEnabled(wire.Stream))
 	if len(wire.Messages) == 0 {
+		observation.Outcome = "invalid_request"
 		writeError(w, http.StatusBadRequest, "`messages` is required and must be a non-empty array")
 		return
 	}
 
 	req, err := wireToChatRequest(&wire, r)
 	if err != nil {
+		observation.Outcome = "invalid_request"
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -140,10 +148,15 @@ func (a *Adapter) handleChat(w http.ResponseWriter, r *http.Request) {
 	// through to the pool path (unchanged).
 	eng, entry, sErr := a.resolveEngine(r)
 	if sErr != nil {
+		if errors.Is(sErr, session.ErrSessionMaxExceeded) {
+			observation.Outcome = "pool_exhausted"
+		}
 		a.writeSessionError(w, sErr)
 		return
 	}
+	observation.SessionMode = "stateless"
 	if entry != nil {
+		observation.SessionMode = "stateful"
 		entry.Mu.Lock()
 		// D-11 (CR-01 fix): Unlock registers FIRST (runs LAST in defer
 		// LIFO), MarkUsed registers SECOND (runs FIRST in defer LIFO).
@@ -163,6 +176,7 @@ func (a *Adapter) handleChat(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		resp, err := eng.Collect(ctx, req)
 		if err != nil {
+			observation.Outcome = classifyRequestError(err)
 			// D-07 REL-POOL-01: pool exhaustion maps to 503 with Ollama
 			// surface-native error body {"error":"pool_exhausted: ..."}.
 			if errors.Is(err, canonical.ErrPoolExhausted) {
@@ -198,6 +212,7 @@ func (a *Adapter) handleChat(w http.ResponseWriter, r *http.Request) {
 		// v1 producer is AuthHook; future hooks producing StopError
 		// for non-auth reasons would need a status-mapping helper.
 		if resp != nil && resp.StopReason == canonical.StopError {
+			observation.Outcome = "authentication"
 			writeError(w, http.StatusUnauthorized, shortCircuitMessage(resp))
 			return
 		}
@@ -225,6 +240,7 @@ func (a *Adapter) handleChat(w http.ResponseWriter, r *http.Request) {
 			stripFencesFromResponse(resp)
 		}
 		writeJSON(w, chatResponseToWire(resp, start, wire.Model))
+		observation.Outcome = "success"
 		return
 	}
 
@@ -248,6 +264,7 @@ func (a *Adapter) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	run, err := eng.Run(streamCtx, req)
 	if err != nil {
+		observation.Outcome = classifyRequestError(err)
 		// D-07 REL-POOL-01: pool exhaustion maps to 503 with an Ollama
 		// surface-native error body {"error":"pool_exhausted: ..."}.
 		if errors.Is(err, canonical.ErrPoolExhausted) {
@@ -287,6 +304,7 @@ func (a *Adapter) handleChat(w http.ResponseWriter, r *http.Request) {
 	// 401. Mirrors the non-streaming sibling at handlers.go:147-150
 	// and the canonical template at anthropic/collect.go:66-73.
 	if sc := run.ShortCircuitResponse(); sc != nil {
+		observation.Outcome = "authentication"
 		// Watchdog is nil on the short-circuit path (engine.go:150);
 		// guard the deref per D-03 / Pitfall 4. Mirrors
 		// anthropic/collect.go:69-71.
@@ -324,6 +342,7 @@ func (a *Adapter) handleChat(w http.ResponseWriter, r *http.Request) {
 		)
 		resp, cErr := eng.CollectFromRun(streamCtx, run, req)
 		if cErr != nil {
+			observation.Outcome = classifyRequestError(cErr)
 			if errors.Is(cErr, canonical.ErrStreamIdleTimeout) {
 				a.cfg.Logger.Warn(
 					"stream.idle_timeout",
@@ -339,6 +358,7 @@ func (a *Adapter) handleChat(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if resp != nil && resp.StopReason == canonical.StopError {
+			observation.Outcome = "authentication"
 			writeError(w, http.StatusUnauthorized, shortCircuitMessage(resp))
 			return
 		}
@@ -370,11 +390,15 @@ func (a *Adapter) handleChat(w http.ResponseWriter, r *http.Request) {
 		// but actively destructive for PII decrypt (operates on already-
 		// decrypted content, errors-swallowed or worse).
 		if err := runSyntheticNDJSONFromResponse(streamCtx, w, resp, wire.Model, true, start, a.cfg.Logger); err != nil {
+			observation.Outcome = classifyStreamingError(err)
 			a.cfg.Logger.Debug("ollama: synthetic chat NDJSON terminated", "err", err)
+		} else {
+			observation.Outcome = "success"
 		}
 		return
 	}
 	resp, emitErr := runNDJSONEmitter(streamCtx, cancelFn, w, run, wire.Model, true, start, a.cfg.Logger, req, a.cfg.ToolAliases, a.cfg.StreamIdleTimeout)
+	observation.Outcome = classifyStreamingError(emitErr)
 	if emitErr != nil {
 		a.cfg.Logger.Debug("ollama: ndjson chat emitter error", "err", emitErr)
 	}
@@ -442,13 +466,18 @@ func (a *Adapter) writeSessionError(w http.ResponseWriter, err error) {
 // ----------------------------------------------------------------------------
 
 func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
+	observation := newRequestObservation()
+	defer func() { a.observeRequest(observation) }()
+
 	if a.cfg.Engine == nil {
+		observation.Outcome = "upstream_error"
 		writeError(w, http.StatusServiceUnavailable, "kiro-cli not configured (set KIRO_CMD)")
 		return
 	}
 
 	var wire ollamaGenerateRequest
 	if err := decodeJSONBody(w, r, generateBodyCap, &wire); err != nil {
+		observation.Outcome = "invalid_request"
 		if isMaxBytesError(err) {
 			writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
 			return
@@ -456,13 +485,16 @@ func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
+	observation.Stream = fmt.Sprintf("%t", streamEnabled(wire.Stream))
 	if wire.Prompt == "" {
+		observation.Outcome = "invalid_request"
 		writeError(w, http.StatusBadRequest, "`prompt` is required")
 		return
 	}
 
 	req, err := wireGenerateToChatRequest(&wire, r)
 	if err != nil {
+		observation.Outcome = "invalid_request"
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -480,10 +512,15 @@ func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 	// Plan 05-03: X-Session-Id branch (same shape as handleChat).
 	eng, entry, sErr := a.resolveEngine(r)
 	if sErr != nil {
+		if errors.Is(sErr, session.ErrSessionMaxExceeded) {
+			observation.Outcome = "pool_exhausted"
+		}
 		a.writeSessionError(w, sErr)
 		return
 	}
+	observation.SessionMode = "stateless"
 	if entry != nil {
+		observation.SessionMode = "stateful"
 		entry.Mu.Lock()
 		// CR-01 fix: Unlock registers FIRST (runs LAST), MarkUsed
 		// SECOND (runs FIRST). MarkUsed writes Entry.LastUsed and must
@@ -498,6 +535,7 @@ func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		resp, err := eng.Collect(ctx, req)
 		if err != nil {
+			observation.Outcome = classifyRequestError(err)
 			// D-07 REL-POOL-01: pool exhaustion maps to 503 with Ollama
 			// surface-native error body {"error":"pool_exhausted: ..."}.
 			if errors.Is(err, canonical.ErrPoolExhausted) {
@@ -527,6 +565,7 @@ func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 		// Phase 8 SC1: same StopError short-circuit detection as
 		// handleChat above.
 		if resp != nil && resp.StopReason == canonical.StopError {
+			observation.Outcome = "authentication"
 			writeError(w, http.StatusUnauthorized, shortCircuitMessage(resp))
 			return
 		}
@@ -535,6 +574,7 @@ func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 			stripFencesFromResponse(resp)
 		}
 		writeJSON(w, generateResponseToWire(resp, start, wire.Model))
+		observation.Outcome = "success"
 		return
 	}
 
@@ -547,6 +587,7 @@ func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 
 	run, err := eng.Run(streamCtx, req)
 	if err != nil {
+		observation.Outcome = classifyRequestError(err)
 		// D-07 REL-POOL-01: pool exhaustion maps to 503 with an Ollama
 		// surface-native error body {"error":"pool_exhausted: ..."}.
 		if errors.Is(err, canonical.ErrPoolExhausted) {
@@ -586,6 +627,7 @@ func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 	// site above. Pitfall 6: handleGenerate is an INDEPENDENT streaming
 	// branch from handleChat — both must carry the guard.
 	if sc := run.ShortCircuitResponse(); sc != nil {
+		observation.Outcome = "authentication"
 		// D-03 / Pitfall 4: nil-guard the watchdog stop function.
 		if stop := run.StopWatchdog(); stop != nil {
 			stop()
@@ -616,6 +658,7 @@ func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 		)
 		resp, cErr := eng.CollectFromRun(streamCtx, run, req)
 		if cErr != nil {
+			observation.Outcome = classifyRequestError(cErr)
 			if errors.Is(cErr, canonical.ErrStreamIdleTimeout) {
 				a.cfg.Logger.Warn(
 					"stream.idle_timeout",
@@ -631,6 +674,7 @@ func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if resp != nil && resp.StopReason == canonical.StopError {
+			observation.Outcome = "authentication"
 			writeError(w, http.StatusUnauthorized, shortCircuitMessage(resp))
 			return
 		}
@@ -642,7 +686,10 @@ func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 		// site for rationale. Audit ollama-reroute-double-posthook-fires:
 		// PostHooks already fired inside CollectFromRun — do not re-fire.
 		if err := runSyntheticNDJSONFromResponse(streamCtx, w, resp, wire.Model, false, start, a.cfg.Logger); err != nil {
+			observation.Outcome = classifyStreamingError(err)
 			a.cfg.Logger.Debug("ollama: synthetic generate NDJSON terminated", "err", err)
+		} else {
+			observation.Outcome = "success"
 		}
 		return
 	}
@@ -650,6 +697,7 @@ func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 	// uniform; the streaming-coerce buffering logic only activates when
 	// len(req.Tools) > 0 so this is a no-op for /api/generate in practice.
 	resp, emitErr := runNDJSONEmitter(streamCtx, cancelFn, w, run, wire.Model, false, start, a.cfg.Logger, req, a.cfg.ToolAliases, a.cfg.StreamIdleTimeout)
+	observation.Outcome = classifyStreamingError(emitErr)
 	if emitErr != nil {
 		a.cfg.Logger.Debug("ollama: ndjson generate emitter error", "err", emitErr)
 	}

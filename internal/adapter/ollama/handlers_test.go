@@ -36,6 +36,9 @@ type fakeEngine struct {
 	runChunks []canonical.Chunk
 	// runErr, if non-nil, is returned directly by Engine.Run before any streaming.
 	runErr error
+	// runHandle overrides the default closed fake stream for tests that need
+	// to control a live streaming terminal path.
+	runHandle RunHandle
 
 	// Quick 260530-df2 — RunPostHooks observation. postN counts
 	// invocations (per-surface double-fire guard). lastPostResp
@@ -93,6 +96,9 @@ func (f *fakeEngine) Run(ctx context.Context, req *canonical.ChatRequest) (RunHa
 	f.lastCtx = ctx
 	if f.runErr != nil {
 		return nil, f.runErr
+	}
+	if f.runHandle != nil {
+		return f.runHandle, nil
 	}
 	final := &canonical.FinalResult{StopReason: canonical.StopEndTurn}
 	return newFakeRunHandle(f.runChunks, final, nil), nil
