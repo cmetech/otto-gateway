@@ -45,7 +45,7 @@ func requestObservationAdapter(eng Engine, extra func(*Config)) (*Adapter, *[]Re
 
 func invokeAnthropicHandler(t *testing.T, adapter *Adapter, body string) *httptest.ResponseRecorder {
 	t.Helper()
-	request := httptest.NewRequest(http.MethodPost, "/messages", strings.NewReader(body))
+	request := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/messages", strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("anthropic-version", "2023-06-01")
 	recorder := httptest.NewRecorder()
@@ -161,7 +161,7 @@ func TestRequestObservation_StatefulSession(t *testing.T) {
 		cfg.Registry = registry
 		cfg.EngineForSession = func(*session.Entry) Engine { return sessionEng }
 	})
-	request := httptest.NewRequest(http.MethodPost, "/messages",
+	request := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/messages",
 		strings.NewReader(`{"model":"auto","max_tokens":128,"messages":[{"role":"user","content":"hello"}],"stream":false}`))
 	request.Header.Set("anthropic-version", "2023-06-01")
 	request.Header.Set("X-Session-Id", "sid-observed")

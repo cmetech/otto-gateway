@@ -45,7 +45,7 @@ func requestObservationAdapter(eng Engine, extra func(*Config)) (*Adapter, *[]Re
 
 func invokeOllamaHandler(t *testing.T, adapter *Adapter, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
-	request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	request := httptest.NewRequestWithContext(t.Context(), http.MethodPost, path, strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	recorder := httptest.NewRecorder()
 	adapter.ProtectedRouter().ServeHTTP(recorder, request)
@@ -177,7 +177,7 @@ func TestRequestObservation_StatefulSession(t *testing.T) {
 		cfg.Registry = registry
 		cfg.EngineForSession = func(*session.Entry) Engine { return sessionEng }
 	})
-	request := httptest.NewRequest(http.MethodPost, "/chat",
+	request := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/chat",
 		strings.NewReader(`{"model":"auto","messages":[{"role":"user","content":"hello"}],"stream":false}`))
 	request.Header.Set("X-Session-Id", "sid-observed")
 	adapter.ProtectedRouter().ServeHTTP(httptest.NewRecorder(), request)

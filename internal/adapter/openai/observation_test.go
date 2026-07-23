@@ -42,7 +42,7 @@ func requestObservationsAdapter(eng Engine) (*Adapter, *[]RequestObservation) {
 
 func invokeOpenAIHandler(t *testing.T, adapter *Adapter, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
-	request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	request := httptest.NewRequestWithContext(t.Context(), http.MethodPost, path, strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	recorder := httptest.NewRecorder()
 	switch path {
@@ -137,7 +137,7 @@ func TestRequestObservation_StatefulSession(t *testing.T) {
 			observations = append(observations, observation)
 		},
 	})
-	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+	request := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions",
 		strings.NewReader(`{"model":"auto","messages":[{"role":"user","content":"hello"}],"stream":false}`))
 	request.Header.Set("X-Session-Id", "sid-observed")
 	adapter.handleChatCompletions(httptest.NewRecorder(), request)
