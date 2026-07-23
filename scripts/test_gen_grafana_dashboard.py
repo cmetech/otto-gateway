@@ -157,6 +157,23 @@ class DashboardGeneratorTest(unittest.TestCase):
                     used.add(metric_family(name))
         self.assertEqual(used, CUSTOM_METRICS)
 
+    def test_unhealthy_or_stalled_requires_saturated_pool(self):
+        panel = next(
+            panel
+            for panel in all_panels(self.dashboard)
+            if panel["title"] == "Unhealthy or Stalled"
+        )
+        expr = panel["targets"][0]["expr"]
+        self.assertRegex(
+            expr,
+            r"gw_pool_busy\{[^}]+\}\s*==\s*gw_pool_alive\{",
+        )
+        self.assertRegex(
+            expr,
+            r"gw_pool_busy\{[^}]+\}\s*==\s*gw_pool_size\{",
+        )
+        self.assertRegex(expr, r"gw_pool_size\{[^}]+\}\s*>\s*0")
+
     def test_generated_json_matches_committed_file(self):
         generated = json.dumps(self.dashboard, indent=2)
         self.assertEqual(generated, DASHBOARD_JSON.read_text())

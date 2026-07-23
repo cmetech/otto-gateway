@@ -339,9 +339,12 @@ def add_fleet_overview(builder):
         (
             "Unhealthy or Stalled",
             f"count(max by(instance)((gw_pool_healthy{SEL} == 0) or "
-            f"((time() - gw_pool_last_progress_timestamp_seconds{SEL} > 300) "
+            f"((gw_pool_busy{SEL} == gw_pool_alive{SEL}) "
+            f"and (gw_pool_busy{SEL} == gw_pool_size{SEL}) "
+            f"and (gw_pool_size{SEL} > 0) "
+            f"and (time() - gw_pool_last_progress_timestamp_seconds{SEL} > 300) "
             f"and (gw_pool_last_progress_timestamp_seconds{SEL} > 0)))) or vector(0)",
-            "Gateways currently unhealthy or with no pool progress for more than five minutes.",
+            "Gateways currently unhealthy or fully saturated with no pool progress for more than five minutes.",
             "short",
             THRESHOLDS_BAD,
         ),

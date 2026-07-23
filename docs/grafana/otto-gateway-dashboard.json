@@ -506,7 +506,7 @@
             "uid": "${DS_PROM}"
           },
           "editorMode": "code",
-          "expr": "count(max by(instance)((gw_pool_healthy{job=\"otto-gateway\", instance=~\"$gateway_id\"} == 0) or ((time() - gw_pool_last_progress_timestamp_seconds{job=\"otto-gateway\", instance=~\"$gateway_id\"} > 300) and (gw_pool_last_progress_timestamp_seconds{job=\"otto-gateway\", instance=~\"$gateway_id\"} > 0)))) or vector(0)",
+          "expr": "count(max by(instance)((gw_pool_healthy{job=\"otto-gateway\", instance=~\"$gateway_id\"} == 0) or ((gw_pool_busy{job=\"otto-gateway\", instance=~\"$gateway_id\"} == gw_pool_alive{job=\"otto-gateway\", instance=~\"$gateway_id\"}) and (gw_pool_busy{job=\"otto-gateway\", instance=~\"$gateway_id\"} == gw_pool_size{job=\"otto-gateway\", instance=~\"$gateway_id\"}) and (gw_pool_size{job=\"otto-gateway\", instance=~\"$gateway_id\"} > 0) and (time() - gw_pool_last_progress_timestamp_seconds{job=\"otto-gateway\", instance=~\"$gateway_id\"} > 300) and (gw_pool_last_progress_timestamp_seconds{job=\"otto-gateway\", instance=~\"$gateway_id\"} > 0)))) or vector(0)",
           "range": true,
           "instant": false,
           "refId": "A",
@@ -553,7 +553,7 @@
         "graphMode": "none",
         "justifyMode": "auto"
       },
-      "description": "Gateways currently unhealthy or with no pool progress for more than five minutes."
+      "description": "Gateways currently unhealthy or fully saturated with no pool progress for more than five minutes."
     },
     {
       "id": 10,
