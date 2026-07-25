@@ -116,6 +116,51 @@ jobs:
       - name: Vulnerability scan
         run: govulncheck ./...
 
+  # Lints the darwin build arm, which ubuntu-latest structurally cannot see.
+  # cmd/otto-tray is //go:build darwin || windows and seven of its files are
+  # darwin-only (desktop_darwin.go, openfolder_darwin.go, autostart_darwin.go,
+  # pidfile_darwin.go, uihelpers_darwin.go, trayhooks_darwin.go,
+  # desktopconsole_darwin.go). On the linux runner every one is dropped by
+  # build tag, so before this job they were linted nowhere — two real findings
+  # (an unwrapped pgrep error, a per-GOOS unparam case) survived until a
+  # developer happened to run `make lint` on a mac (quick task 260725-gp6).
+  lint-darwin:
+    name: golangci-lint (darwin arm)
+    # macos-latest rather than ubuntu-latest with a GOOS override: golangci-lint
+    # type-checks a package before any linter runs, and cmd/otto-tray pulls in
+    # github.com/energye/systray, whose darwin implementation is cgo. A linux
+    # host has no darwin clang/sysroot to build it, and turning cgo off does not
+    # rescue it — the package then has no darwin implementation at all and the
+    # load dies on undefined symbols. Same constraint the publish-dry-run job
+    # below documents for `make package-all`.
+    runs-on: macos-latest
+    # No `needs:` — decoupled from lint-test-arch so a darwin-only regression
+    # reads as its own red X in the PR check list. This is the second macOS
+    # runner in the workflow; the extra minutes are the price of the build arm
+    # having no coverage at all, which is how the two findings above survived.
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go (from go.mod)
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Scope is ./... , not ./cmd/otto-tray/... . The tray holds most of the
+      # darwin-tagged code but not all of it: internal/procstat/procstat_other.go
+      # is `!linux && !windows`, so the linux runner compiles procstat_linux.go
+      # and never sees it. ./... also keeps this identical to `make lint`, so a
+      # developer's local mac run is the same command CI runs. Re-linting the
+      # OS-agnostic packages lint-test-arch already covered is the cheap price.
+      - name: golangci-lint (darwin)
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
+          args: --timeout=5m
+
   cross-compile-smoke:
     name: cross-compile (darwin arm64+amd64, linux amd64, windows amd64)
     runs-on: ubuntu-latest
