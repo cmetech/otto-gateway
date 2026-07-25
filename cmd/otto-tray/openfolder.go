@@ -114,6 +114,15 @@ func runningDesktopCandidate(out *desktopOutput, running func(desktopCandidate) 
 	return out.Candidate, nil
 }
 
+// runOpenDesktopFolder revalidates the candidate, then opens the app or data
+// folder. goos is load-bearing and must NOT be removed: it drives the windows
+// branches of appFolderTarget (install dir, no reveal) and resolveHermesHome
+// (HKCU / LOCALAPPDATA). The sole runtime caller passes runtime.GOOS, a
+// per-build constant, so unparam sees the single value "darwin" under a darwin
+// build and "windows" under a windows one. It is also the platform injection
+// seam openfolder_test.go uses to exercise both arms from one box.
+//
+//nolint:unparam // goos varies by build arm — see doc comment
 func runOpenDesktopFolder(
 	kind desktopFolderKind,
 	out *desktopOutput,
