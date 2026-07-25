@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os/exec"
 	"time"
 )
@@ -25,5 +26,5 @@ func platformDesktopRunning(candidate desktopCandidate) (bool, error) {
 	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
 		return false, nil
 	}
-	return false, err
+	return false, fmt.Errorf("pgrep: %w", err)
 }
