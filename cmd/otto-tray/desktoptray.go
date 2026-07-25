@@ -169,7 +169,7 @@ func runDesktopInstall(d desktopInstallDeps) {
 	d.notify(d.label, "Downloading the installer — this can take a minute. You'll be notified when it's done.")
 	res := d.run()
 	if res.ExitCode != 0 || res.Err != nil {
-		d.notify(d.label, "Install failed: "+firstLine(res.Stderr))
+		d.notify(d.label, "Install failed: "+firstMeaningfulLine(res.Stderr))
 		return
 	}
 	d.notify(d.label, "Co-Worker installed.")
@@ -267,7 +267,7 @@ func (s *trayState) handleDesktopStop() {
 			s.publishDesktopOutput(desktopOutput{State: DesktopDetectionError, Detail: err.Error()})
 			notify(desktopLabel(""), "Could not verify whether the Co-Worker stopped: "+err.Error())
 		} else if running {
-			notify(desktopLabel(""), "Failed to stop: "+firstLine(res.Stderr))
+			notify(desktopLabel(""), "Failed to stop: "+firstMeaningfulLine(res.Stderr))
 		}
 	}
 	requestDesktopRefresh(s.desktopRefreshCh)

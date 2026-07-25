@@ -437,14 +437,14 @@ func (s *trayState) handleStart() {
 	s.setStartedNow()
 	res := runWrapper(s.installDir, s.gwHome, "start")
 	if res.ExitCode != 0 || res.Err != nil {
-		notify("Gateway", "Failed to start: "+firstLine(res.Stderr))
+		notify("Gateway", "Failed to start: "+firstMeaningfulLine(res.Stderr))
 	}
 }
 
 func (s *trayState) handleStop() {
 	res := runWrapper(s.installDir, s.gwHome, "stop")
 	if res.ExitCode != 0 || res.Err != nil {
-		notify("Gateway", "Failed to stop: "+firstLine(res.Stderr))
+		notify("Gateway", "Failed to stop: "+firstMeaningfulLine(res.Stderr))
 	}
 }
 
@@ -452,7 +452,7 @@ func (s *trayState) handleRestart() {
 	s.setStartedNow()
 	res := runWrapper(s.installDir, s.gwHome, "restart")
 	if res.ExitCode != 0 || res.Err != nil {
-		notify("Gateway", "Failed to restart: "+firstLine(res.Stderr))
+		notify("Gateway", "Failed to restart: "+firstMeaningfulLine(res.Stderr))
 	}
 }
 
