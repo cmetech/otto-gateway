@@ -42,6 +42,40 @@ env:
   NODE_VERSION:          '22'
 
 jobs:
+  support-powershell-windows:
+    name: support bundle (Windows PowerShell 5.1)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Parse PowerShell 5.1 sources
+        shell: powershell
+        run: |
+          $files = @(
+            'scripts/gw.ps1',
+            'scripts/lib/redact.ps1',
+            'scripts/lib/support-safe-open.ps1',
+            'tests/scripts/test-support-bundle.ps1',
+            'tests/scripts/test-support-redact.ps1'
+          )
+          foreach ($file in $files) {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $file), [ref]$tokens, [ref]$errors)
+            if ($errors) { throw ($errors | Out-String) }
+          }
+
+      - name: PowerShell support redaction
+        shell: powershell
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/scripts/test-support-redact.ps1
+
+      - name: PowerShell support integration and reparse races
+        shell: powershell
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/scripts/test-support-bundle.ps1
+
   lint-test-arch:
     name: lint + test-race + arch-lint + govulncheck
     runs-on: ubuntu-latest
