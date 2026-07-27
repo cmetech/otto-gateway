@@ -552,7 +552,9 @@ server.serve_forever()
     'enabled' | Set-Content -LiteralPath $ModeFile -Encoding ASCII
     Set-SupportEnvironment $GatewayLog $GatewayBoot $KiroCwdFixture 'native/kiro-current.log' $CoworkerHome
     $env:GW_SUPPORT_TEST_DISABLE_SAFE_OPEN = 'true'
+    $noSafeOpenStagingBefore = New-SupportStagingSnapshot $SupportGlobalTemp
     $noSafeOpen = Invoke-SupportRun (Join-Path $ExtractRoot 'no-safe-open-out')
+    Assert-NoNewSupportStaging $noSafeOpenStagingBefore 'safe-open unavailable run removes its global staging directory'
     $noSafeOpenRoot = Expand-SupportBundle $noSafeOpen.Bundle (Join-Path $ExtractRoot 'no-safe-open-tree')
     Assert-True ($noSafeOpen.ExitCode -eq 0) 'support continues when native safe-open is unavailable'
     Assert-Absent (Join-Path $noSafeOpenRoot 'logs\gateway\gateway.log') 'Gateway source is omitted without safe-open'
@@ -685,6 +687,7 @@ server.serve_forever()
     $env:GW_SUPPORT_TEST_BARRIER_SOURCE = $RaceGateway
     $env:GW_SUPPORT_TEST_BARRIER_READY = $RaceReady
     $env:GW_SUPPORT_TEST_BARRIER_CONTINUE = $RaceContinue
+    $raceStagingBefore = New-SupportStagingSnapshot $SupportGlobalTemp
     $raceRun = Start-SupportRun (Join-Path $ExtractRoot 'regular-race-out')
     foreach ($attempt in 1..100) {
         if (Test-Path -LiteralPath $RaceReady) { break }
@@ -698,6 +701,7 @@ server.serve_forever()
         'continue' | Set-Content -LiteralPath $RaceContinue -Encoding ASCII
     }
     $raceResult = Complete-SupportRun $raceRun
+    Assert-NoNewSupportStaging $raceStagingBefore 'pre-open regular replacement removes its global staging directory'
     Assert-True $regularRaceExecuted 'regular source is replaced between identity inspection and safe-open'
     Assert-True ($raceResult.ExitCode -eq 0) "support continues after deterministic regular replacement: $($raceResult.Stderr)"
     $raceBundleRoot = Expand-SupportBundle $raceResult.Bundle (Join-Path $ExtractRoot 'regular-race-tree')
@@ -810,6 +814,7 @@ server.serve_forever()
         $env:GW_SUPPORT_TEST_BARRIER_SOURCE = $AncestorGateway
         $env:GW_SUPPORT_TEST_BARRIER_READY = $AncestorReady
         $env:GW_SUPPORT_TEST_BARRIER_CONTINUE = $AncestorContinue
+        $ancestorStagingBefore = New-SupportStagingSnapshot $SupportGlobalTemp
         $ancestorRun = Start-SupportRun (Join-Path $ExtractRoot 'ancestor-race-out')
         foreach ($attempt in 1..100) {
             if (Test-Path -LiteralPath $AncestorReady) { break }
@@ -826,6 +831,7 @@ server.serve_forever()
             'continue' | Set-Content -LiteralPath $AncestorContinue -Encoding ASCII
         }
         $ancestorResult = Complete-SupportRun $ancestorRun
+        Assert-NoNewSupportStaging $ancestorStagingBefore 'ancestor junction replacement removes its global staging directory'
         Assert-True ([bool]$ancestorRaceExecuted) 'ancestor directory is swapped to a junction between inspect and open'
         Assert-True ($ancestorResult.ExitCode -eq 0) "support continues after ancestor junction swap: $($ancestorResult.Stderr)"
         $ancestorBundleRoot = Expand-SupportBundle $ancestorResult.Bundle (Join-Path $ExtractRoot 'ancestor-race-tree')
