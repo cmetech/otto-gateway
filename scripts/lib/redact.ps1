@@ -14,7 +14,8 @@
 #   1. Authorization:<space>.*       -> Authorization: [REDACTED]
 #   2. x-api-key:<space>.*           -> x-api-key: [REDACTED]   (case-insensitive)
 #   3. Bearer <hex/url-safe-base64>  -> Bearer [REDACTED]
-#   4. (^|[^A-Za-z0-9_])(AUTH_TOKEN|PII_HASH_KEY|PII_ENCRYPT_KEY)=<value>
+#   4. (^|[^A-Za-z0-9_])(AUTH_TOKEN|PII_HASH_KEY|PII_ENCRYPT_KEY|
+#      GW_METRICS_REMOTE_WRITE_TOKEN)=<value>
 #                                     -> KEY=[REDACTED]
 #
 # Rule (4) intentionally matches mid-line — slog log entries embed the
@@ -42,7 +43,7 @@ function Invoke-RedactStream {
         # (?i) inline regex flag makes the x-api-key match case-insensitive.
         $out = $out -replace '(?i)(x-api-key:\s*).*', '$1[REDACTED]'
         $out = $out -replace 'Bearer [A-Za-z0-9._\-]+', 'Bearer [REDACTED]'
-        $out = $out -replace '(^|[^A-Za-z0-9_])(AUTH_TOKEN|PII_HASH_KEY|PII_ENCRYPT_KEY)=\S+', '$1$2=[REDACTED]'
+        $out = $out -replace '(^|[^A-Za-z0-9_])(AUTH_TOKEN|PII_HASH_KEY|PII_ENCRYPT_KEY|GW_METRICS_REMOTE_WRITE_TOKEN)=\S+', '$1$2=[REDACTED]'
         $out
     }
 }
@@ -65,7 +66,7 @@ function Test-IsSecretKey {
     param([Parameter(Position = 0)][AllowEmptyString()][string]$Key = "")
     if ([string]::IsNullOrEmpty($Key)) { return $false }
     $up = $Key.ToUpperInvariant()
-    if ($up -in @('AUTH_TOKEN', 'PII_HASH_KEY', 'PII_ENCRYPT_KEY')) { return $true }
+    if ($up -in @('AUTH_TOKEN', 'PII_HASH_KEY', 'PII_ENCRYPT_KEY', 'GW_METRICS_REMOTE_WRITE_TOKEN')) { return $true }
     if ($up -match 'TOKEN|KEY|SECRET|PASSWORD|PASSPHRASE') { return $true }
     return $false
 }

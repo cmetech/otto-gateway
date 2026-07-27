@@ -63,6 +63,7 @@ $fixture = @(
     'AUTH_TOKEN=supersecretvalue',
     'PII_HASH_KEY=anotherSecret',
     'PII_ENCRYPT_KEY=thirdSecret',
+    'GW_METRICS_REMOTE_WRITE_TOKEN=remoteWriteSecret',
     'Authorization: Bearer foo',
     'x-api-key: bar',
     'X-API-KEY: BAZ',
@@ -74,6 +75,7 @@ Assert-Contains $redacted 'Bearer [REDACTED]' 'Bearer token rewritten'
 Assert-Contains $redacted 'AUTH_TOKEN=[REDACTED]' 'AUTH_TOKEN= line rewritten'
 Assert-Contains $redacted 'PII_HASH_KEY=[REDACTED]' 'PII_HASH_KEY= line rewritten'
 Assert-Contains $redacted 'PII_ENCRYPT_KEY=[REDACTED]' 'PII_ENCRYPT_KEY= line rewritten'
+Assert-Contains $redacted 'GW_METRICS_REMOTE_WRITE_TOKEN=[REDACTED]' 'remote-write token assignment rewritten'
 Assert-Contains $redacted 'Authorization: [REDACTED]' 'Authorization header rewritten'
 Assert-Contains $redacted 'x-api-key: [REDACTED]' 'x-api-key (lower) rewritten'
 Assert-Contains $redacted 'X-API-KEY: [REDACTED]' 'X-API-KEY (upper) rewritten'
@@ -82,6 +84,7 @@ Assert-Contains $redacted 'hello world' 'control line preserved'
 Assert-NotContains $redacted 'supersecretvalue' 'AUTH_TOKEN secret absent'
 Assert-NotContains $redacted 'anotherSecret' 'PII_HASH_KEY secret absent'
 Assert-NotContains $redacted 'thirdSecret' 'PII_ENCRYPT_KEY secret absent'
+Assert-NotContains $redacted 'remoteWriteSecret' 'remote-write token secret absent'
 Assert-NotContains $redacted 'eyJabc.def-ghi_jkl' 'Bearer token secret absent'
 
 # Idempotency.

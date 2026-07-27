@@ -1,196 +1,455 @@
-# tests/scripts/test-support-bundle.ps1 — integration smoke for
-# `gw.ps1 support`. Mirrors tests/scripts/test-support-bundle.sh:
-# builds a fake install root with a synthetic log file containing known
-# secret literals, runs the subcommand, then asserts:
-#   - exit 0
-#   - bundle path printed on stdout
-#   - zip contains MANIFEST.txt + the six required trees
-#   - none of the synthetic secret literals appear in the extracted tree
-#   - health/health.json contains the "unreachable:" sentinel
-#
-# Plain pwsh harness — no Pester dependency (design constraint).
+# Integration coverage for `gw.ps1 support`. The real wrapper runs against
+# controlled Gateway, Kiro, and Co-worker homes plus deterministic HTTP
+# endpoints. Plain PowerShell harness: no Pester dependency.
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $RepoRoot = Resolve-Path (Join-Path $PSScriptRoot '..\..')
 $Wrapper = Join-Path $RepoRoot 'scripts\gw.ps1'
-if (-not (Test-Path $Wrapper)) {
-    Write-Error "FATAL: $Wrapper not found"
-    exit 1
-}
-
+$Pwsh = (Get-Command pwsh -ErrorAction Stop).Source
+$Python = (Get-Command python3 -ErrorAction Stop).Source
 $script:Pass = 0
 $script:Fail = 0
-$script:FakeRoot = $null
-$script:ExtractDir = $null
+$script:FixtureRoot = $null
+$script:HttpProcess = $null
+$ExtractRoot = $null
+$RunningOnWindows = [System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT
 
-function Cleanup {
-    if ($script:FakeRoot -and (Test-Path $script:FakeRoot)) {
-        Remove-Item -Recurse -Force $script:FakeRoot -ErrorAction SilentlyContinue
-    }
-    if ($script:ExtractDir -and (Test-Path $script:ExtractDir)) {
-        Remove-Item -Recurse -Force $script:ExtractDir -ErrorAction SilentlyContinue
-    }
-}
-
-function Ok($Label) {
+function Ok([string]$Label) {
     $script:Pass++
     Write-Host "  ok: $Label"
 }
 
-function FailWith($Msg) {
+function Fail-With([string]$Message) {
     $script:Fail++
-    Write-Host "FAIL: $Msg"
+    Write-Host "FAIL: $Message"
+}
+
+function Assert-True([bool]$Condition, [string]$Label) {
+    if ($Condition) { Ok $Label } else { Fail-With $Label }
+}
+
+function Assert-File([string]$Path, [string]$Label) {
+    Assert-True ((Test-Path -LiteralPath $Path -PathType Leaf)) "$Label (missing: $Path)"
+}
+
+function Assert-Directory([string]$Path, [string]$Label) {
+    Assert-True ((Test-Path -LiteralPath $Path -PathType Container)) "$Label (missing: $Path)"
+}
+
+function Assert-Absent([string]$Path, [string]$Label) {
+    Assert-True (-not (Test-Path -LiteralPath $Path)) "$Label (forbidden: $Path)"
+}
+
+function Assert-Contains([string]$Path, [string]$Needle, [string]$Label) {
+    $found = (Test-Path -LiteralPath $Path -PathType Leaf) -and
+        (Select-String -LiteralPath $Path -SimpleMatch -Pattern $Needle -Quiet -ErrorAction SilentlyContinue)
+    Assert-True $found "$Label (missing [$Needle] in $Path)"
+}
+
+function Assert-Line([string]$Path, [string]$Expected, [string]$Label) {
+    $found = (Test-Path -LiteralPath $Path -PathType Leaf) -and
+        (@(Get-Content -LiteralPath $Path) -ccontains $Expected)
+    Assert-True $found "$Label (missing exact line [$Expected] in $Path)"
+}
+
+function Get-GzipText([string]$Path) {
+    $input = [System.IO.File]::OpenRead($Path)
+    try {
+        $gzip = New-Object System.IO.Compression.GzipStream($input, [System.IO.Compression.CompressionMode]::Decompress)
+        try {
+            $reader = New-Object System.IO.StreamReader($gzip)
+            try { return $reader.ReadToEnd() } finally { $reader.Dispose() }
+        } finally { $gzip.Dispose() }
+    } finally { $input.Dispose() }
+}
+
+function Write-GzipText([string]$Path, [string]$Text) {
+    $output = [System.IO.File]::Create($Path)
+    try {
+        $gzip = New-Object System.IO.Compression.GzipStream($output, [System.IO.Compression.CompressionMode]::Compress)
+        try {
+            $writer = New-Object System.IO.StreamWriter($gzip)
+            try { $writer.Write($Text) } finally { $writer.Dispose() }
+        } finally { $gzip.Dispose() }
+    } finally { $output.Dispose() }
+}
+
+function Write-RandomFile([string]$Path, [int]$Bytes, [switch]$Gzip) {
+    $data = New-Object byte[] $Bytes
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $rng.GetBytes($data) } finally { $rng.Dispose() }
+    $output = [System.IO.File]::Create($Path)
+    try {
+        if ($Gzip) {
+            $compressionStream = New-Object System.IO.Compression.GzipStream($output, [System.IO.Compression.CompressionMode]::Compress)
+            try { $compressionStream.Write($data, 0, $data.Length) } finally { $compressionStream.Dispose() }
+        } else {
+            $output.Write($data, 0, $data.Length)
+        }
+    } finally { $output.Dispose() }
+}
+
+function Expand-SupportBundle([string]$Bundle, [string]$Destination) {
+    $null = New-Item -ItemType Directory -Path $Destination -Force
+    Expand-Archive -LiteralPath $Bundle -DestinationPath $Destination -Force
+    $root = Get-ChildItem -LiteralPath $Destination -Directory |
+        Where-Object { $_.Name -like 'gateway-support-*' } | Select-Object -First 1
+    if (-not $root) { throw "archive root missing under $Destination" }
+    return $root.FullName
+}
+
+function Set-SupportEnvironment {
+    param(
+        [string]$GatewayLog,
+        [string]$GatewayBoot,
+        [AllowEmptyString()][string]$KiroCwd,
+        [string]$KiroLog,
+        [AllowEmptyString()][string]$HermesHome
+    )
+    $env:HOME = $HomeFixture
+    $env:USERPROFILE = $HomeFixture
+    $env:GW_HOME = $GatewayHome
+    $env:GW_BIN = if ($RunningOnWindows) { 'cmd.exe' } else { '/usr/bin/true' }
+    $env:GW_STATE_DIR = Join-Path $GatewayHome 'state'
+    $env:GW_PID = Join-Path $GatewayHome 'state\gateway.pid'
+    $env:GW_LOG = $GatewayLog
+    $env:GW_LOGOUT = $GatewayBoot
+    $env:GW_LOGERR = Join-Path $GatewayHome 'logs\unused-boot-err.log'
+    $env:GW_ADDR = "http://127.0.0.1:$HttpPort"
+    $env:KIRO_CWD = $KiroCwd
+    $env:KIRO_CHAT_LOG_FILE = $KiroLog
+    $env:HERMES_HOME = $HermesHome
+    $env:AUTH_TOKEN = $SecretToken
+    $env:PII_HASH_KEY = $SecretHash
+    $env:PII_ENCRYPT_KEY = $SecretEncrypt
+    $env:GW_METRICS_REMOTE_WRITE_URL = 'https://metrics.example.test/api/prom/push'
+    $env:GW_METRICS_REMOTE_WRITE_USER = 'fixture-user'
+    $env:GW_METRICS_REMOTE_WRITE_TOKEN = $SecretRemote
+    $env:GW_METRICS_REMOTE_WRITE_INTERVAL_SEC = '45'
+    $env:HTTP_ADDR = '127.0.0.1:18080'
+    $env:CHAT_TRACE = 'true'
+    $env:KIRO_WORKER_MAX_TURNS = '20'
+    $env:GW_ENV_FILE = Join-Path $script:FixtureRoot 'missing.env'
+    $env:GW_OVERRIDES_FILE = Join-Path $script:FixtureRoot 'missing-overrides.env'
+}
+
+function Invoke-SupportRun {
+    param(
+        [string]$OutDir,
+        [int]$MaxMb = 50,
+        [AllowEmptyString()][string]$ExplicitCoworker = ''
+    )
+    $null = New-Item -ItemType Directory -Path $OutDir -Force
+    $stderr = "$OutDir.stderr"
+    $args = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $Wrapper, 'support', '-Out', $OutDir, '-MaxMb', "$MaxMb", '-LogDays', '9999')
+    if ($ExplicitCoworker) { $args += @('-CoworkerHome', $ExplicitCoworker) }
+    $stdout = @(& $Pwsh @args 2> $stderr)
+    $rc = $LASTEXITCODE
+    return [pscustomobject]@{
+        ExitCode = $rc
+        Bundle = if ($stdout.Count -gt 0) { [string]$stdout[-1] } else { '' }
+        Stderr = if (Test-Path -LiteralPath $stderr) { Get-Content -LiteralPath $stderr -Raw } else { '' }
+    }
+}
+
+function Assert-NoSecretInTree([string]$Root, [string[]]$Needles, [string]$LabelPrefix) {
+    foreach ($needle in $Needles) {
+        $found = $false
+        foreach ($file in Get-ChildItem -LiteralPath $Root -Recurse -File) {
+            if ($file.Extension -eq '.gz') {
+                try { if ((Get-GzipText $file.FullName).Contains($needle)) { $found = $true; break } } catch {}
+            } elseif (Select-String -LiteralPath $file.FullName -SimpleMatch -Pattern $needle -Quiet -ErrorAction SilentlyContinue) {
+                $found = $true; break
+            }
+        }
+        Assert-True (-not $found) "$LabelPrefix excludes synthetic secret $needle"
+    }
 }
 
 try {
-    $SecretToken   = 'realsupersecretXYZ'
-    $SecretBearer  = 'realtoken1234deadbeef'
-    $SecretHash    = 'realHashKeyABC987'
+    $SecretToken = 'realsupersecretXYZ'
+    $SecretBearer = 'realtoken1234deadbeef'
+    $SecretHash = 'realHashKeyABC987'
     $SecretEncrypt = 'realEncryptKey555'
+    $SecretRemote = 'remotesecretvalue987'
+    $ExternalSecret = 'external-reparse-secret-4455'
+    $ExcludedSecret = 'excluded-curator-secret-7788'
+    $DecoySecret = 'wrong-hermes-home-secret-9911'
+    $SuffixDecoySecret = 'multi-component-rotation-secret-6633'
 
-    $script:FakeRoot = Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetRandomFileName())
-    $null = New-Item -ItemType Directory -Path (Join-Path $script:FakeRoot 'logs') -Force
-    $null = New-Item -ItemType Directory -Path (Join-Path $script:FakeRoot '.gw\state') -Force
-    # NOTE: no .otto\tray\state fixture — that row was removed from both
-    # wrappers per REL-TRAY-09 (D-18-10); the tray has never written it.
+    $script:FixtureRoot = Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetRandomFileName())
+    $ExtractRoot = Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetRandomFileName())
+    $GatewayHome = Join-Path $script:FixtureRoot 'gateway-home'
+    $KiroCwdFixture = Join-Path $script:FixtureRoot 'kiro-cwd'
+    $CoworkerHome = Join-Path $script:FixtureRoot 'co-worker-home'
+    $DecoyHermesHome = Join-Path $script:FixtureRoot 'decoy-hermes-home'
+    $HomeFixture = Join-Path $script:FixtureRoot 'user-home'
+    foreach ($dir in @(
+        (Join-Path $GatewayHome 'logs'), (Join-Path $GatewayHome 'state'),
+        (Join-Path $KiroCwdFixture 'native'), (Join-Path $CoworkerHome 'logs\curator'),
+        (Join-Path $CoworkerHome 'profiles\work\logs'), (Join-Path $DecoyHermesHome 'logs'),
+        $HomeFixture, $ExtractRoot
+    )) { $null = New-Item -ItemType Directory -Path $dir -Force }
 
     @(
-        '2026-06-08T00:00:00Z info gateway boot ok',
-        "2026-06-08T00:00:01Z info AUTH_TOKEN=$SecretToken was loaded",
-        "2026-06-08T00:00:02Z info Authorization: Bearer $SecretBearer on inbound",
-        "2026-06-08T00:00:03Z info x-api-key: $SecretBearer on inbound",
-        "2026-06-08T00:00:04Z info PII_HASH_KEY=$SecretHash active",
-        "2026-06-08T00:00:05Z info PII_ENCRYPT_KEY=$SecretEncrypt active",
-        '2026-06-08T00:00:06Z info routine traffic'
-    ) | Set-Content -Path (Join-Path $script:FakeRoot 'logs\gateway.log') -Encoding UTF8
+        'gateway current safe',
+        "AUTH_TOKEN=$SecretToken",
+        "Authorization: Bearer $SecretBearer",
+        "x-api-key: $SecretBearer",
+        "PII_HASH_KEY=$SecretHash",
+        "PII_ENCRYPT_KEY=$SecretEncrypt",
+        "GW_METRICS_REMOTE_WRITE_TOKEN=$SecretRemote"
+    ) | Set-Content -LiteralPath (Join-Path $GatewayHome 'logs\gateway.log') -Encoding UTF8
+    'gateway boot safe' | Set-Content -LiteralPath (Join-Path $GatewayHome 'logs\gateway-boot.log') -Encoding UTF8
+    'gateway trace safe' | Set-Content -LiteralPath (Join-Path $GatewayHome 'logs\gateway-chat-trace.log') -Encoding UTF8
+    Write-RandomFile (Join-Path $GatewayHome 'logs\gateway-20200101.log.gz') (1600KB) -Gzip
+    Write-GzipText (Join-Path $GatewayHome 'logs\gateway-20260101.log.gz') "gateway compressed safe`nGW_METRICS_REMOTE_WRITE_TOKEN=$SecretRemote`n"
+    (Get-Item -LiteralPath (Join-Path $GatewayHome 'logs\gateway-20200101.log.gz')).LastWriteTimeUtc = [datetime]'2020-01-01Z'
+    (Get-Item -LiteralPath (Join-Path $GatewayHome 'logs\gateway-20260101.log.gz')).LastWriteTimeUtc = [datetime]'2026-01-01Z'
 
-    'boot ok'  | Set-Content -Path (Join-Path $script:FakeRoot 'logs\gateway.boot-out.log')
-    'boot err' | Set-Content -Path (Join-Path $script:FakeRoot 'logs\gateway.boot-err.log')
+    @('kiro current safe', "AUTH_TOKEN=$SecretToken") | Set-Content -LiteralPath (Join-Path $KiroCwdFixture 'native\kiro-current.log') -Encoding UTF8
+    Write-RandomFile (Join-Path $KiroCwdFixture 'native\kiro-current.log.1') (2100KB)
+    'kiro newest rotation safe' | Set-Content -LiteralPath (Join-Path $KiroCwdFixture 'native\kiro-current.log.2') -Encoding UTF8
+    $SuffixDecoySecret | Set-Content -LiteralPath (Join-Path $KiroCwdFixture 'native\kiro-current.log.backup.99') -Encoding UTF8
+    Write-GzipText (Join-Path $KiroCwdFixture 'native\kiro-current.log.3.gz') 'compressed Kiro excluded'
+    (Get-Item -LiteralPath (Join-Path $KiroCwdFixture 'native\kiro-current.log.1')).LastWriteTimeUtc = [datetime]'2021-01-01Z'
+    (Get-Item -LiteralPath (Join-Path $KiroCwdFixture 'native\kiro-current.log.2')).LastWriteTimeUtc = [datetime]'2023-01-01Z'
 
-    $script:ExtractDir = Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetRandomFileName())
-    $OutDir = Join-Path $script:ExtractDir 'out'
-    $null = New-Item -ItemType Directory -Path $OutDir -Force
+    $ApprovedLogs = @('agent.log','errors.log','gateway.log','gui.log','desktop.log','mcp-stderr.log','gateway-shutdown-watchdog.log','dashboard-auth.log','container-boot.log','tool_calls.log')
+    foreach ($name in $ApprovedLogs) { "$name safe" | Set-Content -LiteralPath (Join-Path $CoworkerHome "logs\$name") -Encoding UTF8 }
+    @("AUTH_TOKEN=$SecretToken", "GW_METRICS_REMOTE_WRITE_TOKEN=$SecretRemote") | Add-Content -LiteralPath (Join-Path $CoworkerHome 'logs\agent.log') -Encoding UTF8
+    Write-RandomFile (Join-Path $CoworkerHome 'logs\agent.log.1') (2100KB)
+    'co-worker newest rotation safe' | Set-Content -LiteralPath (Join-Path $CoworkerHome 'logs\errors.log.2') -Encoding UTF8
+    $SuffixDecoySecret | Set-Content -LiteralPath (Join-Path $CoworkerHome 'logs\agent.log.private.99') -Encoding UTF8
+    Write-GzipText (Join-Path $CoworkerHome 'logs\errors.log.3.gz') 'compressed Co-worker excluded'
+    (Get-Item -LiteralPath (Join-Path $CoworkerHome 'logs\agent.log.1')).LastWriteTimeUtc = [datetime]'2022-01-01Z'
+    (Get-Item -LiteralPath (Join-Path $CoworkerHome 'logs\errors.log.2')).LastWriteTimeUtc = [datetime]'2024-01-01Z'
+    'profile errors safe' | Set-Content -LiteralPath (Join-Path $CoworkerHome 'profiles\work\logs\errors.log') -Encoding UTF8
+    'profile rotation safe' | Set-Content -LiteralPath (Join-Path $CoworkerHome 'profiles\work\logs\errors.log.1') -Encoding UTF8
+    $ExcludedSecret | Set-Content -LiteralPath (Join-Path $CoworkerHome 'logs\unrelated.log') -Encoding UTF8
+    $ExcludedSecret | Set-Content -LiteralPath (Join-Path $CoworkerHome 'logs\curator\agent.log') -Encoding UTF8
+    $DecoySecret | Set-Content -LiteralPath (Join-Path $DecoyHermesHome 'logs\agent.log') -Encoding UTF8
 
-    # Set env overrides so all wrapper-resolved paths point at the fake root
-    # (both anchors — GW_INSTALL_DIR for code, GW_HOME for config/state —
-    # since the two-anchor layout means a bare GW_INSTALL_DIR override no
-    # longer isolates .env discovery from the real $env:USERPROFILE\.gw).
-    $env:GW_INSTALL_DIR    = $script:FakeRoot
-    $env:GW_HOME           = Join-Path $script:FakeRoot '.gw'
-    $env:GW_BIN            = 'cmd.exe'  # exists on PATH but --version will fail -- exercises the error path
-    $env:GW_STATE_DIR      = Join-Path $script:FakeRoot '.gw\state'
-    $env:GW_PID            = Join-Path $script:FakeRoot '.gw\state\gateway.pid'
-    $env:GW_LOG            = Join-Path $script:FakeRoot 'logs\gateway.log'
-    $env:GW_ADDR           = 'http://127.0.0.1:1'  # unreachable on purpose
-    $env:AUTH_TOKEN        = $SecretToken
-    $env:PII_HASH_KEY      = $SecretHash
-    $env:PII_ENCRYPT_KEY   = $SecretEncrypt
-    $env:HTTP_ADDR         = '127.0.0.1:18080'
-    $env:KIRO_WORKER_MAX_TURNS = '20'
-    $env:GW_ENV_FILE       = 'NUL'      # neutralize project-local .env discovery
-    $env:GW_OVERRIDES_FILE = 'NUL'
-
-    Write-Host "== running gw.ps1 support =="
-    $stdoutFile = [System.IO.Path]::GetTempFileName()
-    $stderrFile = [System.IO.Path]::GetTempFileName()
-    $proc = Start-Process -FilePath (Get-Command pwsh -ErrorAction SilentlyContinue).Source `
-        -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$Wrapper,'support','-Out',$OutDir) `
-        -RedirectStandardOutput $stdoutFile -RedirectStandardError $stderrFile -PassThru -Wait -WindowStyle Hidden
-    if (-not $proc) {
-        # Fallback: pwsh not on PATH (test runner is Windows PowerShell 5)
-        & powershell -NoProfile -ExecutionPolicy Bypass -File $Wrapper support -Out $OutDir `
-            > $stdoutFile 2> $stderrFile
-        $rc = $LASTEXITCODE
-    } else {
-        $rc = $proc.ExitCode
+    $Outside = Join-Path $script:FixtureRoot 'outside-secret.log'
+    $ExternalSecret | Set-Content -LiteralPath $Outside -Encoding UTF8
+    $ReparseCreated = $false
+    try {
+        $null = New-Item -ItemType SymbolicLink -Path (Join-Path $CoworkerHome 'logs\agent.log.9') -Target $Outside -ErrorAction Stop
+        $ReparseCreated = $true
+    } catch {
+        Write-Host "  skip: reparse fixture unavailable on this host: $($_.Exception.Message)"
     }
 
-    if ($rc -eq 0) { Ok 'support exit 0' } else { FailWith "support exit $rc (stderr: $(Get-Content $stderrFile -Raw))" }
-
-    $bundlePath = (Get-Content $stdoutFile | Select-Object -Last 1).Trim()
-    if ($bundlePath -and (Test-Path $bundlePath)) {
-        Ok "bundle path printed and file exists: $bundlePath"
-    } else {
-        FailWith "bundle path missing or file does not exist: [$bundlePath]"
-        Write-Host "passed: $script:Pass, failed: $script:Fail"
-        exit 1
+    $PortFile = Join-Path $script:FixtureRoot 'http-port'
+    $RequestLog = Join-Path $script:FixtureRoot 'http-requests.log'
+    $ModeFile = Join-Path $script:FixtureRoot 'http-mode'
+    $ServerScript = Join-Path $script:FixtureRoot 'server.py'
+    'enabled' | Set-Content -LiteralPath $ModeFile -Encoding ASCII
+    @'
+import http.server, json, sys
+port_file, request_log, mode_file = sys.argv[1:]
+class Handler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *_args): pass
+    def send_body(self, status, content_type, body):
+        encoded = body.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(encoded)))
+        self.end_headers()
+        self.wfile.write(encoded)
+    def record(self):
+        with open(request_log, "a", encoding="utf-8") as out: out.write(f"{self.command} {self.path}\n")
+    def do_GET(self):
+        self.record()
+        if self.path == "/metrics": self.send_body(200, "text/plain", "# HELP gateway_up fixture\ngateway_up 1\n")
+        elif self.path == "/admin/api/acp-capture?support=redacted":
+            mode = open(mode_file, encoding="utf-8-sig").read().strip()
+            if mode == "enabled":
+                self.send_body(200, "application/json", json.dumps({"enabled": True, "allowRuntimeToggle": True, "count": 1, "size": 8, "frames": [{"seq": 7, "method": "session/update", "params": "{\"safe\":\"capture safe\",\"token\":\"[REDACTED]\"}", "bytes": 64}]}))
+            elif mode == "disabled": self.send_body(200, "application/json", '{"enabled":false,"frames":[]}')
+            elif mode == "wrongtype": self.send_body(200, "application/json", '{"enabled":"true","frames":[]}')
+            else: self.send_body(200, "application/json", '{"enabled":true')
+        elif self.path == "/health": self.send_body(200, "application/json", '{"status":"ok"}')
+        elif self.path == "/admin/api/snapshot": self.send_body(200, "application/json", '{"fixture":"snapshot"}')
+        else: self.send_body(404, "text/plain", "not found")
+    def do_POST(self):
+        self.record()
+        self.send_body(405, "text/plain", "read only")
+server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+open(port_file, "w", encoding="ascii").write(str(server.server_address[1]))
+server.serve_forever()
+'@ | Set-Content -LiteralPath $ServerScript -Encoding UTF8
+    $script:HttpProcess = Start-Process -FilePath $Python -ArgumentList @($ServerScript, $PortFile, $RequestLog, $ModeFile) -PassThru
+    foreach ($attempt in 1..50) {
+        if (Test-Path -LiteralPath $PortFile) { break }
+        Start-Sleep -Milliseconds 100
     }
+    if (-not (Test-Path -LiteralPath $PortFile)) { throw 'deterministic HTTP endpoint did not start' }
+    $HttpPort = (Get-Content -LiteralPath $PortFile -Raw).Trim()
+    @("request = POST", "url = http://127.0.0.1:$HttpPort/mutate") | Set-Content -LiteralPath (Join-Path $HomeFixture '.curlrc') -Encoding ASCII
 
-    if (Test-Path (Join-Path $OutDir 'latest.zip')) { Ok 'latest.zip alias exists' } else { FailWith 'latest.zip alias missing' }
+    $GatewayLog = Join-Path $GatewayHome 'logs\gateway.log'
+    $GatewayBoot = Join-Path $GatewayHome 'logs\gateway-boot.log'
+    Set-SupportEnvironment $GatewayLog $GatewayBoot $KiroCwdFixture 'native/kiro-current.log' $CoworkerHome
 
-    # Extract and inspect.
-    $ExTree = Join-Path $script:ExtractDir 'extracted'
-    $null = New-Item -ItemType Directory -Path $ExTree -Force
-    Expand-Archive -Path $bundlePath -DestinationPath $ExTree -Force
+    Write-Host '== enabled support bundle =='
+    $main = Invoke-SupportRun (Join-Path $ExtractRoot 'main-out')
+    Assert-True ($main.ExitCode -eq 0) "support exits zero with HERMES_HOME fallback: $($main.Stderr)"
+    Assert-File $main.Bundle 'bundle path is printed and exists'
+    Assert-File (Join-Path $ExtractRoot 'main-out\latest.zip') 'latest.zip copy exists'
+    $mainRoot = Expand-SupportBundle $main.Bundle (Join-Path $ExtractRoot 'main-tree')
+    foreach ($section in @('env','health','logs','system','tray')) { Assert-Directory (Join-Path $mainRoot $section) "standard $section section exists" }
+    $logNames = @((Get-ChildItem -LiteralPath (Join-Path $mainRoot 'logs') -Directory | Sort-Object Name | ForEach-Object Name)) -join ','
+    Assert-True ($logNames -ceq 'co-worker,gateway,kiro') "logs contains exactly application directories (got $logNames)"
+    Assert-Absent (Join-Path $mainRoot 'logs\gateway.log') 'flat Gateway layout is absent'
 
-    Write-Host "== zip contents =="
-    $bundleDirs = Get-ChildItem -Directory -Path $ExTree | Where-Object { $_.Name -like 'gateway-support-*' }
-    if (-not $bundleDirs) {
-        FailWith "extracted bundle root not found under $ExTree"
-        Write-Host "passed: $script:Pass, failed: $script:Fail"
-        exit 1
+    foreach ($relative in @('gateway.log','gateway-boot.log','gateway-chat-trace.log','gateway-20200101.log.gz','gateway-20260101.log.gz')) {
+        Assert-File (Join-Path $mainRoot "logs\gateway\$relative") "Gateway artifact $relative is organized"
     }
-    $BundleRoot = $bundleDirs[0].FullName
+    $gatewayGzipText = Get-GzipText (Join-Path $mainRoot 'logs\gateway\gateway-20260101.log.gz')
+    Assert-True ($gatewayGzipText.Contains('GW_METRICS_REMOTE_WRITE_TOKEN=[REDACTED]')) 'Gateway gzip rotation is decompressed and redacted'
+    Assert-True (-not $gatewayGzipText.Contains($SecretRemote)) 'Gateway gzip rotation excludes raw remote-write token'
+    Assert-Contains (Join-Path $mainRoot 'logs\gateway\gateway.log') 'GW_METRICS_REMOTE_WRITE_TOKEN=[REDACTED]' 'Gateway current remote-write assignment is redacted'
 
-    foreach ($required in @('MANIFEST.txt','env','health','logs','system','tray')) {
-        if (Test-Path (Join-Path $BundleRoot $required)) {
-            Ok "bundle contains $required"
-        } else {
-            FailWith "bundle missing $required"
+    foreach ($relative in @('kiro-chat.log','kiro-chat.log.1','kiro-chat.log.2')) { Assert-File (Join-Path $mainRoot "logs\kiro\$relative") "Kiro artifact $relative is retained" }
+    Assert-Absent (Join-Path $mainRoot 'logs\kiro\kiro-chat.log.3.gz') 'compressed Kiro rotation is excluded'
+    Assert-Absent (Join-Path $mainRoot 'logs\kiro\kiro-chat.log.99') 'multi-component Kiro suffix is excluded'
+    Assert-Contains (Join-Path $mainRoot 'logs\kiro\kiro-chat.log') 'AUTH_TOKEN=[REDACTED]' 'relative Kiro current log is found and redacted'
+
+    foreach ($name in $ApprovedLogs) { Assert-File (Join-Path $mainRoot "logs\co-worker\$name") "approved Co-worker $name is retained" }
+    foreach ($relative in @('agent.log.1','errors.log.2','profiles\work\logs\errors.log','profiles\work\logs\errors.log.1')) { Assert-File (Join-Path $mainRoot "logs\co-worker\$relative") "Co-worker artifact $relative is retained" }
+    foreach ($relative in @('errors.log.3.gz','unrelated.log','curator','agent.log.99')) { Assert-Absent (Join-Path $mainRoot "logs\co-worker\$relative") "unapproved Co-worker artifact $relative is excluded" }
+    if ($ReparseCreated) { Assert-Absent (Join-Path $mainRoot 'logs\co-worker\agent.log.9') 'matching reparse point is rejected' }
+    Assert-Contains (Join-Path $mainRoot 'logs\co-worker\agent.log') 'GW_METRICS_REMOTE_WRITE_TOKEN=[REDACTED]' 'Co-worker remote-write assignment is redacted'
+
+    $metrics = @(Get-ChildItem -LiteralPath (Join-Path $mainRoot 'logs\gateway') -File -Filter 'metrics-snapshot-*.prom')
+    $captures = @(Get-ChildItem -LiteralPath (Join-Path $mainRoot 'logs\gateway') -File -Filter 'acp-capture-*.json')
+    Assert-True ($metrics.Count -eq 1) 'one timestamped metrics snapshot is archived'
+    Assert-True ($captures.Count -eq 1) 'one timestamped enabled capture is archived'
+    if ($metrics.Count -eq 1 -and $captures.Count -eq 1) {
+        $snapshotTs = $metrics[0].BaseName.Substring('metrics-snapshot-'.Length)
+        Assert-True ($snapshotTs -match '^\d{8}-\d{6}Z$') 'snapshot timestamp uses UTC YYYYMMDD-HHMMSSZ'
+        Assert-True ($captures[0].Name -ceq "acp-capture-$snapshotTs.json") 'metrics and capture share one UTC timestamp'
+        Assert-Contains $metrics[0].FullName 'gateway_up 1' 'metrics content is preserved'
+        $captureJson = Get-Content -LiteralPath $captures[0].FullName -Raw | ConvertFrom-Json
+        Assert-True (($captureJson.enabled -is [bool]) -and $captureJson.enabled -and $captureJson.frames[0].seq -eq 7) 'capture is valid enabled JSON'
+    }
+    $envFile = Join-Path $mainRoot 'env\effective.env'
+    Assert-Contains $envFile 'GW_METRICS_REMOTE_WRITE_URL=https://metrics.example.test/api/prom/push' 'effective env includes remote-write URL'
+    Assert-Contains $envFile 'GW_METRICS_REMOTE_WRITE_USER=fixture-user' 'effective env includes remote-write user'
+    Assert-Contains $envFile 'GW_METRICS_REMOTE_WRITE_INTERVAL_SEC=45' 'effective env includes remote-write interval'
+    Assert-Contains $envFile "GW_METRICS_REMOTE_WRITE_TOKEN=remo$([char]0x2026)(20 chars)" 'effective env masks remote-write token'
+    $manifest = Join-Path $mainRoot 'MANIFEST.txt'
+    Assert-Contains $manifest 'metrics: captured' 'manifest records captured metrics'
+    Assert-Contains $manifest 'capture: captured' 'manifest records captured capture'
+    Assert-Contains $manifest 'sensitive user content' 'manifest warns about capture content'
+    Assert-Contains $manifest 'review before sharing' 'manifest tells operator to review bundle'
+    if ($ReparseCreated) { Assert-Contains $manifest 'Co-worker agent.log.9 rejected: reparse point' 'manifest records reparse rejection' }
+    Assert-NoSecretInTree $mainRoot @($SecretToken,$SecretBearer,$SecretHash,$SecretEncrypt,$SecretRemote,$ExternalSecret,$ExcludedSecret,$DecoySecret,$SuffixDecoySecret) 'enabled bundle'
+
+    Write-Host '== global cap and explicit Co-worker precedence =='
+    $env:HERMES_HOME = $DecoyHermesHome
+    $cap = Invoke-SupportRun (Join-Path $ExtractRoot 'cap-out') 4 $CoworkerHome
+    Assert-True ($cap.ExitCode -eq 0) "support exits zero with explicit Co-worker home: $($cap.Stderr)"
+    $capRoot = Expand-SupportBundle $cap.Bundle (Join-Path $ExtractRoot 'cap-tree')
+    foreach ($relative in @('logs\gateway\gateway.log','logs\kiro\kiro-chat.log','logs\co-worker\agent.log','MANIFEST.txt')) { Assert-File (Join-Path $capRoot $relative) "cap preserves protected $relative" }
+    Assert-Contains (Join-Path $capRoot 'logs\co-worker\agent.log') 'agent.log safe' 'explicit Co-worker home wins over HERMES_HOME'
+    Assert-Absent (Join-Path $capRoot 'logs\gateway\gateway-20200101.log.gz') 'cap drops oldest Gateway rotation first'
+    Assert-Absent (Join-Path $capRoot 'logs\kiro\kiro-chat.log.1') 'cap drops next-oldest Kiro rotation'
+    Assert-File (Join-Path $capRoot 'logs\co-worker\agent.log.1') 'cap keeps newer Co-worker rotation once under cap'
+    Assert-Contains (Join-Path $capRoot 'MANIFEST.txt') 'DROPPED FOR SIZE: logs' 'manifest accounts for global cap omissions with relative paths'
+
+    Write-Host '== capture states and Kiro cwd semantics =='
+    'disabled' | Set-Content -LiteralPath $ModeFile -Encoding ASCII
+    $env:HERMES_HOME = ''
+    $disabled = Invoke-SupportRun (Join-Path $ExtractRoot 'disabled-out')
+    $disabledRoot = Expand-SupportBundle $disabled.Bundle (Join-Path $ExtractRoot 'disabled-tree')
+    Assert-True ($disabled.ExitCode -eq 0) 'support continues without a Co-worker home'
+    Assert-True (@(Get-ChildItem -LiteralPath (Join-Path $disabledRoot 'logs\gateway') -Filter 'acp-capture-*.json').Count -eq 0) 'disabled capture creates no export'
+    Assert-Contains (Join-Path $disabledRoot 'MANIFEST.txt') 'capture: disabled' 'manifest records disabled capture'
+    Assert-Contains (Join-Path $disabledRoot 'MANIFEST.txt') 'Co-worker logs unavailable' 'manifest records missing Co-worker home'
+
+    'wrongtype' | Set-Content -LiteralPath $ModeFile -Encoding ASCII
+    $invalid = Invoke-SupportRun (Join-Path $ExtractRoot 'invalid-out')
+    $invalidRoot = Expand-SupportBundle $invalid.Bundle (Join-Path $ExtractRoot 'invalid-tree')
+    Assert-True ($invalid.ExitCode -eq 0) 'support tolerates non-boolean capture state'
+    Assert-True (@(Get-ChildItem -LiteralPath (Join-Path $invalidRoot 'logs\gateway') -Filter 'acp-capture-*.json').Count -eq 0) 'non-boolean capture creates no export'
+    Assert-Contains (Join-Path $invalidRoot 'MANIFEST.txt') 'capture: unavailable' 'manifest records non-boolean capture as unavailable'
+
+    'enabled' | Set-Content -LiteralPath $ModeFile -Encoding ASCII
+    $SmallLogs = Join-Path $script:FixtureRoot 'small-logs'
+    $null = New-Item -ItemType Directory -Path $SmallLogs -Force
+    'small gateway' | Set-Content -LiteralPath (Join-Path $SmallLogs 'gateway.log') -Encoding UTF8
+    'small boot' | Set-Content -LiteralPath (Join-Path $SmallLogs 'gateway-boot.log') -Encoding UTF8
+    'default Kiro cwd safe' | Set-Content -LiteralPath (Join-Path $GatewayHome 'default-relative-kiro.log') -Encoding UTF8
+    Set-SupportEnvironment (Join-Path $SmallLogs 'gateway.log') (Join-Path $SmallLogs 'gateway-boot.log') '' 'default-relative-kiro.log' ''
+    $defaultCwd = Invoke-SupportRun (Join-Path $ExtractRoot 'default-cwd-out')
+    $defaultRoot = Expand-SupportBundle $defaultCwd.Bundle (Join-Path $ExtractRoot 'default-cwd-tree')
+    Assert-Contains (Join-Path $defaultRoot 'logs\kiro\kiro-chat.log') 'default Kiro cwd safe' 'empty KIRO_CWD resolves relative Kiro log from GW_HOME'
+
+    $tildeDir = Join-Path $HomeFixture 'kiro-tilde\native'
+    $null = New-Item -ItemType Directory -Path $tildeDir -Force
+    'tilde Kiro cwd safe' | Set-Content -LiteralPath (Join-Path $tildeDir 'tilde-kiro.log') -Encoding UTF8
+    Set-SupportEnvironment (Join-Path $SmallLogs 'gateway.log') (Join-Path $SmallLogs 'gateway-boot.log') '~/kiro-tilde' 'native/tilde-kiro.log' ''
+    $tilde = Invoke-SupportRun (Join-Path $ExtractRoot 'tilde-out')
+    $tildeRoot = Expand-SupportBundle $tilde.Bundle (Join-Path $ExtractRoot 'tilde-tree')
+    Assert-Contains (Join-Path $tildeRoot 'logs\kiro\kiro-chat.log') 'tilde Kiro cwd safe' 'tilde KIRO_CWD expands before resolving relative Kiro log'
+
+    Write-Host '== configured-source warnings and GET-only probes =='
+    Set-SupportEnvironment (Join-Path $script:FixtureRoot 'missing\gateway.log') (Join-Path $script:FixtureRoot 'missing\gateway-boot.log') (Join-Path $script:FixtureRoot 'missing') 'kiro.log' ''
+    $missing = Invoke-SupportRun (Join-Path $ExtractRoot 'missing-out')
+    $missingRoot = Expand-SupportBundle $missing.Bundle (Join-Path $ExtractRoot 'missing-tree')
+    Assert-True ($missing.ExitCode -eq 0) 'support continues when configured sources are missing'
+    foreach ($warning in @('Gateway current log missing','Gateway boot log missing','Kiro current log missing')) { Assert-Contains (Join-Path $missingRoot 'MANIFEST.txt') $warning "manifest records $warning" }
+
+    if (-not $RunningOnWindows -and (Get-Command chmod -ErrorAction SilentlyContinue)) {
+        $FailureRoot = Join-Path $script:FixtureRoot 'unreadable-sources'
+        foreach ($dir in @((Join-Path $FailureRoot 'gateway'), (Join-Path $FailureRoot 'kiro'), (Join-Path $FailureRoot 'co-worker\logs'))) {
+            $null = New-Item -ItemType Directory -Path $dir -Force
         }
-    }
-
-    Write-Host "== secret-leak grep =="
-    foreach ($needle in @($SecretToken, $SecretBearer, $SecretHash, $SecretEncrypt)) {
-        $leakFiles = Get-ChildItem -Path $BundleRoot -Recurse -File -ErrorAction SilentlyContinue |
-            Where-Object { (Select-String -Path $_.FullName -SimpleMatch -Pattern $needle -Quiet -ErrorAction SilentlyContinue) }
-        if ($leakFiles) {
-            FailWith "synthetic secret leaked into bundle: $needle"
-            $leakFiles | ForEach-Object { Write-Host "    leak: $($_.FullName)" }
-        } else {
-            Ok "synthetic secret absent from bundle: $needle"
+        $UnreadableGateway = Join-Path $FailureRoot 'gateway\gateway.log'
+        $ReadableBoot = Join-Path $FailureRoot 'gateway\gateway-boot.log'
+        $UnreadableKiro = Join-Path $FailureRoot 'kiro\kiro.log'
+        $UnreadableCoworker = Join-Path $FailureRoot 'co-worker\logs\agent.log'
+        'unreadable Gateway' | Set-Content -LiteralPath $UnreadableGateway -Encoding UTF8
+        'readable boot' | Set-Content -LiteralPath $ReadableBoot -Encoding UTF8
+        'unreadable Kiro' | Set-Content -LiteralPath $UnreadableKiro -Encoding UTF8
+        'unreadable Co-worker' | Set-Content -LiteralPath $UnreadableCoworker -Encoding UTF8
+        & chmod 000 $UnreadableGateway $UnreadableKiro $UnreadableCoworker
+        try {
+            Set-SupportEnvironment $UnreadableGateway $ReadableBoot (Join-Path $FailureRoot 'kiro') 'kiro.log' (Join-Path $FailureRoot 'co-worker')
+            $unreadable = Invoke-SupportRun (Join-Path $ExtractRoot 'unreadable-out')
+            $unreadableRoot = Expand-SupportBundle $unreadable.Bundle (Join-Path $ExtractRoot 'unreadable-tree')
+            Assert-True ($unreadable.ExitCode -eq 0) 'support continues when configured sources are unreadable'
+            foreach ($warning in @('Gateway current log unreadable','Kiro current log unreadable','Co-worker agent.log unreadable')) {
+                Assert-Line (Join-Path $unreadableRoot 'MANIFEST.txt') "WARNING: $warning" "manifest records $warning"
+            }
+        } finally {
+            & chmod 600 $UnreadableGateway $UnreadableKiro $UnreadableCoworker
         }
-    }
-
-    $healthFile = Join-Path $BundleRoot 'health\health.json'
-    if ((Test-Path $healthFile) -and (Select-String -Path $healthFile -SimpleMatch -Pattern 'unreachable:' -Quiet)) {
-        Ok 'health\health.json captured unreachable sentinel'
     } else {
-        FailWith 'health\health.json did not capture unreachable sentinel'
+        Write-Host '  skip: unreadable-source warning fixture requires Unix chmod semantics'
     }
 
-    $envFile = Join-Path $BundleRoot 'env\effective.env'
-    if ((Test-Path $envFile) -and (Select-String -Path $envFile -Pattern '^AUTH_TOKEN=real' -Quiet)) {
-        Ok 'env\effective.env masked AUTH_TOKEN'
-    } else {
-        FailWith 'env\effective.env did not capture AUTH_TOKEN (or did not mask correctly)'
-    }
-    if ((Test-Path $envFile) -and (Select-String -Path $envFile -SimpleMatch -Pattern "AUTH_TOKEN=$SecretToken" -Quiet)) {
-        FailWith 'env\effective.env LEAKED the full AUTH_TOKEN literal'
-    }
-
-    if ((Test-Path $envFile) -and (Select-String -Path $envFile -Pattern '^KIRO_WORKER_MAX_TURNS=20$' -Quiet)) {
-        Ok 'env\effective.env captured KIRO_WORKER_MAX_TURNS'
-    } else {
-        FailWith 'env\effective.env missing KIRO_WORKER_MAX_TURNS'
-    }
-
-    $manifestFile = Join-Path $BundleRoot 'MANIFEST.txt'
-    if ((Test-Path $manifestFile) -and (Select-String -Path $manifestFile -SimpleMatch -Pattern 'Redaction notice' -Quiet)) {
-        Ok 'MANIFEST.txt has redaction notice'
-    } else {
-        FailWith 'MANIFEST.txt missing redaction notice'
-    }
-
-    Remove-Item -Force $stdoutFile, $stderrFile -ErrorAction SilentlyContinue
+    $requests = Get-Content -LiteralPath $RequestLog -Raw
+    Assert-True ($requests.Contains('GET /metrics')) 'support requests metrics with GET'
+    Assert-True ($requests.Contains('GET /admin/api/acp-capture?support=redacted')) 'support requests redacted capture with GET'
+    Assert-True (-not $requests.Contains('POST ')) 'support never sends POST or mutates capture state'
+    Assert-True (-not $requests.Contains('/mutate')) 'support ignores hostile curl configuration'
 } finally {
-    Cleanup
+    if ($script:HttpProcess -and -not $script:HttpProcess.HasExited) {
+        Stop-Process -Id $script:HttpProcess.Id -Force -ErrorAction SilentlyContinue
+        $script:HttpProcess.WaitForExit()
+    }
+    foreach ($path in @($script:FixtureRoot, $ExtractRoot)) {
+        if ($path -and (Test-Path -LiteralPath $path)) { Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue }
+    }
 }
 
-Write-Host ""
-Write-Host "== SUMMARY =="
+Write-Host ''
+Write-Host '== SUMMARY =='
 Write-Host "passed: $script:Pass"
 Write-Host "failed: $script:Fail"
 if ($script:Fail -gt 0) { exit 1 }

@@ -65,12 +65,13 @@ param(
     [string]$Addr,
     # support subcommand flags:
     [string]$Out,
-    # REL-TRAY-07 (T-7) D-discretion defaults: 512MB cap covers a typical
-    # multi-GB log day after gzip + redaction; 180s timeout is generous
-    # enough for real-world bundle assembly and short enough that a runaway
+    [string]$CoworkerHome,
+    # Support defaults match the POSIX collector: 50MB with oldest rotations
+    # dropped first. A 180s timeout is generous enough for real-world bundle
+    # assembly and short enough that a runaway
     # subprocess (hung kiro-cli, mounted-volume stall) does not park the
     # operator's tray indefinitely.
-    [int]$MaxMb = 512,
+    [int]$MaxMb = 50,
     [int]$Timeout = 180,
     [int]$LogDays = 7
 )
@@ -1574,7 +1575,8 @@ function Invoke-Support {
     # Resolve config (writes "loaded env file:" / "loaded overrides:" to host).
     Initialize-Config
 
-    $ts = (Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss')
+    # The bundle and both optional live snapshots share this one UTC stamp.
+    $ts = (Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmssZ')
     $hostname = [System.Net.Dns]::GetHostName()
     $outDir = if ($Out) { $Out } else { Join-Path $GwHome 'support' }
     $bundleName = "gateway-support-$hostname-$ts"
@@ -1605,7 +1607,7 @@ function Invoke-Support {
     try {
         $null = New-Item -ItemType Directory -Path $outDir -Force
         $null = New-Item -ItemType Directory -Path $bundleRoot -Force
-        foreach ($sub in @('env','health','logs','system','tray')) {
+        foreach ($sub in @('env','health','system','tray','logs\gateway','logs\kiro','logs\co-worker')) {
             $null = New-Item -ItemType Directory -Path (Join-Path $bundleRoot $sub) -Force
         }
 
@@ -1616,8 +1618,10 @@ function Invoke-Support {
             'ENABLED_HOOKS','PII_REDACTION_ENABLED','PII_REDACTION_MODE',
             'PII_ENABLED_ENTITIES','PII_ENTITY_ACTIONS','PII_HASH_KEY',
             'PII_ENCRYPT_KEY','AUTH_TOKEN','ALLOWED_IPS',
-            'AUTH_TRUST_XFF','HTTP_ADDR','KIRO_CMD','KIRO_ARGS','KIRO_CWD',
+            'AUTH_TRUST_XFF','HTTP_ADDR','KIRO_CMD','KIRO_ARGS','KIRO_CWD','KIRO_CHAT_LOG_FILE',
             'POOL_SIZE','KIRO_WORKER_MAX_TURNS','STREAM_IDLE_TIMEOUT_SEC','DEBUG','CHAT_TRACE',
+            'GW_METRICS_REMOTE_WRITE_URL','GW_METRICS_REMOTE_WRITE_USER',
+            'GW_METRICS_REMOTE_WRITE_TOKEN','GW_METRICS_REMOTE_WRITE_INTERVAL_SEC',
             'GW_ENV_FILE_LOADED','GW_OVERRIDES_FILE_LOADED'
         )
         $effLines = New-Object System.Collections.Generic.List[string]
@@ -1669,13 +1673,13 @@ function Invoke-Support {
         }
 
         try {
-            $body = (Invoke-WebRequest -Uri "$HealthUrl/health" -UseBasicParsing -TimeoutSec 5).Content
+            $body = (Invoke-WebRequest -Method Get -Uri "$HealthUrl/health" -UseBasicParsing -TimeoutSec 5).Content
             Set-Content -Path (Join-Path $bundleRoot 'health\health.json') -Value $body -Encoding UTF8
         } catch {
             Set-Content -Path (Join-Path $bundleRoot 'health\health.json') -Value "unreachable: $HealthUrl/health did not respond ($($_.Exception.Message))" -Encoding UTF8
         }
         try {
-            $body = (Invoke-WebRequest -Uri "$HealthUrl/admin/api/snapshot" -UseBasicParsing -TimeoutSec 5).Content
+            $body = (Invoke-WebRequest -Method Get -Uri "$HealthUrl/admin/api/snapshot" -UseBasicParsing -TimeoutSec 5).Content
             Set-Content -Path (Join-Path $bundleRoot 'health\snapshot.json') -Value $body -Encoding UTF8
         } catch {
             Set-Content -Path (Join-Path $bundleRoot 'health\snapshot.json') -Value "unreachable: $HealthUrl/admin/api/snapshot did not respond ($($_.Exception.Message))" -Encoding UTF8
@@ -1683,59 +1687,381 @@ function Invoke-Support {
 
         # ---- logs/ -----------------------------------------------------
         Test-Deadline 'logs-collect'
-        $logsDir = Split-Path -Parent $LogFile
-        $chatTrace = [System.IO.Path]::ChangeExtension($LogFile, '.chat-trace.log')
-        $logPairs = @(
-            @{ Src = $LogFile;       Dst = 'gateway.log' },
-            @{ Src = $LogBootOut;    Dst = 'gateway-boot-stdout.log' },
-            @{ Src = $LogBootErr;    Dst = 'gateway-boot-stderr.log' },
-            @{ Src = $chatTrace;     Dst = 'gateway-chat-trace.log' }
-        )
-        # REL-TRAY-07 (T-7) fix: live logs are now cap-aware on copy.
-        # Pre-fix: live logs were copied unconditionally and only the
-        # rotated .log.gz files passed through the cap loop at the tail,
-        # so a 200MB current-day log blew past any --max-mb cap. Now: if
-        # the source is larger than $maxBytes, copy only the last
-        # $maxBytes (tail) — the operator gets the most recent behavior,
-        # not the oldest. Streamed through Invoke-RedactStream so the
-        # redaction surface is identical to the full-copy path.
-        foreach ($p in $logPairs) {
-            if (-not (Test-Path $p.Src)) { continue }
-            Test-Deadline ("logs-copy:" + $p.Dst)
-            $srcInfo = Get-Item $p.Src
-            if ($srcInfo.Length -gt $maxBytes) {
-                Write-Stderr ("support bundle: capping {0} ({1:N0} bytes) to last {2}MB" -f $p.Dst, $srcInfo.Length, $MaxMb)
-                $stream = [System.IO.File]::Open($p.Src, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
-                try {
-                    $startOffset = $srcInfo.Length - $maxBytes
-                    if ($startOffset -lt 0) { $startOffset = 0 }
-                    $null = $stream.Seek($startOffset, [System.IO.SeekOrigin]::Begin)
-                    $reader = New-Object System.IO.StreamReader($stream)
-                    # Drop the first (likely partial) line so the cap is
-                    # newline-aligned — keeps logs readable.
-                    $null = $reader.ReadLine()
-                    $sink = Join-Path $bundleRoot "logs\$($p.Dst)"
-                    $lines = @()
-                    while (-not $reader.EndOfStream) {
-                        $lines += $reader.ReadLine()
-                    }
-                    $lines | Invoke-RedactStream | Set-Content -Path $sink -Encoding UTF8
-                    $reader.Close()
-                } finally {
-                    $stream.Close()
+        $collectionWarnings = New-Object System.Collections.Generic.List[string]
+        $snapshotState = @{ Sequence = 0 }
+
+        # PowerShell 5.1 has no managed OpenReparsePoint option. This helper
+        # provides the missing trust boundary: CreateFileW opens the final
+        # Windows component itself (not its target), while Unix open(2) uses
+        # O_NOFOLLOW. The already-open handle is validated as a regular disk
+        # file and copied directly into private staging. If the primitive is
+        # unavailable, callers fail closed and add a manifest warning.
+        $safeOpenAvailable = $true
+        try {
+            if (-not ('GatewaySupport.SafeFile' -as [type])) {
+                Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+
+namespace GatewaySupport {
+    public static class SafeFile {
+        const uint GENERIC_READ = 0x80000000;
+        const uint FILE_SHARE_READ = 0x00000001;
+        const uint FILE_SHARE_WRITE = 0x00000002;
+        const uint FILE_SHARE_DELETE = 0x00000004;
+        const uint OPEN_EXISTING = 3;
+        const uint FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400;
+        const uint FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000;
+        const uint FILE_FLAG_SEQUENTIAL_SCAN = 0x08000000;
+        const uint FILE_TYPE_DISK = 0x0001;
+
+        [StructLayout(LayoutKind.Sequential)]
+        struct ByHandleFileInformation {
+            public uint FileAttributes;
+            public System.Runtime.InteropServices.ComTypes.FILETIME CreationTime;
+            public System.Runtime.InteropServices.ComTypes.FILETIME LastAccessTime;
+            public System.Runtime.InteropServices.ComTypes.FILETIME LastWriteTime;
+            public uint VolumeSerialNumber;
+            public uint FileSizeHigh;
+            public uint FileSizeLow;
+            public uint NumberOfLinks;
+            public uint FileIndexHigh;
+            public uint FileIndexLow;
+        }
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        static extern SafeFileHandle CreateFileW(string name, uint access, uint share,
+            IntPtr security, uint creation, uint flags, IntPtr template);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool GetFileInformationByHandle(SafeFileHandle handle,
+            out ByHandleFileInformation information);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern uint GetFileType(SafeFileHandle handle);
+
+        [DllImport("libc", SetLastError = true)]
+        static extern int open(string path, int flags);
+        [DllImport("libc", SetLastError = true)]
+        static extern int fstat(int descriptor, IntPtr statBuffer);
+
+        public static FileStream OpenRegularNoFollow(string path, bool isDarwin) {
+            if (Environment.OSVersion.Platform == PlatformID.Win32NT) {
+                SafeFileHandle handle = CreateFileW(path, GENERIC_READ,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    IntPtr.Zero, OPEN_EXISTING,
+                    FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN,
+                    IntPtr.Zero);
+                if (handle.IsInvalid) {
+                    int error = Marshal.GetLastWin32Error();
+                    handle.Dispose();
+                    if (error == 5) throw new UnauthorizedAccessException("safe-open access denied");
+                    if (error == 2 || error == 3) throw new FileNotFoundException("source replaced before safe-open", path);
+                    throw new IOException("safe-open failed (Win32 " + error + ")");
                 }
-            } else {
-                Get-Content -Path $p.Src | Invoke-RedactStream |
-                    Set-Content -Path (Join-Path $bundleRoot "logs\$($p.Dst)") -Encoding UTF8
+                ByHandleFileInformation information;
+                if (!GetFileInformationByHandle(handle, out information)) {
+                    int error = Marshal.GetLastWin32Error();
+                    handle.Dispose();
+                    throw new IOException("safe-open inspection failed (Win32 " + error + ")");
+                }
+                if ((information.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+                    handle.Dispose();
+                    throw new InvalidDataException("reparse point");
+                }
+                if (GetFileType(handle) != FILE_TYPE_DISK) {
+                    handle.Dispose();
+                    throw new InvalidDataException("not a regular file");
+                }
+                return new FileStream(handle, FileAccess.Read, 65536, false);
+            }
+
+            int noFollow = isDarwin ? 0x00000100 : 0x00020000;
+            int nonBlock = isDarwin ? 0x00000004 : 0x00000800;
+            int descriptor = open(path, noFollow | nonBlock);
+            if (descriptor < 0) {
+                int error = Marshal.GetLastWin32Error();
+                if (error == 13) throw new UnauthorizedAccessException("safe-open access denied");
+                if (error == 2) throw new FileNotFoundException("source replaced before safe-open", path);
+                if (error == 40 || error == 62) throw new InvalidDataException("reparse point");
+                throw new IOException("safe-open failed (errno " + error + ")");
+            }
+            SafeFileHandle unixHandle = new SafeFileHandle(new IntPtr(descriptor), true);
+            IntPtr statBuffer = Marshal.AllocHGlobal(512);
+            try {
+                for (int i = 0; i < 512; ++i) Marshal.WriteByte(statBuffer, i, 0);
+                if (fstat(descriptor, statBuffer) != 0)
+                    throw new IOException("safe-open inspection failed (errno " + Marshal.GetLastWin32Error() + ")");
+                int mode = isDarwin
+                    ? (int)(ushort)Marshal.ReadInt16(statBuffer, 4)
+                    : Marshal.ReadInt32(statBuffer, 24);
+                if ((mode & 0xF000) != 0x8000)
+                    throw new InvalidDataException("not a regular file");
+                return new FileStream(unixHandle, FileAccess.Read, 65536, false);
+            } catch {
+                unixHandle.Dispose();
+                throw;
+            } finally {
+                Marshal.FreeHGlobal(statBuffer);
             }
         }
-        if (Test-Path $logsDir) {
-            $cutoff = (Get-Date).AddDays(-$LogDays)
-            Get-ChildItem -Path $logsDir -Filter 'gateway-*.log.gz' -File -ErrorAction SilentlyContinue |
-                Where-Object { $_.LastWriteTime -ge $cutoff } |
-                ForEach-Object {
-                    Copy-Item -Path $_.FullName -Destination (Join-Path $bundleRoot 'logs') -Force
+    }
+}
+'@
+            }
+        } catch {
+            $safeOpenAvailable = $false
+        }
+        $isDarwin = $false
+        try {
+            $isDarwin = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
+                [System.Runtime.InteropServices.OSPlatform]::OSX)
+        } catch {}
+
+        function Test-SupportDirectory {
+            param([string]$Path)
+            try {
+                $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+                return $item.PSIsContainer -and
+                    (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0)
+            } catch {
+                return $false
+            }
+        }
+
+        function New-SafeSourceSnapshot {
+            param([string]$Source, [string]$Label, [bool]$WarnIfMissing)
+            $item = $null
+            try {
+                $item = Get-Item -LiteralPath $Source -Force -ErrorAction Stop
+            } catch {
+                if ($WarnIfMissing) { $collectionWarnings.Add("$Label missing") | Out-Null }
+                return $null
+            }
+            if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                $collectionWarnings.Add("$Label rejected: reparse point") | Out-Null
+                return $null
+            }
+            if ($item.PSIsContainer) {
+                $collectionWarnings.Add("$Label rejected: not a regular file") | Out-Null
+                return $null
+            }
+            if (-not $safeOpenAvailable) {
+                $collectionWarnings.Add("$Label safe-open unavailable") | Out-Null
+                return $null
+            }
+
+            $sourceStream = $null
+            try {
+                $sourceStream = [GatewaySupport.SafeFile]::OpenRegularNoFollow($Source, $isDarwin)
+            } catch {
+                $baseException = $_.Exception
+                while ($baseException.InnerException) { $baseException = $baseException.InnerException }
+                if ($baseException.Message -match 'reparse point') {
+                    $collectionWarnings.Add("$Label rejected: source replaced by reparse point") | Out-Null
+                } elseif ($baseException.Message -match 'not a regular file') {
+                    $collectionWarnings.Add("$Label rejected: source replaced by non-regular file") | Out-Null
+                } elseif ($baseException -is [System.IO.FileNotFoundException]) {
+                    $collectionWarnings.Add("$Label rejected: source replaced before safe-open") | Out-Null
+                } elseif ($baseException -is [System.UnauthorizedAccessException] -or $baseException.Message -match 'denied|permission') {
+                    $collectionWarnings.Add("$Label unreadable") | Out-Null
+                } else {
+                    $collectionWarnings.Add("$Label unreadable during safe-open") | Out-Null
                 }
+                return $null
+            }
+
+            $snapshotState.Sequence = [int]$snapshotState.Sequence + 1
+            $snapshotDirectory = Join-Path $staging 'source-snapshots'
+            $snapshotPath = Join-Path $snapshotDirectory ("source-{0}" -f $snapshotState.Sequence)
+            try {
+                $null = New-Item -ItemType Directory -Path $snapshotDirectory -Force
+                $snapshotStream = New-Object System.IO.FileStream(
+                    $snapshotPath, [System.IO.FileMode]::CreateNew,
+                    [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+                try { $sourceStream.CopyTo($snapshotStream) } finally { $snapshotStream.Dispose() }
+                (Get-Item -LiteralPath $snapshotPath).LastWriteTimeUtc = $item.LastWriteTimeUtc
+                return [pscustomobject]@{ Path = $snapshotPath; LastWriteTimeUtc = $item.LastWriteTimeUtc }
+            } catch {
+                Remove-Item -LiteralPath $snapshotPath -Force -ErrorAction SilentlyContinue
+                $collectionWarnings.Add("$Label safe-open snapshot failed") | Out-Null
+                return $null
+            } finally {
+                if ($sourceStream) { $sourceStream.Dispose() }
+            }
+        }
+
+        function Copy-RedactedSupportLog {
+            param([string]$Source, [string]$RelativePath, [string]$Label, [bool]$WarnIfMissing)
+            $snapshot = New-SafeSourceSnapshot $Source $Label $WarnIfMissing
+            if (-not $snapshot) { return $false }
+            $destination = Join-Path $bundleRoot $RelativePath
+            try {
+                $null = New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force
+                Get-Content -LiteralPath $snapshot.Path -ErrorAction Stop | Invoke-RedactStream |
+                    Set-Content -LiteralPath $destination -Encoding UTF8 -ErrorAction Stop
+                (Get-Item -LiteralPath $destination).LastWriteTimeUtc = $snapshot.LastWriteTimeUtc
+                return $true
+            } catch {
+                Remove-Item -LiteralPath $destination -Force -ErrorAction SilentlyContinue
+                $collectionWarnings.Add("$Label redaction failed") | Out-Null
+                return $false
+            }
+        }
+
+        function Copy-RedactedSupportGzip {
+            param([string]$Source, [string]$RelativePath, [string]$Label)
+            $snapshot = New-SafeSourceSnapshot $Source $Label $true
+            if (-not $snapshot) { return $false }
+            $destination = Join-Path $bundleRoot $RelativePath
+            $sourceFileStream = $null
+            $decompressor = $null
+            $reader = $null
+            $destinationFileStream = $null
+            $compressor = $null
+            $writer = $null
+            try {
+                $null = New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force
+                $sourceFileStream = [System.IO.File]::OpenRead($snapshot.Path)
+                $decompressor = New-Object System.IO.Compression.GzipStream(
+                    $sourceFileStream, [System.IO.Compression.CompressionMode]::Decompress)
+                $reader = New-Object System.IO.StreamReader($decompressor)
+                $destinationFileStream = [System.IO.File]::Create($destination)
+                $compressor = New-Object System.IO.Compression.GzipStream(
+                    $destinationFileStream, [System.IO.Compression.CompressionMode]::Compress)
+                $writer = New-Object System.IO.StreamWriter($compressor)
+                while (-not $reader.EndOfStream) {
+                    $redactedLine = @($reader.ReadLine() | Invoke-RedactStream)
+                    foreach ($line in $redactedLine) { $writer.WriteLine([string]$line) }
+                }
+                $writer.Dispose(); $writer = $null
+                $reader.Dispose(); $reader = $null
+                (Get-Item -LiteralPath $destination).LastWriteTimeUtc = $snapshot.LastWriteTimeUtc
+                return $true
+            } catch {
+                Remove-Item -LiteralPath $destination -Force -ErrorAction SilentlyContinue
+                $collectionWarnings.Add("$Label decompression or redaction failed") | Out-Null
+                return $false
+            } finally {
+                if ($writer) { $writer.Dispose() }
+                if ($compressor) { $compressor.Dispose() }
+                if ($destinationFileStream) { $destinationFileStream.Dispose() }
+                if ($reader) { $reader.Dispose() }
+                if ($decompressor) { $decompressor.Dispose() }
+                if ($sourceFileStream) { $sourceFileStream.Dispose() }
+            }
+        }
+
+        $resolvedCoworkerHome = if ($CoworkerHome) { $CoworkerHome } elseif ($env:HERMES_HOME) { $env:HERMES_HOME } else { '' }
+        $kiroCwd = if ($env:KIRO_CWD) { $env:KIRO_CWD } else { $GwHome }
+        $userHome = if ($env:USERPROFILE) { $env:USERPROFILE } else { $env:HOME }
+        if ($kiroCwd -eq '~' -and $userHome) {
+            $kiroCwd = $userHome
+        } elseif (($kiroCwd.StartsWith('~/') -or $kiroCwd.StartsWith('~\')) -and $userHome) {
+            $kiroCwd = Join-Path $userHome $kiroCwd.Substring(2)
+        }
+        $kiroLog = if ($env:KIRO_CHAT_LOG_FILE) { $env:KIRO_CHAT_LOG_FILE } else { Join-Path $GwHome 'logs\kiro-chat.log' }
+        if ($env:KIRO_CHAT_LOG_FILE -and -not [System.IO.Path]::IsPathRooted($kiroLog)) {
+            $kiroLog = Join-Path $kiroCwd $kiroLog
+        }
+
+        $logsDir = Split-Path -Parent $LogFile
+        $chatTrace = if ($LogFile.EndsWith('.log', [System.StringComparison]::OrdinalIgnoreCase)) {
+            $LogFile.Substring(0, $LogFile.Length - 4) + '-chat-trace.log'
+        } else { $LogFile + '-chat-trace.log' }
+        $null = Copy-RedactedSupportLog $LogFile 'logs\gateway\gateway.log' 'Gateway current log' $true
+        $null = Copy-RedactedSupportLog $LogBootOut 'logs\gateway\gateway-boot.log' 'Gateway boot log' $true
+        if ($env:CHAT_TRACE -match '^(?i:true|1|yes)$') {
+            $null = Copy-RedactedSupportLog $chatTrace 'logs\gateway\gateway-chat-trace.log' 'Gateway chat-trace log' $true
+        }
+
+        if (Test-SupportDirectory $logsDir) {
+            $cutoff = (Get-Date).AddDays(-$LogDays)
+            foreach ($candidate in Get-ChildItem -LiteralPath $logsDir -Force -ErrorAction SilentlyContinue) {
+                if ($candidate.Name -like 'gateway-*.log.gz' -and $candidate.LastWriteTime -ge $cutoff) {
+                    $null = Copy-RedactedSupportGzip $candidate.FullName ("logs\gateway\{0}" -f $candidate.Name) ("Gateway rotation {0}" -f $candidate.Name)
+                }
+            }
+        }
+
+        $null = Copy-RedactedSupportLog $kiroLog 'logs\kiro\kiro-chat.log' 'Kiro current log' $true
+        $kiroDirectory = Split-Path -Parent $kiroLog
+        $kiroBase = Split-Path -Leaf $kiroLog
+        $kiroRotationPattern = '^' + [regex]::Escape($kiroBase) + '\.(\d+)$'
+        if (Test-SupportDirectory $kiroDirectory) {
+            foreach ($candidate in Get-ChildItem -LiteralPath $kiroDirectory -Force -ErrorAction SilentlyContinue) {
+                $match = [regex]::Match($candidate.Name, $kiroRotationPattern)
+                if ($match.Success) {
+                    $suffix = $match.Groups[1].Value
+                    $null = Copy-RedactedSupportLog $candidate.FullName ("logs\kiro\kiro-chat.log.{0}" -f $suffix) ("Kiro rotation {0}" -f $candidate.Name) $true
+                }
+            }
+        }
+
+        $approvedCoworkerLogs = @(
+            'agent.log','errors.log','gateway.log','gui.log','desktop.log','mcp-stderr.log',
+            'gateway-shutdown-watchdog.log','dashboard-auth.log','container-boot.log','tool_calls.log'
+        )
+        function Copy-CoworkerDirectory {
+            param([string]$SourceDirectory, [string]$DestinationPrefix)
+            $children = @(Get-ChildItem -LiteralPath $SourceDirectory -Force -ErrorAction SilentlyContinue)
+            foreach ($approved in $approvedCoworkerLogs) {
+                $currentPath = Join-Path $SourceDirectory $approved
+                $null = Copy-RedactedSupportLog $currentPath (Join-Path $DestinationPrefix $approved) ("Co-worker {0}" -f $approved) $false
+                $rotationPattern = '^' + [regex]::Escape($approved) + '\.(\d+)$'
+                foreach ($candidate in $children) {
+                    $match = [regex]::Match($candidate.Name, $rotationPattern)
+                    if ($match.Success) {
+                        $null = Copy-RedactedSupportLog $candidate.FullName (Join-Path $DestinationPrefix $candidate.Name) ("Co-worker {0}" -f $candidate.Name) $true
+                    }
+                }
+            }
+        }
+
+        $coworkerLogs = if ($resolvedCoworkerHome) { Join-Path $resolvedCoworkerHome 'logs' } else { '' }
+        if (-not $resolvedCoworkerHome) {
+            $collectionWarnings.Add('Co-worker logs unavailable: no -CoworkerHome or HERMES_HOME configured') | Out-Null
+        } elseif (-not (Test-SupportDirectory $resolvedCoworkerHome) -or -not (Test-SupportDirectory $coworkerLogs)) {
+            $collectionWarnings.Add('Co-worker logs unavailable: resolved home has no regular logs directory') | Out-Null
+        } else {
+            Copy-CoworkerDirectory $coworkerLogs 'logs\co-worker'
+            $profilesDirectory = Join-Path $resolvedCoworkerHome 'profiles'
+            if (Test-SupportDirectory $profilesDirectory) {
+                foreach ($profile in Get-ChildItem -LiteralPath $profilesDirectory -Directory -Force -ErrorAction SilentlyContinue) {
+                    if (($profile.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
+                    $profileLogs = Join-Path $profile.FullName 'logs'
+                    if (Test-SupportDirectory $profileLogs) {
+                        Copy-CoworkerDirectory $profileLogs ("logs\co-worker\profiles\{0}\logs" -f $profile.Name)
+                    }
+                }
+            }
+        }
+
+        # Both optional snapshots are explicit GETs. Capture JSON is archived
+        # only when it parses and `enabled` is an actual Boolean true.
+        $metricsStatus = 'unavailable'
+        $captureStatus = 'unavailable'
+        try {
+            $metricsBody = (Invoke-WebRequest -Method Get -Uri "$HealthUrl/metrics" -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop).Content
+            Set-Content -LiteralPath (Join-Path $bundleRoot "logs\gateway\metrics-snapshot-$ts.prom") -Value $metricsBody -Encoding UTF8
+            $metricsStatus = 'captured'
+        } catch {
+            $collectionWarnings.Add("Metrics snapshot unavailable: $HealthUrl/metrics") | Out-Null
+        }
+        try {
+            $captureBody = (Invoke-WebRequest -Method Get -Uri "$HealthUrl/admin/api/acp-capture?support=redacted" -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop).Content
+            $captureObject = $captureBody | ConvertFrom-Json -ErrorAction Stop
+            $enabledProperty = $captureObject.PSObject.Properties['enabled']
+            if (-not $enabledProperty -or -not ($enabledProperty.Value -is [bool])) {
+                $collectionWarnings.Add('ACP capture unavailable: response state was invalid') | Out-Null
+            } elseif ($enabledProperty.Value) {
+                Set-Content -LiteralPath (Join-Path $bundleRoot "logs\gateway\acp-capture-$ts.json") -Value $captureBody -Encoding UTF8
+                $captureStatus = 'captured'
+            } else {
+                $captureStatus = 'disabled'
+            }
+        } catch {
+            $collectionWarnings.Add('ACP capture unavailable: response was not valid JSON') | Out-Null
         }
 
         # ---- system/ ---------------------------------------------------
@@ -1819,40 +2145,34 @@ function Invoke-Support {
         Set-Content -Path (Join-Path $bundleRoot 'tray\autostart.txt') -Value $autostart -Encoding UTF8
 
         # ---- size cap --------------------------------------------------
-        # REL-TRAY-07 (T-7) fix: cap loop drops rotated .log.gz first
-        # (oldest), then falls through to live logs if still over cap.
-        # Pre-fix only trimmed .log.gz, so a single huge live log could
-        # blow past the cap regardless. Live logs are already
-        # tail-trimmed at copy time above; this is the safety net for
-        # any pathological case (e.g. 5x boot-stdout logs all near cap).
+        # Rotations from all three application trees share one oldest-first
+        # queue. Current logs, the manifest, and live snapshots are protected.
         Test-Deadline 'size-cap'
         $droppedFiles = New-Object System.Collections.Generic.List[string]
-        $size = (Get-ChildItem -Path $bundleRoot -Recurse -File | Measure-Object -Property Length -Sum).Sum
-        $sizeMb = [int]($size / 1MB)
-        if ($sizeMb -gt $MaxMb) {
-            Get-ChildItem -Path (Join-Path $bundleRoot 'logs') -Filter 'gateway-*.log.gz' -File -ErrorAction SilentlyContinue |
-                Sort-Object LastWriteTime |
-                ForEach-Object {
-                    if ($sizeMb -le $MaxMb) { return }
-                    $droppedFiles.Add($_.FullName) | Out-Null
-                    Remove-Item -Force $_.FullName
-                    $size = (Get-ChildItem -Path $bundleRoot -Recurse -File | Measure-Object -Property Length -Sum).Sum
-                    $sizeMb = [int]($size / 1MB)
-                }
-        }
-        if ($sizeMb -gt $MaxMb) {
-            # Still over cap after rotated drops — fall through to live
-            # logs. Drop oldest by LastWriteTime.
-            Get-ChildItem -Path (Join-Path $bundleRoot 'logs') -File -ErrorAction SilentlyContinue |
-                Sort-Object LastWriteTime |
-                ForEach-Object {
-                    if ($sizeMb -le $MaxMb) { return }
-                    Write-Stderr ("support bundle: cap still exceeded -- dropping {0}" -f $_.FullName)
-                    $droppedFiles.Add($_.FullName) | Out-Null
-                    Remove-Item -Force $_.FullName
-                    $size = (Get-ChildItem -Path $bundleRoot -Recurse -File | Measure-Object -Property Length -Sum).Sum
-                    $sizeMb = [int]($size / 1MB)
-                }
+        $sizeMeasure = Get-ChildItem -LiteralPath $bundleRoot -Recurse -File | Measure-Object -Property Length -Sum
+        $size = if ($null -eq $sizeMeasure.Sum) { [int64]0 } else { [int64]$sizeMeasure.Sum }
+        if ($size -gt $maxBytes) {
+            $approvedPattern = '(agent|errors|gateway|gui|desktop|mcp-stderr|gateway-shutdown-watchdog|dashboard-auth|container-boot|tool_calls)\.log\.\d+$'
+            $rotations = New-Object System.Collections.Generic.List[object]
+            foreach ($file in Get-ChildItem -LiteralPath (Join-Path $bundleRoot 'logs') -Recurse -File -ErrorAction SilentlyContinue) {
+                $relative = $file.FullName.Substring($bundleRoot.Length).TrimStart('\','/').Replace('\','/')
+                $isRotation =
+                    ($relative -match '^logs/gateway/gateway-.*\.log\.gz$') -or
+                    ($relative -match '^logs/kiro/kiro-chat\.log\.\d+$') -or
+                    ($relative -match "^logs/co-worker/(?:profiles/[^/]+/logs/)?$approvedPattern")
+                if ($isRotation) { $rotations.Add($file) | Out-Null }
+            }
+            foreach ($rotation in $rotations | Sort-Object LastWriteTimeUtc, FullName) {
+                if ($size -le $maxBytes) { break }
+                $relative = $rotation.FullName.Substring($bundleRoot.Length).TrimStart('\','/').Replace('\','/')
+                $droppedFiles.Add($relative) | Out-Null
+                $length = [int64]$rotation.Length
+                Remove-Item -LiteralPath $rotation.FullName -Force
+                $size -= $length
+            }
+            if ($size -gt $maxBytes) {
+                $collectionWarnings.Add('Size cap could not be met without dropping protected current logs or snapshots') | Out-Null
+            }
         }
 
         # Resolve the Gateway ID the same way the gateway does
@@ -1882,20 +2202,38 @@ function Invoke-Support {
         $manifest.Add("host:       $hostname") | Out-Null
         $manifest.Add("os:         $([System.Runtime.InteropServices.RuntimeInformation]::OSDescription)") | Out-Null
         $manifest.Add("wrapper:    scripts/gw.ps1 (PowerShell)") | Out-Null
-        $manifest.Add("spec:       docs/superpowers/specs/2026-06-08-support-bundle-design.md") | Out-Null
+        $manifest.Add("spec:       docs/superpowers/specs/2026-07-27-kiro-and-support-observability-design.md") | Out-Null
+        $manifest.Add("") | Out-Null
+        $manifest.Add("Live snapshot status") | Out-Null
+        $manifest.Add("--------------------") | Out-Null
+        $manifest.Add("metrics: $metricsStatus") | Out-Null
+        $manifest.Add("capture: $captureStatus") | Out-Null
+        $manifest.Add("") | Out-Null
+        $manifest.Add("WARNING: ACP capture exports may still contain sensitive user content.") | Out-Null
+        $manifest.Add("Please review before sharing this bundle, even after known-secret redaction.") | Out-Null
+        if ($collectionWarnings.Count -gt 0) {
+            $manifest.Add("") | Out-Null
+            $manifest.Add("Collection warnings") | Out-Null
+            $manifest.Add("-------------------") | Out-Null
+            foreach ($warning in $collectionWarnings) {
+                $manifest.Add("WARNING: $warning") | Out-Null
+            }
+        }
         $manifest.Add("") | Out-Null
         $manifest.Add("Redaction notice") | Out-Null
         $manifest.Add("----------------") | Out-Null
         $manifest.Add("Env keys masked via scripts/lib/redact.ps1:") | Out-Null
-        $manifest.Add("  - AUTH_TOKEN, PII_HASH_KEY, PII_ENCRYPT_KEY (explicit allowlist)") | Out-Null
+        $manifest.Add("  - AUTH_TOKEN, PII_HASH_KEY, PII_ENCRYPT_KEY, GW_METRICS_REMOTE_WRITE_TOKEN (explicit allowlist)") | Out-Null
         $manifest.Add("  - any key matching *TOKEN* / *KEY* / *SECRET* / *PASSWORD* / *PASSPHRASE* (case-insensitive)") | Out-Null
         $manifest.Add("Log scrubs (regex -> [REDACTED]):") | Out-Null
         $manifest.Add("  - Bearer <token>") | Out-Null
-        $manifest.Add("  - AUTH_TOKEN= / PII_HASH_KEY= / PII_ENCRYPT_KEY= values") | Out-Null
+        $manifest.Add("  - secret assignment values, including GW_METRICS_REMOTE_WRITE_TOKEN") | Out-Null
         $manifest.Add("  - Authorization: header values") | Out-Null
         $manifest.Add("  - x-api-key: header values (case-insensitive)") | Out-Null
         $manifest.Add("") | Out-Null
-        $manifest.Add("Rotated *.log.gz files are copied verbatim. Gateway scrubs at write time.") | Out-Null
+        $manifest.Add("Gateway rotated *.log.gz files are snapshotted without following") | Out-Null
+        $manifest.Add("reparse points, decompressed, streamed through the same log redactor,") | Out-Null
+        $manifest.Add("and recompressed before they enter this bundle.") | Out-Null
         $manifest.Add("") | Out-Null
         $manifest.Add("Bundle contents") | Out-Null
         $manifest.Add("---------------") | Out-Null
@@ -1963,9 +2301,9 @@ Commands:
   support             Produce a redacted diagnostic archive under
                       `$GwHome\support\. Secrets are
                       masked. No raw values are ever written. Flags: -Out DIR,
-                      -MaxMb N (default 512), -Timeout SEC (default 180),
-                      -LogDays D (default 7).
-                      See docs/superpowers/specs/2026-06-08-support-bundle-design.md.
+                      -MaxMb N (default 50), -Timeout SEC (default 180),
+                      -LogDays D (default 7), -CoworkerHome DIR.
+                      See docs/superpowers/specs/2026-07-27-kiro-and-support-observability-design.md.
 
 Gateway config flags (for start | restart | run | env):
   -Pii MODE           off | replace | mask | hash | drop | encrypt
