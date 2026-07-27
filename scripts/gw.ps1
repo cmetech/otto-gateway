@@ -1704,6 +1704,13 @@ function Invoke-Support {
         if ($env:GW_SUPPORT_TEST_DISABLE_SAFE_OPEN -match '^(?i:true|1|yes)$') {
             $safeOpenAvailable = $false
         }
+        function Test-SupportForcedPublishFailure {
+            param([string]$Kind)
+            $forcedFailures = @($env:GW_SUPPORT_TEST_FAIL_PUBLISH -split ',' |
+                ForEach-Object { $_.Trim().ToLowerInvariant() } |
+                Where-Object { $_ })
+            return $forcedFailures -contains $Kind.ToLowerInvariant()
+        }
         function Test-SupportDirectory {
             param([string]$Path)
             try {
@@ -1753,6 +1760,17 @@ function Invoke-Support {
                 }
                 $openedSource = [GatewaySupport.SafeFile]::OpenRegularNoFollow(
                     $Source, $inspectedMetadata.Identity)
+                if ($env:GW_SUPPORT_TEST_AFTER_OPEN_BARRIER_SOURCE -and
+                    $Source -ceq $env:GW_SUPPORT_TEST_AFTER_OPEN_BARRIER_SOURCE) {
+                    Set-Content -LiteralPath $env:GW_SUPPORT_TEST_AFTER_OPEN_BARRIER_READY -Value 'ready' -Encoding ASCII
+                    $barrierDeadline = [DateTime]::UtcNow.AddSeconds(10)
+                    while (-not (Test-Path -LiteralPath $env:GW_SUPPORT_TEST_AFTER_OPEN_BARRIER_CONTINUE)) {
+                        if ([DateTime]::UtcNow -ge $barrierDeadline) {
+                            throw 'safe-open after-open test barrier timed out'
+                        }
+                        Start-Sleep -Milliseconds 25
+                    }
+                }
             } catch {
                 $baseException = $_.Exception
                 while ($baseException.InnerException) { $baseException = $baseException.InnerException }
@@ -1816,6 +1834,9 @@ function Invoke-Support {
                 $null = New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force
                 Get-Content -LiteralPath $snapshot.Path -ErrorAction Stop | Invoke-RedactStream |
                     Set-Content -LiteralPath $temporary -Encoding UTF8 -ErrorAction Stop
+                if (Test-SupportForcedPublishFailure 'plain') {
+                    throw 'forced atomic publish failure: plain'
+                }
                 [System.IO.File]::Move($temporary, $destination)
                 (Get-Item -LiteralPath $destination).LastWriteTimeUtc = $snapshot.LastWriteTimeUtc
                 return $true
@@ -1831,9 +1852,7 @@ function Invoke-Support {
             $temporary = $Destination + '.partial-' + [Guid]::NewGuid().ToString('N')
             try {
                 Set-Content -LiteralPath $temporary -Value $Value -Encoding UTF8 -ErrorAction Stop
-                $forcedFailures = @($env:GW_SUPPORT_TEST_FAIL_PUBLISH -split ',' |
-                    ForEach-Object { $_.Trim().ToLowerInvariant() })
-                if ($forcedFailures -contains $FailureKind.ToLowerInvariant()) {
+                if (Test-SupportForcedPublishFailure $FailureKind) {
                     throw "forced atomic publish failure: $FailureKind"
                 }
                 [System.IO.File]::Move($temporary, $Destination)
@@ -1889,6 +1908,9 @@ function Invoke-Support {
                 return $false
             }
             try {
+                if (Test-SupportForcedPublishFailure 'gzip') {
+                    throw 'forced atomic publish failure: gzip'
+                }
                 [System.IO.File]::Move($temporary, $destination)
                 (Get-Item -LiteralPath $destination).LastWriteTimeUtc = $snapshot.LastWriteTimeUtc
                 return $true
@@ -2209,6 +2231,9 @@ function Invoke-Support {
             $archiveTemporary = Join-Path $outDir ("{0}.partial-{1}.zip" -f $bundleName, [Guid]::NewGuid().ToString('N'))
             try {
                 Compress-Archive -Path $bundleRoot -DestinationPath $archiveTemporary -Force
+                if (Test-SupportForcedPublishFailure 'archive') {
+                    throw 'forced atomic publish failure: archive'
+                }
                 $archiveLength = (Get-Item -LiteralPath $archiveTemporary).Length
                 if ($archiveLength -le $maxBytes) {
                     if (Test-Path -LiteralPath $outPath) { Remove-Item -LiteralPath $outPath -Force }
@@ -2244,6 +2269,9 @@ function Invoke-Support {
         $latestTemporary = Join-Path $outDir ('latest.partial-' + [Guid]::NewGuid().ToString('N') + '.zip')
         try {
             Copy-Item -LiteralPath $outPath -Destination $latestTemporary -Force
+            if (Test-SupportForcedPublishFailure 'latest') {
+                throw 'forced atomic publish failure: latest'
+            }
             if (Test-Path -LiteralPath $latestPath) { Remove-Item -LiteralPath $latestPath -Force }
             [System.IO.File]::Move($latestTemporary, $latestPath)
         } finally {

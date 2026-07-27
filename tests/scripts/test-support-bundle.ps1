@@ -62,6 +62,19 @@ function Assert-Line([string]$Path, [string]$Expected, [string]$Label) {
     Assert-True $found "$Label (missing exact line [$Expected] in $Path)"
 }
 
+function Assert-NoSupportTemporaryArtifacts([string]$Root, [string]$Label) {
+    $artifacts = @()
+    if ($Root -and (Test-Path -LiteralPath $Root)) {
+        $artifacts = @(Get-ChildItem -LiteralPath $Root -Recurse -Force -ErrorAction SilentlyContinue |
+            Where-Object {
+                $_.Name -match '(?i)\.partial-' -or
+                $_.Name -like '.gw-support-staging-*'
+            })
+    }
+    $found = @($artifacts | ForEach-Object FullName) -join ', '
+    Assert-True ($artifacts.Count -eq 0) "$Label (temporary artifacts: $found)"
+}
+
 function Get-GzipText([string]$Path) {
     $input = [System.IO.File]::OpenRead($Path)
     try {
@@ -152,6 +165,9 @@ function Set-SupportEnvironment {
     $env:GW_SUPPORT_TEST_BARRIER_SOURCE = ''
     $env:GW_SUPPORT_TEST_BARRIER_READY = ''
     $env:GW_SUPPORT_TEST_BARRIER_CONTINUE = ''
+    $env:GW_SUPPORT_TEST_AFTER_OPEN_BARRIER_SOURCE = ''
+    $env:GW_SUPPORT_TEST_AFTER_OPEN_BARRIER_READY = ''
+    $env:GW_SUPPORT_TEST_AFTER_OPEN_BARRIER_CONTINUE = ''
     $env:GW_SUPPORT_TEST_FAIL_PUBLISH = ''
 }
 
@@ -384,6 +400,8 @@ server.serve_forever()
     Assert-True (-not $gatewayGzipText.Contains($SecretRemote)) 'Gateway gzip rotation excludes raw remote-write token'
     Assert-Contains (Join-Path $mainRoot 'logs\gateway\gateway.log') 'GW_METRICS_REMOTE_WRITE_TOKEN=[REDACTED]' 'Gateway current remote-write assignment is redacted'
     Assert-Absent (Join-Path $mainRoot 'logs\gateway\gateway-corrupt.log.gz') 'corrupt Gateway gzip leaves no partial archive artifact'
+    Assert-NoSupportTemporaryArtifacts $mainRoot 'corrupt gzip bundle has no partial artifacts'
+    Assert-NoSupportTemporaryArtifacts (Join-Path $ExtractRoot 'main-out') 'corrupt gzip output has no partial or staging artifacts'
 
     foreach ($relative in @('kiro-chat.log','kiro-chat.log.1','kiro-chat.log.2')) { Assert-File (Join-Path $mainRoot "logs\kiro\$relative") "Kiro artifact $relative is retained" }
     Assert-Absent (Join-Path $mainRoot 'logs\kiro\kiro-chat.log.3.gz') 'compressed Kiro rotation is excluded'
@@ -500,6 +518,43 @@ server.serve_forever()
     Assert-True (@(Get-ChildItem -LiteralPath (Join-Path $publishFailureRoot 'logs\gateway') -Filter 'acp-capture-*.json').Count -eq 0) 'failed capture publish leaves no partial artifact'
     Assert-Line (Join-Path $publishFailureRoot 'MANIFEST.txt') 'WARNING: Metrics snapshot unavailable: atomic publish failed' 'manifest records metrics publish failure'
     Assert-Line (Join-Path $publishFailureRoot 'MANIFEST.txt') 'WARNING: ACP capture unavailable: atomic publish failed' 'manifest records capture publish failure'
+    Assert-NoSupportTemporaryArtifacts $publishFailureRoot 'metrics/capture failure bundle has no partial artifacts'
+    Assert-NoSupportTemporaryArtifacts (Join-Path $ExtractRoot 'publish-failure-out') 'metrics/capture failure output has no partial or staging artifacts'
+
+    Write-Host '== atomic publication cleanup for every artifact kind =='
+    Set-SupportEnvironment $GatewayLog $GatewayBoot $KiroCwdFixture 'native/kiro-current.log' $CoworkerHome
+    $env:GW_SUPPORT_TEST_FAIL_PUBLISH = 'plain,gzip,metrics,capture'
+    $leafPublishFailure = Invoke-SupportRun (Join-Path $ExtractRoot 'leaf-publish-failure-out')
+    Assert-True ($leafPublishFailure.ExitCode -eq 0) 'support continues after forced plain/gzip/metrics/capture publication failures'
+    $leafPublishFailureRoot = Expand-SupportBundle $leafPublishFailure.Bundle (Join-Path $ExtractRoot 'leaf-publish-failure-tree')
+    Assert-Absent (Join-Path $leafPublishFailureRoot 'logs\gateway\gateway.log') 'forced plain publication failure leaves no final plain log'
+    Assert-Absent (Join-Path $leafPublishFailureRoot 'logs\gateway\gateway-20260101.log.gz') 'forced gzip publication failure leaves no final gzip log'
+    Assert-True (@(Get-ChildItem -LiteralPath (Join-Path $leafPublishFailureRoot 'logs\gateway') -Filter 'metrics-snapshot-*').Count -eq 0) 'forced metrics publication failure leaves no final or partial snapshot'
+    Assert-True (@(Get-ChildItem -LiteralPath (Join-Path $leafPublishFailureRoot 'logs\gateway') -Filter 'acp-capture-*').Count -eq 0) 'forced capture publication failure leaves no final or partial snapshot'
+    Assert-Line (Join-Path $leafPublishFailureRoot 'MANIFEST.txt') 'WARNING: Gateway current log redaction failed' 'manifest proves the forced plain publication failure path ran'
+    Assert-Line (Join-Path $leafPublishFailureRoot 'MANIFEST.txt') 'WARNING: Gateway rotation gateway-20260101.log.gz archive publish failed' 'manifest proves the forced gzip publication failure path ran'
+    Assert-NoSupportTemporaryArtifacts $leafPublishFailureRoot 'plain/gzip/metrics/capture failure bundle has no partial artifacts'
+    Assert-NoSupportTemporaryArtifacts (Join-Path $ExtractRoot 'leaf-publish-failure-out') 'plain/gzip/metrics/capture failure output has no partial or staging artifacts'
+
+    foreach ($failureKind in @('manifest','archive','latest')) {
+        Set-SupportEnvironment $GatewayLog $GatewayBoot $KiroCwdFixture 'native/kiro-current.log' $CoworkerHome
+        $env:GW_SUPPORT_TEST_FAIL_PUBLISH = $failureKind
+        $failureOut = Join-Path $ExtractRoot "$failureKind-publish-failure-out"
+        $terminalPublishFailure = Invoke-SupportRun $failureOut
+        Assert-True ($terminalPublishFailure.ExitCode -ne 0) "forced $failureKind publication failure exits nonzero"
+        Assert-NoSupportTemporaryArtifacts $failureOut "forced $failureKind failure output has no partial or staging artifacts"
+        $publishedArchives = @(Get-ChildItem -LiteralPath $failureOut -Filter 'gateway-support-*.zip' -File -ErrorAction SilentlyContinue)
+        if ($failureKind -eq 'latest') {
+            Assert-True ($publishedArchives.Count -eq 1) 'latest failure preserves the already-published timestamped archive'
+            Assert-Absent (Join-Path $failureOut 'latest.zip') 'latest publication failure leaves no final latest.zip'
+            if ($publishedArchives.Count -eq 1) {
+                $latestFailureRoot = Expand-SupportBundle $publishedArchives[0].FullName (Join-Path $ExtractRoot 'latest-publish-failure-tree')
+                Assert-NoSupportTemporaryArtifacts $latestFailureRoot 'latest failure preserved archive contains no partial artifacts'
+            }
+        } else {
+            Assert-True ($publishedArchives.Count -eq 0) "forced $failureKind failure leaves no final timestamped archive"
+        }
+    }
 
     'enabled' | Set-Content -LiteralPath $ModeFile -Encoding ASCII
     $SmallLogs = Join-Path $script:FixtureRoot 'small-logs'
@@ -591,7 +646,91 @@ server.serve_forever()
     Assert-Line (Join-Path $raceBundleRoot 'MANIFEST.txt') 'WARNING: Gateway current log rejected: source replaced before safe-open' 'manifest records regular identity replacement'
     Assert-NoSecretInTree $raceBundleRoot @('replacement external secret 8811') 'regular replacement bundle'
 
+    Write-Host '== deterministic safe-open held-handle rename =='
+    $HeldRoot = Join-Path $RaceRoot 'held-rename'
+    $null = New-Item -ItemType Directory -Path $HeldRoot -Force
+    $HeldGateway = Join-Path $HeldRoot 'gateway.log'
+    $HeldRenamed = Join-Path $HeldRoot 'gateway-renamed.log'
+    $HeldBoot = Join-Path $HeldRoot 'gateway-boot.log'
+    $HeldExternalSecret = 'post-open replacement external secret 4422'
+    'authorized held-handle content' | Set-Content -LiteralPath $HeldGateway -Encoding UTF8
+    'held-handle boot' | Set-Content -LiteralPath $HeldBoot -Encoding UTF8
+    Set-SupportEnvironment $HeldGateway $HeldBoot (Join-Path $RaceRoot 'missing-kiro') 'kiro.log' ''
+    $HeldReady = Join-Path $HeldRoot 'after-open.ready'
+    $HeldContinue = Join-Path $HeldRoot 'after-open.continue'
+    $env:GW_SUPPORT_TEST_AFTER_OPEN_BARRIER_SOURCE = $HeldGateway
+    $env:GW_SUPPORT_TEST_AFTER_OPEN_BARRIER_READY = $HeldReady
+    $env:GW_SUPPORT_TEST_AFTER_OPEN_BARRIER_CONTINUE = $HeldContinue
+    $heldRun = Start-SupportRun (Join-Path $ExtractRoot 'held-rename-out')
+    foreach ($attempt in 1..100) {
+        if (Test-Path -LiteralPath $HeldReady) { break }
+        if ($heldRun.Process.HasExited) { break }
+        Start-Sleep -Milliseconds 50
+    }
+    $heldBarrierReached = Test-Path -LiteralPath $HeldReady
+    $heldRenameSucceeded = $false
+    $heldRenameError = ''
+    if ($heldBarrierReached) {
+        try {
+            Move-Item -LiteralPath $HeldGateway -Destination $HeldRenamed -ErrorAction Stop
+            $HeldExternalSecret | Set-Content -LiteralPath $HeldGateway -Encoding UTF8
+            $heldRenameSucceeded = $true
+        } catch {
+            $heldRenameError = $_.Exception.Message
+        }
+        'continue' | Set-Content -LiteralPath $HeldContinue -Encoding ASCII
+    }
+    $heldResult = Complete-SupportRun $heldRun
+    Assert-True $heldBarrierReached 'collection pauses only after the identity-validated source handle is open'
+    Assert-True $heldRenameSucceeded "open source permits rename with replacement while held: $heldRenameError"
+    Assert-True ($heldResult.ExitCode -eq 0) "support continues from a renamed open source: $($heldResult.Stderr)"
+    $heldBundleRoot = Expand-SupportBundle $heldResult.Bundle (Join-Path $ExtractRoot 'held-rename-tree')
+    Assert-Contains (Join-Path $heldBundleRoot 'logs\gateway\gateway.log') 'authorized held-handle content' 'renamed open source snapshots the validated handle content'
+    Assert-NoSecretInTree $heldBundleRoot @($HeldExternalSecret) 'held-handle rename bundle'
+    Assert-NoSupportTemporaryArtifacts $heldBundleRoot 'held-handle rename bundle has no partial artifacts'
+    Assert-NoSupportTemporaryArtifacts (Join-Path $ExtractRoot 'held-rename-out') 'held-handle rename output has no partial or staging artifacts'
+
     if ($RunningOnWindows) {
+        $DeleteRoot = Join-Path $RaceRoot 'held-delete'
+        $null = New-Item -ItemType Directory -Path $DeleteRoot -Force
+        $DeleteGateway = Join-Path $DeleteRoot 'gateway.log'
+        $DeleteBoot = Join-Path $DeleteRoot 'gateway-boot.log'
+        'authorized delete-pending content' | Set-Content -LiteralPath $DeleteGateway -Encoding UTF8
+        'delete-pending boot' | Set-Content -LiteralPath $DeleteBoot -Encoding UTF8
+        Set-SupportEnvironment $DeleteGateway $DeleteBoot (Join-Path $RaceRoot 'missing-kiro') 'kiro.log' ''
+        $DeleteReady = Join-Path $DeleteRoot 'after-open.ready'
+        $DeleteContinue = Join-Path $DeleteRoot 'after-open.continue'
+        $env:GW_SUPPORT_TEST_AFTER_OPEN_BARRIER_SOURCE = $DeleteGateway
+        $env:GW_SUPPORT_TEST_AFTER_OPEN_BARRIER_READY = $DeleteReady
+        $env:GW_SUPPORT_TEST_AFTER_OPEN_BARRIER_CONTINUE = $DeleteContinue
+        $deleteRun = Start-SupportRun (Join-Path $ExtractRoot 'held-delete-out')
+        foreach ($attempt in 1..100) {
+            if (Test-Path -LiteralPath $DeleteReady) { break }
+            if ($deleteRun.Process.HasExited) { break }
+            Start-Sleep -Milliseconds 50
+        }
+        $deleteBarrierReached = Test-Path -LiteralPath $DeleteReady
+        $deleteSucceeded = $false
+        $deleteError = ''
+        if ($deleteBarrierReached) {
+            try {
+                Remove-Item -LiteralPath $DeleteGateway -Force -ErrorAction Stop
+                $deleteSucceeded = $true
+            } catch {
+                $deleteError = $_.Exception.Message
+            }
+            'continue' | Set-Content -LiteralPath $DeleteContinue -Encoding ASCII
+        }
+        $deleteResult = Complete-SupportRun $deleteRun
+        Assert-True $deleteBarrierReached 'Windows collection pauses after the identity-validated source handle is open for delete'
+        Assert-True $deleteSucceeded "Windows safe-open sharing permits source deletion while held: $deleteError"
+        Assert-True ($deleteResult.ExitCode -eq 0) "Windows support continues from a delete-pending source: $($deleteResult.Stderr)"
+        Assert-Absent $DeleteGateway 'delete-pending source is removed after collection closes its handle'
+        $deleteBundleRoot = Expand-SupportBundle $deleteResult.Bundle (Join-Path $ExtractRoot 'held-delete-tree')
+        Assert-Contains (Join-Path $deleteBundleRoot 'logs\gateway\gateway.log') 'authorized delete-pending content' 'deleted open source snapshots the validated handle content'
+        Assert-NoSupportTemporaryArtifacts $deleteBundleRoot 'held-handle delete bundle has no partial artifacts'
+        Assert-NoSupportTemporaryArtifacts (Join-Path $ExtractRoot 'held-delete-out') 'held-handle delete output has no partial or staging artifacts'
+
         $AncestorRaceRoot = Join-Path $RaceRoot 'ancestor'
         $AncestorLive = Join-Path $AncestorRaceRoot 'live'
         $AncestorOriginal = Join-Path $AncestorRaceRoot 'live-original'
