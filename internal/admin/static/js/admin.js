@@ -1122,7 +1122,12 @@
   // T-6.1-16: builds <option> elements via document.createElement +
   // textContent/value assignment — NEVER innerHTML.
   function populateLogSources(sources, labels) {
-    var serialized = JSON.stringify({ sources: sources || [], labels: labels || {} });
+    sources = sources || [];
+    labels = labels || {};
+    var renderedLabels = sources.map(function (source) {
+      return labels[source] || source;
+    });
+    var serialized = JSON.stringify({ sources: sources, labels: renderedLabels });
     if (serialized === logSourceLastJSON) {
       return;
     }
