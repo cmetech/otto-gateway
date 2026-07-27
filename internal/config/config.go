@@ -106,6 +106,9 @@ type Config struct {
 	// KiroCWD is the working directory for the kiro-cli subprocess (default:
 	// the gateway-owned persistent directory).
 	KiroCWD string
+	// KiroChatLogFile is the native Kiro chat log destination (default:
+	// <gateway home>/logs/kiro-chat.log).
+	KiroChatLogFile string
 	// KiroCWDIsDefault reports that KiroCWD came from the gateway-owned
 	// default, not an explicit KIRO_CWD or --kiro-cwd override. Startup uses
 	// this ownership bit to avoid modifying operator-controlled workspaces.
@@ -390,6 +393,15 @@ func Load() (Config, error) {
 		kiroCWD, cwdErr = gatewayembed.GatewayDir()
 		if cwdErr != nil {
 			errs = append(errs, fmt.Errorf("config: KIRO_CWD default: %w", cwdErr))
+		}
+	}
+	kiroChatLogFile := strings.TrimSpace(os.Getenv("KIRO_CHAT_LOG_FILE"))
+	if kiroChatLogFile == "" {
+		gatewayHome, homeErr := gatewayembed.GatewayDir()
+		if homeErr != nil {
+			errs = append(errs, fmt.Errorf("config: KIRO_CHAT_LOG_FILE default: %w", homeErr))
+		} else {
+			kiroChatLogFile = filepath.Join(gatewayHome, "logs", "kiro-chat.log")
 		}
 	}
 	// Use LookupEnv (not getEnvStr) so an explicitly-set empty value disables
@@ -943,6 +955,7 @@ func Load() (Config, error) {
 		KiroCmd:                   kiroCmd,
 		KiroArgs:                  kiroArgs,
 		KiroCWD:                   kiroCWD,
+		KiroChatLogFile:           kiroChatLogFile,
 		KiroCWDIsDefault:          kiroCWDIsDefault,
 		ToolAliases:               toolAliases,
 		Debug:                     debug,

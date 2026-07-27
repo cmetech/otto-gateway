@@ -28,6 +28,7 @@ func TestPrepareKiroLaunchMaterializesAndLogsDefaultAgent(t *testing.T) {
 		KiroCmd:          "kiro-cli",
 		KiroArgs:         []string{"acp", "--agent", "acp_proxy"},
 		KiroCWD:          root,
+		KiroChatLogFile:  filepath.Join(root, "logs", "kiro-chat.log"),
 		KiroCWDIsDefault: true,
 	}
 
@@ -43,6 +44,7 @@ func TestPrepareKiroLaunchMaterializesAndLogsDefaultAgent(t *testing.T) {
 		"kiro-cli",
 		"acp_proxy",
 		root,
+		filepath.Join(root, "logs", "kiro-chat.log"),
 		gatewayembed.ACPProxyPath(root),
 		"created",
 	} {
@@ -66,6 +68,7 @@ func TestPrepareKiroLaunchPreservesDefaultAgent(t *testing.T) {
 		KiroCmd:          "kiro-cli",
 		KiroArgs:         []string{"acp", "--agent", "acp_proxy"},
 		KiroCWD:          root,
+		KiroChatLogFile:  filepath.Join(root, "logs", "kiro-chat.log"),
 		KiroCWDIsDefault: true,
 	}
 
@@ -87,6 +90,7 @@ func TestPrepareKiroLaunchDoesNotModifyCustomCWD(t *testing.T) {
 		KiroCmd:          "kiro-cli",
 		KiroArgs:         []string{"acp"},
 		KiroCWD:          root,
+		KiroChatLogFile:  filepath.Join(root, "logs", "kiro-chat.log"),
 		KiroCWDIsDefault: false,
 	}
 
@@ -107,12 +111,46 @@ func TestPrepareKiroLaunchReturnsMaterializationError(t *testing.T) {
 	cfg := config.Config{
 		KiroCmd:          "kiro-cli",
 		KiroCWD:          root,
+		KiroChatLogFile:  filepath.Join(root, "logs", "kiro-chat.log"),
 		KiroCWDIsDefault: true,
 	}
 
 	err := prepareKiroLaunch(cfg, testutil.Logger(t))
 	if err == nil || !strings.Contains(err.Error(), "prepare acp_proxy agent") {
 		t.Fatalf("error = %v, want prepare acp_proxy agent failure", err)
+	}
+}
+
+func TestPrepareKiroLaunchPreparesNativeLogDir(t *testing.T) {
+	root := t.TempDir()
+	logFile := filepath.Join(root, "logs", "kiro-chat.log")
+	cfg := config.Config{KiroCmd: "kiro-cli", KiroCWD: root, KiroChatLogFile: logFile}
+	if err := prepareKiroLaunch(cfg, testutil.Logger(t)); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(filepath.Dir(logFile)); err != nil || !info.IsDir() {
+		t.Fatalf("info=%v err=%v", info, err)
+	}
+}
+
+func TestPrepareKiroLaunchReportsNativeLogDirFailure(t *testing.T) {
+	root := t.TempDir()
+	blocker := filepath.Join(root, "blocker")
+	if err := os.WriteFile(blocker, []byte("file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{KiroCmd: "kiro-cli", KiroCWD: root, KiroChatLogFile: filepath.Join(blocker, "kiro.log")}
+	err := prepareKiroLaunch(cfg, testutil.Logger(t))
+	if err == nil || !strings.Contains(err.Error(), "Kiro log directory") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestPrepareKiroLaunchRejectsEmptyNativeLogPath(t *testing.T) {
+	cfg := config.Config{KiroCmd: "kiro-cli", KiroCWD: t.TempDir()}
+	err := prepareKiroLaunch(cfg, testutil.Logger(t))
+	if err == nil || !strings.Contains(err.Error(), "Kiro log path is empty") {
+		t.Fatalf("error=%v", err)
 	}
 }
 
@@ -279,6 +317,7 @@ func TestApp_WarmupBeforeListen(t *testing.T) {
 		HTTPAddr:         ":0",
 		KiroCmd:          "/usr/bin/true", // exists on macOS + Linux; speaks no ACP
 		KiroArgs:         []string{},
+		KiroChatLogFile:  filepath.Join(t.TempDir(), "logs", "kiro-chat.log"),
 		PoolSize:         1,
 		PingInterval:     60 * time.Second,
 		OllamaPathPrefix: "/api",

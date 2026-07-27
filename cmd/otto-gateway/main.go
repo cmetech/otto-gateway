@@ -73,6 +73,14 @@ const warmupDeadline = 30 * time.Second
 // gateway-owned default workspace, then records the exact subprocess launch
 // configuration before pool warmup. Explicit workspaces are never modified.
 func prepareKiroLaunch(cfg config.Config, logger *slog.Logger) error {
+	if cfg.KiroChatLogFile == "" {
+		return errors.New("prepare Kiro launch: Kiro log path is empty")
+	}
+	logDir := filepath.Dir(cfg.KiroChatLogFile)
+	if err := os.MkdirAll(logDir, 0o750); err != nil {
+		return fmt.Errorf("prepare Kiro log directory %q: %w", logDir, err)
+	}
+
 	agentPath := "(custom workspace — not managed)"
 	status := "not-managed"
 	if cfg.KiroCWDIsDefault {
@@ -92,6 +100,7 @@ func prepareKiroLaunch(cfg config.Config, logger *slog.Logger) error {
 		"command", cfg.KiroCmd,
 		"args", cfg.KiroArgs,
 		"cwd", cfg.KiroCWD,
+		"chat_log_file", cfg.KiroChatLogFile,
 		"agent_config", agentPath,
 		"agent_config_status", status,
 	)

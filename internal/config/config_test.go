@@ -2,6 +2,7 @@ package config_test
 
 import (
 	"os"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
@@ -11,6 +12,30 @@ import (
 	"otto-gateway/internal/config"
 	gatewayembed "otto-gateway/internal/embed"
 )
+
+func TestLoad_KiroChatLogFile(t *testing.T) {
+	gwHome := t.TempDir()
+	t.Setenv("GW_HOME", gwHome)
+	t.Setenv("KIRO_CHAT_LOG_FILE", "")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(gwHome, "logs", "kiro-chat.log")
+	if cfg.KiroChatLogFile != want {
+		t.Fatalf("got %q want %q", cfg.KiroChatLogFile, want)
+	}
+
+	explicit := filepath.Join(t.TempDir(), "native", "kiro.log")
+	t.Setenv("KIRO_CHAT_LOG_FILE", explicit)
+	cfg, err = config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.KiroChatLogFile != explicit {
+		t.Fatalf("got %q want %q", cfg.KiroChatLogFile, explicit)
+	}
+}
 
 func TestLoadDefaults(t *testing.T) {
 	// No t.Setenv, safe to run in parallel.
