@@ -481,7 +481,19 @@ func (s *trayState) handleSupportBundle() {
 		return
 	}
 
-	res := runWrapper(s.installDir, s.gwHome, "support")
+	home, detected := detectedHermesHome(
+		s.desktopCurrent.Load(),
+		runtime.GOOS,
+		os.Getenv,
+		homeDir(),
+		readUserEnvVar,
+		statExists,
+	)
+	var extraArgs []string
+	if detected {
+		extraArgs = supportCoworkerArgs(runtime.GOOS, home)
+	}
+	res := runWrapper(s.installDir, s.gwHome, "support", extraArgs...)
 	if res.ExitCode != 0 || res.Err != nil {
 		body := "Failed to create support bundle."
 		tail := tailLines(res.Stderr, 20)

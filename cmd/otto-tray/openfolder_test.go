@@ -169,6 +169,38 @@ func TestResolveHermesHomeWindowsBrandSafety(t *testing.T) {
 	}
 }
 
+func TestDetectedHermesHomeUsesStoppedCandidate(t *testing.T) {
+	candidate := &desktopCandidate{Slug: "loop24", HomeDir: ".loop24"}
+	home, ok := detectedHermesHome(
+		&desktopOutput{State: DesktopStopped, Candidate: candidate},
+		"darwin",
+		func(string) string { return "" },
+		"/Users/me",
+		func(string) string { return "" },
+		func(string) bool { return false },
+	)
+	if !ok {
+		t.Fatal("stopped candidate was not detected")
+	}
+	if home != "/Users/me/.loop24" {
+		t.Fatalf("home = %q, want %q", home, "/Users/me/.loop24")
+	}
+}
+
+func TestDetectedHermesHomeRejectsMissingCandidate(t *testing.T) {
+	home, ok := detectedHermesHome(
+		&desktopOutput{State: DesktopStopped},
+		"darwin",
+		func(string) string { return "" },
+		"/Users/me",
+		func(string) string { return "" },
+		func(string) bool { return false },
+	)
+	if ok || home != "" {
+		t.Fatalf("missing candidate = (%q, %v), want (\"\", false)", home, ok)
+	}
+}
+
 func TestRunningDesktopCandidateRejectsStaleSnapshot(t *testing.T) {
 	candidate := &desktopCandidate{Identity: identityFromDisplayName("LOOP24"), Slug: "loop24"}
 	if _, err := runningDesktopCandidate(&desktopOutput{State: DesktopStopped, Candidate: candidate}, func(desktopCandidate) (bool, error) {

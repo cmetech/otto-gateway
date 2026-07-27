@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -28,11 +29,11 @@ type runResult struct {
 // on win) so quitting the tray does not signal the gateway. A 30s
 // timeout matches the wrapper's own readiness wait — anything longer
 // is reported as a failure to the user.
-func runWrapper(installDir, gwHome, verb string) runResult {
+func runWrapper(installDir, gwHome, verb string, extraArgs ...string) runResult {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	cmdName, args := wrapperCommand(installDir, verb)
+	cmdName, args := wrapperCommand(installDir, verb, extraArgs...)
 	cmd := exec.CommandContext(ctx, cmdName, args...) //nolint:gosec // cmdName + args come from constants and operator-controlled installDir
 	cmd.Dir = gwHome
 	detachProcessGroup(cmd)
@@ -55,4 +56,14 @@ func runWrapper(installDir, gwHome, verb string) runResult {
 		Stderr:   stderr.String(),
 		Err:      err,
 	}
+}
+
+func supportCoworkerArgs(goos, home string) []string {
+	if strings.TrimSpace(home) == "" {
+		return nil
+	}
+	if goos == "windows" {
+		return []string{"-CoworkerHome", home}
+	}
+	return []string{"--co-worker-home", home}
 }

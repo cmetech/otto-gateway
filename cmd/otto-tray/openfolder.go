@@ -64,6 +64,24 @@ func resolveHermesHome(
 	return filepath.Join(home, brandHomeDir)
 }
 
+// detectedHermesHome resolves the Co-Worker home for a previously detected
+// desktop candidate. A stopped candidate remains useful for support
+// collection, so this deliberately does not revalidate process liveness.
+func detectedHermesHome(
+	out *desktopOutput,
+	goos string,
+	env func(string) string,
+	home string,
+	winReg func(string) string,
+	exists func(string) bool,
+) (string, bool) {
+	if out == nil || out.Candidate == nil {
+		return "", false
+	}
+	candidate := out.Candidate
+	return resolveHermesHome(goos, env, home, candidate.Slug, candidate.HomeDir, winReg, exists), true
+}
+
 // appFolderTarget maps the resolved app path to what to open.
 // windows: the install dir (dir of the exe), opened directly.
 // darwin:  the .app bundle, revealed in Finder (reveal=true → `open -R`).

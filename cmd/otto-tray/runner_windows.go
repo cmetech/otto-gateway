@@ -28,13 +28,13 @@ const (
 // We rely on the wrapper script's own internal authentication
 // guards (env-driven AUTH_TOKEN) — the script itself is not the
 // trust boundary; the user already trusted the install.
-func wrapperCommand(installDir, verb string) (string, []string) {
+func wrapperCommand(installDir, verb string, extraArgs ...string) (string, []string) {
 	script := filepath.Join(installDir, "scripts", "gw.ps1")
 	shell := "powershell"
 	if _, err := exec.LookPath("pwsh"); err == nil {
 		shell = "pwsh"
 	}
-	return shell, []string{"-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, verb}
+	return shell, append([]string{"-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, verb}, extraArgs...)
 }
 
 // detachProcessGroup puts the wrapper in its own process group so that

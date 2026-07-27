@@ -11,8 +11,8 @@ import (
 // wrapperCommand returns the executable and args to run the gw
 // shell wrapper on darwin. The wrapper itself lives at
 // scripts/gw under $GW_INSTALL_DIR.
-func wrapperCommand(installDir, verb string) (string, []string) {
-	return filepath.Join(installDir, "scripts", "gw"), []string{verb}
+func wrapperCommand(installDir, verb string, extraArgs ...string) (string, []string) {
+	return filepath.Join(installDir, "scripts", "gw"), append([]string{verb}, extraArgs...)
 }
 
 func detachProcessGroup(cmd *exec.Cmd) {
