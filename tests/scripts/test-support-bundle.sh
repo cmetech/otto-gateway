@@ -282,7 +282,7 @@ TEST_SWAP_SOURCE_ONE=""
 TEST_SWAP_TARGET_ONE=""
 TEST_SWAP_SOURCE_TWO=""
 TEST_SWAP_TARGET_TWO=""
-TEST_REAL_CP="$(command -v cp)"
+TEST_REAL_PERL="$(command -v perl)"
 
 reset_support_inputs() {
     TEST_GW_LOG="$GW_HOME_FIXTURE/logs/gateway.log"
@@ -347,7 +347,7 @@ run_support() {
         TASK3_SWAP_TARGET_ONE="$TEST_SWAP_TARGET_ONE" \
         TASK3_SWAP_SOURCE_TWO="$TEST_SWAP_SOURCE_TWO" \
         TASK3_SWAP_TARGET_TWO="$TEST_SWAP_TARGET_TWO" \
-        TASK3_REAL_CP="$TEST_REAL_CP" \
+        TASK3_REAL_PERL="$TEST_REAL_PERL" \
         "$BASH" "$WRAPPER" "$@" >"$stdout_file" 2>"$stderr_file"
     local rc=$?
     set -e
@@ -635,42 +635,90 @@ assert_contains "$REDACTION_FAIL_ROOT/MANIFEST.txt" 'Kiro current log redaction 
 assert_contains "$REDACTION_FAIL_ROOT/MANIFEST.txt" 'Co-worker agent.log redaction failed' "manifest warns for Co-worker redaction failure"
 reset_support_inputs
 
-echo "== no-dereference snapshot boundary =="
-RACE_ROOT="$FAKE_ROOT/snapshot-race"
-mkdir -p "$RACE_ROOT/gateway" "$RACE_ROOT/kiro" "$RACE_ROOT/co-worker/logs" "$RACE_ROOT/bin"
-printf '%s\n' 'race Gateway current safe' > "$RACE_ROOT/gateway/gateway.log"
-printf '%s\n' 'race Gateway boot safe' > "$RACE_ROOT/gateway/gateway-boot.log"
-printf '%s\n' 'race Gateway rotation safe' | gzip > "$RACE_ROOT/gateway/gateway-race.log.gz"
+echo "== unavailable safe-open boundary =="
+NO_SAFE_OPEN_ROOT="$FAKE_ROOT/no-safe-open"
+mkdir -p "$NO_SAFE_OPEN_ROOT/gateway" "$NO_SAFE_OPEN_ROOT/kiro" "$NO_SAFE_OPEN_ROOT/co-worker/logs" "$NO_SAFE_OPEN_ROOT/bin"
+printf '%s\n' 'unavailable Gateway current' > "$NO_SAFE_OPEN_ROOT/gateway/gateway.log"
+printf '%s\n' 'unavailable Gateway boot' > "$NO_SAFE_OPEN_ROOT/gateway/gateway-boot.log"
+printf '%s\n' 'unavailable Kiro' > "$NO_SAFE_OPEN_ROOT/kiro/kiro.log"
+printf '%s\n' 'unavailable Co-worker' > "$NO_SAFE_OPEN_ROOT/co-worker/logs/agent.log"
+cat > "$NO_SAFE_OPEN_ROOT/bin/perl" <<'EOF'
+#!/bin/sh
+exit 127
+EOF
+chmod +x "$NO_SAFE_OPEN_ROOT/bin/perl"
+TEST_GW_LOG="$NO_SAFE_OPEN_ROOT/gateway/gateway.log"
+TEST_GW_LOG_BOOT="$NO_SAFE_OPEN_ROOT/gateway/gateway-boot.log"
+TEST_KIRO_CWD="$NO_SAFE_OPEN_ROOT/kiro"
+TEST_KIRO_CHAT_LOG_FILE="kiro.log"
+TEST_COWORKER_HOME="$NO_SAFE_OPEN_ROOT/co-worker"
+TEST_PATH="$NO_SAFE_OPEN_ROOT/bin:$PATH"
+NO_SAFE_OPEN_OUT="$EXTRACT_DIR/no-safe-open-out"
+if run_support fallback "$NO_SAFE_OPEN_OUT" 50 "$EXTRACT_DIR/no-safe-open.stdout" "$EXTRACT_DIR/no-safe-open.stderr"; then
+    ok "support continues when atomic safe-open is unavailable"
+else
+    fail_with "support failed without atomic safe-open: $(cat "$EXTRACT_DIR/no-safe-open.stderr")"
+fi
+NO_SAFE_OPEN_BUNDLE=$(tail -n 1 "$EXTRACT_DIR/no-safe-open.stdout" 2>/dev/null || true)
+NO_SAFE_OPEN_BUNDLE_ROOT=$(extract_bundle "$NO_SAFE_OPEN_BUNDLE" "$EXTRACT_DIR/no-safe-open-tree")
+assert_absent "$NO_SAFE_OPEN_BUNDLE_ROOT/logs/gateway/gateway.log" "Gateway source is omitted without atomic safe-open"
+assert_absent "$NO_SAFE_OPEN_BUNDLE_ROOT/logs/kiro/kiro-chat.log" "Kiro source is omitted without atomic safe-open"
+assert_absent "$NO_SAFE_OPEN_BUNDLE_ROOT/logs/co-worker/agent.log" "Co-worker source is omitted without atomic safe-open"
+assert_contains "$NO_SAFE_OPEN_BUNDLE_ROOT/MANIFEST.txt" 'Gateway current log safe-open unavailable' "manifest warns when Gateway safe-open is unavailable"
+assert_contains "$NO_SAFE_OPEN_BUNDLE_ROOT/MANIFEST.txt" 'Kiro current log safe-open unavailable' "manifest warns when Kiro safe-open is unavailable"
+assert_contains "$NO_SAFE_OPEN_BUNDLE_ROOT/MANIFEST.txt" 'Co-worker agent.log safe-open unavailable' "manifest warns when Co-worker safe-open is unavailable"
+reset_support_inputs
+
+echo "== atomic no-follow snapshot boundary =="
+RACE_ROOT="$FAKE_ROOT/snapshot race"
+mkdir -p "$RACE_ROOT/gateway logs" "$RACE_ROOT/kiro" "$RACE_ROOT/co-worker/logs" "$RACE_ROOT/bin"
+printf '%s\n' 'race Gateway current safe' > "$RACE_ROOT/gateway logs/gateway current.log"
+printf '%s\n' 'race Gateway boot safe' > "$RACE_ROOT/gateway logs/gateway boot.log"
+printf '%s\n' 'race Gateway rotation safe' | gzip > "$RACE_ROOT/gateway logs/gateway-race binary.log.gz"
 printf '%s\n' 'race Kiro safe' > "$RACE_ROOT/kiro/kiro.log"
 RACE_PLAIN_SECRET="race-plain-external-secret-2244"
 RACE_GZIP_SECRET="race-gzip-external-secret-3355"
 printf '%s\n' "$RACE_PLAIN_SECRET" > "$RACE_ROOT/external-secret.log"
 printf '%s\n' "$RACE_GZIP_SECRET" | gzip > "$RACE_ROOT/external-secret.log.gz"
 ln -s "$RACE_ROOT/external-secret.log" "$RACE_ROOT/co-worker/logs/agent.log"
-cat > "$RACE_ROOT/bin/cp" <<'EOF'
+cat > "$RACE_ROOT/bin/perl" <<'EOF'
 #!/bin/sh
+task3_copy_mode=false
+task3_source_one=false
+task3_source_two=false
 for task3_arg in "$@"; do
-    if [ -n "${TASK3_SWAP_SOURCE_ONE:-}" ] && [ "$task3_arg" = "$TASK3_SWAP_SOURCE_ONE" ] && [ ! -e "$TASK3_SWAP_SOURCE_ONE.before-swap" ]; then
+    if [ "$task3_arg" = "copy" ]; then
+        task3_copy_mode=true
+    fi
+    if [ -n "${TASK3_SWAP_SOURCE_ONE:-}" ] && [ "$task3_arg" = "$TASK3_SWAP_SOURCE_ONE" ]; then
+        task3_source_one=true
+    fi
+    if [ -n "${TASK3_SWAP_SOURCE_TWO:-}" ] && [ "$task3_arg" = "$TASK3_SWAP_SOURCE_TWO" ]; then
+        task3_source_two=true
+    fi
+done
+if [ "$task3_copy_mode" = true ]; then
+    if [ "$task3_source_one" = true ] && [ ! -e "$TASK3_SWAP_SOURCE_ONE.before-swap" ]; then
         mv "$TASK3_SWAP_SOURCE_ONE" "$TASK3_SWAP_SOURCE_ONE.before-swap"
         ln -s "$TASK3_SWAP_TARGET_ONE" "$TASK3_SWAP_SOURCE_ONE"
     fi
-    if [ -n "${TASK3_SWAP_SOURCE_TWO:-}" ] && [ "$task3_arg" = "$TASK3_SWAP_SOURCE_TWO" ] && [ ! -e "$TASK3_SWAP_SOURCE_TWO.before-swap" ]; then
+    if [ "$task3_source_two" = true ] && [ ! -e "$TASK3_SWAP_SOURCE_TWO.before-swap" ]; then
         mv "$TASK3_SWAP_SOURCE_TWO" "$TASK3_SWAP_SOURCE_TWO.before-swap"
         ln -s "$TASK3_SWAP_TARGET_TWO" "$TASK3_SWAP_SOURCE_TWO"
     fi
-done
-exec "$TASK3_REAL_CP" "$@"
+fi
+exec "$TASK3_REAL_PERL" "$@"
 EOF
-chmod +x "$RACE_ROOT/bin/cp"
-TEST_GW_LOG="$RACE_ROOT/gateway/gateway.log"
-TEST_GW_LOG_BOOT="$RACE_ROOT/gateway/gateway-boot.log"
+chmod +x "$RACE_ROOT/bin/perl"
+TEST_GW_LOG="$RACE_ROOT/gateway logs/gateway current.log"
+TEST_GW_LOG_BOOT="$RACE_ROOT/gateway logs/gateway boot.log"
 TEST_KIRO_CWD="$RACE_ROOT/kiro"
 TEST_KIRO_CHAT_LOG_FILE="kiro.log"
 TEST_COWORKER_HOME="$RACE_ROOT/co-worker"
 TEST_PATH="$RACE_ROOT/bin:$PATH"
-TEST_SWAP_SOURCE_ONE="$RACE_ROOT/gateway/gateway.log"
+TEST_SWAP_SOURCE_ONE="$RACE_ROOT/gateway logs/gateway current.log"
 TEST_SWAP_TARGET_ONE="$RACE_ROOT/external-secret.log"
-TEST_SWAP_SOURCE_TWO="$RACE_ROOT/gateway/gateway-race.log.gz"
+TEST_SWAP_SOURCE_TWO="$RACE_ROOT/gateway logs/gateway-race binary.log.gz"
 TEST_SWAP_TARGET_TWO="$RACE_ROOT/external-secret.log.gz"
 RACE_OUT="$EXTRACT_DIR/race-out"
 if run_support fallback "$RACE_OUT" 50 "$EXTRACT_DIR/race.stdout" "$EXTRACT_DIR/race.stderr"; then
@@ -680,11 +728,17 @@ else
 fi
 RACE_BUNDLE=$(tail -n 1 "$EXTRACT_DIR/race.stdout" 2>/dev/null || true)
 RACE_BUNDLE_ROOT=$(extract_bundle "$RACE_BUNDLE" "$EXTRACT_DIR/race-tree")
+if [[ -L "$TEST_SWAP_SOURCE_ONE" && -f "$TEST_SWAP_SOURCE_ONE.before-swap" && \
+      -L "$TEST_SWAP_SOURCE_TWO" && -f "$TEST_SWAP_SOURCE_TWO.before-swap" ]]; then
+    ok "race seam swaps plain and gzip sources immediately before safe-open copy"
+else
+    fail_with "race seam did not execute at both safe-open copy boundaries"
+fi
 assert_absent "$RACE_BUNDLE_ROOT/logs/gateway/gateway.log" "plain source swapped to symlink is rejected after snapshot"
-assert_absent "$RACE_BUNDLE_ROOT/logs/gateway/gateway-race.log.gz" "compressed source swapped to symlink is rejected after snapshot"
+assert_absent "$RACE_BUNDLE_ROOT/logs/gateway/gateway-race binary.log.gz" "binary compressed source with spaces swapped to symlink is rejected after snapshot"
 assert_absent "$RACE_BUNDLE_ROOT/logs/co-worker/agent.log" "static Co-worker symlink is rejected"
-assert_contains "$RACE_BUNDLE_ROOT/MANIFEST.txt" 'Gateway current log rejected: symlink snapshot' "manifest records raced plain symlink rejection"
-assert_contains "$RACE_BUNDLE_ROOT/MANIFEST.txt" 'Gateway rotation gateway-race.log.gz rejected: symlink snapshot' "manifest records raced compressed symlink rejection"
+assert_contains "$RACE_BUNDLE_ROOT/MANIFEST.txt" 'Gateway current log rejected: source replaced before safe-open' "manifest records raced plain source replacement"
+assert_contains "$RACE_BUNDLE_ROOT/MANIFEST.txt" 'Gateway rotation gateway-race binary.log.gz rejected: source replaced before safe-open' "manifest records raced compressed source replacement"
 assert_contains "$RACE_BUNDLE_ROOT/MANIFEST.txt" 'Co-worker agent.log rejected: symlink' "manifest records static Co-worker symlink rejection"
 if grep -rIF -- "$RACE_PLAIN_SECRET" "$RACE_BUNDLE_ROOT" >/dev/null 2>&1 || \
    grep -rIF -- "$RACE_GZIP_SECRET" "$RACE_BUNDLE_ROOT" >/dev/null 2>&1; then

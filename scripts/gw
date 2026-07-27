@@ -2011,16 +2011,82 @@ EOF
 
     local collection_warnings=()
     local source_snapshot_seq=0 source_snapshot=""
+    local safe_open_perl="" safe_open_candidate="" safe_open_program
+
+    # Perl is part of the macOS base system and gives Bash 3.2 a real
+    # O_NOFOLLOW boundary. Probe the exact constants used below. If the
+    # interpreter or primitive is unavailable, collection fails closed.
+    if safe_open_candidate="$(command -v perl 2>/dev/null)" && \
+       [[ -n "$safe_open_candidate" ]] && \
+       "$safe_open_candidate" -MFcntl=:DEFAULT,:mode -e \
+           'exit(!(defined(&O_NOFOLLOW) && defined(&O_NONBLOCK) && defined(&S_ISREG) && defined(&S_ISLNK)));' \
+           >/dev/null 2>&1; then
+        safe_open_perl="$safe_open_candidate"
+    fi
+
+    # The inspect phase records the source identity. The copy phase opens the
+    # pathname once with O_NOFOLLOW, validates that already-open descriptor
+    # with fstat, compares its identity, and copies binary bytes from that same
+    # descriptor. O_NONBLOCK keeps a raced FIFO from hanging before fstat.
+    # shellcheck disable=SC2016 # This is Perl source, not a shell expression.
+    safe_open_program='use strict;
+use warnings;
+use Fcntl qw(:DEFAULT :mode);
+use Errno qw(ELOOP ENOENT);
+
+my $operation = shift(@ARGV) // "";
+if ($operation eq "inspect") {
+    my $source = shift(@ARGV) // exit 20;
+    my @source_stat = lstat($source);
+    exit 21 unless @source_stat;
+    exit 22 if S_ISLNK($source_stat[2]);
+    exit 23 unless S_ISREG($source_stat[2]);
+    print $source_stat[0], ":", $source_stat[1], "\n";
+    exit 0;
+}
+
+exit 20 unless $operation eq "copy";
+my ($expected_device, $expected_inode, $source, $destination) = @ARGV;
+exit 20 unless defined($destination);
+
+my $input_flags = O_RDONLY | O_NOFOLLOW | O_NONBLOCK;
+my $input;
+unless (sysopen($input, $source, $input_flags)) {
+    exit(($! == ELOOP || $! == ENOENT) ? 31 : 32);
+}
+binmode($input);
+my @opened_stat = stat($input);
+exit 33 unless @opened_stat && S_ISREG($opened_stat[2]);
+exit 34 unless "$opened_stat[0]" eq "$expected_device" &&
+               "$opened_stat[1]" eq "$expected_inode";
+
+my $output_flags = O_WRONLY | O_CREAT | O_EXCL;
+my $output;
+sysopen($output, $destination, $output_flags, 0600) or exit 35;
+binmode($output);
+while (1) {
+    my $read_count = sysread($input, my $buffer, 65536);
+    exit 35 unless defined($read_count);
+    last if $read_count == 0;
+    my $offset = 0;
+    while ($offset < $read_count) {
+        my $write_count = syswrite($output, $buffer, $read_count - $offset, $offset);
+        exit 35 unless defined($write_count) && $write_count > 0;
+        $offset += $write_count;
+    }
+}
+close($output) or exit 35;
+close($input) or exit 35;
+utime($opened_stat[8], $opened_stat[9], $destination);
+exit 0;'
 
     # snapshot_regular_source SOURCE LABEL WARN_IF_MISSING
-    # Copy with no dereference into the private staging directory, then
-    # validate the copied object before any reader opens it. If SOURCE changes
-    # to a symlink after the initial classification, cp -P snapshots the link
-    # itself and the post-copy check rejects it. All later work reads only the
-    # private snapshot, closing the check/reopen race at the support boundary.
+    # Atomically safe-open a verified regular source and copy its already-open
+    # descriptor into the private staging directory. All later work reads only
+    # that snapshot; there is no path reopen at the support trust boundary.
     snapshot_regular_source() {
         local snapshot_src="$1" snapshot_label="$2" warn_missing="$3"
-        local snapshot_dir snapshot_path
+        local snapshot_dir snapshot_path source_identity source_device source_inode safe_open_rc
         source_snapshot=""
 
         if [[ -L "$snapshot_src" ]]; then
@@ -2041,6 +2107,37 @@ EOF
             collection_warnings+=("$snapshot_label unreadable")
             return 1
         fi
+        if [[ -z "$safe_open_perl" ]]; then
+            collection_warnings+=("$snapshot_label safe-open unavailable")
+            return 1
+        fi
+
+        source_identity="$("$safe_open_perl" -e "$safe_open_program" -- inspect "$snapshot_src" 2>/dev/null)"
+        safe_open_rc=$?
+        if [[ "$safe_open_rc" -ne 0 ]]; then
+            case "$safe_open_rc" in
+                21|22)
+                    collection_warnings+=("$snapshot_label rejected: source replaced before safe-open")
+                    ;;
+                23)
+                    collection_warnings+=("$snapshot_label rejected: source replaced by non-regular file")
+                    ;;
+                *)
+                    collection_warnings+=("$snapshot_label safe-open inspection failed")
+                    ;;
+            esac
+            return 1
+        fi
+        case "$source_identity" in
+            *:*)
+                source_device="${source_identity%%:*}"
+                source_inode="${source_identity#*:}"
+                ;;
+            *)
+                collection_warnings+=("$snapshot_label safe-open inspection failed")
+                return 1
+                ;;
+        esac
 
         snapshot_dir="$staging/source-snapshots"
         if ! mkdir -p "$snapshot_dir"; then
@@ -2049,16 +2146,25 @@ EOF
         fi
         source_snapshot_seq=$((source_snapshot_seq + 1))
         snapshot_path="$snapshot_dir/source-$source_snapshot_seq"
-        if ! cp -p -P "$snapshot_src" "$snapshot_path" 2>/dev/null; then
-            collection_warnings+=("$snapshot_label snapshot failed")
-            return 1
-        fi
-        if [[ -L "$snapshot_path" ]]; then
-            collection_warnings+=("$snapshot_label rejected: symlink snapshot")
-            return 1
-        fi
-        if [[ ! -f "$snapshot_path" ]]; then
-            collection_warnings+=("$snapshot_label rejected: non-regular snapshot")
+        "$safe_open_perl" -e "$safe_open_program" -- copy \
+            "$source_device" "$source_inode" "$snapshot_src" "$snapshot_path" 2>/dev/null
+        safe_open_rc=$?
+        if [[ "$safe_open_rc" -ne 0 ]]; then
+            rm -f "$snapshot_path"
+            case "$safe_open_rc" in
+                31|34)
+                    collection_warnings+=("$snapshot_label rejected: source replaced before safe-open")
+                    ;;
+                33)
+                    collection_warnings+=("$snapshot_label rejected: source replaced by non-regular file")
+                    ;;
+                32)
+                    collection_warnings+=("$snapshot_label unreadable during safe-open")
+                    ;;
+                *)
+                    collection_warnings+=("$snapshot_label safe-open snapshot failed")
+                    ;;
+            esac
             return 1
         fi
         source_snapshot="$snapshot_path"
