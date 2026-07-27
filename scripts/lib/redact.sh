@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # scripts/lib/redact.sh — shared bash redaction primitives for the support
-# bundle subcommand. Sourced (not executed); requires bash 4+ (same baseline
-# as scripts/gw).
+# bundle subcommand. Sourced (not executed); remains compatible with Bash 3.2.
 #
 # Surface (per docs/superpowers/specs/2026-06-08-support-bundle-design.md):
 #   - redact_stream            stdin -> stdout filter applying log-scrub rules
@@ -15,7 +14,8 @@
 #   1. Authorization:<space>.*      -> Authorization: [REDACTED]
 #   2. x-api-key:<space>.*           -> x-api-key: [REDACTED]  (case-insensitive)
 #   3. Bearer <hex/url-safe-base64>  -> Bearer [REDACTED]
-#   4. (^|[^A-Za-z0-9_])(AUTH_TOKEN|PII_HASH_KEY|PII_ENCRYPT_KEY)=<value>
+#   4. (^|[^A-Za-z0-9_])(AUTH_TOKEN|PII_HASH_KEY|PII_ENCRYPT_KEY|
+#      GW_METRICS_REMOTE_WRITE_TOKEN)=<value>
 #                                    -> \1KEY=[REDACTED]
 #
 # Rule (4) intentionally matches the secret-key= form ANYWHERE on the line
@@ -47,7 +47,7 @@ redact_stream() {
         -e 's/(Authorization:[[:space:]]*).*/\1[REDACTED]/g' \
         -e 's/([Xx]-[Aa][Pp][Ii]-[Kk][Ee][Yy]:[[:space:]]*).*/\1[REDACTED]/g' \
         -e 's/Bearer [A-Za-z0-9._-]+/Bearer [REDACTED]/g' \
-        -e 's/(^|[^A-Za-z0-9_])(AUTH_TOKEN|PII_HASH_KEY|PII_ENCRYPT_KEY)=[^[:space:]]+/\1\2=[REDACTED]/g'
+        -e 's/(^|[^A-Za-z0-9_])(AUTH_TOKEN|PII_HASH_KEY|PII_ENCRYPT_KEY|GW_METRICS_REMOTE_WRITE_TOKEN)=[^[:space:]]+/\1\2=[REDACTED]/g'
 }
 
 # mask_env_value VALUE — echo "<first 4 chars>…(<N> chars)". The literal
@@ -79,7 +79,7 @@ is_secret_key() {
     local up
     up=$(printf '%s' "$k" | tr '[:lower:]' '[:upper:]')
     case "$up" in
-        AUTH_TOKEN|PII_HASH_KEY|PII_ENCRYPT_KEY) return 0 ;;
+        AUTH_TOKEN|PII_HASH_KEY|PII_ENCRYPT_KEY|GW_METRICS_REMOTE_WRITE_TOKEN) return 0 ;;
     esac
     case "$up" in
         *TOKEN*|*KEY*|*SECRET*|*PASSWORD*|*PASSPHRASE*) return 0 ;;

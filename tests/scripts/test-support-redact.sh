@@ -13,6 +13,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd -P "$(dirname "$0")/../.." >/dev/null 2>&1 && pwd)"
+# shellcheck source-path=SCRIPTDIR
 # shellcheck source=../../scripts/lib/redact.sh
 source "$REPO_ROOT/scripts/lib/redact.sh"
 
@@ -69,6 +70,7 @@ FIXTURE=$(printf '%s\n' \
     'AUTH_TOKEN=supersecretvalue' \
     'PII_HASH_KEY=anotherSecret' \
     'PII_ENCRYPT_KEY=thirdSecret' \
+    'GW_METRICS_REMOTE_WRITE_TOKEN=remoteWriteSecret' \
     'Authorization: Bearer foo' \
     'x-api-key: bar' \
     'X-API-KEY: BAZ' \
@@ -80,6 +82,7 @@ assert_contains "$REDACTED" "Bearer [REDACTED]" "Bearer token rewritten"
 assert_contains "$REDACTED" "AUTH_TOKEN=[REDACTED]" "AUTH_TOKEN= line rewritten"
 assert_contains "$REDACTED" "PII_HASH_KEY=[REDACTED]" "PII_HASH_KEY= line rewritten"
 assert_contains "$REDACTED" "PII_ENCRYPT_KEY=[REDACTED]" "PII_ENCRYPT_KEY= line rewritten"
+assert_contains "$REDACTED" "GW_METRICS_REMOTE_WRITE_TOKEN=[REDACTED]" "remote-write token assignment rewritten"
 assert_contains "$REDACTED" "Authorization: [REDACTED]" "Authorization header rewritten"
 assert_contains "$REDACTED" "x-api-key: [REDACTED]" "x-api-key (lower) rewritten"
 assert_contains "$REDACTED" "X-API-KEY: [REDACTED]" "X-API-KEY (upper) rewritten"
@@ -89,6 +92,7 @@ assert_contains "$REDACTED" "hello world" "control line preserved"
 assert_not_contains "$REDACTED" "supersecretvalue" "AUTH_TOKEN secret absent"
 assert_not_contains "$REDACTED" "anotherSecret" "PII_HASH_KEY secret absent"
 assert_not_contains "$REDACTED" "thirdSecret" "PII_ENCRYPT_KEY secret absent"
+assert_not_contains "$REDACTED" "remoteWriteSecret" "remote-write token secret absent"
 assert_not_contains "$REDACTED" "eyJabc.def-ghi_jkl" "Bearer token secret absent"
 assert_not_contains "$REDACTED" "Bearer foo" "Authorization Bearer remnant absent"
 assert_not_contains "$REDACTED" " bar" "x-api-key value absent"
@@ -111,7 +115,7 @@ assert_contains "$masked_full" "supe…(16 chars)" "mask format matches scripts/
 
 echo "== is_secret_key =="
 
-for k in AUTH_TOKEN PII_HASH_KEY PII_ENCRYPT_KEY MY_PASSWORD WEBHOOK_SECRET API_KEY MY_TOKEN PASSPHRASE_FOO auth_token; do
+for k in AUTH_TOKEN PII_HASH_KEY PII_ENCRYPT_KEY GW_METRICS_REMOTE_WRITE_TOKEN MY_PASSWORD WEBHOOK_SECRET API_KEY MY_TOKEN PASSPHRASE_FOO auth_token; do
     if is_secret_key "$k"; then
         ok "is_secret_key($k) -> 0"
     else

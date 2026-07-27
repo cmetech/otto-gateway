@@ -1803,12 +1803,15 @@ print_env() {
              PII_ENABLED_ENTITIES PII_ENTITY_ACTIONS PII_HASH_KEY \
              PII_ENCRYPT_KEY AUTH_TOKEN ALLOWED_IPS \
              AUTH_TRUST_XFF HTTP_ADDR KIRO_CMD KIRO_ARGS KIRO_CWD \
-             POOL_SIZE KIRO_WORKER_MAX_TURNS STREAM_IDLE_TIMEOUT_SEC DEBUG; do
+             KIRO_CHAT_LOG_FILE POOL_SIZE KIRO_WORKER_MAX_TURNS \
+             STREAM_IDLE_TIMEOUT_SEC DEBUG \
+             GW_METRICS_REMOTE_WRITE_URL GW_METRICS_REMOTE_WRITE_USER \
+             GW_METRICS_REMOTE_WRITE_TOKEN GW_METRICS_REMOTE_WRITE_INTERVAL_SEC; do
         v="${!k:-}"
         if [[ -z "$v" ]]; then
             continue
         fi
-        if [[ "$show_secrets" != "1" ]] && [[ "$k" == "AUTH_TOKEN" || "$k" == "PII_HASH_KEY" || "$k" == "PII_ENCRYPT_KEY" ]]; then
+        if [[ "$show_secrets" != "1" ]] && [[ "$k" == "AUTH_TOKEN" || "$k" == "PII_HASH_KEY" || "$k" == "PII_ENCRYPT_KEY" || "$k" == "GW_METRICS_REMOTE_WRITE_TOKEN" ]]; then
             # Show only first 4 chars + char count, never the literal.
             masked="${v:0:4}…(${#v} chars)"
             echo "$k=$masked"
@@ -1818,7 +1821,7 @@ print_env() {
     done
 }
 
-# support [--out DIR] [--max-mb N] [--log-days D]
+# support [--out DIR] [--max-mb N] [--log-days D] [--co-worker-home DIR]
 #
 # Produce a redacted diagnostic archive at
 # $GW_HOME/support/gateway-support-<host>-<ts>.tar.gz plus a
@@ -1839,15 +1842,17 @@ support() {
     # it out. The support bundle ALWAYS masks; this is a design constraint
     # (no raw secrets, ever — spec §Constraints).
     local FLAG_SHOW_SECRETS=0
-    local FLAG_OUT="" FLAG_MAX_MB=50 FLAG_LOG_DAYS=7
+    local FLAG_OUT="" FLAG_MAX_MB=50 FLAG_LOG_DAYS=7 FLAG_COWORKER_HOME=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --out) FLAG_OUT="$2"; shift 2 ;;
             --max-mb) FLAG_MAX_MB="$2"; shift 2 ;;
             --log-days) FLAG_LOG_DAYS="$2"; shift 2 ;;
+            --co-worker-home) FLAG_COWORKER_HOME="$2"; shift 2 ;;
+            --co-worker-home=*) FLAG_COWORKER_HOME="${1#*=}"; shift ;;
             -h|--help)
                 cat <<'EOF'
-Usage: gw support [--out DIR] [--max-mb N] [--log-days D]
+Usage: gw support [--out DIR] [--max-mb N] [--log-days D] [--co-worker-home DIR]
 
 Produce a redacted diagnostic archive under $GW_HOME/support/
 (or --out DIR). Secrets are masked. No raw values are ever written.
@@ -1855,6 +1860,8 @@ Produce a redacted diagnostic archive under $GW_HOME/support/
   --out DIR        override output directory (default: $GW_HOME/support)
   --max-mb N       bundle size cap in MB (default 50; oldest rotated logs dropped)
   --log-days D     include rotated .log.gz files modified in last D days (default 7)
+  --co-worker-home DIR
+                    collect approved logs from this Co-worker data home
 EOF
                 return 0
                 ;;
@@ -1867,6 +1874,7 @@ EOF
 
     # Source the shared redaction primitives. Same resolution pattern as the
     # rest of the wrapper uses for sibling files.
+    # shellcheck source-path=SCRIPTDIR
     # shellcheck source=lib/redact.sh
     source "$GW_SCRIPT_DIR/lib/redact.sh"
 
@@ -1876,7 +1884,7 @@ EOF
     load_config
 
     local ts host out_dir bundle_name staging bundle_root
-    ts=$(date -u +%Y%m%d-%H%M%S)
+    ts=$(date -u +%Y%m%d-%H%M%SZ)
     host=$(hostname -s 2>/dev/null || hostname)
     out_dir="${FLAG_OUT:-$GW_HOME/support}"
     bundle_name="gateway-support-${host}-${ts}"
@@ -1888,7 +1896,9 @@ EOF
     # shellcheck disable=SC2064
     trap "rm -rf '$staging'" EXIT
 
-    mkdir -p "$out_dir" "$bundle_root"/{env,health,logs,system,tray}
+    mkdir -p "$out_dir" "$bundle_root"/{env,health,system,tray} \
+        "$bundle_root/logs/gateway" "$bundle_root/logs/kiro" \
+        "$bundle_root/logs/co-worker"
 
     # ---- env/ ----------------------------------------------------------
     # env/effective.env: extend print_env's mask logic to every *TOKEN* /
@@ -1902,7 +1912,10 @@ EOF
                  PII_ENABLED_ENTITIES PII_ENTITY_ACTIONS PII_HASH_KEY \
                  PII_ENCRYPT_KEY AUTH_TOKEN ALLOWED_IPS \
                  AUTH_TRUST_XFF HTTP_ADDR KIRO_CMD KIRO_ARGS KIRO_CWD \
-                 POOL_SIZE KIRO_WORKER_MAX_TURNS STREAM_IDLE_TIMEOUT_SEC DEBUG CHAT_TRACE \
+                 KIRO_CHAT_LOG_FILE POOL_SIZE KIRO_WORKER_MAX_TURNS \
+                 STREAM_IDLE_TIMEOUT_SEC DEBUG CHAT_TRACE \
+                 GW_METRICS_REMOTE_WRITE_URL GW_METRICS_REMOTE_WRITE_USER \
+                 GW_METRICS_REMOTE_WRITE_TOKEN GW_METRICS_REMOTE_WRITE_INTERVAL_SEC \
                  GW_ENV_FILE_LOADED GW_OVERRIDES_FILE_LOADED; do
             v="${!k:-}"
             [[ -z "$v" ]] && continue
@@ -1977,32 +1990,176 @@ EOF
     fi
 
     # ---- logs/ ---------------------------------------------------------
-    # Copy through redact_stream so masked tokens are in the bundle but the
-    # source files on disk stay verbatim (operators sometimes need to grep
-    # their own logs with the real values). Missing source files are silently
-    # skipped — common during early-life installs.
-    local logs_dir; logs_dir="$(dirname "$GW_LOG")"
-    local chat_trace_log; chat_trace_log="${GW_LOG%.log}-chat-trace.log"
-    local src dst
-    for pair in \
-        "$GW_LOG:gateway.log" \
-        "$GW_LOG_BOOT:gateway-boot.log" \
-        "$chat_trace_log:gateway-chat-trace.log"; do
-        src="${pair%%:*}"
-        dst="${pair##*:}"
-        if [[ -f "$src" ]]; then
-            redact_stream < "$src" > "$bundle_root/logs/$dst"
-        fi
-    done
+    # Resolve collection roots exactly once. A relative explicit Kiro child
+    # path has the same meaning here as at runtime: it is relative to the
+    # final KIRO_CWD. With no explicit value, use the Gateway-managed default.
+    local coworker_home kiro_log
+    coworker_home="${FLAG_COWORKER_HOME:-${HERMES_HOME:-}}"
+    kiro_log="${KIRO_CHAT_LOG_FILE:-$GW_HOME/logs/kiro-chat.log}"
+    if [[ -n "${KIRO_CHAT_LOG_FILE:-}" && "$kiro_log" != /* && -n "${KIRO_CWD:-}" ]]; then
+        kiro_log="$KIRO_CWD/$kiro_log"
+    fi
 
-    # Rotated *.log.gz within the --log-days window. -mtime -N is portable
-    # across BSD and GNU find. The wrapper gateway scrubs at write time so
-    # we don't gunzip/regzip here (would force gzip in the redaction path
-    # and break BSD/GNU portability). MANIFEST notes the deferral.
-    if [[ -d "$logs_dir" ]]; then
-        find "$logs_dir" -maxdepth 1 -name 'gateway-*.log.gz' -mtime -"$FLAG_LOG_DAYS" -print 2>/dev/null | while IFS= read -r gz; do
-            cp -p "$gz" "$bundle_root/logs/" 2>/dev/null || true
+    local collection_warnings=()
+
+    # copy_redacted_log SOURCE ARCHIVE_RELATIVE_PATH
+    # Only regular, non-symlink inputs cross the support boundary. The helper
+    # creates parents for preserved profile paths and never edits the source.
+    copy_redacted_log() {
+        local copy_src="$1" copy_rel="$2" copy_dst
+        if [[ ! -f "$copy_src" || -L "$copy_src" ]]; then
+            return 1
+        fi
+        copy_dst="$bundle_root/$copy_rel"
+        mkdir -p "$(dirname "$copy_dst")"
+        if ! redact_stream < "$copy_src" > "$copy_dst"; then
+            rm -f "$copy_dst"
+            return 1
+        fi
+        # Preserve source mtime so oldest-first cap enforcement remains true
+        # after the content has passed through redaction.
+        touch -r "$copy_src" "$copy_dst" 2>/dev/null || true
+        return 0
+    }
+
+    local logs_dir chat_trace_log
+    logs_dir="$(dirname "$GW_LOG")"
+    chat_trace_log="${GW_LOG%.log}-chat-trace.log"
+    copy_redacted_log "$GW_LOG" "logs/gateway/gateway.log" || true
+    copy_redacted_log "$GW_LOG_BOOT" "logs/gateway/gateway-boot.log" || true
+    case "${CHAT_TRACE:-false}" in
+        true|TRUE|True|1|yes|YES|Yes)
+            copy_redacted_log "$chat_trace_log" "logs/gateway/gateway-chat-trace.log" || true
+            ;;
+    esac
+
+    # Gateway writes already-scrubbed compressed rotations. Keep only those
+    # within the configured age window; symlinks never satisfy -type f.
+    if [[ -d "$logs_dir" && ! -L "$logs_dir" ]]; then
+        while IFS= read -r gz; do
+            cp -p "$gz" "$bundle_root/logs/gateway/" 2>/dev/null || \
+                collection_warnings+=("Gateway rotation unreadable: ${gz##*/}")
+        done < <(find "$logs_dir" -maxdepth 1 -type f -name 'gateway-*.log.gz' -mtime -"$FLAG_LOG_DAYS" -print 2>/dev/null)
+    fi
+
+    # Kiro uses a canonical archive name regardless of the configured source
+    # basename. Only the current file and all-digit rotations are accepted;
+    # compressed rotations are excluded because they have not been streamed
+    # through redaction.
+    copy_redacted_log "$kiro_log" "logs/kiro/kiro-chat.log" || true
+    local kiro_dir kiro_base kiro_candidate kiro_suffix
+    kiro_dir="$(dirname "$kiro_log")"
+    kiro_base="$(basename "$kiro_log")"
+    if [[ -d "$kiro_dir" && ! -L "$kiro_dir" ]]; then
+        while IFS= read -r kiro_candidate; do
+            kiro_suffix="${kiro_candidate##*.}"
+            case "$kiro_suffix" in
+                ""|*[!0-9]*) continue ;;
+            esac
+            copy_redacted_log "$kiro_candidate" "logs/kiro/kiro-chat.log.$kiro_suffix" || \
+                collection_warnings+=("Kiro rotation unreadable: ${kiro_candidate##*/}")
+        done < <(find "$kiro_dir" -maxdepth 1 -type f -name "$kiro_base.*" -print 2>/dev/null)
+    fi
+
+    # Co-worker selection is allowlist-by-construction. Search only its root
+    # logs directory and immediate profiles/*/logs directories, preserving the
+    # profile path in the archive. Curator and unrelated trees are never
+    # traversed.
+    collect_coworker_dir() {
+        local coworker_src_dir="$1" coworker_dest_prefix="$2"
+        local approved current candidate suffix
+        for approved in \
+            agent.log errors.log gateway.log gui.log desktop.log mcp-stderr.log \
+            gateway-shutdown-watchdog.log dashboard-auth.log container-boot.log tool_calls.log; do
+            current="$coworker_src_dir/$approved"
+            copy_redacted_log "$current" "$coworker_dest_prefix/$approved" || true
+            while IFS= read -r candidate; do
+                suffix="${candidate##*.}"
+                case "$suffix" in
+                    ""|*[!0-9]*) continue ;;
+                esac
+                copy_redacted_log "$candidate" "$coworker_dest_prefix/$approved.$suffix" || \
+                    collection_warnings+=("Co-worker rotation unreadable: ${candidate##*/}")
+            done < <(find "$coworker_src_dir" -maxdepth 1 -type f -name "$approved.*" -print 2>/dev/null)
         done
+    }
+
+    if [[ -z "$coworker_home" ]]; then
+        collection_warnings+=("Co-worker logs unavailable: no --co-worker-home or HERMES_HOME configured")
+    elif [[ -L "$coworker_home" || ! -d "$coworker_home/logs" || -L "$coworker_home/logs" ]]; then
+        collection_warnings+=("Co-worker logs unavailable: resolved home has no regular logs directory")
+    else
+        collect_coworker_dir "$coworker_home/logs" "logs/co-worker"
+        if [[ -d "$coworker_home/profiles" && ! -L "$coworker_home/profiles" ]]; then
+            local profile_dir profile_name profile_logs
+            while IFS= read -r profile_dir; do
+                profile_name="$(basename "$profile_dir")"
+                profile_logs="$profile_dir/logs"
+                if [[ -d "$profile_logs" && ! -L "$profile_logs" ]]; then
+                    collect_coworker_dir "$profile_logs" "logs/co-worker/profiles/$profile_name/logs"
+                fi
+            done < <(find "$coworker_home/profiles" -mindepth 1 -maxdepth 1 -type d -print 2>/dev/null)
+        fi
+    fi
+
+    # ---- live snapshots ------------------------------------------------
+    # Both probes are GET-only. A single UTC timestamp is shared with the
+    # bundle name and both snapshot filenames.
+    local metrics_status="unavailable" capture_status="unavailable"
+    local metrics_tmp capture_tmp capture_enabled
+    metrics_tmp="$staging/metrics-snapshot.tmp"
+    capture_tmp="$staging/acp-capture.tmp"
+    if curl -sf -m 5 "${GW_ADDR}/metrics" > "$metrics_tmp" 2>/dev/null; then
+        mv "$metrics_tmp" "$bundle_root/logs/gateway/metrics-snapshot-$ts.prom"
+        metrics_status="captured"
+    else
+        rm -f "$metrics_tmp"
+        collection_warnings+=("Metrics snapshot unavailable: ${GW_ADDR}/metrics")
+    fi
+
+    capture_json_enabled_state() {
+        local json_file="$1"
+        if command -v jq >/dev/null 2>&1; then
+            jq -er 'if (.enabled | type) != "boolean" then error("enabled must be boolean") elif .enabled then "true" else "false" end' "$json_file"
+            return $?
+        fi
+        if command -v python3 >/dev/null 2>&1; then
+            python3 -c 'import json,sys; value=json.load(open(sys.argv[1])).get("enabled"); assert type(value) is bool; print("true" if value else "false")' "$json_file"
+            return $?
+        fi
+        if command -v python >/dev/null 2>&1; then
+            python -c 'import json,sys; value=json.load(open(sys.argv[1])).get("enabled"); assert type(value) is bool; print("true" if value else "false")' "$json_file"
+            return $?
+        fi
+
+        # Without a real JSON parser, fail closed. Archiving no capture and
+        # recording it unavailable is safer than accepting malformed JSON.
+        return 1
+    }
+
+    if curl -sf -m 5 "${GW_ADDR}/admin/api/acp-capture?support=redacted" > "$capture_tmp" 2>/dev/null; then
+        if capture_enabled=$(capture_json_enabled_state "$capture_tmp" 2>/dev/null); then
+            case "$capture_enabled" in
+                true)
+                    mv "$capture_tmp" "$bundle_root/logs/gateway/acp-capture-$ts.json"
+                    capture_status="captured"
+                    ;;
+                false)
+                    rm -f "$capture_tmp"
+                    capture_status="disabled"
+                    ;;
+                *)
+                    rm -f "$capture_tmp"
+                    collection_warnings+=("ACP capture unavailable: response state was invalid")
+                    ;;
+            esac
+        else
+            rm -f "$capture_tmp"
+            collection_warnings+=("ACP capture unavailable: response was not valid JSON")
+        fi
+    else
+        rm -f "$capture_tmp"
+        collection_warnings+=("ACP capture unavailable: ${GW_ADDR}/admin/api/acp-capture")
     fi
 
     # ---- system/ -------------------------------------------------------
@@ -2063,8 +2220,9 @@ EOF
     } > "$bundle_root/tray/pidfile.txt"
 
     # ---- Size cap enforcement -----------------------------------------
-    # du -sm yields whole MB. If we're over cap, drop the oldest rotated
-    # gz files until we're under, listing each drop in MANIFEST below.
+    # Drop rotations oldest-first across all three application trees. Current
+    # logs, the manifest, and live snapshots are protected even if that means
+    # the final archive cannot satisfy an unusually small cap.
     local dropped_files=()
     local current_mb
     current_mb=$(du -sm "$bundle_root" 2>/dev/null | awk '{print $1}')
@@ -2074,25 +2232,46 @@ EOF
         # epoch with the path, sort numerically, then strip the prefix.
         # Fall back gracefully if both flavors miss: filename-sort is
         # deterministic enough for the "we have to drop *something*" case.
-        local gz_list gz_path epoch
-        gz_list=""
-        for gz_path in "$bundle_root/logs/"gateway-*.log.gz; do
-            [[ -e "$gz_path" ]] || continue
-            epoch=$(stat -f %m "$gz_path" 2>/dev/null || stat -c %Y "$gz_path" 2>/dev/null || echo 0)
-            gz_list+="${epoch}	${gz_path}"$'\n'
-        done
-        if [[ -n "$gz_list" ]]; then
+        local rotation_list rotation_path rotation_base rotation_suffix epoch
+        rotation_list=""
+        while IFS= read -r rotation_path; do
+            rotation_base="${rotation_path##*/}"
+            case "$rotation_path" in
+                "$bundle_root/logs/gateway/"*.log.gz)
+                    ;;
+                "$bundle_root/logs/kiro/"kiro-chat.log.*|"$bundle_root/logs/co-worker/"*)
+                    rotation_suffix="${rotation_base##*.}"
+                    case "$rotation_base" in
+                        *.log.*) ;;
+                        *) continue ;;
+                    esac
+                    case "$rotation_suffix" in
+                        ""|*[!0-9]*) continue ;;
+                    esac
+                    ;;
+                *)
+                    continue
+                    ;;
+            esac
+            epoch=$(stat -f %m "$rotation_path" 2>/dev/null || stat -c %Y "$rotation_path" 2>/dev/null || echo 0)
+            rotation_list+="${epoch}	${rotation_path}"$'\n'
+        done < <(find "$bundle_root/logs" -type f -print 2>/dev/null)
+        if [[ -n "$rotation_list" ]]; then
             local sorted
-            sorted=$(printf '%s' "$gz_list" | sort -n | awk -F'\t' '{print $2}')
-            while IFS= read -r gz; do
-                [[ -z "$gz" ]] && continue
-                rm -f "$gz"
-                dropped_files+=("$gz")
+            sorted=$(printf '%s' "$rotation_list" | sort -n | awk -F'\t' '{print $2}')
+            while IFS= read -r rotation_path; do
+                [[ -z "$rotation_path" ]] && continue
+                rm -f "$rotation_path"
+                dropped_files+=("${rotation_path#"$bundle_root/"}")
                 current_mb=$(du -sm "$bundle_root" 2>/dev/null | awk '{print $1}')
                 if [[ -n "$current_mb" && "$current_mb" -le "$FLAG_MAX_MB" ]]; then
                     break
                 fi
             done <<< "$sorted"
+        fi
+        current_mb=$(du -sm "$bundle_root" 2>/dev/null | awk '{print $1}')
+        if [[ -n "$current_mb" && "$current_mb" -gt "$FLAG_MAX_MB" ]]; then
+            collection_warnings+=("Size cap could not be met without dropping protected current logs or snapshots")
         fi
     fi
 
@@ -2124,27 +2303,44 @@ EOF
         echo "host:       $host"
         echo "os:         $(uname -a)"
         echo "wrapper:    scripts/gw (POSIX bash)"
-        echo "spec:       docs/superpowers/specs/2026-06-08-support-bundle-design.md"
+        echo "spec:       docs/superpowers/specs/2026-07-27-kiro-and-support-observability-design.md"
+        echo
+        echo "Live snapshot status"
+        echo "--------------------"
+        echo "metrics: $metrics_status"
+        echo "capture: $capture_status"
+        echo
+        echo "WARNING: ACP capture exports may still contain sensitive user content."
+        echo "Please review before sharing this bundle, even after known-secret redaction."
+        if [[ "${#collection_warnings[@]}" -gt 0 ]]; then
+            echo
+            echo "Collection warnings"
+            echo "-------------------"
+            local warning
+            for warning in "${collection_warnings[@]}"; do
+                echo "WARNING: $warning"
+            done
+        fi
         echo
         echo "Redaction notice"
         echo "----------------"
         echo "Env keys masked via scripts/lib/redact.sh:"
-        echo "  - AUTH_TOKEN, PII_HASH_KEY, PII_ENCRYPT_KEY (explicit allowlist)"
+        echo "  - AUTH_TOKEN, PII_HASH_KEY, PII_ENCRYPT_KEY, GW_METRICS_REMOTE_WRITE_TOKEN (explicit allowlist)"
         echo "  - any key matching *TOKEN* / *KEY* / *SECRET* / *PASSWORD* / *PASSPHRASE* (case-insensitive)"
         echo "Log scrubs (regex -> [REDACTED]):"
         echo "  - Bearer <token>"
-        echo "  - ^(AUTH_TOKEN|PII_HASH_KEY|PII_ENCRYPT_KEY)= lines"
+        echo "  - secret assignment values, including GW_METRICS_REMOTE_WRITE_TOKEN"
         echo "  - Authorization: header values"
         echo "  - x-api-key: header values (case-insensitive)"
         echo
-        echo "Rotated *.log.gz files are copied verbatim. Gateway already"
+        echo "Gateway rotated *.log.gz files are copied verbatim. Gateway already"
         echo "scrubs at write time, so the on-disk gz files already have"
         echo "masked content — re-redacting would require gunzip/gzip in"
         echo "the bash path and was deferred to keep this wrapper portable."
         echo
         echo "Bundle contents"
         echo "---------------"
-        ( cd "$staging" && find "$bundle_name" -maxdepth 3 -print | sort )
+        ( cd "$staging" && find "$bundle_name" -print | sort )
         if [[ "${#dropped_files[@]}" -gt 0 ]]; then
             echo
             echo "Dropped for size (>$FLAG_MAX_MB MB cap)"
@@ -2197,11 +2393,11 @@ Commands:
                       overrides.env, back up the original, then
                       regenerate .env from the template. Idempotent.
   version             Print the gateway binary version (delegates to bin/gateway --version)
-  support [--out DIR] [--max-mb N] [--log-days D]
+  support [--out DIR] [--max-mb N] [--log-days D] [--co-worker-home DIR]
                       Produce a redacted diagnostic archive under
                       $GW_HOME/support/. Secrets are masked. No raw
                       values are ever written. See
-                      docs/superpowers/specs/2026-06-08-support-bundle-design.md.
+                      docs/superpowers/specs/2026-07-27-kiro-and-support-observability-design.md.
 
 Gateway config flags (for start | restart | run | env):
   --pii MODE          off | replace | mask | hash | drop | encrypt
@@ -2298,11 +2494,11 @@ Commands:
                       overrides.env, back up the original, then
                       regenerate .env from the template. Idempotent.
   version             Print the gateway binary version (delegates to bin/gateway --version)
-  support [--out DIR] [--max-mb N] [--log-days D]
+  support [--out DIR] [--max-mb N] [--log-days D] [--co-worker-home DIR]
                       Produce a redacted diagnostic archive under
                       $GW_HOME/support/. Secrets are masked. No raw
                       values are ever written. See
-                      docs/superpowers/specs/2026-06-08-support-bundle-design.md.
+                      docs/superpowers/specs/2026-07-27-kiro-and-support-observability-design.md.
 
 Gateway config flags (for start | restart | run | env):
   --pii MODE          off | replace | mask | hash | drop | encrypt
