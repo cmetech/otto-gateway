@@ -75,6 +75,47 @@ function Assert-NoSupportTemporaryArtifacts([string]$Root, [string]$Label) {
     Assert-True ($artifacts.Count -eq 0) "$Label (temporary artifacts: $found)"
 }
 
+function Get-SupportStagingDirectories([string]$TempRoot) {
+    if (-not $TempRoot -or -not (Test-Path -LiteralPath $TempRoot -PathType Container)) {
+        return @()
+    }
+    return @(Get-ChildItem -LiteralPath $TempRoot -Directory -Force -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -like '.gw-support-staging-*' } |
+        ForEach-Object { [System.IO.Path]::GetFullPath($_.FullName) })
+}
+
+function New-SupportStagingSnapshot([string]$TempRoot) {
+    return [pscustomobject]@{
+        TempRoot = [System.IO.Path]::GetFullPath($TempRoot)
+        Entries = [string[]]@(Get-SupportStagingDirectories $TempRoot)
+    }
+}
+
+function Get-NewSupportStagingDirectories($Snapshot) {
+    $comparison = if ($RunningOnWindows) {
+        [System.StringComparison]::OrdinalIgnoreCase
+    } else {
+        [System.StringComparison]::Ordinal
+    }
+    $newEntries = New-Object System.Collections.Generic.List[string]
+    foreach ($current in @(Get-SupportStagingDirectories $Snapshot.TempRoot)) {
+        $alreadyPresent = $false
+        foreach ($existing in @($Snapshot.Entries)) {
+            if ([string]::Equals($current, $existing, $comparison)) {
+                $alreadyPresent = $true
+                break
+            }
+        }
+        if (-not $alreadyPresent) { $newEntries.Add($current) | Out-Null }
+    }
+    return @($newEntries)
+}
+
+function Assert-NoNewSupportStaging($Snapshot, [string]$Label) {
+    $newEntries = @(Get-NewSupportStagingDirectories $Snapshot)
+    Assert-True ($newEntries.Count -eq 0) "$Label (new global staging: $($newEntries -join ', '))"
+}
+
 function Get-GzipText([string]$Path) {
     $input = [System.IO.File]::OpenRead($Path)
     try {
@@ -277,6 +318,16 @@ try {
         $HomeFixture, $ExtractRoot
     )) { $null = New-Item -ItemType Directory -Path $dir -Force }
 
+    # Force the child wrapper's process-global temp root to a literal path
+    # containing spaces. Keep one unrelated pre-existing staging directory so
+    # every baseline/delta assertion proves it ignores concurrent prior state.
+    $SupportGlobalTemp = Join-Path $script:FixtureRoot 'support global temp with spaces'
+    $null = New-Item -ItemType Directory -Path $SupportGlobalTemp -Force
+    $env:TEMP = $SupportGlobalTemp
+    $env:TMP = $SupportGlobalTemp
+    if (-not $RunningOnWindows) { $env:TMPDIR = $SupportGlobalTemp }
+    $null = New-Item -ItemType Directory -Path (Join-Path $SupportGlobalTemp '.gw-support-staging-unrelated existing') -Force
+
     @(
         'gateway current safe',
         "AUTH_TOKEN=$SecretToken",
@@ -382,7 +433,9 @@ server.serve_forever()
     Set-SupportEnvironment $GatewayLog $GatewayBoot $KiroCwdFixture 'native/kiro-current.log' $CoworkerHome
 
     Write-Host '== enabled support bundle =='
+    $mainStagingBefore = New-SupportStagingSnapshot $SupportGlobalTemp
     $main = Invoke-SupportRun (Join-Path $ExtractRoot 'main-out')
+    Assert-NoNewSupportStaging $mainStagingBefore 'corrupt gzip run removes its global staging directory'
     Assert-True ($main.ExitCode -eq 0) "support exits zero with HERMES_HOME fallback: $($main.Stderr)"
     Assert-File $main.Bundle 'bundle path is printed and exists'
     Assert-File (Join-Path $ExtractRoot 'main-out\latest.zip') 'latest.zip copy exists'
@@ -511,7 +564,9 @@ server.serve_forever()
 
     Set-SupportEnvironment $GatewayLog $GatewayBoot $KiroCwdFixture 'native/kiro-current.log' $CoworkerHome
     $env:GW_SUPPORT_TEST_FAIL_PUBLISH = 'metrics,capture'
+    $publishStagingBefore = New-SupportStagingSnapshot $SupportGlobalTemp
     $publishFailure = Invoke-SupportRun (Join-Path $ExtractRoot 'publish-failure-out')
+    Assert-NoNewSupportStaging $publishStagingBefore 'metrics/capture failures remove their global staging directory'
     $publishFailureRoot = Expand-SupportBundle $publishFailure.Bundle (Join-Path $ExtractRoot 'publish-failure-tree')
     Assert-True ($publishFailure.ExitCode -eq 0) 'support continues after forced live-snapshot publish failures'
     Assert-True (@(Get-ChildItem -LiteralPath (Join-Path $publishFailureRoot 'logs\gateway') -Filter 'metrics-snapshot-*.prom').Count -eq 0) 'failed metrics publish leaves no partial artifact'
@@ -524,7 +579,9 @@ server.serve_forever()
     Write-Host '== atomic publication cleanup for every artifact kind =='
     Set-SupportEnvironment $GatewayLog $GatewayBoot $KiroCwdFixture 'native/kiro-current.log' $CoworkerHome
     $env:GW_SUPPORT_TEST_FAIL_PUBLISH = 'plain,gzip,metrics,capture'
+    $leafStagingBefore = New-SupportStagingSnapshot $SupportGlobalTemp
     $leafPublishFailure = Invoke-SupportRun (Join-Path $ExtractRoot 'leaf-publish-failure-out')
+    Assert-NoNewSupportStaging $leafStagingBefore 'plain/gzip/metrics/capture failures remove their global staging directory'
     Assert-True ($leafPublishFailure.ExitCode -eq 0) 'support continues after forced plain/gzip/metrics/capture publication failures'
     $leafPublishFailureRoot = Expand-SupportBundle $leafPublishFailure.Bundle (Join-Path $ExtractRoot 'leaf-publish-failure-tree')
     Assert-Absent (Join-Path $leafPublishFailureRoot 'logs\gateway\gateway.log') 'forced plain publication failure leaves no final plain log'
@@ -540,7 +597,9 @@ server.serve_forever()
         Set-SupportEnvironment $GatewayLog $GatewayBoot $KiroCwdFixture 'native/kiro-current.log' $CoworkerHome
         $env:GW_SUPPORT_TEST_FAIL_PUBLISH = $failureKind
         $failureOut = Join-Path $ExtractRoot "$failureKind-publish-failure-out"
+        $terminalStagingBefore = New-SupportStagingSnapshot $SupportGlobalTemp
         $terminalPublishFailure = Invoke-SupportRun $failureOut
+        Assert-NoNewSupportStaging $terminalStagingBefore "forced $failureKind failure removes its global staging directory"
         Assert-True ($terminalPublishFailure.ExitCode -ne 0) "forced $failureKind publication failure exits nonzero"
         Assert-NoSupportTemporaryArtifacts $failureOut "forced $failureKind failure output has no partial or staging artifacts"
         $publishedArchives = @(Get-ChildItem -LiteralPath $failureOut -Filter 'gateway-support-*.zip' -File -ErrorAction SilentlyContinue)
@@ -661,6 +720,7 @@ server.serve_forever()
     $env:GW_SUPPORT_TEST_AFTER_OPEN_BARRIER_SOURCE = $HeldGateway
     $env:GW_SUPPORT_TEST_AFTER_OPEN_BARRIER_READY = $HeldReady
     $env:GW_SUPPORT_TEST_AFTER_OPEN_BARRIER_CONTINUE = $HeldContinue
+    $heldStagingBefore = New-SupportStagingSnapshot $SupportGlobalTemp
     $heldRun = Start-SupportRun (Join-Path $ExtractRoot 'held-rename-out')
     foreach ($attempt in 1..100) {
         if (Test-Path -LiteralPath $HeldReady) { break }
@@ -668,6 +728,8 @@ server.serve_forever()
         Start-Sleep -Milliseconds 50
     }
     $heldBarrierReached = Test-Path -LiteralPath $HeldReady
+    $heldActiveStaging = @(Get-NewSupportStagingDirectories $heldStagingBefore)
+    Assert-True ($heldActiveStaging.Count -eq 1) 'held-handle rename exposes exactly one prefixed staging directory in global temp'
     $heldRenameSucceeded = $false
     $heldRenameError = ''
     if ($heldBarrierReached) {
@@ -681,6 +743,7 @@ server.serve_forever()
         'continue' | Set-Content -LiteralPath $HeldContinue -Encoding ASCII
     }
     $heldResult = Complete-SupportRun $heldRun
+    Assert-NoNewSupportStaging $heldStagingBefore 'held-handle rename removes its global staging directory'
     Assert-True $heldBarrierReached 'collection pauses only after the identity-validated source handle is open'
     Assert-True $heldRenameSucceeded "open source permits rename with replacement while held: $heldRenameError"
     Assert-True ($heldResult.ExitCode -eq 0) "support continues from a renamed open source: $($heldResult.Stderr)"
@@ -703,6 +766,7 @@ server.serve_forever()
         $env:GW_SUPPORT_TEST_AFTER_OPEN_BARRIER_SOURCE = $DeleteGateway
         $env:GW_SUPPORT_TEST_AFTER_OPEN_BARRIER_READY = $DeleteReady
         $env:GW_SUPPORT_TEST_AFTER_OPEN_BARRIER_CONTINUE = $DeleteContinue
+        $deleteStagingBefore = New-SupportStagingSnapshot $SupportGlobalTemp
         $deleteRun = Start-SupportRun (Join-Path $ExtractRoot 'held-delete-out')
         foreach ($attempt in 1..100) {
             if (Test-Path -LiteralPath $DeleteReady) { break }
@@ -722,6 +786,7 @@ server.serve_forever()
             'continue' | Set-Content -LiteralPath $DeleteContinue -Encoding ASCII
         }
         $deleteResult = Complete-SupportRun $deleteRun
+        Assert-NoNewSupportStaging $deleteStagingBefore 'held-handle delete removes its global staging directory'
         Assert-True $deleteBarrierReached 'Windows collection pauses after the identity-validated source handle is open for delete'
         Assert-True $deleteSucceeded "Windows safe-open sharing permits source deletion while held: $deleteError"
         Assert-True ($deleteResult.ExitCode -eq 0) "Windows support continues from a delete-pending source: $($deleteResult.Stderr)"

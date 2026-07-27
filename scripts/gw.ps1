@@ -1580,7 +1580,8 @@ function Invoke-Support {
     $hostname = [System.Net.Dns]::GetHostName()
     $outDir = if ($Out) { $Out } else { Join-Path $GwHome 'support' }
     $bundleName = "gateway-support-$hostname-$ts"
-    $staging = Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetRandomFileName())
+    $staging = Join-Path ([System.IO.Path]::GetTempPath()) (
+        '.gw-support-staging-{0}' -f [System.IO.Path]::GetRandomFileName())
     $bundleRoot = Join-Path $staging $bundleName
 
     # REL-TRAY-07 (T-7) fix: bound the entire bundle assembly with a
