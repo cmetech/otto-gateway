@@ -132,6 +132,19 @@ logs/kiro/
 logs/co-worker/
 ```
 
+Gateway and Kiro selection is intentionally narrow rather than a copy of every
+file in their directories:
+
+- `logs/gateway/` contains the current Gateway log as `gateway.log`, the
+  available boot sidecar as `gateway-boot.log`, and the chat-trace sidecar only
+  when `CHAT_TRACE` is enabled. It may also contain only age-limited
+  `gateway-*.log.gz` rotations selected by `--log-days` / `-LogDays`.
+  Each selected Gateway gzip rotation is safely snapshotted, decompressed,
+  redacted, and recompressed before archive publication.
+- `logs/kiro/` contains the resolved current Kiro log under the canonical name
+  `kiro-chat.log`, plus only its numeric rotations as
+  `kiro-chat.log.<number>`. Compressed Kiro rotations are excluded.
+
 Within `logs/co-worker/`, the collector selects only these Hermes diagnostic
 families from the resolved home's `logs/` directory and from each immediate
 `profiles/<profile>/logs/` directory, retaining the profile path:
