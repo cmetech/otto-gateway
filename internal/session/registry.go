@@ -398,6 +398,7 @@ func (r *Registry) createEntry(ctx context.Context, sid, cwd string, e *Entry) (
 		Command:      r.cfg.KiroCmd,
 		Args:         r.cfg.KiroArgs,
 		Cwd:          cwd,
+		Env:          append([]string(nil), r.cfg.KiroEnv...),
 		PingInterval: r.cfg.PingInterval,
 		// Kiro usage-metrics parity: OnContextPct drives ONLY the per-session
 		// recycle signal (e.lastCtxPct) — it fires on every mid-turn frame, so

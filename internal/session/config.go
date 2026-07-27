@@ -98,6 +98,8 @@ type Config struct {
 	// KiroCWD is the default working directory passed to NewSession when
 	// the surface handler does not supply a per-request cwd.
 	KiroCWD string
+	// KiroEnv is appended to the parent environment for each Kiro subprocess.
+	KiroEnv []string
 	// PingInterval is the heartbeat interval forwarded to acp.Config.
 	PingInterval time.Duration
 	// RecyclePct is the context-utilization threshold (PERCENT, 0–100) at

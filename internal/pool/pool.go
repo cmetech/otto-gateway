@@ -789,6 +789,7 @@ func (p *Pool) acpSlotConfig() acp.Config {
 		Command:           p.cfg.KiroCmd,
 		Args:              p.cfg.KiroArgs,
 		Cwd:               p.cfg.KiroCWD,
+		Env:               append([]string(nil), p.cfg.KiroEnv...),
 		PingInterval:      p.cfg.PingInterval,
 		OnPingEscalate:    func() { p.pingEscalations.Add(1) },
 		OnPingSuspendSkip: func() { p.pingSuspendSkips.Add(1) },

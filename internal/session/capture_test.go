@@ -5,10 +5,30 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
+
 	"otto-gateway/internal/acp"
 	"otto-gateway/internal/session"
 	"otto-gateway/internal/testutil"
 )
+
+// TestCreateEntry_ForwardsKiroEnv ensures each stateful Kiro subprocess gets
+// the launch-specific environment prepared by the gateway.
+func TestCreateEntry_ForwardsKiroEnv(t *testing.T) {
+	var captured acp.Config
+	want := []string{"KIRO_CHAT_LOG_FILE=/tmp/kiro-chat.log"}
+	r := session.New(session.Config{
+		Factory: &capturingFactory{cfgSink: &captured, client: newFake("kiro-env")},
+		KiroCWD: t.TempDir(), KiroEnv: want,
+	})
+	t.Cleanup(func() { _ = r.Close() })
+	if _, err := r.Get(context.Background(), "session-env", ""); err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff(want, captured.Env); diff != "" {
+		t.Fatalf("acp env mismatch (-want +got):\n%s", diff)
+	}
+}
 
 // TestCreateEntry_ForwardsCapture: Config.Capture is wired onto the entry's
 // acp.Config.OnRawFrame in createEntry.

@@ -127,6 +127,8 @@ type Config struct {
 	// the cwd passed to slot.Client.NewSession during warmup (slot 0
 	// only, for model-catalog capture per Codex H-6).
 	KiroCWD string
+	// KiroEnv is appended to the parent environment for each Kiro subprocess.
+	KiroEnv []string
 	// PingInterval is the heartbeat interval forwarded to acp.Config.
 	PingInterval time.Duration
 	// AcquireTimeout is the maximum time NewSession will block waiting for a

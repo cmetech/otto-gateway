@@ -537,12 +537,14 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 			cleanup()
 			return nil, func() {}, err
 		}
+		kiroEnv := []string{"KIRO_CHAT_LOG_FILE=" + cfg.KiroChatLogFile}
 		a.pool = pool.New(pool.Config{
 			Logger:         logger,
 			Size:           cfg.PoolSize,
 			KiroCmd:        cfg.KiroCmd,
 			KiroArgs:       cfg.KiroArgs,
 			KiroCWD:        cfg.KiroCWD,
+			KiroEnv:        kiroEnv,
 			PingInterval:   cfg.PingInterval,
 			Metrics:        gwMetrics,                        // kiro usage-metrics parity: forward slot usage events
 			Capture:        controllerRecordFunc(acpCapture), // Track 0 (nil controller → nil func → no capture)
@@ -587,6 +589,7 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 			KiroCmd:        cfg.KiroCmd,
 			KiroArgs:       cfg.KiroArgs,
 			KiroCWD:        cfg.KiroCWD,
+			KiroEnv:        kiroEnv,
 			PingInterval:   cfg.PingInterval,
 			RecyclePct:     cfg.RecyclePct, // Track 2: proactive context recycle at CTX_RECYCLE_PCT
 			Metrics:        gwMetrics,      // kiro usage-metrics parity: forward per-session usage events
