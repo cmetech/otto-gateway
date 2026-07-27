@@ -1978,12 +1978,12 @@ EOF
     # health.json / snapshot.json: best-effort live probe. On failure write
     # an "unreachable: <reason>" sentinel so triage can tell "no probe ran"
     # from "probe ran and got an empty body".
-    if curl -sf -m 5 "${GW_ADDR}/health" > "$bundle_root/health/health.json" 2>/dev/null; then
+    if curl -q --request GET --silent --fail --max-time 5 --url "${GW_ADDR}/health" > "$bundle_root/health/health.json" 2>/dev/null; then
         :
     else
         echo "unreachable: ${GW_ADDR}/health did not respond within 5s" > "$bundle_root/health/health.json"
     fi
-    if curl -sf -m 5 "${GW_ADDR}/admin/api/snapshot" > "$bundle_root/health/snapshot.json" 2>/dev/null; then
+    if curl -q --request GET --silent --fail --max-time 5 --url "${GW_ADDR}/admin/api/snapshot" > "$bundle_root/health/snapshot.json" 2>/dev/null; then
         :
     else
         echo "unreachable: ${GW_ADDR}/admin/api/snapshot did not respond within 5s" > "$bundle_root/health/snapshot.json"
@@ -1993,72 +1993,158 @@ EOF
     # Resolve collection roots exactly once. A relative explicit Kiro child
     # path has the same meaning here as at runtime: it is relative to the
     # final KIRO_CWD. With no explicit value, use the Gateway-managed default.
-    local coworker_home kiro_log
+    local coworker_home kiro_log kiro_cwd
     coworker_home="${FLAG_COWORKER_HOME:-${HERMES_HOME:-}}"
+    kiro_cwd="${KIRO_CWD:-$GW_HOME}"
+    case "$kiro_cwd" in
+        \~)
+            [[ -n "${HOME:-}" ]] && kiro_cwd="$HOME"
+            ;;
+        \~/*)
+            [[ -n "${HOME:-}" ]] && kiro_cwd="$HOME/${kiro_cwd#\~/}"
+            ;;
+    esac
     kiro_log="${KIRO_CHAT_LOG_FILE:-$GW_HOME/logs/kiro-chat.log}"
-    if [[ -n "${KIRO_CHAT_LOG_FILE:-}" && "$kiro_log" != /* && -n "${KIRO_CWD:-}" ]]; then
-        kiro_log="$KIRO_CWD/$kiro_log"
+    if [[ -n "${KIRO_CHAT_LOG_FILE:-}" && "$kiro_log" != /* ]]; then
+        kiro_log="$kiro_cwd/$kiro_log"
     fi
 
     local collection_warnings=()
+    local source_snapshot_seq=0 source_snapshot=""
 
-    # copy_redacted_log SOURCE ARCHIVE_RELATIVE_PATH
-    # Only regular, non-symlink inputs cross the support boundary. The helper
-    # creates parents for preserved profile paths and never edits the source.
+    # snapshot_regular_source SOURCE LABEL WARN_IF_MISSING
+    # Copy with no dereference into the private staging directory, then
+    # validate the copied object before any reader opens it. If SOURCE changes
+    # to a symlink after the initial classification, cp -P snapshots the link
+    # itself and the post-copy check rejects it. All later work reads only the
+    # private snapshot, closing the check/reopen race at the support boundary.
+    snapshot_regular_source() {
+        local snapshot_src="$1" snapshot_label="$2" warn_missing="$3"
+        local snapshot_dir snapshot_path
+        source_snapshot=""
+
+        if [[ -L "$snapshot_src" ]]; then
+            collection_warnings+=("$snapshot_label rejected: symlink")
+            return 1
+        fi
+        if [[ ! -e "$snapshot_src" ]]; then
+            if [[ "$warn_missing" == "1" ]]; then
+                collection_warnings+=("$snapshot_label missing")
+            fi
+            return 1
+        fi
+        if [[ ! -f "$snapshot_src" ]]; then
+            collection_warnings+=("$snapshot_label rejected: not a regular file")
+            return 1
+        fi
+        if [[ ! -r "$snapshot_src" ]]; then
+            collection_warnings+=("$snapshot_label unreadable")
+            return 1
+        fi
+
+        snapshot_dir="$staging/source-snapshots"
+        if ! mkdir -p "$snapshot_dir"; then
+            collection_warnings+=("$snapshot_label snapshot directory unavailable")
+            return 1
+        fi
+        source_snapshot_seq=$((source_snapshot_seq + 1))
+        snapshot_path="$snapshot_dir/source-$source_snapshot_seq"
+        if ! cp -p -P "$snapshot_src" "$snapshot_path" 2>/dev/null; then
+            collection_warnings+=("$snapshot_label snapshot failed")
+            return 1
+        fi
+        if [[ -L "$snapshot_path" ]]; then
+            collection_warnings+=("$snapshot_label rejected: symlink snapshot")
+            return 1
+        fi
+        if [[ ! -f "$snapshot_path" ]]; then
+            collection_warnings+=("$snapshot_label rejected: non-regular snapshot")
+            return 1
+        fi
+        source_snapshot="$snapshot_path"
+        return 0
+    }
+
+    # copy_redacted_log SOURCE ARCHIVE_RELATIVE_PATH LABEL WARN_IF_MISSING
     copy_redacted_log() {
-        local copy_src="$1" copy_rel="$2" copy_dst
-        if [[ ! -f "$copy_src" || -L "$copy_src" ]]; then
+        local copy_src="$1" copy_rel="$2" copy_label="$3" warn_missing="$4"
+        local copy_dst
+        if ! snapshot_regular_source "$copy_src" "$copy_label" "$warn_missing"; then
             return 1
         fi
         copy_dst="$bundle_root/$copy_rel"
-        mkdir -p "$(dirname "$copy_dst")"
-        if ! redact_stream < "$copy_src" > "$copy_dst"; then
+        if ! mkdir -p "$(dirname "$copy_dst")"; then
+            collection_warnings+=("$copy_label archive destination unavailable")
+            return 1
+        fi
+        if ! redact_stream < "$source_snapshot" > "$copy_dst"; then
             rm -f "$copy_dst"
+            collection_warnings+=("$copy_label redaction failed")
             return 1
         fi
         # Preserve source mtime so oldest-first cap enforcement remains true
         # after the content has passed through redaction.
-        touch -r "$copy_src" "$copy_dst" 2>/dev/null || true
+        touch -r "$source_snapshot" "$copy_dst" 2>/dev/null || true
+        return 0
+    }
+
+    # copy_redacted_gzip SOURCE ARCHIVE_RELATIVE_PATH LABEL
+    # Compressed Gateway logs cross the same snapshot boundary, then are
+    # decompressed, streamed through redaction, and recompressed.
+    copy_redacted_gzip() {
+        local gzip_src="$1" gzip_rel="$2" gzip_label="$3" gzip_dst
+        if ! snapshot_regular_source "$gzip_src" "$gzip_label" 1; then
+            return 1
+        fi
+        gzip_dst="$bundle_root/$gzip_rel"
+        if ! mkdir -p "$(dirname "$gzip_dst")"; then
+            collection_warnings+=("$gzip_label archive destination unavailable")
+            return 1
+        fi
+        if ! gzip -cd "$source_snapshot" 2>/dev/null | redact_stream | gzip > "$gzip_dst"; then
+            rm -f "$gzip_dst"
+            collection_warnings+=("$gzip_label decompression or redaction failed")
+            return 1
+        fi
+        touch -r "$source_snapshot" "$gzip_dst" 2>/dev/null || true
         return 0
     }
 
     local logs_dir chat_trace_log
     logs_dir="$(dirname "$GW_LOG")"
     chat_trace_log="${GW_LOG%.log}-chat-trace.log"
-    copy_redacted_log "$GW_LOG" "logs/gateway/gateway.log" || true
-    copy_redacted_log "$GW_LOG_BOOT" "logs/gateway/gateway-boot.log" || true
+    copy_redacted_log "$GW_LOG" "logs/gateway/gateway.log" "Gateway current log" 1 || true
+    copy_redacted_log "$GW_LOG_BOOT" "logs/gateway/gateway-boot.log" "Gateway boot log" 1 || true
     case "${CHAT_TRACE:-false}" in
         true|TRUE|True|1|yes|YES|Yes)
-            copy_redacted_log "$chat_trace_log" "logs/gateway/gateway-chat-trace.log" || true
+            copy_redacted_log "$chat_trace_log" "logs/gateway/gateway-chat-trace.log" "Gateway chat-trace log" 1 || true
             ;;
     esac
 
-    # Gateway writes already-scrubbed compressed rotations. Keep only those
-    # within the configured age window; symlinks never satisfy -type f.
+    # Gateway compressed rotations are snapshotted, decompressed, redacted,
+    # and recompressed. Keep only those within the configured age window.
     if [[ -d "$logs_dir" && ! -L "$logs_dir" ]]; then
         while IFS= read -r gz; do
-            cp -p "$gz" "$bundle_root/logs/gateway/" 2>/dev/null || \
-                collection_warnings+=("Gateway rotation unreadable: ${gz##*/}")
-        done < <(find "$logs_dir" -maxdepth 1 -type f -name 'gateway-*.log.gz' -mtime -"$FLAG_LOG_DAYS" -print 2>/dev/null)
+            copy_redacted_gzip "$gz" "logs/gateway/${gz##*/}" "Gateway rotation ${gz##*/}" || true
+        done < <(find "$logs_dir" -maxdepth 1 \( -type f -o -type l \) -name 'gateway-*.log.gz' -mtime -"$FLAG_LOG_DAYS" -print 2>/dev/null)
     fi
 
     # Kiro uses a canonical archive name regardless of the configured source
     # basename. Only the current file and all-digit rotations are accepted;
     # compressed rotations are excluded because they have not been streamed
     # through redaction.
-    copy_redacted_log "$kiro_log" "logs/kiro/kiro-chat.log" || true
+    copy_redacted_log "$kiro_log" "logs/kiro/kiro-chat.log" "Kiro current log" 1 || true
     local kiro_dir kiro_base kiro_candidate kiro_suffix
     kiro_dir="$(dirname "$kiro_log")"
     kiro_base="$(basename "$kiro_log")"
     if [[ -d "$kiro_dir" && ! -L "$kiro_dir" ]]; then
         while IFS= read -r kiro_candidate; do
-            kiro_suffix="${kiro_candidate##*.}"
+            kiro_suffix="${kiro_candidate#"$kiro_dir/$kiro_base."}"
             case "$kiro_suffix" in
                 ""|*[!0-9]*) continue ;;
             esac
-            copy_redacted_log "$kiro_candidate" "logs/kiro/kiro-chat.log.$kiro_suffix" || \
-                collection_warnings+=("Kiro rotation unreadable: ${kiro_candidate##*/}")
-        done < <(find "$kiro_dir" -maxdepth 1 -type f -name "$kiro_base.*" -print 2>/dev/null)
+            copy_redacted_log "$kiro_candidate" "logs/kiro/kiro-chat.log.$kiro_suffix" "Kiro rotation ${kiro_candidate##*/}" 1 || true
+        done < <(find "$kiro_dir" -maxdepth 1 \( -type f -o -type l \) -name "$kiro_base.*" -print 2>/dev/null)
     fi
 
     # Co-worker selection is allowlist-by-construction. Search only its root
@@ -2072,15 +2158,14 @@ EOF
             agent.log errors.log gateway.log gui.log desktop.log mcp-stderr.log \
             gateway-shutdown-watchdog.log dashboard-auth.log container-boot.log tool_calls.log; do
             current="$coworker_src_dir/$approved"
-            copy_redacted_log "$current" "$coworker_dest_prefix/$approved" || true
+            copy_redacted_log "$current" "$coworker_dest_prefix/$approved" "Co-worker $approved" 0 || true
             while IFS= read -r candidate; do
-                suffix="${candidate##*.}"
+                suffix="${candidate#"$coworker_src_dir/$approved."}"
                 case "$suffix" in
                     ""|*[!0-9]*) continue ;;
                 esac
-                copy_redacted_log "$candidate" "$coworker_dest_prefix/$approved.$suffix" || \
-                    collection_warnings+=("Co-worker rotation unreadable: ${candidate##*/}")
-            done < <(find "$coworker_src_dir" -maxdepth 1 -type f -name "$approved.*" -print 2>/dev/null)
+                copy_redacted_log "$candidate" "$coworker_dest_prefix/$approved.$suffix" "Co-worker ${candidate##*/}" 1 || true
+            done < <(find "$coworker_src_dir" -maxdepth 1 \( -type f -o -type l \) -name "$approved.*" -print 2>/dev/null)
         done
     }
 
@@ -2109,7 +2194,7 @@ EOF
     local metrics_tmp capture_tmp capture_enabled
     metrics_tmp="$staging/metrics-snapshot.tmp"
     capture_tmp="$staging/acp-capture.tmp"
-    if curl -sf -m 5 "${GW_ADDR}/metrics" > "$metrics_tmp" 2>/dev/null; then
+    if curl -q --request GET --silent --fail --max-time 5 --url "${GW_ADDR}/metrics" > "$metrics_tmp" 2>/dev/null; then
         mv "$metrics_tmp" "$bundle_root/logs/gateway/metrics-snapshot-$ts.prom"
         metrics_status="captured"
     else
@@ -2137,7 +2222,7 @@ EOF
         return 1
     }
 
-    if curl -sf -m 5 "${GW_ADDR}/admin/api/acp-capture?support=redacted" > "$capture_tmp" 2>/dev/null; then
+    if curl -q --request GET --silent --fail --max-time 5 --url "${GW_ADDR}/admin/api/acp-capture?support=redacted" > "$capture_tmp" 2>/dev/null; then
         if capture_enabled=$(capture_json_enabled_state "$capture_tmp" 2>/dev/null); then
             case "$capture_enabled" in
                 true)
@@ -2333,10 +2418,9 @@ EOF
         echo "  - Authorization: header values"
         echo "  - x-api-key: header values (case-insensitive)"
         echo
-        echo "Gateway rotated *.log.gz files are copied verbatim. Gateway already"
-        echo "scrubs at write time, so the on-disk gz files already have"
-        echo "masked content — re-redacting would require gunzip/gzip in"
-        echo "the bash path and was deferred to keep this wrapper portable."
+        echo "Gateway rotated *.log.gz files are snapshotted without following"
+        echo "symlinks, decompressed, streamed through the same log redactor,"
+        echo "and recompressed before they enter this bundle."
         echo
         echo "Bundle contents"
         echo "---------------"

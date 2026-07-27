@@ -75,6 +75,24 @@ assert_contains() {
     fi
 }
 
+assert_gzip_contains() {
+    local path="$1" needle="$2" label="$3"
+    if gzip -cd "$path" 2>/dev/null | grep -Fq -- "$needle"; then
+        ok "$label"
+    else
+        fail_with "$label: [$needle] not found in decompressed $path"
+    fi
+}
+
+assert_gzip_not_contains() {
+    local path="$1" needle="$2" label="$3"
+    if gzip -cd "$path" 2>/dev/null | grep -Fq -- "$needle"; then
+        fail_with "$label: forbidden [$needle] present in decompressed $path"
+    else
+        ok "$label"
+    fi
+}
+
 assert_no_capture_file() {
     local root="$1" label="$2" candidate
     candidate=$(find "$root/logs/gateway" -maxdepth 1 -type f -name 'acp-capture-*.json' -print 2>/dev/null | head -n 1)
@@ -102,6 +120,7 @@ SECRET_REMOTE_LITERAL="remotesecretvalue987"
 EXTERNAL_SECRET_LITERAL="external-symlink-secret-4455"
 EXCLUDED_SECRET_LITERAL="excluded-curator-secret-7788"
 DECOY_SECRET_LITERAL="wrong-hermes-home-secret-9911"
+SUFFIX_DECOY_SECRET_LITERAL="multi-component-rotation-secret-6633"
 
 FAKE_ROOT=$(mktemp -d)
 EXTRACT_DIR=$(mktemp -d)
@@ -128,10 +147,15 @@ EOF
 printf '%s\n' 'gateway boot safe' > "$GW_HOME_FIXTURE/logs/gateway-boot.log"
 printf '%s\n' 'gateway trace safe' > "$GW_HOME_FIXTURE/logs/gateway-chat-trace.log"
 
-# A compressed Gateway rotation is retained verbatim. Random input prevents
-# compression from defeating the size-cap fixture.
-dd if=/dev/urandom bs=1024 count=1536 2>/dev/null | gzip > "$GW_HOME_FIXTURE/logs/gateway-20200101.log.gz"
+# A large compressed Gateway rotation keeps the size-cap fixture meaningful;
+# support must snapshot, decompress, redact, and recompress it.
+dd if=/dev/urandom bs=1024 count=1536 2>/dev/null | base64 | gzip > "$GW_HOME_FIXTURE/logs/gateway-20200101.log.gz"
 touch -t 202001010000 "$GW_HOME_FIXTURE/logs/gateway-20200101.log.gz"
+printf '%s\n' \
+    'gateway compressed safe' \
+    "GW_METRICS_REMOTE_WRITE_TOKEN=$SECRET_REMOTE_LITERAL" | \
+    gzip > "$GW_HOME_FIXTURE/logs/gateway-20260101.log.gz"
+touch -t 202601010000 "$GW_HOME_FIXTURE/logs/gateway-20260101.log.gz"
 
 # The explicit Kiro path is deliberately relative. Runtime interpretation is
 # relative to the final KIRO_CWD, and support collection must find that same
@@ -142,6 +166,7 @@ AUTH_TOKEN=$SECRET_TOKEN_LITERAL
 EOF
 dd if=/dev/urandom bs=1024 count=1536 2>/dev/null | base64 > "$KIRO_CWD_FIXTURE/native/kiro-current.log.1"
 printf '%s\n' 'kiro newest rotation safe' > "$KIRO_CWD_FIXTURE/native/kiro-current.log.2"
+printf '%s\n' "$SUFFIX_DECOY_SECRET_LITERAL" > "$KIRO_CWD_FIXTURE/native/kiro-current.log.backup.99"
 printf '%s\n' 'compressed kiro must not be copied' | gzip > "$KIRO_CWD_FIXTURE/native/kiro-current.log.3.gz"
 touch -t 202101010000 "$KIRO_CWD_FIXTURE/native/kiro-current.log.1"
 touch -t 202301010000 "$KIRO_CWD_FIXTURE/native/kiro-current.log.2"
@@ -156,6 +181,7 @@ GW_METRICS_REMOTE_WRITE_TOKEN=$SECRET_REMOTE_LITERAL
 EOF
 dd if=/dev/urandom bs=1024 count=1536 2>/dev/null | base64 > "$COWORKER_HOME/logs/agent.log.1"
 printf '%s\n' 'co-worker newest rotation safe' > "$COWORKER_HOME/logs/errors.log.2"
+printf '%s\n' "$SUFFIX_DECOY_SECRET_LITERAL" > "$COWORKER_HOME/logs/agent.log.private.99"
 printf '%s\n' 'compressed co-worker must not be copied' | gzip > "$COWORKER_HOME/logs/errors.log.3.gz"
 touch -t 202201010000 "$COWORKER_HOME/logs/agent.log.1"
 touch -t 202401010000 "$COWORKER_HOME/logs/errors.log.2"
@@ -239,6 +265,38 @@ if [[ ! -s "$HTTP_PORT_FILE" ]]; then
 fi
 HTTP_PORT=$(cat "$HTTP_PORT_FILE")
 
+# A hostile user curl config attempts both a POST override and an extra URL.
+# Support probes must disable config loading before curl processes either.
+cat > "$FAKE_ROOT/home/.curlrc" <<EOF
+request = POST
+url = http://127.0.0.1:$HTTP_PORT/mutate
+EOF
+
+TEST_GW_LOG="$GW_HOME_FIXTURE/logs/gateway.log"
+TEST_GW_LOG_BOOT="$GW_HOME_FIXTURE/logs/gateway-boot.log"
+TEST_KIRO_CWD="$KIRO_CWD_FIXTURE"
+TEST_KIRO_CHAT_LOG_FILE="native/kiro-current.log"
+TEST_COWORKER_HOME="$COWORKER_HOME"
+TEST_PATH="$PATH"
+TEST_SWAP_SOURCE_ONE=""
+TEST_SWAP_TARGET_ONE=""
+TEST_SWAP_SOURCE_TWO=""
+TEST_SWAP_TARGET_TWO=""
+TEST_REAL_CP="$(command -v cp)"
+
+reset_support_inputs() {
+    TEST_GW_LOG="$GW_HOME_FIXTURE/logs/gateway.log"
+    TEST_GW_LOG_BOOT="$GW_HOME_FIXTURE/logs/gateway-boot.log"
+    TEST_KIRO_CWD="$KIRO_CWD_FIXTURE"
+    TEST_KIRO_CHAT_LOG_FILE="native/kiro-current.log"
+    TEST_COWORKER_HOME="$COWORKER_HOME"
+    TEST_PATH="$PATH"
+    TEST_SWAP_SOURCE_ONE=""
+    TEST_SWAP_TARGET_ONE=""
+    TEST_SWAP_SOURCE_TWO=""
+    TEST_SWAP_TARGET_TWO=""
+}
+
 run_support() {
     local mode="$1" out_dir="$2" max_mb="$3" stdout_file="$4" stderr_file="$5"
     local hermes_home=""
@@ -246,10 +304,10 @@ run_support() {
     case "$mode" in
         explicit)
             hermes_home="$DECOY_HERMES_HOME"
-            set -- "$@" --co-worker-home "$COWORKER_HOME"
+            set -- "$@" --co-worker-home "$TEST_COWORKER_HOME"
             ;;
         fallback)
-            hermes_home="$COWORKER_HOME"
+            hermes_home="$TEST_COWORKER_HOME"
             ;;
         missing)
             hermes_home=""
@@ -268,11 +326,11 @@ run_support() {
         GW_BIN=/bin/true \
         GW_STATE_DIR="$GW_HOME_FIXTURE/state" \
         GW_PID="$GW_HOME_FIXTURE/state/gateway.pid" \
-        GW_LOG="$GW_HOME_FIXTURE/logs/gateway.log" \
-        GW_LOG_BOOT="$GW_HOME_FIXTURE/logs/gateway-boot.log" \
+        GW_LOG="$TEST_GW_LOG" \
+        GW_LOG_BOOT="$TEST_GW_LOG_BOOT" \
         GW_ADDR="http://127.0.0.1:$HTTP_PORT" \
-        KIRO_CWD="$KIRO_CWD_FIXTURE" \
-        KIRO_CHAT_LOG_FILE="native/kiro-current.log" \
+        KIRO_CWD="$TEST_KIRO_CWD" \
+        KIRO_CHAT_LOG_FILE="$TEST_KIRO_CHAT_LOG_FILE" \
         HERMES_HOME="$hermes_home" \
         AUTH_TOKEN="$SECRET_TOKEN_LITERAL" \
         PII_HASH_KEY="$SECRET_HASH_LITERAL" \
@@ -284,6 +342,12 @@ run_support() {
         HTTP_ADDR="127.0.0.1:18080" \
         CHAT_TRACE=true \
         KIRO_WORKER_MAX_TURNS=20 \
+        PATH="$TEST_PATH" \
+        TASK3_SWAP_SOURCE_ONE="$TEST_SWAP_SOURCE_ONE" \
+        TASK3_SWAP_TARGET_ONE="$TEST_SWAP_TARGET_ONE" \
+        TASK3_SWAP_SOURCE_TWO="$TEST_SWAP_SOURCE_TWO" \
+        TASK3_SWAP_TARGET_TWO="$TEST_SWAP_TARGET_TWO" \
+        TASK3_REAL_CP="$TEST_REAL_CP" \
         "$BASH" "$WRAPPER" "$@" >"$stdout_file" 2>"$stderr_file"
     local rc=$?
     set -e
@@ -328,6 +392,9 @@ assert_file "$MAIN_ROOT/logs/gateway/gateway.log" "Gateway current log is organi
 assert_file "$MAIN_ROOT/logs/gateway/gateway-boot.log" "Gateway boot log is organized"
 assert_file "$MAIN_ROOT/logs/gateway/gateway-chat-trace.log" "Gateway chat trace is organized"
 assert_file "$MAIN_ROOT/logs/gateway/gateway-20200101.log.gz" "Gateway compressed rotation is retained"
+assert_file "$MAIN_ROOT/logs/gateway/gateway-20260101.log.gz" "Gateway credential-bearing compressed rotation is retained"
+assert_gzip_contains "$MAIN_ROOT/logs/gateway/gateway-20260101.log.gz" 'GW_METRICS_REMOTE_WRITE_TOKEN=[REDACTED]' "Gateway compressed rotation is decompressed and redacted"
+assert_gzip_not_contains "$MAIN_ROOT/logs/gateway/gateway-20260101.log.gz" "$SECRET_REMOTE_LITERAL" "Gateway compressed rotation excludes raw remote-write token"
 assert_contains "$MAIN_ROOT/logs/gateway/gateway.log" 'AUTH_TOKEN=[REDACTED]' "Gateway log assignments are redacted"
 assert_contains "$MAIN_ROOT/logs/gateway/gateway.log" 'GW_METRICS_REMOTE_WRITE_TOKEN=[REDACTED]' "Gateway remote-write assignment is redacted"
 
@@ -335,6 +402,7 @@ assert_file "$MAIN_ROOT/logs/kiro/kiro-chat.log" "relative explicit Kiro current
 assert_file "$MAIN_ROOT/logs/kiro/kiro-chat.log.1" "Kiro numeric rotation is retained"
 assert_file "$MAIN_ROOT/logs/kiro/kiro-chat.log.2" "Kiro newest numeric rotation is retained"
 assert_absent "$MAIN_ROOT/logs/kiro/kiro-chat.log.3.gz" "compressed Kiro rotation is excluded"
+assert_absent "$MAIN_ROOT/logs/kiro/kiro-chat.log.99" "multi-component Kiro suffix is not treated as numeric rotation"
 assert_contains "$MAIN_ROOT/logs/kiro/kiro-chat.log" 'AUTH_TOKEN=[REDACTED]' "Kiro current log is redacted"
 
 for name in $APPROVED_LOGS; do
@@ -348,6 +416,7 @@ assert_absent "$MAIN_ROOT/logs/co-worker/errors.log.3.gz" "compressed Co-worker 
 assert_absent "$MAIN_ROOT/logs/co-worker/unrelated.log" "unapproved Co-worker log is excluded"
 assert_absent "$MAIN_ROOT/logs/co-worker/curator" "curator tree is excluded"
 assert_absent "$MAIN_ROOT/logs/co-worker/agent.log.9" "matching symlink is not followed or archived"
+assert_absent "$MAIN_ROOT/logs/co-worker/agent.log.99" "multi-component Co-worker suffix is not treated as numeric rotation"
 assert_contains "$MAIN_ROOT/logs/co-worker/agent.log" 'GW_METRICS_REMOTE_WRITE_TOKEN=[REDACTED]' "Co-worker remote-write assignment is redacted"
 
 METRICS_FILES=( "$MAIN_ROOT"/logs/gateway/metrics-snapshot-*.prom )
@@ -396,7 +465,7 @@ echo "== extracted-tree secret scan =="
 for needle in \
     "$SECRET_TOKEN_LITERAL" "$SECRET_BEARER_LITERAL" "$SECRET_HASH_LITERAL" \
     "$SECRET_ENCRYPT_LITERAL" "$SECRET_REMOTE_LITERAL" "$EXTERNAL_SECRET_LITERAL" \
-    "$EXCLUDED_SECRET_LITERAL" "$DECOY_SECRET_LITERAL"; do
+    "$EXCLUDED_SECRET_LITERAL" "$DECOY_SECRET_LITERAL" "$SUFFIX_DECOY_SECRET_LITERAL"; do
     if grep -rIF -- "$needle" "$MAIN_ROOT" >/dev/null 2>&1; then
         fail_with "synthetic secret leaked into enabled bundle: $needle"
         grep -rIFln -- "$needle" "$MAIN_ROOT" >&2 || true
@@ -404,6 +473,13 @@ for needle in \
         ok "synthetic secret absent: $needle"
     fi
 done
+while IFS= read -r gzip_artifact; do
+    if gzip -cd "$gzip_artifact" 2>/dev/null | grep -Fq -- "$SECRET_REMOTE_LITERAL"; then
+        fail_with "remote-write token leaked inside compressed archive artifact: $gzip_artifact"
+    else
+        ok "remote-write token absent from compressed artifact: ${gzip_artifact##*/}"
+    fi
+done < <(find "$MAIN_ROOT" -type f -name '*.gz' -print)
 
 echo "== cap priority and HERMES_HOME fallback =="
 CAP_OUT="$EXTRACT_DIR/cap-out"
@@ -460,12 +536,175 @@ INVALID_ROOT=$(extract_bundle "$INVALID_BUNDLE" "$EXTRACT_DIR/invalid-tree")
 assert_no_capture_file "$INVALID_ROOT" "invalid capture JSON is not archived"
 assert_contains "$INVALID_ROOT/MANIFEST.txt" 'capture: unavailable' "manifest records invalid capture as unavailable"
 
+echo "== Kiro runtime path parity =="
+SMALL_GW_DIR="$FAKE_ROOT/small-gateway-logs"
+mkdir -p "$SMALL_GW_DIR"
+printf '%s\n' 'small gateway current' > "$SMALL_GW_DIR/gateway.log"
+printf '%s\n' 'small gateway boot' > "$SMALL_GW_DIR/gateway-boot.log"
+TEST_GW_LOG="$SMALL_GW_DIR/gateway.log"
+TEST_GW_LOG_BOOT="$SMALL_GW_DIR/gateway-boot.log"
+
+printf '%s\n' 'default Kiro cwd safe' > "$GW_HOME_FIXTURE/default-relative-kiro.log"
+TEST_KIRO_CWD=""
+TEST_KIRO_CHAT_LOG_FILE="default-relative-kiro.log"
+DEFAULT_CWD_OUT="$EXTRACT_DIR/default-cwd-out"
+if run_support missing "$DEFAULT_CWD_OUT" 50 "$EXTRACT_DIR/default-cwd.stdout" "$EXTRACT_DIR/default-cwd.stderr"; then
+    ok "support continues with empty KIRO_CWD"
+else
+    fail_with "support failed with empty KIRO_CWD: $(cat "$EXTRACT_DIR/default-cwd.stderr")"
+fi
+DEFAULT_CWD_BUNDLE=$(tail -n 1 "$EXTRACT_DIR/default-cwd.stdout" 2>/dev/null || true)
+DEFAULT_CWD_ROOT=$(extract_bundle "$DEFAULT_CWD_BUNDLE" "$EXTRACT_DIR/default-cwd-tree")
+assert_contains "$DEFAULT_CWD_ROOT/logs/kiro/kiro-chat.log" 'default Kiro cwd safe' "empty KIRO_CWD resolves relative Kiro log from GW_HOME"
+
+mkdir -p "$FAKE_ROOT/home/kiro-tilde/native"
+printf '%s\n' 'tilde Kiro cwd safe' > "$FAKE_ROOT/home/kiro-tilde/native/tilde-kiro.log"
+TEST_KIRO_CWD=\~/kiro-tilde
+TEST_KIRO_CHAT_LOG_FILE="native/tilde-kiro.log"
+TILDE_CWD_OUT="$EXTRACT_DIR/tilde-cwd-out"
+if run_support missing "$TILDE_CWD_OUT" 50 "$EXTRACT_DIR/tilde-cwd.stdout" "$EXTRACT_DIR/tilde-cwd.stderr"; then
+    ok "support continues with tilde KIRO_CWD"
+else
+    fail_with "support failed with tilde KIRO_CWD: $(cat "$EXTRACT_DIR/tilde-cwd.stderr")"
+fi
+TILDE_CWD_BUNDLE=$(tail -n 1 "$EXTRACT_DIR/tilde-cwd.stdout" 2>/dev/null || true)
+TILDE_CWD_ROOT=$(extract_bundle "$TILDE_CWD_BUNDLE" "$EXTRACT_DIR/tilde-cwd-tree")
+assert_contains "$TILDE_CWD_ROOT/logs/kiro/kiro-chat.log" 'tilde Kiro cwd safe' "tilde KIRO_CWD expands before resolving relative Kiro log"
+reset_support_inputs
+
+echo "== source failure warnings =="
+TEST_GW_LOG="$FAKE_ROOT/missing/gateway.log"
+TEST_GW_LOG_BOOT="$FAKE_ROOT/missing/gateway-boot.log"
+TEST_KIRO_CWD="$FAKE_ROOT/missing"
+TEST_KIRO_CHAT_LOG_FILE="kiro.log"
+MISSING_OUT="$EXTRACT_DIR/missing-sources-out"
+if run_support missing "$MISSING_OUT" 50 "$EXTRACT_DIR/missing-sources.stdout" "$EXTRACT_DIR/missing-sources.stderr"; then
+    ok "support continues when configured sources are missing"
+else
+    fail_with "support failed for missing sources: $(cat "$EXTRACT_DIR/missing-sources.stderr")"
+fi
+MISSING_BUNDLE=$(tail -n 1 "$EXTRACT_DIR/missing-sources.stdout" 2>/dev/null || true)
+MISSING_ROOT=$(extract_bundle "$MISSING_BUNDLE" "$EXTRACT_DIR/missing-sources-tree")
+assert_contains "$MISSING_ROOT/MANIFEST.txt" 'Gateway current log missing' "manifest warns for missing configured Gateway current log"
+assert_contains "$MISSING_ROOT/MANIFEST.txt" 'Gateway boot log missing' "manifest warns for missing configured Gateway boot log"
+assert_contains "$MISSING_ROOT/MANIFEST.txt" 'Kiro current log missing' "manifest warns for missing configured Kiro current log"
+
+FAILURE_ROOT="$FAKE_ROOT/source-failures"
+mkdir -p "$FAILURE_ROOT/gateway" "$FAILURE_ROOT/kiro" "$FAILURE_ROOT/co-worker/logs"
+printf '%s\n' 'unreadable Gateway' > "$FAILURE_ROOT/gateway/gateway.log"
+printf '%s\n' 'readable Gateway boot' > "$FAILURE_ROOT/gateway/gateway-boot.log"
+printf '%s\n' 'unreadable Kiro' > "$FAILURE_ROOT/kiro/kiro.log"
+printf '%s\n' 'unreadable Co-worker' > "$FAILURE_ROOT/co-worker/logs/agent.log"
+chmod 000 "$FAILURE_ROOT/gateway/gateway.log" "$FAILURE_ROOT/kiro/kiro.log" "$FAILURE_ROOT/co-worker/logs/agent.log"
+TEST_GW_LOG="$FAILURE_ROOT/gateway/gateway.log"
+TEST_GW_LOG_BOOT="$FAILURE_ROOT/gateway/gateway-boot.log"
+TEST_KIRO_CWD="$FAILURE_ROOT/kiro"
+TEST_KIRO_CHAT_LOG_FILE="kiro.log"
+TEST_COWORKER_HOME="$FAILURE_ROOT/co-worker"
+UNREADABLE_OUT="$EXTRACT_DIR/unreadable-out"
+if run_support fallback "$UNREADABLE_OUT" 50 "$EXTRACT_DIR/unreadable.stdout" "$EXTRACT_DIR/unreadable.stderr"; then
+    ok "support continues when configured sources are unreadable"
+else
+    fail_with "support failed for unreadable sources: $(cat "$EXTRACT_DIR/unreadable.stderr")"
+fi
+UNREADABLE_BUNDLE=$(tail -n 1 "$EXTRACT_DIR/unreadable.stdout" 2>/dev/null || true)
+UNREADABLE_ROOT=$(extract_bundle "$UNREADABLE_BUNDLE" "$EXTRACT_DIR/unreadable-tree")
+assert_contains "$UNREADABLE_ROOT/MANIFEST.txt" 'Gateway current log unreadable' "manifest warns for unreadable Gateway source"
+assert_contains "$UNREADABLE_ROOT/MANIFEST.txt" 'Kiro current log unreadable' "manifest warns for unreadable Kiro source"
+assert_contains "$UNREADABLE_ROOT/MANIFEST.txt" 'Co-worker agent.log unreadable' "manifest warns for unreadable Co-worker source"
+
+chmod 600 "$FAILURE_ROOT/gateway/gateway.log" "$FAILURE_ROOT/kiro/kiro.log" "$FAILURE_ROOT/co-worker/logs/agent.log"
+FAIL_BIN="$FAKE_ROOT/failing-redactor-bin"
+mkdir -p "$FAIL_BIN"
+cat > "$FAIL_BIN/sed" <<'EOF'
+#!/bin/sh
+exit 9
+EOF
+chmod +x "$FAIL_BIN/sed"
+TEST_PATH="$FAIL_BIN:$PATH"
+REDACTION_FAIL_OUT="$EXTRACT_DIR/redaction-fail-out"
+if run_support fallback "$REDACTION_FAIL_OUT" 50 "$EXTRACT_DIR/redaction-fail.stdout" "$EXTRACT_DIR/redaction-fail.stderr"; then
+    ok "support continues when log redaction fails"
+else
+    fail_with "support failed when redaction failed: $(cat "$EXTRACT_DIR/redaction-fail.stderr")"
+fi
+REDACTION_FAIL_BUNDLE=$(tail -n 1 "$EXTRACT_DIR/redaction-fail.stdout" 2>/dev/null || true)
+REDACTION_FAIL_ROOT=$(extract_bundle "$REDACTION_FAIL_BUNDLE" "$EXTRACT_DIR/redaction-fail-tree")
+assert_contains "$REDACTION_FAIL_ROOT/MANIFEST.txt" 'Gateway current log redaction failed' "manifest warns for Gateway redaction failure"
+assert_contains "$REDACTION_FAIL_ROOT/MANIFEST.txt" 'Kiro current log redaction failed' "manifest warns for Kiro redaction failure"
+assert_contains "$REDACTION_FAIL_ROOT/MANIFEST.txt" 'Co-worker agent.log redaction failed' "manifest warns for Co-worker redaction failure"
+reset_support_inputs
+
+echo "== no-dereference snapshot boundary =="
+RACE_ROOT="$FAKE_ROOT/snapshot-race"
+mkdir -p "$RACE_ROOT/gateway" "$RACE_ROOT/kiro" "$RACE_ROOT/co-worker/logs" "$RACE_ROOT/bin"
+printf '%s\n' 'race Gateway current safe' > "$RACE_ROOT/gateway/gateway.log"
+printf '%s\n' 'race Gateway boot safe' > "$RACE_ROOT/gateway/gateway-boot.log"
+printf '%s\n' 'race Gateway rotation safe' | gzip > "$RACE_ROOT/gateway/gateway-race.log.gz"
+printf '%s\n' 'race Kiro safe' > "$RACE_ROOT/kiro/kiro.log"
+RACE_PLAIN_SECRET="race-plain-external-secret-2244"
+RACE_GZIP_SECRET="race-gzip-external-secret-3355"
+printf '%s\n' "$RACE_PLAIN_SECRET" > "$RACE_ROOT/external-secret.log"
+printf '%s\n' "$RACE_GZIP_SECRET" | gzip > "$RACE_ROOT/external-secret.log.gz"
+ln -s "$RACE_ROOT/external-secret.log" "$RACE_ROOT/co-worker/logs/agent.log"
+cat > "$RACE_ROOT/bin/cp" <<'EOF'
+#!/bin/sh
+for task3_arg in "$@"; do
+    if [ -n "${TASK3_SWAP_SOURCE_ONE:-}" ] && [ "$task3_arg" = "$TASK3_SWAP_SOURCE_ONE" ] && [ ! -e "$TASK3_SWAP_SOURCE_ONE.before-swap" ]; then
+        mv "$TASK3_SWAP_SOURCE_ONE" "$TASK3_SWAP_SOURCE_ONE.before-swap"
+        ln -s "$TASK3_SWAP_TARGET_ONE" "$TASK3_SWAP_SOURCE_ONE"
+    fi
+    if [ -n "${TASK3_SWAP_SOURCE_TWO:-}" ] && [ "$task3_arg" = "$TASK3_SWAP_SOURCE_TWO" ] && [ ! -e "$TASK3_SWAP_SOURCE_TWO.before-swap" ]; then
+        mv "$TASK3_SWAP_SOURCE_TWO" "$TASK3_SWAP_SOURCE_TWO.before-swap"
+        ln -s "$TASK3_SWAP_TARGET_TWO" "$TASK3_SWAP_SOURCE_TWO"
+    fi
+done
+exec "$TASK3_REAL_CP" "$@"
+EOF
+chmod +x "$RACE_ROOT/bin/cp"
+TEST_GW_LOG="$RACE_ROOT/gateway/gateway.log"
+TEST_GW_LOG_BOOT="$RACE_ROOT/gateway/gateway-boot.log"
+TEST_KIRO_CWD="$RACE_ROOT/kiro"
+TEST_KIRO_CHAT_LOG_FILE="kiro.log"
+TEST_COWORKER_HOME="$RACE_ROOT/co-worker"
+TEST_PATH="$RACE_ROOT/bin:$PATH"
+TEST_SWAP_SOURCE_ONE="$RACE_ROOT/gateway/gateway.log"
+TEST_SWAP_TARGET_ONE="$RACE_ROOT/external-secret.log"
+TEST_SWAP_SOURCE_TWO="$RACE_ROOT/gateway/gateway-race.log.gz"
+TEST_SWAP_TARGET_TWO="$RACE_ROOT/external-secret.log.gz"
+RACE_OUT="$EXTRACT_DIR/race-out"
+if run_support fallback "$RACE_OUT" 50 "$EXTRACT_DIR/race.stdout" "$EXTRACT_DIR/race.stderr"; then
+    ok "support continues when sources change to symlinks during snapshot"
+else
+    fail_with "support failed during deterministic source swap: $(cat "$EXTRACT_DIR/race.stderr")"
+fi
+RACE_BUNDLE=$(tail -n 1 "$EXTRACT_DIR/race.stdout" 2>/dev/null || true)
+RACE_BUNDLE_ROOT=$(extract_bundle "$RACE_BUNDLE" "$EXTRACT_DIR/race-tree")
+assert_absent "$RACE_BUNDLE_ROOT/logs/gateway/gateway.log" "plain source swapped to symlink is rejected after snapshot"
+assert_absent "$RACE_BUNDLE_ROOT/logs/gateway/gateway-race.log.gz" "compressed source swapped to symlink is rejected after snapshot"
+assert_absent "$RACE_BUNDLE_ROOT/logs/co-worker/agent.log" "static Co-worker symlink is rejected"
+assert_contains "$RACE_BUNDLE_ROOT/MANIFEST.txt" 'Gateway current log rejected: symlink snapshot' "manifest records raced plain symlink rejection"
+assert_contains "$RACE_BUNDLE_ROOT/MANIFEST.txt" 'Gateway rotation gateway-race.log.gz rejected: symlink snapshot' "manifest records raced compressed symlink rejection"
+assert_contains "$RACE_BUNDLE_ROOT/MANIFEST.txt" 'Co-worker agent.log rejected: symlink' "manifest records static Co-worker symlink rejection"
+if grep -rIF -- "$RACE_PLAIN_SECRET" "$RACE_BUNDLE_ROOT" >/dev/null 2>&1 || \
+   grep -rIF -- "$RACE_GZIP_SECRET" "$RACE_BUNDLE_ROOT" >/dev/null 2>&1; then
+    fail_with "deterministic symlink swap leaked external content"
+else
+    ok "deterministic symlink swap leaks no external content"
+fi
+reset_support_inputs
+
 assert_contains "$HTTP_REQUEST_LOG" 'GET /metrics' "support requests metrics with GET"
 assert_contains "$HTTP_REQUEST_LOG" 'GET /admin/api/acp-capture?support=redacted' "support requests redacted capture with GET"
 if grep -q '^POST ' "$HTTP_REQUEST_LOG"; then
     fail_with "support mutated live state with POST: $(grep '^POST ' "$HTTP_REQUEST_LOG")"
 else
     ok "support never sends POST or mutates live capture state"
+fi
+if grep -Fq '/mutate' "$HTTP_REQUEST_LOG"; then
+    fail_with "support honored malicious curl config URL: $(grep -F '/mutate' "$HTTP_REQUEST_LOG")"
+else
+    ok "support ignores malicious curl config URLs"
 fi
 
 echo
