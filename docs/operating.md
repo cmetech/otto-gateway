@@ -233,10 +233,36 @@ above — this table is the underlying contract every knob maps to.
 | `KIRO_CMD` | `kiro-cli` | kiro-cli binary name or full path. If unset, the gateway starts without ACP worker processes. |
 | `KIRO_ARGS` | `acp` | Arguments passed to kiro-cli (space-separated) |
 | `KIRO_CWD` | _(empty)_ | Default working directory for kiro-cli subprocesses |
+| `KIRO_CHAT_LOG_FILE` | `$GW_HOME/logs/kiro-chat.log` | Native Kiro log destination. The gateway creates its parent directory and passes this path to every pooled or dedicated Kiro child. |
+| `KIRO_LOG_LEVEL` | _(unset; Kiro normal logging)_ | Kiro's own log level, inherited by its child processes. To collect diagnostics, set `KIRO_LOG_LEVEL=debug` in `overrides.env` and restart; this is independent of the gateway's `DEBUG` setting. |
 | `POOL_SIZE` | `4` (binary default) | Number of warm kiro-cli subprocesses kept in the pool. The laptop wrapper template (`scripts/.env.example`, copied to `.env` by `gw init`/`upgrade-env`) sets `2`, sized for single-user laptops; shared hosts should raise it in `overrides.env`, which `gw upgrade-env` never touches. |
 | `KIRO_WORKER_MAX_TURNS` | `0` (binary default; disabled) | Successful pool-worker `session/new` calls before scheduled process recycling — bounds per-process memory/context growth independent of the context-usage-triggered session recycle. The laptop wrapper template sets `20`; shared hosts override in `overrides.env`. Accepts `0`–`10000`; negative or out-of-range values cause a boot error. Caveat: with `POOL_SIZE=1` a scheduled recycle takes the pool's only worker offline while its replacement respawns in the background, so pool status transiently reports `down`/unhealthy until the respawn completes; run `POOL_SIZE >= 2` when recycling is enabled so recycles stay invisible to callers. Concurrent scheduled recycles are serialized — at most one worker is down for maintenance at a time — so a `POOL_SIZE >= 2` pool never recycles all its workers at once (a worker crossing the threshold while a recycle is in flight defers and keeps serving). |
 | `DEBUG` | `false` | Enable debug-level JSON logging. Accepts `1`, `true`, `0`, or `false`. |
 | `PING_INTERVAL` | `60000` | ACP ping interval. Default: 60 s. Integer values are treated as milliseconds (e.g., `60000` = 60 s); Go duration strings are also accepted (e.g., `"90s"`, `"2m"`). |
+
+### Kiro native log operations
+
+Normal Kiro logs go to `KIRO_CHAT_LOG_FILE`; with the default wrapper
+configuration that is `$GW_HOME/logs/kiro-chat.log`. To enable Kiro debug
+logging, add the following operator override, then restart so replacement
+workers inherit it:
+
+```text
+# $GW_HOME/overrides.env (or ./overrides.env)
+KIRO_LOG_LEVEL=debug
+```
+
+```bash
+./scripts/gw restart
+```
+
+```powershell
+.\scripts\gw.ps1 restart
+```
+
+Remove the `KIRO_LOG_LEVEL` override and restart again to return to normal
+Kiro logging. The Gateway dashboard's **Log tail** shows Gateway and Kiro
+logs only; Co-worker retains its own viewer.
 
 ### Phase 8 — Plugin chain (hooks)
 
