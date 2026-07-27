@@ -216,6 +216,158 @@ func TestAcpCaptureSupport_MalformedParamsBecomeScrubbedString(t *testing.T) {
 	}
 }
 
+// TestAcpCaptureSupport_ScrubsNamingConventionsInsideStrings catches
+// separator- and camel-case credential labels leaking from malformed params or
+// JSON encoded inside a decoded string leaf.
+func TestAcpCaptureSupport_ScrubsNamingConventionsInsideStrings(t *testing.T) {
+	const malformed = `malformed-safe access_token=malformed_access_shh refreshToken=malformed_refresh_shh client_secret=malformed_client_shh dbPassword=malformed_password_shh`
+	const encoded = `{"payload":"{\"access_token\":\"encoded_access_shh\",\"refreshToken\":\"encoded_refresh_shh\",\"client_secret\":\"encoded_client_shh\",\"dbPassword\":\"encoded_password_shh\",\"safe\":\"encoded-safe\"}"}`
+	src := &fakeCaptureSource{enabled: true, frames: []admin.CaptureFrame{
+		{Seq: 1, Params: malformed},
+		{Seq: 2, Params: encoded},
+	}}
+	h := admin.Handler(admin.Deps{AcpCapture: src})
+
+	rec := doGet(t, h, "/api/acp-capture?support=redacted")
+	var body struct {
+		Frames []admin.CaptureFrame `json:"frames"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("support export is invalid JSON: %v; body=%s", err, rec.Body.String())
+	}
+	if len(body.Frames) != 2 {
+		t.Fatalf("frames = %+v, want two", body.Frames)
+	}
+	for _, secret := range []string{
+		"malformed_access_shh", "malformed_refresh_shh", "malformed_client_shh", "malformed_password_shh",
+		"encoded_access_shh", "encoded_refresh_shh", "encoded_client_shh", "encoded_password_shh",
+	} {
+		if strings.Contains(rec.Body.String(), secret) {
+			t.Errorf("support export leaked naming-convention credential %q", secret)
+		}
+	}
+	for _, safe := range []string{"malformed-safe", "encoded-safe"} {
+		if !strings.Contains(rec.Body.String(), safe) {
+			t.Errorf("support export removed safe string %q", safe)
+		}
+	}
+}
+
+// TestAcpCaptureSupport_ScrubsEntireGenericAuthorizationValue catches schemes
+// other than Bearer/Basic leaving credential material after the scheme token.
+func TestAcpCaptureSupport_ScrubsEntireGenericAuthorizationValue(t *testing.T) {
+	const params = `{"notes":[
+		"apikey-safe-prefix\nAuthorization: ApiKey generic_apikey_shh\napikey-safe-suffix",
+		"digest-safe-prefix\nAuthorization: Digest username=alice, realm=example, nonce=digest_nonce_shh, response=digest_response_shh\ndigest-safe-suffix",
+		"aws-safe-prefix\nAuthorization: AWS4-HMAC-SHA256 Credential=aws_credential_shh/20260727/us-east-1/service/aws4_request, SignedHeaders=host;x-amz-date, Signature=aws_signature_shh\naws-safe-suffix"
+	],"encoded":"{\"Authorization\":\"Digest username=alice, nonce=encoded_digest_shh\",\"safe\":\"encoded-auth-safe\"}"}`
+	src := &fakeCaptureSource{enabled: true, frames: []admin.CaptureFrame{{Seq: 1, Params: params}}}
+	h := admin.Handler(admin.Deps{AcpCapture: src})
+
+	rec := doGet(t, h, "/api/acp-capture?support=redacted")
+	var body struct {
+		Frames []admin.CaptureFrame `json:"frames"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("support export is invalid JSON: %v; body=%s", err, rec.Body.String())
+	}
+	for _, secret := range []string{
+		"generic_apikey_shh", "digest_nonce_shh", "digest_response_shh",
+		"aws_credential_shh", "aws_signature_shh", "encoded_digest_shh",
+	} {
+		if strings.Contains(rec.Body.String(), secret) {
+			t.Errorf("support export leaked Authorization credential %q", secret)
+		}
+	}
+	for _, safe := range []string{
+		"apikey-safe-prefix", "apikey-safe-suffix", "digest-safe-prefix",
+		"digest-safe-suffix", "aws-safe-prefix", "aws-safe-suffix", "encoded-auth-safe",
+	} {
+		if !strings.Contains(rec.Body.String(), safe) {
+			t.Errorf("support export removed surrounding safe text %q", safe)
+		}
+	}
+	var redactedParams struct {
+		Encoded string `json:"encoded"`
+	}
+	if err := json.Unmarshal([]byte(body.Frames[0].Params), &redactedParams); err != nil {
+		t.Fatalf("redacted params are invalid JSON: %v; params=%s", err, body.Frames[0].Params)
+	}
+	var encoded map[string]any
+	if err := json.Unmarshal([]byte(redactedParams.Encoded), &encoded); err != nil {
+		t.Fatalf("redaction damaged encoded Authorization JSON: %v; encoded=%s", err, redactedParams.Encoded)
+	}
+	if got := encoded["safe"]; got != "encoded-auth-safe" {
+		t.Errorf("encoded safe value = %v, want encoded-auth-safe", got)
+	}
+}
+
+// TestAcpCaptureSupport_ParsedKeyNamingConventions catches acronym credential
+// suffixes leaking and ordinary words or metadata prefixes being over-redacted.
+func TestAcpCaptureSupport_ParsedKeyNamingConventions(t *testing.T) {
+	const params = `{
+		"signingKEY":"signing_key_shh",
+		"access_token":"access_token_shh",
+		"refreshToken":"refresh_token_shh",
+		"client_secret":"client_secret_shh",
+		"dbPassword":"db_password_shh",
+		"Authorization":"authorization_shh",
+		"bearer":"bearer_shh",
+		"apiKey":"api_key_shh",
+		"secretary":"safe-secretary",
+		"tokenCount":42,
+		"keyboardLayout":"safe-keyboard"
+	}`
+	src := &fakeCaptureSource{enabled: true, frames: []admin.CaptureFrame{{Seq: 1, Params: params}}}
+	h := admin.Handler(admin.Deps{AcpCapture: src})
+
+	rec := doGet(t, h, "/api/acp-capture?support=redacted")
+	var body struct {
+		Frames []admin.CaptureFrame `json:"frames"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("support export is invalid JSON: %v; body=%s", err, rec.Body.String())
+	}
+	for _, secret := range []string{
+		"signing_key_shh", "access_token_shh", "refresh_token_shh", "client_secret_shh",
+		"db_password_shh", "authorization_shh", "bearer_shh", "api_key_shh",
+	} {
+		if strings.Contains(rec.Body.String(), secret) {
+			t.Errorf("support export leaked parsed credential %q", secret)
+		}
+	}
+	for _, safe := range []string{"safe-secretary", `"tokenCount":42`, "safe-keyboard"} {
+		if !strings.Contains(body.Frames[0].Params, safe) {
+			t.Errorf("support export removed safe parsed value %q; params=%s", safe, body.Frames[0].Params)
+		}
+	}
+}
+
+// TestAcpCaptureSupport_PreservesLargeJSONInteger catches JSON decoding through
+// float64 changing an otherwise safe integer during support export.
+func TestAcpCaptureSupport_PreservesLargeJSONInteger(t *testing.T) {
+	const params = `{"requestId":9007199254740993,"safe":"numeric-safe"}`
+	src := &fakeCaptureSource{enabled: true, frames: []admin.CaptureFrame{{Seq: 1, Params: params}}}
+	h := admin.Handler(admin.Deps{AcpCapture: src})
+
+	rec := doGet(t, h, "/api/acp-capture?support=redacted")
+	var body struct {
+		Frames []admin.CaptureFrame `json:"frames"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("support export is invalid JSON: %v; body=%s", err, rec.Body.String())
+	}
+	if len(body.Frames) != 1 {
+		t.Fatalf("frames = %+v, want one", body.Frames)
+	}
+	if !strings.Contains(body.Frames[0].Params, `"requestId":9007199254740993`) {
+		t.Errorf("large JSON integer changed during support export: %s", body.Frames[0].Params)
+	}
+	if !strings.Contains(body.Frames[0].Params, "numeric-safe") {
+		t.Errorf("safe numeric context removed: %s", body.Frames[0].Params)
+	}
+}
+
 // TestAcpCaptureSupport_OrdinaryGetRemainsRaw catches accidental redaction of
 // the existing operator-only capture endpoint when support mode is not asked for.
 func TestAcpCaptureSupport_OrdinaryGetRemainsRaw(t *testing.T) {
