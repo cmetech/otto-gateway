@@ -253,6 +253,93 @@ func TestAcpCaptureSupport_ScrubsNamingConventionsInsideStrings(t *testing.T) {
 	}
 }
 
+// TestAcpCaptureSupport_ScrubsEveryQueryAssignment catches a safe leading
+// form/query parameter consuming later credential assignments as part of its
+// value and preventing those later names from being examined.
+func TestAcpCaptureSupport_ScrubsEveryQueryAssignment(t *testing.T) {
+	const params = `{
+		"query":"safe=ok&access_token=query_access_shh&after=kept&token=query_token_shh&last=visible",
+		"form":"first=visible&password=form_password_shh&final=kept"
+	}`
+	src := &fakeCaptureSource{enabled: true, frames: []admin.CaptureFrame{{Seq: 1, Params: params}}}
+	h := admin.Handler(admin.Deps{AcpCapture: src})
+
+	rec := doGet(t, h, "/api/acp-capture?support=redacted")
+	var body struct {
+		Frames []admin.CaptureFrame `json:"frames"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("support export is invalid JSON: %v; body=%s", err, rec.Body.String())
+	}
+	if len(body.Frames) != 1 {
+		t.Fatalf("frames = %+v, want one", body.Frames)
+	}
+	for _, secret := range []string{"query_access_shh", "query_token_shh", "form_password_shh"} {
+		if strings.Contains(rec.Body.String(), secret) {
+			t.Errorf("support export leaked chained query credential %q", secret)
+		}
+	}
+	var redactedParams map[string]string
+	if err := json.Unmarshal([]byte(body.Frames[0].Params), &redactedParams); err != nil {
+		t.Fatalf("redacted params are invalid JSON: %v; params=%s", err, body.Frames[0].Params)
+	}
+	for _, safe := range []string{"safe=ok", "after=kept", "last=visible"} {
+		if !strings.Contains(redactedParams["query"], safe) {
+			t.Errorf("query lost safe parameter %q: %s", safe, redactedParams["query"])
+		}
+	}
+	for _, safe := range []string{"first=visible", "final=kept"} {
+		if !strings.Contains(redactedParams["form"], safe) {
+			t.Errorf("form lost safe parameter %q: %s", safe, redactedParams["form"])
+		}
+	}
+}
+
+// TestAcpCaptureSupport_SemanticCredentialNameSegments catches credential
+// terms followed by value-bearing suffixes while protecting similarly named
+// metadata and ordinary words in both parsed keys and string assignments.
+func TestAcpCaptureSupport_SemanticCredentialNameSegments(t *testing.T) {
+	const params = `{
+		"accessTokenValue":"parsed_access_token_value_shh",
+		"passwordHash":"parsed_password_hash_shh",
+		"clientSecretValue":"parsed_client_secret_value_shh",
+		"apiKeyHash":"parsed_api_key_hash_shh",
+		"authorizationHeader":"parsed_authorization_header_shh",
+		"safe":{"tokenCount":7,"secretary":"safe-secretary","keyboardLayout":"safe-keyboard"},
+		"assignmentText":"tokenCount=9 secretary=office-safe keyboardLayout=qwerty-safe accessTokenValue=string_access_token_value_shh passwordHash=string_password_hash_shh clientSecretValue=string_client_secret_value_shh"
+	}`
+	src := &fakeCaptureSource{enabled: true, frames: []admin.CaptureFrame{{Seq: 1, Params: params}}}
+	h := admin.Handler(admin.Deps{AcpCapture: src})
+
+	rec := doGet(t, h, "/api/acp-capture?support=redacted")
+	var body struct {
+		Frames []admin.CaptureFrame `json:"frames"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("support export is invalid JSON: %v; body=%s", err, rec.Body.String())
+	}
+	if len(body.Frames) != 1 {
+		t.Fatalf("frames = %+v, want one", body.Frames)
+	}
+	for _, secret := range []string{
+		"parsed_access_token_value_shh", "parsed_password_hash_shh", "parsed_client_secret_value_shh",
+		"parsed_api_key_hash_shh", "parsed_authorization_header_shh", "string_access_token_value_shh",
+		"string_password_hash_shh", "string_client_secret_value_shh",
+	} {
+		if strings.Contains(rec.Body.String(), secret) {
+			t.Errorf("support export leaked semantic-name credential %q", secret)
+		}
+	}
+	for _, safe := range []string{
+		`"tokenCount":7`, "safe-secretary", "safe-keyboard",
+		"tokenCount=9", "secretary=office-safe", "keyboardLayout=qwerty-safe",
+	} {
+		if !strings.Contains(body.Frames[0].Params, safe) {
+			t.Errorf("support export removed safe semantic-name value %q; params=%s", safe, body.Frames[0].Params)
+		}
+	}
+}
+
 // TestAcpCaptureSupport_ScrubsEntireGenericAuthorizationValue catches schemes
 // other than Bearer/Basic leaving credential material after the scheme token.
 func TestAcpCaptureSupport_ScrubsEntireGenericAuthorizationValue(t *testing.T) {

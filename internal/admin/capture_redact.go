@@ -13,7 +13,7 @@ const captureRedactionMarker = "[REDACTED]"
 var (
 	captureAuthorizationPrefixPattern = regexp.MustCompile(`(?i)\bauthorization\b\s*["']?\s*[:=]\s*`)
 	captureCredentialPattern          = regexp.MustCompile(`(?i)\b(?:bearer|basic|api[ _-]?key)\s+[a-z0-9._~+/=-]+`)
-	captureNamedAssignmentPattern     = regexp.MustCompile(`([A-Za-z][A-Za-z0-9_-]*)(\s*["']?\s*[:=]\s*["']?)(\[REDACTED\]|[^\s,;"'\}\]]+)`)
+	captureNamedAssignmentPattern     = regexp.MustCompile(`([A-Za-z][A-Za-z0-9_-]*)(\s*["']?\s*[:=]\s*["']?)(\[REDACTED\]|[^\s&,;"'\}\]]+)`)
 )
 
 var captureSecretNameWords = map[string]struct{}{
@@ -25,6 +25,19 @@ var captureSecretNameWords = map[string]struct{}{
 	"password":      {},
 	"secret":        {},
 	"token":         {},
+}
+
+var captureCredentialValueSuffixWords = map[string]struct{}{
+	"bytes":       {},
+	"credential":  {},
+	"credentials": {},
+	"data":        {},
+	"digest":      {},
+	"hash":        {},
+	"header":      {},
+	"raw":         {},
+	"string":      {},
+	"value":       {},
 }
 
 func redactCaptureFrames(in []CaptureFrame) []CaptureFrame {
@@ -156,8 +169,22 @@ func isCaptureSecretName(name string) bool {
 	if len(words) == 0 {
 		return false
 	}
-	_, secret := captureSecretNameWords[strings.ToLower(words[len(words)-1])]
-	return secret
+	for i, word := range words {
+		if _, secret := captureSecretNameWords[strings.ToLower(word)]; !secret {
+			continue
+		}
+		credentialValue := true
+		for _, suffix := range words[i+1:] {
+			if _, ok := captureCredentialValueSuffixWords[strings.ToLower(suffix)]; !ok {
+				credentialValue = false
+				break
+			}
+		}
+		if credentialValue {
+			return true
+		}
+	}
+	return false
 }
 
 func captureNameWords(name string) []string {
