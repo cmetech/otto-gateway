@@ -46,7 +46,7 @@ PowerShell scripts run without any per-invocation bypass.
 
 Three equivalent surfaces ship in every release archive:
 
-- `.\scripts\gw.ps1 <cmd>` — PowerShell wrapper (subcommands: `init`, `start`, `stop`, `status`, `restart`, `logs`, `run`, `env`, `version`).
+- `.\scripts\gw.ps1 <cmd>` — PowerShell wrapper (subcommands: `init`, `start`, `stop`, `status`, `restart`, `logs`, `run`, `env`, `version`, `support`).
 - `.\scripts\gw.bat <cmd>` — cmd.exe dispatcher. Mirrors the PowerShell wrapper's subcommand surface and passes `-ExecutionPolicy Bypass -File` internally, so it works on a fresh extract even before `setup.bat` has run.
 - `.\scripts\start.bat`, `stop.bat`, `status.bat` — Explorer-double-clickable per-command shortcuts that delegate to the dispatcher.
 
@@ -89,6 +89,106 @@ networks without operator-side mitigation.**
 | `logs [-f]` | Tail the log file; pass `-f` to follow (macOS/Linux); Windows tails both stdout and stderr files simultaneously |
 | `run` | Run gateway in the foreground — equivalent to invoking the binary directly |
 | `env` | Print the resolved gateway env (the keys that would be passed to the binary). Secrets are masked by default; pass `--show-secrets` (bash) or `-ShowSecrets` (PowerShell) to print literals. |
+| `support` | Create a redacted, best-effort diagnostic archive. See [Support bundles](#support-bundles). |
+
+## Support bundles
+
+Create a support bundle when collecting evidence for an incident. The command
+prints the archive path on success and also refreshes a `latest` copy in the
+output directory. POSIX creates a `.tar.gz`; PowerShell creates a `.zip`.
+
+```bash
+./scripts/gw support [--out DIR] [--max-mb N] [--log-days D] [--co-worker-home DIR]
+```
+
+```powershell
+.\scripts\gw.ps1 support [-Out DIR] [-MaxMb N] [-Timeout SEC] [-LogDays D] [-CoworkerHome DIR]
+```
+
+`--out` / `-Out` overrides the default `$GW_HOME/support` output directory,
+`--max-mb` / `-MaxMb` defaults to 50 MB, and `--log-days` / `-LogDays`
+defaults to 7 days for Gateway compressed rotations. The PowerShell command
+also has `-Timeout` (default 180 seconds). Collection is best-effort: a
+stopped Gateway, an unreadable log, or an unavailable optional endpoint does
+not stop other artifacts from being archived. Each skipped artifact and other
+collection warning is recorded in `MANIFEST.txt`.
+
+### Co-worker diagnostics
+
+For direct use, provide the Co-worker data home with `--co-worker-home DIR`
+on POSIX or `-CoworkerHome DIR` in PowerShell. That explicit value wins over
+`HERMES_HOME`; otherwise `HERMES_HOME` is used when present. The tray passes
+the Co-worker home it already resolved for its **Open Co-worker Data Folder**
+action. The collector never searches or guesses among other product data
+directories. If no home resolves, or it has no regular `logs` directory,
+Gateway and Kiro diagnostics still proceed and the manifest records the
+omission.
+
+The archive has exactly three application log subtrees:
+
+```text
+logs/gateway/
+logs/kiro/
+logs/co-worker/
+```
+
+Within `logs/co-worker/`, the collector selects only these Hermes diagnostic
+families from the resolved home's `logs/` directory and from each immediate
+`profiles/<profile>/logs/` directory, retaining the profile path:
+
+`agent.log`, `errors.log`, `gateway.log`, `gui.log`, `desktop.log`,
+`mcp-stderr.log`, `gateway-shutdown-watchdog.log`, `dashboard-auth.log`,
+`container-boot.log`, and `tool_calls.log`. It accepts each current file and
+only numeric rotations of that same filename (for example, `agent.log.1`).
+It does not traverse `logs/curator/` or unrelated directories, and excludes
+compressed or non-numeric-suffix files.
+
+All application-log collection is allowlisted and safety-first: only regular
+files are eligible; symbolic links and Windows reparse points are rejected and
+never followed. The source is safely snapshotted before redaction so a
+replacement or non-regular source is omitted rather than read. These selection
+and no-follow guarantees, including profile paths and rotation handling, have
+the same meaning in the POSIX and PowerShell wrappers.
+
+### Live snapshots, redaction, and sharing
+
+One UTC timestamp is created per bundle and is used in the archive name and
+both optional live-snapshot filenames. The collector makes GET-only,
+read-only requests: it does not clear ACP capture data or change capture or
+remote-write state.
+
+- `GET /metrics` produces
+  `logs/gateway/metrics-snapshot-<timestamp>.prom` when successful.
+- `GET /admin/api/acp-capture?support=redacted` produces
+  `logs/gateway/acp-capture-<timestamp>.json` only when the returned JSON has
+  `enabled: true`. A valid `enabled: false` response is recorded as
+  `disabled` without an empty export; failed, malformed, or unavailable
+  responses are recorded as `unavailable`.
+
+`MANIFEST.txt` records the `metrics` and `capture` states as `captured`,
+`disabled` (capture only), or `unavailable`, alongside all collection
+warnings. It also warns that ACP capture exports can contain sensitive user
+content—prompts, tool arguments, model output, and paths may remain even
+after known-secret redaction—so review the bundle before sharing it.
+
+`env/effective.env` contains the resolved relevant Gateway configuration, and
+`env/shell-env.txt` contains the bounded ambient Gateway/Kiro/PII/auth
+namespace. Secret values are always masked there, including the explicit
+`GW_METRICS_REMOTE_WRITE_TOKEN` and keys matching token, key, secret,
+password, or passphrase. Log copies are redacted before archiving; the source
+files are never changed. There is no support-bundle option that writes raw
+secret values.
+
+### Size policy
+
+Current Gateway, Kiro, and approved Co-worker diagnostics take priority over
+rotations. The manifest and the small live snapshots are protected as well.
+If the configured cap is exceeded, rotations from all three log subtrees are
+dropped oldest first, preserving source modification times for that decision.
+Every cap-driven omission is listed as `DROPPED FOR SIZE` in `MANIFEST.txt`.
+If the cap still cannot be met without dropping protected current logs or
+snapshots, the bundle is retained with an explicit manifest warning rather
+than discarding those higher-value artifacts.
 
 ## Gateway config flags (flags + .env)
 
