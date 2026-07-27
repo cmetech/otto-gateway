@@ -20,17 +20,25 @@ type runResult struct {
 	Err      error
 }
 
+const (
+	lifecycleWrapperTimeout = 30 * time.Second
+	// The support scripts enforce a 180-second collection deadline. Leave a
+	// cleanup margin so their staging removal and atomic archive publication
+	// can finish before the tray cancels the process.
+	supportWrapperTimeout = 210 * time.Second
+)
+
 // runWrapper invokes the gw wrapper with the given verb
-// ("start" / "stop" / "restart"). installDir locates the wrapper
+// (lifecycle verbs or "support"). installDir locates the wrapper
 // script (under $GW_INSTALL_DIR/scripts); gwHome becomes the
 // subprocess's working directory so any relative logs/state paths
 // the wrapper resolves land in the data home, not the code dir. The
 // subprocess is detached (new process group on darwin, DETACHED_PROCESS
-// on win) so quitting the tray does not signal the gateway. A 30s
-// timeout matches the wrapper's own readiness wait — anything longer
-// is reported as a failure to the user.
+// on win) so quitting the tray does not signal the gateway. Lifecycle verbs
+// retain the wrapper's 30-second readiness budget; support allows the
+// collector's 180-second deadline plus cleanup margin.
 func runWrapper(installDir, gwHome, verb string, extraArgs ...string) runResult {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := wrapperContext(context.Background(), verb)
 	defer cancel()
 
 	cmdName, args := wrapperCommand(installDir, verb, extraArgs...)
@@ -56,6 +64,17 @@ func runWrapper(installDir, gwHome, verb string, extraArgs ...string) runResult 
 		Stderr:   stderr.String(),
 		Err:      err,
 	}
+}
+
+func wrapperTimeoutForVerb(verb string) time.Duration {
+	if strings.EqualFold(strings.TrimSpace(verb), "support") {
+		return supportWrapperTimeout
+	}
+	return lifecycleWrapperTimeout
+}
+
+func wrapperContext(parent context.Context, verb string) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(parent, wrapperTimeoutForVerb(verb))
 }
 
 func supportCoworkerArgs(goos, home string) []string {

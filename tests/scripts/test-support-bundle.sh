@@ -75,6 +75,15 @@ assert_contains() {
     fi
 }
 
+assert_not_contains() {
+    local path="$1" needle="$2" label="$3"
+    if grep -Fq -- "$needle" "$path" 2>/dev/null; then
+        fail_with "$label: forbidden [$needle] found in $path"
+    else
+        ok "$label"
+    fi
+}
+
 assert_gzip_contains() {
     local path="$1" needle="$2" label="$3"
     if gzip -cd "$path" 2>/dev/null | grep -Fq -- "$needle"; then
@@ -124,6 +133,11 @@ SUFFIX_DECOY_SECRET_LITERAL="multi-component-rotation-secret-6633"
 
 FAKE_ROOT=$(mktemp -d)
 EXTRACT_DIR=$(mktemp -d)
+# macOS exposes /var as a symlink to /private/var. Use physical fixture paths
+# so the test's normal sources do not themselves cross an ancestor symlink;
+# dedicated cases below introduce the only symlink ancestors.
+FAKE_ROOT=$(cd -P "$FAKE_ROOT" && pwd)
+EXTRACT_DIR=$(cd -P "$EXTRACT_DIR" && pwd)
 GW_HOME_FIXTURE="$FAKE_ROOT/gateway-home"
 KIRO_CWD_FIXTURE="$FAKE_ROOT/kiro-cwd"
 COWORKER_HOME="$FAKE_ROOT/co-worker-home"
@@ -235,8 +249,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self.send_body(200, "application/json", body)
             elif mode == "disabled":
                 self.send_body(200, "application/json", '{"enabled":false,"allowRuntimeToggle":true,"count":0,"size":8,"frames":[]}')
-            else:
+            elif mode == "invalid":
                 self.send_body(200, "application/json", '{"enabled":true')
+            else:
+                self.send_body(200, "application/json", '{"enabled":1,"frames":[]}')
         elif self.path == "/health":
             self.send_body(200, "application/json", '{"status":"ok"}')
         elif self.path == "/admin/api/snapshot":
@@ -282,6 +298,9 @@ TEST_SWAP_SOURCE_ONE=""
 TEST_SWAP_TARGET_ONE=""
 TEST_SWAP_SOURCE_TWO=""
 TEST_SWAP_TARGET_TWO=""
+TEST_SWAP_ANCESTOR_ONE=""
+TEST_SWAP_ANCESTOR_TARGET_ONE=""
+TEST_PYTHONOPTIMIZE=""
 TEST_REAL_PERL="$(command -v perl)"
 
 reset_support_inputs() {
@@ -295,6 +314,9 @@ reset_support_inputs() {
     TEST_SWAP_TARGET_ONE=""
     TEST_SWAP_SOURCE_TWO=""
     TEST_SWAP_TARGET_TWO=""
+    TEST_SWAP_ANCESTOR_ONE=""
+    TEST_SWAP_ANCESTOR_TARGET_ONE=""
+    TEST_PYTHONOPTIMIZE=""
 }
 
 run_support() {
@@ -347,7 +369,10 @@ run_support() {
         TASK3_SWAP_TARGET_ONE="$TEST_SWAP_TARGET_ONE" \
         TASK3_SWAP_SOURCE_TWO="$TEST_SWAP_SOURCE_TWO" \
         TASK3_SWAP_TARGET_TWO="$TEST_SWAP_TARGET_TWO" \
+        TASK3_SWAP_ANCESTOR_ONE="$TEST_SWAP_ANCESTOR_ONE" \
+        TASK3_SWAP_ANCESTOR_TARGET_ONE="$TEST_SWAP_ANCESTOR_TARGET_ONE" \
         TASK3_REAL_PERL="$TEST_REAL_PERL" \
+        PYTHONOPTIMIZE="$TEST_PYTHONOPTIMIZE" \
         "$BASH" "$WRAPPER" "$@" >"$stdout_file" 2>"$stderr_file"
     local rc=$?
     set -e
@@ -502,11 +527,63 @@ CAP_CAPTURE=$(find "$CAP_ROOT/logs/gateway" -maxdepth 1 -type f -name 'acp-captu
 assert_file "$CAP_METRICS" "cap preserves metrics snapshot"
 assert_file "$CAP_CAPTURE" "cap preserves capture snapshot"
 assert_absent "$CAP_ROOT/logs/gateway/gateway-20200101.log.gz" "cap drops oldest Gateway rotation first"
-assert_absent "$CAP_ROOT/logs/kiro/kiro-chat.log.1" "cap drops next-oldest Kiro rotation"
+assert_file "$CAP_ROOT/logs/kiro/kiro-chat.log.1" "actual archive sizing retains the next rotation once under cap"
 assert_file "$CAP_ROOT/logs/co-worker/agent.log.1" "cap keeps newer Co-worker rotation once under cap"
 assert_contains "$CAP_ROOT/MANIFEST.txt" 'DROPPED FOR SIZE:' "manifest accounts for cap omissions"
 assert_contains "$CAP_ROOT/MANIFEST.txt" 'gateway-20200101.log.gz' "manifest names dropped Gateway rotation"
-assert_contains "$CAP_ROOT/MANIFEST.txt" 'kiro-chat.log.1' "manifest names dropped Kiro rotation"
+assert_not_contains "$CAP_ROOT/MANIFEST.txt" 'DROPPED FOR SIZE: logs/kiro/kiro-chat.log.1' "manifest does not claim a retained Kiro rotation was dropped"
+CAP_BYTES=$(wc -c < "$CAP_BUNDLE" | tr -d '[:space:]')
+if [[ "$CAP_BYTES" -le $((4 * 1024 * 1024)) ]]; then
+    ok "actual final archive satisfies 4MB cap after the minimum omission"
+else
+    fail_with "actual final archive exceeds 4MB cap: $CAP_BYTES bytes"
+fi
+
+echo "== final-archive cap accounting =="
+OVERHEAD_GATEWAY="$FAKE_ROOT/overhead-gateway"
+OVERHEAD_KIRO="$FAKE_ROOT/overhead-kiro"
+mkdir -p "$OVERHEAD_GATEWAY" "$OVERHEAD_KIRO"
+printf '%s\n' 'overhead current Gateway' > "$OVERHEAD_GATEWAY/gateway.log"
+printf '%s\n' 'overhead boot Gateway' > "$OVERHEAD_GATEWAY/gateway-boot.log"
+printf '%s\n' 'overhead current Kiro' > "$OVERHEAD_KIRO/kiro.log"
+dd if=/dev/urandom bs=1024 count=1030 2>/dev/null | base64 | gzip > "$OVERHEAD_GATEWAY/gateway-overhead.log.gz"
+touch -t 201901010000 "$OVERHEAD_GATEWAY/gateway-overhead.log.gz"
+for rotation in $(seq 100 180); do
+    printf 'manifest row %s\n' "$rotation" > "$OVERHEAD_KIRO/kiro.log.$rotation"
+    touch -t 202501010000 "$OVERHEAD_KIRO/kiro.log.$rotation"
+done
+TEST_GW_LOG="$OVERHEAD_GATEWAY/gateway.log"
+TEST_GW_LOG_BOOT="$OVERHEAD_GATEWAY/gateway-boot.log"
+TEST_KIRO_CWD="$OVERHEAD_KIRO"
+TEST_KIRO_CHAT_LOG_FILE="kiro.log"
+UNDERREPORT_BIN="$FAKE_ROOT/underreport-du-bin"
+mkdir -p "$UNDERREPORT_BIN"
+cat > "$UNDERREPORT_BIN/du" <<'EOF'
+#!/bin/sh
+last_path=""
+for last_path do :; done
+printf '1\t%s\n' "$last_path"
+EOF
+chmod +x "$UNDERREPORT_BIN/du"
+TEST_PATH="$UNDERREPORT_BIN:$PATH"
+OVERHEAD_OUT="$EXTRACT_DIR/overhead-cap-out"
+if run_support missing "$OVERHEAD_OUT" 1 "$EXTRACT_DIR/overhead-cap.stdout" "$EXTRACT_DIR/overhead-cap.stderr"; then
+    ok "near-cap support exits zero"
+else
+    fail_with "near-cap support failed: $(cat "$EXTRACT_DIR/overhead-cap.stderr")"
+fi
+OVERHEAD_BUNDLE=$(tail -n 1 "$EXTRACT_DIR/overhead-cap.stdout" 2>/dev/null || true)
+OVERHEAD_BYTES=$(wc -c < "$OVERHEAD_BUNDLE" | tr -d '[:space:]')
+if [[ "$OVERHEAD_BYTES" -le 1048576 ]]; then
+    ok "actual final tar archive including manifest and metadata satisfies 1MB cap"
+else
+    fail_with "actual final tar archive exceeds 1MB cap: $OVERHEAD_BYTES bytes"
+fi
+OVERHEAD_ROOT=$(extract_bundle "$OVERHEAD_BUNDLE" "$EXTRACT_DIR/overhead-cap-tree")
+assert_absent "$OVERHEAD_ROOT/logs/gateway/gateway-overhead.log.gz" "final-archive sizing drops oldest near-cap rotation"
+assert_file "$OVERHEAD_ROOT/logs/kiro/kiro-chat.log.180" "final-archive sizing preserves newer rotation once under cap"
+assert_contains "$OVERHEAD_ROOT/MANIFEST.txt" 'DROPPED FOR SIZE: logs/gateway/gateway-overhead.log.gz' "manifest accounts for overhead-driven omission"
+reset_support_inputs
 
 echo "== disabled and unavailable capture states =="
 printf '%s\n' disabled > "$HTTP_MODE_FILE"
@@ -535,6 +612,29 @@ INVALID_BUNDLE=$(tail -n 1 "$EXTRACT_DIR/invalid.stdout" 2>/dev/null || true)
 INVALID_ROOT=$(extract_bundle "$INVALID_BUNDLE" "$EXTRACT_DIR/invalid-tree")
 assert_no_capture_file "$INVALID_ROOT" "invalid capture JSON is not archived"
 assert_contains "$INVALID_ROOT/MANIFEST.txt" 'capture: unavailable' "manifest records invalid capture as unavailable"
+
+printf '%s\n' nonboolean > "$HTTP_MODE_FILE"
+NO_JQ_BIN="$FAKE_ROOT/no-jq-bin"
+mkdir -p "$NO_JQ_BIN"
+for tool_path in /bin/* /usr/bin/* /usr/sbin/* /sbin/*; do
+    [[ -f "$tool_path" && -x "$tool_path" ]] || continue
+    tool_name="${tool_path##*/}"
+    [[ "$tool_name" == "jq" || -e "$NO_JQ_BIN/$tool_name" ]] && continue
+    ln -s "$tool_path" "$NO_JQ_BIN/$tool_name"
+done
+TEST_PATH="$NO_JQ_BIN"
+TEST_PYTHONOPTIMIZE=1
+OPTIMIZED_OUT="$EXTRACT_DIR/optimized-python-out"
+if run_support missing "$OPTIMIZED_OUT" 50 "$EXTRACT_DIR/optimized-python.stdout" "$EXTRACT_DIR/optimized-python.stderr"; then
+    ok "support tolerates non-Boolean capture state under optimized Python fallback"
+else
+    fail_with "support failed under optimized Python fallback: $(cat "$EXTRACT_DIR/optimized-python.stderr")"
+fi
+OPTIMIZED_BUNDLE=$(tail -n 1 "$EXTRACT_DIR/optimized-python.stdout" 2>/dev/null || true)
+OPTIMIZED_ROOT=$(extract_bundle "$OPTIMIZED_BUNDLE" "$EXTRACT_DIR/optimized-python-tree")
+assert_no_capture_file "$OPTIMIZED_ROOT" "optimized Python fallback rejects non-Boolean capture state"
+assert_contains "$OPTIMIZED_ROOT/MANIFEST.txt" 'capture: unavailable' "optimized Python rejection is recorded as unavailable"
+reset_support_inputs
 
 echo "== Kiro runtime path parity =="
 SMALL_GW_DIR="$FAKE_ROOT/small-gateway-logs"
@@ -671,15 +771,16 @@ reset_support_inputs
 
 echo "== atomic no-follow snapshot boundary =="
 RACE_ROOT="$FAKE_ROOT/snapshot race"
-mkdir -p "$RACE_ROOT/gateway logs" "$RACE_ROOT/kiro" "$RACE_ROOT/co-worker/logs" "$RACE_ROOT/bin"
+mkdir -p "$RACE_ROOT/gateway logs" "$RACE_ROOT/kiro/source parent" \
+    "$RACE_ROOT/boot target" "$RACE_ROOT/co-worker/logs" "$RACE_ROOT/bin"
 printf '%s\n' 'race Gateway current safe' > "$RACE_ROOT/gateway logs/gateway current.log"
-printf '%s\n' 'race Gateway boot safe' > "$RACE_ROOT/gateway logs/gateway boot.log"
+printf '%s\n' 'race Kiro safe' > "$RACE_ROOT/kiro/source parent/kiro.log"
 printf '%s\n' 'race Gateway rotation safe' | gzip > "$RACE_ROOT/gateway logs/gateway-race binary.log.gz"
-printf '%s\n' 'race Kiro safe' > "$RACE_ROOT/kiro/kiro.log"
-RACE_PLAIN_SECRET="race-plain-external-secret-2244"
 RACE_GZIP_SECRET="race-gzip-external-secret-3355"
-printf '%s\n' "$RACE_PLAIN_SECRET" > "$RACE_ROOT/external-secret.log"
+STATIC_ANCESTOR_SECRET="static-ancestor-external-secret-5577"
 printf '%s\n' "$RACE_GZIP_SECRET" | gzip > "$RACE_ROOT/external-secret.log.gz"
+printf '%s\n' "$STATIC_ANCESTOR_SECRET" > "$RACE_ROOT/boot target/gateway boot.log"
+ln -s "$RACE_ROOT/boot target" "$RACE_ROOT/boot ancestor link"
 ln -s "$RACE_ROOT/external-secret.log" "$RACE_ROOT/co-worker/logs/agent.log"
 cat > "$RACE_ROOT/bin/perl" <<'EOF'
 #!/bin/sh
@@ -699,8 +800,8 @@ for task3_arg in "$@"; do
 done
 if [ "$task3_copy_mode" = true ]; then
     if [ "$task3_source_one" = true ] && [ ! -e "$TASK3_SWAP_SOURCE_ONE.before-swap" ]; then
-        mv "$TASK3_SWAP_SOURCE_ONE" "$TASK3_SWAP_SOURCE_ONE.before-swap"
-        ln -s "$TASK3_SWAP_TARGET_ONE" "$TASK3_SWAP_SOURCE_ONE"
+        mv "$TASK3_SWAP_ANCESTOR_ONE" "$TASK3_SWAP_ANCESTOR_ONE.before-swap"
+        ln -s "$TASK3_SWAP_ANCESTOR_TARGET_ONE" "$TASK3_SWAP_ANCESTOR_ONE"
     fi
     if [ "$task3_source_two" = true ] && [ ! -e "$TASK3_SWAP_SOURCE_TWO.before-swap" ]; then
         mv "$TASK3_SWAP_SOURCE_TWO" "$TASK3_SWAP_SOURCE_TWO.before-swap"
@@ -711,13 +812,15 @@ exec "$TASK3_REAL_PERL" "$@"
 EOF
 chmod +x "$RACE_ROOT/bin/perl"
 TEST_GW_LOG="$RACE_ROOT/gateway logs/gateway current.log"
-TEST_GW_LOG_BOOT="$RACE_ROOT/gateway logs/gateway boot.log"
-TEST_KIRO_CWD="$RACE_ROOT/kiro"
+TEST_GW_LOG_BOOT="$RACE_ROOT/boot ancestor link/gateway boot.log"
+TEST_KIRO_CWD="$RACE_ROOT/kiro/source parent"
 TEST_KIRO_CHAT_LOG_FILE="kiro.log"
 TEST_COWORKER_HOME="$RACE_ROOT/co-worker"
 TEST_PATH="$RACE_ROOT/bin:$PATH"
-TEST_SWAP_SOURCE_ONE="$RACE_ROOT/gateway logs/gateway current.log"
-TEST_SWAP_TARGET_ONE="$RACE_ROOT/external-secret.log"
+TEST_SWAP_SOURCE_ONE="$RACE_ROOT/kiro/source parent/kiro.log"
+TEST_SWAP_TARGET_ONE=""
+TEST_SWAP_ANCESTOR_ONE="$RACE_ROOT/kiro/source parent"
+TEST_SWAP_ANCESTOR_TARGET_ONE="$RACE_ROOT/kiro/source parent.before-swap"
 TEST_SWAP_SOURCE_TWO="$RACE_ROOT/gateway logs/gateway-race binary.log.gz"
 TEST_SWAP_TARGET_TWO="$RACE_ROOT/external-secret.log.gz"
 RACE_OUT="$EXTRACT_DIR/race-out"
@@ -728,20 +831,23 @@ else
 fi
 RACE_BUNDLE=$(tail -n 1 "$EXTRACT_DIR/race.stdout" 2>/dev/null || true)
 RACE_BUNDLE_ROOT=$(extract_bundle "$RACE_BUNDLE" "$EXTRACT_DIR/race-tree")
-if [[ -L "$TEST_SWAP_SOURCE_ONE" && -f "$TEST_SWAP_SOURCE_ONE.before-swap" && \
+if [[ -L "$TEST_SWAP_ANCESTOR_ONE" && -f "$TEST_SWAP_ANCESTOR_ONE.before-swap/kiro.log" && \
       -L "$TEST_SWAP_SOURCE_TWO" && -f "$TEST_SWAP_SOURCE_TWO.before-swap" ]]; then
-    ok "race seam swaps plain and gzip sources immediately before safe-open copy"
+    ok "race seam swaps a plain source ancestor and gzip source immediately before safe-open copy"
 else
     fail_with "race seam did not execute at both safe-open copy boundaries"
 fi
-assert_absent "$RACE_BUNDLE_ROOT/logs/gateway/gateway.log" "plain source swapped to symlink is rejected after snapshot"
+assert_contains "$RACE_BUNDLE_ROOT/logs/gateway/gateway.log" 'race Gateway current safe' "unraced plain source remains collected"
+assert_absent "$RACE_BUNDLE_ROOT/logs/gateway/gateway-boot.log" "source below a static symlink ancestor is rejected"
 assert_absent "$RACE_BUNDLE_ROOT/logs/gateway/gateway-race binary.log.gz" "binary compressed source with spaces swapped to symlink is rejected after snapshot"
+assert_absent "$RACE_BUNDLE_ROOT/logs/kiro/kiro-chat.log" "source with swapped symlink ancestor is rejected after snapshot"
 assert_absent "$RACE_BUNDLE_ROOT/logs/co-worker/agent.log" "static Co-worker symlink is rejected"
-assert_contains "$RACE_BUNDLE_ROOT/MANIFEST.txt" 'Gateway current log rejected: source replaced before safe-open' "manifest records raced plain source replacement"
+assert_contains "$RACE_BUNDLE_ROOT/MANIFEST.txt" 'Gateway boot log rejected: source replaced before safe-open' "manifest records static ancestor symlink rejection"
 assert_contains "$RACE_BUNDLE_ROOT/MANIFEST.txt" 'Gateway rotation gateway-race binary.log.gz rejected: source replaced before safe-open' "manifest records raced compressed source replacement"
+assert_contains "$RACE_BUNDLE_ROOT/MANIFEST.txt" 'Kiro current log rejected: source replaced before safe-open' "manifest records raced ancestor replacement"
 assert_contains "$RACE_BUNDLE_ROOT/MANIFEST.txt" 'Co-worker agent.log rejected: symlink' "manifest records static Co-worker symlink rejection"
-if grep -rIF -- "$RACE_PLAIN_SECRET" "$RACE_BUNDLE_ROOT" >/dev/null 2>&1 || \
-   grep -rIF -- "$RACE_GZIP_SECRET" "$RACE_BUNDLE_ROOT" >/dev/null 2>&1; then
+if grep -rIF -- "$RACE_GZIP_SECRET" "$RACE_BUNDLE_ROOT" >/dev/null 2>&1 || \
+   grep -rIF -- "$STATIC_ANCESTOR_SECRET" "$RACE_BUNDLE_ROOT" >/dev/null 2>&1; then
     fail_with "deterministic symlink swap leaked external content"
 else
     ok "deterministic symlink swap leaks no external content"

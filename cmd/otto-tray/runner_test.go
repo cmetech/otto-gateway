@@ -3,10 +3,13 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestWrapperPath_DarwinUsesShellScript(t *testing.T) {
@@ -66,5 +69,46 @@ func TestSupportCoworkerArgs(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestWrapperTimeoutForVerb(t *testing.T) {
+	tests := []struct {
+		verb string
+		want time.Duration
+	}{
+		{verb: "start", want: 30 * time.Second},
+		{verb: "stop", want: 30 * time.Second},
+		{verb: "restart", want: 30 * time.Second},
+		{verb: "support", want: 210 * time.Second},
+	}
+	for _, tc := range tests {
+		t.Run(tc.verb, func(t *testing.T) {
+			if got := wrapperTimeoutForVerb(tc.verb); got != tc.want {
+				t.Fatalf("wrapperTimeoutForVerb(%q) = %s, want %s", tc.verb, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestWrapperContextCancellation(t *testing.T) {
+	ctx, cancel := wrapperContext(context.Background(), "support")
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		t.Fatal("support wrapper context has no deadline")
+	}
+	remaining := time.Until(deadline)
+	if remaining < 209*time.Second || remaining > 210*time.Second {
+		t.Fatalf("support wrapper deadline remaining = %s, want about 210s", remaining)
+	}
+
+	cancel()
+	select {
+	case <-ctx.Done():
+		if !errors.Is(ctx.Err(), context.Canceled) {
+			t.Fatalf("context error = %v, want context.Canceled", ctx.Err())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancel did not release support wrapper context")
 	}
 }

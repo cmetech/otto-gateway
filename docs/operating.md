@@ -111,7 +111,10 @@ defaults to 7 days for Gateway compressed rotations. The PowerShell command
 also has `-Timeout` (default 180 seconds). Collection is best-effort: a
 stopped Gateway, an unreadable log, or an unavailable optional endpoint does
 not stop other artifacts from being archived. Each skipped artifact and other
-collection warning is recorded in `MANIFEST.txt`.
+collection warning is recorded in `MANIFEST.txt`. Tray-launched support
+collection allows 210 seconds so the script's 180-second collection deadline
+still has a 30-second cleanup and atomic-publication margin; lifecycle actions
+retain their 30-second timeout.
 
 ### Co-worker diagnostics
 
@@ -135,9 +138,11 @@ logs/co-worker/
 Gateway and Kiro selection is intentionally narrow rather than a copy of every
 file in their directories:
 
-- `logs/gateway/` contains the current Gateway log as `gateway.log`, the
-  available boot sidecar as `gateway-boot.log`, and the chat-trace sidecar only
-  when `CHAT_TRACE` is enabled. It may also contain only age-limited
+- `logs/gateway/` contains the current Gateway log as `gateway.log`. POSIX
+  archives its combined boot sidecar as `gateway-boot.log`; Windows archives
+  its separately redirected sidecars as `gateway-boot-stdout.log` and
+  `gateway-boot-stderr.log`. The chat-trace sidecar is included only when
+  `CHAT_TRACE` is enabled. This subtree may also contain only age-limited
   `gateway-*.log.gz` rotations selected by `--log-days` / `-LogDays`.
   Each selected Gateway gzip rotation is safely snapshotted, decompressed,
   redacted, and recompressed before archive publication.
@@ -157,11 +162,12 @@ It does not traverse `logs/curator/` or unrelated directories, and excludes
 compressed or non-numeric-suffix files.
 
 All application-log collection is allowlisted and safety-first: only regular
-files are eligible; symbolic links and Windows reparse points are rejected and
-never followed. The source is safely snapshotted before redaction so a
-replacement or non-regular source is omitted rather than read. These selection
-and no-follow guarantees, including profile paths and rotation handling, have
-the same meaning in the POSIX and PowerShell wrappers.
+files are eligible; symbolic links and Windows reparse points in the final
+name or any ancestor component are rejected and never followed. The source is
+safely snapshotted before redaction so an ancestor or file replacement, or a
+non-regular source, is omitted rather than read. These selection and no-follow
+guarantees, including profile paths and rotation handling, have the same
+meaning in the POSIX and PowerShell wrappers.
 
 ### Live snapshots, redaction, and sharing
 
@@ -199,9 +205,12 @@ rotations. The manifest and the small live snapshots are protected as well.
 If the configured cap is exceeded, rotations from all three log subtrees are
 dropped oldest first, preserving source modification times for that decision.
 Every cap-driven omission is listed as `DROPPED FOR SIZE` in `MANIFEST.txt`.
+The collector rebuilds and measures the actual final compressed archive after
+each omission, so manifest and archive-format overhead count toward the cap.
 If the cap still cannot be met without dropping protected current logs or
 snapshots, the bundle is retained with an explicit manifest warning rather
-than discarding those higher-value artifacts.
+than discarding those higher-value artifacts. Final archives and their
+`latest` copies are published by same-directory atomic rename.
 
 ## Gateway config flags (flags + .env)
 

@@ -1773,7 +1773,15 @@ function Invoke-Support {
                     }
                 }
             } catch {
-                $baseException = $_.Exception
+                $safeOpenError = $_
+                # OpenRegularNoFollow may have succeeded before a barrier or
+                # other post-open step failed. Dispose that acquired handle
+                # on this early-return path; the snapshot-copy path below has
+                # its own finally for successful acquisition.
+                if ($openedSource) {
+                    try { $openedSource.Dispose() } catch {} finally { $openedSource = $null }
+                }
+                $baseException = $safeOpenError.Exception
                 while ($baseException.InnerException) { $baseException = $baseException.InnerException }
                 if ($baseException.Message -match 'reparse point') {
                     $collectionWarnings.Add("$Label rejected: source replaced by reparse point") | Out-Null
@@ -1853,6 +1861,9 @@ function Invoke-Support {
             $temporary = $Destination + '.partial-' + [Guid]::NewGuid().ToString('N')
             try {
                 Set-Content -LiteralPath $temporary -Value $Value -Encoding UTF8 -ErrorAction Stop
+                if (Test-SupportForcedPublishFailure "$FailureKind-write") {
+                    throw "forced support write failure: $FailureKind"
+                }
                 if (Test-SupportForcedPublishFailure $FailureKind) {
                     throw "forced atomic publish failure: $FailureKind"
                 }
@@ -1940,7 +1951,8 @@ function Invoke-Support {
             $LogFile.Substring(0, $LogFile.Length - 4) + '-chat-trace.log'
         } else { $LogFile + '-chat-trace.log' }
         $null = Copy-RedactedSupportLog $LogFile 'logs\gateway\gateway.log' 'Gateway current log' $true
-        $null = Copy-RedactedSupportLog $LogBootOut 'logs\gateway\gateway-boot.log' 'Gateway boot log' $true
+        $null = Copy-RedactedSupportLog $LogBootOut 'logs\gateway\gateway-boot-stdout.log' 'Gateway boot stdout log' $true
+        $null = Copy-RedactedSupportLog $LogBootErr 'logs\gateway\gateway-boot-stderr.log' 'Gateway boot stderr log' $true
         if ($env:CHAT_TRACE -match '^(?i:true|1|yes)$') {
             $null = Copy-RedactedSupportLog $chatTrace 'logs\gateway\gateway-chat-trace.log' 'Gateway chat-trace log' $true
         }
@@ -2022,23 +2034,39 @@ function Invoke-Support {
                 $collectionWarnings.Add("Metrics snapshot unavailable: $HealthUrl/metrics") | Out-Null
             }
         }
+        $captureBody = $null
         try {
             $captureBody = (Invoke-WebRequest -Method Get -Uri "$HealthUrl/admin/api/acp-capture?support=redacted" -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop).Content
-            $captureObject = $captureBody | ConvertFrom-Json -ErrorAction Stop
-            $enabledProperty = $captureObject.PSObject.Properties['enabled']
-            if (-not $enabledProperty -or -not ($enabledProperty.Value -is [bool])) {
-                $collectionWarnings.Add('ACP capture unavailable: response state was invalid') | Out-Null
-            } elseif ($enabledProperty.Value) {
-                Write-SupportTextAtomically (Join-Path $bundleRoot "logs\gateway\acp-capture-$ts.json") $captureBody 'capture'
-                $captureStatus = 'captured'
-            } else {
-                $captureStatus = 'disabled'
-            }
         } catch {
-            if ($_.Exception.Message -match 'atomic publish failure') {
-                $collectionWarnings.Add('ACP capture unavailable: atomic publish failed') | Out-Null
-            } else {
+            $collectionWarnings.Add('ACP capture unavailable: request failed') | Out-Null
+        }
+        if ($null -ne $captureBody) {
+            $captureObject = $null
+            $captureParsed = $false
+            try {
+                $captureObject = $captureBody | ConvertFrom-Json -ErrorAction Stop
+                $captureParsed = $true
+            } catch {
                 $collectionWarnings.Add('ACP capture unavailable: response was not valid JSON') | Out-Null
+            }
+            if ($captureParsed) {
+                $enabledProperty = if ($null -ne $captureObject) { $captureObject.PSObject.Properties['enabled'] } else { $null }
+                if (-not $enabledProperty -or -not ($enabledProperty.Value -is [bool])) {
+                    $collectionWarnings.Add('ACP capture unavailable: response state was invalid') | Out-Null
+                } elseif ($enabledProperty.Value) {
+                    try {
+                        Write-SupportTextAtomically (Join-Path $bundleRoot "logs\gateway\acp-capture-$ts.json") $captureBody 'capture'
+                        $captureStatus = 'captured'
+                    } catch {
+                        if ($_.Exception.Message -match 'atomic publish failure') {
+                            $collectionWarnings.Add('ACP capture unavailable: atomic publish failed') | Out-Null
+                        } else {
+                            $collectionWarnings.Add('ACP capture unavailable: publication failed') | Out-Null
+                        }
+                    }
+                } else {
+                    $captureStatus = 'disabled'
+                }
             }
         }
 

@@ -2013,47 +2013,134 @@ EOF
     local source_snapshot_seq=0 source_snapshot=""
     local safe_open_perl="" safe_open_candidate="" safe_open_program
 
-    # Perl is part of the macOS base system and gives Bash 3.2 a real
-    # O_NOFOLLOW boundary. Probe the exact constants used below. If the
-    # interpreter or primitive is unavailable, collection fails closed.
+    # Perl is part of the macOS base system and gives Bash 3.2 access to the
+    # native openat syscall. Probe the exact constants and supported syscall
+    # ABIs used below. If the interpreter or primitive is unavailable,
+    # collection fails closed.
+    # shellcheck disable=SC2016 # This is Perl source, not a shell expression.
     if safe_open_candidate="$(command -v perl 2>/dev/null)" && \
        [[ -n "$safe_open_candidate" ]] && \
-       "$safe_open_candidate" -MFcntl=:DEFAULT,:mode -e \
-           'exit(!(defined(&O_NOFOLLOW) && defined(&O_NONBLOCK) && defined(&S_ISREG) && defined(&S_ISLNK)));' \
+       "$safe_open_candidate" -MConfig -MFcntl=:DEFAULT,:mode -e \
+           'my $arch = $Config::Config{archname} // "";
+            my $supported = ($^O eq "darwin") ||
+                ($^O eq "linux" && $arch =~ /(?:x86_64|aarch64|arm64)/);
+            exit(!($supported && defined(&O_DIRECTORY) && defined(&O_NOFOLLOW) &&
+                defined(&O_NONBLOCK) && defined(&S_ISREG)));' \
            >/dev/null 2>&1; then
         safe_open_perl="$safe_open_candidate"
     fi
 
-    # The inspect phase records the source identity. The copy phase opens the
-    # pathname once with O_NOFOLLOW, validates that already-open descriptor
-    # with fstat, compares its identity, and copies binary bytes from that same
-    # descriptor. O_NONBLOCK keeps a raced FIFO from hanging before fstat.
+    # Both phases traverse from an opened filesystem root with openat,
+    # O_DIRECTORY, and O_NOFOLLOW on every ancestor. The final component is
+    # opened once with O_NOFOLLOW and O_NONBLOCK, validated with fstat, and in
+    # the copy phase read from that same descriptor. Keeping each directory
+    # descriptor open until its child is opened prevents rename/symlink races;
+    # O_NONBLOCK keeps a raced FIFO from hanging before fstat.
     # shellcheck disable=SC2016 # This is Perl source, not a shell expression.
     safe_open_program='use strict;
-use warnings;
-use Fcntl qw(:DEFAULT :mode);
-use Errno qw(ELOOP ENOENT);
+	use warnings;
+	use Config;
+	use Cwd ();
+	use Fcntl qw(:DEFAULT :mode);
+	use Errno qw(ELOOP ENOENT ENOTDIR);
+	use POSIX ();
 
-my $operation = shift(@ARGV) // "";
-if ($operation eq "inspect") {
-    my $source = shift(@ARGV) // exit 20;
-    my @source_stat = lstat($source);
-    exit 21 unless @source_stat;
-    exit 22 if S_ISLNK($source_stat[2]);
-    exit 23 unless S_ISREG($source_stat[2]);
-    print $source_stat[0], ":", $source_stat[1], "\n";
-    exit 0;
-}
+	sub openat_syscall_number {
+	    my $arch = $Config::Config{archname} // "";
+	    return 463 if $^O eq "darwin";
+	    return 257 if $^O eq "linux" && $arch =~ /x86_64/;
+	    return 56 if $^O eq "linux" && $arch =~ /(?:aarch64|arm64)/;
+	    return undef;
+	}
+
+	sub secure_open_source {
+	    my ($source) = @_;
+	    my $openat_number = openat_syscall_number();
+	    return (undef, ENOTDIR) unless defined($openat_number);
+
+	    my $absolute = $source;
+	    if (substr($absolute, 0, 1) ne "/") {
+	        my $cwd = Cwd::getcwd();
+	        return (undef, ENOENT) unless defined($cwd);
+	        $absolute = $cwd . "/" . $absolute;
+	    }
+
+	    my @components;
+	    for my $component (split(m{/+}, $absolute)) {
+	        next if $component eq "" || $component eq ".";
+	        if ($component eq "..") {
+	            pop(@components) if @components;
+	            next;
+	        }
+	        return (undef, ENOENT) if index($component, "\0") >= 0;
+	        push(@components, $component);
+	    }
+	    return (undef, ENOTDIR) unless @components;
+
+	    my $directory;
+	    unless (sysopen($directory, "/", O_RDONLY | O_DIRECTORY | O_NOFOLLOW)) {
+	        return (undef, 0 + $!);
+	    }
+	    for (my $index = 0; $index < @components - 1; $index++) {
+	        my $component = $components[$index];
+	        my $next_fd = syscall($openat_number, fileno($directory), $component,
+	            O_RDONLY | O_DIRECTORY | O_NOFOLLOW, 0);
+	        if ($next_fd < 0) {
+	            my $open_errno = 0 + $!;
+	            close($directory);
+	            return (undef, $open_errno);
+	        }
+	        my $next_directory;
+	        unless (open($next_directory, "<&=$next_fd")) {
+	            my $open_errno = 0 + $!;
+	            POSIX::close($next_fd);
+	            close($directory);
+	            return (undef, $open_errno);
+	        }
+	        close($directory);
+	        $directory = $next_directory;
+	    }
+
+	    my $leaf = $components[-1];
+	    my $input_fd = syscall($openat_number, fileno($directory), $leaf,
+	        O_RDONLY | O_NOFOLLOW | O_NONBLOCK, 0);
+	    if ($input_fd < 0) {
+	        my $open_errno = 0 + $!;
+	        close($directory);
+	        return (undef, $open_errno);
+	    }
+	    my $input;
+	    unless (open($input, "<&=$input_fd")) {
+	        my $open_errno = 0 + $!;
+	        POSIX::close($input_fd);
+	        close($directory);
+	        return (undef, $open_errno);
+	    }
+	    close($directory);
+	    return ($input, 0);
+	}
+
+	my $operation = shift(@ARGV) // "";
+	if ($operation eq "inspect") {
+	    my $source = shift(@ARGV) // exit 20;
+	    my ($input, $open_errno) = secure_open_source($source);
+	    exit(($open_errno == ELOOP || $open_errno == ENOENT || $open_errno == ENOTDIR) ? 22 : 21)
+	        unless defined($input);
+	    my @source_stat = stat($input);
+	    exit 21 unless @source_stat;
+	    exit 23 unless S_ISREG($source_stat[2]);
+	    print $source_stat[0], ":", $source_stat[1], "\n";
+	    close($input) or exit 21;
+	    exit 0;
+	}
 
 exit 20 unless $operation eq "copy";
 my ($expected_device, $expected_inode, $source, $destination) = @ARGV;
 exit 20 unless defined($destination);
 
-my $input_flags = O_RDONLY | O_NOFOLLOW | O_NONBLOCK;
-my $input;
-unless (sysopen($input, $source, $input_flags)) {
-    exit(($! == ELOOP || $! == ENOENT) ? 31 : 32);
-}
+	my ($input, $open_errno) = secure_open_source($source);
+	exit(($open_errno == ELOOP || $open_errno == ENOENT || $open_errno == ENOTDIR) ? 31 : 32)
+	    unless defined($input);
 binmode($input);
 my @opened_stat = stat($input);
 exit 33 unless @opened_stat && S_ISREG($opened_stat[2]);
@@ -2315,11 +2402,19 @@ exit 0;'
             return $?
         fi
         if command -v python3 >/dev/null 2>&1; then
-            python3 -c 'import json,sys; value=json.load(open(sys.argv[1])).get("enabled"); assert type(value) is bool; print("true" if value else "false")' "$json_file"
+            python3 -c 'import json,sys
+value=json.load(open(sys.argv[1])).get("enabled")
+if type(value) is not bool:
+    raise ValueError("enabled must be boolean")
+print("true" if value else "false")' "$json_file"
             return $?
         fi
         if command -v python >/dev/null 2>&1; then
-            python -c 'import json,sys; value=json.load(open(sys.argv[1])).get("enabled"); assert type(value) is bool; print("true" if value else "false")' "$json_file"
+            python -c 'import json,sys
+value=json.load(open(sys.argv[1])).get("enabled")
+if type(value) is not bool:
+    raise ValueError("enabled must be boolean")
+print("true" if value else "false")' "$json_file"
             return $?
         fi
 
@@ -2410,21 +2505,17 @@ exit 0;'
         fi
     } > "$bundle_root/tray/pidfile.txt"
 
-    # ---- Size cap enforcement -----------------------------------------
-    # Drop rotations oldest-first across all three application trees. Current
-    # logs, the manifest, and live snapshots are protected even if that means
-    # the final archive cannot satisfy an unusually small cap.
+    # ---- Size cap state ------------------------------------------------
+    # The archive loop below measures the actual final tar.gz, including the
+    # manifest and archive metadata. Only eligible rotations can be removed;
+    # current logs, live snapshots, and the manifest remain protected.
     local dropped_files=()
-    local current_mb
-    current_mb=$(du -sm "$bundle_root" 2>/dev/null | awk '{print $1}')
-    if [[ -n "$current_mb" && "$current_mb" -gt "$FLAG_MAX_MB" ]]; then
-        # Sort by mtime ascending (oldest first). BSD `stat -f %m` prints
-        # epoch seconds; GNU `stat -c %Y` prints the same. We tab-pair the
-        # epoch with the path, sort numerically, then strip the prefix.
-        # Fall back gracefully if both flavors miss: filename-sort is
-        # deterministic enough for the "we have to drop *something*" case.
-        local rotation_list rotation_path rotation_base rotation_suffix epoch
-        rotation_list=""
+
+    # Print the oldest remaining eligible rotation, or nothing. BSD `stat
+    # -f %m` and GNU `stat -c %Y` both yield epoch seconds. Paths are paired
+    # with the epoch for deterministic oldest-first selection.
+    oldest_support_rotation() {
+        local rotation_list="" rotation_path rotation_base rotation_suffix epoch
         while IFS= read -r rotation_path; do
             rotation_base="${rotation_path##*/}"
             case "$rotation_path" in
@@ -2448,23 +2539,9 @@ exit 0;'
             rotation_list+="${epoch}	${rotation_path}"$'\n'
         done < <(find "$bundle_root/logs" -type f -print 2>/dev/null)
         if [[ -n "$rotation_list" ]]; then
-            local sorted
-            sorted=$(printf '%s' "$rotation_list" | sort -n | awk -F'\t' '{print $2}')
-            while IFS= read -r rotation_path; do
-                [[ -z "$rotation_path" ]] && continue
-                rm -f "$rotation_path"
-                dropped_files+=("${rotation_path#"$bundle_root/"}")
-                current_mb=$(du -sm "$bundle_root" 2>/dev/null | awk '{print $1}')
-                if [[ -n "$current_mb" && "$current_mb" -le "$FLAG_MAX_MB" ]]; then
-                    break
-                fi
-            done <<< "$sorted"
+            printf '%s' "$rotation_list" | sort -n | awk -F'\t' 'NR == 1 { print $2 }'
         fi
-        current_mb=$(du -sm "$bundle_root" 2>/dev/null | awk '{print $1}')
-        if [[ -n "$current_mb" && "$current_mb" -gt "$FLAG_MAX_MB" ]]; then
-            collection_warnings+=("Size cap could not be met without dropping protected current logs or snapshots")
-        fi
-    fi
+    }
 
     # Resolve the Gateway ID the same way the gateway does (resolveGatewayID):
     # GW_ID env → $GW_HOME/gateway-id → <UserConfigDir>/gateway/gateway-id
@@ -2485,8 +2562,11 @@ exit 0;'
     fi
     [[ -z "$gw_id" ]] && gw_id="(unknown)"
 
-    # ---- MANIFEST.txt (written LAST so contents listing is accurate) ---
-    {
+    # ---- MANIFEST.txt --------------------------------------------------
+    # Rewritten before every archive attempt so its contents and drop list
+    # describe exactly the candidate archive being measured.
+    write_support_manifest() {
+        {
         echo "gw support bundle"
         echo "======================"
         echo "gateway_id: $gw_id"
@@ -2540,17 +2620,74 @@ exit 0;'
                 echo "DROPPED FOR SIZE: $d"
             done
         fi
-    } > "$bundle_root/MANIFEST.txt"
+        } > "$bundle_root/MANIFEST.txt"
+    }
 
     # ---- Archive --------------------------------------------------------
     local out_path="$out_dir/$bundle_name.tar.gz"
-    if ! tar -czf "$out_path" -C "$staging" "$bundle_name"; then
-        echo "support: tar failed for $out_path" >&2
-        return 1
-    fi
+    local archive_tmp archive_bytes max_bytes oldest_rotation
+    local cap_warning_added=0
+    max_bytes=$((FLAG_MAX_MB * 1024 * 1024))
+    while true; do
+        write_support_manifest
+        archive_tmp=$(mktemp "$out_dir/.${bundle_name}.partial.XXXXXX") || {
+            echo "support: could not create archive staging file under $out_dir" >&2
+            return 1
+        }
+        if ! tar -czf "$archive_tmp" -C "$staging" "$bundle_name"; then
+            rm -f "$archive_tmp"
+            echo "support: tar failed for $out_path" >&2
+            return 1
+        fi
+        archive_bytes=$(wc -c < "$archive_tmp" | tr -d '[:space:]')
+        if [[ -n "$archive_bytes" && "$archive_bytes" -le "$max_bytes" ]]; then
+            if ! mv -f "$archive_tmp" "$out_path"; then
+                rm -f "$archive_tmp"
+                echo "support: could not publish archive at $out_path" >&2
+                return 1
+            fi
+            break
+        fi
+
+        oldest_rotation=$(oldest_support_rotation)
+        if [[ -n "$oldest_rotation" ]]; then
+            rm -f "$archive_tmp"
+            if rm -f "$oldest_rotation"; then
+                dropped_files+=("${oldest_rotation#"$bundle_root/"}")
+                continue
+            fi
+            collection_warnings+=("Size cap could not remove eligible rotation ${oldest_rotation#"$bundle_root/"}")
+        fi
+
+        if [[ "$cap_warning_added" -eq 0 ]]; then
+            rm -f "$archive_tmp"
+            collection_warnings+=("Size cap could not be met without dropping protected current logs or snapshots")
+            cap_warning_added=1
+            continue
+        fi
+
+        # Best effort: with no removable rotations left, publish the useful
+        # protected bundle atomically even though the manifest records that it
+        # exceeds the requested cap.
+        if ! mv -f "$archive_tmp" "$out_path"; then
+            rm -f "$archive_tmp"
+            echo "support: could not publish archive at $out_path" >&2
+            return 1
+        fi
+        break
+    done
     # latest.tar.gz is a COPY (not a symlink) for parity with the Windows
     # wrapper's Copy-Item — design constraint §Output Location.
-    cp -f "$out_path" "$out_dir/latest.tar.gz"
+    local latest_tmp
+    latest_tmp=$(mktemp "$out_dir/.latest.partial.XXXXXX") || {
+        echo "support: could not create latest archive staging file under $out_dir" >&2
+        return 1
+    }
+    if ! cp -f "$out_path" "$latest_tmp" || ! mv -f "$latest_tmp" "$out_dir/latest.tar.gz"; then
+        rm -f "$latest_tmp"
+        echo "support: could not publish latest.tar.gz" >&2
+        return 1
+    fi
 
     echo "$out_path"
     return 0
