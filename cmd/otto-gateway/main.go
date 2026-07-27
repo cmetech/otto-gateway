@@ -871,30 +871,19 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 	// default distribution path). "boot-err" is the boot-time stderr capture
 	// the wrapper scripts write to (script convention: same dir as
 	// LOG_FILE, "-boot.log" suffix; operator can override via
-	// GW_LOG_BOOT, or the deprecated OTTO_LOG_BOOT). "chat-trace" is included
-	// ONLY when CHAT_TRACE=true so the UI surfaces only sources that have a
-	// tailable file on disk.
+	// GW_LOG_BOOT, or the deprecated OTTO_LOG_BOOT). "kiro" is always included
+	// so the tailer can retry until Kiro creates its native log file.
+	// "chat-trace" is included ONLY when CHAT_TRACE=true.
 	mainLogPath := envOrDefault("LOG_FILE",
 		envOrDefault("GW_LOG",
 			envOrDefault("OTTO_LOG", "./logs/gateway.log")))
 	bootLogPath := envOrDefault("GW_LOG_BOOT",
 		envOrDefault("OTTO_LOG_BOOT", stripExt(mainLogPath)+"-boot.log"))
-	logPaths := map[string]string{
-		"main":     mainLogPath,
-		"boot-err": bootLogPath,
-	}
-	logPathOrder := []string{"main", "boot-err"}
-	if cfg.ChatTrace {
-		// D-18-08 REL-OBSV-04: the admin log-tail panel reads the
-		// chat-trace file from cfg.AdminTailPath — the single source
-		// populated in config.Load() via the SAME deriveChatTraceFile
-		// call the writer (chat-trace rotator at main.go:302) uses for
-		// cfg.ChatTraceFile. The two fields hold the same string by
-		// construction; the AdminTailPath read at this wiring site
-		// guarantees the tailer never diverges from the writer.
-		logPaths["chat-trace"] = cfg.AdminTailPath
-		logPathOrder = append(logPathOrder, "chat-trace")
-	}
+	// D-18-08 REL-OBSV-04: cfg.AdminTailPath is derived from the same
+	// chat-trace path used by the writer, so the tailer cannot diverge.
+	logPaths, logPathOrder, logPathLabels := buildAdminLogSources(
+		mainLogPath, bootLogPath, cfg.KiroChatLogFile, cfg.AdminTailPath, cfg.ChatTrace,
+	)
 	// REL-HTTP-01: shared shutdown channel — created here before both the
 	// admin handler and the server so both consumers observe the same signal
 	// when http.Server.Shutdown fires RegisterOnShutdown callbacks.
@@ -904,20 +893,21 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 	sharedShutdownCh := make(chan struct{})
 
 	adminHandler := admin.Handler(admin.Deps{
-		Logger:       logger,
-		Version:      version.Version,
-		Commit:       version.Commit(),
-		GatewayID:    gatewayID,
-		Start:        time.Now(),
-		PoolDetail:   adminPoolDetail,
-		Registry:     adminRegistry,
-		AcpCapture:   adminAcpCapture(acpCapture),
-		Proc:         adminProcSampler{pool: a.pool},
-		LogPaths:     logPaths,
-		LogPathOrder: logPathOrder,
-		Debug:        cfg.Debug,
-		ShutdownCh:   sharedShutdownCh,
-		ChatTrace:    cfg.ChatTrace,
+		Logger:        logger,
+		Version:       version.Version,
+		Commit:        version.Commit(),
+		GatewayID:     gatewayID,
+		Start:         time.Now(),
+		PoolDetail:    adminPoolDetail,
+		Registry:      adminRegistry,
+		AcpCapture:    adminAcpCapture(acpCapture),
+		Proc:          adminProcSampler{pool: a.pool},
+		LogPaths:      logPaths,
+		LogPathOrder:  logPathOrder,
+		LogPathLabels: logPathLabels,
+		Debug:         cfg.Debug,
+		ShutdownCh:    sharedShutdownCh,
+		ChatTrace:     cfg.ChatTrace,
 
 		// Effective posture ("on" / "per-request" / "off") — computed
 		// above, next to the ENABLED_HOOKS chain filter. Knob snapshots
@@ -1387,6 +1377,18 @@ func envOrDefault(key, def string) string {
 // path without its extension + "-boot.log".
 func stripExt(p string) string {
 	return strings.TrimSuffix(p, filepath.Ext(p))
+}
+
+func buildAdminLogSources(mainPath, bootPath, kiroPath, chatTracePath string, chatTrace bool) (map[string]string, []string, map[string]string) {
+	paths := map[string]string{"main": mainPath, "boot-err": bootPath, "kiro": kiroPath}
+	order := []string{"main", "boot-err", "kiro"}
+	labels := map[string]string{"main": "Gateway", "boot-err": "Gateway boot/errors", "kiro": "Kiro"}
+	if chatTrace {
+		paths["chat-trace"] = chatTracePath
+		order = append(order, "chat-trace")
+		labels["chat-trace"] = "Gateway chat trace"
+	}
+	return paths, order, labels
 }
 
 // buildLogger constructs the root *slog.Logger from the loaded config.

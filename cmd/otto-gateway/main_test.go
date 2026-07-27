@@ -15,10 +15,33 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
+
 	"otto-gateway/internal/config"
 	gatewayembed "otto-gateway/internal/embed"
 	"otto-gateway/internal/testutil"
 )
+
+func TestBuildAdminLogSourcesIncludesKiroWithFriendlyLabels(t *testing.T) {
+	paths, order, labels := buildAdminLogSources("gateway.log", "boot.log", "kiro.log", "trace.log", true)
+	if diff := cmp.Diff([]string{"main", "boot-err", "kiro", "chat-trace"}, order); diff != "" {
+		t.Fatalf("log source order mismatch (-want +got):\n%s", diff)
+	}
+	if paths["kiro"] != "kiro.log" || labels["kiro"] != "Kiro" {
+		t.Fatalf("Kiro source = %q, label = %q", paths["kiro"], labels["kiro"])
+	}
+	if _, ok := paths["co-worker"]; ok {
+		t.Fatal("Co-worker must not be exposed")
+	}
+	if diff := cmp.Diff(map[string]string{
+		"main":       "Gateway",
+		"boot-err":   "Gateway boot/errors",
+		"kiro":       "Kiro",
+		"chat-trace": "Gateway chat trace",
+	}, labels); diff != "" {
+		t.Fatalf("log source labels mismatch (-want +got):\n%s", diff)
+	}
+}
 
 func TestPrepareKiroLaunchMaterializesAndLogsDefaultAgent(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "gateway")

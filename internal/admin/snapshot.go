@@ -18,16 +18,17 @@ import (
 // Deps.LogPathOrder so a snapshot consumer mutating the slice cannot
 // reach into the live admin Deps.
 type Snapshot struct {
-	Status        string         `json:"status"`
-	Version       string         `json:"version"`
-	Commit        string         `json:"commit"`
-	Debug         bool           `json:"debug"`
-	ChatTrace     bool           `json:"chat_trace"`
-	UptimeSeconds float64        `json:"uptime_seconds"`
-	GeneratedAt   time.Time      `json:"generated_at"`
-	Pool          SnapshotPool   `json:"pool"`
-	Sessions      []SnapshotSess `json:"sessions"`
-	LogSources    []string       `json:"log_sources"`
+	Status          string            `json:"status"`
+	Version         string            `json:"version"`
+	Commit          string            `json:"commit"`
+	Debug           bool              `json:"debug"`
+	ChatTrace       bool              `json:"chat_trace"`
+	UptimeSeconds   float64           `json:"uptime_seconds"`
+	GeneratedAt     time.Time         `json:"generated_at"`
+	Pool            SnapshotPool      `json:"pool"`
+	Sessions        []SnapshotSess    `json:"sessions"`
+	LogSources      []string          `json:"log_sources"`
+	LogSourceLabels map[string]string `json:"log_source_labels"`
 
 	// Gateway process resource usage (procstat, cgo-free). ProcessCPUSeconds is
 	// cumulative CPU time — the dashboard derives a live percent by diffing
@@ -189,6 +190,12 @@ func (h *handler) snapshotHandler(w http.ResponseWriter, r *http.Request) {
 	// null) because the JSON encoder marshals a zero-length non-nil
 	// slice as an empty array.
 	snap.LogSources = append([]string{}, h.deps.LogPathOrder...)
+	snap.LogSourceLabels = make(map[string]string, len(h.deps.LogPathOrder))
+	for _, id := range h.deps.LogPathOrder {
+		if label := h.deps.LogPathLabels[id]; label != "" {
+			snap.LogSourceLabels[id] = label
+		}
+	}
 
 	// Process perf — gateway self + per-worker, merged by slot label. Nil-safe:
 	// when Proc is unset the fields stay zero-valued with StatOK=false and the

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
 	"go.uber.org/goleak"
 
 	"otto-gateway/internal/testutil"
@@ -441,5 +442,41 @@ func TestSnapshot_LogSources_DefensiveCopy(t *testing.T) {
 	snap.LogSources[0] = "tampered"
 	if original[0] != "main" {
 		t.Errorf("defensive-copy violation: original mutated to %q", original[0])
+	}
+}
+
+func TestSnapshot_LogSourceLabelsOrderedAndDefensive(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	labels := map[string]string{
+		"main":        "Gateway",
+		"kiro":        "Kiro",
+		"co-worker":   "Co-worker",
+		"empty-label": "",
+	}
+	h := Handler(Deps{
+		Logger:        testutil.Logger(t),
+		LogPathOrder:  []string{"main", "kiro", "empty-label"},
+		LogPathLabels: labels,
+	})
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/snapshot", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	var payload struct {
+		Labels map[string]string `json:"log_source_labels"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode snapshot: %v", err)
+	}
+	want := map[string]string{"main": "Gateway", "kiro": "Kiro"}
+	if diff := cmp.Diff(want, payload.Labels); diff != "" {
+		t.Fatalf("log_source_labels mismatch (-want +got):\n%s", diff)
+	}
+
+	payload.Labels["kiro"] = "tampered"
+	if labels["kiro"] != "Kiro" {
+		t.Fatalf("dependency labels mutated through snapshot: %q", labels["kiro"])
 	}
 }

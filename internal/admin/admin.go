@@ -96,6 +96,8 @@ type AcpCaptureSource interface {
 //     entry is the default SSE source. Filling LogPaths without
 //     LogPathOrder means the SSE handler cannot resolve sources (the
 //     validation uses slices.Contains on LogPathOrder).
+//   - LogPathLabels: optional source ID→friendly label map published to the
+//     admin UI. Only IDs present in LogPathOrder are included in snapshots.
 //   - Debug: mirrors cfg.Debug — whether DEBUG-level structured logging is
 //     enabled. Surfaced in the snapshot JSON and the HTML page so operators
 //     can tell at a glance whether verbose logging is on.
@@ -118,11 +120,12 @@ type Deps struct {
 	// Proc surfaces gateway + per-worker CPU/RSS for the dashboard perf tiles.
 	// Nil-safe: when unset, the snapshot's process fields stay zero with
 	// StatOK/ProcessStatOK false and the UI renders "n/a".
-	Proc         ProcSampler
-	LogPaths     map[string]string
-	LogPathOrder []string
-	Debug        bool
-	ChatTrace    bool
+	Proc          ProcSampler
+	LogPaths      map[string]string
+	LogPathOrder  []string
+	LogPathLabels map[string]string
+	Debug         bool
+	ChatTrace     bool
 
 	// CompressionState is the EFFECTIVE process-wide compression posture
 	// shown on the dashboard summary strip and /admin/about Feature

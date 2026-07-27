@@ -612,9 +612,9 @@
         );
         renderSessions(snap.sessions || []);
         // Quick 260529-ll2 — populate the source dropdown from
-        // snap.log_sources. populateLogSources no-ops when the list is
-        // unchanged so operator selection survives across polls.
-        populateLogSources(snap.log_sources || []);
+        // snap.log_sources. populateLogSources no-ops when the sources and
+        // labels are unchanged so operator selection survives across polls.
+        populateLogSources(snap.log_sources || [], snap.log_source_labels || {});
       })
       .catch(function () {
         consecutiveFailures++;
@@ -660,9 +660,9 @@
 
   // Quick 260529-ll2 — multi-source Log Tail state.
   // currentLogSource is the name passed in /admin/logs/stream?source=.
-  // logSourceLastJSON is a stringified-array cache used by
-  // populateLogSources to no-op when the snapshot's log_sources field
-  // hasn't changed (so operator selection survives across polls).
+  // logSourceLastJSON is a serialized sources-and-labels cache used by
+  // populateLogSources to no-op when the snapshot's sources and labels
+  // haven't changed (so operator selection survives across polls).
   // logEventSource holds the active EventSource so the source switcher
   // can close it before opening a new one.
   var currentLogSource = 'main';
@@ -1117,12 +1117,12 @@
   }
 
   // Quick 260529-ll2 — populate the source dropdown from the
-  // snapshot's log_sources array. No-op when the list is unchanged so
-  // operator mid-session selection is preserved across snapshot polls.
+  // snapshot's log_sources array and log_source_labels map. No-op when both
+  // are unchanged so operator mid-session selection survives snapshot polls.
   // T-6.1-16: builds <option> elements via document.createElement +
   // textContent/value assignment — NEVER innerHTML.
-  function populateLogSources(sources) {
-    var serialized = JSON.stringify(sources || []);
+  function populateLogSources(sources, labels) {
+    var serialized = JSON.stringify({ sources: sources || [], labels: labels || {} });
     if (serialized === logSourceLastJSON) {
       return;
     }
@@ -1137,7 +1137,7 @@
     for (var i = 0; i < sources.length; i++) {
       var opt = document.createElement('option');
       opt.value = sources[i];
-      opt.textContent = sources[i];
+      opt.textContent = labels[sources[i]] || sources[i];
       sel.appendChild(opt);
     }
     // Default selection: "main" if present, else first entry.
