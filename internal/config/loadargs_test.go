@@ -2,6 +2,7 @@ package config_test
 
 import (
 	"errors"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
@@ -139,6 +140,27 @@ func TestLoadArgs_FlagWins_KiroCWD(t *testing.T) {
 	}
 	if cfg.KiroCWDIsDefault {
 		t.Error("KiroCWDIsDefault: got true, want false for explicit --kiro-cwd")
+	}
+}
+
+func TestLoadArgs_KiroChatLogPathUsesFlagSelectedKiroCWD(t *testing.T) {
+	flagCWD := t.TempDir()
+	const childLogFile = "relative-logs/kiro chat.log"
+	t.Setenv("KIRO_CHAT_LOG_FILE", childLogFile)
+
+	cfg, err := config.LoadArgs([]string{"--kiro-cwd", flagCWD})
+	if err != nil {
+		t.Fatalf("LoadArgs() returned unexpected error: %v", err)
+	}
+	if cfg.KiroChatLogFile != childLogFile {
+		t.Fatalf("KiroChatLogFile: got %q, want byte-for-byte child value %q", cfg.KiroChatLogFile, childLogFile)
+	}
+	wantPath := filepath.Join(flagCWD, "relative-logs", "kiro chat.log")
+	if cfg.KiroChatLogPath != wantPath {
+		t.Fatalf("KiroChatLogPath: got %q, want absolute path beneath flag-selected cwd %q", cfg.KiroChatLogPath, wantPath)
+	}
+	if !filepath.IsAbs(cfg.KiroChatLogPath) {
+		t.Fatalf("KiroChatLogPath: got non-absolute path %q", cfg.KiroChatLogPath)
 	}
 }
 

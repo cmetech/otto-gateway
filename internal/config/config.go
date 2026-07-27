@@ -481,12 +481,7 @@ func Load() (Config, error) {
 			errs = append(errs, fmt.Errorf("config: KIRO_CWD (%q): not a directory", kiroCWD))
 		}
 	}
-	kiroChatLogPath := kiroChatLogFile
-	if !filepath.IsAbs(kiroChatLogPath) {
-		kiroChatLogPath = filepath.Join(kiroCWD, kiroChatLogPath)
-	}
-	var kiroChatLogPathErr error
-	kiroChatLogPath, kiroChatLogPathErr = filepath.Abs(kiroChatLogPath)
+	kiroChatLogPath, kiroChatLogPathErr := resolveKiroChatLogPath(kiroCWD, kiroChatLogFile)
 	if kiroChatLogPathErr != nil {
 		errs = append(errs, fmt.Errorf("config: resolve KIRO_CHAT_LOG_FILE parent path: %w", kiroChatLogPathErr))
 	}
@@ -1038,6 +1033,14 @@ func deriveChatTraceFile(logFile string) string {
 	return base + "-chat-trace.log"
 }
 
+func resolveKiroChatLogPath(kiroCWD, kiroChatLogFile string) (string, error) {
+	kiroChatLogPath := kiroChatLogFile
+	if !filepath.IsAbs(kiroChatLogPath) {
+		kiroChatLogPath = filepath.Join(kiroCWD, kiroChatLogPath)
+	}
+	return filepath.Abs(kiroChatLogPath)
+}
+
 // LoadArgs resolves configuration from env+defaults via Load(), then overlays
 // ONLY the CLI flags the operator explicitly passed (flag-wins-over-env). It
 // uses ONLY the Go stdlib `flag` package — no new dependencies (preserves the
@@ -1190,6 +1193,13 @@ func LoadArgs(args []string) (Config, error) {
 			cfg.AllowedIPs = prefixes
 		}
 	})
+
+	kiroChatLogPath, kiroChatLogPathErr := resolveKiroChatLogPath(cfg.KiroCWD, cfg.KiroChatLogFile)
+	if kiroChatLogPathErr != nil {
+		errs = append(errs, fmt.Errorf("resolve KIRO_CHAT_LOG_FILE parent path: %w", kiroChatLogPathErr))
+	} else {
+		cfg.KiroChatLogPath = kiroChatLogPath
+	}
 
 	if len(errs) > 0 {
 		return Config{}, fmt.Errorf("config: invalid flags: %w", errors.Join(errs...))
