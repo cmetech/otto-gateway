@@ -25,7 +25,7 @@ type acpCaptureActionRequest struct {
 // acpCaptureHandler serves the capture ring + runtime state as JSON. When no
 // source is wired it reports enabled:false / allowRuntimeToggle:false with an
 // empty frames array (200, not 404, so a harness can tell "off" from "missing").
-func (h *handler) acpCaptureHandler(w http.ResponseWriter, _ *http.Request) {
+func (h *handler) acpCaptureHandler(w http.ResponseWriter, req *http.Request) {
 	resp := acpCaptureResponse{Frames: []CaptureFrame{}}
 	if src := h.deps.AcpCapture; src != nil {
 		resp.Enabled = src.Enabled()
@@ -35,6 +35,9 @@ func (h *handler) acpCaptureHandler(w http.ResponseWriter, _ *http.Request) {
 		if fr := src.Snapshot(); fr != nil {
 			resp.Frames = fr
 		}
+	}
+	if req.Method == http.MethodGet && req.URL.Query().Get("support") == "redacted" {
+		resp.Frames = redactCaptureFrames(resp.Frames)
 	}
 	writeJSONCapture(w, http.StatusOK, resp, h)
 }

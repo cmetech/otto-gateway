@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -13,16 +14,17 @@ import (
 )
 
 type fakeCaptureSource struct {
-	frames   []admin.CaptureFrame
-	enabled  bool
-	allow    bool
-	size     int
-	enableN  int
-	disableN int
-	clearN   int
+	frames    []admin.CaptureFrame
+	enabled   bool
+	allow     bool
+	size      int
+	enableN   int
+	disableN  int
+	clearN    int
+	snapshotN int
 }
 
-func (f *fakeCaptureSource) Snapshot() []admin.CaptureFrame { return f.frames }
+func (f *fakeCaptureSource) Snapshot() []admin.CaptureFrame { f.snapshotN++; return f.frames }
 func (f *fakeCaptureSource) Enabled() bool                  { return f.enabled }
 func (f *fakeCaptureSource) AllowRuntimeToggle() bool       { return f.allow }
 func (f *fakeCaptureSource) Count() int                     { return len(f.frames) }
@@ -95,6 +97,171 @@ func TestAcpCapture_Disabled(t *testing.T) {
 	}
 	if body.Frames == nil {
 		t.Error("frames must be a non-nil (empty) array")
+	}
+}
+
+// TestAcpCaptureSupport_RedactsDecodedJSONWithoutMutatingCapture catches a
+// support export that either leaks a nested credential, destroys safe
+// diagnostic context, produces invalid outer JSON, or edits the source ring.
+func TestAcpCaptureSupport_RedactsDecodedJSONWithoutMutatingCapture(t *testing.T) {
+	const params = `{
+		"safe":"safe-value",
+		"keyboardLayout":"qwerty-safe",
+		"nested":{
+			"Authorization":"Bearer named_auth_secret",
+			"api_key":"glc_secret",
+			"token":"named_token_secret",
+			"Key":"named_key_secret",
+			"secret":"named_secret_value",
+			"password":"named_password_secret",
+			"passphrase":"named_passphrase_secret",
+			"headers":{"X-Trace":"safe-header","X-API-Key":"named_header_secret"}
+		},
+		"notes":[
+			"safe-prefix Authorization: Bearer abc.def safe-suffix",
+			"safe-prefix Basic dXNlcjp0b2tlbg== safe-suffix",
+			"safe-prefix X-API-Key: inline_api_secret safe-suffix",
+			"safe sentence"
+		],
+		"encoded":"{\"apiKey\":\"encoded_api_secret\",\"safe\":\"encoded-safe\"}"
+	}`
+	src := &fakeCaptureSource{enabled: true, allow: true, size: 32, frames: []admin.CaptureFrame{
+		{Seq: 7, Ts: time.Unix(1700000000, 0).UTC(), Method: "session/update", Params: params, Bytes: len(params)},
+	}}
+	wantSource := append([]admin.CaptureFrame(nil), src.frames...)
+	h := admin.Handler(admin.Deps{AcpCapture: src})
+
+	rec := doGet(t, h, "/api/acp-capture?support=redacted")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Enabled bool                 `json:"enabled"`
+		Frames  []admin.CaptureFrame `json:"frames"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("support export is invalid JSON: %v; body=%s", err, rec.Body.String())
+	}
+	if !body.Enabled || len(body.Frames) != 1 {
+		t.Fatalf("support export shape = %+v, want one enabled frame", body)
+	}
+	if body.Frames[0].Seq != 7 || body.Frames[0].Method != "session/update" {
+		t.Fatalf("non-sensitive frame metadata changed: %+v", body.Frames[0])
+	}
+
+	for _, secret := range []string{
+		"named_auth_secret", "glc_secret", "named_token_secret",
+		"named_key_secret", "named_secret_value", "named_password_secret",
+		"named_passphrase_secret", "named_header_secret", "abc.def",
+		"dXNlcjp0b2tlbg==", "inline_api_secret", "encoded_api_secret",
+	} {
+		if strings.Contains(rec.Body.String(), secret) {
+			t.Errorf("support export leaked secret %q", secret)
+		}
+	}
+	for _, safe := range []string{"safe-value", "qwerty-safe", "safe-header", "safe-prefix", "safe-suffix", "safe sentence", "encoded-safe"} {
+		if !strings.Contains(rec.Body.String(), safe) {
+			t.Errorf("support export removed safe diagnostic value %q", safe)
+		}
+	}
+
+	var redactedParams map[string]any
+	if err := json.Unmarshal([]byte(body.Frames[0].Params), &redactedParams); err != nil {
+		t.Fatalf("redacted frame params are not valid JSON: %v; params=%s", err, body.Frames[0].Params)
+	}
+	if got := redactedParams["safe"]; got != "safe-value" {
+		t.Errorf("safe param = %v, want safe-value", got)
+	}
+	if !strings.Contains(body.Frames[0].Params, "[REDACTED]") {
+		t.Errorf("redacted params contain no redaction marker: %s", body.Frames[0].Params)
+	}
+	if src.snapshotN != 1 {
+		t.Errorf("Snapshot calls = %d, want one ordinary snapshot", src.snapshotN)
+	}
+	if src.enableN != 0 || src.disableN != 0 || src.clearN != 0 {
+		t.Errorf("support GET called mutator: enable=%d disable=%d clear=%d", src.enableN, src.disableN, src.clearN)
+	}
+	if !reflect.DeepEqual(src.frames, wantSource) {
+		t.Errorf("support export mutated source frames:\n got: %+v\nwant: %+v", src.frames, wantSource)
+	}
+}
+
+// TestAcpCaptureSupport_MalformedParamsBecomeScrubbedString catches a fallback
+// that returns malformed captured params verbatim or corrupts the response JSON.
+func TestAcpCaptureSupport_MalformedParamsBecomeScrubbedString(t *testing.T) {
+	const params = `malformed safe-value Authorization: Bearer malformed_bearer_secret X-API-Key=malformed_api_secret`
+	src := &fakeCaptureSource{enabled: true, frames: []admin.CaptureFrame{{Seq: 1, Params: params}}}
+	h := admin.Handler(admin.Deps{AcpCapture: src})
+
+	rec := doGet(t, h, "/api/acp-capture?support=redacted")
+	var body struct {
+		Frames []admin.CaptureFrame `json:"frames"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("support export is invalid JSON: %v; body=%s", err, rec.Body.String())
+	}
+	if len(body.Frames) != 1 {
+		t.Fatalf("frames = %+v, want one", body.Frames)
+	}
+	if strings.Contains(body.Frames[0].Params, "malformed_bearer_secret") || strings.Contains(body.Frames[0].Params, "malformed_api_secret") {
+		t.Errorf("malformed params leaked a credential: %q", body.Frames[0].Params)
+	}
+	for _, safe := range []string{"malformed", "safe-value"} {
+		if !strings.Contains(body.Frames[0].Params, safe) {
+			t.Errorf("malformed fallback removed safe text %q: %q", safe, body.Frames[0].Params)
+		}
+	}
+	if src.frames[0].Params != params {
+		t.Errorf("malformed fallback mutated source params: got %q, want %q", src.frames[0].Params, params)
+	}
+}
+
+// TestAcpCaptureSupport_OrdinaryGetRemainsRaw catches accidental redaction of
+// the existing operator-only capture endpoint when support mode is not asked for.
+func TestAcpCaptureSupport_OrdinaryGetRemainsRaw(t *testing.T) {
+	const params = `{"token":"ordinary_get_secret","safe":"safe-value"}`
+	src := &fakeCaptureSource{enabled: true, frames: []admin.CaptureFrame{{Seq: 1, Params: params}}}
+	h := admin.Handler(admin.Deps{AcpCapture: src})
+
+	rec := doGet(t, h, "/api/acp-capture")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "ordinary_get_secret") {
+		t.Errorf("ordinary GET was unexpectedly redacted: %s", rec.Body.String())
+	}
+	if src.frames[0].Params != params {
+		t.Errorf("ordinary GET mutated source params: got %q, want %q", src.frames[0].Params, params)
+	}
+}
+
+// TestAcpCaptureSupport_DisabledAndEmptyRemainEmpty catches support mode
+// changing the endpoint's stable non-nil empty-array contract.
+func TestAcpCaptureSupport_DisabledAndEmptyRemainEmpty(t *testing.T) {
+	tests := []struct {
+		name string
+		src  admin.AcpCaptureSource
+	}{
+		{name: "disabled", src: nil},
+		{name: "enabled empty", src: &fakeCaptureSource{enabled: true, frames: nil}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			h := admin.Handler(admin.Deps{AcpCapture: tc.src})
+			rec := doGet(t, h, "/api/acp-capture?support=redacted")
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", rec.Code)
+			}
+			var body struct {
+				Frames []admin.CaptureFrame `json:"frames"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatalf("support export is invalid JSON: %v", err)
+			}
+			if body.Frames == nil || len(body.Frames) != 0 {
+				t.Errorf("frames = %#v, want non-nil empty array", body.Frames)
+			}
+		})
 	}
 }
 
