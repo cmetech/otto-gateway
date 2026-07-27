@@ -76,7 +76,10 @@ func prepareKiroLaunch(cfg config.Config, logger *slog.Logger) error {
 	if cfg.KiroChatLogFile == "" {
 		return errors.New("prepare Kiro launch: Kiro log path is empty")
 	}
-	logDir := filepath.Dir(cfg.KiroChatLogFile)
+	if cfg.KiroChatLogPath == "" {
+		return errors.New("prepare Kiro launch: parent-visible Kiro log path is empty")
+	}
+	logDir := filepath.Dir(cfg.KiroChatLogPath)
 	if err := os.MkdirAll(logDir, 0o750); err != nil {
 		return fmt.Errorf("prepare Kiro log directory %q: %w", logDir, err)
 	}
@@ -101,10 +104,15 @@ func prepareKiroLaunch(cfg config.Config, logger *slog.Logger) error {
 		"args", cfg.KiroArgs,
 		"cwd", cfg.KiroCWD,
 		"chat_log_file", cfg.KiroChatLogFile,
+		"chat_log_path", cfg.KiroChatLogPath,
 		"agent_config", agentPath,
 		"agent_config_status", status,
 	)
 	return nil
+}
+
+func kiroProcessEnv(cfg config.Config) []string {
+	return []string{"KIRO_CHAT_LOG_FILE=" + cfg.KiroChatLogFile}
 }
 
 func main() {
@@ -537,7 +545,7 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 			cleanup()
 			return nil, func() {}, err
 		}
-		kiroEnv := []string{"KIRO_CHAT_LOG_FILE=" + cfg.KiroChatLogFile}
+		kiroEnv := kiroProcessEnv(cfg)
 		a.pool = pool.New(pool.Config{
 			Logger:         logger,
 			Size:           cfg.PoolSize,
@@ -882,7 +890,7 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 	// D-18-08 REL-OBSV-04: cfg.AdminTailPath is derived from the same
 	// chat-trace path used by the writer, so the tailer cannot diverge.
 	logPaths, logPathOrder, logPathLabels := buildAdminLogSources(
-		mainLogPath, bootLogPath, cfg.KiroChatLogFile, cfg.AdminTailPath, cfg.ChatTrace,
+		mainLogPath, bootLogPath, cfg.KiroChatLogPath, cfg.AdminTailPath, cfg.ChatTrace,
 	)
 	// REL-HTTP-01: shared shutdown channel — created here before both the
 	// admin handler and the server so both consumers observe the same signal

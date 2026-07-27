@@ -19,7 +19,7 @@ PKG_SCRIPTS := scripts/gw scripts/gw.ps1 scripts/.env.example
 PKG_README  := docs/operator-quickstart.md
 PKG_INSTALL := docs/INSTALL.md
 
-.PHONY: all build run test test-race lint fmt fmt-check vet examples tidy clean cross ci arch-lint start stop status e2e e2e-list e2e-sdk-setup help \
+.PHONY: all build run test test-race test-admin-js lint fmt fmt-check vet examples tidy clean cross ci arch-lint start stop status e2e e2e-list e2e-sdk-setup help \
         cross-darwin-arm64 cross-darwin-amd64 cross-linux-amd64 cross-windows-amd64 \
         cross-otto-tray cross-otto-tray-darwin-arm64 cross-otto-tray-darwin-amd64 cross-otto-tray-windows-amd64 \
         package package-all package-checksums package-darwin-arm64 package-darwin-amd64 package-linux-amd64 package-windows-amd64
@@ -33,11 +33,14 @@ build: ## Build for the host platform
 run: ## Run the gateway on the host platform
 	go run $(PKG)
 
-test: ## Run unit + integration tests
+test: test-admin-js ## Run unit + integration tests
 	go test ./...
 
 test-race: ## Run tests with the race detector (CI default)
 	go test -race ./...
+
+test-admin-js: ## Run dashboard JavaScript behavior tests (Node built-in runner)
+	node --test internal/admin/admin_js_test.js
 
 lint: ## Run golangci-lint
 	golangci-lint run ./...
@@ -275,11 +278,12 @@ arch-lint: ## Check architecture boundaries (requires go-arch-lint@v1.15.0)
 	$(shell go env GOPATH)/bin/go-arch-lint check --project-path .
 
 # Brief §3.12 canonical trust-gate sequence (Phase 08.1 D-16): fmt-check → vet
-# → build → lint → test-race → arch-lint → examples → govulncheck → cross. Each
+# → build → lint → test-race → dashboard JS → arch-lint → examples →
+# govulncheck → cross. Each
 # target gates the next via Make's dependency ordering; govulncheck stays as a
 # recipe step because it has no separate target. `cross` is intentionally NOT
 # a dependency — CI runs it in a parallel job (see .github/workflows/ci.yml).
-ci: fmt-check vet build lint test-race arch-lint examples ## Full CI gate (brief §3.12 canonical sequence)
+ci: fmt-check vet build lint test-race test-admin-js arch-lint examples ## Full CI gate (brief §3.12 canonical sequence)
 	$(shell go env GOPATH)/bin/govulncheck ./...
 
 start: ## Start gateway in background (wrapper script)

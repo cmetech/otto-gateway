@@ -17,6 +17,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 
+	"otto-gateway/internal/acp"
 	"otto-gateway/internal/config"
 	gatewayembed "otto-gateway/internal/embed"
 	"otto-gateway/internal/testutil"
@@ -43,6 +44,35 @@ func TestBuildAdminLogSourcesIncludesKiroWithFriendlyLabels(t *testing.T) {
 	}
 }
 
+func TestBuildAdminLogSourcesOmitsChatTraceWhenDisabled(t *testing.T) {
+	paths, order, labels := buildAdminLogSources("gateway.log", "boot.log", "kiro.log", "trace.log", false)
+	if diff := cmp.Diff([]string{"main", "boot-err", "kiro"}, order); diff != "" {
+		t.Fatalf("disabled log source order mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(map[string]string{
+		"main":     "gateway.log",
+		"boot-err": "boot.log",
+		"kiro":     "kiro.log",
+	}, paths); diff != "" {
+		t.Fatalf("disabled log source paths mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(map[string]string{
+		"main":     "Gateway",
+		"boot-err": "Gateway boot/errors",
+		"kiro":     "Kiro",
+	}, labels); diff != "" {
+		t.Fatalf("disabled log source labels mismatch (-want +got):\n%s", diff)
+	}
+	for _, sources := range []map[string]string{paths, labels} {
+		if _, ok := sources["chat-trace"]; ok {
+			t.Fatal("Gateway chat trace must be absent when disabled")
+		}
+		if _, ok := sources["co-worker"]; ok {
+			t.Fatal("Co-worker must not be exposed")
+		}
+	}
+}
+
 func TestPrepareKiroLaunchMaterializesAndLogsDefaultAgent(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "gateway")
 	var logs bytes.Buffer
@@ -52,6 +82,7 @@ func TestPrepareKiroLaunchMaterializesAndLogsDefaultAgent(t *testing.T) {
 		KiroArgs:         []string{"acp", "--agent", "acp_proxy"},
 		KiroCWD:          root,
 		KiroChatLogFile:  filepath.Join(root, "logs", "kiro-chat.log"),
+		KiroChatLogPath:  filepath.Join(root, "logs", "kiro-chat.log"),
 		KiroCWDIsDefault: true,
 	}
 
@@ -92,6 +123,7 @@ func TestPrepareKiroLaunchPreservesDefaultAgent(t *testing.T) {
 		KiroArgs:         []string{"acp", "--agent", "acp_proxy"},
 		KiroCWD:          root,
 		KiroChatLogFile:  filepath.Join(root, "logs", "kiro-chat.log"),
+		KiroChatLogPath:  filepath.Join(root, "logs", "kiro-chat.log"),
 		KiroCWDIsDefault: true,
 	}
 
@@ -114,6 +146,7 @@ func TestPrepareKiroLaunchDoesNotModifyCustomCWD(t *testing.T) {
 		KiroArgs:         []string{"acp"},
 		KiroCWD:          root,
 		KiroChatLogFile:  filepath.Join(root, "logs", "kiro-chat.log"),
+		KiroChatLogPath:  filepath.Join(root, "logs", "kiro-chat.log"),
 		KiroCWDIsDefault: false,
 	}
 
@@ -135,6 +168,7 @@ func TestPrepareKiroLaunchReturnsMaterializationError(t *testing.T) {
 		KiroCmd:          "kiro-cli",
 		KiroCWD:          root,
 		KiroChatLogFile:  filepath.Join(root, "logs", "kiro-chat.log"),
+		KiroChatLogPath:  filepath.Join(root, "logs", "kiro-chat.log"),
 		KiroCWDIsDefault: true,
 	}
 
@@ -147,12 +181,165 @@ func TestPrepareKiroLaunchReturnsMaterializationError(t *testing.T) {
 func TestPrepareKiroLaunchPreparesNativeLogDir(t *testing.T) {
 	root := t.TempDir()
 	logFile := filepath.Join(root, "logs", "kiro-chat.log")
-	cfg := config.Config{KiroCmd: "kiro-cli", KiroCWD: root, KiroChatLogFile: logFile}
+	cfg := config.Config{KiroCmd: "kiro-cli", KiroCWD: root, KiroChatLogFile: logFile, KiroChatLogPath: logFile}
 	if err := prepareKiroLaunch(cfg, testutil.Logger(t)); err != nil {
 		t.Fatal(err)
 	}
 	if info, err := os.Stat(filepath.Dir(logFile)); err != nil || !info.IsDir() {
 		t.Fatalf("info=%v err=%v", info, err)
+	}
+}
+
+func TestPrepareKiroLaunchPreparesRelativeLogDirFromKiroCWD(t *testing.T) {
+	kiroCWD := t.TempDir()
+	relative := filepath.Join("relative-"+filepath.Base(kiroCWD), "native", "kiro.log")
+	parentPath := filepath.Join(kiroCWD, relative)
+	wrongParent, err := filepath.Abs(filepath.Dir(relative))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(wrongParent)) })
+	cfg := config.Config{
+		KiroCmd:         "kiro-cli",
+		KiroCWD:         kiroCWD,
+		KiroChatLogFile: relative,
+		KiroChatLogPath: parentPath,
+	}
+
+	if err := prepareKiroLaunch(cfg, testutil.Logger(t)); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(filepath.Dir(parentPath)); err != nil || !info.IsDir() {
+		t.Fatalf("parent-visible log directory info=%v err=%v", info, err)
+	}
+}
+
+func TestNewAppDashboardTailsRelativeKiroLogFromKiroCWD(t *testing.T) {
+	kiroCWD := t.TempDir()
+	relative := filepath.Join("relative-"+filepath.Base(kiroCWD), "kiro.log")
+	parentPath := filepath.Join(kiroCWD, relative)
+	if err := os.MkdirAll(filepath.Dir(parentPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(parentPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	wrongPath, err := filepath.Abs(relative)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(wrongPath)) })
+
+	cfg := config.Config{
+		HTTPAddr:         ":0",
+		KiroCmd:          "",
+		KiroCWD:          kiroCWD,
+		KiroChatLogFile:  relative,
+		KiroChatLogPath:  parentPath,
+		PoolSize:         1,
+		PingInterval:     time.Minute,
+		OllamaPathPrefix: "/api",
+	}
+	a, cleanup, err := newApp(context.Background(), cfg, testutil.Logger(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/admin/logs/stream?source=kiro", nil)
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		a.srv.ServeHTTP(rec, req)
+	}()
+	time.Sleep(400 * time.Millisecond)
+	const line = "relative Kiro log reached the dashboard"
+	if err := os.WriteFile(parentPath, []byte(line+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(800 * time.Millisecond)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("dashboard log stream did not stop after cancellation")
+	}
+	if body := rec.Body.String(); !strings.Contains(body, "data: "+line) {
+		t.Fatalf("dashboard did not tail parent-visible Kiro path %q: %s", parentPath, body)
+	}
+}
+
+func TestKiroProcessEnvironmentComposition(t *testing.T) {
+	t.Setenv("KIRO_LOG_LEVEL", "debug")
+	t.Setenv("KIRO_CHAT_LOG_FILE", "parent.log")
+	output := filepath.Join(t.TempDir(), "kiro-env.json")
+	const childLogFile = "  child.log  "
+	childEnv := kiroProcessEnv(config.Config{KiroChatLogFile: childLogFile})
+	for _, entry := range childEnv {
+		if strings.HasPrefix(entry, "KIRO_LOG_LEVEL=") {
+			t.Fatalf("gateway must not inject a Kiro log level: %q", entry)
+		}
+	}
+	env := append(
+		childEnv,
+		"GW_TEST_KIRO_ENV_OUTPUT="+output,
+	)
+	client, err := acp.New(acp.Config{
+		Logger:       testutil.Logger(t),
+		Command:      os.Args[0],
+		Args:         []string{"-test.run=^TestKiroEnvironmentHelperProcess$"},
+		Env:          env,
+		PingInterval: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	deadline := time.Now().Add(3 * time.Second)
+	var body []byte
+	for time.Now().Before(deadline) {
+		body, err = os.ReadFile(output)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			t.Fatal(err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("read helper environment: %v", err)
+	}
+	var got map[string]string
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"KIRO_LOG_LEVEL":     "debug",
+		"KIRO_CHAT_LOG_FILE": childLogFile,
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Fatalf("spawned Kiro environment mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestKiroEnvironmentHelperProcess(t *testing.T) {
+	output := os.Getenv("GW_TEST_KIRO_ENV_OUTPUT")
+	if output == "" {
+		return
+	}
+	body, err := json.Marshal(map[string]string{
+		"KIRO_LOG_LEVEL":     os.Getenv("KIRO_LOG_LEVEL"),
+		"KIRO_CHAT_LOG_FILE": os.Getenv("KIRO_CHAT_LOG_FILE"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(output, body, 0o600); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -162,7 +349,8 @@ func TestPrepareKiroLaunchReportsNativeLogDirFailure(t *testing.T) {
 	if err := os.WriteFile(blocker, []byte("file"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg := config.Config{KiroCmd: "kiro-cli", KiroCWD: root, KiroChatLogFile: filepath.Join(blocker, "kiro.log")}
+	logFile := filepath.Join(blocker, "kiro.log")
+	cfg := config.Config{KiroCmd: "kiro-cli", KiroCWD: root, KiroChatLogFile: logFile, KiroChatLogPath: logFile}
 	err := prepareKiroLaunch(cfg, testutil.Logger(t))
 	if err == nil || !strings.Contains(err.Error(), "Kiro log directory") {
 		t.Fatalf("error=%v", err)
@@ -336,11 +524,13 @@ func TestApp_WarmupBeforeListen(t *testing.T) {
 		t.Fatalf("http.NewRequestWithContext: %v", err)
 	}
 
+	logFile := filepath.Join(t.TempDir(), "logs", "kiro-chat.log")
 	cfg := config.Config{
 		HTTPAddr:         ":0",
 		KiroCmd:          "/usr/bin/true", // exists on macOS + Linux; speaks no ACP
 		KiroArgs:         []string{},
-		KiroChatLogFile:  filepath.Join(t.TempDir(), "logs", "kiro-chat.log"),
+		KiroChatLogFile:  logFile,
+		KiroChatLogPath:  logFile,
 		PoolSize:         1,
 		PingInterval:     60 * time.Second,
 		OllamaPathPrefix: "/api",

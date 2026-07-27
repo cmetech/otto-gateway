@@ -39,6 +39,7 @@ env:
   GOLANGCI_LINT_VERSION: v2.12.2
   GO_ARCH_LINT_VERSION:  v1.15.0
   GOVULNCHECK_VERSION:   v1.1.4
+  NODE_VERSION:          '22'
 
 jobs:
   lint-test-arch:
@@ -54,6 +55,11 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
 
       # Phase 08.1 WARNING-01: explicit trust-gate sequence per
       # docs/briefs/go_port_brief.md §3.12. The local Makefile holds the
@@ -101,6 +107,9 @@ jobs:
 
       - name: Test (-race)
         run: make test-race
+
+      - name: Dashboard JavaScript behavior test
+        run: make test-admin-js
 
       # Brief §3.12 step 7 — Example tests. Surfaced as its own step so
       # broken godoc-runnable examples fail with a clear log line rather

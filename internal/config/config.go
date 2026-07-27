@@ -106,9 +106,14 @@ type Config struct {
 	// KiroCWD is the working directory for the kiro-cli subprocess (default:
 	// the gateway-owned persistent directory).
 	KiroCWD string
-	// KiroChatLogFile is the native Kiro chat log destination (default:
-	// <gateway home>/logs/kiro-chat.log).
+	// KiroChatLogFile is the exact native Kiro chat log value passed to the
+	// child process (default: <gateway home>/logs/kiro-chat.log). Explicit
+	// values are preserved byte-for-byte, including surrounding whitespace.
 	KiroChatLogFile string
+	// KiroChatLogPath is the absolute parent-visible path for the same file.
+	// Relative child values are resolved from KiroCWD because that is where
+	// Kiro interprets them. Gateway uses this path for preparation and tailing.
+	KiroChatLogPath string
 	// KiroCWDIsDefault reports that KiroCWD came from the gateway-owned
 	// default, not an explicit KIRO_CWD or --kiro-cwd override. Startup uses
 	// this ownership bit to avoid modifying operator-controlled workspaces.
@@ -395,7 +400,7 @@ func Load() (Config, error) {
 			errs = append(errs, fmt.Errorf("config: KIRO_CWD default: %w", cwdErr))
 		}
 	}
-	kiroChatLogFile := strings.TrimSpace(os.Getenv("KIRO_CHAT_LOG_FILE"))
+	kiroChatLogFile := os.Getenv("KIRO_CHAT_LOG_FILE")
 	if kiroChatLogFile == "" {
 		gatewayHome, homeErr := gatewayembed.GatewayDir()
 		if homeErr != nil {
@@ -475,6 +480,15 @@ func Load() (Config, error) {
 		case !stat.IsDir():
 			errs = append(errs, fmt.Errorf("config: KIRO_CWD (%q): not a directory", kiroCWD))
 		}
+	}
+	kiroChatLogPath := kiroChatLogFile
+	if !filepath.IsAbs(kiroChatLogPath) {
+		kiroChatLogPath = filepath.Join(kiroCWD, kiroChatLogPath)
+	}
+	var kiroChatLogPathErr error
+	kiroChatLogPath, kiroChatLogPathErr = filepath.Abs(kiroChatLogPath)
+	if kiroChatLogPathErr != nil {
+		errs = append(errs, fmt.Errorf("config: resolve KIRO_CHAT_LOG_FILE parent path: %w", kiroChatLogPathErr))
 	}
 
 	debug, err := getEnvBool("DEBUG", false)
@@ -956,6 +970,7 @@ func Load() (Config, error) {
 		KiroArgs:                  kiroArgs,
 		KiroCWD:                   kiroCWD,
 		KiroChatLogFile:           kiroChatLogFile,
+		KiroChatLogPath:           kiroChatLogPath,
 		KiroCWDIsDefault:          kiroCWDIsDefault,
 		ToolAliases:               toolAliases,
 		Debug:                     debug,

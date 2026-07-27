@@ -25,6 +25,9 @@ func TestLoad_KiroChatLogFile(t *testing.T) {
 	if cfg.KiroChatLogFile != want {
 		t.Fatalf("got %q want %q", cfg.KiroChatLogFile, want)
 	}
+	if cfg.KiroChatLogPath != want {
+		t.Fatalf("parent-visible default got %q want %q", cfg.KiroChatLogPath, want)
+	}
 
 	explicit := filepath.Join(t.TempDir(), "native", "kiro.log")
 	t.Setenv("KIRO_CHAT_LOG_FILE", explicit)
@@ -34,6 +37,40 @@ func TestLoad_KiroChatLogFile(t *testing.T) {
 	}
 	if cfg.KiroChatLogFile != explicit {
 		t.Fatalf("got %q want %q", cfg.KiroChatLogFile, explicit)
+	}
+}
+
+func TestLoad_KiroChatLogFilePreservesExplicitWhitespace(t *testing.T) {
+	t.Setenv("GW_HOME", t.TempDir())
+	const explicit = "  logs/kiro chat.log  "
+	t.Setenv("KIRO_CHAT_LOG_FILE", explicit)
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.KiroChatLogFile != explicit {
+		t.Fatalf("got %q want byte-for-byte explicit value %q", cfg.KiroChatLogFile, explicit)
+	}
+}
+
+func TestLoad_KiroChatLogPathResolvesRelativeOverrideFromKiroCWD(t *testing.T) {
+	kiroCWD := t.TempDir()
+	t.Setenv("GW_HOME", t.TempDir())
+	t.Setenv("KIRO_CWD", kiroCWD)
+	relative := filepath.Join("native-logs", "kiro.log")
+	t.Setenv("KIRO_CHAT_LOG_FILE", relative)
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.KiroChatLogFile != relative {
+		t.Fatalf("child log value got %q want %q", cfg.KiroChatLogFile, relative)
+	}
+	wantPath := filepath.Join(kiroCWD, "native-logs", "kiro.log")
+	if cfg.KiroChatLogPath != wantPath {
+		t.Fatalf("parent-visible log path got %q want %q", cfg.KiroChatLogPath, wantPath)
 	}
 }
 
