@@ -312,14 +312,16 @@ jobs:
       - name: publish.sh -n (dry-run plan only)
         run: |
           set -euo pipefail
-          # CI has no Artifactory cert and no mc alias configured. We
-          # simulate a configured mc alias so the alias-list prereq
-          # passes; the -n flag aborts before any real upload. Contract:
-          # dry-run prints the plan and exits 0 given at least one
-          # destination is available.
+          # CI has no Artifactory cert or MinIO alias. Import a disposable,
+          # local-only alias because `mc alias set` probes its endpoint;
+          # `publish.sh -n` only lists the alias and never uploads. Contract:
+          # dry-run prints the plan and exits 0 given one destination.
           brew install minio-mc
-          mc alias set myminio https://play.min.io \
-            Q3AM3UQ867SPQQA43P2F zuf+tfteSlswRu7BJ86wekitnifILbZam1KYY3TG
+          export MC_CONFIG_DIR="$(mktemp -d)"
+          printf '%s\n' \
+            '{"url":"http://127.0.0.1:9000","accessKey":"ci-dry-run","secretKey":"ci-dry-run","api":"S3v4","path":"auto"}' \
+            | mc alias import myminio
+          mc alias list myminio --json | grep -q '"status":"success"'
           out=$(./scripts/publish.sh -n 2>&1)
           echo "$out"
           echo "$out" | grep -q 'otto-gateway publish plan' \
