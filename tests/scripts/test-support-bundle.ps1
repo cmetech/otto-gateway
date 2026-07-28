@@ -511,6 +511,238 @@ try {
         Assert-True ([regex]::Matches($wrapperSource, $requestCallPattern).Count -eq 1) "request site $requestStage uses the bounded timeout helper"
     }
 
+    Write-Host '== support exception diagnostic contract =='
+    $diagnosticAst = $wrapperAst.Find({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -ceq 'Format-SupportExceptionDiagnostic'
+    }, $true)
+    $copyRedactedLogAst = $wrapperAst.Find({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -ceq 'Copy-RedactedSupportLog'
+    }, $true)
+    Assert-True ($null -ne $diagnosticAst) 'support exception diagnostic helper is present'
+    Assert-True ($null -ne $copyRedactedLogAst) 'plain redaction control flow is present for stage extraction'
+    if ($null -ne $diagnosticAst) {
+        $diagnosticCases = @(& {
+            param([string]$Definition)
+            . ([scriptblock]::Create($Definition))
+            $messageSecret = 'diagnostic-message-secret-5511'
+            $windowsPath = 'C:\diagnostic-private\gateway.log'
+            $unixPath = '/tmp/diagnostic-private/gateway.log'
+            $logContent = 'AUTH_TOKEN=diagnostic-log-secret-6622'
+
+            $invalidOperationRecord = $null
+            try {
+                throw [System.InvalidOperationException]::new(
+                    "$messageSecret $windowsPath $unixPath $logContent")
+            } catch { $invalidOperationRecord = $_ }
+
+            $nestedWin32 = [System.Exception]::new(
+                "$messageSecret outer $windowsPath",
+                [System.ComponentModel.Win32Exception]::new(
+                    32, "$messageSecret inner $unixPath $logContent"))
+            $zeroHresult = [System.Runtime.InteropServices.ExternalException]::new(
+                "$messageSecret $windowsPath $logContent", 0)
+            $bareException = [System.Exception]::new(
+                "$messageSecret $unixPath $logContent")
+
+            foreach ($case in @(
+                @{ Name = 'negative HRESULT error record'; Input = $invalidOperationRecord; Expected = 'System.InvalidOperationException, HRESULT 0x80131509' },
+                @{ Name = 'deepest Win32 exception'; Input = $nestedWin32; Expected = 'System.ComponentModel.Win32Exception, HRESULT 0x80004005, native error 32' },
+                @{ Name = 'zero HRESULT'; Input = $zeroHresult; Expected = 'System.Runtime.InteropServices.ExternalException, HRESULT 0x00000000' },
+                @{ Name = 'bare exception'; Input = $bareException; Expected = 'System.Exception, HRESULT 0x80131500' },
+                @{ Name = 'null record'; Input = $null; Expected = 'unknown exception, HRESULT 0x00000000' },
+                @{ Name = 'null exception'; Input = [pscustomobject]@{ Exception = $null }; Expected = 'unknown exception, HRESULT 0x00000000' },
+                @{ Name = 'missing exception property'; Input = [pscustomobject]@{ Value = 7 }; Expected = 'unknown exception, HRESULT 0x00000000' },
+                @{ Name = 'non-exception shape'; Input = [pscustomobject]@{ Exception = [pscustomobject]@{ InnerException = 'not-an-exception' } }; Expected = 'unknown exception, HRESULT 0x00000000' }
+            )) {
+                $threw = $false
+                $actual = ''
+                try { $actual = Format-SupportExceptionDiagnostic $case.Input } catch { $threw = $true }
+                [pscustomobject]@{
+                    Name = $case.Name
+                    Actual = $actual
+                    Expected = $case.Expected
+                    Threw = $threw
+                }
+            }
+        } $diagnosticAst.Extent.Text)
+        $diagnosticForbidden = @(
+            'diagnostic-message-secret-5511', 'C:\diagnostic-private\gateway.log',
+            '/tmp/diagnostic-private/gateway.log', 'AUTH_TOKEN=diagnostic-log-secret-6622'
+        )
+        foreach ($case in $diagnosticCases) {
+            Assert-True (-not $case.Threw) "diagnostic formatter is total for $($case.Name)"
+            Assert-True ($case.Actual -ceq $case.Expected) "diagnostic formatter emits exact allowed shape for $($case.Name)"
+            Assert-True ($case.Actual -cmatch '^(?:unknown exception|[A-Za-z0-9_.+`]+), HRESULT 0x[0-9A-F]{8}(?:, native error [0-9]+)?$') "diagnostic formatter emits an exact type/HRESULT/native-code grammar for $($case.Name)"
+            foreach ($needle in $diagnosticForbidden) {
+                Assert-True (-not $case.Actual.Contains($needle)) "diagnostic formatter excludes protected text for $($case.Name)"
+            }
+        }
+    }
+
+    if ($null -ne $diagnosticAst -and $null -ne $copyRedactedLogAst) {
+        $diagnosticControlRoot = Join-Path ([System.IO.Path]::GetTempPath()) (
+            'gw-diagnostic-control-' + [System.IO.Path]::GetRandomFileName())
+        $stageResults = @(& {
+            param([string]$FormatterDefinition, [string]$CopyDefinition, [string]$Root)
+            . ([scriptblock]::Create($FormatterDefinition))
+            # ScriptBlock::Create has no script-file anchor. Substitute only
+            # that automatic path with the controlled harness root; all
+            # production control flow remains the extracted function text.
+            . ([scriptblock]::Create($CopyDefinition.Replace('$PSScriptRoot', '$Root')))
+            foreach ($case in @(
+                @{ Stage = 'plain-redaction'; Type = 'System.InvalidOperationException'; HResult = '80131509' },
+                @{ Stage = 'plain-publish'; Type = 'System.InvalidOperationException'; HResult = '80131509' },
+                @{ Stage = 'plain-metadata'; Type = 'System.IO.IOException'; HResult = '80131620' }
+            )) {
+                $stageState = @{ Stage = $case.Stage }
+                $caseRoot = Join-Path $Root $case.Stage
+                $null = New-Item -ItemType Directory -Path $caseRoot -Force
+                $bundleRoot = $caseRoot
+                $collectionWarnings = New-Object System.Collections.Generic.List[string]
+                $snapshotPath = Join-Path $caseRoot 'collector-owned.snapshot'
+                [System.IO.File]::WriteAllText($snapshotPath, 'safe snapshot bytes')
+                $caseMessage = "diagnostic-stage-secret-7733 C:\private\source.log /tmp/private.partial AUTH_TOKEN=raw-stage-secret-8844"
+
+                function New-SafeSourceSnapshot {
+                    param($Source, $Label, $WarnIfMissing)
+                    [pscustomobject]@{
+                        Path = $snapshotPath
+                        LastWriteTimeUtc = [DateTime]::UtcNow
+                    }
+                }
+                function Invoke-SupportDeadlineJob {
+                    param($Work, $Arguments, $Stage)
+                    [System.IO.File]::WriteAllText([string]$Arguments[1], 'redacted temporary')
+                    if ($stageState.Stage -ceq 'plain-redaction') {
+                        throw [System.InvalidOperationException]::new($caseMessage)
+                    }
+                }
+                function Test-SupportForcedPublishFailure { param($Kind); return $false }
+                function Publish-SupportArtifact {
+                    param($Temporary, $Destination, $FailureKind)
+                    if ($stageState.Stage -ceq 'plain-publish') {
+                        throw [System.InvalidOperationException]::new($caseMessage)
+                    }
+                    [System.IO.File]::Move($Temporary, $Destination)
+                }
+                function Get-Item {
+                    param($LiteralPath)
+                    throw [System.IO.IOException]::new($caseMessage)
+                }
+
+                $returned = Copy-RedactedSupportLog $snapshotPath 'gateway.log' 'Gateway current log' $true
+                $warning = if ($collectionWarnings.Count -eq 1) {
+                    [string]$collectionWarnings[0]
+                } else { '' }
+                [pscustomobject]@{
+                    Stage = $case.Stage
+                    Expected = "Gateway current log redaction failed at $($case.Stage) ($($case.Type), HRESULT 0x$($case.HResult))"
+                    Warning = $warning
+                    Returned = $returned
+                    PartialCount = @(Get-ChildItem -LiteralPath $caseRoot -Filter '*.partial-*' -ErrorAction SilentlyContinue).Count
+                    DestinationExists = [System.IO.File]::Exists((Join-Path $caseRoot 'gateway.log'))
+                }
+            }
+        } $diagnosticAst.Extent.Text $copyRedactedLogAst.Extent.Text $diagnosticControlRoot)
+        foreach ($case in $stageResults) {
+            Assert-True ($case.Returned -eq $false) "$($case.Stage) diagnostic keeps the failure best effort"
+            Assert-True ($case.Warning -ceq $case.Expected) "$($case.Stage) diagnostic selects the exact lifecycle stage and exception shape"
+            Assert-True ($case.PartialCount -eq 0) "$($case.Stage) diagnostic removes sibling partial artifacts"
+            foreach ($needle in @(
+                'diagnostic-stage-secret-7733', 'C:\private\source.log',
+                '/tmp/private.partial', 'AUTH_TOKEN=raw-stage-secret-8844'
+            )) {
+                Assert-True (-not $case.Warning.Contains($needle)) "$($case.Stage) diagnostic excludes protected failure text"
+            }
+        }
+        $redactionStage = @($stageResults | Where-Object Stage -eq 'plain-redaction')[0]
+        $publishStage = @($stageResults | Where-Object Stage -eq 'plain-publish')[0]
+        $metadataStage = @($stageResults | Where-Object Stage -eq 'plain-metadata')[0]
+        Assert-True (-not $redactionStage.DestinationExists) 'plain-redaction failure publishes no destination'
+        Assert-True (-not $publishStage.DestinationExists) 'plain-publish failure publishes no destination'
+        Assert-True $metadataStage.DestinationExists 'plain-metadata failure preserves the already-published redacted destination'
+
+        $failSafeResults = @(& {
+            param([string]$CopyDefinition, [string]$Root)
+            . ([scriptblock]::Create($CopyDefinition.Replace('$PSScriptRoot', '$Root')))
+            foreach ($timeoutCase in @($false, $true)) {
+                $caseName = if ($timeoutCase) { 'timeout' } else { 'format-failure' }
+                $caseRoot = Join-Path $Root $caseName
+                $null = New-Item -ItemType Directory -Path $caseRoot -Force
+                $bundleRoot = $caseRoot
+                $collectionWarnings = New-Object System.Collections.Generic.List[string]
+                $state = @{
+                    TimeoutCase = $timeoutCase
+                    FormatterCalled = $false
+                    FormatterSawPartial = $false
+                }
+                $snapshotPath = Join-Path $caseRoot 'collector-owned.snapshot'
+                [System.IO.File]::WriteAllText($snapshotPath, 'safe snapshot bytes')
+
+                function New-SafeSourceSnapshot {
+                    param($Source, $Label, $WarnIfMissing)
+                    [pscustomobject]@{ Path = $snapshotPath; LastWriteTimeUtc = [DateTime]::UtcNow }
+                }
+                function Invoke-SupportDeadlineJob {
+                    param($Work, $Arguments, $Stage)
+                    [System.IO.File]::WriteAllText([string]$Arguments[1], 'partial bytes')
+                    if ($state.TimeoutCase) {
+                        throw 'support bundle: timed out after 1 seconds at stage ''plain-redaction''; staging will be cleaned'
+                    }
+                    throw [System.InvalidOperationException]::new('formatter-failure-secret-9955')
+                }
+                function Format-SupportExceptionDiagnostic {
+                    $state.FormatterCalled = $true
+                    $state.FormatterSawPartial = @(
+                        Get-ChildItem -LiteralPath $caseRoot -Filter '*.partial-*' -ErrorAction SilentlyContinue
+                    ).Count -gt 0
+                    throw 'diagnostic formatter failed'
+                }
+                function Test-SupportForcedPublishFailure { param($Kind); return $false }
+                function Publish-SupportArtifact { throw 'unexpected publication' }
+
+                $escaped = $false
+                $escapedMessage = ''
+                $returned = $null
+                try {
+                    $returned = Copy-RedactedSupportLog $snapshotPath 'gateway.log' 'Gateway current log' $true
+                } catch {
+                    $escaped = $true
+                    $escapedMessage = $_.Exception.Message
+                }
+                [pscustomobject]@{
+                    Name = $caseName
+                    Escaped = $escaped
+                    EscapedMessage = $escapedMessage
+                    Returned = $returned
+                    FormatterCalled = $state.FormatterCalled
+                    FormatterSawPartial = $state.FormatterSawPartial
+                    PartialCount = @(Get-ChildItem -LiteralPath $caseRoot -Filter '*.partial-*' -ErrorAction SilentlyContinue).Count
+                    Warning = if ($collectionWarnings.Count -eq 1) { [string]$collectionWarnings[0] } else { '' }
+                }
+            }
+        } $copyRedactedLogAst.Extent.Text $diagnosticControlRoot)
+        $formatFailure = @($failSafeResults | Where-Object Name -eq 'format-failure')[0]
+        Assert-True (-not $formatFailure.Escaped) 'diagnostic formatting failure does not replace an ordinary best-effort failure'
+        Assert-True ($formatFailure.Returned -eq $false) 'diagnostic formatting failure preserves the false result'
+        Assert-True $formatFailure.FormatterCalled 'ordinary failure attempts best-effort diagnostic formatting'
+        Assert-True (-not $formatFailure.FormatterSawPartial) 'ordinary failure removes its partial before diagnostic formatting'
+        Assert-True ($formatFailure.PartialCount -eq 0) 'ordinary formatter failure leaves no partial artifact'
+        Assert-True ($formatFailure.Warning -ceq 'Gateway current log redaction failed at plain-redaction (unknown exception, HRESULT 0x00000000)') 'ordinary formatter failure uses the fixed content-free fallback'
+
+        $timeoutFailure = @($failSafeResults | Where-Object Name -eq 'timeout')[0]
+        Assert-True $timeoutFailure.Escaped 'support timeout remains terminating'
+        Assert-True ($timeoutFailure.EscapedMessage -like 'support bundle: timed out*') 'support timeout preserves the original timeout exception'
+        Assert-True (-not $timeoutFailure.FormatterCalled) 'support timeout rethrows before diagnostic formatting'
+        Assert-True ($timeoutFailure.PartialCount -eq 0) 'support timeout removes its partial before rethrow'
+        Assert-True (-not $timeoutFailure.Warning) 'support timeout emits no best-effort redaction warning'
+        Remove-Item -LiteralPath $diagnosticControlRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
     Write-Host '== native safe-open ABI selection =='
     if (Test-Path -LiteralPath $SafeOpenLibrary -PathType Leaf) {
         . $SafeOpenLibrary
@@ -999,8 +1231,7 @@ server.serve_forever()
     Assert-Absent (Join-Path $leafPublishFailureRoot 'logs\gateway\gateway-20260101.log.gz') 'forced gzip publication failure leaves no final gzip log'
     Assert-True (@(Get-ChildItem -LiteralPath (Join-Path $leafPublishFailureRoot 'logs\gateway') -Filter 'metrics-snapshot-*').Count -eq 0) 'forced metrics publication failure leaves no final or partial snapshot'
     Assert-True (@(Get-ChildItem -LiteralPath (Join-Path $leafPublishFailureRoot 'logs\gateway') -Filter 'acp-capture-*').Count -eq 0) 'forced capture publication failure leaves no final or partial snapshot'
-    Assert-Contains (Join-Path $leafPublishFailureRoot 'MANIFEST.txt') 'WARNING: Gateway current log redaction failed at plain-publish (' 'manifest identifies the forced plain publication failure stage'
-    Assert-Contains (Join-Path $leafPublishFailureRoot 'MANIFEST.txt') 'HRESULT 0x' 'manifest records a content-free plain publication exception diagnostic'
+    Assert-Line (Join-Path $leafPublishFailureRoot 'MANIFEST.txt') 'WARNING: Gateway current log redaction failed at plain-publish (System.Management.Automation.RuntimeException, HRESULT 0x80131501)' 'manifest records the exact content-free forced plain publication diagnostic'
     Assert-Line (Join-Path $leafPublishFailureRoot 'MANIFEST.txt') 'WARNING: Gateway rotation gateway-20260101.log.gz archive publish failed' 'manifest proves the forced gzip publication failure path ran'
     Assert-NoSupportTemporaryArtifacts $leafPublishFailureRoot 'plain/gzip/metrics/capture failure bundle has no partial artifacts'
     Assert-NoSupportTemporaryArtifacts (Join-Path $ExtractRoot 'leaf-publish-failure-out') 'plain/gzip/metrics/capture failure output has no partial or staging artifacts'

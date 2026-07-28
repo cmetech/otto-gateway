@@ -1865,14 +1865,32 @@ function Invoke-Support {
         }
         function Format-SupportExceptionDiagnostic {
             param($ErrorRecord)
-            $exception = $ErrorRecord.Exception
-            while ($exception.InnerException) { $exception = $exception.InnerException }
-            $diagnostic = '{0}, HRESULT 0x{1:X8}' -f @(
-                $exception.GetType().FullName, [int]$exception.HResult)
-            if ($exception -is [System.ComponentModel.Win32Exception]) {
-                $diagnostic += ', native error {0}' -f $exception.NativeErrorCode
+            $fallback = 'unknown exception, HRESULT 0x00000000'
+            try {
+                $exception = $null
+                if ($ErrorRecord -is [System.Exception]) {
+                    $exception = $ErrorRecord
+                } elseif ($null -ne $ErrorRecord) {
+                    $exceptionProperty = $ErrorRecord.PSObject.Properties['Exception']
+                    if ($null -ne $exceptionProperty) {
+                        $exception = $exceptionProperty.Value
+                    }
+                }
+                if ($exception -isnot [System.Exception]) { return $fallback }
+                while ($exception.InnerException -is [System.Exception]) {
+                    $exception = $exception.InnerException
+                }
+                $typeName = $exception.GetType().FullName
+                if ([string]::IsNullOrEmpty($typeName)) { return $fallback }
+                $diagnostic = '{0}, HRESULT 0x{1:X8}' -f @(
+                    $typeName, [int]$exception.HResult)
+                if ($exception -is [System.ComponentModel.Win32Exception]) {
+                    $diagnostic += ', native error {0}' -f $exception.NativeErrorCode
+                }
+                return $diagnostic
+            } catch {
+                return $fallback
             }
-            return $diagnostic
         }
         function Publish-SupportArtifact {
             param(
@@ -2107,9 +2125,16 @@ function Invoke-Support {
                 (Get-Item -LiteralPath $destination).LastWriteTimeUtc = $snapshot.LastWriteTimeUtc
                 return $true
             } catch {
-                $plainFailureDiagnostic = Format-SupportExceptionDiagnostic $_
+                $plainFailure = $_
                 Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
-                if ($_.Exception.Message -match '^support bundle: timed out') { throw }
+                if ($plainFailure.Exception.Message -match '^support bundle: timed out') { throw }
+                $plainFailureDiagnostic = 'unknown exception, HRESULT 0x00000000'
+                try {
+                    $formattedDiagnostic = Format-SupportExceptionDiagnostic $plainFailure
+                    if (-not [string]::IsNullOrEmpty($formattedDiagnostic)) {
+                        $plainFailureDiagnostic = $formattedDiagnostic
+                    }
+                } catch {}
                 $collectionWarnings.Add(
                     "$Label redaction failed at $plainFailureStage ($plainFailureDiagnostic)") | Out-Null
                 return $false
