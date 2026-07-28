@@ -450,9 +450,17 @@ func (s *trayState) setStartedNow() {
 func (s *trayState) handleStart() {
 	s.setStartedNow()
 	res := runWrapper(s.installDir, s.gwHome, "start")
-	if res.ExitCode != 0 || res.Err != nil {
+	if res.ExitCode == 0 && res.Err == nil {
+		return
+	}
+	_, healthy, _ := s.makeProbe()()
+	if shouldNotifyStartFailure(res, healthy) {
 		notify("Gateway", "Failed to start: "+firstMeaningfulLine(res.Stderr))
 	}
+}
+
+func shouldNotifyStartFailure(res runResult, healthy bool) bool {
+	return (res.ExitCode != 0 || res.Err != nil) && !healthy
 }
 
 func (s *trayState) handleStop() {
