@@ -3,9 +3,13 @@
 package main
 
 import (
+	"errors"
+	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"syscall"
+	"time"
 )
 
 const (
@@ -48,6 +52,30 @@ func detachProcessGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		CreationFlags: createNewProcessGroup,
 		HideWindow:    true,
+	}
+}
+
+// configureWrapperCancellation terminates the complete wrapper process tree.
+// os.Process.Kill only stops powershell.exe itself; taskkill /T also reaps any
+// support-compression job that PowerShell started before the tray deadline.
+func configureWrapperCancellation(cmd *exec.Cmd) {
+	cmd.WaitDelay = 3 * time.Second
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return os.ErrProcessDone
+		}
+		killer := exec.Command("taskkill.exe", "/PID", strconv.Itoa(cmd.Process.Pid), "/T", "/F") //nolint:gosec // PID is an integer from the child process
+		killer.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+		if err := killer.Run(); err == nil {
+			return nil
+		}
+		if err := cmd.Process.Kill(); err != nil {
+			if errors.Is(err, os.ErrProcessDone) {
+				return os.ErrProcessDone
+			}
+			return err
+		}
+		return nil
 	}
 }
 

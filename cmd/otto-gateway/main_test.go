@@ -24,7 +24,7 @@ import (
 )
 
 func TestBuildAdminLogSourcesIncludesKiroWithFriendlyLabels(t *testing.T) {
-	paths, order, labels := buildAdminLogSources("gateway.log", "boot.log", "kiro.log", "trace.log", true)
+	paths, order, labels := buildAdminLogSources("127.0.0.1:18080", "gateway.log", "boot.log", "kiro.log", "trace.log", true)
 	if diff := cmp.Diff([]string{"main", "boot-err", "kiro", "chat-trace"}, order); diff != "" {
 		t.Fatalf("log source order mismatch (-want +got):\n%s", diff)
 	}
@@ -45,7 +45,7 @@ func TestBuildAdminLogSourcesIncludesKiroWithFriendlyLabels(t *testing.T) {
 }
 
 func TestBuildAdminLogSourcesOmitsChatTraceWhenDisabled(t *testing.T) {
-	paths, order, labels := buildAdminLogSources("gateway.log", "boot.log", "kiro.log", "trace.log", false)
+	paths, order, labels := buildAdminLogSources("127.0.0.1:18080", "gateway.log", "boot.log", "kiro.log", "trace.log", false)
 	if diff := cmp.Diff([]string{"main", "boot-err", "kiro"}, order); diff != "" {
 		t.Fatalf("disabled log source order mismatch (-want +got):\n%s", diff)
 	}
@@ -70,6 +70,87 @@ func TestBuildAdminLogSourcesOmitsChatTraceWhenDisabled(t *testing.T) {
 		if _, ok := sources["co-worker"]; ok {
 			t.Fatal("Co-worker must not be exposed")
 		}
+	}
+}
+
+// TestIsStrictLoopbackHTTPListener catches wildcard, private-network, public,
+// or arbitrary hostname listeners being treated as local merely because the
+// admin handler is also reachable through loopback. Kiro may be registered
+// only when the effective listener itself is strictly loopback-bound.
+func TestIsStrictLoopbackHTTPListener(t *testing.T) {
+	tests := []struct {
+		addr string
+		want bool
+	}{
+		{addr: "127.0.0.1:18080", want: true},
+		{addr: "127.99.4.2:0", want: true},
+		{addr: "[::1]:18080", want: true},
+		{addr: "localhost:18080", want: true},
+		{addr: "LOCALHOST:18080", want: true},
+		{addr: "localhost.:18080", want: true},
+		{addr: ":18080", want: false},
+		{addr: "0.0.0.0:18080", want: false},
+		{addr: "[::]:18080", want: false},
+		{addr: "192.168.1.20:18080", want: false},
+		{addr: "10.0.0.20:18080", want: false},
+		{addr: "203.0.113.20:18080", want: false},
+		{addr: "gateway.local:18080", want: false},
+		{addr: "localhost.example:18080", want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.addr, func(t *testing.T) {
+			if got := isStrictLoopbackHTTPListener(tc.addr); got != tc.want {
+				t.Fatalf("isStrictLoopbackHTTPListener(%q) = %v, want %v", tc.addr, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestBuildAdminLogSourcesGatesKiroByEffectiveListener is the wiring-level
+// contract: every listener keeps Gateway-owned sources, while only a strict
+// loopback listener receives the sensitive Kiro source. Co-worker is never
+// registered.
+func TestBuildAdminLogSourcesGatesKiroByEffectiveListener(t *testing.T) {
+	tests := []struct {
+		name     string
+		addr     string
+		wantKiro bool
+	}{
+		{name: "default IPv4 loopback", addr: "127.0.0.1:18080", wantKiro: true},
+		{name: "IPv6 loopback", addr: "[::1]:18080", wantKiro: true},
+		{name: "localhost", addr: "localhost:18080", wantKiro: true},
+		{name: "empty-host wildcard", addr: ":18080", wantKiro: false},
+		{name: "IPv4 wildcard", addr: "0.0.0.0:18080", wantKiro: false},
+		{name: "IPv6 wildcard", addr: "[::]:18080", wantKiro: false},
+		{name: "private non-loopback", addr: "192.168.50.8:18080", wantKiro: false},
+		{name: "public non-loopback", addr: "203.0.113.8:18080", wantKiro: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			paths, order, labels := buildAdminLogSources(tc.addr, "gateway.log", "boot.log", "kiro.log", "trace.log", true)
+			_, pathHasKiro := paths["kiro"]
+			_, labelHasKiro := labels["kiro"]
+			if pathHasKiro != tc.wantKiro || labelHasKiro != tc.wantKiro {
+				t.Fatalf("Kiro registration for %q: path=%v label=%v, want %v; paths=%v labels=%v", tc.addr, pathHasKiro, labelHasKiro, tc.wantKiro, paths, labels)
+			}
+			wantOrder := []string{"main", "boot-err", "chat-trace"}
+			if tc.wantKiro {
+				wantOrder = []string{"main", "boot-err", "kiro", "chat-trace"}
+			}
+			if diff := cmp.Diff(wantOrder, order); diff != "" {
+				t.Fatalf("source order mismatch (-want +got):\n%s", diff)
+			}
+			for _, sources := range []map[string]string{paths, labels} {
+				if _, ok := sources["co-worker"]; ok {
+					t.Fatal("Co-worker must never be exposed")
+				}
+				for _, id := range []string{"main", "boot-err", "chat-trace"} {
+					if _, ok := sources[id]; !ok {
+						t.Fatalf("Gateway source %q omitted for listener %q", id, tc.addr)
+					}
+				}
+			}
+		})
 	}
 }
 
@@ -231,7 +312,7 @@ func TestNewAppDashboardTailsRelativeKiroLogFromKiroCWD(t *testing.T) {
 	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(wrongPath)) })
 
 	cfg := config.Config{
-		HTTPAddr:         ":0",
+		HTTPAddr:         "127.0.0.1:0",
 		KiroCmd:          "",
 		KiroCWD:          kiroCWD,
 		KiroChatLogFile:  relative,

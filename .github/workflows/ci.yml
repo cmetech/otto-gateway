@@ -50,6 +50,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set up Go (from go.mod)
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
       - name: Parse PowerShell 5.1 sources
         shell: powershell
         run: |
@@ -75,6 +81,10 @@ jobs:
       - name: PowerShell support integration and reparse races
         shell: powershell
         run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/scripts/test-support-bundle.ps1
+
+      - name: Native Windows tray observability and cancellation tests
+        shell: powershell
+        run: go test ./cmd/otto-tray -run 'RemoteWrite|MetricsRW|WrapperCancellation' -count=1
 
   lint-test-arch:
     name: lint + test-race + arch-lint + govulncheck
@@ -145,6 +155,9 @@ jobs:
       - name: Dashboard JavaScript behavior test
         run: make test-admin-js
 
+      - name: Metrics remote-write defaults acceptance
+        run: bash tests/scripts/test-metrics-remote-write-defaults.sh
+
       # Brief §3.12 step 7 — Example tests. Surfaced as its own step so
       # broken godoc-runnable examples fail with a clear log line rather
       # than being buried inside the test-race batch (Phase 08.1 D-16).
@@ -191,6 +204,9 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+
+      - name: Targeted tray observability and preference race tests
+        run: go test -race ./cmd/otto-tray -run 'RemoteWrite|MetricsRW|Preference|WrapperCancellation' -count=1
 
       # Scope is ./... , not ./cmd/otto-tray/... . The tray holds most of the
       # darwin-tagged code but not all of it: internal/procstat/procstat_other.go
@@ -286,6 +302,9 @@ jobs:
 
       - name: Build full release set (make package-all)
         run: make package-all
+
+      - name: Windows package support runtime smoke
+        run: bash tests/scripts/test-windows-package-support.sh
 
       - name: Shellcheck publish scripts
         run: shellcheck scripts/publish.sh tests/scripts/publish_test.sh

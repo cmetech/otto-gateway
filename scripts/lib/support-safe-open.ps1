@@ -6,6 +6,7 @@ function Initialize-SupportSafeOpen {
 
     Add-Type -TypeDefinition @'
 using System;
+using System.ComponentModel;
 using System.IO;
 using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
@@ -57,6 +58,8 @@ namespace GatewaySupport {
         const uint FILE_TYPE_DISK = 0x0001;
         const uint S_IFMT = 0xF000;
         const uint S_IFREG = 0x8000;
+        const uint MOVEFILE_REPLACE_EXISTING = 0x00000001;
+        const uint MOVEFILE_WRITE_THROUGH = 0x00000008;
 
         [StructLayout(LayoutKind.Sequential)]
         struct UnicodeString {
@@ -141,6 +144,10 @@ namespace GatewaySupport {
 
         [DllImport("kernel32.dll", SetLastError = true)]
         static extern uint GetFileType(SafeFileHandle handle);
+
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        static extern bool MoveFileEx(string existingFileName, string newFileName,
+            uint flags);
 
         [DllImport("libc", SetLastError = true)]
         static extern int open(string path, int flags);
@@ -384,9 +391,76 @@ namespace GatewaySupport {
                 throw;
             }
         }
+
+        // MoveFileEx with REPLACE_EXISTING is the native Windows primitive
+        // that keeps an existing destination continuously visible until the
+        // replacement commits. WRITE_THROUGH asks Windows not to return until
+        // the move has reached the filesystem. The PowerShell wrapper enforces
+        // same-directory publication before entering this method.
+        public static void PublishAtomicWindows(string temporaryPath, string destinationPath) {
+            if (Environment.OSVersion.Platform != PlatformID.Win32NT)
+                throw new PlatformNotSupportedException(
+                    "native atomic publication is available only on Windows");
+            if (!MoveFileEx(temporaryPath, destinationPath,
+                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+                throw new Win32Exception(Marshal.GetLastWin32Error(),
+                    "atomic support publication failed");
+            }
+        }
+
+        public static void PublishAtomicPortable(string temporaryPath, string destinationPath) {
+            if (File.Exists(destinationPath))
+                File.Replace(temporaryPath, destinationPath, null);
+            else
+                File.Move(temporaryPath, destinationPath);
+        }
     }
 }
 '@
+}
+
+# Windows PowerShell 5.1's `Set-Content -Encoding UTF8` prepends a BOM while
+# PowerShell 7 does not. Support snapshots are protocol payloads (Prometheus
+# text and JSON), so write their bytes explicitly and identically everywhere.
+function Write-SupportUtf8NoBom {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [AllowEmptyString()][string]$Value = ''
+    )
+    $encoding = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($Path, $Value, $encoding)
+}
+
+# Publish a completed sibling temporary file without first deleting an
+# existing destination. Windows uses MoveFileEx(REPLACE_EXISTING|WRITE_THROUGH)
+# for the native guarantee. The non-Windows branch exists only so the portable
+# PowerShell harness can exercise the same replacement semantics; it does not
+# claim the Windows durability guarantee.
+function Publish-SupportFileAtomically {
+    param(
+        [Parameter(Mandatory)][string]$TemporaryPath,
+        [Parameter(Mandatory)][string]$DestinationPath
+    )
+
+    $temporaryFull = [System.IO.Path]::GetFullPath($TemporaryPath)
+    $destinationFull = [System.IO.Path]::GetFullPath($DestinationPath)
+    $temporaryDirectory = [System.IO.Path]::GetDirectoryName($temporaryFull)
+    $destinationDirectory = [System.IO.Path]::GetDirectoryName($destinationFull)
+    $comparison = if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
+        [System.StringComparison]::OrdinalIgnoreCase
+    } else {
+        [System.StringComparison]::Ordinal
+    }
+    if (-not [string]::Equals($temporaryDirectory, $destinationDirectory, $comparison)) {
+        throw 'atomic support publication requires a sibling temporary file'
+    }
+
+    Initialize-SupportSafeOpen
+    if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
+        [GatewaySupport.SafeFile]::PublishAtomicWindows($temporaryFull, $destinationFull)
+        return
+    }
+    [GatewaySupport.SafeFile]::PublishAtomicPortable($temporaryFull, $destinationFull)
 }
 
 function Get-SupportUnixAbiLayout {

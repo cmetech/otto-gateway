@@ -45,6 +45,7 @@ func runWrapper(installDir, gwHome, verb string, extraArgs ...string) runResult 
 	cmd := exec.CommandContext(ctx, cmdName, args...) //nolint:gosec // cmdName + args come from constants and operator-controlled installDir
 	cmd.Dir = gwHome
 	detachProcessGroup(cmd)
+	configureWrapperCancellation(cmd)
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

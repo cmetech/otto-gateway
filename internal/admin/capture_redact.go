@@ -8,12 +8,15 @@ import (
 	"unicode"
 )
 
-const captureRedactionMarker = "[REDACTED]"
+const (
+	captureRedactionMarker     = "[REDACTED]"
+	captureRedactionMaxDepth   = 8
+	captureRedactionMaxJSONLen = 256 * 1024
+)
 
 var (
 	captureAuthorizationPrefixPattern = regexp.MustCompile(`(?i)\bauthorization\b\s*["']?\s*[:=]\s*`)
 	captureCredentialPattern          = regexp.MustCompile(`(?i)\b(?:bearer|basic|api[ _-]?key)\s+[a-z0-9._~+/=-]+`)
-	captureNamedAssignmentPattern     = regexp.MustCompile(`([A-Za-z][A-Za-z0-9_-]*)(\s*["']?\s*[:=]\s*["']?)(\[REDACTED\]|[^\s&,;"'\}\]]+)`)
 )
 
 var captureSecretNameWords = map[string]struct{}{
@@ -28,16 +31,18 @@ var captureSecretNameWords = map[string]struct{}{
 }
 
 var captureCredentialValueSuffixWords = map[string]struct{}{
-	"bytes":       {},
-	"credential":  {},
-	"credentials": {},
-	"data":        {},
-	"digest":      {},
-	"hash":        {},
-	"header":      {},
-	"raw":         {},
-	"string":      {},
-	"value":       {},
+	"bytes":        {},
+	"credential":   {},
+	"credentials":  {},
+	"confirm":      {},
+	"confirmation": {},
+	"data":         {},
+	"digest":       {},
+	"hash":         {},
+	"header":       {},
+	"raw":          {},
+	"string":       {},
+	"value":        {},
 }
 
 func redactCaptureFrames(in []CaptureFrame) []CaptureFrame {
@@ -52,17 +57,11 @@ func redactCaptureFrames(in []CaptureFrame) []CaptureFrame {
 func redactCapturedParams(raw string) string {
 	// Decode before walking so redaction never runs across the serialized JSON
 	// syntax and cannot damage its quoting or structural delimiters.
-	var value any
-	decoder := json.NewDecoder(strings.NewReader(raw))
-	decoder.UseNumber()
-	if err := decoder.Decode(&value); err != nil {
+	value, ok := decodeCaptureJSON(raw)
+	if !ok {
 		return redactCaptureString(raw)
 	}
-	var trailing any
-	if err := decoder.Decode(&trailing); err != io.EOF {
-		return redactCaptureString(raw)
-	}
-	value = redactCaptureValue("", value)
+	value = redactCaptureValue("", value, 0)
 	body, err := json.Marshal(value)
 	if err != nil {
 		return "[REDACTED: invalid captured JSON]"
@@ -70,41 +69,227 @@ func redactCapturedParams(raw string) string {
 	return string(body)
 }
 
-func redactCaptureValue(key string, value any) any {
+func decodeCaptureJSON(raw string) (any, bool) {
+	var value any
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	decoder.UseNumber()
+	if err := decoder.Decode(&value); err != nil {
+		return nil, false
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return nil, false
+	}
+	return value, true
+}
+
+func redactCaptureValue(key string, value any, depth int) any {
 	if key != "" && isCaptureSecretName(key) {
 		return captureRedactionMarker
+	}
+	if depth >= captureRedactionMaxDepth {
+		switch value.(type) {
+		case map[string]any, []any, string:
+			return captureRedactionMarker
+		default:
+			return value
+		}
 	}
 
 	switch value := value.(type) {
 	case map[string]any:
 		redacted := make(map[string]any, len(value))
 		for childKey, childValue := range value {
-			redacted[childKey] = redactCaptureValue(childKey, childValue)
+			redacted[childKey] = redactCaptureValue(childKey, childValue, depth+1)
 		}
 		return redacted
 	case []any:
 		redacted := make([]any, len(value))
 		for i, childValue := range value {
-			redacted[i] = redactCaptureValue("", childValue)
+			redacted[i] = redactCaptureValue("", childValue, depth+1)
 		}
 		return redacted
 	case string:
-		return redactCaptureString(value)
+		return redactCaptureStringValue(value, depth+1)
 	default:
 		return value
+	}
+}
+
+func redactCaptureStringValue(value string, depth int) string {
+	if len(value) > captureRedactionMaxJSONLen {
+		if looksLikeCaptureJSON(value) {
+			return captureRedactionMarker
+		}
+		return redactCaptureString(value)
+	}
+	nested, ok := decodeCaptureJSON(value)
+	if !ok {
+		return redactCaptureString(value)
+	}
+	if depth >= captureRedactionMaxDepth {
+		return captureRedactionMarker
+	}
+	nested = redactCaptureValue("", nested, depth)
+	body, err := json.Marshal(nested)
+	if err != nil {
+		return captureRedactionMarker
+	}
+	return string(body)
+}
+
+func looksLikeCaptureJSON(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return false
+	}
+	switch trimmed[0] {
+	case '{', '[', '"':
+		return true
+	default:
+		return false
 	}
 }
 
 func redactCaptureString(value string) string {
 	value = redactCaptureAuthorizationValues(value)
 	value = captureCredentialPattern.ReplaceAllString(value, captureRedactionMarker)
-	return captureNamedAssignmentPattern.ReplaceAllStringFunc(value, func(assignment string) string {
-		parts := captureNamedAssignmentPattern.FindStringSubmatch(assignment)
-		if len(parts) != 4 || !isCaptureSecretName(parts[1]) {
-			return assignment
+	return redactCaptureNamedAssignments(value)
+}
+
+func redactCaptureNamedAssignments(value string) string {
+	var redacted strings.Builder
+	written := 0
+	for index := 0; index < len(value); {
+		if !isCaptureNameStart(value[index]) || (index > 0 && isCaptureNamePart(value[index-1])) {
+			index++
+			continue
 		}
-		return parts[1] + parts[2] + captureRedactionMarker
-	})
+
+		nameStart := index
+		index++
+		for index < len(value) && isCaptureNamePart(value[index]) {
+			index++
+		}
+		nameEnd := index
+		if !isCaptureSecretName(value[nameStart:nameEnd]) {
+			continue
+		}
+
+		separator := index
+		for separator < len(value) && isCaptureSpace(value[separator]) {
+			separator++
+		}
+		if separator < len(value) && (value[separator] == '"' || value[separator] == '\'') {
+			separator++
+			for separator < len(value) && isCaptureSpace(value[separator]) {
+				separator++
+			}
+		}
+		if separator >= len(value) || (value[separator] != ':' && value[separator] != '=') {
+			continue
+		}
+		separator++
+		for separator < len(value) && isCaptureSpace(value[separator]) {
+			separator++
+		}
+
+		valueEnd, replacement := captureAssignmentValue(value, separator)
+		redacted.WriteString(value[written:separator])
+		redacted.WriteString(replacement)
+		written = valueEnd
+		index = valueEnd
+	}
+	redacted.WriteString(value[written:])
+	return redacted.String()
+}
+
+func captureAssignmentValue(value string, start int) (int, string) {
+	if start >= len(value) {
+		return start, captureRedactionMarker
+	}
+	switch value[start] {
+	case '"', '\'':
+		quote := value[start]
+		for index := start + 1; index < len(value); index++ {
+			if value[index] == '\\' {
+				index++
+				continue
+			}
+			if value[index] == quote {
+				return index + 1, string(quote) + captureRedactionMarker + string(quote)
+			}
+		}
+		return captureLineEnd(value, start), string(quote) + captureRedactionMarker
+	case '{', '[':
+		return captureStructuredAssignmentValue(value, start)
+	default:
+		end := start
+		for end < len(value) && !isCaptureAssignmentDelimiter(value[end]) {
+			end++
+		}
+		return end, captureRedactionMarker
+	}
+}
+
+func captureStructuredAssignmentValue(value string, start int) (int, string) {
+	stack := []byte{value[start]}
+	var quote byte
+	for index := start + 1; index < len(value); index++ {
+		char := value[index]
+		if quote != 0 {
+			if char == '\\' {
+				index++
+				continue
+			}
+			if char == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch char {
+		case '"', '\'':
+			quote = char
+		case '{', '[':
+			stack = append(stack, char)
+		case '}', ']':
+			want := byte('{')
+			if char == ']' {
+				want = '['
+			}
+			if stack[len(stack)-1] != want {
+				return captureLineEnd(value, start), captureRedactionMarker
+			}
+			stack = stack[:len(stack)-1]
+			if len(stack) == 0 {
+				return index + 1, captureRedactionMarker
+			}
+		}
+	}
+	return captureLineEnd(value, start), captureRedactionMarker
+}
+
+func captureLineEnd(value string, start int) int {
+	if offset := strings.IndexAny(value[start:], "\r\n"); offset >= 0 {
+		return start + offset
+	}
+	return len(value)
+}
+
+func isCaptureNameStart(char byte) bool {
+	return char >= 'A' && char <= 'Z' || char >= 'a' && char <= 'z'
+}
+
+func isCaptureNamePart(char byte) bool {
+	return isCaptureNameStart(char) || char >= '0' && char <= '9' || char == '_' || char == '-'
+}
+
+func isCaptureSpace(char byte) bool {
+	return char == ' ' || char == '\t' || char == '\r' || char == '\n'
+}
+
+func isCaptureAssignmentDelimiter(char byte) bool {
+	return isCaptureSpace(char) || char == '&' || char == ',' || char == ';' || char == '}' || char == ']'
 }
 
 func redactCaptureAuthorizationValues(value string) string {

@@ -1567,6 +1567,33 @@ function Show-Env {
     }
 }
 
+function Resolve-SupportBaseUrl {
+    # GW_ADDR is an explicit client-facing override. Otherwise derive a
+    # reachable client address from the effective HTTP_ADDR after dotenv and
+    # overrides loading; wildcard listen hosts are not valid request targets.
+    if ($env:GW_ADDR) {
+        $candidate = $env:GW_ADDR.Trim().TrimEnd('/')
+    } else {
+        $listen = if ($env:HTTP_ADDR) { $env:HTTP_ADDR.Trim() } else { '127.0.0.1:18080' }
+        if ($listen -match '^:(\d+)$') {
+            $listen = "127.0.0.1:$($Matches[1])"
+        } elseif ($listen -match '^(?:0\.0\.0\.0|\*|\+):(\d+)$') {
+            $listen = "127.0.0.1:$($Matches[1])"
+        } elseif ($listen -match '^\[::\]:(\d+)$') {
+            $listen = "[::1]:$($Matches[1])"
+        }
+        $candidate = "http://$listen"
+    }
+
+    $parsed = $null
+    if (-not [System.Uri]::TryCreate($candidate, [System.UriKind]::Absolute, [ref]$parsed) -or
+        $parsed.Scheme -notin @('http','https') -or -not $parsed.Host -or
+        $parsed.UserInfo -or $parsed.Query -or $parsed.Fragment) {
+        throw "support bundle: invalid effective Gateway address '$candidate'"
+    }
+    return $candidate
+}
+
 function Invoke-Support {
     # Dot-source the shared pwsh redaction primitives. Same regex surface as
     # scripts/lib/redact.sh — byte-equivalent rules across OS wrappers.
@@ -1575,8 +1602,21 @@ function Invoke-Support {
     # Resolve config (writes "loaded env file:" / "loaded overrides:" to host).
     Initialize-Config
 
+    # This library owns both no-follow reads and support-artifact publication.
+    # It must be present in release packages even when source collection is
+    # deliberately disabled by a test seam.
+    . (Join-Path $PSScriptRoot 'lib\support-safe-open.ps1')
+    $supportBaseUrl = Resolve-SupportBaseUrl
+
     # The bundle and both optional live snapshots share this one UTC stamp.
-    $ts = (Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmssZ')
+    $ts = if ($env:GW_SUPPORT_TEST_TIMESTAMP) {
+        if ($env:GW_SUPPORT_TEST_TIMESTAMP -notmatch '^\d{8}-\d{6}Z$') {
+            throw 'support bundle: invalid test timestamp'
+        }
+        $env:GW_SUPPORT_TEST_TIMESTAMP
+    } else {
+        (Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmssZ')
+    }
     $hostname = [System.Net.Dns]::GetHostName()
     $outDir = if ($Out) { $Out } else { Join-Path $GwHome 'support' }
     $bundleName = "gateway-support-$hostname-$ts"
@@ -1591,10 +1631,88 @@ function Invoke-Support {
     $deadlineStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
     $timeoutSec = $Timeout
     $maxBytes = [int64]$MaxMb * 1MB
+    $deadlineInjectedStages = @{}
+    $compressionDeadlineState = @{ Armed = $false }
+    function Throw-SupportTimeout {
+        param([string]$Stage)
+        throw "support bundle: timed out after $timeoutSec seconds at stage '$Stage'; staging will be cleaned"
+    }
     function Test-Deadline {
         param([string]$Stage)
-        if ($deadlineStopwatch.Elapsed.TotalSeconds -gt $timeoutSec) {
-            throw "support bundle: timed out after $timeoutSec seconds at stage '$Stage'; staging will be cleaned"
+        $targetStage = $env:GW_SUPPORT_TEST_DEADLINE_STAGE
+        if ($targetStage) {
+            if ($targetStage -ceq $Stage -and -not $deadlineInjectedStages.ContainsKey($Stage)) {
+                $deadlineInjectedStages[$Stage] = $true
+                $delayMilliseconds = 0
+                if ([int]::TryParse($env:GW_SUPPORT_TEST_DEADLINE_DELAY_MS, [ref]$delayMilliseconds) -and
+                    $delayMilliseconds -gt 0) {
+                    Start-Sleep -Milliseconds $delayMilliseconds
+                }
+            } elseif (-not $deadlineInjectedStages.ContainsKey($targetStage)) {
+                # Deterministic test targeting: later per-item checkpoints must
+                # be reachable even when setup itself takes longer than the
+                # intentionally tiny fixture timeout.
+                return
+            }
+        }
+        $compressionStage = if ($env:GW_SUPPORT_TEST_COMPRESSION_KIND) {
+            "$($env:GW_SUPPORT_TEST_COMPRESSION_KIND)-compression"
+        } else { '' }
+        if ($compressionStage -and $env:GW_SUPPORT_TEST_COMPRESSION_PID_FILE -and
+            -not $compressionDeadlineState.Armed) {
+            if ($compressionStage -ceq $Stage) {
+                # Arm the deterministic cancellation clock immediately before
+                # the tested child starts, rather than consuming it during
+                # fixture setup.
+                $compressionDeadlineState.Armed = $true
+                $deadlineStopwatch.Restart()
+            } else {
+                return
+            }
+        }
+        if ($deadlineStopwatch.Elapsed.TotalSeconds -ge $timeoutSec) {
+            Throw-SupportTimeout $Stage
+        }
+    }
+    function Get-SupportRequestTimeout {
+        param([string]$Stage)
+        Test-Deadline $Stage
+        $remaining = $timeoutSec - $deadlineStopwatch.Elapsed.TotalSeconds
+        return [int][Math]::Max(1, [Math]::Ceiling($remaining))
+    }
+    function Invoke-SupportDeadlineJob {
+        param(
+            [Parameter(Mandatory)][scriptblock]$Work,
+            [object[]]$Arguments = @(),
+            [Parameter(Mandatory)][string]$Stage
+        )
+        Test-Deadline $Stage
+        $job = Start-Job -ScriptBlock $Work -ArgumentList $Arguments
+        if ($env:GW_SUPPORT_TEST_COMPRESSION_PID_FILE -and
+            "$($env:GW_SUPPORT_TEST_COMPRESSION_KIND)-compression" -ceq $Stage) {
+            # Do not charge child-process startup against the deterministic
+            # cancellation interval; the child itself is the behavior under
+            # test. Production collection has no such seam.
+            $deadlineStopwatch.Restart()
+        }
+        try {
+            while ($job.State -in @('NotStarted','Running')) {
+                Test-Deadline $Stage
+                Start-Sleep -Milliseconds 25
+            }
+            if ($job.State -ne 'Completed') {
+                $jobError = @($job.ChildJobs | ForEach-Object { $_.JobStateInfo.Reason } |
+                    Where-Object { $null -ne $_ } | Select-Object -First 1)
+                if ($jobError.Count -gt 0) { throw $jobError[0] }
+                throw "support bundle: child job failed at stage '$Stage'"
+            }
+            $null = @(Receive-Job -Job $job -ErrorAction Stop)
+            Test-Deadline $Stage
+        } finally {
+            if ($job.State -in @('NotStarted','Running','Blocked')) {
+                Stop-Job -Job $job -ErrorAction SilentlyContinue
+            }
+            Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
         }
     }
 
@@ -1674,16 +1792,20 @@ function Invoke-Support {
         }
 
         try {
-            $body = (Invoke-WebRequest -Method Get -Uri "$HealthUrl/health" -UseBasicParsing -TimeoutSec 5).Content
+            $requestTimeout = Get-SupportRequestTimeout 'health-request'
+            $body = (Invoke-WebRequest -Method Get -Uri "$supportBaseUrl/health" -UseBasicParsing -TimeoutSec $requestTimeout).Content
             Set-Content -Path (Join-Path $bundleRoot 'health\health.json') -Value $body -Encoding UTF8
         } catch {
-            Set-Content -Path (Join-Path $bundleRoot 'health\health.json') -Value "unreachable: $HealthUrl/health did not respond ($($_.Exception.Message))" -Encoding UTF8
+            Test-Deadline 'health-request'
+            Set-Content -Path (Join-Path $bundleRoot 'health\health.json') -Value "unreachable: $supportBaseUrl/health did not respond ($($_.Exception.Message))" -Encoding UTF8
         }
         try {
-            $body = (Invoke-WebRequest -Method Get -Uri "$HealthUrl/admin/api/snapshot" -UseBasicParsing -TimeoutSec 5).Content
+            $requestTimeout = Get-SupportRequestTimeout 'admin-snapshot-request'
+            $body = (Invoke-WebRequest -Method Get -Uri "$supportBaseUrl/admin/api/snapshot" -UseBasicParsing -TimeoutSec $requestTimeout).Content
             Set-Content -Path (Join-Path $bundleRoot 'health\snapshot.json') -Value $body -Encoding UTF8
         } catch {
-            Set-Content -Path (Join-Path $bundleRoot 'health\snapshot.json') -Value "unreachable: $HealthUrl/admin/api/snapshot did not respond ($($_.Exception.Message))" -Encoding UTF8
+            Test-Deadline 'admin-snapshot-request'
+            Set-Content -Path (Join-Path $bundleRoot 'health\snapshot.json') -Value "unreachable: $supportBaseUrl/admin/api/snapshot did not respond ($($_.Exception.Message))" -Encoding UTF8
         }
 
         # ---- logs/ -----------------------------------------------------
@@ -1696,7 +1818,6 @@ function Invoke-Support {
         # its verified platform ABI is unavailable.
         $safeOpenAvailable = $false
         try {
-            . (Join-Path $PSScriptRoot 'lib\support-safe-open.ps1')
             Initialize-SupportSafeOpen
             $safeOpenAvailable = $true
         } catch {
@@ -1711,6 +1832,47 @@ function Invoke-Support {
                 ForEach-Object { $_.Trim().ToLowerInvariant() } |
                 Where-Object { $_ })
             return $forcedFailures -contains $Kind.ToLowerInvariant()
+        }
+        function Publish-SupportArtifact {
+            param(
+                [Parameter(Mandatory)][string]$Temporary,
+                [Parameter(Mandatory)][string]$Destination,
+                [Parameter(Mandatory)][string]$FailureKind
+            )
+            Test-Deadline "$FailureKind-publish"
+            $replacing = [System.IO.File]::Exists($Destination)
+            if (Test-SupportForcedPublishFailure $FailureKind) {
+                throw "forced atomic publish failure: $FailureKind"
+            }
+            if ($replacing -and (Test-SupportForcedPublishFailure "$FailureKind-replace")) {
+                throw "forced atomic replacement failure: $FailureKind"
+            }
+
+            if ($replacing -and $env:GW_SUPPORT_TEST_REPLACE_BARRIER_DESTINATION) {
+                $destinationFull = [System.IO.Path]::GetFullPath($Destination)
+                $barrierFull = [System.IO.Path]::GetFullPath(
+                    $env:GW_SUPPORT_TEST_REPLACE_BARRIER_DESTINATION)
+                $comparison = if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
+                    [System.StringComparison]::OrdinalIgnoreCase
+                } else {
+                    [System.StringComparison]::Ordinal
+                }
+                if ([string]::Equals($destinationFull, $barrierFull, $comparison)) {
+                    Set-Content -LiteralPath $env:GW_SUPPORT_TEST_REPLACE_BARRIER_READY `
+                        -Value 'ready' -Encoding ASCII
+                    $replacementBarrierDeadline = [DateTime]::UtcNow.AddSeconds(30)
+                    while (-not (Test-Path -LiteralPath $env:GW_SUPPORT_TEST_REPLACE_BARRIER_CONTINUE)) {
+                        Test-Deadline "$FailureKind-replacement-barrier"
+                        if ([DateTime]::UtcNow -ge $replacementBarrierDeadline) {
+                            throw 'atomic replacement test barrier timed out'
+                        }
+                        Start-Sleep -Milliseconds 25
+                    }
+                }
+            }
+
+            Test-Deadline "$FailureKind-publish"
+            Publish-SupportFileAtomically -TemporaryPath $Temporary -DestinationPath $Destination
         }
         function Test-SupportDirectory {
             param([string]$Path)
@@ -1811,6 +1973,7 @@ function Invoke-Support {
                     $remaining = [int64]$openedSource.Metadata.Length
                     $buffer = New-Object byte[] 65536
                     while ($remaining -gt 0) {
+                        Test-Deadline 'source-snapshot-chunk'
                         $wanted = [int][Math]::Min([int64]$buffer.Length, $remaining)
                         $read = $openedSource.Stream.Read($buffer, 0, $wanted)
                         if ($read -le 0) { throw 'source changed length during safe-open snapshot' }
@@ -1826,6 +1989,7 @@ function Invoke-Support {
                 }
             } catch {
                 Remove-Item -LiteralPath $snapshotPath -Force -ErrorAction SilentlyContinue
+                if ($_.Exception.Message -match '^support bundle: timed out') { throw }
                 $collectionWarnings.Add("$Label safe-open snapshot failed") | Out-Null
                 return $null
             } finally {
@@ -1846,11 +2010,12 @@ function Invoke-Support {
                 if (Test-SupportForcedPublishFailure 'plain') {
                     throw 'forced atomic publish failure: plain'
                 }
-                [System.IO.File]::Move($temporary, $destination)
+                Publish-SupportArtifact $temporary $destination 'plain'
                 (Get-Item -LiteralPath $destination).LastWriteTimeUtc = $snapshot.LastWriteTimeUtc
                 return $true
             } catch {
                 Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+                if ($_.Exception.Message -match '^support bundle: timed out') { throw }
                 $collectionWarnings.Add("$Label redaction failed") | Out-Null
                 return $false
             }
@@ -1860,14 +2025,11 @@ function Invoke-Support {
             param([string]$Destination, [string]$Value, [string]$FailureKind)
             $temporary = $Destination + '.partial-' + [Guid]::NewGuid().ToString('N')
             try {
-                Set-Content -LiteralPath $temporary -Value $Value -Encoding UTF8 -ErrorAction Stop
+                Write-SupportUtf8NoBom -Path $temporary -Value $Value
                 if (Test-SupportForcedPublishFailure "$FailureKind-write") {
                     throw "forced support write failure: $FailureKind"
                 }
-                if (Test-SupportForcedPublishFailure $FailureKind) {
-                    throw "forced atomic publish failure: $FailureKind"
-                }
-                [System.IO.File]::Move($temporary, $Destination)
+                Publish-SupportArtifact $temporary $Destination $FailureKind
             } catch {
                 Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
                 throw
@@ -1880,54 +2042,69 @@ function Invoke-Support {
             if (-not $snapshot) { return $false }
             $destination = Join-Path $bundleRoot $RelativePath
             $temporary = $destination + '.partial-' + [Guid]::NewGuid().ToString('N')
-            $sourceFileStream = $null
-            $decompressor = $null
-            $reader = $null
-            $destinationFileStream = $null
-            $compressor = $null
-            $writer = $null
-            $failure = $null
             try {
                 $null = New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force
-                $sourceFileStream = [System.IO.File]::OpenRead($snapshot.Path)
-                $decompressor = New-Object System.IO.Compression.GzipStream(
-                    $sourceFileStream, [System.IO.Compression.CompressionMode]::Decompress)
-                $reader = New-Object System.IO.StreamReader($decompressor)
-                $destinationFileStream = [System.IO.File]::Create($temporary)
-                $compressor = New-Object System.IO.Compression.GzipStream(
-                    $destinationFileStream, [System.IO.Compression.CompressionMode]::Compress)
-                $writer = New-Object System.IO.StreamWriter($compressor)
-                while (-not $reader.EndOfStream) {
-                    $redactedLine = @($reader.ReadLine() | Invoke-RedactStream)
-                    foreach ($line in $redactedLine) { $writer.WriteLine([string]$line) }
-                }
-            } catch {
-                $failure = $_
-            } finally {
-                foreach ($disposable in @(
-                    $writer, $compressor, $destinationFileStream,
-                    $reader, $decompressor, $sourceFileStream
-                )) {
-                    if ($null -ne $disposable) {
-                        try { $disposable.Dispose() }
-                        catch { if (-not $failure) { $failure = $_ } }
+                $gzipWork = {
+                    param($SnapshotPath, $TemporaryPath, $RedactLibrary,
+                        $CompressionKind, $DelayMilliseconds, $PidFile)
+                    $ErrorActionPreference = 'Stop'
+                    if ($CompressionKind -ceq 'gzip') {
+                        if ($PidFile) {
+                            $encoding = New-Object System.Text.UTF8Encoding($false)
+                            [System.IO.File]::WriteAllText($PidFile, [string]$PID, $encoding)
+                        }
+                        if ([int]$DelayMilliseconds -gt 0) {
+                            Start-Sleep -Milliseconds ([int]$DelayMilliseconds)
+                        }
+                    }
+                    . $RedactLibrary
+                    $sourceFileStream = $null
+                    $decompressor = $null
+                    $reader = $null
+                    $destinationFileStream = $null
+                    $compressor = $null
+                    $writer = $null
+                    try {
+                        $sourceFileStream = [System.IO.File]::OpenRead($SnapshotPath)
+                        $decompressor = New-Object System.IO.Compression.GzipStream(
+                            $sourceFileStream, [System.IO.Compression.CompressionMode]::Decompress)
+                        $reader = New-Object System.IO.StreamReader($decompressor)
+                        $destinationFileStream = [System.IO.File]::Create($TemporaryPath)
+                        $compressor = New-Object System.IO.Compression.GzipStream(
+                            $destinationFileStream, [System.IO.Compression.CompressionMode]::Compress)
+                        $writer = New-Object System.IO.StreamWriter($compressor)
+                        while (-not $reader.EndOfStream) {
+                            $redactedLine = @($reader.ReadLine() | Invoke-RedactStream)
+                            foreach ($line in $redactedLine) { $writer.WriteLine([string]$line) }
+                        }
+                    } finally {
+                        foreach ($disposable in @(
+                            $writer, $compressor, $destinationFileStream,
+                            $reader, $decompressor, $sourceFileStream
+                        )) {
+                            if ($null -ne $disposable) { $disposable.Dispose() }
+                        }
                     }
                 }
-            }
-            if ($failure) {
+                Invoke-SupportDeadlineJob -Work $gzipWork -Arguments @(
+                    $snapshot.Path, $temporary, (Join-Path $PSScriptRoot 'lib\redact.ps1'),
+                    $env:GW_SUPPORT_TEST_COMPRESSION_KIND,
+                    $env:GW_SUPPORT_TEST_COMPRESSION_DELAY_MS,
+                    $env:GW_SUPPORT_TEST_COMPRESSION_PID_FILE
+                ) -Stage 'gzip-compression'
+            } catch {
                 Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+                if ($_.Exception.Message -match '^support bundle: timed out') { throw }
                 $collectionWarnings.Add("$Label decompression or redaction failed") | Out-Null
                 return $false
             }
             try {
-                if (Test-SupportForcedPublishFailure 'gzip') {
-                    throw 'forced atomic publish failure: gzip'
-                }
-                [System.IO.File]::Move($temporary, $destination)
+                Publish-SupportArtifact $temporary $destination 'gzip'
                 (Get-Item -LiteralPath $destination).LastWriteTimeUtc = $snapshot.LastWriteTimeUtc
                 return $true
             } catch {
                 Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+                if ($_.Exception.Message -match '^support bundle: timed out') { throw }
                 $collectionWarnings.Add("$Label archive publish failed") | Out-Null
                 return $false
             }
@@ -1961,6 +2138,7 @@ function Invoke-Support {
             $cutoff = (Get-Date).AddDays(-$LogDays)
             foreach ($candidate in Get-ChildItem -LiteralPath $logsDir -Force -ErrorAction SilentlyContinue) {
                 if ($candidate.Name -like 'gateway-*.log.gz' -and $candidate.LastWriteTime -ge $cutoff) {
+                    Test-Deadline 'gateway-rotation-item'
                     $null = Copy-RedactedSupportGzip $candidate.FullName ("logs\gateway\{0}" -f $candidate.Name) ("Gateway rotation {0}" -f $candidate.Name)
                 }
             }
@@ -1974,6 +2152,7 @@ function Invoke-Support {
             foreach ($candidate in Get-ChildItem -LiteralPath $kiroDirectory -Force -ErrorAction SilentlyContinue) {
                 $match = [regex]::Match($candidate.Name, $kiroRotationPattern)
                 if ($match.Success) {
+                    Test-Deadline 'kiro-rotation-item'
                     $suffix = $match.Groups[1].Value
                     $null = Copy-RedactedSupportLog $candidate.FullName ("logs\kiro\kiro-chat.log.{0}" -f $suffix) ("Kiro rotation {0}" -f $candidate.Name) $true
                 }
@@ -1988,12 +2167,14 @@ function Invoke-Support {
             param([string]$SourceDirectory, [string]$DestinationPrefix)
             $children = @(Get-ChildItem -LiteralPath $SourceDirectory -Force -ErrorAction SilentlyContinue)
             foreach ($approved in $approvedCoworkerLogs) {
+                Test-Deadline 'coworker-log-item'
                 $currentPath = Join-Path $SourceDirectory $approved
                 $null = Copy-RedactedSupportLog $currentPath (Join-Path $DestinationPrefix $approved) ("Co-worker {0}" -f $approved) $false
                 $rotationPattern = '^' + [regex]::Escape($approved) + '\.([0-9]+)$'
                 foreach ($candidate in $children) {
                     $match = [regex]::Match($candidate.Name, $rotationPattern)
                     if ($match.Success) {
+                        Test-Deadline 'coworker-log-item'
                         $null = Copy-RedactedSupportLog $candidate.FullName (Join-Path $DestinationPrefix $candidate.Name) ("Co-worker {0}" -f $candidate.Name) $true
                     }
                 }
@@ -2010,6 +2191,7 @@ function Invoke-Support {
             $profilesDirectory = Join-Path $resolvedCoworkerHome 'profiles'
             if (Test-SupportDirectory $profilesDirectory) {
                 foreach ($profile in Get-ChildItem -LiteralPath $profilesDirectory -Directory -Force -ErrorAction SilentlyContinue) {
+                    Test-Deadline 'profile-log-item'
                     if (($profile.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
                     $profileLogs = Join-Path $profile.FullName 'logs'
                     if (Test-SupportDirectory $profileLogs) {
@@ -2023,21 +2205,27 @@ function Invoke-Support {
         # only when it parses and `enabled` is an actual Boolean true.
         $metricsStatus = 'unavailable'
         $captureStatus = 'unavailable'
+        Test-Deadline 'metrics-request'
         try {
-            $metricsBody = (Invoke-WebRequest -Method Get -Uri "$HealthUrl/metrics" -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop).Content
+            $requestTimeout = Get-SupportRequestTimeout 'metrics-request'
+            $metricsBody = (Invoke-WebRequest -Method Get -Uri "$supportBaseUrl/metrics" -UseBasicParsing -TimeoutSec $requestTimeout -ErrorAction Stop).Content
             Write-SupportTextAtomically (Join-Path $bundleRoot "logs\gateway\metrics-snapshot-$ts.prom") $metricsBody 'metrics'
             $metricsStatus = 'captured'
         } catch {
+            Test-Deadline 'metrics-request'
             if ($_.Exception.Message -match 'atomic publish failure') {
                 $collectionWarnings.Add('Metrics snapshot unavailable: atomic publish failed') | Out-Null
             } else {
-                $collectionWarnings.Add("Metrics snapshot unavailable: $HealthUrl/metrics") | Out-Null
+                $collectionWarnings.Add("Metrics snapshot unavailable: $supportBaseUrl/metrics") | Out-Null
             }
         }
         $captureBody = $null
+        Test-Deadline 'capture-request'
         try {
-            $captureBody = (Invoke-WebRequest -Method Get -Uri "$HealthUrl/admin/api/acp-capture?support=redacted" -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop).Content
+            $requestTimeout = Get-SupportRequestTimeout 'capture-request'
+            $captureBody = (Invoke-WebRequest -Method Get -Uri "$supportBaseUrl/admin/api/acp-capture?support=redacted" -UseBasicParsing -TimeoutSec $requestTimeout -ErrorAction Stop).Content
         } catch {
+            Test-Deadline 'capture-request'
             $collectionWarnings.Add('ACP capture unavailable: request failed') | Out-Null
         }
         if ($null -ne $captureBody) {
@@ -2058,6 +2246,7 @@ function Invoke-Support {
                         Write-SupportTextAtomically (Join-Path $bundleRoot "logs\gateway\acp-capture-$ts.json") $captureBody 'capture'
                         $captureStatus = 'captured'
                     } catch {
+                        if ($_.Exception.Message -match '^support bundle: timed out') { throw }
                         if ($_.Exception.Message -match 'atomic publish failure') {
                             $collectionWarnings.Add('ACP capture unavailable: atomic publish failed') | Out-Null
                         } else {
@@ -2159,6 +2348,7 @@ function Invoke-Support {
         $approvedPattern = '(agent|errors|gateway|gui|desktop|mcp-stderr|gateway-shutdown-watchdog|dashboard-auth|container-boot|tool_calls)\.log\.[0-9]+$'
         $rotationCandidates = New-Object System.Collections.Generic.List[object]
         foreach ($file in Get-ChildItem -LiteralPath (Join-Path $bundleRoot 'logs') -Recurse -File -ErrorAction SilentlyContinue) {
+            Test-Deadline 'archive-cap-item'
             $relative = $file.FullName.Substring($bundleRoot.Length).TrimStart('\','/').Replace('\','/')
             $isRotation =
                 ($relative -match '^logs/gateway/gateway-.*\.log\.gz$') -or
@@ -2188,7 +2378,6 @@ function Invoke-Support {
 
         # ---- MANIFEST.txt ----------------------------------------------
         function Write-SupportManifest {
-            Remove-Item -LiteralPath (Join-Path $bundleRoot 'MANIFEST.txt') -Force -ErrorAction SilentlyContinue
             $manifest = New-Object System.Collections.Generic.List[string]
             $manifest.Add("gw support bundle") | Out-Null
             $manifest.Add("======================") | Out-Null
@@ -2255,18 +2444,34 @@ function Invoke-Support {
         $rotationIndex = 0
         $capWarningAdded = $false
         while ($true) {
-            Test-Deadline 'archive-cap-measure'
+            Test-Deadline 'archive-cap-item'
             Write-SupportManifest
             $archiveTemporary = Join-Path $outDir ("{0}.partial-{1}.zip" -f $bundleName, [Guid]::NewGuid().ToString('N'))
             try {
-                Compress-Archive -Path $bundleRoot -DestinationPath $archiveTemporary -Force
-                if (Test-SupportForcedPublishFailure 'archive') {
-                    throw 'forced atomic publish failure: archive'
+                $archiveWork = {
+                    param($BundlePath, $TemporaryPath, $CompressionKind,
+                        $DelayMilliseconds, $PidFile)
+                    $ErrorActionPreference = 'Stop'
+                    if ($CompressionKind -ceq 'archive') {
+                        if ($PidFile) {
+                            $encoding = New-Object System.Text.UTF8Encoding($false)
+                            [System.IO.File]::WriteAllText($PidFile, [string]$PID, $encoding)
+                        }
+                        if ([int]$DelayMilliseconds -gt 0) {
+                            Start-Sleep -Milliseconds ([int]$DelayMilliseconds)
+                        }
+                    }
+                    Compress-Archive -Path $BundlePath -DestinationPath $TemporaryPath -Force
                 }
+                Invoke-SupportDeadlineJob -Work $archiveWork -Arguments @(
+                    $bundleRoot, $archiveTemporary,
+                    $env:GW_SUPPORT_TEST_COMPRESSION_KIND,
+                    $env:GW_SUPPORT_TEST_COMPRESSION_DELAY_MS,
+                    $env:GW_SUPPORT_TEST_COMPRESSION_PID_FILE
+                ) -Stage 'archive-compression'
                 $archiveLength = (Get-Item -LiteralPath $archiveTemporary).Length
                 if ($archiveLength -le $maxBytes) {
-                    if (Test-Path -LiteralPath $outPath) { Remove-Item -LiteralPath $outPath -Force }
-                    [System.IO.File]::Move($archiveTemporary, $outPath)
+                    Publish-SupportArtifact $archiveTemporary $outPath 'archive'
                     break
                 }
                 if ($rotationIndex -lt $rotationCandidates.Count) {
@@ -2284,8 +2489,7 @@ function Invoke-Support {
                     $capWarningAdded = $true
                     continue
                 }
-                if (Test-Path -LiteralPath $outPath) { Remove-Item -LiteralPath $outPath -Force }
-                [System.IO.File]::Move($archiveTemporary, $outPath)
+                Publish-SupportArtifact $archiveTemporary $outPath 'archive'
                 break
             } finally {
                 if (Test-Path -LiteralPath $archiveTemporary) {
@@ -2298,11 +2502,7 @@ function Invoke-Support {
         $latestTemporary = Join-Path $outDir ('latest.partial-' + [Guid]::NewGuid().ToString('N') + '.zip')
         try {
             Copy-Item -LiteralPath $outPath -Destination $latestTemporary -Force
-            if (Test-SupportForcedPublishFailure 'latest') {
-                throw 'forced atomic publish failure: latest'
-            }
-            if (Test-Path -LiteralPath $latestPath) { Remove-Item -LiteralPath $latestPath -Force }
-            [System.IO.File]::Move($latestTemporary, $latestPath)
+            Publish-SupportArtifact $latestTemporary $latestPath 'latest'
         } finally {
             if (Test-Path -LiteralPath $latestTemporary) {
                 Remove-Item -LiteralPath $latestTemporary -Force -ErrorAction SilentlyContinue

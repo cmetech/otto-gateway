@@ -116,6 +116,14 @@ collection allows 210 seconds so the script's 180-second collection deadline
 still has a 30-second cleanup and atomic-publication margin; lifecycle actions
 retain their 30-second timeout.
 
+PowerShell derives its snapshot request base after loading `.env` and
+`overrides.env`: an explicit `GW_ADDR` wins, otherwise the effective
+`HTTP_ADDR` is used (wildcard listeners are probed through loopback). Its live
+Prometheus and JSON snapshots are UTF-8 without a BOM. Expensive compression
+runs in a cancellable child, and the deadline is checked between collection
+items and source-copy chunks so timeout cleanup does not leave a collector
+process or partial archive behind.
+
 ### Co-worker diagnostics
 
 For direct use, provide the Co-worker data home with `--co-worker-home DIR`
@@ -210,7 +218,11 @@ each omission, so manifest and archive-format overhead count toward the cap.
 If the cap still cannot be met without dropping protected current logs or
 snapshots, the bundle is retained with an explicit manifest warning rather
 than discarding those higher-value artifacts. Final archives and their
-`latest` copies are published by same-directory atomic rename.
+`latest` copies are published from completed sibling temporaries without
+deleting an existing destination first. On Windows the PowerShell collector
+uses native `MoveFileEx(REPLACE_EXISTING | WRITE_THROUGH)`, so readers continue
+to see the old valid ZIP until the replacement commits; first publication uses
+the same primitive.
 
 ## Gateway config flags (flags + .env)
 
@@ -719,6 +731,15 @@ or `./bin/gateway` without `GW_LOG` or without shell
 redirection, the log file is empty/absent and the tail panel shows
 "Waiting for log activity…" indefinitely — this is a graceful
 degraded mode, not a failure.
+
+The admin log-source list always includes the Gateway main and boot logs, and
+includes chat trace only when enabled. Kiro is offered only when the effective
+HTTP listener host is strictly loopback (`localhost`, any `127/8` address, or
+`::1`). It is omitted for wildcard, private-LAN, public, and other hostname
+listeners. Co-worker logs are never exposed through Gateway's admin tail; use
+Co-worker's own viewer or a support bundle. This is a data-exposure boundary,
+not an authentication change: `/admin` remains auth-exempt under the accepted
+v1 posture below, including on a non-loopback listener.
 
 Log rotation: the tailer opens the file read-only with no exclusive
 lock and re-opens at EOF when it detects rotation (size shrink OR

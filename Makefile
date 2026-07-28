@@ -19,7 +19,7 @@ PKG_SCRIPTS := scripts/gw scripts/gw.ps1 scripts/.env.example
 PKG_README  := docs/operator-quickstart.md
 PKG_INSTALL := docs/INSTALL.md
 
-.PHONY: all build run test test-race test-admin-js lint fmt fmt-check vet examples tidy clean cross ci arch-lint start stop status e2e e2e-list e2e-sdk-setup help \
+.PHONY: all build run test test-race test-admin-js test-metrics-defaults test-windows-package-support lint fmt fmt-check vet examples tidy clean cross ci arch-lint start stop status e2e e2e-list e2e-sdk-setup help \
         cross-darwin-arm64 cross-darwin-amd64 cross-linux-amd64 cross-windows-amd64 \
         cross-otto-tray cross-otto-tray-darwin-arm64 cross-otto-tray-darwin-amd64 cross-otto-tray-windows-amd64 \
         package package-all package-checksums package-darwin-arm64 package-darwin-amd64 package-linux-amd64 package-windows-amd64
@@ -41,6 +41,12 @@ test-race: ## Run tests with the race detector (CI default)
 
 test-admin-js: ## Run dashboard JavaScript behavior tests (Node built-in runner)
 	node --test internal/admin/admin_js_test.js
+
+test-metrics-defaults: ## Verify shipped remote-write defaults remain safe and opt-in
+	bash tests/scripts/test-metrics-remote-write-defaults.sh
+
+test-windows-package-support: ## Build and exercise support from the Windows release archive
+	bash tests/scripts/test-windows-package-support.sh
 
 lint: ## Run golangci-lint
 	golangci-lint run ./...
@@ -164,6 +170,7 @@ cross-otto-tray: cross-otto-tray-darwin-arm64 cross-otto-tray-darwin-amd64 cross
 #     scripts/gw.bat             (Windows cmd.exe dispatcher, -> gw.ps1)
 #     scripts/.env.example
 #     scripts/lib/redact.*       (PII redaction — sourced by gw / test-pii)
+#     scripts/lib/support-safe-open.ps1 (no-follow + atomic Windows support I/O)
 #     scripts/lib/migrate.*      (~/.otto-gw -> ~/.gw config migration; the
 #                                 installers dot-source this on first run, so
 #                                 omitting it here silently no-ops migration)
@@ -216,13 +223,14 @@ define stage_unix
 	mkdir -p $(DIST_DIR)/otto_gateway/logs
 	cp $(BUILD_DIR)/$(BINARY)-$(1)-$(2)$(3) $(DIST_DIR)/otto_gateway/bin/$(BINARY)$(3)
 	cp scripts/gw scripts/gw.ps1 scripts/gw.bat scripts/setup.bat scripts/start.bat scripts/stop.bat scripts/status.bat scripts/.env.example scripts/test-pii.sh scripts/test-pii.ps1 $(DIST_DIR)/otto_gateway/scripts/
-	cp scripts/lib/redact.sh scripts/lib/redact.ps1 scripts/lib/migrate.sh scripts/lib/migrate.ps1 $(DIST_DIR)/otto_gateway/scripts/lib/
+	cp scripts/lib/redact.sh scripts/lib/redact.ps1 scripts/lib/migrate.sh scripts/lib/migrate.ps1 scripts/lib/support-safe-open.ps1 $(DIST_DIR)/otto_gateway/scripts/lib/
 	chmod 755 $(DIST_DIR)/otto_gateway/scripts/gw
 	chmod 755 $(DIST_DIR)/otto_gateway/scripts/test-pii.sh
 	chmod 644 $(DIST_DIR)/otto_gateway/scripts/lib/redact.sh
 	chmod 644 $(DIST_DIR)/otto_gateway/scripts/lib/redact.ps1
 	chmod 644 $(DIST_DIR)/otto_gateway/scripts/lib/migrate.sh
 	chmod 644 $(DIST_DIR)/otto_gateway/scripts/lib/migrate.ps1
+	chmod 644 $(DIST_DIR)/otto_gateway/scripts/lib/support-safe-open.ps1
 	cp $(PKG_README) $(DIST_DIR)/otto_gateway/README.md
 	cp $(PKG_INSTALL) $(DIST_DIR)/otto_gateway/INSTALL.md
 	: > $(DIST_DIR)/otto_gateway/logs/.gitkeep
@@ -283,7 +291,7 @@ arch-lint: ## Check architecture boundaries (requires go-arch-lint@v1.15.0)
 # target gates the next via Make's dependency ordering; govulncheck stays as a
 # recipe step because it has no separate target. `cross` is intentionally NOT
 # a dependency — CI runs it in a parallel job (see .github/workflows/ci.yml).
-ci: fmt-check vet build lint test-race test-admin-js arch-lint examples ## Full CI gate (brief §3.12 canonical sequence)
+ci: fmt-check vet build lint test-race test-admin-js test-metrics-defaults arch-lint examples ## Full CI gate (brief §3.12 canonical sequence)
 	$(shell go env GOPATH)/bin/govulncheck ./...
 
 start: ## Start gateway in background (wrapper script)

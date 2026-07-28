@@ -30,6 +30,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -879,8 +880,10 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 	// default distribution path). "boot-err" is the boot-time stderr capture
 	// the wrapper scripts write to (script convention: same dir as
 	// LOG_FILE, "-boot.log" suffix; operator can override via
-	// GW_LOG_BOOT, or the deprecated OTTO_LOG_BOOT). "kiro" is always included
-	// so the tailer can retry until Kiro creates its native log file.
+	// GW_LOG_BOOT, or the deprecated OTTO_LOG_BOOT). "kiro" is included only
+	// for a strictly loopback-bound listener; /admin is intentionally auth-
+	// exempt, so a non-loopback listener must not publish the sensitive native
+	// Kiro log. On loopback the tailer can retry until Kiro creates the file.
 	// "chat-trace" is included ONLY when CHAT_TRACE=true.
 	mainLogPath := envOrDefault("LOG_FILE",
 		envOrDefault("GW_LOG",
@@ -890,7 +893,7 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 	// D-18-08 REL-OBSV-04: cfg.AdminTailPath is derived from the same
 	// chat-trace path used by the writer, so the tailer cannot diverge.
 	logPaths, logPathOrder, logPathLabels := buildAdminLogSources(
-		mainLogPath, bootLogPath, cfg.KiroChatLogPath, cfg.AdminTailPath, cfg.ChatTrace,
+		cfg.HTTPAddr, mainLogPath, bootLogPath, cfg.KiroChatLogPath, cfg.AdminTailPath, cfg.ChatTrace,
 	)
 	// REL-HTTP-01: shared shutdown channel — created here before both the
 	// admin handler and the server so both consumers observe the same signal
@@ -1387,16 +1390,37 @@ func stripExt(p string) string {
 	return strings.TrimSuffix(p, filepath.Ext(p))
 }
 
-func buildAdminLogSources(mainPath, bootPath, kiroPath, chatTracePath string, chatTrace bool) (map[string]string, []string, map[string]string) {
-	paths := map[string]string{"main": mainPath, "boot-err": bootPath, "kiro": kiroPath}
-	order := []string{"main", "boot-err", "kiro"}
-	labels := map[string]string{"main": "Gateway", "boot-err": "Gateway boot/errors", "kiro": "Kiro"}
+func buildAdminLogSources(httpAddr, mainPath, bootPath, kiroPath, chatTracePath string, chatTrace bool) (map[string]string, []string, map[string]string) {
+	paths := map[string]string{"main": mainPath, "boot-err": bootPath}
+	order := []string{"main", "boot-err"}
+	labels := map[string]string{"main": "Gateway", "boot-err": "Gateway boot/errors"}
+	if isStrictLoopbackHTTPListener(httpAddr) {
+		paths["kiro"] = kiroPath
+		order = append(order, "kiro")
+		labels["kiro"] = "Kiro"
+	}
 	if chatTrace {
 		paths["chat-trace"] = chatTracePath
 		order = append(order, "chat-trace")
 		labels["chat-trace"] = "Gateway chat trace"
 	}
 	return paths, order, labels
+}
+
+func isStrictLoopbackHTTPListener(addr string) bool {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(addr))
+	if err != nil || host == "" {
+		return false
+	}
+	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	if host == "localhost" {
+		return true
+	}
+	if zone := strings.LastIndexByte(host, '%'); zone >= 0 {
+		host = host[:zone]
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // buildLogger constructs the root *slog.Logger from the loaded config.

@@ -455,6 +455,158 @@ func TestAcpCaptureSupport_PreservesLargeJSONInteger(t *testing.T) {
 	}
 }
 
+// TestAcpCaptureSupport_RecursivelyRedactsJSONStringLeaves catches a redactor
+// that treats decoded string leaves as flat text. Flat assignment matching can
+// redact only the first word of a quoted value and leaks object/array values;
+// walking each bounded JSON document keeps the whole secret value opaque.
+func TestAcpCaptureSupport_RecursivelyRedactsJSONStringLeaves(t *testing.T) {
+	deepest := `{"password":"deep secret with \"quoted\" text","safe":"deep-safe"}`
+	levelTwoBody, err := json.Marshal(map[string]string{"payload": deepest, "safe": "level-two-safe"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	levelOneBody, err := json.Marshal(map[string]string{"payload": string(levelTwoBody), "safe": "level-one-safe"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	paramsBody, err := json.Marshal(map[string]string{
+		"multiword": `{"password":"multi word secret","safe":"multi-safe"}`,
+		"object":    `{"password":{"nested":"object-value-secret"},"safe":"object-safe"}`,
+		"array":     `{"api_key":["array-value-secret",{"nested":"array-object-secret"}],"safe":"array-safe"}`,
+		"recursive": string(levelOneBody),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := &fakeCaptureSource{enabled: true, frames: []admin.CaptureFrame{{Seq: 1, Params: string(paramsBody)}}}
+	h := admin.Handler(admin.Deps{AcpCapture: src})
+
+	rec := doGet(t, h, "/api/acp-capture?support=redacted")
+	var body struct {
+		Frames []admin.CaptureFrame `json:"frames"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("support export is invalid JSON: %v; body=%s", err, rec.Body.String())
+	}
+	if len(body.Frames) != 1 {
+		t.Fatalf("frames = %+v, want one", body.Frames)
+	}
+	for _, secret := range []string{
+		"multi word secret", "object-value-secret", "array-value-secret",
+		"array-object-secret", "deep secret", "quoted",
+	} {
+		if strings.Contains(rec.Body.String(), secret) {
+			t.Errorf("support export leaked recursively encoded secret %q", secret)
+		}
+	}
+	for _, safe := range []string{
+		"multi-safe", "object-safe", "array-safe", "level-one-safe",
+		"level-two-safe", "deep-safe",
+	} {
+		if !strings.Contains(rec.Body.String(), safe) {
+			t.Errorf("support export removed recursively encoded safe value %q", safe)
+		}
+	}
+
+	var params map[string]string
+	if err := json.Unmarshal([]byte(body.Frames[0].Params), &params); err != nil {
+		t.Fatalf("redacted params are invalid JSON: %v; params=%s", err, body.Frames[0].Params)
+	}
+	for _, name := range []string{"multiword", "object", "array", "recursive"} {
+		var nested any
+		if err := json.Unmarshal([]byte(params[name]), &nested); err != nil {
+			t.Errorf("redaction damaged nested JSON leaf %q: %v; leaf=%s", name, err, params[name])
+		}
+	}
+}
+
+// TestAcpCaptureSupport_MalformedAssignmentsRedactWholeQuotedAndStructuredValues
+// catches fallback parsing that stops at whitespace or the first structural
+// delimiter, exposing the remainder of a secret value. The fixture is
+// intentionally not JSON so it exercises the quote-aware fail-safe parser.
+func TestAcpCaptureSupport_MalformedAssignmentsRedactWholeQuotedAndStructuredValues(t *testing.T) {
+	const params = `malformed-safe password="multi word malformed secret" after=visible ` +
+		`api_key={"nested":"object malformed secret"} ` +
+		`refreshToken=["array malformed secret",{"more":"array object malformed secret"}] ` +
+		`dbPassword="escaped malformed secret with \"quoted secret\" tail" ` +
+		`password_confirmation='confirmation malformed secret' final=kept`
+	src := &fakeCaptureSource{enabled: true, frames: []admin.CaptureFrame{{Seq: 1, Params: params}}}
+	h := admin.Handler(admin.Deps{AcpCapture: src})
+
+	rec := doGet(t, h, "/api/acp-capture?support=redacted")
+	var body struct {
+		Frames []admin.CaptureFrame `json:"frames"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("support export is invalid JSON: %v; body=%s", err, rec.Body.String())
+	}
+	if len(body.Frames) != 1 {
+		t.Fatalf("frames = %+v, want one", body.Frames)
+	}
+	for _, secret := range []string{
+		"multi word malformed secret", "object malformed secret",
+		"array malformed secret", "array object malformed secret",
+		"escaped malformed secret", "quoted secret", "confirmation malformed secret",
+	} {
+		if strings.Contains(body.Frames[0].Params, secret) {
+			t.Errorf("malformed fallback partially exposed secret %q: %s", secret, body.Frames[0].Params)
+		}
+	}
+	for _, safe := range []string{"malformed-safe", "after=visible", "final=kept"} {
+		if !strings.Contains(body.Frames[0].Params, safe) {
+			t.Errorf("malformed fallback removed safe text %q: %s", safe, body.Frames[0].Params)
+		}
+	}
+}
+
+// TestAcpCaptureSupport_NestedJSONLimitsFailClosed catches unbounded recursive
+// decoding as well as a limit path that returns an uninspected encoded secret.
+// The response must stay valid JSON and replace the bounded-away subtree as a
+// whole, never expose part of the credential.
+func TestAcpCaptureSupport_NestedJSONLimitsFailClosed(t *testing.T) {
+	deep := `{"password":"depth-limit-secret"}`
+	// Re-encoding a JSON document as a JSON string necessarily doubles escape
+	// runs, so twelve layers are ample to cross the production recursion bound
+	// without turning the fixture itself into an exponential memory test.
+	for range 12 {
+		body, err := json.Marshal(map[string]string{"payload": deep})
+		if err != nil {
+			t.Fatal(err)
+		}
+		deep = string(body)
+	}
+	oversizedSecret := "oversized-limit-secret-" + strings.Repeat("x", 300*1024)
+	oversizedBody, err := json.Marshal(map[string]string{"password": oversizedSecret})
+	if err != nil {
+		t.Fatal(err)
+	}
+	paramsBody, err := json.Marshal(map[string]string{"deep": deep, "oversized": string(oversizedBody), "safe": "limit-safe"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := &fakeCaptureSource{enabled: true, frames: []admin.CaptureFrame{{Seq: 1, Params: string(paramsBody)}}}
+	h := admin.Handler(admin.Deps{AcpCapture: src})
+
+	rec := doGet(t, h, "/api/acp-capture?support=redacted")
+	var body struct {
+		Frames []admin.CaptureFrame `json:"frames"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("bounded support export is invalid JSON: %v; body prefix=%q", err, rec.Body.String()[:min(256, rec.Body.Len())])
+	}
+	if len(body.Frames) != 1 {
+		t.Fatalf("frames = %+v, want one", body.Frames)
+	}
+	for _, secret := range []string{"depth-limit-secret", "oversized-limit-secret-"} {
+		if strings.Contains(rec.Body.String(), secret) {
+			t.Errorf("bounded nested JSON path leaked secret prefix %q", secret)
+		}
+	}
+	if !strings.Contains(body.Frames[0].Params, "limit-safe") {
+		t.Errorf("bounded redaction removed outer safe context: %s", body.Frames[0].Params)
+	}
+}
+
 // TestAcpCaptureSupport_OrdinaryGetRemainsRaw catches accidental redaction of
 // the existing operator-only capture endpoint when support mode is not asked for.
 func TestAcpCaptureSupport_OrdinaryGetRemainsRaw(t *testing.T) {

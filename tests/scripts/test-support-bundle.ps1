@@ -62,6 +62,16 @@ function Assert-Line([string]$Path, [string]$Expected, [string]$Label) {
     Assert-True $found "$Label (missing exact line [$Expected] in $Path)"
 }
 
+function Assert-NoUtf8Bom([string]$Path, [string]$Label) {
+    $hasBom = $false
+    if (Test-Path -LiteralPath $Path -PathType Leaf) {
+        $bytes = [System.IO.File]::ReadAllBytes($Path)
+        $hasBom = $bytes.Length -ge 3 -and
+            $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF
+    }
+    Assert-True ((Test-Path -LiteralPath $Path -PathType Leaf) -and -not $hasBom) "$Label (unexpected UTF-8 BOM: $Path)"
+}
+
 function Assert-NoSupportTemporaryArtifacts([string]$Root, [string]$Label) {
     $artifacts = @()
     if ($Root -and (Test-Path -LiteralPath $Root)) {
@@ -211,17 +221,27 @@ function Set-SupportEnvironment {
     $env:GW_SUPPORT_TEST_AFTER_OPEN_BARRIER_READY = ''
     $env:GW_SUPPORT_TEST_AFTER_OPEN_BARRIER_CONTINUE = ''
     $env:GW_SUPPORT_TEST_FAIL_PUBLISH = ''
+    $env:GW_SUPPORT_TEST_TIMESTAMP = ''
+    $env:GW_SUPPORT_TEST_REPLACE_BARRIER_DESTINATION = ''
+    $env:GW_SUPPORT_TEST_REPLACE_BARRIER_READY = ''
+    $env:GW_SUPPORT_TEST_REPLACE_BARRIER_CONTINUE = ''
+    $env:GW_SUPPORT_TEST_DEADLINE_STAGE = ''
+    $env:GW_SUPPORT_TEST_DEADLINE_DELAY_MS = ''
+    $env:GW_SUPPORT_TEST_COMPRESSION_KIND = ''
+    $env:GW_SUPPORT_TEST_COMPRESSION_DELAY_MS = ''
+    $env:GW_SUPPORT_TEST_COMPRESSION_PID_FILE = ''
 }
 
 function Invoke-SupportRun {
     param(
         [string]$OutDir,
         [int]$MaxMb = 50,
-        [AllowEmptyString()][string]$ExplicitCoworker = ''
+        [AllowEmptyString()][string]$ExplicitCoworker = '',
+        [int]$TimeoutSec = 180
     )
     $null = New-Item -ItemType Directory -Path $OutDir -Force
     $stderr = "$OutDir.stderr"
-    $args = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $Wrapper, 'support', '-Out', $OutDir, '-MaxMb', "$MaxMb", '-LogDays', '9999')
+    $args = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $Wrapper, 'support', '-Out', $OutDir, '-MaxMb', "$MaxMb", '-Timeout', "$TimeoutSec", '-LogDays', '9999')
     if ($ExplicitCoworker) { $args += @('-CoworkerHome', $ExplicitCoworker) }
     $stdout = @(& $PowerShellExecutable @args 2> $stderr)
     $rc = $LASTEXITCODE
@@ -233,11 +253,11 @@ function Invoke-SupportRun {
 }
 
 function Start-SupportRun {
-    param([string]$OutDir, [int]$MaxMb = 50)
+    param([string]$OutDir, [int]$MaxMb = 50, [int]$TimeoutSec = 180)
     $null = New-Item -ItemType Directory -Path $OutDir -Force
     $stdout = "$OutDir.stdout"
     $stderr = "$OutDir.stderr"
-    $arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $Wrapper, 'support', '-Out', $OutDir, '-MaxMb', "$MaxMb", '-LogDays', '9999')
+    $arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $Wrapper, 'support', '-Out', $OutDir, '-MaxMb', "$MaxMb", '-Timeout', "$TimeoutSec", '-LogDays', '9999')
     $quotedArguments = @($arguments | ForEach-Object { '"' + ([string]$_).Replace('"', '\"') + '"' }) -join ' '
     $process = Start-Process -FilePath $PowerShellExecutable -ArgumentList $quotedArguments `
         -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
@@ -280,6 +300,20 @@ try {
             @{ OS = 'Linux'; Architecture = 'Arm64'; Expected = 'linux-arm64' }
         )) {
             Assert-True ((Get-SupportUnixAbiLayout $case.OS $case.Architecture) -ceq $case.Expected) "native layout selects $($case.Expected)"
+        }
+
+        $noBomFixture = Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetRandomFileName())
+        try {
+            try {
+                Write-SupportUtf8NoBom -Path $noBomFixture -Value '{"strict":true}'
+                Assert-NoUtf8Bom $noBomFixture 'support UTF-8 writer emits no BOM on every PowerShell version'
+                $strictObject = [System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($noBomFixture)) | ConvertFrom-Json
+                Assert-True (($strictObject.strict -is [bool]) -and $strictObject.strict) 'support UTF-8 writer preserves strict JSON bytes'
+            } catch {
+                Fail-With "support UTF-8 writer is available and usable: $($_.Exception.Message)"
+            }
+        } finally {
+            Remove-Item -LiteralPath $noBomFixture -Force -ErrorAction SilentlyContinue
         }
     } else {
         foreach ($abi in @('darwin-x64','darwin-arm64','linux-x64','linux-arm64')) {
@@ -484,6 +518,8 @@ server.serve_forever()
         Assert-True ($snapshotTs -match '^\d{8}-\d{6}Z$') 'snapshot timestamp uses UTC YYYYMMDD-HHMMSSZ'
         Assert-True ($captures[0].Name -ceq "acp-capture-$snapshotTs.json") 'metrics and capture share one UTC timestamp'
         Assert-Contains $metrics[0].FullName 'gateway_up 1' 'metrics content is preserved'
+        Assert-NoUtf8Bom $metrics[0].FullName 'metrics snapshot starts with Prometheus text, not a BOM'
+        Assert-NoUtf8Bom $captures[0].FullName 'capture snapshot starts with JSON, not a BOM'
         $captureJson = Get-Content -LiteralPath $captures[0].FullName -Raw | ConvertFrom-Json
         Assert-True (($captureJson.enabled -is [bool]) -and $captureJson.enabled -and $captureJson.frames[0].seq -eq 7) 'capture is valid enabled JSON'
     }
@@ -567,6 +603,52 @@ server.serve_forever()
     Assert-True ($httpFailure.ExitCode -eq 0) 'support tolerates capture HTTP failure'
     Assert-Line (Join-Path $httpFailureRoot 'MANIFEST.txt') 'WARNING: ACP capture unavailable: request failed' 'manifest identifies capture transport or HTTP failure'
 
+    Write-Host '== effective snapshot address resolution =='
+    $AddressEnv = Join-Path $script:FixtureRoot 'address.env'
+    $AddressOverrides = Join-Path $script:FixtureRoot 'address-overrides.env'
+
+    # An HTTP_ADDR that exists only in the loaded .env must drive every live
+    # support request; the pre-load default port is intentionally unreachable.
+    Set-SupportEnvironment $GatewayLog $GatewayBoot $KiroCwdFixture 'native/kiro-current.log' ''
+    "HTTP_ADDR=127.0.0.1:$HttpPort" | Set-Content -LiteralPath $AddressEnv -Encoding ASCII
+    $env:GW_ADDR = ''
+    $env:GW_ENV_FILE = $AddressEnv
+    $env:GW_OVERRIDES_FILE = Join-Path $script:FixtureRoot 'missing-address-overrides.env'
+    Clear-Content -LiteralPath $RequestLog
+    $envAddress = Invoke-SupportRun (Join-Path $ExtractRoot 'env-address-out')
+    Assert-True ($envAddress.ExitCode -eq 0) "support uses .env-only HTTP_ADDR: $($envAddress.Stderr)"
+    foreach ($path in @('/health','/admin/api/snapshot','/metrics','/admin/api/acp-capture?support=redacted')) {
+        Assert-Contains $RequestLog "GET $path" ".env-only HTTP_ADDR requests $path on the custom port"
+    }
+
+    # The second dotenv layer wins for HTTP_ADDR exactly as it does for the
+    # gateway process itself.
+    'HTTP_ADDR=127.0.0.1:1' | Set-Content -LiteralPath $AddressEnv -Encoding ASCII
+    "HTTP_ADDR=127.0.0.1:$HttpPort" | Set-Content -LiteralPath $AddressOverrides -Encoding ASCII
+    $env:GW_ADDR = ''
+    $env:GW_ENV_FILE = $AddressEnv
+    $env:GW_OVERRIDES_FILE = $AddressOverrides
+    Clear-Content -LiteralPath $RequestLog
+    $overrideAddress = Invoke-SupportRun (Join-Path $ExtractRoot 'override-address-out')
+    Assert-True ($overrideAddress.ExitCode -eq 0) "support uses overrides HTTP_ADDR precedence: $($overrideAddress.Stderr)"
+    foreach ($path in @('/health','/admin/api/snapshot','/metrics','/admin/api/acp-capture?support=redacted')) {
+        Assert-Contains $RequestLog "GET $path" "overrides HTTP_ADDR requests $path on the custom port"
+    }
+
+    # GW_ADDR remains the explicit wrapper probe override even when effective
+    # HTTP_ADDR points somewhere else.
+    'HTTP_ADDR=127.0.0.1:1' | Set-Content -LiteralPath $AddressEnv -Encoding ASCII
+    'HTTP_ADDR=127.0.0.1:2' | Set-Content -LiteralPath $AddressOverrides -Encoding ASCII
+    $env:GW_ADDR = "http://127.0.0.1:$HttpPort/"
+    $env:GW_ENV_FILE = $AddressEnv
+    $env:GW_OVERRIDES_FILE = $AddressOverrides
+    Clear-Content -LiteralPath $RequestLog
+    $explicitAddress = Invoke-SupportRun (Join-Path $ExtractRoot 'explicit-address-out')
+    Assert-True ($explicitAddress.ExitCode -eq 0) "support honors explicit GW_ADDR precedence: $($explicitAddress.Stderr)"
+    foreach ($path in @('/health','/admin/api/snapshot','/metrics','/admin/api/acp-capture?support=redacted')) {
+        Assert-Contains $RequestLog "GET $path" "explicit GW_ADDR requests $path without a double slash"
+    }
+
     Write-Host '== fail-closed safe-open and atomic snapshot publish =='
     'enabled' | Set-Content -LiteralPath $ModeFile -Encoding ASCII
     Set-SupportEnvironment $GatewayLog $GatewayBoot $KiroCwdFixture 'native/kiro-current.log' $CoworkerHome
@@ -645,6 +727,76 @@ server.serve_forever()
         }
     }
 
+    Write-Host '== replacement-safe timestamped and latest publication =='
+    $ExistingZipInput = Join-Path $script:FixtureRoot 'existing-zip-input'
+    $null = New-Item -ItemType Directory -Path $ExistingZipInput -Force
+    'prior valid archive artifact' | Set-Content -LiteralPath (Join-Path $ExistingZipInput 'prior.txt') -Encoding ASCII
+
+    $FixedArchiveTimestamp = '20000101-010203Z'
+    $ArchiveReplaceOut = Join-Path $ExtractRoot 'archive-replacement-out'
+    $null = New-Item -ItemType Directory -Path $ArchiveReplaceOut -Force
+    $ExistingTimestamped = Join-Path $ArchiveReplaceOut ("gateway-support-{0}-{1}.zip" -f ([System.Net.Dns]::GetHostName()), $FixedArchiveTimestamp)
+    Compress-Archive -Path $ExistingZipInput -DestinationPath $ExistingTimestamped -Force
+    $TimestampedPriorHash = (Get-FileHash -LiteralPath $ExistingTimestamped -Algorithm SHA256).Hash
+    Set-SupportEnvironment $GatewayLog $GatewayBoot $KiroCwdFixture 'native/kiro-current.log' ''
+    $env:GW_SUPPORT_TEST_TIMESTAMP = $FixedArchiveTimestamp
+    $env:GW_SUPPORT_TEST_FAIL_PUBLISH = 'archive-replace'
+    $archiveReplace = Invoke-SupportRun $ArchiveReplaceOut
+    Assert-True ($archiveReplace.ExitCode -ne 0) 'injected timestamped replacement failure exits nonzero'
+    Assert-File $ExistingTimestamped 'timestamped replacement failure preserves prior valid destination'
+    if (Test-Path -LiteralPath $ExistingTimestamped) {
+        Assert-True (((Get-FileHash -LiteralPath $ExistingTimestamped -Algorithm SHA256).Hash) -ceq $TimestampedPriorHash) 'timestamped replacement failure preserves prior destination bytes'
+    }
+
+    $LatestReplaceOut = Join-Path $ExtractRoot 'latest-replacement-out'
+    $null = New-Item -ItemType Directory -Path $LatestReplaceOut -Force
+    $ExistingLatest = Join-Path $LatestReplaceOut 'latest.zip'
+    Compress-Archive -Path $ExistingZipInput -DestinationPath $ExistingLatest -Force
+    $LatestPriorHash = (Get-FileHash -LiteralPath $ExistingLatest -Algorithm SHA256).Hash
+    Set-SupportEnvironment $GatewayLog $GatewayBoot $KiroCwdFixture 'native/kiro-current.log' ''
+    $env:GW_SUPPORT_TEST_TIMESTAMP = '20000101-010204Z'
+    $env:GW_SUPPORT_TEST_FAIL_PUBLISH = 'latest-replace'
+    $latestReplace = Invoke-SupportRun $LatestReplaceOut
+    Assert-True ($latestReplace.ExitCode -ne 0) 'injected latest replacement failure exits nonzero'
+    Assert-File $ExistingLatest 'latest replacement failure preserves prior valid destination'
+    if (Test-Path -LiteralPath $ExistingLatest) {
+        Assert-True (((Get-FileHash -LiteralPath $ExistingLatest -Algorithm SHA256).Hash) -ceq $LatestPriorHash) 'latest replacement failure preserves prior destination bytes'
+    }
+
+    # Pause immediately before the replacement primitive. The old archive
+    # must remain continuously observable at the barrier; publishing the new
+    # one is a single replace operation after release.
+    $BarrierReplaceOut = Join-Path $ExtractRoot 'latest-replacement-barrier-out'
+    $null = New-Item -ItemType Directory -Path $BarrierReplaceOut -Force
+    $BarrierLatest = Join-Path $BarrierReplaceOut 'latest.zip'
+    Compress-Archive -Path $ExistingZipInput -DestinationPath $BarrierLatest -Force
+    $BarrierPriorHash = (Get-FileHash -LiteralPath $BarrierLatest -Algorithm SHA256).Hash
+    Set-SupportEnvironment $GatewayLog $GatewayBoot $KiroCwdFixture 'native/kiro-current.log' ''
+    $ReplaceReady = Join-Path $script:FixtureRoot 'replace.ready'
+    $ReplaceContinue = Join-Path $script:FixtureRoot 'replace.continue'
+    $env:GW_SUPPORT_TEST_TIMESTAMP = '20000101-010205Z'
+    $env:GW_SUPPORT_TEST_REPLACE_BARRIER_DESTINATION = $BarrierLatest
+    $env:GW_SUPPORT_TEST_REPLACE_BARRIER_READY = $ReplaceReady
+    $env:GW_SUPPORT_TEST_REPLACE_BARRIER_CONTINUE = $ReplaceContinue
+    $replaceRun = Start-SupportRun $BarrierReplaceOut
+    foreach ($attempt in 1..600) {
+        if (Test-Path -LiteralPath $ReplaceReady) { break }
+        if ($replaceRun.Process.HasExited) { break }
+        Start-Sleep -Milliseconds 50
+    }
+    $replaceBarrierReached = Test-Path -LiteralPath $ReplaceReady
+    $oldVisibleAtBarrier = $replaceBarrierReached -and (Test-Path -LiteralPath $BarrierLatest -PathType Leaf) -and
+        (((Get-FileHash -LiteralPath $BarrierLatest -Algorithm SHA256).Hash) -ceq $BarrierPriorHash)
+    if ($replaceBarrierReached) { 'continue' | Set-Content -LiteralPath $ReplaceContinue -Encoding ASCII }
+    $replaceResult = Complete-SupportRun $replaceRun
+    Assert-True $replaceBarrierReached 'latest publisher reaches deterministic pre-replacement barrier'
+    Assert-True $oldVisibleAtBarrier 'reader observes prior latest.zip until the atomic replacement call'
+    Assert-True ($replaceResult.ExitCode -eq 0) "barriered latest replacement succeeds: $($replaceResult.Stderr)"
+    Assert-File $BarrierLatest 'latest.zip remains continuously present after replacement'
+    if (Test-Path -LiteralPath $BarrierLatest) {
+        Assert-True (((Get-FileHash -LiteralPath $BarrierLatest -Algorithm SHA256).Hash) -cne $BarrierPriorHash) 'successful replacement publishes new latest.zip bytes'
+    }
+
     'enabled' | Set-Content -LiteralPath $ModeFile -Encoding ASCII
     $SmallLogs = Join-Path $script:FixtureRoot 'small-logs'
     $null = New-Item -ItemType Directory -Path $SmallLogs -Force
@@ -699,6 +851,58 @@ server.serve_forever()
     } else {
         Write-Host '  skip: unreadable-source warning fixture requires Unix chmod semantics'
     }
+
+    Write-Host '== per-item support deadline enforcement =='
+    foreach ($deadlineStage in @(
+        'source-snapshot-chunk',
+        'gateway-rotation-item',
+        'kiro-rotation-item',
+        'coworker-log-item',
+        'profile-log-item',
+        'metrics-request',
+        'capture-request',
+        'archive-cap-item'
+    )) {
+        Set-SupportEnvironment $GatewayLog $GatewayBoot $KiroCwdFixture 'native/kiro-current.log' $CoworkerHome
+        $env:GW_SUPPORT_TEST_DEADLINE_STAGE = $deadlineStage
+        $env:GW_SUPPORT_TEST_DEADLINE_DELAY_MS = '1250'
+        $deadlineOut = Join-Path $ExtractRoot ("deadline-{0}-out" -f $deadlineStage)
+        $deadlineStagingBefore = New-SupportStagingSnapshot $SupportGlobalTemp
+        $deadlineWatch = [System.Diagnostics.Stopwatch]::StartNew()
+        $deadlineRun = Invoke-SupportRun $deadlineOut 50 '' 1
+        $deadlineWatch.Stop()
+        Assert-True ($deadlineRun.ExitCode -ne 0) "deadline expires inside $deadlineStage"
+        # PowerShell's renderer prefixes wrapped exception continuation lines
+        # with a `|`; remove that presentation gutter before matching the
+        # underlying message.
+        $normalizedDeadlineError = ($deadlineRun.Stderr -replace '\s*\|\s*', ' ') -replace '\s+', ' '
+        Assert-True ($normalizedDeadlineError -match [regex]::Escape("timed out after 1 seconds at stage '$deadlineStage'")) "deadline failure identifies the exact one-second stage contract for $deadlineStage"
+        Assert-True ($deadlineWatch.Elapsed.TotalSeconds -lt 6) "deadline $deadlineStage returns promptly instead of overrunning collection"
+        Assert-NoNewSupportStaging $deadlineStagingBefore "deadline $deadlineStage removes global staging"
+        Assert-NoSupportTemporaryArtifacts $deadlineOut "deadline $deadlineStage leaves no output partials"
+    }
+
+    Write-Host '== killable archive compression deadline =='
+    Set-SupportEnvironment $GatewayLog $GatewayBoot $KiroCwdFixture 'native/kiro-current.log' $CoworkerHome
+    $CompressionPidFile = Join-Path $script:FixtureRoot 'archive-compression.pid'
+    $env:GW_SUPPORT_TEST_COMPRESSION_KIND = 'archive'
+    $env:GW_SUPPORT_TEST_COMPRESSION_DELAY_MS = '5000'
+    $env:GW_SUPPORT_TEST_COMPRESSION_PID_FILE = $CompressionPidFile
+    $compressionDeadlineOut = Join-Path $ExtractRoot 'archive-compression-deadline-out'
+    $compressionStagingBefore = New-SupportStagingSnapshot $SupportGlobalTemp
+    $compressionWatch = [System.Diagnostics.Stopwatch]::StartNew()
+    $compressionDeadline = Invoke-SupportRun $compressionDeadlineOut 50 '' 1
+    $compressionWatch.Stop()
+    Assert-True ($compressionDeadline.ExitCode -ne 0) 'archive compression is cancelled at the support deadline'
+    Assert-True ($compressionWatch.Elapsed.TotalSeconds -lt 6) 'archive compression timeout does not wait for the injected five-second child delay'
+    Assert-File $CompressionPidFile 'archive compression child exposes its PID for cancellation verification'
+    if (Test-Path -LiteralPath $CompressionPidFile) {
+        $CompressionPid = [int](Get-Content -LiteralPath $CompressionPidFile -Raw)
+        Start-Sleep -Milliseconds 100
+        Assert-True ($null -eq (Get-Process -Id $CompressionPid -ErrorAction SilentlyContinue)) 'timed-out archive compression child is terminated'
+    }
+    Assert-NoNewSupportStaging $compressionStagingBefore 'archive compression timeout removes global staging'
+    Assert-NoSupportTemporaryArtifacts $compressionDeadlineOut 'archive compression timeout leaves no partial archive'
 
     Write-Host '== deterministic safe-open replacement races =='
     $RaceRoot = Join-Path $script:FixtureRoot 'safe-open-races'
