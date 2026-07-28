@@ -661,8 +661,25 @@ try {
         }, $true)
     }
     Assert-True ($deadlineContractAsts.Count -eq 5) 'plain worker production deadline helpers are present'
+    $plainCopyBoundaryAsts = @(
+        'Test-SupportForcedPublishFailure',
+        'Publish-SupportArtifact',
+        'New-SafeSourceSnapshot'
+    ) | ForEach-Object {
+        $functionName = $_
+        $wrapperAst.Find({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -ceq $functionName
+        }, $true)
+    }
+    Assert-True ($plainCopyBoundaryAsts.Count -eq 3) 'plain copy production snapshot and publication helpers are present'
     if ($null -ne $plainRedactionAssignmentAst -and $deadlineContractAsts.Count -eq 5) {
-        $plainWorkerRoot = Join-Path ([System.IO.Path]::GetTempPath()) (
+        $plainWorkerTempRoot = [System.IO.Path]::GetTempPath()
+        if (-not $RunningOnWindows -and $plainWorkerTempRoot.StartsWith('/var/')) {
+            $plainWorkerTempRoot = '/private' + $plainWorkerTempRoot
+        }
+        $plainWorkerRoot = Join-Path $plainWorkerTempRoot (
             'gw plain worker with spaces ' + [System.IO.Path]::GetRandomFileName())
         $null = New-Item -ItemType Directory -Path $plainWorkerRoot -Force
         $plainWorkerJob = $null
@@ -673,7 +690,11 @@ try {
                 'GW_SUPPORT_TEST_COMPRESSION_KIND',
                 'GW_SUPPORT_TEST_BLOCKING_KIND',
                 'GW_SUPPORT_TEST_BLOCKING_PID_FILE',
-                'GW_SUPPORT_TEST_DEADLINE_STAGE'
+                'GW_SUPPORT_TEST_BLOCKING_READY_FILE',
+                'GW_SUPPORT_TEST_DEADLINE_STAGE',
+                'GW_SUPPORT_TEST_FAIL_PUBLISH',
+                'GW_SUPPORT_TEST_REPLACE_BARRIER_DESTINATION',
+                'GW_SUPPORT_TEST_DISABLE_SAFE_OPEN'
             )) {
                 $savedPlainWorkerEnvironment[$name] = [Environment]::GetEnvironmentVariable(
                     $name, 'Process')
@@ -684,7 +705,11 @@ try {
             $env:GW_SUPPORT_TEST_COMPRESSION_KIND = ''
             $env:GW_SUPPORT_TEST_BLOCKING_KIND = ''
             $env:GW_SUPPORT_TEST_BLOCKING_PID_FILE = ''
+            $env:GW_SUPPORT_TEST_BLOCKING_READY_FILE = ''
             $env:GW_SUPPORT_TEST_DEADLINE_STAGE = ''
+            $env:GW_SUPPORT_TEST_FAIL_PUBLISH = ''
+            $env:GW_SUPPORT_TEST_REPLACE_BARRIER_DESTINATION = ''
+            $env:GW_SUPPORT_TEST_DISABLE_SAFE_OPEN = ''
 
             $plainWorkerSource = Join-Path $plainWorkerRoot 'source-snapshots\source-1'
             $plainWorkerTemporary = Join-Path $plainWorkerRoot (
@@ -807,6 +832,142 @@ try {
             Assert-True ($plainHelperOutput -ceq $plainWorkerExpected) 'deadline helper preserves the production plain-redaction output'
             Assert-True (-not $plainHelperOutput.Contains($plainWorkerSecret)) 'deadline helper excludes the original remote-write token'
             Assert-NoUtf8Bom $plainHelperTemporary 'deadline helper publishes UTF-8 without a BOM'
+
+            if ($plainCopyBoundaryAsts.Count -eq 3 -and
+                $null -ne $diagnosticAst -and $null -ne $copyRedactedLogAst) {
+                $plainCopyRoot = Join-Path $plainWorkerRoot 'actual copy boundary'
+                $plainCopySource = Join-Path $plainCopyRoot 'configured gateway.log'
+                $plainCopyRelative = 'logs\gateway\gateway.log'
+                $null = New-Item -ItemType Directory -Path $plainCopyRoot -Force
+                [System.IO.File]::WriteAllBytes($plainCopySource, $plainWorkerBytes)
+
+                $plainCopyDefinitions = @($deadlineContractAsts |
+                    ForEach-Object { $_.Extent.Text })
+                $plainCopyDefinitions += @($plainCopyBoundaryAsts |
+                    ForEach-Object { $_.Extent.Text })
+                $productionDiagnosticDefinition = $diagnosticAst.Extent.Text.Replace(
+                    'function Format-SupportExceptionDiagnostic',
+                    'function Format-ProductionSupportExceptionDiagnostic')
+                $productionCopyDefinition = $copyRedactedLogAst.Extent.Text.Replace(
+                    '$PSScriptRoot', '$RepoScriptsRoot')
+
+                $plainCopyResult = & {
+                    param(
+                        [string]$Definitions,
+                        [string]$DiagnosticDefinition,
+                        [string]$CopyDefinition,
+                        [string]$SafeOpenLibraryPath,
+                        [string]$RepoScriptsRoot,
+                        [string]$Source,
+                        [string]$RelativePath,
+                        [string]$Root,
+                        [string]$Expected,
+                        [string]$Secret
+                    )
+                    . $SafeOpenLibraryPath
+                    . ([scriptblock]::Create($Definitions))
+                    . ([scriptblock]::Create($DiagnosticDefinition))
+
+                    $failureState = @{
+                        Type = ''
+                        HResult = 0
+                        FullyQualifiedErrorId = ''
+                        ScriptLineNumber = 0
+                    }
+                    function Format-SupportExceptionDiagnostic {
+                        param($ErrorRecord)
+                        try {
+                            $baseException = $ErrorRecord.Exception
+                            while ($baseException.InnerException) {
+                                $baseException = $baseException.InnerException
+                            }
+                            $failureState.Type = $baseException.GetType().FullName
+                            $failureState.HResult = [int]$baseException.HResult
+                            $failureState.FullyQualifiedErrorId = [string]$ErrorRecord.FullyQualifiedErrorId
+                            $failureState.ScriptLineNumber = [int]$ErrorRecord.InvocationInfo.ScriptLineNumber
+                        } catch {}
+                        return Format-ProductionSupportExceptionDiagnostic $ErrorRecord
+                    }
+
+                    . ([scriptblock]::Create($CopyDefinition))
+                    $timeoutSec = 180
+                    $deadlineStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+                    $deadlineInjectedStages = @{}
+                    $deadlineWorkState = @{ Armed = $false }
+                    $collectionWarnings = New-Object System.Collections.Generic.List[string]
+                    $snapshotState = @{ Sequence = 0 }
+                    $staging = Join-Path $Root 'staging'
+                    $bundleRoot = Join-Path $Root 'bundle'
+                    $null = New-Item -ItemType Directory -Path $staging,$bundleRoot -Force
+                    $safeOpenAvailable = $false
+                    try {
+                        Initialize-SupportSafeOpen
+                        $safeOpenAvailable = $true
+                    } catch {
+                        $safeOpenAvailable = $false
+                    }
+
+                    $probe = New-SafeSourceSnapshot $Source 'Gateway current log probe' $true
+                    $probePathType = if ($null -ne $probe -and $null -ne $probe.Path) {
+                        $probe.Path.GetType().FullName
+                    } else { '<null>' }
+                    $probeBaseType = if ($null -ne $probe -and $null -ne $probe.Path) {
+                        $probe.Path.PSObject.BaseObject.GetType().FullName
+                    } else { '<null>' }
+                    $returned = Copy-RedactedSupportLog `
+                        $Source $RelativePath 'Gateway current log' $true
+                    $destination = Join-Path $bundleRoot $RelativePath
+                    $output = if (Test-Path -LiteralPath $destination -PathType Leaf) {
+                        [System.IO.File]::ReadAllText($destination)
+                    } else { '' }
+                    $hasBom = $false
+                    if (Test-Path -LiteralPath $destination -PathType Leaf) {
+                        $bytes = [System.IO.File]::ReadAllBytes($destination)
+                        $hasBom = $bytes.Length -ge 3 -and
+                            $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and
+                            $bytes[2] -eq 0xBF
+                    }
+                    [pscustomobject]@{
+                        Returned = $returned -eq $true
+                        ProbeExists = $null -ne $probe -and
+                            (Test-Path -LiteralPath ([string]$probe.Path) -PathType Leaf)
+                        ProbePathType = $probePathType
+                        ProbeBaseType = $probeBaseType
+                        DestinationExists = Test-Path -LiteralPath $destination -PathType Leaf
+                        OutputMatches = $output -ceq $Expected
+                        SecretAbsent = -not $output.Contains($Secret)
+                        HasBom = $hasBom
+                        PartialCount = @(Get-ChildItem -LiteralPath $bundleRoot `
+                            -Filter '*.partial-*' -Recurse -ErrorAction SilentlyContinue).Count
+                        Warning = @($collectionWarnings) -join '; '
+                        Failure = if ($failureState.Type) {
+                            '{0}/0x{1:X8}/{2}/{3}' -f @(
+                                $failureState.Type,
+                                $failureState.HResult,
+                                $failureState.FullyQualifiedErrorId,
+                                $failureState.ScriptLineNumber)
+                        } else { '' }
+                    }
+                } ($plainCopyDefinitions -join [Environment]::NewLine) `
+                    $productionDiagnosticDefinition $productionCopyDefinition `
+                    $SafeOpenLibrary (Join-Path $RepoRoot 'scripts') `
+                    $plainCopySource $plainCopyRelative $plainCopyRoot `
+                    $plainWorkerExpected $plainWorkerSecret
+
+                $plainCopyContext = 'snapshot path type {0}, base type {1}, warning [{2}], failure [{3}]' -f @(
+                    $plainCopyResult.ProbePathType,
+                    $plainCopyResult.ProbeBaseType,
+                    $plainCopyResult.Warning,
+                    $plainCopyResult.Failure)
+                Assert-True $plainCopyResult.ProbeExists "production snapshot helper yields a readable owned snapshot ($plainCopyContext)"
+                Assert-True $plainCopyResult.Returned "production snapshot-to-copy chain returns success ($plainCopyContext)"
+                Assert-True $plainCopyResult.DestinationExists "production snapshot-to-copy chain publishes its destination ($plainCopyContext)"
+                Assert-True $plainCopyResult.OutputMatches 'production snapshot-to-copy chain preserves expected redaction output'
+                Assert-True $plainCopyResult.SecretAbsent 'production snapshot-to-copy chain excludes the original remote-write token'
+                Assert-True (-not $plainCopyResult.HasBom) 'production snapshot-to-copy chain publishes UTF-8 without a BOM'
+                Assert-True ($plainCopyResult.PartialCount -eq 0) "production snapshot-to-copy chain leaves no partial artifact ($plainCopyContext)"
+                Assert-True (-not $plainCopyResult.Warning) "production snapshot-to-copy chain emits no warning ($plainCopyContext)"
+            }
         } finally {
             if ($null -ne $plainWorkerJob) {
                 if ($plainWorkerJob.State -in @('NotStarted','Running','Blocked')) {
