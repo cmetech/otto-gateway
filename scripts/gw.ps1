@@ -2035,53 +2035,54 @@ function Invoke-Support {
             $temporary = $destination + '.partial-' + [Guid]::NewGuid().ToString('N')
             try {
                 $null = New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force
-                Test-Deadline 'plain-redaction'
-                if ($env:GW_SUPPORT_TEST_BLOCKING_KIND -ceq 'plain') {
-                    if ($env:GW_SUPPORT_TEST_BLOCKING_PID_FILE) {
-                        $pidEncoding = New-Object System.Text.UTF8Encoding($false)
-                        [System.IO.File]::WriteAllText(
-                            $env:GW_SUPPORT_TEST_BLOCKING_PID_FILE, [string]$PID, $pidEncoding)
-                    }
-                    $delayMilliseconds = 0
-                    if ([int]::TryParse($env:GW_SUPPORT_TEST_BLOCKING_DELAY_MS, [ref]$delayMilliseconds) -and
-                        $delayMilliseconds -gt 0) {
-                        $delayWatch = [System.Diagnostics.Stopwatch]::StartNew()
-                        while ($delayWatch.ElapsedMilliseconds -lt $delayMilliseconds) {
-                            Test-Deadline 'plain-redaction'
-                            Start-Sleep -Milliseconds 25
+                $plainRedactionWork = {
+                    param($SnapshotPath, $TemporaryPath, $RedactLibrary,
+                        $BlockingKind, $DelayMilliseconds, $PidFile, $ReadyFile)
+                    $ErrorActionPreference = 'Stop'
+                    if ($BlockingKind -ceq 'plain') {
+                        $markerEncoding = New-Object System.Text.UTF8Encoding($false)
+                        if ($PidFile) {
+                            [System.IO.File]::WriteAllText($PidFile, [string]$PID, $markerEncoding)
+                        }
+                        if ($ReadyFile) {
+                            [System.IO.File]::WriteAllText($ReadyFile, 'ready', $markerEncoding)
+                        }
+                        if ([int]$DelayMilliseconds -gt 0) {
+                            # Deliberately one non-cooperative operation: the
+                            # parent deadline must terminate this worker rather
+                            # than relying on work to call Test-Deadline.
+                            Start-Sleep -Milliseconds ([int]$DelayMilliseconds)
                         }
                     }
-                }
 
-                # The source is already an identity-validated local snapshot.
-                # Stream it one line at a time so redaction retains its exact
-                # line-oriented semantics. Check the global deadline after a
-                # bounded batch instead of on every line; Test-Deadline also
-                # services deterministic test seams and is intentionally not a
-                # zero-cost predicate.
-                $reader = New-Object System.IO.StreamReader($snapshot.Path, $true)
-                $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-                $writer = New-Object System.IO.StreamWriter($temporary, $false, $utf8NoBom)
-                try {
-                    $linesSinceDeadline = 0
-                    $charactersSinceDeadline = [int64]0
-                    while ($null -ne ($line = $reader.ReadLine())) {
-                        $linesSinceDeadline++
-                        $charactersSinceDeadline += $line.Length
-                        if ($linesSinceDeadline -ge 128 -or $charactersSinceDeadline -ge 65536) {
-                            Test-Deadline 'plain-redaction'
-                            $linesSinceDeadline = 0
-                            $charactersSinceDeadline = [int64]0
+                    . $RedactLibrary
+                    $reader = $null
+                    $writer = $null
+                    try {
+                        # SnapshotPath is collector-owned staging populated
+                        # from the held, identity-validated source handle. The
+                        # worker never reopens the configured source path.
+                        $reader = New-Object System.IO.StreamReader($SnapshotPath, $true)
+                        $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+                        $writer = New-Object System.IO.StreamWriter(
+                            $TemporaryPath, $false, $utf8NoBom)
+                        while ($null -ne ($line = $reader.ReadLine())) {
+                            foreach ($redactedLine in @($line | Invoke-RedactStream)) {
+                                $writer.WriteLine([string]$redactedLine)
+                            }
                         }
-                        foreach ($redactedLine in @($line | Invoke-RedactStream)) {
-                            $writer.WriteLine([string]$redactedLine)
-                        }
+                    } finally {
+                        if ($null -ne $writer) { $writer.Dispose() }
+                        if ($null -ne $reader) { $reader.Dispose() }
                     }
-                } finally {
-                    $writer.Dispose()
-                    $reader.Dispose()
                 }
-                Test-Deadline 'plain-redaction'
+                $null = @(Invoke-SupportDeadlineJob -Work $plainRedactionWork -Arguments @(
+                    $snapshot.Path, $temporary, (Join-Path $PSScriptRoot 'lib\redact.ps1'),
+                    $env:GW_SUPPORT_TEST_BLOCKING_KIND,
+                    $env:GW_SUPPORT_TEST_BLOCKING_DELAY_MS,
+                    $env:GW_SUPPORT_TEST_BLOCKING_PID_FILE,
+                    $env:GW_SUPPORT_TEST_BLOCKING_READY_FILE
+                ) -Stage 'plain-redaction')
                 if (Test-SupportForcedPublishFailure 'plain') {
                     throw 'forced atomic publish failure: plain'
                 }

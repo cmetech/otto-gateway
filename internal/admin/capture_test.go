@@ -629,6 +629,117 @@ func TestAcpCaptureSupport_RingTruncatedEscapedJSONFailsClosed(t *testing.T) {
 	}
 }
 
+// TestAcpCaptureSupport_EscapedSecretDetectionIgnoresEarlierQuoteParity
+// catches an escaped-fragment detector that consumes non-overlapping quote
+// pairs. An escaped quote inside an earlier safe encoded string contributes an
+// odd delimiter to that global pairing and can make a later credential key
+// look like a value delimiter. Each credential assignment must instead be
+// recognized from its own escaped key boundary.
+func TestAcpCaptureSupport_EscapedSecretDetectionIgnoresEarlierQuoteParity(t *testing.T) {
+	const ringFrameBytes = 8 * 1024
+	const ringSecret = "ring-sized-parity-secret"
+	ringFull := `{"payload":"{\"safe\":\"` + strings.Repeat("s", 7000) +
+		`\\\" odd\",\"password\" : \"` + ringSecret +
+		`\",\"tail\":\"` + strings.Repeat("t", 2048) + `\"}"}`
+	if len(ringFull) <= ringFrameBytes {
+		t.Fatalf("ring fixture length = %d, want more than %d", len(ringFull), ringFrameBytes)
+	}
+	ringPrefix := ringFull[:ringFrameBytes]
+	if !strings.Contains(ringPrefix, ringSecret) {
+		t.Fatalf("ring fixture truncates before synthetic secret")
+	}
+
+	secretCases := []struct {
+		name   string
+		params string
+		secret string
+	}{
+		{
+			name:   "actual eight kibibyte ring prefix with odd escaped quote",
+			params: ringPrefix,
+			secret: ringSecret,
+		},
+		{
+			name: "odd escaped quote before whitespace and multiword value",
+			params: `{"payload":"{\"safe\":\"C:\\\\logs \\\"odd\",` +
+				`\"password\"` + " \t : \r\n " + `\"odd multi word secret\",\"tail\":\"cut`,
+			secret: "odd multi word secret",
+		},
+		{
+			name: "even escaped quotes before object value",
+			params: `{"payload":"{\"safe\":\"C:\\\\logs \\\"one\\\" pair\",` +
+				`\"api_key\":{\"nested\":\"even object secret\"},\"tail\":\"cut`,
+			secret: "even object secret",
+		},
+		{
+			name: "odd escaped quote before array credential suffix",
+			params: `{"payload":"{\"safe\":\"quoted \\\"odd\",` +
+				`\"refreshTokenCredentials\"` + "\t=\t" + `[\"array suffix secret\",` +
+				`{\"more\":\"array object secret\"}],\"tail\":\"cut`,
+			secret: "array suffix secret",
+		},
+	}
+	benign := []string{
+		`malformed prose with \"safe\":\"C:\\\\logs \\\"quoted\" text and no credential assignment`,
+		`documentation mentions \"password\" as a field name; unrelated prose remains visible`,
+		`{"payload":"{\"notPasswordish\":\"safe value\",\"requestId\":9007199254740993`,
+	}
+	const validLargeNumber = `{"requestId":9007199254740993,"safe":"large-number-safe"}`
+
+	frames := make([]admin.CaptureFrame, 0, len(secretCases)+len(benign)+1)
+	for i, tc := range secretCases {
+		frames = append(frames, admin.CaptureFrame{Seq: uint64(i + 1), Params: tc.params})
+	}
+	for _, params := range benign {
+		frames = append(frames, admin.CaptureFrame{Seq: uint64(len(frames) + 1), Params: params})
+	}
+	frames = append(frames, admin.CaptureFrame{Seq: uint64(len(frames) + 1), Params: validLargeNumber})
+	sourceFrames := append([]admin.CaptureFrame(nil), frames...)
+	src := &fakeCaptureSource{enabled: true, frames: frames}
+	h := admin.Handler(admin.Deps{AcpCapture: src})
+
+	rec := doGet(t, h, "/api/acp-capture?support=redacted")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var body struct {
+		Frames []admin.CaptureFrame `json:"frames"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("support export containing parity adversaries is invalid JSON: %v; body=%s", err, rec.Body.String())
+	}
+	if len(body.Frames) != len(frames) {
+		t.Fatalf("frames = %d, want %d", len(body.Frames), len(frames))
+	}
+	for i, tc := range secretCases {
+		t.Run(tc.name, func(t *testing.T) {
+			if strings.Contains(rec.Body.String(), tc.secret) {
+				t.Errorf("escaped fragment leaked synthetic secret %q", tc.secret)
+			}
+			if body.Frames[i].Params != "[REDACTED]" {
+				t.Errorf("escaped credential fragment = %q, want bounded fail-closed marker", body.Frames[i].Params)
+			}
+		})
+	}
+	for i, want := range benign {
+		got := body.Frames[len(secretCases)+i].Params
+		if got != want {
+			t.Errorf("benign malformed prose over-redacted: got %q, want %q", got, want)
+		}
+	}
+	largeNumberParams := body.Frames[len(body.Frames)-1].Params
+	if !strings.Contains(largeNumberParams, `"requestId":9007199254740993`) ||
+		!strings.Contains(largeNumberParams, "large-number-safe") {
+		t.Errorf("valid large-number frame changed: %s", largeNumberParams)
+	}
+	if len(ringPrefix) != ringFrameBytes {
+		t.Errorf("ring prefix length = %d, want %d", len(ringPrefix), ringFrameBytes)
+	}
+	if !reflect.DeepEqual(src.frames, sourceFrames) {
+		t.Errorf("support export mutated source frames: got %#v, want %#v", src.frames, sourceFrames)
+	}
+}
+
 // TestAcpCaptureSupport_NestedJSONLimitsFailClosed catches unbounded recursive
 // decoding as well as a limit path that returns an uninspected encoded secret.
 // The response must stay valid JSON and replace the bounded-away subtree as a

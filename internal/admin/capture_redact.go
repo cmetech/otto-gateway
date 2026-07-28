@@ -81,11 +81,12 @@ func redactCapturedParams(raw string) string {
 func hasEscapedCaptureSecretAssignment(value string) bool {
 	const escapedQuote = `\"`
 	for searchFrom := 0; searchFrom < len(value); {
-		keyStartOffset := strings.Index(value[searchFrom:], escapedQuote)
-		if keyStartOffset < 0 {
+		keyQuoteOffset := strings.Index(value[searchFrom:], escapedQuote)
+		if keyQuoteOffset < 0 {
 			return false
 		}
-		keyStart := searchFrom + keyStartOffset + len(escapedQuote)
+		keyQuote := searchFrom + keyQuoteOffset
+		keyStart := keyQuote + len(escapedQuote)
 		keyEndOffset := strings.Index(value[keyStart:], escapedQuote)
 		if keyEndOffset < 0 {
 			return false
@@ -99,7 +100,13 @@ func hasEscapedCaptureSecretAssignment(value string) bool {
 			(value[separator] == ':' || value[separator] == '=') {
 			return true
 		}
-		searchFrom = keyEnd + len(escapedQuote)
+		// Treat every escaped quote as a possible key opening. Advancing past a
+		// non-secret pair makes recognition depend on global quote parity: an
+		// escaped quote inside an earlier safe encoded string can then pair with
+		// the later key opening and hide that credential assignment. Advancing
+		// one byte keeps this scan linear while evaluating the later key from its
+		// own local opening/closing boundary.
+		searchFrom = keyQuote + 1
 	}
 	return false
 }

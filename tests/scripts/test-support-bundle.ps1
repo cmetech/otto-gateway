@@ -234,6 +234,7 @@ function Set-SupportEnvironment {
     $env:GW_SUPPORT_TEST_BLOCKING_KIND = ''
     $env:GW_SUPPORT_TEST_BLOCKING_DELAY_MS = ''
     $env:GW_SUPPORT_TEST_BLOCKING_PID_FILE = ''
+    $env:GW_SUPPORT_TEST_BLOCKING_READY_FILE = ''
 }
 
 function Invoke-SupportRun {
@@ -491,11 +492,12 @@ try {
     $PortFile = Join-Path $script:FixtureRoot 'http-port'
     $RequestLog = Join-Path $script:FixtureRoot 'http-requests.log'
     $ModeFile = Join-Path $script:FixtureRoot 'http-mode'
+    $StallAcceptedFile = Join-Path $script:FixtureRoot 'http-stall-health.accepted'
     $ServerScript = Join-Path $script:FixtureRoot 'server.py'
     'enabled' | Set-Content -LiteralPath $ModeFile -Encoding ASCII
     @'
 import http.server, json, sys, time
-port_file, request_log, mode_file = sys.argv[1:]
+port_file, request_log, mode_file, stall_accepted_file = sys.argv[1:]
 class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *_args): pass
     def send_body(self, status, content_type, body):
@@ -513,6 +515,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if mode == "stall-health" and self.path == "/health":
             # Accept the TCP connection but send no headers. This distinguishes
             # the wrapper's per-request deadline from a fast connection error.
+            with open(stall_accepted_file, "w", encoding="ascii") as out: out.write("accepted")
             time.sleep(30)
             return
         if self.path == "/metrics": self.send_body(200, "text/plain", "# HELP gateway_up fixture\ngateway_up 1\n")
@@ -533,7 +536,8 @@ server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
 open(port_file, "w", encoding="ascii").write(str(server.server_address[1]))
 server.serve_forever()
 '@ | Set-Content -LiteralPath $ServerScript -Encoding UTF8
-    $script:HttpProcess = Start-Process -FilePath $Python -ArgumentList @($ServerScript, $PortFile, $RequestLog, $ModeFile) -PassThru
+    $script:HttpProcess = Start-Process -FilePath $Python -ArgumentList @(
+        $ServerScript, $PortFile, $RequestLog, $ModeFile, $StallAcceptedFile) -PassThru
     foreach ($attempt in 1..50) {
         if (Test-Path -LiteralPath $PortFile) { break }
         Start-Sleep -Milliseconds 100
@@ -690,9 +694,13 @@ server.serve_forever()
     Set-SupportEnvironment (Join-Path $StalledLogs 'gateway.log') (Join-Path $StalledLogs 'gateway-boot.log') $StalledLogs 'kiro.log' ''
     'stall-health' | Set-Content -LiteralPath $ModeFile -Encoding ASCII
     Clear-Content -LiteralPath $RequestLog
+    Remove-Item -LiteralPath $StallAcceptedFile -Force -ErrorAction SilentlyContinue
+    $stalledRequestHandle = Start-SupportRun (Join-Path $ExtractRoot 'stalled-request-out') 50 15
+    $stalledRequestAccepted = Wait-SupportMarkerOrExit $stalledRequestHandle $StallAcceptedFile
     $stalledRequestWatch = [System.Diagnostics.Stopwatch]::StartNew()
-    $stalledRequest = Invoke-SupportRun (Join-Path $ExtractRoot 'stalled-request-out') 50 '' 15
+    $stalledRequest = Complete-SupportRun $stalledRequestHandle
     $stalledRequestWatch.Stop()
+    Assert-True $stalledRequestAccepted 'stalled-request timer starts only after the server accepts the health request'
     Assert-True ($stalledRequest.ExitCode -eq 0) "accepted-but-stalled request remains best effort: $($stalledRequest.Stderr)"
     Assert-True ($stalledRequestWatch.Elapsed.TotalSeconds -ge 4 -and $stalledRequestWatch.Elapsed.TotalSeconds -lt 12) "stalled request uses the five-second cap instead of the remaining 15-second bundle budget (elapsed $($stalledRequestWatch.Elapsed.TotalSeconds)s)"
     foreach ($path in @('/health','/admin/api/snapshot','/metrics','/admin/api/acp-capture?support=redacted')) {
@@ -1008,10 +1016,24 @@ server.serve_forever()
         $env:GW_SUPPORT_TEST_BLOCKING_DELAY_MS = '5000'
         $blockingPidFile = Join-Path $script:FixtureRoot ("{0}.pid" -f $blockingCase.Kind)
         $env:GW_SUPPORT_TEST_BLOCKING_PID_FILE = $blockingPidFile
+        $blockingReadyFile = Join-Path $script:FixtureRoot ("{0}.ready" -f $blockingCase.Kind)
+        if ($blockingCase.Kind -ceq 'plain') {
+            $env:GW_SUPPORT_TEST_BLOCKING_READY_FILE = $blockingReadyFile
+        }
         $blockingOut = Join-Path $ExtractRoot ("blocking-{0}-out" -f $blockingCase.Kind)
+        $priorLatest = Join-Path $blockingOut 'latest.zip'
+        $priorFinal = Join-Path $blockingOut 'prior-support.zip'
+        if ($blockingCase.Kind -ceq 'plain') {
+            $null = New-Item -ItemType Directory -Path $blockingOut -Force
+            [System.IO.File]::WriteAllText($priorLatest, 'prior latest bytes')
+            [System.IO.File]::WriteAllText($priorFinal, 'prior final bytes')
+            $priorLatestHash = (Get-FileHash -LiteralPath $priorLatest -Algorithm SHA256).Hash
+            $priorFinalHash = (Get-FileHash -LiteralPath $priorFinal -Algorithm SHA256).Hash
+        }
         $blockingStagingBefore = New-SupportStagingSnapshot $SupportGlobalTemp
         $blockingHandle = Start-SupportRun $blockingOut 50 1
-        $blockingReached = Wait-SupportMarkerOrExit $blockingHandle $blockingPidFile
+        $blockingMarker = if ($blockingCase.Kind -ceq 'plain') { $blockingReadyFile } else { $blockingPidFile }
+        $blockingReached = Wait-SupportMarkerOrExit $blockingHandle $blockingMarker
         $blockingWatch = [System.Diagnostics.Stopwatch]::StartNew()
         $blockingRun = Complete-SupportRun $blockingHandle
         $blockingWatch.Stop()
@@ -1023,8 +1045,16 @@ server.serve_forever()
         Assert-File $blockingPidFile "$($blockingCase.Kind) worker exposes its PID for cancellation verification"
         if (Test-Path -LiteralPath $blockingPidFile) {
             $blockingPid = [int](Get-Content -LiteralPath $blockingPidFile -Raw)
+            if ($blockingCase.Kind -ceq 'plain') {
+                Assert-True ($blockingPid -ne $blockingHandle.Process.Id) 'plain redaction publishes an independent worker PID, not the wrapper PID'
+            }
             Start-Sleep -Milliseconds 100
             Assert-True ($null -eq (Get-Process -Id $blockingPid -ErrorAction SilentlyContinue)) "timed-out $($blockingCase.Kind) worker is terminated"
+        }
+        if ($blockingCase.Kind -ceq 'plain') {
+            Assert-True ((Get-FileHash -LiteralPath $priorLatest -Algorithm SHA256).Hash -ceq $priorLatestHash) 'plain redaction timeout preserves prior latest.zip bytes'
+            Assert-True ((Get-FileHash -LiteralPath $priorFinal -Algorithm SHA256).Hash -ceq $priorFinalHash) 'plain redaction timeout preserves prior final archive bytes'
+            Assert-True (@(Get-ChildItem -LiteralPath $blockingOut -Filter 'gateway-support-*.zip' -File -ErrorAction SilentlyContinue).Count -eq 0) 'plain redaction timeout publishes no new final archive'
         }
         Assert-NoNewSupportStaging $blockingStagingBefore "$($blockingCase.Kind) timeout removes global staging"
         Assert-NoSupportTemporaryArtifacts $blockingOut "$($blockingCase.Kind) timeout leaves no output partials"
