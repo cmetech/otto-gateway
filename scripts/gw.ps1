@@ -2095,7 +2095,11 @@ function Invoke-Support {
                         # SnapshotPath is collector-owned staging populated
                         # from the held, identity-validated source handle. The
                         # worker never reopens the configured source path.
-                        $reader = New-Object System.IO.StreamReader($SnapshotPath, $true)
+                        # Select the overload explicitly: Windows PowerShell
+                        # 5.1 cannot bind the parenthesized two-argument
+                        # New-Object form reliably inside this child job.
+                        $reader = [System.IO.StreamReader]::new(
+                            [string]$SnapshotPath, [bool]$true)
                         $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
                         $writer = New-Object System.IO.StreamWriter(
                             $TemporaryPath, $false, $utf8NoBom)

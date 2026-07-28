@@ -636,6 +636,79 @@ try {
     }, $true)
     Assert-True ($null -ne $diagnosticAst) 'support exception diagnostic helper is present'
     Assert-True ($null -ne $copyRedactedLogAst) 'plain redaction control flow is present for stage extraction'
+
+    Write-Host '== plain redaction worker compatibility =='
+    $plainRedactionAssignmentAst = if ($null -ne $copyRedactedLogAst) {
+        $copyRedactedLogAst.Find({
+            param($node)
+            $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+                $node.Left.Extent.Text -ceq '$plainRedactionWork'
+        }, $true)
+    } else { $null }
+    Assert-True ($null -ne $plainRedactionAssignmentAst) 'plain redaction deadline worker is present'
+    if ($null -ne $plainRedactionAssignmentAst) {
+        $plainWorkerRoot = Join-Path ([System.IO.Path]::GetTempPath()) (
+            'gw-plain-worker-' + [System.IO.Path]::GetRandomFileName())
+        $null = New-Item -ItemType Directory -Path $plainWorkerRoot -Force
+        $plainWorkerJob = $null
+        try {
+            $plainWorkerSource = Join-Path $plainWorkerRoot 'collector-owned.snapshot'
+            $plainWorkerTemporary = Join-Path $plainWorkerRoot 'gateway.log.partial-fixture'
+            $plainWorkerSecret = 'plain-worker-remote-secret-7711'
+            $plainWorkerText = "gateway current safe`r`nGW_METRICS_REMOTE_WRITE_TOKEN=$plainWorkerSecret`r`n"
+            $plainWorkerPayload = [System.Text.Encoding]::UTF8.GetBytes($plainWorkerText)
+            $plainWorkerBytes = New-Object byte[] (3 + $plainWorkerPayload.Length)
+            $plainWorkerBytes[0] = 0xEF
+            $plainWorkerBytes[1] = 0xBB
+            $plainWorkerBytes[2] = 0xBF
+            [System.Array]::Copy(
+                $plainWorkerPayload, 0, $plainWorkerBytes, 3, $plainWorkerPayload.Length)
+            [System.IO.File]::WriteAllBytes($plainWorkerSource, $plainWorkerBytes)
+
+            $plainRedactionWork = $plainRedactionAssignmentAst.Right.Expression.ScriptBlock.GetScriptBlock()
+            $plainWorkerJob = Start-Job -ScriptBlock $plainRedactionWork -ArgumentList @(
+                $plainWorkerSource,
+                $plainWorkerTemporary,
+                (Join-Path $RepoRoot 'scripts\lib\redact.ps1'),
+                '', 0, '', ''
+            )
+            $null = Wait-Job -Job $plainWorkerJob -Timeout 10
+            $plainWorkerFailure = ''
+            if ($plainWorkerJob.State -eq 'Completed') {
+                try {
+                    $null = @(Receive-Job -Job $plainWorkerJob -ErrorAction Stop)
+                } catch {
+                    $plainWorkerFailure = $_.Exception.GetType().FullName
+                }
+            } else {
+                $reason = @($plainWorkerJob.ChildJobs | ForEach-Object {
+                    $_.JobStateInfo.Reason
+                } | Where-Object { $null -ne $_ } | Select-Object -First 1)
+                $plainWorkerFailure = if ($reason.Count -gt 0) {
+                    $reason[0].GetType().FullName
+                } else { [string]$plainWorkerJob.State }
+            }
+
+            Assert-True (
+                $plainWorkerJob.State -eq 'Completed' -and -not $plainWorkerFailure
+            ) "plain worker opens a BOM-prefixed snapshot in its deadline job (failure: $plainWorkerFailure)"
+            $plainWorkerOutput = if (Test-Path -LiteralPath $plainWorkerTemporary -PathType Leaf) {
+                [System.IO.File]::ReadAllText($plainWorkerTemporary)
+            } else { '' }
+            $plainWorkerExpected = "gateway current safe$([Environment]::NewLine)GW_METRICS_REMOTE_WRITE_TOKEN=[REDACTED]$([Environment]::NewLine)"
+            Assert-True ($plainWorkerOutput -ceq $plainWorkerExpected) 'plain worker preserves BOM detection and line-oriented redaction'
+            Assert-True (-not $plainWorkerOutput.Contains($plainWorkerSecret)) 'plain worker excludes the original remote-write token'
+            Assert-NoUtf8Bom $plainWorkerTemporary 'plain worker publishes UTF-8 without a BOM'
+        } finally {
+            if ($null -ne $plainWorkerJob) {
+                if ($plainWorkerJob.State -in @('NotStarted','Running','Blocked')) {
+                    Stop-Job -Job $plainWorkerJob -ErrorAction SilentlyContinue
+                }
+                Remove-Job -Job $plainWorkerJob -Force -ErrorAction SilentlyContinue
+            }
+            Remove-Item -LiteralPath $plainWorkerRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
     if ($null -ne $diagnosticAst) {
         $diagnosticCases = @(& {
             param([string]$Definition)
