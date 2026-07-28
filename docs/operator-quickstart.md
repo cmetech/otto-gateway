@@ -256,6 +256,25 @@ The file is `KEY=value` per line, `#` for comments, `export ` prefix tolerated. 
 
 ## Common operator tasks
 
+### Send metrics to Grafana Cloud
+
+The generated `.env` already supplies the shared remote-write URL
+`https://prometheus-prod-66-prod-us-east-3.grafana.net/api/prom/push`, user
+`3370048`, and interval `30`. Add only your Grafana API key to the
+operator-owned override file:
+
+```dotenv
+# ~/.gw/overrides.env
+GW_METRICS_REMOTE_WRITE_TOKEN=<Grafana API key>
+```
+
+Run `gw upgrade-env` when upgrading to refresh shared defaults; it does not
+touch `overrides.env`. Sending remains disabled until you enable **Send metrics
+to Grafana Cloud** in the tray. The tray stores only that enabled boolean in
+`tray.json`, never the endpoint, user, or token. If the key is missing when
+you enable it, the tray gives feedback then, without recurring notification
+spam.
+
 ### Enable PII redaction (replace mode — easy to read in logs)
 
 ```bash

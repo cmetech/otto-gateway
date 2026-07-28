@@ -249,6 +249,33 @@ The .env loader only sets keys it actually contains; anything you already
 exported in the shell is preserved unless the .env overrides it, and
 anything you pass via `--pii` / `--hash-key` / etc. wins over both.
 
+### Grafana metrics remote-write
+
+The generated `.env` contains the shared, non-secret remote-write defaults:
+
+| Setting | Generated value |
+|---------|-----------------|
+| URL | `https://prometheus-prod-66-prod-us-east-3.grafana.net/api/prom/push` |
+| User | `3370048` |
+| Interval | `30` seconds |
+
+Do not duplicate those values in `overrides.env`. The only setting an operator
+adds is the Grafana API key:
+
+```dotenv
+# ~/.gw/overrides.env
+GW_METRICS_REMOTE_WRITE_TOKEN=<Grafana API key>
+```
+
+`gw upgrade-env` refreshes the shared generated defaults without touching
+`overrides.env`. Remote sending remains disabled until the user enables **Send
+metrics to Grafana Cloud** in the tray; no enabled env default is required.
+The tray persists only the enabled boolean in `tray.json`, never the endpoint,
+user, or token. If the user enables it without the API key, the tray gives
+missing-key feedback on enable and does not repeat that notification every
+polling interval. Disabling the tray option stops sending but leaves the
+operator's configuration in place.
+
 **Examples:**
 
 ```bash
