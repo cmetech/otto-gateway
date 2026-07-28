@@ -237,6 +237,29 @@ function Set-SupportEnvironment {
     $env:GW_SUPPORT_TEST_BLOCKING_READY_FILE = ''
 }
 
+function Invoke-CapturedNativeCommand {
+    param(
+        [string]$FilePath,
+        [string[]]$ArgumentList,
+        [string]$StderrPath
+    )
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        # Windows PowerShell 5.1 promotes native stderr to NativeCommandError.
+        # Keep it non-terminating long enough to capture the process exit code.
+        $ErrorActionPreference = 'Continue'
+        $stdout = @(& $FilePath @ArgumentList 2> $StderrPath)
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    return [pscustomobject]@{
+        ExitCode = $exitCode
+        Stdout = [string[]]@($stdout)
+        Stderr = if (Test-Path -LiteralPath $StderrPath) { Get-Content -LiteralPath $StderrPath -Raw } else { '' }
+    }
+}
+
 function Invoke-SupportRun {
     param(
         [string]$OutDir,
@@ -248,12 +271,11 @@ function Invoke-SupportRun {
     $stderr = "$OutDir.stderr"
     $args = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $Wrapper, 'support', '-Out', $OutDir, '-MaxMb', "$MaxMb", '-Timeout', "$TimeoutSec", '-LogDays', '9999')
     if ($ExplicitCoworker) { $args += @('-CoworkerHome', $ExplicitCoworker) }
-    $stdout = @(& $PowerShellExecutable @args 2> $stderr)
-    $rc = $LASTEXITCODE
+    $capture = Invoke-CapturedNativeCommand -FilePath $PowerShellExecutable -ArgumentList $args -StderrPath $stderr
     return [pscustomobject]@{
-        ExitCode = $rc
-        Bundle = if ($stdout.Count -gt 0) { [string]$stdout[-1] } else { '' }
-        Stderr = if (Test-Path -LiteralPath $stderr) { Get-Content -LiteralPath $stderr -Raw } else { '' }
+        ExitCode = $capture.ExitCode
+        Bundle = if ($capture.Stdout.Count -gt 0) { [string]$capture.Stdout[-1] } else { '' }
+        Stderr = $capture.Stderr
     }
 }
 
@@ -304,6 +326,20 @@ function Assert-NoSecretInTree([string]$Root, [string[]]$Needles, [string]$Label
 }
 
 try {
+    Write-Host '== native command capture contract =='
+    $captureStderr = Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetRandomFileName())
+    try {
+        $capture = Invoke-CapturedNativeCommand -FilePath $PowerShellExecutable -ArgumentList @(
+            '-NoProfile', '-Command', "Write-Output 'native-stdout'; [Console]::Error.WriteLine('native-stderr'); exit 7"
+        ) -StderrPath $captureStderr
+        Assert-True ($capture.ExitCode -eq 7) 'native capture preserves a nonzero exit code'
+        Assert-True ($capture.Stdout.Count -eq 1 -and $capture.Stdout[0] -ceq 'native-stdout') 'native capture preserves stdout'
+        Assert-True ($capture.Stderr.Contains('native-stderr')) 'native capture preserves stderr without terminating'
+        Assert-True ($ErrorActionPreference -ceq 'Stop') 'native capture restores strict error handling'
+    } finally {
+        Remove-Item -LiteralPath $captureStderr -Force -ErrorAction SilentlyContinue
+    }
+
     Write-Host '== per-request timeout budget contract =='
     $wrapperSource = Get-Content -LiteralPath $Wrapper -Raw
     $wrapperTokens = $null

@@ -4,6 +4,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -36,7 +37,7 @@ func configureWrapperCancellation(cmd *exec.Cmd) {
 		if errors.Is(err, syscall.ESRCH) {
 			return os.ErrProcessDone
 		}
-		return err
+		return fmt.Errorf("terminate wrapper process tree for PID %d: %w", cmd.Process.Pid, err)
 	}
 }
 

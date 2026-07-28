@@ -1038,7 +1038,11 @@ func resolveKiroChatLogPath(kiroCWD, kiroChatLogFile string) (string, error) {
 	if !filepath.IsAbs(kiroChatLogPath) {
 		kiroChatLogPath = filepath.Join(kiroCWD, kiroChatLogPath)
 	}
-	return filepath.Abs(kiroChatLogPath)
+	absolutePath, err := filepath.Abs(kiroChatLogPath)
+	if err != nil {
+		return "", fmt.Errorf("resolve Kiro chat log path %q: %w", kiroChatLogPath, err)
+	}
+	return absolutePath, nil
 }
 
 // LoadArgs resolves configuration from env+defaults via Load(), then overlays
