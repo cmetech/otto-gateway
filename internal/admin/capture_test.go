@@ -559,6 +559,76 @@ func TestAcpCaptureSupport_MalformedAssignmentsRedactWholeQuotedAndStructuredVal
 	}
 }
 
+// TestAcpCaptureSupport_RingTruncatedEscapedJSONFailsClosed catches capture
+// ring truncation leaving the outer params document malformed while an
+// encoded JSON fragment still uses backslash-escaped quotes. Treating that
+// fragment as ordinary assignment text misses the escaped key delimiters and
+// exposes the complete credential in an otherwise valid support export.
+func TestAcpCaptureSupport_RingTruncatedEscapedJSONFailsClosed(t *testing.T) {
+	tests := []struct {
+		name   string
+		params string
+		secret string
+	}{
+		{
+			name:   "multiword value after escaped key",
+			params: `\{\"password\" : \"multi word ring secret\",\"safe\":\"truncated`,
+			secret: "multi word ring secret",
+		},
+		{
+			name:   "structured value",
+			params: `prefix {\"api_key\":{\"nested\":\"structured ring secret\"},\"safe\":\"truncated`,
+			secret: "structured ring secret",
+		},
+		{
+			name:   "array value",
+			params: `[{\"refreshToken\":[\"array ring secret\",{\"more\":\"still secret\"}],\"safe\":`,
+			secret: "array ring secret",
+		},
+		{
+			name:   "escaped quote in value",
+			params: `{\"dbPassword\":\"escaped ring secret with \\\"quoted ring secret\\\" tail\",\"safe\":`,
+			secret: "quoted ring secret",
+		},
+		{
+			name:   "credential suffix name",
+			params: `noise \"password_confirmation\" = \"suffix ring secret\",\"safe\":`,
+			secret: "suffix ring secret",
+		},
+	}
+
+	frames := make([]admin.CaptureFrame, len(tests))
+	for i, tc := range tests {
+		frames[i] = admin.CaptureFrame{Seq: uint64(i + 1), Params: tc.params}
+	}
+	src := &fakeCaptureSource{enabled: true, frames: frames}
+	h := admin.Handler(admin.Deps{AcpCapture: src})
+
+	rec := doGet(t, h, "/api/acp-capture?support=redacted")
+	var body struct {
+		Frames []admin.CaptureFrame `json:"frames"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("support export containing truncated frames is invalid JSON: %v; body=%s", err, rec.Body.String())
+	}
+	if len(body.Frames) != len(tests) {
+		t.Fatalf("frames = %d, want %d", len(body.Frames), len(tests))
+	}
+	for i, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if strings.Contains(body.Frames[i].Params, tc.secret) {
+				t.Errorf("ring-truncated escaped JSON leaked secret %q: %s", tc.secret, body.Frames[i].Params)
+			}
+			if !strings.Contains(body.Frames[i].Params, "[REDACTED]") {
+				t.Errorf("ring-truncated escaped JSON did not fail closed: %s", body.Frames[i].Params)
+			}
+			if src.frames[i].Params != tc.params {
+				t.Errorf("support export mutated source frame: got %q, want %q", src.frames[i].Params, tc.params)
+			}
+		})
+	}
+}
+
 // TestAcpCaptureSupport_NestedJSONLimitsFailClosed catches unbounded recursive
 // decoding as well as a limit path that returns an uninspected encoded secret.
 // The response must stay valid JSON and replace the bounded-away subtree as a

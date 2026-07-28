@@ -59,6 +59,15 @@ func redactCapturedParams(raw string) string {
 	// syntax and cannot damage its quoting or structural delimiters.
 	value, ok := decodeCaptureJSON(raw)
 	if !ok {
+		// A ring snapshot can start or end in the middle of a JSON string that
+		// itself contains encoded JSON. In that state the key delimiters are
+		// still written as \" even though the outer document no longer decodes.
+		// The ordinary malformed-text scanner intentionally does not interpret
+		// arbitrary backslashes as syntax, so fail the whole fragment closed
+		// when an escaped credential key/value boundary is still recognizable.
+		if hasEscapedCaptureSecretAssignment(raw) {
+			return captureRedactionMarker
+		}
 		return redactCaptureString(raw)
 	}
 	value = redactCaptureValue("", value, 0)
@@ -67,6 +76,32 @@ func redactCapturedParams(raw string) string {
 		return "[REDACTED: invalid captured JSON]"
 	}
 	return string(body)
+}
+
+func hasEscapedCaptureSecretAssignment(value string) bool {
+	const escapedQuote = `\"`
+	for searchFrom := 0; searchFrom < len(value); {
+		keyStartOffset := strings.Index(value[searchFrom:], escapedQuote)
+		if keyStartOffset < 0 {
+			return false
+		}
+		keyStart := searchFrom + keyStartOffset + len(escapedQuote)
+		keyEndOffset := strings.Index(value[keyStart:], escapedQuote)
+		if keyEndOffset < 0 {
+			return false
+		}
+		keyEnd := keyStart + keyEndOffset
+		separator := keyEnd + len(escapedQuote)
+		for separator < len(value) && isCaptureSpace(value[separator]) {
+			separator++
+		}
+		if isCaptureSecretName(value[keyStart:keyEnd]) && separator < len(value) &&
+			(value[separator] == ':' || value[separator] == '=') {
+			return true
+		}
+		searchFrom = keyEnd + len(escapedQuote)
+	}
+	return false
 }
 
 func decodeCaptureJSON(raw string) (any, bool) {

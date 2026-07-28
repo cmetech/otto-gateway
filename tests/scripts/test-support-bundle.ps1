@@ -227,9 +227,13 @@ function Set-SupportEnvironment {
     $env:GW_SUPPORT_TEST_REPLACE_BARRIER_CONTINUE = ''
     $env:GW_SUPPORT_TEST_DEADLINE_STAGE = ''
     $env:GW_SUPPORT_TEST_DEADLINE_DELAY_MS = ''
+    $env:GW_SUPPORT_TEST_DEADLINE_READY_FILE = ''
     $env:GW_SUPPORT_TEST_COMPRESSION_KIND = ''
     $env:GW_SUPPORT_TEST_COMPRESSION_DELAY_MS = ''
     $env:GW_SUPPORT_TEST_COMPRESSION_PID_FILE = ''
+    $env:GW_SUPPORT_TEST_BLOCKING_KIND = ''
+    $env:GW_SUPPORT_TEST_BLOCKING_DELAY_MS = ''
+    $env:GW_SUPPORT_TEST_BLOCKING_PID_FILE = ''
 }
 
 function Invoke-SupportRun {
@@ -264,9 +268,19 @@ function Start-SupportRun {
     return [pscustomobject]@{ Process = $process; Stdout = $stdout; Stderr = $stderr; OutDir = $OutDir }
 }
 
+function Wait-SupportMarkerOrExit {
+    param($Run, [string]$Marker, [int]$Attempts = 600)
+    foreach ($attempt in 1..$Attempts) {
+        if (Test-Path -LiteralPath $Marker) { return $true }
+        if ($Run.Process.HasExited) { break }
+        Start-Sleep -Milliseconds 50
+    }
+    return Test-Path -LiteralPath $Marker
+}
+
 function Complete-SupportRun($Run) {
     $Run.Process.WaitForExit()
-    $stdout = if (Test-Path -LiteralPath $Run.Stdout) { @(Get-Content -LiteralPath $Run.Stdout) } else { @() }
+    $stdout = @(if (Test-Path -LiteralPath $Run.Stdout) { Get-Content -LiteralPath $Run.Stdout })
     return [pscustomobject]@{
         ExitCode = $Run.Process.ExitCode
         Bundle = if ($stdout.Count -gt 0) { [string]$stdout[-1] } else { '' }
@@ -289,6 +303,64 @@ function Assert-NoSecretInTree([string]$Root, [string[]]$Needles, [string]$Label
 }
 
 try {
+    Write-Host '== per-request timeout budget contract =='
+    $wrapperSource = Get-Content -LiteralPath $Wrapper -Raw
+    $wrapperTokens = $null
+    $wrapperParseErrors = $null
+    $wrapperAst = [System.Management.Automation.Language.Parser]::ParseInput(
+        $wrapperSource, [ref]$wrapperTokens, [ref]$wrapperParseErrors)
+    $requestTimeoutAst = $wrapperAst.Find({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -ceq 'Get-SupportRequestTimeout'
+    }, $true)
+    Assert-True ($wrapperParseErrors.Count -eq 0) 'PowerShell wrapper parses for request-timeout contract extraction'
+    Assert-True ($null -ne $requestTimeoutAst) 'request-timeout helper is present in the support collector'
+    if ($null -ne $requestTimeoutAst) {
+        $requestTimeoutResults = @(& {
+            param([string]$Definition)
+            . ([scriptblock]::Create($Definition))
+            function Test-Deadline { param([string]$Stage) }
+            function Throw-SupportTimeout { param([string]$Stage) throw "expired:$Stage" }
+
+            foreach ($case in @(
+                @{ Name = 'caps large remaining budget'; Timeout = 10.0; Elapsed = 0.0; Want = 5; WantThrow = $false },
+                @{ Name = 'rounds fractional remaining budget down'; Timeout = 10.0; Elapsed = 5.25; Want = 4; WantThrow = $false },
+                @{ Name = 'rejects subsecond remaining budget'; Timeout = 10.0; Elapsed = 9.25; Want = 0; WantThrow = $true },
+                @{ Name = 'rejects expired budget'; Timeout = 10.0; Elapsed = 10.25; Want = 0; WantThrow = $true }
+            )) {
+                $timeoutSec = $case.Timeout
+                $deadlineStopwatch = [pscustomobject]@{
+                    Elapsed = [pscustomobject]@{ TotalSeconds = $case.Elapsed }
+                }
+                try {
+                    $actual = Get-SupportRequestTimeout 'fixture-request'
+                    [pscustomobject]@{
+                        Name = $case.Name; Actual = $actual; Want = $case.Want
+                        Threw = $false; WantThrow = $case.WantThrow
+                    }
+                } catch {
+                    [pscustomobject]@{
+                        Name = $case.Name; Actual = 0; Want = $case.Want
+                        Threw = $true; WantThrow = $case.WantThrow
+                    }
+                }
+            }
+        } $requestTimeoutAst.Extent.Text)
+        foreach ($result in $requestTimeoutResults) {
+            Assert-True ($result.Threw -eq $result.WantThrow) "request timeout $($result.Name)"
+            if (-not $result.WantThrow) {
+                Assert-True ($result.Actual -eq $result.Want) "request timeout $($result.Name) returns $($result.Want)s"
+            }
+        }
+    }
+    foreach ($requestStage in @(
+        'health-request', 'admin-snapshot-request', 'metrics-request', 'capture-request'
+    )) {
+        $requestCallPattern = "Get-SupportRequestTimeout\s+'$([regex]::Escape($requestStage))'"
+        Assert-True ([regex]::Matches($wrapperSource, $requestCallPattern).Count -eq 1) "request site $requestStage uses the bounded timeout helper"
+    }
+
     Write-Host '== native safe-open ABI selection =='
     if (Test-Path -LiteralPath $SafeOpenLibrary -PathType Leaf) {
         . $SafeOpenLibrary
@@ -422,7 +494,7 @@ try {
     $ServerScript = Join-Path $script:FixtureRoot 'server.py'
     'enabled' | Set-Content -LiteralPath $ModeFile -Encoding ASCII
     @'
-import http.server, json, sys
+import http.server, json, sys, time
 port_file, request_log, mode_file = sys.argv[1:]
 class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *_args): pass
@@ -437,10 +509,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
         with open(request_log, "a", encoding="utf-8") as out: out.write(f"{self.command} {self.path}\n")
     def do_GET(self):
         self.record()
+        mode = open(mode_file, encoding="utf-8-sig").read().strip()
+        if mode == "stall-health" and self.path == "/health":
+            # Accept the TCP connection but send no headers. This distinguishes
+            # the wrapper's per-request deadline from a fast connection error.
+            time.sleep(30)
+            return
         if self.path == "/metrics": self.send_body(200, "text/plain", "# HELP gateway_up fixture\ngateway_up 1\n")
         elif self.path == "/admin/api/acp-capture?support=redacted":
-            mode = open(mode_file, encoding="utf-8-sig").read().strip()
-            if mode == "enabled":
+            if mode in ("enabled", "stall-health"):
                 self.send_body(200, "application/json", json.dumps({"enabled": True, "allowRuntimeToggle": True, "count": 1, "size": 8, "frames": [{"seq": 7, "method": "session/update", "params": "{\"safe\":\"capture safe\",\"token\":\"[REDACTED]\"}", "bytes": 64}]}))
             elif mode == "disabled": self.send_body(200, "application/json", '{"enabled":false,"frames":[]}')
             elif mode == "wrongtype": self.send_body(200, "application/json", '{"enabled":"true","frames":[]}')
@@ -602,6 +679,35 @@ server.serve_forever()
     $httpFailureRoot = Expand-SupportBundle $httpFailure.Bundle (Join-Path $ExtractRoot 'capture-http-failure-tree')
     Assert-True ($httpFailure.ExitCode -eq 0) 'support tolerates capture HTTP failure'
     Assert-Line (Join-Path $httpFailureRoot 'MANIFEST.txt') 'WARNING: ACP capture unavailable: request failed' 'manifest identifies capture transport or HTTP failure'
+
+    Write-Host '== stalled request keeps the five-second per-request budget =='
+    'stall-health' | Set-Content -LiteralPath $ModeFile -Encoding ASCII
+    $StalledLogs = Join-Path $script:FixtureRoot 'stalled-request-logs'
+    $null = New-Item -ItemType Directory -Path $StalledLogs -Force
+    'stalled request gateway safe' | Set-Content -LiteralPath (Join-Path $StalledLogs 'gateway.log') -Encoding UTF8
+    'stalled request boot safe' | Set-Content -LiteralPath (Join-Path $StalledLogs 'gateway-boot.log') -Encoding UTF8
+    'stalled request Kiro safe' | Set-Content -LiteralPath (Join-Path $StalledLogs 'kiro.log') -Encoding UTF8
+    Set-SupportEnvironment (Join-Path $StalledLogs 'gateway.log') (Join-Path $StalledLogs 'gateway-boot.log') $StalledLogs 'kiro.log' ''
+    'stall-health' | Set-Content -LiteralPath $ModeFile -Encoding ASCII
+    Clear-Content -LiteralPath $RequestLog
+    $stalledRequestWatch = [System.Diagnostics.Stopwatch]::StartNew()
+    $stalledRequest = Invoke-SupportRun (Join-Path $ExtractRoot 'stalled-request-out') 50 '' 15
+    $stalledRequestWatch.Stop()
+    Assert-True ($stalledRequest.ExitCode -eq 0) "accepted-but-stalled request remains best effort: $($stalledRequest.Stderr)"
+    Assert-True ($stalledRequestWatch.Elapsed.TotalSeconds -ge 4 -and $stalledRequestWatch.Elapsed.TotalSeconds -lt 12) "stalled request uses the five-second cap instead of the remaining 15-second bundle budget (elapsed $($stalledRequestWatch.Elapsed.TotalSeconds)s)"
+    foreach ($path in @('/health','/admin/api/snapshot','/metrics','/admin/api/acp-capture?support=redacted')) {
+        Assert-Contains $RequestLog "GET $path" "collection continues to $path after an earlier accepted connection stalls"
+    }
+    if ($stalledRequest.ExitCode -eq 0 -and (Test-Path -LiteralPath $stalledRequest.Bundle -PathType Leaf)) {
+        $stalledRequestRoot = Expand-SupportBundle $stalledRequest.Bundle (Join-Path $ExtractRoot 'stalled-request-tree')
+        Assert-Contains (Join-Path $stalledRequestRoot 'health\health.json') 'unreachable:' 'stalled health request is recorded as unavailable'
+        Assert-Contains (Join-Path $stalledRequestRoot 'health\snapshot.json') '"fixture":"snapshot"' 'best-effort collection preserves the later admin snapshot'
+        Assert-Contains (Join-Path $stalledRequestRoot 'MANIFEST.txt') 'metrics: captured' 'best-effort collection preserves the later metrics snapshot'
+        Assert-Contains (Join-Path $stalledRequestRoot 'MANIFEST.txt') 'capture: captured' 'best-effort collection preserves the later capture snapshot'
+    } else {
+        Fail-With 'stalled request run did not publish a bundle for best-effort artifact assertions'
+    }
+    'enabled' | Set-Content -LiteralPath $ModeFile -Encoding ASCII
 
     Write-Host '== effective snapshot address resolution =='
     $AddressEnv = Join-Path $script:FixtureRoot 'address.env'
@@ -866,21 +972,88 @@ server.serve_forever()
         Set-SupportEnvironment $GatewayLog $GatewayBoot $KiroCwdFixture 'native/kiro-current.log' $CoworkerHome
         $env:GW_SUPPORT_TEST_DEADLINE_STAGE = $deadlineStage
         $env:GW_SUPPORT_TEST_DEADLINE_DELAY_MS = '1250'
+        $deadlineReady = Join-Path $script:FixtureRoot ("deadline-{0}.ready" -f $deadlineStage)
+        $env:GW_SUPPORT_TEST_DEADLINE_READY_FILE = $deadlineReady
         $deadlineOut = Join-Path $ExtractRoot ("deadline-{0}-out" -f $deadlineStage)
         $deadlineStagingBefore = New-SupportStagingSnapshot $SupportGlobalTemp
+        $deadlineHandle = Start-SupportRun $deadlineOut 50 1
+        $deadlineReached = Wait-SupportMarkerOrExit $deadlineHandle $deadlineReady
         $deadlineWatch = [System.Diagnostics.Stopwatch]::StartNew()
-        $deadlineRun = Invoke-SupportRun $deadlineOut 50 '' 1
+        $deadlineRun = Complete-SupportRun $deadlineHandle
         $deadlineWatch.Stop()
+        Assert-True $deadlineReached "deadline test reaches $deadlineStage before measuring cancellation"
         Assert-True ($deadlineRun.ExitCode -ne 0) "deadline expires inside $deadlineStage"
         # PowerShell's renderer prefixes wrapped exception continuation lines
         # with a `|`; remove that presentation gutter before matching the
         # underlying message.
         $normalizedDeadlineError = ($deadlineRun.Stderr -replace '\s*\|\s*', ' ') -replace '\s+', ' '
         Assert-True ($normalizedDeadlineError -match [regex]::Escape("timed out after 1 seconds at stage '$deadlineStage'")) "deadline failure identifies the exact one-second stage contract for $deadlineStage"
-        Assert-True ($deadlineWatch.Elapsed.TotalSeconds -lt 6) "deadline $deadlineStage returns promptly instead of overrunning collection"
+        Assert-True ($deadlineWatch.Elapsed.TotalSeconds -lt 4) "deadline $deadlineStage returns promptly from its stage barrier (elapsed $($deadlineWatch.Elapsed.TotalSeconds)s)"
         Assert-NoNewSupportStaging $deadlineStagingBefore "deadline $deadlineStage removes global staging"
         Assert-NoSupportTemporaryArtifacts $deadlineOut "deadline $deadlineStage leaves no output partials"
     }
+
+    Write-Host '== cancellable plain redaction and diagnostic probes =='
+    $VersionProbe = Join-Path $script:FixtureRoot 'version-probe.ps1'
+    "param([string]`$VersionArg)`n'fixture version'" | Set-Content -LiteralPath $VersionProbe -Encoding ASCII
+    foreach ($blockingCase in @(
+        @{ Kind = 'plain'; Stage = 'plain-redaction' },
+        @{ Kind = 'gateway-version'; Stage = 'gateway-version-probe' },
+        @{ Kind = 'install-tree'; Stage = 'install-tree-probe' }
+    )) {
+        Set-SupportEnvironment $GatewayLog $GatewayBoot $KiroCwdFixture 'native/kiro-current.log' $CoworkerHome
+        if ($blockingCase.Kind -ceq 'gateway-version') { $env:GW_BIN = $VersionProbe }
+        $env:GW_SUPPORT_TEST_DEADLINE_STAGE = $blockingCase.Stage
+        $env:GW_SUPPORT_TEST_BLOCKING_KIND = $blockingCase.Kind
+        $env:GW_SUPPORT_TEST_BLOCKING_DELAY_MS = '5000'
+        $blockingPidFile = Join-Path $script:FixtureRoot ("{0}.pid" -f $blockingCase.Kind)
+        $env:GW_SUPPORT_TEST_BLOCKING_PID_FILE = $blockingPidFile
+        $blockingOut = Join-Path $ExtractRoot ("blocking-{0}-out" -f $blockingCase.Kind)
+        $blockingStagingBefore = New-SupportStagingSnapshot $SupportGlobalTemp
+        $blockingHandle = Start-SupportRun $blockingOut 50 1
+        $blockingReached = Wait-SupportMarkerOrExit $blockingHandle $blockingPidFile
+        $blockingWatch = [System.Diagnostics.Stopwatch]::StartNew()
+        $blockingRun = Complete-SupportRun $blockingHandle
+        $blockingWatch.Stop()
+        Assert-True $blockingReached "$($blockingCase.Kind) worker reaches its deterministic cancellation barrier"
+        Assert-True ($blockingRun.ExitCode -ne 0) "$($blockingCase.Kind) work is cancelled at the support deadline"
+        $normalizedBlockingError = ($blockingRun.Stderr -replace '\s*\|\s*', ' ') -replace '\s+', ' '
+        Assert-True ($normalizedBlockingError -match [regex]::Escape("timed out after 1 seconds at stage '$($blockingCase.Stage)'")) "$($blockingCase.Kind) timeout identifies its blocking stage"
+        Assert-True ($blockingWatch.Elapsed.TotalSeconds -lt 4) "$($blockingCase.Kind) timeout returns promptly from its worker barrier (elapsed $($blockingWatch.Elapsed.TotalSeconds)s)"
+        Assert-File $blockingPidFile "$($blockingCase.Kind) worker exposes its PID for cancellation verification"
+        if (Test-Path -LiteralPath $blockingPidFile) {
+            $blockingPid = [int](Get-Content -LiteralPath $blockingPidFile -Raw)
+            Start-Sleep -Milliseconds 100
+            Assert-True ($null -eq (Get-Process -Id $blockingPid -ErrorAction SilentlyContinue)) "timed-out $($blockingCase.Kind) worker is terminated"
+        }
+        Assert-NoNewSupportStaging $blockingStagingBefore "$($blockingCase.Kind) timeout removes global staging"
+        Assert-NoSupportTemporaryArtifacts $blockingOut "$($blockingCase.Kind) timeout leaves no output partials"
+    }
+
+    Write-Host '== killable gzip compression deadline =='
+    Set-SupportEnvironment $GatewayLog $GatewayBoot $KiroCwdFixture 'native/kiro-current.log' $CoworkerHome
+    $GzipPidFile = Join-Path $script:FixtureRoot 'gzip-compression.pid'
+    $env:GW_SUPPORT_TEST_COMPRESSION_KIND = 'gzip'
+    $env:GW_SUPPORT_TEST_COMPRESSION_DELAY_MS = '5000'
+    $env:GW_SUPPORT_TEST_COMPRESSION_PID_FILE = $GzipPidFile
+    $gzipDeadlineOut = Join-Path $ExtractRoot 'gzip-compression-deadline-out'
+    $gzipStagingBefore = New-SupportStagingSnapshot $SupportGlobalTemp
+    $gzipHandle = Start-SupportRun $gzipDeadlineOut 50 1
+    $gzipReached = Wait-SupportMarkerOrExit $gzipHandle $GzipPidFile
+    $gzipWatch = [System.Diagnostics.Stopwatch]::StartNew()
+    $gzipDeadline = Complete-SupportRun $gzipHandle
+    $gzipWatch.Stop()
+    Assert-True $gzipReached 'gzip compression child reaches its deterministic cancellation barrier'
+    Assert-True ($gzipDeadline.ExitCode -ne 0) 'gzip compression is cancelled at the support deadline'
+    Assert-True ($gzipWatch.Elapsed.TotalSeconds -lt 4) "gzip compression timeout returns promptly from its child barrier (elapsed $($gzipWatch.Elapsed.TotalSeconds)s)"
+    Assert-File $GzipPidFile 'gzip compression child exposes its PID for cancellation verification'
+    if (Test-Path -LiteralPath $GzipPidFile) {
+        $GzipPid = [int](Get-Content -LiteralPath $GzipPidFile -Raw)
+        Start-Sleep -Milliseconds 100
+        Assert-True ($null -eq (Get-Process -Id $GzipPid -ErrorAction SilentlyContinue)) 'timed-out gzip compression child is terminated'
+    }
+    Assert-NoNewSupportStaging $gzipStagingBefore 'gzip compression timeout removes global staging'
+    Assert-NoSupportTemporaryArtifacts $gzipDeadlineOut 'gzip compression timeout leaves no partial archive'
 
     Write-Host '== killable archive compression deadline =='
     Set-SupportEnvironment $GatewayLog $GatewayBoot $KiroCwdFixture 'native/kiro-current.log' $CoworkerHome
@@ -890,11 +1063,14 @@ server.serve_forever()
     $env:GW_SUPPORT_TEST_COMPRESSION_PID_FILE = $CompressionPidFile
     $compressionDeadlineOut = Join-Path $ExtractRoot 'archive-compression-deadline-out'
     $compressionStagingBefore = New-SupportStagingSnapshot $SupportGlobalTemp
+    $compressionHandle = Start-SupportRun $compressionDeadlineOut 50 1
+    $compressionReached = Wait-SupportMarkerOrExit $compressionHandle $CompressionPidFile
     $compressionWatch = [System.Diagnostics.Stopwatch]::StartNew()
-    $compressionDeadline = Invoke-SupportRun $compressionDeadlineOut 50 '' 1
+    $compressionDeadline = Complete-SupportRun $compressionHandle
     $compressionWatch.Stop()
+    Assert-True $compressionReached 'archive compression child reaches its deterministic cancellation barrier'
     Assert-True ($compressionDeadline.ExitCode -ne 0) 'archive compression is cancelled at the support deadline'
-    Assert-True ($compressionWatch.Elapsed.TotalSeconds -lt 6) 'archive compression timeout does not wait for the injected five-second child delay'
+    Assert-True ($compressionWatch.Elapsed.TotalSeconds -lt 4) "archive compression timeout returns promptly from its child barrier (elapsed $($compressionWatch.Elapsed.TotalSeconds)s)"
     Assert-File $CompressionPidFile 'archive compression child exposes its PID for cancellation verification'
     if (Test-Path -LiteralPath $CompressionPidFile) {
         $CompressionPid = [int](Get-Content -LiteralPath $CompressionPidFile -Raw)

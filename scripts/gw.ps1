@@ -1632,10 +1632,28 @@ function Invoke-Support {
     $timeoutSec = $Timeout
     $maxBytes = [int64]$MaxMb * 1MB
     $deadlineInjectedStages = @{}
-    $compressionDeadlineState = @{ Armed = $false }
+    $deadlineWorkState = @{ Armed = $false }
     function Throw-SupportTimeout {
         param([string]$Stage)
         throw "support bundle: timed out after $timeoutSec seconds at stage '$Stage'; staging will be cleaned"
+    }
+    function Get-SupportTestWorkStage {
+        if ($env:GW_SUPPORT_TEST_COMPRESSION_KIND) {
+            return "$($env:GW_SUPPORT_TEST_COMPRESSION_KIND)-compression"
+        }
+        switch ($env:GW_SUPPORT_TEST_BLOCKING_KIND) {
+            'plain' { return 'plain-redaction' }
+            'gateway-version' { return 'gateway-version-probe' }
+            'kiro-version' { return 'kiro-version-probe' }
+            'install-tree' { return 'install-tree-probe' }
+            default { return '' }
+        }
+    }
+    function Get-SupportTestWorkPidFile {
+        if ($env:GW_SUPPORT_TEST_COMPRESSION_KIND) {
+            return $env:GW_SUPPORT_TEST_COMPRESSION_PID_FILE
+        }
+        return $env:GW_SUPPORT_TEST_BLOCKING_PID_FILE
     }
     function Test-Deadline {
         param([string]$Stage)
@@ -1643,6 +1661,11 @@ function Invoke-Support {
         if ($targetStage) {
             if ($targetStage -ceq $Stage -and -not $deadlineInjectedStages.ContainsKey($Stage)) {
                 $deadlineInjectedStages[$Stage] = $true
+                if ($env:GW_SUPPORT_TEST_DEADLINE_READY_FILE) {
+                    $readyEncoding = New-Object System.Text.UTF8Encoding($false)
+                    [System.IO.File]::WriteAllText(
+                        $env:GW_SUPPORT_TEST_DEADLINE_READY_FILE, $Stage, $readyEncoding)
+                }
                 $delayMilliseconds = 0
                 if ([int]::TryParse($env:GW_SUPPORT_TEST_DEADLINE_DELAY_MS, [ref]$delayMilliseconds) -and
                     $delayMilliseconds -gt 0) {
@@ -1655,16 +1678,14 @@ function Invoke-Support {
                 return
             }
         }
-        $compressionStage = if ($env:GW_SUPPORT_TEST_COMPRESSION_KIND) {
-            "$($env:GW_SUPPORT_TEST_COMPRESSION_KIND)-compression"
-        } else { '' }
-        if ($compressionStage -and $env:GW_SUPPORT_TEST_COMPRESSION_PID_FILE -and
-            -not $compressionDeadlineState.Armed) {
-            if ($compressionStage -ceq $Stage) {
+        $testWorkStage = Get-SupportTestWorkStage
+        $testWorkPidFile = Get-SupportTestWorkPidFile
+        if ($testWorkStage -and $testWorkPidFile -and -not $deadlineWorkState.Armed) {
+            if ($testWorkStage -ceq $Stage) {
                 # Arm the deterministic cancellation clock immediately before
-                # the tested child starts, rather than consuming it during
-                # fixture setup.
-                $compressionDeadlineState.Armed = $true
+                # the tested blocking operation starts, rather than consuming
+                # its short fixture budget during bundle setup.
+                $deadlineWorkState.Armed = $true
                 $deadlineStopwatch.Restart()
             } else {
                 return
@@ -1678,7 +1699,15 @@ function Invoke-Support {
         param([string]$Stage)
         Test-Deadline $Stage
         $remaining = $timeoutSec - $deadlineStopwatch.Elapsed.TotalSeconds
-        return [int][Math]::Max(1, [Math]::Ceiling($remaining))
+        # Live snapshots are best effort: one accepted connection that stops
+        # responding must not consume the collector's entire global budget.
+        # TimeoutSec accepts whole seconds, so round the remaining budget down
+        # and decline to start a request when less than one second remains.
+        $wholeSecondsRemaining = [int][Math]::Floor($remaining)
+        if ($wholeSecondsRemaining -lt 1) {
+            Throw-SupportTimeout $Stage
+        }
+        return [Math]::Min(5, $wholeSecondsRemaining)
     }
     function Invoke-SupportDeadlineJob {
         param(
@@ -1688,8 +1717,8 @@ function Invoke-Support {
         )
         Test-Deadline $Stage
         $job = Start-Job -ScriptBlock $Work -ArgumentList $Arguments
-        if ($env:GW_SUPPORT_TEST_COMPRESSION_PID_FILE -and
-            "$($env:GW_SUPPORT_TEST_COMPRESSION_KIND)-compression" -ceq $Stage) {
+        if ((Get-SupportTestWorkPidFile) -and
+            (Get-SupportTestWorkStage) -ceq $Stage) {
             # Do not charge child-process startup against the deterministic
             # cancellation interval; the child itself is the behavior under
             # test. Production collection has no such seam.
@@ -1706,8 +1735,9 @@ function Invoke-Support {
                 if ($jobError.Count -gt 0) { throw $jobError[0] }
                 throw "support bundle: child job failed at stage '$Stage'"
             }
-            $null = @(Receive-Job -Job $job -ErrorAction Stop)
+            $jobOutput = @(Receive-Job -Job $job -ErrorAction Stop)
             Test-Deadline $Stage
+            return $jobOutput
         } finally {
             if ($job.State -in @('NotStarted','Running','Blocked')) {
                 Stop-Job -Job $job -ErrorAction SilentlyContinue
@@ -2005,8 +2035,53 @@ function Invoke-Support {
             $temporary = $destination + '.partial-' + [Guid]::NewGuid().ToString('N')
             try {
                 $null = New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force
-                Get-Content -LiteralPath $snapshot.Path -ErrorAction Stop | Invoke-RedactStream |
-                    Set-Content -LiteralPath $temporary -Encoding UTF8 -ErrorAction Stop
+                Test-Deadline 'plain-redaction'
+                if ($env:GW_SUPPORT_TEST_BLOCKING_KIND -ceq 'plain') {
+                    if ($env:GW_SUPPORT_TEST_BLOCKING_PID_FILE) {
+                        $pidEncoding = New-Object System.Text.UTF8Encoding($false)
+                        [System.IO.File]::WriteAllText(
+                            $env:GW_SUPPORT_TEST_BLOCKING_PID_FILE, [string]$PID, $pidEncoding)
+                    }
+                    $delayMilliseconds = 0
+                    if ([int]::TryParse($env:GW_SUPPORT_TEST_BLOCKING_DELAY_MS, [ref]$delayMilliseconds) -and
+                        $delayMilliseconds -gt 0) {
+                        $delayWatch = [System.Diagnostics.Stopwatch]::StartNew()
+                        while ($delayWatch.ElapsedMilliseconds -lt $delayMilliseconds) {
+                            Test-Deadline 'plain-redaction'
+                            Start-Sleep -Milliseconds 25
+                        }
+                    }
+                }
+
+                # The source is already an identity-validated local snapshot.
+                # Stream it one line at a time so redaction retains its exact
+                # line-oriented semantics. Check the global deadline after a
+                # bounded batch instead of on every line; Test-Deadline also
+                # services deterministic test seams and is intentionally not a
+                # zero-cost predicate.
+                $reader = New-Object System.IO.StreamReader($snapshot.Path, $true)
+                $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+                $writer = New-Object System.IO.StreamWriter($temporary, $false, $utf8NoBom)
+                try {
+                    $linesSinceDeadline = 0
+                    $charactersSinceDeadline = [int64]0
+                    while ($null -ne ($line = $reader.ReadLine())) {
+                        $linesSinceDeadline++
+                        $charactersSinceDeadline += $line.Length
+                        if ($linesSinceDeadline -ge 128 -or $charactersSinceDeadline -ge 65536) {
+                            Test-Deadline 'plain-redaction'
+                            $linesSinceDeadline = 0
+                            $charactersSinceDeadline = [int64]0
+                        }
+                        foreach ($redactedLine in @($line | Invoke-RedactStream)) {
+                            $writer.WriteLine([string]$redactedLine)
+                        }
+                    }
+                } finally {
+                    $writer.Dispose()
+                    $reader.Dispose()
+                }
+                Test-Deadline 'plain-redaction'
                 if (Test-SupportForcedPublishFailure 'plain') {
                     throw 'forced atomic publish failure: plain'
                 }
@@ -2276,11 +2351,37 @@ function Invoke-Support {
         } catch {}
         Set-Content -Path (Join-Path $bundleRoot 'system\system.txt') -Value $sys -Encoding UTF8
 
+        $versionProbeWork = {
+            param($Executable, $ExpectedKind, $BlockingKind,
+                $DelayMilliseconds, $PidFile)
+            $ErrorActionPreference = 'Stop'
+            if ($BlockingKind -ceq $ExpectedKind) {
+                if ($PidFile) {
+                    $encoding = New-Object System.Text.UTF8Encoding($false)
+                    [System.IO.File]::WriteAllText($PidFile, [string]$PID, $encoding)
+                }
+                if ([int]$DelayMilliseconds -gt 0) {
+                    Start-Sleep -Milliseconds ([int]$DelayMilliseconds)
+                }
+            }
+            (& $Executable --version 2>&1 | Out-String).Trim()
+        }
         $versions = New-Object System.Collections.Generic.List[string]
         $versions.Add("gateway:") | Out-Null
         if (Test-Path $BinPath) {
-            try { $versions.Add((& $BinPath --version 2>&1 | Out-String).Trim()) | Out-Null }
-            catch { $versions.Add("(--version failed: $($_.Exception.Message))") | Out-Null }
+            try {
+                $gatewayVersion = @(Invoke-SupportDeadlineJob -Work $versionProbeWork -Arguments @(
+                    $BinPath, 'gateway-version',
+                    $env:GW_SUPPORT_TEST_BLOCKING_KIND,
+                    $env:GW_SUPPORT_TEST_BLOCKING_DELAY_MS,
+                    $env:GW_SUPPORT_TEST_BLOCKING_PID_FILE
+                ) -Stage 'gateway-version-probe')
+                $versions.Add(($gatewayVersion -join [Environment]::NewLine).Trim()) | Out-Null
+            } catch {
+                if ($_.Exception.Message -match '^support bundle: timed out') { throw }
+                $versions.Add("(--version failed)") | Out-Null
+                $collectionWarnings.Add('Gateway version probe failed') | Out-Null
+            }
         } else {
             $versions.Add("(binary not found at $BinPath)") | Out-Null
         }
@@ -2289,8 +2390,19 @@ function Invoke-Support {
         $kiroCmd = Get-Command kiro -ErrorAction SilentlyContinue
         if ($kiroCmd) {
             $versions.Add($kiroCmd.Source) | Out-Null
-            try { $versions.Add((& kiro --version 2>&1 | Out-String).Trim()) | Out-Null }
-            catch { $versions.Add("(kiro --version failed)") | Out-Null }
+            try {
+                $kiroVersion = @(Invoke-SupportDeadlineJob -Work $versionProbeWork -Arguments @(
+                    'kiro', 'kiro-version',
+                    $env:GW_SUPPORT_TEST_BLOCKING_KIND,
+                    $env:GW_SUPPORT_TEST_BLOCKING_DELAY_MS,
+                    $env:GW_SUPPORT_TEST_BLOCKING_PID_FILE
+                ) -Stage 'kiro-version-probe')
+                $versions.Add(($kiroVersion -join [Environment]::NewLine).Trim()) | Out-Null
+            } catch {
+                if ($_.Exception.Message -match '^support bundle: timed out') { throw }
+                $versions.Add("(kiro --version failed)") | Out-Null
+                $collectionWarnings.Add('Kiro version probe failed') | Out-Null
+            }
         } else {
             $versions.Add("(kiro not on PATH)") | Out-Null
         }
@@ -2298,10 +2410,37 @@ function Invoke-Support {
         $versions.Add("gateway-tray: n/a -- query via tray menu") | Out-Null
         Set-Content -Path (Join-Path $bundleRoot 'system\versions.txt') -Value $versions -Encoding UTF8
 
-        Get-ChildItem -Path $InstallDir -Recurse -Depth 1 -ErrorAction SilentlyContinue |
-            Sort-Object FullName |
-            ForEach-Object { $_.FullName } |
-            Set-Content -Path (Join-Path $bundleRoot 'system\installroot.txt') -Encoding UTF8
+        $installTreePath = Join-Path $bundleRoot 'system\installroot.txt'
+        $installTreeWork = {
+            param($Root, $Destination, $BlockingKind,
+                $DelayMilliseconds, $PidFile)
+            $ErrorActionPreference = 'Stop'
+            if ($BlockingKind -ceq 'install-tree') {
+                if ($PidFile) {
+                    $encoding = New-Object System.Text.UTF8Encoding($false)
+                    [System.IO.File]::WriteAllText($PidFile, [string]$PID, $encoding)
+                }
+                if ([int]$DelayMilliseconds -gt 0) {
+                    Start-Sleep -Milliseconds ([int]$DelayMilliseconds)
+                }
+            }
+            Get-ChildItem -LiteralPath $Root -Recurse -Depth 1 -ErrorAction SilentlyContinue |
+                Sort-Object FullName |
+                ForEach-Object { $_.FullName } |
+                Set-Content -LiteralPath $Destination -Encoding UTF8
+        }
+        try {
+            $null = @(Invoke-SupportDeadlineJob -Work $installTreeWork -Arguments @(
+                $InstallDir, $installTreePath,
+                $env:GW_SUPPORT_TEST_BLOCKING_KIND,
+                $env:GW_SUPPORT_TEST_BLOCKING_DELAY_MS,
+                $env:GW_SUPPORT_TEST_BLOCKING_PID_FILE
+            ) -Stage 'install-tree-probe')
+        } catch {
+            if ($_.Exception.Message -match '^support bundle: timed out') { throw }
+            $collectionWarnings.Add('Install tree probe failed') | Out-Null
+            Set-Content -LiteralPath $installTreePath -Value '(install tree unavailable)' -Encoding UTF8
+        }
 
         # ---- tray/ -----------------------------------------------------
         # tray/tray-state.txt row removed per REL-TRAY-09 (D-18-10) parity
