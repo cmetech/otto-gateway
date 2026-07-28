@@ -31,8 +31,11 @@ func TestWrapperCancellationTerminatesDarwinProcessTree(t *testing.T) {
 	cmd := exec.CommandContext(ctx, script, pidFile) //nolint:gosec // test-owned fixed executable and path
 	detachProcessGroup(cmd)
 	configureWrapperCancellation(cmd)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start wrapper process: %v", err)
+	}
 	done := make(chan error, 1)
-	go func() { done <- cmd.Run() }()
+	go func() { done <- cmd.Wait() }()
 
 	var childPID int
 	deadline := time.Now().Add(3 * time.Second)
