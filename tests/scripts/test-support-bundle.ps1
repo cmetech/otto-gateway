@@ -838,6 +838,8 @@ try {
                 $plainCopyRoot = Join-Path $plainWorkerRoot 'actual copy boundary'
                 $plainCopySource = Join-Path $plainCopyRoot 'configured gateway.log'
                 $plainCopyRelative = 'logs\gateway\gateway.log'
+                $plainCopyDefinitionsPath = Join-Path $plainCopyRoot 'production-copy-definitions.ps1'
+                $plainCopyProcessScript = Join-Path $plainCopyRoot 'fresh-copy-process.ps1'
                 $null = New-Item -ItemType Directory -Path $plainCopyRoot -Force
                 [System.IO.File]::WriteAllBytes($plainCopySource, $plainWorkerBytes)
 
@@ -850,25 +852,32 @@ try {
                     'function Format-ProductionSupportExceptionDiagnostic')
                 $productionCopyDefinition = $copyRedactedLogAst.Extent.Text.Replace(
                     '$PSScriptRoot', '$RepoScriptsRoot')
+                $plainCopyEncoding = New-Object System.Text.UTF8Encoding($false)
+                [System.IO.File]::WriteAllText(
+                    $plainCopyDefinitionsPath,
+                    ((@($plainCopyDefinitions) + @(
+                        $productionDiagnosticDefinition,
+                        $productionCopyDefinition
+                    )) -join [Environment]::NewLine),
+                    $plainCopyEncoding)
 
-                $plainCopyResult = & {
-                    param(
-                        [string]$Definitions,
-                        [string]$DiagnosticDefinition,
-                        [string]$CopyDefinition,
-                        [string]$SafeOpenLibraryPath,
-                        [string]$RepoScriptsRoot,
-                        [string]$Source,
-                        [string]$RelativePath,
-                        [string]$Root,
-                        [string]$Expected,
-                        [string]$Secret
-                    )
-                    . $SafeOpenLibraryPath
-                    . ([scriptblock]::Create($Definitions))
-                    . ([scriptblock]::Create($DiagnosticDefinition))
+                $plainCopyProcessSource = @'
+param(
+    [string]$DefinitionsPath,
+    [string]$SafeOpenLibraryPath,
+    [string]$RepoScriptsRoot,
+    [string]$Source,
+    [string]$RelativePath,
+    [string]$Root,
+    [string]$ExpectedBase64,
+    [string]$Secret
+)
+$ErrorActionPreference = 'Stop'
+try {
+    . $SafeOpenLibraryPath
+    . $DefinitionsPath
 
-                    $failureState = @{
+    $failureState = @{
                         Type = ''
                         HResult = 0
                         FullyQualifiedErrorId = ''
@@ -889,7 +898,6 @@ try {
                         return Format-ProductionSupportExceptionDiagnostic $ErrorRecord
                     }
 
-                    . ([scriptblock]::Create($CopyDefinition))
                     $timeoutSec = 180
                     $deadlineStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
                     $deadlineInjectedStages = @{}
@@ -907,16 +915,13 @@ try {
                         $safeOpenAvailable = $false
                     }
 
-                    $probe = New-SafeSourceSnapshot $Source 'Gateway current log probe' $true
-                    $probePathType = if ($null -ne $probe -and $null -ne $probe.Path) {
-                        $probe.Path.GetType().FullName
-                    } else { '<null>' }
-                    $probeBaseType = if ($null -ne $probe -and $null -ne $probe.Path) {
-                        $probe.Path.PSObject.BaseObject.GetType().FullName
-                    } else { '<null>' }
+                    # This is deliberately the fresh process's first source
+                    # snapshot and first Start-Job invocation.
                     $returned = Copy-RedactedSupportLog `
                         $Source $RelativePath 'Gateway current log' $true
                     $destination = Join-Path $bundleRoot $RelativePath
+                    $expected = [System.Text.Encoding]::UTF8.GetString(
+                        [Convert]::FromBase64String($ExpectedBase64))
                     $output = if (Test-Path -LiteralPath $destination -PathType Leaf) {
                         [System.IO.File]::ReadAllText($destination)
                     } else { '' }
@@ -927,14 +932,11 @@ try {
                             $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and
                             $bytes[2] -eq 0xBF
                     }
-                    [pscustomobject]@{
+                    $result = [pscustomobject]@{
+                        HarnessFailure = $false
                         Returned = $returned -eq $true
-                        ProbeExists = $null -ne $probe -and
-                            (Test-Path -LiteralPath ([string]$probe.Path) -PathType Leaf)
-                        ProbePathType = $probePathType
-                        ProbeBaseType = $probeBaseType
                         DestinationExists = Test-Path -LiteralPath $destination -PathType Leaf
-                        OutputMatches = $output -ceq $Expected
+                        OutputMatches = $output -ceq $expected
                         SecretAbsent = -not $output.Contains($Secret)
                         HasBom = $hasBom
                         PartialCount = @(Get-ChildItem -LiteralPath $bundleRoot `
@@ -948,25 +950,83 @@ try {
                                 $failureState.ScriptLineNumber)
                         } else { '' }
                     }
-                } ($plainCopyDefinitions -join [Environment]::NewLine) `
-                    $productionDiagnosticDefinition $productionCopyDefinition `
-                    $SafeOpenLibrary (Join-Path $RepoRoot 'scripts') `
-                    $plainCopySource $plainCopyRelative $plainCopyRoot `
-                    $plainWorkerExpected $plainWorkerSecret
-
-                $plainCopyContext = 'snapshot path type {0}, base type {1}, warning [{2}], failure [{3}]' -f @(
-                    $plainCopyResult.ProbePathType,
-                    $plainCopyResult.ProbeBaseType,
-                    $plainCopyResult.Warning,
-                    $plainCopyResult.Failure)
-                Assert-True $plainCopyResult.ProbeExists "production snapshot helper yields a readable owned snapshot ($plainCopyContext)"
-                Assert-True $plainCopyResult.Returned "production snapshot-to-copy chain returns success ($plainCopyContext)"
-                Assert-True $plainCopyResult.DestinationExists "production snapshot-to-copy chain publishes its destination ($plainCopyContext)"
-                Assert-True $plainCopyResult.OutputMatches 'production snapshot-to-copy chain preserves expected redaction output'
-                Assert-True $plainCopyResult.SecretAbsent 'production snapshot-to-copy chain excludes the original remote-write token'
-                Assert-True (-not $plainCopyResult.HasBom) 'production snapshot-to-copy chain publishes UTF-8 without a BOM'
-                Assert-True ($plainCopyResult.PartialCount -eq 0) "production snapshot-to-copy chain leaves no partial artifact ($plainCopyContext)"
-                Assert-True (-not $plainCopyResult.Warning) "production snapshot-to-copy chain emits no warning ($plainCopyContext)"
+} catch {
+    $baseException = $_.Exception
+    while ($baseException.InnerException) {
+        $baseException = $baseException.InnerException
+    }
+    $result = [pscustomobject]@{
+        HarnessFailure = $true
+        Returned = $false
+        DestinationExists = $false
+        OutputMatches = $false
+        SecretAbsent = $true
+        HasBom = $false
+        PartialCount = -1
+        Warning = ''
+        Failure = '{0}/0x{1:X8}/{2}/{3}' -f @(
+            $baseException.GetType().FullName,
+            [int]$baseException.HResult,
+            $_.FullyQualifiedErrorId,
+            $_.InvocationInfo.ScriptLineNumber)
+    }
+}
+$result | ConvertTo-Json -Compress
+'@
+                [System.IO.File]::WriteAllText(
+                    $plainCopyProcessScript, $plainCopyProcessSource,
+                    $plainCopyEncoding)
+                $plainCopyExpectedBase64 = [Convert]::ToBase64String(
+                    [System.Text.Encoding]::UTF8.GetBytes($plainWorkerExpected))
+                $plainCopyCapture = Invoke-CapturedNativeCommand `
+                    -FilePath $PowerShellExecutable -ArgumentList @(
+                        '-NoProfile', '-ExecutionPolicy', 'Bypass',
+                        '-File', $plainCopyProcessScript,
+                        '-DefinitionsPath', $plainCopyDefinitionsPath,
+                        '-SafeOpenLibraryPath', $SafeOpenLibrary,
+                        '-RepoScriptsRoot', (Join-Path $RepoRoot 'scripts'),
+                        '-Source', $plainCopySource,
+                        '-RelativePath', $plainCopyRelative,
+                        '-Root', $plainCopyRoot,
+                        '-ExpectedBase64', $plainCopyExpectedBase64,
+                        '-Secret', $plainWorkerSecret)
+                $plainCopyResult = $null
+                try {
+                    $plainCopyResult = Get-LastNativeOutputLine `
+                        $plainCopyCapture.Stdout | ConvertFrom-Json -ErrorAction Stop
+                } catch {}
+                $plainCopyProcessFailure = if ($null -eq $plainCopyResult) {
+                    'no-result'
+                } elseif ($plainCopyResult.HarnessFailure) {
+                    [string]$plainCopyResult.Failure
+                } else { '' }
+                Assert-True (
+                    $plainCopyCapture.ExitCode -eq 0 -and -not $plainCopyProcessFailure
+                ) "fresh plain-copy process initializes the production boundary (failure: $plainCopyProcessFailure)"
+                if ($null -ne $plainCopyResult) {
+                    $plainCopyContext = 'warning [{0}], failure [{1}]' -f @(
+                        $plainCopyResult.Warning,
+                        $plainCopyResult.Failure)
+                    Assert-True $plainCopyResult.Returned "first-job production copy returns success ($plainCopyContext)"
+                    Assert-True $plainCopyResult.DestinationExists "first-job production copy publishes its destination ($plainCopyContext)"
+                    Assert-True $plainCopyResult.OutputMatches 'first-job production copy preserves expected redaction output'
+                    Assert-True $plainCopyResult.SecretAbsent 'first-job production copy excludes the original remote-write token'
+                    Assert-True (-not $plainCopyResult.HasBom) 'first-job production copy publishes UTF-8 without a BOM'
+                    Assert-True ($plainCopyResult.PartialCount -eq 0) "first-job production copy leaves no partial artifact ($plainCopyContext)"
+                    Assert-True (-not $plainCopyResult.Warning) "first-job production copy emits no warning ($plainCopyContext)"
+                } else {
+                    foreach ($label in @(
+                        'returns success',
+                        'publishes its destination',
+                        'preserves expected redaction output',
+                        'excludes the original remote-write token',
+                        'publishes UTF-8 without a BOM',
+                        'leaves no partial artifact',
+                        'emits no warning'
+                    )) {
+                        Fail-With "first-job production copy $label (fresh process returned no diagnostic result)"
+                    }
+                }
             }
         } finally {
             if ($null -ne $plainWorkerJob) {
