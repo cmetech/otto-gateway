@@ -646,16 +646,64 @@ try {
         }, $true)
     } else { $null }
     Assert-True ($null -ne $plainRedactionAssignmentAst) 'plain redaction deadline worker is present'
-    if ($null -ne $plainRedactionAssignmentAst) {
+    $deadlineContractAsts = @(
+        'Throw-SupportTimeout',
+        'Get-SupportTestWorkStage',
+        'Get-SupportTestWorkPidFile',
+        'Test-Deadline',
+        'Invoke-SupportDeadlineJob'
+    ) | ForEach-Object {
+        $functionName = $_
+        $wrapperAst.Find({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -ceq $functionName
+        }, $true)
+    }
+    Assert-True ($deadlineContractAsts.Count -eq 5) 'plain worker production deadline helpers are present'
+    if ($null -ne $plainRedactionAssignmentAst -and $deadlineContractAsts.Count -eq 5) {
         $plainWorkerRoot = Join-Path ([System.IO.Path]::GetTempPath()) (
-            'gw-plain-worker-' + [System.IO.Path]::GetRandomFileName())
+            'gw plain worker with spaces ' + [System.IO.Path]::GetRandomFileName())
         $null = New-Item -ItemType Directory -Path $plainWorkerRoot -Force
         $plainWorkerJob = $null
+        $savedPlainWorkerEnvironment = @{}
         try {
-            $plainWorkerSource = Join-Path $plainWorkerRoot 'collector-owned.snapshot'
-            $plainWorkerTemporary = Join-Path $plainWorkerRoot 'gateway.log.partial-fixture'
+            foreach ($name in @(
+                'TEMP', 'TMP', 'TMPDIR',
+                'GW_SUPPORT_TEST_COMPRESSION_KIND',
+                'GW_SUPPORT_TEST_BLOCKING_KIND',
+                'GW_SUPPORT_TEST_BLOCKING_PID_FILE',
+                'GW_SUPPORT_TEST_DEADLINE_STAGE'
+            )) {
+                $savedPlainWorkerEnvironment[$name] = [Environment]::GetEnvironmentVariable(
+                    $name, 'Process')
+            }
+            $env:TEMP = $plainWorkerRoot
+            $env:TMP = $plainWorkerRoot
+            if (-not $RunningOnWindows) { $env:TMPDIR = $plainWorkerRoot }
+            $env:GW_SUPPORT_TEST_COMPRESSION_KIND = ''
+            $env:GW_SUPPORT_TEST_BLOCKING_KIND = ''
+            $env:GW_SUPPORT_TEST_BLOCKING_PID_FILE = ''
+            $env:GW_SUPPORT_TEST_DEADLINE_STAGE = ''
+
+            $plainWorkerSource = Join-Path $plainWorkerRoot 'source-snapshots\source-1'
+            $plainWorkerTemporary = Join-Path $plainWorkerRoot (
+                'gateway-support-host-20260728-000000Z\logs\gateway\gateway.log.partial-direct')
+            $null = New-Item -ItemType Directory -Path (
+                Split-Path -Parent $plainWorkerSource) -Force
+            $null = New-Item -ItemType Directory -Path (
+                Split-Path -Parent $plainWorkerTemporary) -Force
             $plainWorkerSecret = 'plain-worker-remote-secret-7711'
-            $plainWorkerText = "gateway current safe`r`nGW_METRICS_REMOTE_WRITE_TOKEN=$plainWorkerSecret`r`n"
+            $plainWorkerText = @(
+                'gateway current safe',
+                'AUTH_TOKEN=plain-worker-auth-secret-1122',
+                'Authorization: Bearer plain-worker-bearer-secret-2233',
+                'x-api-key: plain-worker-api-secret-3344',
+                'PII_HASH_KEY=plain-worker-hash-secret-4455',
+                'PII_ENCRYPT_KEY=plain-worker-encrypt-secret-5566',
+                "GW_METRICS_REMOTE_WRITE_TOKEN=$plainWorkerSecret"
+            ) -join "`r`n"
+            $plainWorkerText += "`r`n"
             $plainWorkerPayload = [System.Text.Encoding]::UTF8.GetBytes($plainWorkerText)
             $plainWorkerBytes = New-Object byte[] (3 + $plainWorkerPayload.Length)
             $plainWorkerBytes[0] = 0xEF
@@ -691,20 +739,84 @@ try {
 
             Assert-True (
                 $plainWorkerJob.State -eq 'Completed' -and -not $plainWorkerFailure
-            ) "plain worker opens a BOM-prefixed snapshot in its deadline job (failure: $plainWorkerFailure)"
+            ) "direct plain worker handles production content and space-containing TEMP (failure: $plainWorkerFailure)"
             $plainWorkerOutput = if (Test-Path -LiteralPath $plainWorkerTemporary -PathType Leaf) {
                 [System.IO.File]::ReadAllText($plainWorkerTemporary)
             } else { '' }
-            $plainWorkerExpected = "gateway current safe$([Environment]::NewLine)GW_METRICS_REMOTE_WRITE_TOKEN=[REDACTED]$([Environment]::NewLine)"
+            $plainWorkerExpected = @(
+                'gateway current safe',
+                'AUTH_TOKEN=[REDACTED]',
+                'Authorization: [REDACTED]',
+                'x-api-key: [REDACTED]',
+                'PII_HASH_KEY=[REDACTED]',
+                'PII_ENCRYPT_KEY=[REDACTED]',
+                'GW_METRICS_REMOTE_WRITE_TOKEN=[REDACTED]'
+            ) -join [Environment]::NewLine
+            $plainWorkerExpected += [Environment]::NewLine
             Assert-True ($plainWorkerOutput -ceq $plainWorkerExpected) 'plain worker preserves BOM detection and line-oriented redaction'
             Assert-True (-not $plainWorkerOutput.Contains($plainWorkerSecret)) 'plain worker excludes the original remote-write token'
             Assert-NoUtf8Bom $plainWorkerTemporary 'plain worker publishes UTF-8 without a BOM'
+
+            $plainHelperTemporary = Join-Path $plainWorkerRoot (
+                'gateway-support-host-20260728-000000Z\logs\gateway\gateway.log.partial-helper')
+            $deadlineContractDefinitions = @($deadlineContractAsts |
+                ForEach-Object { $_.Extent.Text }) -join [Environment]::NewLine
+            $plainHelperResult = & {
+                param(
+                    [string]$Definitions,
+                    [scriptblock]$Work,
+                    [string]$SnapshotPath,
+                    [string]$TemporaryPath,
+                    [string]$RedactLibrary
+                )
+                . ([scriptblock]::Create($Definitions))
+                $timeoutSec = 180
+                $deadlineStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+                $deadlineInjectedStages = @{}
+                $deadlineWorkState = @{ Armed = $false }
+                try {
+                    $null = @(Invoke-SupportDeadlineJob -Work $Work -Arguments @(
+                        $SnapshotPath, $TemporaryPath, $RedactLibrary,
+                        '', '', '', ''
+                    ) -Stage 'plain-redaction')
+                    [pscustomobject]@{
+                        Success = $true
+                        Failure = ''
+                    }
+                } catch {
+                    $baseException = $_.Exception
+                    while ($baseException.InnerException) {
+                        $baseException = $baseException.InnerException
+                    }
+                    [pscustomobject]@{
+                        Success = $false
+                        Failure = '{0}/0x{1:X8}/{2}/{3}' -f @(
+                            $baseException.GetType().FullName,
+                            [int]$baseException.HResult,
+                            $_.FullyQualifiedErrorId,
+                            $_.InvocationInfo.ScriptLineNumber)
+                    }
+                }
+            } $deadlineContractDefinitions $plainRedactionWork `
+                $plainWorkerSource $plainHelperTemporary `
+                (Join-Path $RepoRoot 'scripts\lib\redact.ps1')
+            Assert-True $plainHelperResult.Success "deadline helper completes the same plain worker (failure: $($plainHelperResult.Failure))"
+            $plainHelperOutput = if (Test-Path -LiteralPath $plainHelperTemporary -PathType Leaf) {
+                [System.IO.File]::ReadAllText($plainHelperTemporary)
+            } else { '' }
+            Assert-True ($plainHelperOutput -ceq $plainWorkerExpected) 'deadline helper preserves the production plain-redaction output'
+            Assert-True (-not $plainHelperOutput.Contains($plainWorkerSecret)) 'deadline helper excludes the original remote-write token'
+            Assert-NoUtf8Bom $plainHelperTemporary 'deadline helper publishes UTF-8 without a BOM'
         } finally {
             if ($null -ne $plainWorkerJob) {
                 if ($plainWorkerJob.State -in @('NotStarted','Running','Blocked')) {
                     Stop-Job -Job $plainWorkerJob -ErrorAction SilentlyContinue
                 }
                 Remove-Job -Job $plainWorkerJob -Force -ErrorAction SilentlyContinue
+            }
+            foreach ($name in $savedPlainWorkerEnvironment.Keys) {
+                [Environment]::SetEnvironmentVariable(
+                    $name, $savedPlainWorkerEnvironment[$name], 'Process')
             }
             Remove-Item -LiteralPath $plainWorkerRoot -Recurse -Force -ErrorAction SilentlyContinue
         }
