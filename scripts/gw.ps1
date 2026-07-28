@@ -1892,6 +1892,39 @@ function Invoke-Support {
                 return $fallback
             }
         }
+        function Format-SupportErrorIdentityDiagnostic {
+            param($ErrorRecord)
+            $fallback = 'FQID unknown, line 0'
+            try {
+                if ($null -eq $ErrorRecord) { return $fallback }
+
+                $fqid = 'unknown'
+                $fqidProperty = $ErrorRecord.PSObject.Properties['FullyQualifiedErrorId']
+                if ($null -ne $fqidProperty) {
+                    $candidate = [string]$fqidProperty.Value
+                    if ($candidate -cmatch '^[A-Za-z0-9_.+`,-]{1,160}$' -and
+                        $candidate -cnotmatch '(?i:auth|key|passphrase|password|secret|token)') {
+                        $fqid = $candidate
+                    }
+                }
+
+                $line = 0
+                $invocationProperty = $ErrorRecord.PSObject.Properties['InvocationInfo']
+                if ($null -ne $invocationProperty -and
+                    $null -ne $invocationProperty.Value) {
+                    $lineProperty = $invocationProperty.Value.PSObject.Properties['ScriptLineNumber']
+                    $candidateLine = 0
+                    if ($null -ne $lineProperty -and
+                        [int]::TryParse([string]$lineProperty.Value, [ref]$candidateLine) -and
+                        $candidateLine -ge 1 -and $candidateLine -le 9999999) {
+                        $line = $candidateLine
+                    }
+                }
+                return 'FQID {0}, line {1}' -f $fqid, $line
+            } catch {
+                return $fallback
+            }
+        }
         function Publish-SupportArtifact {
             param(
                 [Parameter(Mandatory)][string]$Temporary,
@@ -2139,6 +2172,16 @@ function Invoke-Support {
                         $plainFailureDiagnostic = $formattedDiagnostic
                     }
                 } catch {}
+                # Harness-only seam: append command identity without exposing
+                # exception messages, source text, paths, or log content.
+                if ($env:GW_SUPPORT_TEST_PLAIN_ERROR_IDENTITY -match '^(?i:true|1|yes)$') {
+                    try {
+                        $identityDiagnostic = Format-SupportErrorIdentityDiagnostic $plainFailure
+                        if (-not [string]::IsNullOrEmpty($identityDiagnostic)) {
+                            $plainFailureDiagnostic += '; ' + $identityDiagnostic
+                        }
+                    } catch {}
+                }
                 $collectionWarnings.Add(
                     "$Label redaction failed at $plainFailureStage ($plainFailureDiagnostic)") | Out-Null
                 return $false

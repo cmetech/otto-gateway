@@ -306,6 +306,7 @@ function Set-SupportEnvironment {
     $env:GW_SUPPORT_TEST_BLOCKING_DELAY_MS = ''
     $env:GW_SUPPORT_TEST_BLOCKING_PID_FILE = ''
     $env:GW_SUPPORT_TEST_BLOCKING_READY_FILE = ''
+    $env:GW_SUPPORT_TEST_PLAIN_ERROR_IDENTITY = ''
 }
 
 function ConvertTo-NativeProcessArgument {
@@ -629,12 +630,18 @@ try {
         $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
             $node.Name -ceq 'Format-SupportExceptionDiagnostic'
     }, $true)
+    $errorIdentityDiagnosticAst = $wrapperAst.Find({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -ceq 'Format-SupportErrorIdentityDiagnostic'
+    }, $true)
     $copyRedactedLogAst = $wrapperAst.Find({
         param($node)
         $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
             $node.Name -ceq 'Copy-RedactedSupportLog'
     }, $true)
     Assert-True ($null -ne $diagnosticAst) 'support exception diagnostic helper is present'
+    Assert-True ($null -ne $errorIdentityDiagnosticAst) 'support error identity diagnostic helper is present'
     Assert-True ($null -ne $copyRedactedLogAst) 'plain redaction control flow is present for stage extraction'
 
     Write-Host '== plain redaction worker compatibility =='
@@ -694,7 +701,8 @@ try {
                 'GW_SUPPORT_TEST_DEADLINE_STAGE',
                 'GW_SUPPORT_TEST_FAIL_PUBLISH',
                 'GW_SUPPORT_TEST_REPLACE_BARRIER_DESTINATION',
-                'GW_SUPPORT_TEST_DISABLE_SAFE_OPEN'
+                'GW_SUPPORT_TEST_DISABLE_SAFE_OPEN',
+                'GW_SUPPORT_TEST_PLAIN_ERROR_IDENTITY'
             )) {
                 $savedPlainWorkerEnvironment[$name] = [Environment]::GetEnvironmentVariable(
                     $name, 'Process')
@@ -710,6 +718,7 @@ try {
             $env:GW_SUPPORT_TEST_FAIL_PUBLISH = ''
             $env:GW_SUPPORT_TEST_REPLACE_BARRIER_DESTINATION = ''
             $env:GW_SUPPORT_TEST_DISABLE_SAFE_OPEN = ''
+            $env:GW_SUPPORT_TEST_PLAIN_ERROR_IDENTITY = ''
 
             $plainWorkerSource = Join-Path $plainWorkerRoot 'source-snapshots\source-1'
             $plainWorkerTemporary = Join-Path $plainWorkerRoot (
@@ -1101,23 +1110,108 @@ $result | ConvertTo-Json -Compress
         }
     }
 
-    if ($null -ne $diagnosticAst -and $null -ne $copyRedactedLogAst) {
+    if ($null -ne $errorIdentityDiagnosticAst) {
+        $identityDiagnosticCases = @(& {
+            param([string]$Definition)
+            . ([scriptblock]::Create($Definition))
+            $protectedIdentity = 'identity-secret-1199 C:\private\gateway.log /tmp/private.log AUTH_TOKEN=raw'
+            foreach ($case in @(
+                @{
+                    Name = 'valid command identity'
+                    Input = [pscustomobject]@{
+                        FullyQualifiedErrorId = 'MethodCountCouldNotFindBest,Microsoft.PowerShell.Commands.NewObjectCommand'
+                        InvocationInfo = [pscustomobject]@{ ScriptLineNumber = 2116 }
+                    }
+                    Expected = 'FQID MethodCountCouldNotFindBest,Microsoft.PowerShell.Commands.NewObjectCommand, line 2116'
+                },
+                @{
+                    Name = 'protected identity text'
+                    Input = [pscustomobject]@{
+                        FullyQualifiedErrorId = $protectedIdentity
+                        InvocationInfo = [pscustomobject]@{ ScriptLineNumber = 2116 }
+                    }
+                    Expected = 'FQID unknown, line 2116'
+                },
+                @{
+                    Name = 'credential-shaped identifier'
+                    Input = [pscustomobject]@{
+                        FullyQualifiedErrorId = 'identity-secret-1199'
+                        InvocationInfo = [pscustomobject]@{ ScriptLineNumber = 2116 }
+                    }
+                    Expected = 'FQID unknown, line 2116'
+                },
+                @{
+                    Name = 'invalid line'
+                    Input = [pscustomobject]@{
+                        FullyQualifiedErrorId = 'PSArgumentException'
+                        InvocationInfo = [pscustomobject]@{ ScriptLineNumber = $protectedIdentity }
+                    }
+                    Expected = 'FQID PSArgumentException, line 0'
+                },
+                @{
+                    Name = 'missing properties'
+                    Input = [pscustomobject]@{ Value = 7 }
+                    Expected = 'FQID unknown, line 0'
+                },
+                @{
+                    Name = 'null record'
+                    Input = $null
+                    Expected = 'FQID unknown, line 0'
+                }
+            )) {
+                $threw = $false
+                $actual = ''
+                try {
+                    $actual = Format-SupportErrorIdentityDiagnostic $case.Input
+                } catch { $threw = $true }
+                [pscustomobject]@{
+                    Name = $case.Name
+                    Actual = $actual
+                    Expected = $case.Expected
+                    Threw = $threw
+                }
+            }
+        } $errorIdentityDiagnosticAst.Extent.Text)
+        foreach ($case in $identityDiagnosticCases) {
+            Assert-True (-not $case.Threw) "error identity formatter is total for $($case.Name)"
+            Assert-True ($case.Actual -ceq $case.Expected) "error identity formatter normalizes $($case.Name)"
+            Assert-True ($case.Actual -cmatch '^FQID (?:unknown|[A-Za-z0-9_.+`,-]{1,160}), line (?:0|[1-9][0-9]{0,6})$') "error identity formatter emits exact allowed grammar for $($case.Name)"
+            foreach ($needle in @(
+                'identity-secret-1199', 'C:\private\gateway.log',
+                '/tmp/private.log', 'AUTH_TOKEN=raw'
+            )) {
+                Assert-True (-not $case.Actual.Contains($needle)) "error identity formatter excludes protected text for $($case.Name)"
+            }
+        }
+    }
+
+    if ($null -ne $diagnosticAst -and $null -ne $errorIdentityDiagnosticAst -and
+        $null -ne $copyRedactedLogAst) {
         $diagnosticControlRoot = Join-Path ([System.IO.Path]::GetTempPath()) (
             'gw-diagnostic-control-' + [System.IO.Path]::GetRandomFileName())
         $stageResults = @(& {
-            param([string]$FormatterDefinition, [string]$CopyDefinition, [string]$Root)
+            param(
+                [string]$FormatterDefinition,
+                [string]$IdentityDefinition,
+                [string]$CopyDefinition,
+                [string]$Root
+            )
             . ([scriptblock]::Create($FormatterDefinition))
+            . ([scriptblock]::Create($IdentityDefinition))
             # ScriptBlock::Create has no script-file anchor. Substitute only
             # that automatic path with the controlled harness root; all
             # production control flow remains the extracted function text.
             . ([scriptblock]::Create($CopyDefinition.Replace('$PSScriptRoot', '$Root')))
+            $savedIdentityDiagnostic = $env:GW_SUPPORT_TEST_PLAIN_ERROR_IDENTITY
             foreach ($case in @(
-                @{ Stage = 'plain-redaction'; Type = 'System.InvalidOperationException'; HResult = '80131509' },
-                @{ Stage = 'plain-publish'; Type = 'System.InvalidOperationException'; HResult = '80131509' },
-                @{ Stage = 'plain-metadata'; Type = 'System.IO.IOException'; HResult = '80131620' }
+                @{ Name = 'plain-redaction'; Stage = 'plain-redaction'; Type = 'System.InvalidOperationException'; HResult = '80131509'; Identity = $false },
+                @{ Name = 'plain-redaction-identity'; Stage = 'plain-redaction'; Type = 'System.InvalidOperationException'; HResult = '80131509'; Identity = $true },
+                @{ Name = 'plain-publish'; Stage = 'plain-publish'; Type = 'System.InvalidOperationException'; HResult = '80131509'; Identity = $false },
+                @{ Name = 'plain-metadata'; Stage = 'plain-metadata'; Type = 'System.IO.IOException'; HResult = '80131620'; Identity = $false }
             )) {
+                $env:GW_SUPPORT_TEST_PLAIN_ERROR_IDENTITY = if ($case.Identity) { 'true' } else { '' }
                 $stageState = @{ Stage = $case.Stage }
-                $caseRoot = Join-Path $Root $case.Stage
+                $caseRoot = Join-Path $Root $case.Name
                 $null = New-Item -ItemType Directory -Path $caseRoot -Force
                 $bundleRoot = $caseRoot
                 $collectionWarnings = New-Object System.Collections.Generic.List[string]
@@ -1136,6 +1230,14 @@ $result | ConvertTo-Json -Compress
                     param($Work, $Arguments, $Stage)
                     [System.IO.File]::WriteAllText([string]$Arguments[1], 'redacted temporary')
                     if ($stageState.Stage -ceq 'plain-redaction') {
+                        if ($case.Identity) {
+                            $identityRecord = [System.Management.Automation.ErrorRecord]::new(
+                                ([System.InvalidOperationException]::new($caseMessage)),
+                                'MethodCountCouldNotFindBest,Microsoft.PowerShell.Commands.NewObjectCommand',
+                                [System.Management.Automation.ErrorCategory]::InvalidArgument,
+                                $null)
+                            throw $identityRecord
+                        }
                         throw [System.InvalidOperationException]::new($caseMessage)
                     }
                 }
@@ -1157,29 +1259,39 @@ $result | ConvertTo-Json -Compress
                     [string]$collectionWarnings[0]
                 } else { '' }
                 [pscustomobject]@{
+                    Name = $case.Name
                     Stage = $case.Stage
                     Expected = "Gateway current log redaction failed at $($case.Stage) ($($case.Type), HRESULT 0x$($case.HResult))"
+                    Identity = $case.Identity
                     Warning = $warning
                     Returned = $returned
                     PartialCount = @(Get-ChildItem -LiteralPath $caseRoot -Filter '*.partial-*' -ErrorAction SilentlyContinue).Count
                     DestinationExists = [System.IO.File]::Exists((Join-Path $caseRoot 'gateway.log'))
                 }
             }
-        } $diagnosticAst.Extent.Text $copyRedactedLogAst.Extent.Text $diagnosticControlRoot)
+            [Environment]::SetEnvironmentVariable(
+                'GW_SUPPORT_TEST_PLAIN_ERROR_IDENTITY', $savedIdentityDiagnostic, 'Process')
+        } $diagnosticAst.Extent.Text $errorIdentityDiagnosticAst.Extent.Text `
+            $copyRedactedLogAst.Extent.Text $diagnosticControlRoot)
         foreach ($case in $stageResults) {
-            Assert-True ($case.Returned -eq $false) "$($case.Stage) diagnostic keeps the failure best effort"
-            Assert-True ($case.Warning -ceq $case.Expected) "$($case.Stage) diagnostic selects the exact lifecycle stage and exception shape"
-            Assert-True ($case.PartialCount -eq 0) "$($case.Stage) diagnostic removes sibling partial artifacts"
+            Assert-True ($case.Returned -eq $false) "$($case.Name) diagnostic keeps the failure best effort"
+            if ($case.Identity) {
+                $identityWarningPattern = '^Gateway current log redaction failed at plain-redaction \(System\.InvalidOperationException, HRESULT 0x80131509; FQID MethodCountCouldNotFindBest,Microsoft\.PowerShell\.Commands\.NewObjectCommand, line [1-9][0-9]{0,6}\)$'
+                Assert-True ($case.Warning -cmatch $identityWarningPattern) 'plain-redaction identity diagnostic adds exact FQID and invocation line grammar'
+            } else {
+                Assert-True ($case.Warning -ceq $case.Expected) "$($case.Name) diagnostic selects the exact lifecycle stage and exception shape"
+            }
+            Assert-True ($case.PartialCount -eq 0) "$($case.Name) diagnostic removes sibling partial artifacts"
             foreach ($needle in @(
                 'diagnostic-stage-secret-7733', 'C:\private\source.log',
                 '/tmp/private.partial', 'AUTH_TOKEN=raw-stage-secret-8844'
             )) {
-                Assert-True (-not $case.Warning.Contains($needle)) "$($case.Stage) diagnostic excludes protected failure text"
+                Assert-True (-not $case.Warning.Contains($needle)) "$($case.Name) diagnostic excludes protected failure text"
             }
         }
-        $redactionStage = @($stageResults | Where-Object Stage -eq 'plain-redaction')[0]
-        $publishStage = @($stageResults | Where-Object Stage -eq 'plain-publish')[0]
-        $metadataStage = @($stageResults | Where-Object Stage -eq 'plain-metadata')[0]
+        $redactionStage = @($stageResults | Where-Object Name -eq 'plain-redaction')[0]
+        $publishStage = @($stageResults | Where-Object Name -eq 'plain-publish')[0]
+        $metadataStage = @($stageResults | Where-Object Name -eq 'plain-metadata')[0]
         Assert-True (-not $redactionStage.DestinationExists) 'plain-redaction failure publishes no destination'
         Assert-True (-not $publishStage.DestinationExists) 'plain-publish failure publishes no destination'
         Assert-True $metadataStage.DestinationExists 'plain-metadata failure preserves the already-published redacted destination'
@@ -1474,6 +1586,7 @@ server.serve_forever()
     $GatewayBoot = Join-Path $GatewayHome 'logs\gateway-boot.log'
     $GatewayBootError = Join-Path $GatewayHome 'logs\gateway-boot-stderr-source.log'
     Set-SupportEnvironment $GatewayLog $GatewayBoot $KiroCwdFixture 'native/kiro-current.log' $CoworkerHome $GatewayBootError
+    $env:GW_SUPPORT_TEST_PLAIN_ERROR_IDENTITY = 'true'
 
     Write-Host '== enabled support bundle =='
     $mainStagingBefore = New-SupportStagingSnapshot $SupportGlobalTemp
