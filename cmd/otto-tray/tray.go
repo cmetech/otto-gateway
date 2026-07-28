@@ -74,6 +74,7 @@ func applyGatewayMenuModel(
 
 type trayState struct {
 	mu               sync.Mutex
+	preferenceSaveMu sync.Mutex
 	installDir       string
 	gwHome           string
 	cfg              TrayConfig
@@ -589,11 +590,11 @@ func tailLines(s string, n int) string {
 func (s *trayState) toggleLaunchAtLogin() {
 	s.mu.Lock()
 	s.cfg.LaunchAtLogin = !s.cfg.LaunchAtLogin
-	cfg := s.cfg
+	enabled := s.cfg.LaunchAtLogin
 	s.mu.Unlock()
 	exe, _ := exeForAutostart()
 	var err error
-	if cfg.LaunchAtLogin {
+	if enabled {
 		err = installAutostart(exe)
 		s.miPrefsLogin.Check()
 	} else {
@@ -605,21 +606,32 @@ func (s *trayState) toggleLaunchAtLogin() {
 		notify("Gateway", "Could not change login setting: "+err.Error())
 		return
 	}
-	if err := saveTrayConfig(gwTrayConfigPath(s.gwHome), cfg); err != nil {
-		slog.Error("save tray.json", "err", err)
-	}
+	s.savePreferences()
 }
 
 func (s *trayState) toggleStartGatewayOnLaunch() {
 	s.mu.Lock()
 	s.cfg.StartGatewayOnLaunch = !s.cfg.StartGatewayOnLaunch
-	cfg := s.cfg
+	enabled := s.cfg.StartGatewayOnLaunch
 	s.mu.Unlock()
-	if cfg.StartGatewayOnLaunch {
+	if enabled {
 		s.miPrefsStart.Check()
 	} else {
 		s.miPrefsStart.Uncheck()
 	}
+	s.savePreferences()
+}
+
+// savePreferences serializes tray.json writes and snapshots the latest state
+// only after entering that serialization point. A delayed preference callback
+// therefore cannot overwrite a newer preference with an earlier snapshot.
+func (s *trayState) savePreferences() {
+	s.preferenceSaveMu.Lock()
+	defer s.preferenceSaveMu.Unlock()
+
+	s.mu.Lock()
+	cfg := s.cfg
+	s.mu.Unlock()
 	if err := saveTrayConfig(gwTrayConfigPath(s.gwHome), cfg); err != nil {
 		slog.Error("save tray.json", "err", err)
 	}
@@ -646,11 +658,8 @@ func (s *trayState) toggleMetricsRemoteWrite() {
 	s.setMetricsRWChecked(newVal)
 	s.mu.Lock()
 	s.cfg.MetricsRemoteWriteEnabled = &newVal
-	cfg := s.cfg
 	s.mu.Unlock()
-	if err := saveTrayConfig(gwTrayConfigPath(s.gwHome), cfg); err != nil {
-		slog.Error("save tray.json", "err", err)
-	}
+	s.savePreferences()
 	var warning string
 	if newVal {
 		warning = remoteWriteEnableWarning(loadRemoteWriteConfig(s.gwHome))
