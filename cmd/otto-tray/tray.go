@@ -125,19 +125,24 @@ type trayState struct {
 	// metricsRWEnabled is the live on/off for Grafana Cloud remote-write, read
 	// each cycle by runRemoteWriter and flipped by the Advanced-menu checkbox so
 	// enable/disable takes effect without a tray restart.
-	metricsRWEnabled atomic.Bool
+	metricsRWEnabled  atomic.Bool
+	metricsRWToggleMu sync.Mutex
+	// setMetricsRWChecked isolates native menu rendering from toggle behavior.
+	// Tests replace it so enable/disable notifications can be verified without UI.
+	setMetricsRWChecked func(bool)
 }
 
 func newTrayState(installDir, gwHome string, cfg TrayConfig) *trayState {
 	return &trayState{
-		installDir:       installDir,
-		gwHome:           gwHome,
-		cfg:              cfg,
-		dashboardURL:     resolveDashboardURL(gwHome),
-		current:          StateUnknown,
-		stateCh:          make(chan stateOutput, 4),
-		desktopCh:        make(chan desktopOutput, 4),
-		desktopRefreshCh: make(chan struct{}, 1),
+		installDir:          installDir,
+		gwHome:              gwHome,
+		cfg:                 cfg,
+		dashboardURL:        resolveDashboardURL(gwHome),
+		current:             StateUnknown,
+		stateCh:             make(chan stateOutput, 4),
+		desktopCh:           make(chan desktopOutput, 4),
+		desktopRefreshCh:    make(chan struct{}, 1),
+		setMetricsRWChecked: func(bool) {},
 	}
 }
 
@@ -175,6 +180,13 @@ func (s *trayState) onReady(isFirstRun bool) func() {
 		rwInitial := resolveMetricsRWEnabled(s.cfg, s.gwHome)
 		s.metricsRWEnabled.Store(rwInitial)
 		s.miMetricsRW = s.miAdvanced.AddSubMenuItemCheckbox("Send metrics to Grafana Cloud", "Scrape the gateway's metrics and remote-write them to Grafana Cloud", rwInitial)
+		s.setMetricsRWChecked = func(enabled bool) {
+			if enabled {
+				s.miMetricsRW.Check()
+				return
+			}
+			s.miMetricsRW.Uncheck()
+		}
 		systray.AddSeparator()
 		s.miSupport = systray.AddMenuItem("Create Support Bundle…", "Produce a redacted diagnostic archive")
 		systray.AddSeparator()
@@ -628,19 +640,25 @@ func resolveMetricsRWEnabled(cfg TrayConfig, gwHome string) bool {
 // it up on its next cycle) and persists the concrete on/off to tray.json so the
 // choice survives restarts and thereafter wins over the env default.
 func (s *trayState) toggleMetricsRemoteWrite() {
+	s.metricsRWToggleMu.Lock()
 	newVal := !s.metricsRWEnabled.Load()
 	s.metricsRWEnabled.Store(newVal)
-	if newVal {
-		s.miMetricsRW.Check()
-	} else {
-		s.miMetricsRW.Uncheck()
-	}
+	s.setMetricsRWChecked(newVal)
 	s.mu.Lock()
 	s.cfg.MetricsRemoteWriteEnabled = &newVal
 	cfg := s.cfg
 	s.mu.Unlock()
 	if err := saveTrayConfig(gwTrayConfigPath(s.gwHome), cfg); err != nil {
 		slog.Error("save tray.json", "err", err)
+	}
+	var warning string
+	if newVal {
+		warning = remoteWriteEnableWarning(loadRemoteWriteConfig(s.gwHome))
+	}
+	s.metricsRWToggleMu.Unlock()
+
+	if warning != "" {
+		notify("Gateway", warning)
 	}
 }
 

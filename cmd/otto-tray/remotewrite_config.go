@@ -72,6 +72,29 @@ func (c remoteWriteConfig) ready() bool {
 	return c.URL != "" && c.User != "" && c.Token != ""
 }
 
+func (c remoteWriteConfig) missingRequiredFields() []string {
+	var missing []string
+	if c.URL == "" {
+		missing = append(missing, "endpoint")
+	}
+	if c.User == "" {
+		missing = append(missing, "account user")
+	}
+	if c.Token == "" {
+		missing = append(missing, "API key")
+	}
+	return missing
+}
+
+func remoteWriteEnableWarning(c remoteWriteConfig) string {
+	missing := c.missingRequiredFields()
+	if len(missing) == 0 {
+		return ""
+	}
+	return "Metrics sending is enabled but missing " + strings.Join(missing, ", ") +
+		". Add GW_METRICS_REMOTE_WRITE_TOKEN to overrides.env."
+}
+
 // parseIntervalSeconds parses a whole-second interval, defaulting to 30s and
 // clamping up to a 5s floor so a fat-fingered "1" cannot hammer the gateway or
 // Grafana.

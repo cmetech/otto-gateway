@@ -4,12 +4,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -274,6 +276,254 @@ func TestResolveMetricsRWEnabled_Precedence(t *testing.T) {
 	}
 }
 
+func TestRemoteWriteMissingRequiredFields_DefaultsNeedOnlyAPIKey(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("GW_METRICS_REMOTE_WRITE_TOKEN", "")
+	const defaults = "GW_METRICS_REMOTE_WRITE_URL=https://prometheus-prod-66-prod-us-east-3.grafana.net/api/prom/push\n" +
+		"GW_METRICS_REMOTE_WRITE_USER=3370048\n" +
+		"GW_METRICS_REMOTE_WRITE_INTERVAL_SEC=30\n"
+	if err := os.WriteFile(filepath.Join(home, ".env"), []byte(defaults), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := loadRemoteWriteConfig(home)
+	if cfg.URL != "https://prometheus-prod-66-prod-us-east-3.grafana.net/api/prom/push" {
+		t.Errorf("URL = %q", cfg.URL)
+	}
+	if cfg.User != "3370048" {
+		t.Errorf("user = %q", cfg.User)
+	}
+	if cfg.Interval != 30*time.Second {
+		t.Errorf("interval = %v; want 30s", cfg.Interval)
+	}
+	if cfg.ready() {
+		t.Error("configuration without an API key must not be ready")
+	}
+	if got := cfg.missingRequiredFields(); !equalStrings(got, []string{"API key"}) {
+		t.Errorf("missing fields = %v; want [API key]", got)
+	}
+}
+
+func TestRemoteWriteMissingRequiredFields_DeterministicOrder(t *testing.T) {
+	cfg := remoteWriteConfig{}
+	if got := cfg.missingRequiredFields(); !equalStrings(got, []string{"endpoint", "account user", "API key"}) {
+		t.Errorf("missing fields = %v; want [endpoint account user API key]", got)
+	}
+}
+
+func TestRemoteWriteEnableWarning_NamesSettingWithoutSecret(t *testing.T) {
+	const secret = "glc_do-not-leak-this-value"
+	warning := remoteWriteEnableWarning(remoteWriteConfig{User: "3370048", Token: secret})
+	if !strings.Contains(warning, "GW_METRICS_REMOTE_WRITE_TOKEN") {
+		t.Errorf("warning does not name GW_METRICS_REMOTE_WRITE_TOKEN: %q", warning)
+	}
+	if strings.Contains(warning, secret) {
+		t.Errorf("warning leaked remote-write token: %q", warning)
+	}
+}
+
+func TestRemoteWriteEnableWarning_OverrideTokenMakesConfigReady(t *testing.T) {
+	home := t.TempDir()
+	const defaults = "GW_METRICS_REMOTE_WRITE_URL=https://prometheus-prod-66-prod-us-east-3.grafana.net/api/prom/push\n" +
+		"GW_METRICS_REMOTE_WRITE_USER=3370048\n" +
+		"GW_METRICS_REMOTE_WRITE_INTERVAL_SEC=30\n"
+	if err := os.WriteFile(filepath.Join(home, ".env"), []byte(defaults), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "overrides.env"), []byte("GW_METRICS_REMOTE_WRITE_TOKEN=glc_override-secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := loadRemoteWriteConfig(home)
+	if cfg.Token != "glc_override-secret" {
+		t.Errorf("token = %q; want overrides.env value", cfg.Token)
+	}
+	if !cfg.ready() {
+		t.Error("configuration with an overrides.env API key must be ready")
+	}
+	if warning := remoteWriteEnableWarning(cfg); warning != "" {
+		t.Errorf("ready configuration warning = %q; want empty", warning)
+	}
+}
+
+func TestTrayConfig_MetricsRemoteWritePersistsBooleanOnly(t *testing.T) {
+	body, err := json.Marshal(TrayConfig{MetricsRemoteWriteEnabled: boolPtr(true)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	if !strings.Contains(text, `"metrics_remote_write_enabled":true`) {
+		t.Errorf("tray config missing enabled preference: %s", text)
+	}
+	for _, forbidden := range []string{
+		"GW_METRICS_REMOTE_WRITE_URL",
+		"GW_METRICS_REMOTE_WRITE_USER",
+		"GW_METRICS_REMOTE_WRITE_TOKEN",
+		"prometheus-prod-66-prod-us-east-3.grafana.net",
+		"3370048",
+		"glc_",
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Errorf("tray config contains remote-write configuration %q: %s", forbidden, text)
+		}
+	}
+}
+
+func TestToggleMetricsRemoteWrite_EnableMissingNotifiesOnceAndWriterTicksStaySilent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("GW_METRICS_REMOTE_WRITE_TOKEN", "")
+	const defaults = "GW_METRICS_REMOTE_WRITE_URL=https://prometheus-prod-66-prod-us-east-3.grafana.net/api/prom/push\n" +
+		"GW_METRICS_REMOTE_WRITE_USER=3370048\n" +
+		"GW_METRICS_REMOTE_WRITE_INTERVAL_SEC=30\n"
+	if err := os.WriteFile(filepath.Join(home, ".env"), []byte(defaults), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	s := newTrayState("", home, TrayConfig{})
+	var checked []bool
+	s.setMetricsRWChecked = func(enabled bool) { checked = append(checked, enabled) }
+	type notification struct{ title, body string }
+	var notifications []notification
+	oldNotify := notifyFn
+	notifyFn = func(title, body string) {
+		notifications = append(notifications, notification{title: title, body: body})
+	}
+	t.Cleanup(func() { notifyFn = oldNotify })
+
+	s.toggleMetricsRemoteWrite()
+	if !s.metricsRWEnabled.Load() {
+		t.Error("metrics sending must be enabled after the action")
+	}
+	if !equalBools(checked, []bool{true}) {
+		t.Errorf("checkbox updates = %v; want [true]", checked)
+	}
+	if len(notifications) != 1 {
+		t.Fatalf("notifications after enable = %d; want 1", len(notifications))
+	}
+	if notifications[0].title != "Gateway" {
+		t.Errorf("notification title = %q; want Gateway", notifications[0].title)
+	}
+	if !strings.Contains(notifications[0].body, "GW_METRICS_REMOTE_WRITE_TOKEN") {
+		t.Errorf("notification does not identify the API-key setting: %q", notifications[0].body)
+	}
+
+	cfg, _ := loadTrayConfig(filepath.Join(home, "tray.json"))
+	if cfg.MetricsRemoteWriteEnabled == nil || !*cfg.MetricsRemoteWriteEnabled {
+		t.Errorf("persisted metrics preference = %v; want true", cfg.MetricsRemoteWriteEnabled)
+	}
+	body, err := os.ReadFile(filepath.Join(home, "tray.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"REMOTE_WRITE_URL", "REMOTE_WRITE_USER", "REMOTE_WRITE_TOKEN", "3370048"} {
+		if strings.Contains(string(body), forbidden) {
+			t.Errorf("tray.json contains remote-write setting/value %q: %s", forbidden, body)
+		}
+	}
+
+	rw := newRemoteWriter("http://127.0.0.1:0/metrics", home, &s.metricsRWEnabled)
+	missingToken := loadRemoteWriteConfig(home)
+	for i := 0; i < 3; i++ {
+		rw.tickOnce(context.Background(), missingToken)
+	}
+	if len(notifications) != 1 {
+		t.Errorf("notifications after recurring writer ticks = %d; want enable action's single notification", len(notifications))
+	}
+}
+
+func TestToggleMetricsRemoteWrite_DisableIsSilent(t *testing.T) {
+	s := newTrayState("", t.TempDir(), TrayConfig{MetricsRemoteWriteEnabled: boolPtr(true)})
+	s.metricsRWEnabled.Store(true)
+	var checked []bool
+	s.setMetricsRWChecked = func(enabled bool) { checked = append(checked, enabled) }
+	var notifications int
+	oldNotify := notifyFn
+	notifyFn = func(string, string) { notifications++ }
+	t.Cleanup(func() { notifyFn = oldNotify })
+
+	s.toggleMetricsRemoteWrite()
+	if s.metricsRWEnabled.Load() {
+		t.Error("metrics sending must be disabled after the action")
+	}
+	if !equalBools(checked, []bool{false}) {
+		t.Errorf("checkbox updates = %v; want [false]", checked)
+	}
+	if notifications != 0 {
+		t.Errorf("disable notifications = %d; want 0", notifications)
+	}
+}
+
+func TestToggleMetricsRemoteWrite_ReadyConfigDoesNotWarn(t *testing.T) {
+	home := t.TempDir()
+	const ready = "GW_METRICS_REMOTE_WRITE_URL=https://example.test/api/prom/push\n" +
+		"GW_METRICS_REMOTE_WRITE_USER=3370048\n" +
+		"GW_METRICS_REMOTE_WRITE_TOKEN=glc_ready-secret\n"
+	if err := os.WriteFile(filepath.Join(home, "overrides.env"), []byte(ready), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := newTrayState("", home, TrayConfig{})
+	s.setMetricsRWChecked = func(bool) {}
+	var notifications int
+	oldNotify := notifyFn
+	notifyFn = func(string, string) { notifications++ }
+	t.Cleanup(func() { notifyFn = oldNotify })
+
+	s.toggleMetricsRemoteWrite()
+	if notifications != 0 {
+		t.Errorf("ready enable notifications = %d; want 0", notifications)
+	}
+}
+
+func TestToggleMetricsRemoteWrite_ConcurrentActionsStayOrdered(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("GW_METRICS_REMOTE_WRITE_TOKEN", "")
+	s := newTrayState("", home, TrayConfig{})
+	var captureMu sync.Mutex
+	var checked []bool
+	s.setMetricsRWChecked = func(enabled bool) {
+		captureMu.Lock()
+		checked = append(checked, enabled)
+		captureMu.Unlock()
+	}
+	var notifications int
+	oldNotify := notifyFn
+	notifyFn = func(string, string) {
+		captureMu.Lock()
+		notifications++
+		captureMu.Unlock()
+	}
+	t.Cleanup(func() { notifyFn = oldNotify })
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			defer wg.Done()
+			<-start
+			s.toggleMetricsRemoteWrite()
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	if s.metricsRWEnabled.Load() {
+		t.Error("two toggle actions from disabled must finish disabled")
+	}
+	captureMu.Lock()
+	defer captureMu.Unlock()
+	if !equalBools(checked, []bool{true, false}) {
+		t.Errorf("checkbox updates = %v; want [true false]", checked)
+	}
+	if notifications != 1 {
+		t.Errorf("notifications = %d; want only the enable action's warning", notifications)
+	}
+	cfg, _ := loadTrayConfig(filepath.Join(home, "tray.json"))
+	if cfg.MetricsRemoteWriteEnabled == nil || *cfg.MetricsRemoteWriteEnabled {
+		t.Errorf("persisted metrics preference = %v; want false", cfg.MetricsRemoteWriteEnabled)
+	}
+}
+
 // TestConfig_Parsers covers interval clamping, prefix defaults/wildcard, env
 // bool, and the allowlist matcher.
 func TestConfig_Parsers(t *testing.T) {
@@ -316,6 +566,30 @@ func TestScrubToken(t *testing.T) {
 }
 
 func boolPtr(b bool) *bool { return &b }
+
+func equalStrings(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func equalBools(got, want []bool) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}
 
 // enabledFlag returns an *atomic.Bool preset to b for newRemoteWriter.
 func enabledFlag(b bool) *atomic.Bool {
