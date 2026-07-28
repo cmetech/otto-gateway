@@ -2005,7 +2005,10 @@ function Invoke-Support {
                     while ($remaining -gt 0) {
                         Test-Deadline 'source-snapshot-chunk'
                         $wanted = [int][Math]::Min([int64]$buffer.Length, $remaining)
-                        $read = $openedSource.Stream.Read($buffer, 0, $wanted)
+                        # Keep the PowerShell 5.1 boundary on the single-signature
+                        # helper. Its Windows branch reads the already validated
+                        # native handle directly; it never reopens $Source.
+                        $read = $openedSource.Read($buffer, $wanted)
                         if ($read -le 0) { throw 'source changed length during safe-open snapshot' }
                         $snapshotStream.Write($buffer, 0, $read)
                         $remaining -= $read

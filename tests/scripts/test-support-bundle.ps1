@@ -62,6 +62,35 @@ function Assert-Line([string]$Path, [string]$Expected, [string]$Label) {
     Assert-True $found "$Label (missing exact line [$Expected] in $Path)"
 }
 
+function Assert-CurrentLogContains {
+    param(
+        [string]$Path,
+        [string]$Manifest,
+        [AllowEmptyString()][string]$Needle,
+        [string]$Label
+    )
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        $warnings = @()
+        if (Test-Path -LiteralPath $Manifest -PathType Leaf) {
+            $warnings = @(Get-Content -LiteralPath $Manifest |
+                Where-Object { $_ -like 'WARNING: *current log*' })
+        }
+        $warningText = if ($warnings.Count -gt 0) { $warnings -join '; ' } else { '(none)' }
+        Fail-With "$Label (missing: $Path; manifest current-log warnings: $warningText)"
+        return
+    }
+    if ($Needle) {
+        Assert-Contains $Path $Needle $Label
+    } else {
+        Ok $Label
+    }
+}
+
+function Format-SupportResult($Result) {
+    $exitCode = if ($null -eq $Result.ExitCode) { '<null>' } else { [string]$Result.ExitCode }
+    return "exit code $exitCode; stderr: $($Result.Stderr)"
+}
+
 function Assert-NoUtf8Bom([string]$Path, [string]$Label) {
     $hasBom = $false
     if (Test-Path -LiteralPath $Path -PathType Leaf) {
@@ -237,27 +266,102 @@ function Set-SupportEnvironment {
     $env:GW_SUPPORT_TEST_BLOCKING_READY_FILE = ''
 }
 
-function Invoke-CapturedNativeCommand {
+function ConvertTo-NativeProcessArgument {
+    param([AllowEmptyString()][string]$Argument)
+    if ($Argument.Length -gt 0 -and $Argument -notmatch '[\s"]') {
+        return $Argument
+    }
+
+    # ProcessStartInfo.ArgumentList is absent from .NET Framework/Windows
+    # PowerShell 5.1. Apply the CommandLineToArgvW-compatible escaping rules
+    # explicitly so paths with spaces, empty values, quotes, and trailing
+    # backslashes survive identically on both supported PowerShell editions.
+    $quoted = New-Object System.Text.StringBuilder
+    $backslash = [char]92
+    $quote = [char]34
+    $null = $quoted.Append($quote)
+    $pendingBackslashes = 0
+    foreach ($character in $Argument.ToCharArray()) {
+        if ($character -eq $backslash) {
+            $pendingBackslashes++
+            continue
+        }
+        $copies = if ($character -eq $quote) {
+            ($pendingBackslashes * 2) + 1
+        } else {
+            $pendingBackslashes
+        }
+        for ($index = 0; $index -lt $copies; $index++) {
+            $null = $quoted.Append($backslash)
+        }
+        $pendingBackslashes = 0
+        $null = $quoted.Append($character)
+    }
+    for ($index = 0; $index -lt ($pendingBackslashes * 2); $index++) {
+        $null = $quoted.Append($backslash)
+    }
+    $null = $quoted.Append($quote)
+    return $quoted.ToString()
+}
+
+function Start-CapturedNativeCommand {
     param(
         [string]$FilePath,
-        [string[]]$ArgumentList,
-        [string]$StderrPath
+        [string[]]$ArgumentList
     )
-    $previousErrorActionPreference = $ErrorActionPreference
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $FilePath
+    $startInfo.Arguments = @($ArgumentList | ForEach-Object {
+        ConvertTo-NativeProcessArgument ([string]$_)
+    }) -join ' '
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $startInfo
     try {
-        # Windows PowerShell 5.1 promotes native stderr to NativeCommandError.
-        # Keep it non-terminating long enough to capture the process exit code.
-        $ErrorActionPreference = 'Continue'
-        $stdout = @(& $FilePath @ArgumentList 2> $StderrPath)
-        $exitCode = $LASTEXITCODE
+        if (-not $process.Start()) { throw "failed to start native command: $FilePath" }
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        return [pscustomobject]@{
+            Process = $process
+            ProcessId = $process.Id
+            StdoutTask = $stdoutTask
+            StderrTask = $stderrTask
+        }
+    } catch {
+        $process.Dispose()
+        throw
+    }
+}
+
+function Complete-CapturedNativeCommand($Run) {
+    try {
+        $Run.Process.WaitForExit()
+        $stdout = $Run.StdoutTask.GetAwaiter().GetResult()
+        $stderr = $Run.StderrTask.GetAwaiter().GetResult()
+        return [pscustomobject]@{
+            ExitCode = [int]$Run.Process.ExitCode
+            Stdout = [string]$stdout
+            Stderr = [string]$stderr
+        }
     } finally {
-        $ErrorActionPreference = $previousErrorActionPreference
+        $Run.Process.Dispose()
     }
-    return [pscustomobject]@{
-        ExitCode = $exitCode
-        Stdout = [string[]]@($stdout)
-        Stderr = if (Test-Path -LiteralPath $StderrPath) { Get-Content -LiteralPath $StderrPath -Raw } else { '' }
-    }
+}
+
+function Invoke-CapturedNativeCommand {
+    param([string]$FilePath, [string[]]$ArgumentList)
+    return Complete-CapturedNativeCommand (
+        Start-CapturedNativeCommand -FilePath $FilePath -ArgumentList $ArgumentList)
+}
+
+function Get-LastNativeOutputLine([string]$Stdout) {
+    $lines = @($Stdout -split '\r?\n' | Where-Object { $_.Length -gt 0 })
+    if ($lines.Count -gt 0) { return [string]$lines[-1] }
+    return ''
 }
 
 function Invoke-SupportRun {
@@ -268,13 +372,12 @@ function Invoke-SupportRun {
         [int]$TimeoutSec = 180
     )
     $null = New-Item -ItemType Directory -Path $OutDir -Force
-    $stderr = "$OutDir.stderr"
     $args = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $Wrapper, 'support', '-Out', $OutDir, '-MaxMb', "$MaxMb", '-Timeout', "$TimeoutSec", '-LogDays', '9999')
     if ($ExplicitCoworker) { $args += @('-CoworkerHome', $ExplicitCoworker) }
-    $capture = Invoke-CapturedNativeCommand -FilePath $PowerShellExecutable -ArgumentList $args -StderrPath $stderr
+    $capture = Invoke-CapturedNativeCommand -FilePath $PowerShellExecutable -ArgumentList $args
     return [pscustomobject]@{
         ExitCode = $capture.ExitCode
-        Bundle = if ($capture.Stdout.Count -gt 0) { [string]$capture.Stdout[-1] } else { '' }
+        Bundle = Get-LastNativeOutputLine $capture.Stdout
         Stderr = $capture.Stderr
     }
 }
@@ -282,13 +385,15 @@ function Invoke-SupportRun {
 function Start-SupportRun {
     param([string]$OutDir, [int]$MaxMb = 50, [int]$TimeoutSec = 180)
     $null = New-Item -ItemType Directory -Path $OutDir -Force
-    $stdout = "$OutDir.stdout"
-    $stderr = "$OutDir.stderr"
     $arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $Wrapper, 'support', '-Out', $OutDir, '-MaxMb', "$MaxMb", '-Timeout', "$TimeoutSec", '-LogDays', '9999')
-    $quotedArguments = @($arguments | ForEach-Object { '"' + ([string]$_).Replace('"', '\"') + '"' }) -join ' '
-    $process = Start-Process -FilePath $PowerShellExecutable -ArgumentList $quotedArguments `
-        -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
-    return [pscustomobject]@{ Process = $process; Stdout = $stdout; Stderr = $stderr; OutDir = $OutDir }
+    $run = Start-CapturedNativeCommand -FilePath $PowerShellExecutable -ArgumentList $arguments
+    return [pscustomobject]@{
+        Process = $run.Process
+        ProcessId = $run.ProcessId
+        StdoutTask = $run.StdoutTask
+        StderrTask = $run.StderrTask
+        OutDir = $OutDir
+    }
 }
 
 function Wait-SupportMarkerOrExit {
@@ -302,12 +407,11 @@ function Wait-SupportMarkerOrExit {
 }
 
 function Complete-SupportRun($Run) {
-    $Run.Process.WaitForExit()
-    $stdout = @(if (Test-Path -LiteralPath $Run.Stdout) { Get-Content -LiteralPath $Run.Stdout })
+    $capture = Complete-CapturedNativeCommand $Run
     return [pscustomobject]@{
-        ExitCode = $Run.Process.ExitCode
-        Bundle = if ($stdout.Count -gt 0) { [string]$stdout[-1] } else { '' }
-        Stderr = if (Test-Path -LiteralPath $Run.Stderr) { Get-Content -LiteralPath $Run.Stderr -Raw } else { '' }
+        ExitCode = $capture.ExitCode
+        Bundle = Get-LastNativeOutputLine $capture.Stdout
+        Stderr = $capture.Stderr
     }
 }
 
@@ -327,17 +431,26 @@ function Assert-NoSecretInTree([string]$Root, [string[]]$Needles, [string]$Label
 
 try {
     Write-Host '== native command capture contract =='
-    $captureStderr = Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetRandomFileName())
+    $capture = Invoke-CapturedNativeCommand -FilePath $PowerShellExecutable -ArgumentList @(
+        '-NoProfile', '-Command', "Write-Output 'native-stdout'; [Console]::Error.WriteLine('native-stderr'); exit 7"
+    )
+    Assert-True ($capture.ExitCode -eq 7) 'native capture preserves a nonzero exit code'
+    Assert-True (($capture.Stdout -is [string]) -and
+        $capture.Stdout -ceq "native-stdout$([Environment]::NewLine)") 'native capture preserves raw stdout bytes as text'
+    Assert-True ($capture.Stderr -ceq "native-stderr$([Environment]::NewLine)") 'native capture preserves raw stderr without NativeCommandError serialization'
+    Assert-True ($ErrorActionPreference -ceq 'Stop') 'native capture leaves strict error handling unchanged'
+
+    $argumentScript = Join-Path ([System.IO.Path]::GetTempPath()) (
+        [System.IO.Path]::GetRandomFileName() + '.ps1')
     try {
-        $capture = Invoke-CapturedNativeCommand -FilePath $PowerShellExecutable -ArgumentList @(
-            '-NoProfile', '-Command', "Write-Output 'native-stdout'; [Console]::Error.WriteLine('native-stderr'); exit 7"
-        ) -StderrPath $captureStderr
-        Assert-True ($capture.ExitCode -eq 7) 'native capture preserves a nonzero exit code'
-        Assert-True ($capture.Stdout.Count -eq 1 -and $capture.Stdout[0] -ceq 'native-stdout') 'native capture preserves stdout'
-        Assert-True ($capture.Stderr.Contains('native-stderr')) 'native capture preserves stderr without terminating'
-        Assert-True ($ErrorActionPreference -ceq 'Stop') 'native capture restores strict error handling'
+        [System.IO.File]::WriteAllText($argumentScript, 'Write-Output ($args -join ''|'')')
+        $argumentCapture = Invoke-CapturedNativeCommand -FilePath $PowerShellExecutable -ArgumentList @(
+            '-NoProfile', '-File', $argumentScript, 'space value', '', 'quote"value', 'trailing\'
+        )
+        Assert-True ($argumentCapture.ExitCode -eq 0) "native capture quoting fixture exits zero: $($argumentCapture.Stderr)"
+        Assert-True ($argumentCapture.Stdout.TrimEnd() -ceq 'space value||quote"value|trailing\') 'native capture preserves cross-version argument boundaries'
     } finally {
-        Remove-Item -LiteralPath $captureStderr -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $argumentScript -Force -ErrorAction SilentlyContinue
     }
 
     Write-Host '== per-request timeout budget contract =='
@@ -409,6 +522,36 @@ try {
             @{ OS = 'Linux'; Architecture = 'Arm64'; Expected = 'linux-arm64' }
         )) {
             Assert-True ((Get-SupportUnixAbiLayout $case.OS $case.Architecture) -ceq $case.Expected) "native layout selects $($case.Expected)"
+        }
+
+        $heldReadTempRoot = [System.IO.Path]::GetTempPath()
+        if (-not $RunningOnWindows -and $heldReadTempRoot.StartsWith('/var/')) {
+            $heldReadTempRoot = '/private' + $heldReadTempRoot
+        }
+        $heldReadFixture = Join-Path $heldReadTempRoot ([System.IO.Path]::GetRandomFileName())
+        $heldReadRenamed = "$heldReadFixture.renamed"
+        $heldReadOriginal = 'validated handle bytes'
+        $heldReadReplacement = 'replacement path bytes'
+        $heldRead = $null
+        try {
+            [System.IO.File]::WriteAllText($heldReadFixture, $heldReadOriginal)
+            $heldReadMetadata = [GatewaySupport.SafeFile]::InspectRegularNoFollow($heldReadFixture)
+            $heldRead = [GatewaySupport.SafeFile]::OpenRegularNoFollow(
+                $heldReadFixture, $heldReadMetadata.Identity)
+            Move-Item -LiteralPath $heldReadFixture -Destination $heldReadRenamed -ErrorAction Stop
+            [System.IO.File]::WriteAllText($heldReadFixture, $heldReadReplacement)
+            $heldReadBuffer = New-Object byte[] 65536
+            $heldReadCount = $heldRead.Read($heldReadBuffer, $heldReadBuffer.Length)
+            $heldReadText = [System.Text.Encoding]::UTF8.GetString(
+                $heldReadBuffer, 0, $heldReadCount)
+            Assert-True ($heldReadText -ceq $heldReadOriginal) 'safe-open reads the identity-validated handle after its source path is replaced'
+            Assert-True (-not $heldReadText.Contains($heldReadReplacement)) 'safe-open never reopens the replaced configured source path'
+        } catch {
+            Fail-With "safe-open held-handle read boundary is usable: $($_.Exception.Message)"
+            Fail-With 'safe-open never reopens the replaced configured source path'
+        } finally {
+            if ($heldRead) { $heldRead.Dispose() }
+            Remove-Item -LiteralPath $heldReadFixture,$heldReadRenamed -Force -ErrorAction SilentlyContinue
         }
 
         $noBomFixture = Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetRandomFileName())
@@ -591,7 +734,7 @@ server.serve_forever()
     $mainStagingBefore = New-SupportStagingSnapshot $SupportGlobalTemp
     $main = Invoke-SupportRun (Join-Path $ExtractRoot 'main-out')
     Assert-NoNewSupportStaging $mainStagingBefore 'corrupt gzip run removes its global staging directory'
-    Assert-True ($main.ExitCode -eq 0) "support exits zero with HERMES_HOME fallback: $($main.Stderr)"
+    Assert-True ($main.ExitCode -eq 0) "support exits zero with HERMES_HOME fallback: $(Format-SupportResult $main)"
     Assert-File $main.Bundle 'bundle path is printed and exists'
     Assert-File (Join-Path $ExtractRoot 'main-out\latest.zip') 'latest.zip copy exists'
     $mainRoot = Expand-SupportBundle $main.Bundle (Join-Path $ExtractRoot 'main-tree')
@@ -600,8 +743,13 @@ server.serve_forever()
     Assert-True ($logNames -ceq 'co-worker,gateway,kiro') "logs contains exactly application directories (got $logNames)"
     Assert-Absent (Join-Path $mainRoot 'logs\gateway.log') 'flat Gateway layout is absent'
 
+    $mainManifest = Join-Path $mainRoot 'MANIFEST.txt'
     foreach ($relative in @('gateway.log','gateway-boot-stdout.log','gateway-boot-stderr.log','gateway-chat-trace.log','gateway-20200101.log.gz','gateway-20260101.log.gz')) {
-        Assert-File (Join-Path $mainRoot "logs\gateway\$relative") "Gateway artifact $relative is organized"
+        if ($relative -ceq 'gateway.log') {
+            Assert-CurrentLogContains (Join-Path $mainRoot "logs\gateway\$relative") $mainManifest '' "Gateway artifact $relative is organized"
+        } else {
+            Assert-File (Join-Path $mainRoot "logs\gateway\$relative") "Gateway artifact $relative is organized"
+        }
     }
     Assert-Contains (Join-Path $mainRoot 'logs\gateway\gateway-boot-stdout.log') 'gateway boot safe' 'Gateway boot stdout sidecar content is preserved'
     Assert-Contains (Join-Path $mainRoot 'logs\gateway\gateway-boot-stderr.log') 'gateway boot stderr safe' 'Gateway boot stderr sidecar content is preserved'
@@ -657,9 +805,10 @@ server.serve_forever()
     Write-Host '== global cap and explicit Co-worker precedence =='
     $env:HERMES_HOME = $DecoyHermesHome
     $cap = Invoke-SupportRun (Join-Path $ExtractRoot 'cap-out') 3 $CoworkerHome
-    Assert-True ($cap.ExitCode -eq 0) "support exits zero with explicit Co-worker home: $($cap.Stderr)"
+    Assert-True ($cap.ExitCode -eq 0) "support exits zero with explicit Co-worker home: $(Format-SupportResult $cap)"
     $capRoot = Expand-SupportBundle $cap.Bundle (Join-Path $ExtractRoot 'cap-tree')
-    foreach ($relative in @('logs\gateway\gateway.log','logs\kiro\kiro-chat.log','logs\co-worker\agent.log','MANIFEST.txt')) { Assert-File (Join-Path $capRoot $relative) "cap preserves protected $relative" }
+    Assert-CurrentLogContains (Join-Path $capRoot 'logs\gateway\gateway.log') (Join-Path $capRoot 'MANIFEST.txt') '' 'cap preserves protected logs\gateway\gateway.log'
+    foreach ($relative in @('logs\kiro\kiro-chat.log','logs\co-worker\agent.log','MANIFEST.txt')) { Assert-File (Join-Path $capRoot $relative) "cap preserves protected $relative" }
     Assert-Contains (Join-Path $capRoot 'logs\co-worker\agent.log') 'agent.log safe' 'explicit Co-worker home wins over HERMES_HOME'
     Assert-Absent (Join-Path $capRoot 'logs\gateway\gateway-20200101.log.gz') 'cap drops oldest Gateway rotation first'
     Assert-Absent (Join-Path $capRoot 'logs\kiro\kiro-chat.log.1') 'cap drops next-oldest Kiro rotation'
@@ -683,7 +832,7 @@ server.serve_forever()
     }
     Set-SupportEnvironment (Join-Path $OverheadGateway 'gateway.log') (Join-Path $OverheadGateway 'gateway-boot.log') $OverheadKiro 'kiro.log' ''
     $overheadCap = Invoke-SupportRun (Join-Path $ExtractRoot 'overhead-cap-out') 1
-    Assert-True ($overheadCap.ExitCode -eq 0) "near-cap support exits zero: $($overheadCap.Stderr)"
+    Assert-True ($overheadCap.ExitCode -eq 0) "near-cap support exits zero: $(Format-SupportResult $overheadCap)"
     Assert-True ((Get-Item -LiteralPath $overheadCap.Bundle).Length -le 1MB) 'actual final zip including manifest and metadata satisfies 1MB cap'
     $overheadRoot = Expand-SupportBundle $overheadCap.Bundle (Join-Path $ExtractRoot 'overhead-cap-tree')
     Assert-Absent (Join-Path $overheadRoot 'logs\gateway\gateway-overhead.log.gz') 'final-archive sizing drops oldest near-cap rotation'
@@ -695,7 +844,7 @@ server.serve_forever()
     $env:HERMES_HOME = ''
     $disabled = Invoke-SupportRun (Join-Path $ExtractRoot 'disabled-out')
     $disabledRoot = Expand-SupportBundle $disabled.Bundle (Join-Path $ExtractRoot 'disabled-tree')
-    Assert-True ($disabled.ExitCode -eq 0) 'support continues without a Co-worker home'
+    Assert-True ($disabled.ExitCode -eq 0) "support continues without a Co-worker home: $(Format-SupportResult $disabled)"
     Assert-True (@(Get-ChildItem -LiteralPath (Join-Path $disabledRoot 'logs\gateway') -Filter 'acp-capture-*.json').Count -eq 0) 'disabled capture creates no export'
     Assert-Contains (Join-Path $disabledRoot 'MANIFEST.txt') 'capture: disabled' 'manifest records disabled capture'
     Assert-Contains (Join-Path $disabledRoot 'MANIFEST.txt') 'Co-worker logs unavailable' 'manifest records missing Co-worker home'
@@ -703,7 +852,7 @@ server.serve_forever()
     'wrongtype' | Set-Content -LiteralPath $ModeFile -Encoding ASCII
     $invalid = Invoke-SupportRun (Join-Path $ExtractRoot 'invalid-out')
     $invalidRoot = Expand-SupportBundle $invalid.Bundle (Join-Path $ExtractRoot 'invalid-tree')
-    Assert-True ($invalid.ExitCode -eq 0) 'support tolerates non-boolean capture state'
+    Assert-True ($invalid.ExitCode -eq 0) "support tolerates non-boolean capture state: $(Format-SupportResult $invalid)"
     Assert-True (@(Get-ChildItem -LiteralPath (Join-Path $invalidRoot 'logs\gateway') -Filter 'acp-capture-*.json').Count -eq 0) 'non-boolean capture creates no export'
     Assert-Contains (Join-Path $invalidRoot 'MANIFEST.txt') 'capture: unavailable' 'manifest records non-boolean capture as unavailable'
     Assert-Line (Join-Path $invalidRoot 'MANIFEST.txt') 'WARNING: ACP capture unavailable: response state was invalid' 'manifest identifies invalid capture state or type'
@@ -711,13 +860,13 @@ server.serve_forever()
     'invalid' | Set-Content -LiteralPath $ModeFile -Encoding ASCII
     $malformed = Invoke-SupportRun (Join-Path $ExtractRoot 'malformed-capture-out')
     $malformedRoot = Expand-SupportBundle $malformed.Bundle (Join-Path $ExtractRoot 'malformed-capture-tree')
-    Assert-True ($malformed.ExitCode -eq 0) 'support tolerates malformed capture JSON'
+    Assert-True ($malformed.ExitCode -eq 0) "support tolerates malformed capture JSON: $(Format-SupportResult $malformed)"
     Assert-Line (Join-Path $malformedRoot 'MANIFEST.txt') 'WARNING: ACP capture unavailable: response was not valid JSON' 'manifest identifies malformed capture JSON'
 
     'http-error' | Set-Content -LiteralPath $ModeFile -Encoding ASCII
     $httpFailure = Invoke-SupportRun (Join-Path $ExtractRoot 'capture-http-failure-out')
     $httpFailureRoot = Expand-SupportBundle $httpFailure.Bundle (Join-Path $ExtractRoot 'capture-http-failure-tree')
-    Assert-True ($httpFailure.ExitCode -eq 0) 'support tolerates capture HTTP failure'
+    Assert-True ($httpFailure.ExitCode -eq 0) "support tolerates capture HTTP failure: $(Format-SupportResult $httpFailure)"
     Assert-Line (Join-Path $httpFailureRoot 'MANIFEST.txt') 'WARNING: ACP capture unavailable: request failed' 'manifest identifies capture transport or HTTP failure'
 
     Write-Host '== stalled request keeps the five-second per-request budget =='
@@ -737,7 +886,7 @@ server.serve_forever()
     $stalledRequest = Complete-SupportRun $stalledRequestHandle
     $stalledRequestWatch.Stop()
     Assert-True $stalledRequestAccepted 'stalled-request timer starts only after the server accepts the health request'
-    Assert-True ($stalledRequest.ExitCode -eq 0) "accepted-but-stalled request remains best effort: $($stalledRequest.Stderr)"
+    Assert-True ($stalledRequest.ExitCode -eq 0) "accepted-but-stalled request remains best effort: $(Format-SupportResult $stalledRequest)"
     Assert-True ($stalledRequestWatch.Elapsed.TotalSeconds -ge 4 -and $stalledRequestWatch.Elapsed.TotalSeconds -lt 12) "stalled request uses the five-second cap instead of the remaining 15-second bundle budget (elapsed $($stalledRequestWatch.Elapsed.TotalSeconds)s)"
     foreach ($path in @('/health','/admin/api/snapshot','/metrics','/admin/api/acp-capture?support=redacted')) {
         Assert-Contains $RequestLog "GET $path" "collection continues to $path after an earlier accepted connection stalls"
@@ -766,7 +915,7 @@ server.serve_forever()
     $env:GW_OVERRIDES_FILE = Join-Path $script:FixtureRoot 'missing-address-overrides.env'
     Clear-Content -LiteralPath $RequestLog
     $envAddress = Invoke-SupportRun (Join-Path $ExtractRoot 'env-address-out')
-    Assert-True ($envAddress.ExitCode -eq 0) "support uses .env-only HTTP_ADDR: $($envAddress.Stderr)"
+    Assert-True ($envAddress.ExitCode -eq 0) "support uses .env-only HTTP_ADDR: $(Format-SupportResult $envAddress)"
     foreach ($path in @('/health','/admin/api/snapshot','/metrics','/admin/api/acp-capture?support=redacted')) {
         Assert-Contains $RequestLog "GET $path" ".env-only HTTP_ADDR requests $path on the custom port"
     }
@@ -780,7 +929,7 @@ server.serve_forever()
     $env:GW_OVERRIDES_FILE = $AddressOverrides
     Clear-Content -LiteralPath $RequestLog
     $overrideAddress = Invoke-SupportRun (Join-Path $ExtractRoot 'override-address-out')
-    Assert-True ($overrideAddress.ExitCode -eq 0) "support uses overrides HTTP_ADDR precedence: $($overrideAddress.Stderr)"
+    Assert-True ($overrideAddress.ExitCode -eq 0) "support uses overrides HTTP_ADDR precedence: $(Format-SupportResult $overrideAddress)"
     foreach ($path in @('/health','/admin/api/snapshot','/metrics','/admin/api/acp-capture?support=redacted')) {
         Assert-Contains $RequestLog "GET $path" "overrides HTTP_ADDR requests $path on the custom port"
     }
@@ -794,7 +943,7 @@ server.serve_forever()
     $env:GW_OVERRIDES_FILE = $AddressOverrides
     Clear-Content -LiteralPath $RequestLog
     $explicitAddress = Invoke-SupportRun (Join-Path $ExtractRoot 'explicit-address-out')
-    Assert-True ($explicitAddress.ExitCode -eq 0) "support honors explicit GW_ADDR precedence: $($explicitAddress.Stderr)"
+    Assert-True ($explicitAddress.ExitCode -eq 0) "support honors explicit GW_ADDR precedence: $(Format-SupportResult $explicitAddress)"
     foreach ($path in @('/health','/admin/api/snapshot','/metrics','/admin/api/acp-capture?support=redacted')) {
         Assert-Contains $RequestLog "GET $path" "explicit GW_ADDR requests $path without a double slash"
     }
@@ -807,7 +956,7 @@ server.serve_forever()
     $noSafeOpen = Invoke-SupportRun (Join-Path $ExtractRoot 'no-safe-open-out')
     Assert-NoNewSupportStaging $noSafeOpenStagingBefore 'safe-open unavailable run removes its global staging directory'
     $noSafeOpenRoot = Expand-SupportBundle $noSafeOpen.Bundle (Join-Path $ExtractRoot 'no-safe-open-tree')
-    Assert-True ($noSafeOpen.ExitCode -eq 0) 'support continues when native safe-open is unavailable'
+    Assert-True ($noSafeOpen.ExitCode -eq 0) "support continues when native safe-open is unavailable: $(Format-SupportResult $noSafeOpen)"
     Assert-Absent (Join-Path $noSafeOpenRoot 'logs\gateway\gateway.log') 'Gateway source is omitted without safe-open'
     Assert-Absent (Join-Path $noSafeOpenRoot 'logs\kiro\kiro-chat.log') 'Kiro source is omitted without safe-open'
     Assert-Absent (Join-Path $noSafeOpenRoot 'logs\co-worker\agent.log') 'Co-worker source is omitted without safe-open'
@@ -821,7 +970,7 @@ server.serve_forever()
     $publishFailure = Invoke-SupportRun (Join-Path $ExtractRoot 'publish-failure-out')
     Assert-NoNewSupportStaging $publishStagingBefore 'metrics/capture failures remove their global staging directory'
     $publishFailureRoot = Expand-SupportBundle $publishFailure.Bundle (Join-Path $ExtractRoot 'publish-failure-tree')
-    Assert-True ($publishFailure.ExitCode -eq 0) 'support continues after forced live-snapshot publish failures'
+    Assert-True ($publishFailure.ExitCode -eq 0) "support continues after forced live-snapshot publish failures: $(Format-SupportResult $publishFailure)"
     Assert-True (@(Get-ChildItem -LiteralPath (Join-Path $publishFailureRoot 'logs\gateway') -Filter 'metrics-snapshot-*.prom').Count -eq 0) 'failed metrics publish leaves no partial artifact'
     Assert-True (@(Get-ChildItem -LiteralPath (Join-Path $publishFailureRoot 'logs\gateway') -Filter 'acp-capture-*.json').Count -eq 0) 'failed capture publish leaves no partial artifact'
     Assert-Line (Join-Path $publishFailureRoot 'MANIFEST.txt') 'WARNING: Metrics snapshot unavailable: atomic publish failed' 'manifest records metrics publish failure'
@@ -833,7 +982,7 @@ server.serve_forever()
     $env:GW_SUPPORT_TEST_FAIL_PUBLISH = 'capture-write'
     $captureWriteFailure = Invoke-SupportRun (Join-Path $ExtractRoot 'capture-write-failure-out')
     $captureWriteFailureRoot = Expand-SupportBundle $captureWriteFailure.Bundle (Join-Path $ExtractRoot 'capture-write-failure-tree')
-    Assert-True ($captureWriteFailure.ExitCode -eq 0) 'support continues after capture write failure'
+    Assert-True ($captureWriteFailure.ExitCode -eq 0) "support continues after capture write failure: $(Format-SupportResult $captureWriteFailure)"
     Assert-True (@(Get-ChildItem -LiteralPath (Join-Path $captureWriteFailureRoot 'logs\gateway') -Filter 'acp-capture-*.json').Count -eq 0) 'capture write failure leaves no capture artifact'
     Assert-Line (Join-Path $captureWriteFailureRoot 'MANIFEST.txt') 'WARNING: ACP capture unavailable: publication failed' 'manifest identifies capture publication or write failure'
     Assert-NoSupportTemporaryArtifacts $captureWriteFailureRoot 'capture write failure bundle has no partial artifacts'
@@ -844,7 +993,7 @@ server.serve_forever()
     $leafStagingBefore = New-SupportStagingSnapshot $SupportGlobalTemp
     $leafPublishFailure = Invoke-SupportRun (Join-Path $ExtractRoot 'leaf-publish-failure-out')
     Assert-NoNewSupportStaging $leafStagingBefore 'plain/gzip/metrics/capture failures remove their global staging directory'
-    Assert-True ($leafPublishFailure.ExitCode -eq 0) 'support continues after forced plain/gzip/metrics/capture publication failures'
+    Assert-True ($leafPublishFailure.ExitCode -eq 0) "support continues after forced plain/gzip/metrics/capture publication failures: $(Format-SupportResult $leafPublishFailure)"
     $leafPublishFailureRoot = Expand-SupportBundle $leafPublishFailure.Bundle (Join-Path $ExtractRoot 'leaf-publish-failure-tree')
     Assert-Absent (Join-Path $leafPublishFailureRoot 'logs\gateway\gateway.log') 'forced plain publication failure leaves no final plain log'
     Assert-Absent (Join-Path $leafPublishFailureRoot 'logs\gateway\gateway-20260101.log.gz') 'forced gzip publication failure leaves no final gzip log'
@@ -941,7 +1090,7 @@ server.serve_forever()
     $replaceResult = Complete-SupportRun $replaceRun
     Assert-True $replaceBarrierReached 'latest publisher reaches deterministic pre-replacement barrier'
     Assert-True $oldVisibleAtBarrier 'reader observes prior latest.zip until the atomic replacement call'
-    Assert-True ($replaceResult.ExitCode -eq 0) "barriered latest replacement succeeds: $($replaceResult.Stderr)"
+    Assert-True ($replaceResult.ExitCode -eq 0) "barriered latest replacement succeeds: $(Format-SupportResult $replaceResult)"
     Assert-File $BarrierLatest 'latest.zip remains continuously present after replacement'
     if (Test-Path -LiteralPath $BarrierLatest) {
         Assert-True (((Get-FileHash -LiteralPath $BarrierLatest -Algorithm SHA256).Hash) -cne $BarrierPriorHash) 'successful replacement publishes new latest.zip bytes'
@@ -970,7 +1119,7 @@ server.serve_forever()
     Set-SupportEnvironment (Join-Path $script:FixtureRoot 'missing\gateway.log') (Join-Path $script:FixtureRoot 'missing\gateway-boot.log') (Join-Path $script:FixtureRoot 'missing') 'kiro.log' ''
     $missing = Invoke-SupportRun (Join-Path $ExtractRoot 'missing-out')
     $missingRoot = Expand-SupportBundle $missing.Bundle (Join-Path $ExtractRoot 'missing-tree')
-    Assert-True ($missing.ExitCode -eq 0) 'support continues when configured sources are missing'
+    Assert-True ($missing.ExitCode -eq 0) "support continues when configured sources are missing: $(Format-SupportResult $missing)"
     foreach ($warning in @('Gateway current log missing','Gateway boot stdout log missing','Gateway boot stderr log missing','Kiro current log missing')) { Assert-Contains (Join-Path $missingRoot 'MANIFEST.txt') $warning "manifest records $warning" }
 
     if (-not $RunningOnWindows -and (Get-Command chmod -ErrorAction SilentlyContinue)) {
@@ -991,7 +1140,7 @@ server.serve_forever()
             Set-SupportEnvironment $UnreadableGateway $ReadableBoot (Join-Path $FailureRoot 'kiro') 'kiro.log' (Join-Path $FailureRoot 'co-worker')
             $unreadable = Invoke-SupportRun (Join-Path $ExtractRoot 'unreadable-out')
             $unreadableRoot = Expand-SupportBundle $unreadable.Bundle (Join-Path $ExtractRoot 'unreadable-tree')
-            Assert-True ($unreadable.ExitCode -eq 0) 'support continues when configured sources are unreadable'
+            Assert-True ($unreadable.ExitCode -eq 0) "support continues when configured sources are unreadable: $(Format-SupportResult $unreadable)"
             foreach ($warning in @('Gateway current log unreadable','Kiro current log unreadable','Co-worker agent.log unreadable')) {
                 Assert-Line (Join-Path $unreadableRoot 'MANIFEST.txt') "WARNING: $warning" "manifest records $warning"
             }
@@ -1082,7 +1231,7 @@ server.serve_forever()
         if (Test-Path -LiteralPath $blockingPidFile) {
             $blockingPid = [int](Get-Content -LiteralPath $blockingPidFile -Raw)
             if ($blockingCase.Kind -ceq 'plain') {
-                Assert-True ($blockingPid -ne $blockingHandle.Process.Id) 'plain redaction publishes an independent worker PID, not the wrapper PID'
+                Assert-True ($blockingPid -ne $blockingHandle.ProcessId) 'plain redaction publishes an independent worker PID, not the wrapper PID'
             }
             Start-Sleep -Milliseconds 100
             Assert-True ($null -eq (Get-Process -Id $blockingPid -ErrorAction SilentlyContinue)) "timed-out $($blockingCase.Kind) worker is terminated"
@@ -1177,7 +1326,7 @@ server.serve_forever()
     $raceResult = Complete-SupportRun $raceRun
     Assert-NoNewSupportStaging $raceStagingBefore 'pre-open regular replacement removes its global staging directory'
     Assert-True $regularRaceExecuted 'regular source is replaced between identity inspection and safe-open'
-    Assert-True ($raceResult.ExitCode -eq 0) "support continues after deterministic regular replacement: $($raceResult.Stderr)"
+    Assert-True ($raceResult.ExitCode -eq 0) "support continues after deterministic regular replacement: $(Format-SupportResult $raceResult)"
     $raceBundleRoot = Expand-SupportBundle $raceResult.Bundle (Join-Path $ExtractRoot 'regular-race-tree')
     Assert-Absent (Join-Path $raceBundleRoot 'logs\gateway\gateway.log') 'regular replacement is rejected from archive'
     Assert-Line (Join-Path $raceBundleRoot 'MANIFEST.txt') 'WARNING: Gateway current log rejected: source replaced before safe-open' 'manifest records regular identity replacement'
@@ -1230,7 +1379,7 @@ server.serve_forever()
     if ($nextBarrierReached) { 'continue' | Set-Content -LiteralPath $NextSourceContinue -Encoding ASCII }
     $barrierFailureResult = Complete-SupportRun $barrierFailureRun
     Assert-True $nextBarrierReached 'collection reaches the next-source barrier after forced after-open barrier failure'
-    Assert-True ($barrierFailureResult.ExitCode -eq 0) "support continues after forced after-open barrier failure: $($barrierFailureResult.Stderr)"
+    Assert-True ($barrierFailureResult.ExitCode -eq 0) "support continues after forced after-open barrier failure: $(Format-SupportResult $barrierFailureResult)"
     if ($handleCheckAvailable) {
         Assert-True (-not $sourceHandleStillOpen) 'failed after-open barrier disposes the acquired source handle before collection continues'
     } else {
@@ -1278,9 +1427,9 @@ server.serve_forever()
     Assert-NoNewSupportStaging $heldStagingBefore 'held-handle rename removes its global staging directory'
     Assert-True $heldBarrierReached 'collection pauses only after the identity-validated source handle is open'
     Assert-True $heldRenameSucceeded "open source permits rename with replacement while held: $heldRenameError"
-    Assert-True ($heldResult.ExitCode -eq 0) "support continues from a renamed open source: $($heldResult.Stderr)"
+    Assert-True ($heldResult.ExitCode -eq 0) "support continues from a renamed open source: $(Format-SupportResult $heldResult)"
     $heldBundleRoot = Expand-SupportBundle $heldResult.Bundle (Join-Path $ExtractRoot 'held-rename-tree')
-    Assert-Contains (Join-Path $heldBundleRoot 'logs\gateway\gateway.log') 'authorized held-handle content' 'renamed open source snapshots the validated handle content'
+    Assert-CurrentLogContains (Join-Path $heldBundleRoot 'logs\gateway\gateway.log') (Join-Path $heldBundleRoot 'MANIFEST.txt') 'authorized held-handle content' 'renamed open source snapshots the validated handle content'
     Assert-NoSecretInTree $heldBundleRoot @($HeldExternalSecret) 'held-handle rename bundle'
     Assert-NoSupportTemporaryArtifacts $heldBundleRoot 'held-handle rename bundle has no partial artifacts'
     Assert-NoSupportTemporaryArtifacts (Join-Path $ExtractRoot 'held-rename-out') 'held-handle rename output has no partial or staging artifacts'
@@ -1321,10 +1470,10 @@ server.serve_forever()
         Assert-NoNewSupportStaging $deleteStagingBefore 'held-handle delete removes its global staging directory'
         Assert-True $deleteBarrierReached 'Windows collection pauses after the identity-validated source handle is open for delete'
         Assert-True $deleteSucceeded "Windows safe-open sharing permits source deletion while held: $deleteError"
-        Assert-True ($deleteResult.ExitCode -eq 0) "Windows support continues from a delete-pending source: $($deleteResult.Stderr)"
+        Assert-True ($deleteResult.ExitCode -eq 0) "Windows support continues from a delete-pending source: $(Format-SupportResult $deleteResult)"
         Assert-Absent $DeleteGateway 'delete-pending source is removed after collection closes its handle'
         $deleteBundleRoot = Expand-SupportBundle $deleteResult.Bundle (Join-Path $ExtractRoot 'held-delete-tree')
-        Assert-Contains (Join-Path $deleteBundleRoot 'logs\gateway\gateway.log') 'authorized delete-pending content' 'deleted open source snapshots the validated handle content'
+        Assert-CurrentLogContains (Join-Path $deleteBundleRoot 'logs\gateway\gateway.log') (Join-Path $deleteBundleRoot 'MANIFEST.txt') 'authorized delete-pending content' 'deleted open source snapshots the validated handle content'
         Assert-NoSupportTemporaryArtifacts $deleteBundleRoot 'held-handle delete bundle has no partial artifacts'
         Assert-NoSupportTemporaryArtifacts (Join-Path $ExtractRoot 'held-delete-out') 'held-handle delete output has no partial or staging artifacts'
 
@@ -1361,7 +1510,7 @@ server.serve_forever()
         $ancestorResult = Complete-SupportRun $ancestorRun
         Assert-NoNewSupportStaging $ancestorStagingBefore 'ancestor junction replacement removes its global staging directory'
         Assert-True ([bool]$ancestorRaceExecuted) 'ancestor directory is swapped to a junction between inspect and open'
-        Assert-True ($ancestorResult.ExitCode -eq 0) "support continues after ancestor junction swap: $($ancestorResult.Stderr)"
+        Assert-True ($ancestorResult.ExitCode -eq 0) "support continues after ancestor junction swap: $(Format-SupportResult $ancestorResult)"
         $ancestorBundleRoot = Expand-SupportBundle $ancestorResult.Bundle (Join-Path $ExtractRoot 'ancestor-race-tree')
         Assert-Absent (Join-Path $ancestorBundleRoot 'logs\gateway\gateway.log') 'ancestor junction replacement is rejected from archive'
         Assert-Line (Join-Path $ancestorBundleRoot 'MANIFEST.txt') 'WARNING: Gateway current log rejected: source replaced by reparse point' 'manifest records ancestor junction rejection'

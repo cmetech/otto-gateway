@@ -27,16 +27,42 @@ namespace GatewaySupport {
     public sealed class OpenedSource : IDisposable {
         public FileStream Stream { get; private set; }
         public SourceMetadata Metadata { get; private set; }
+        private SafeFileHandle Handle;
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool ReadFile(SafeFileHandle handle, [Out] byte[] buffer,
+            uint bytesToRead, out uint bytesRead, IntPtr overlapped);
 
         public OpenedSource(FileStream stream, SourceMetadata metadata) {
             Stream = stream;
+            Handle = stream.SafeFileHandle;
             Metadata = metadata;
+        }
+
+        public int Read(byte[] buffer, int count) {
+            if (buffer == null) throw new ArgumentNullException("buffer");
+            if (count < 0 || count > buffer.Length)
+                throw new ArgumentOutOfRangeException("count");
+            if (Stream == null || Handle == null || Handle.IsClosed)
+                throw new ObjectDisposedException("OpenedSource");
+            if (Environment.OSVersion.Platform != PlatformID.Win32NT)
+                return Stream.Read(buffer, 0, count);
+
+            uint bytesRead;
+            if (!ReadFile(Handle, buffer, checked((uint)count), out bytesRead,
+                    IntPtr.Zero)) {
+                int error = Marshal.GetLastWin32Error();
+                if (error == 38) return 0; // ERROR_HANDLE_EOF
+                throw new Win32Exception(error, "safe-open native read failed");
+            }
+            return checked((int)bytesRead);
         }
 
         public void Dispose() {
             if (Stream != null) {
                 Stream.Dispose();
                 Stream = null;
+                Handle = null;
             }
         }
     }
