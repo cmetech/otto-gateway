@@ -668,6 +668,49 @@ try {
         }, $true)
     }
     Assert-True ($deadlineContractAsts.Count -eq 5) 'plain worker production deadline helpers are present'
+    $deadlineJobAst = @($deadlineContractAsts | Where-Object {
+        $_.Name -ceq 'Invoke-SupportDeadlineJob'
+    })[0]
+    $discardOutputParameter = @($deadlineJobAst.Body.ParamBlock.Parameters |
+        Where-Object { $_.Name.VariablePath.UserPath -ceq 'DiscardOutput' })
+    Assert-True (
+        $discardOutputParameter.Count -eq 1 -and
+        $discardOutputParameter[0].StaticType -eq `
+            [System.Management.Automation.SwitchParameter]
+    ) 'deadline job helper exposes one explicit DiscardOutput switch'
+    $deadlineJobCalls = @($wrapperAst.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.CommandAst] -and
+            $node.GetCommandName() -ceq 'Invoke-SupportDeadlineJob'
+    }, $true))
+    $deadlineCallContracts = @($deadlineJobCalls | ForEach-Object {
+        $elements = @($_.CommandElements)
+        $stageParameter = @($elements | Where-Object {
+            $_ -is [System.Management.Automation.Language.CommandParameterAst] -and
+                $_.ParameterName -ceq 'Stage'
+        })[0]
+        $stageIndex = [Array]::IndexOf($elements, $stageParameter)
+        [pscustomobject]@{
+            Stage = if ($stageIndex -ge 0 -and
+                $stageIndex + 1 -lt $elements.Count) {
+                [string]$elements[$stageIndex + 1].Value
+            } else { '' }
+            DiscardOutput = @($elements | Where-Object {
+                $_ -is [System.Management.Automation.Language.CommandParameterAst] -and
+                    $_.ParameterName -ceq 'DiscardOutput'
+            }).Count -eq 1
+        }
+    })
+    Assert-True ($deadlineCallContracts.Count -eq 6) 'deadline job helper has exactly six production call sites'
+    $discardOutputStages = @($deadlineCallContracts |
+        Where-Object DiscardOutput | ForEach-Object Stage | Sort-Object) -join ','
+    Assert-True ($discardOutputStages -ceq `
+        'archive-compression,gzip-compression,install-tree-probe,plain-redaction') 'only side-effect-only deadline jobs explicitly discard output'
+    $receivedOutputStages = @($deadlineCallContracts |
+        Where-Object { -not $_.DiscardOutput } |
+        ForEach-Object Stage | Sort-Object) -join ','
+    Assert-True ($receivedOutputStages -ceq `
+        'gateway-version-probe,kiro-version-probe') 'every output-consuming deadline job retains receive semantics'
     if ($deadlineContractAsts.Count -eq 5) {
         Write-Host '== deadline job stage behavior =='
         $deadlineStageResult = & {
@@ -685,22 +728,22 @@ try {
             $env:GW_SUPPORT_TEST_BLOCKING_PID_FILE = ''
             try {
                 $deadlineStopwatch.Restart()
-                $plainThrew = $false
-                $plainOutput = @()
+                $discardThrew = $false
+                $discardOutput = @()
                 try {
-                    $plainOutput = @(Invoke-SupportDeadlineJob -Work {
-                        'plain-output-must-not-be-received-round7'
-                    } -Stage 'plain-redaction')
-                } catch { $plainThrew = $true }
+                    $discardOutput = @(Invoke-SupportDeadlineJob -Work {
+                        'discard-output-must-not-be-received-round8'
+                    } -Stage 'gzip-compression' -DiscardOutput)
+                } catch { $discardThrew = $true }
 
                 $deadlineStopwatch.Restart()
                 $childErrorThrew = $false
                 $childErrorIdentity = ''
                 try {
                     $null = @(Invoke-SupportDeadlineJob -Work {
-                        Write-Error -Message 'plain child error round 7' `
-                            -ErrorId 'PlainChildErrorRound7'
-                    } -Stage 'plain-redaction')
+                        Write-Error -Message 'discarded child error round 8' `
+                            -ErrorId 'DiscardedChildErrorRound8'
+                    } -Stage 'install-tree-probe' -DiscardOutput)
                 } catch {
                     $childErrorThrew = $true
                     $childErrorIdentity = [string]$_.FullyQualifiedErrorId
@@ -712,21 +755,21 @@ try {
                 try {
                     $null = @(Invoke-SupportDeadlineJob -Work {
                         throw [System.InvalidOperationException]::new(
-                            'failed job state round 7')
-                    } -Stage 'plain-redaction')
+                            'failed job state round 8')
+                    } -Stage 'archive-compression' -DiscardOutput)
                 } catch {
                     $failedStateThrew = $true
                     $failedStateMessage = [string]$_.Exception.Message
                 }
 
                 $deadlineStopwatch.Restart()
-                $outputStageThrew = $false
-                $outputStageOutput = @()
+                $plainReceiveThrew = $false
+                $plainReceiveOutput = @()
                 try {
-                    $outputStageOutput = @(Invoke-SupportDeadlineJob -Work {
-                        'version-output-round7'
-                    } -Stage 'version-probe')
-                } catch { $outputStageThrew = $true }
+                    $plainReceiveOutput = @(Invoke-SupportDeadlineJob -Work {
+                        'plain-output-round8'
+                    } -Stage 'plain-redaction')
+                } catch { $plainReceiveThrew = $true }
 
                 $jobsBeforeTimeout = @(Get-Job | ForEach-Object Id | Sort-Object)
                 $timeoutSec = 1
@@ -736,7 +779,7 @@ try {
                 try {
                     $null = @(Invoke-SupportDeadlineJob -Work {
                         Start-Sleep -Seconds 10
-                    } -Stage 'plain-redaction')
+                    } -Stage 'gzip-compression' -DiscardOutput)
                 } catch {
                     $timeoutThrew = $true
                     $timeoutMessage = [string]$_.Exception.Message
@@ -744,14 +787,14 @@ try {
                 $jobsAfterTimeout = @(Get-Job | ForEach-Object Id | Sort-Object)
 
                 [pscustomobject]@{
-                    PlainThrew = $plainThrew
-                    PlainOutputCount = $plainOutput.Count
+                    DiscardThrew = $discardThrew
+                    DiscardOutputCount = $discardOutput.Count
                     ChildErrorThrew = $childErrorThrew
                     ChildErrorIdentity = $childErrorIdentity
                     FailedStateThrew = $failedStateThrew
                     FailedStateMessage = $failedStateMessage
-                    OutputStageThrew = $outputStageThrew
-                    OutputStageOutput = @($outputStageOutput) -join ','
+                    PlainReceiveThrew = $plainReceiveThrew
+                    PlainReceiveOutput = @($plainReceiveOutput) -join ','
                     TimeoutThrew = $timeoutThrew
                     TimeoutMessage = $timeoutMessage
                     TimeoutCleanup = (@($jobsBeforeTimeout) -join ',') -ceq `
@@ -769,17 +812,17 @@ try {
             }
         } (@($deadlineContractAsts | ForEach-Object { $_.Extent.Text }) -join `
             [Environment]::NewLine)
-        Assert-True (-not $deadlineStageResult.PlainThrew) 'completed zero-error plain-redaction job succeeds'
-        Assert-True ($deadlineStageResult.PlainOutputCount -eq 0) 'completed zero-error plain-redaction job succeeds without receiving output'
-        Assert-True $deadlineStageResult.ChildErrorThrew 'completed plain-redaction job with a child error fails'
-        Assert-True ($deadlineStageResult.ChildErrorIdentity -cmatch '^PlainChildErrorRound7(?:,|$)') 'completed plain-redaction child error retains its identity'
-        Assert-True $deadlineStageResult.FailedStateThrew 'failed plain-redaction job state fails'
-        Assert-True ($deadlineStageResult.FailedStateMessage -ceq 'failed job state round 7') 'failed plain-redaction job preserves its reason message'
-        Assert-True (-not $deadlineStageResult.OutputStageThrew) 'completed output-bearing job succeeds'
-        Assert-True ($deadlineStageResult.OutputStageOutput -ceq 'version-output-round7') 'output-bearing stage still receives meaningful output'
-        Assert-True $deadlineStageResult.TimeoutThrew 'plain-redaction deadline still fails timed-out work'
-        Assert-True ($deadlineStageResult.TimeoutMessage -cmatch "timed out after 1 seconds at stage 'plain-redaction'") 'plain-redaction timeout retains the deadline error'
-        Assert-True $deadlineStageResult.TimeoutCleanup 'plain-redaction timeout removes its background job'
+        Assert-True (-not $deadlineStageResult.DiscardThrew) 'completed zero-error discard-output job succeeds'
+        Assert-True ($deadlineStageResult.DiscardOutputCount -eq 0) 'completed zero-error discard-output job succeeds without receiving output'
+        Assert-True $deadlineStageResult.ChildErrorThrew 'completed discard-output job with a child error fails'
+        Assert-True ($deadlineStageResult.ChildErrorIdentity -cmatch '^DiscardedChildErrorRound8(?:,|$)') 'completed discard-output child error retains its identity'
+        Assert-True $deadlineStageResult.FailedStateThrew 'failed discard-output job state fails'
+        Assert-True ($deadlineStageResult.FailedStateMessage -ceq 'failed job state round 8') 'failed discard-output job preserves its reason message'
+        Assert-True (-not $deadlineStageResult.PlainReceiveThrew) 'plain-redaction without DiscardOutput succeeds'
+        Assert-True ($deadlineStageResult.PlainReceiveOutput -ceq 'plain-output-round8') 'plain-redaction without DiscardOutput still receives meaningful output'
+        Assert-True $deadlineStageResult.TimeoutThrew 'discard-output deadline still fails timed-out work'
+        Assert-True ($deadlineStageResult.TimeoutMessage -cmatch "timed out after 1 seconds at stage 'gzip-compression'") 'discard-output timeout retains the deadline error'
+        Assert-True $deadlineStageResult.TimeoutCleanup 'discard-output timeout removes its background job'
     }
     $plainCopyBoundaryAsts = @(
         'Test-SupportForcedPublishFailure',
@@ -925,7 +968,7 @@ try {
                     $null = @(Invoke-SupportDeadlineJob -Work $Work -Arguments @(
                         $SnapshotPath, $TemporaryPath, $RedactLibrary,
                         '', '', '', ''
-                    ) -Stage 'plain-redaction')
+                    ) -Stage 'plain-redaction' -DiscardOutput)
                     [pscustomobject]@{
                         Success = $true
                         Failure = ''
@@ -1340,7 +1383,7 @@ $result | ConvertTo-Json -Compress
                     }
                 }
                 function Invoke-SupportDeadlineJob {
-                    param($Work, $Arguments, $Stage)
+                    param($Work, $Arguments, $Stage, [switch]$DiscardOutput)
                     [System.IO.File]::WriteAllText([string]$Arguments[1], 'redacted temporary')
                     if ($stageState.Stage -ceq 'plain-redaction') {
                         if ($case.Identity) {
@@ -1431,7 +1474,7 @@ $result | ConvertTo-Json -Compress
                     [pscustomobject]@{ Path = $snapshotPath; LastWriteTimeUtc = [DateTime]::UtcNow }
                 }
                 function Invoke-SupportDeadlineJob {
-                    param($Work, $Arguments, $Stage)
+                    param($Work, $Arguments, $Stage, [switch]$DiscardOutput)
                     [System.IO.File]::WriteAllText([string]$Arguments[1], 'partial bytes')
                     if ($state.TimeoutCase) {
                         throw 'support bundle: timed out after 1 seconds at stage ''plain-redaction''; staging will be cleaned'

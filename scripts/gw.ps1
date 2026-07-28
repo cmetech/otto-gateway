@@ -1713,7 +1713,8 @@ function Invoke-Support {
         param(
             [Parameter(Mandatory)][scriptblock]$Work,
             [object[]]$Arguments = @(),
-            [Parameter(Mandatory)][string]$Stage
+            [Parameter(Mandatory)][string]$Stage,
+            [switch]$DiscardOutput
         )
         Test-Deadline $Stage
         $job = Start-Job -ScriptBlock $Work -ArgumentList $Arguments
@@ -1735,7 +1736,7 @@ function Invoke-Support {
                 if ($jobError.Count -gt 0) { throw $jobError[0] }
                 throw "support bundle: child job failed at stage '$Stage'"
             }
-            if ($Stage -ceq 'plain-redaction') {
+            if ($DiscardOutput) {
                 $childErrors = @($job.ChildJobs | ForEach-Object { @($_.Error) })
                 if ($childErrors.Count -gt 0) { throw $childErrors[0] }
                 Test-Deadline $Stage
@@ -2158,7 +2159,7 @@ function Invoke-Support {
                     $env:GW_SUPPORT_TEST_BLOCKING_DELAY_MS,
                     $env:GW_SUPPORT_TEST_BLOCKING_PID_FILE,
                     $env:GW_SUPPORT_TEST_BLOCKING_READY_FILE
-                ) -Stage 'plain-redaction')
+                ) -Stage 'plain-redaction' -DiscardOutput)
                 $plainFailureStage = 'plain-publish'
                 if (Test-SupportForcedPublishFailure 'plain') {
                     throw 'forced atomic publish failure: plain'
@@ -2264,7 +2265,7 @@ function Invoke-Support {
                     $env:GW_SUPPORT_TEST_COMPRESSION_KIND,
                     $env:GW_SUPPORT_TEST_COMPRESSION_DELAY_MS,
                     $env:GW_SUPPORT_TEST_COMPRESSION_PID_FILE
-                ) -Stage 'gzip-compression'
+                ) -Stage 'gzip-compression' -DiscardOutput
             } catch {
                 Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
                 if ($_.Exception.Message -match '^support bundle: timed out') { throw }
@@ -2533,7 +2534,7 @@ function Invoke-Support {
                 $env:GW_SUPPORT_TEST_BLOCKING_KIND,
                 $env:GW_SUPPORT_TEST_BLOCKING_DELAY_MS,
                 $env:GW_SUPPORT_TEST_BLOCKING_PID_FILE
-            ) -Stage 'install-tree-probe')
+            ) -Stage 'install-tree-probe' -DiscardOutput)
         } catch {
             if ($_.Exception.Message -match '^support bundle: timed out') { throw }
             $collectionWarnings.Add('Install tree probe failed') | Out-Null
@@ -2705,7 +2706,7 @@ function Invoke-Support {
                     $env:GW_SUPPORT_TEST_COMPRESSION_KIND,
                     $env:GW_SUPPORT_TEST_COMPRESSION_DELAY_MS,
                     $env:GW_SUPPORT_TEST_COMPRESSION_PID_FILE
-                ) -Stage 'archive-compression'
+                ) -Stage 'archive-compression' -DiscardOutput
                 $archiveLength = (Get-Item -LiteralPath $archiveTemporary).Length
                 if ($archiveLength -le $maxBytes) {
                     Publish-SupportArtifact $archiveTemporary $outPath 'archive'
