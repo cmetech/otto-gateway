@@ -1633,6 +1633,7 @@ function Invoke-Support {
     $maxBytes = [int64]$MaxMb * 1MB
     $deadlineInjectedStages = @{}
     $deadlineWorkState = @{ Armed = $false }
+    $plainReceiveDiagnosticState = @{ Emitted = $false }
     function Throw-SupportTimeout {
         param([string]$Stage)
         throw "support bundle: timed out after $timeoutSec seconds at stage '$Stage'; staging will be cleaned"
@@ -1734,6 +1735,17 @@ function Invoke-Support {
                     Where-Object { $null -ne $_ } | Select-Object -First 1)
                 if ($jobError.Count -gt 0) { throw $jobError[0] }
                 throw "support bundle: child job failed at stage '$Stage'"
+            }
+            if ($Stage -ceq 'plain-redaction' -and
+                $env:GW_SUPPORT_TEST_PLAIN_ERROR_IDENTITY -match '^(?i:true|1|yes)$' -and
+                -not $plainReceiveDiagnosticState.Emitted) {
+                $plainReceiveDiagnosticState.Emitted = $true
+                try {
+                    $jobDiagnostic = Format-SupportJobReceiveDiagnostic $job
+                    if (-not [string]::IsNullOrEmpty($jobDiagnostic)) {
+                        Write-Stderr $jobDiagnostic
+                    }
+                } catch {}
             }
             $jobOutput = @(Receive-Job -Job $job -ErrorAction Stop)
             Test-Deadline $Stage
@@ -1921,6 +1933,80 @@ function Invoke-Support {
                     }
                 }
                 return 'FQID {0}, line {1}' -f $fqid, $line
+            } catch {
+                return $fallback
+            }
+        }
+        function Format-SupportJobReceiveDiagnostic {
+            param($Job)
+            $fallback = 'support diagnostic: pre-receive job(type=unknown; base=unknown; count=0; state=unknown); child(count=0; state=unknown; errors=0; first=unknown exception, HRESULT 0x00000000; FQID unknown, line 0)'
+            try {
+                $jobItems = @($Job)
+                $jobCount = [Math]::Min($jobItems.Count, 9999999)
+                if ($jobItems.Count -eq 0) { return $fallback }
+
+                $jobType = $Job.GetType().FullName
+                if ([string]::IsNullOrEmpty($jobType) -or
+                    $jobType -cnotmatch '^[A-Za-z0-9_.+`,\[\]-]{1,160}$') {
+                    $jobType = 'unknown'
+                }
+                $jobBase = $Job.PSObject.BaseObject
+                $jobBaseType = if ($null -ne $jobBase) {
+                    $jobBase.GetType().FullName
+                } else { '' }
+                if ([string]::IsNullOrEmpty($jobBaseType) -or
+                    $jobBaseType -cnotmatch '^[A-Za-z0-9_.+`,\[\]-]{1,160}$') {
+                    $jobBaseType = 'unknown'
+                }
+
+                $allowedStates = @(
+                    'NotStarted','Running','Completed','Failed',
+                    'Stopped','Blocked','Disconnected')
+                $firstJob = $jobItems[0]
+                $jobState = 'unknown'
+                $jobStateProperty = $firstJob.PSObject.Properties['State']
+                if ($null -ne $jobStateProperty) {
+                    $candidateState = [string]$jobStateProperty.Value
+                    if ($allowedStates -ccontains $candidateState) {
+                        $jobState = $candidateState
+                    }
+                }
+
+                $children = @()
+                $childrenProperty = $firstJob.PSObject.Properties['ChildJobs']
+                if ($null -ne $childrenProperty -and
+                    $null -ne $childrenProperty.Value) {
+                    $children = @($childrenProperty.Value)
+                }
+                $childCount = [Math]::Min($children.Count, 9999999)
+                $childState = 'unknown'
+                $errorItems = @()
+                if ($children.Count -gt 0) {
+                    $firstChild = $children[0]
+                    $childStateProperty = $firstChild.PSObject.Properties['State']
+                    if ($null -ne $childStateProperty) {
+                        $candidateState = [string]$childStateProperty.Value
+                        if ($allowedStates -ccontains $candidateState) {
+                            $childState = $candidateState
+                        }
+                    }
+                    $errorProperty = $firstChild.PSObject.Properties['Error']
+                    if ($null -ne $errorProperty -and
+                        $null -ne $errorProperty.Value) {
+                        $errorItems = @($errorProperty.Value)
+                    }
+                }
+                $errorCount = [Math]::Min($errorItems.Count, 9999999)
+                $errorDiagnostic = 'unknown exception, HRESULT 0x00000000'
+                $identityDiagnostic = 'FQID unknown, line 0'
+                if ($errorItems.Count -gt 0) {
+                    $errorDiagnostic = Format-SupportExceptionDiagnostic $errorItems[0]
+                    $identityDiagnostic = Format-SupportErrorIdentityDiagnostic $errorItems[0]
+                }
+                return 'support diagnostic: pre-receive job(type={0}; base={1}; count={2}; state={3}); child(count={4}; state={5}; errors={6}; first={7}; {8})' -f @(
+                    $jobType, $jobBaseType, $jobCount, $jobState,
+                    $childCount, $childState, $errorCount,
+                    $errorDiagnostic, $identityDiagnostic)
             } catch {
                 return $fallback
             }

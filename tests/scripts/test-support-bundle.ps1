@@ -635,6 +635,11 @@ try {
         $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
             $node.Name -ceq 'Format-SupportErrorIdentityDiagnostic'
     }, $true)
+    $jobReceiveDiagnosticAst = $wrapperAst.Find({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -ceq 'Format-SupportJobReceiveDiagnostic'
+    }, $true)
     $copyRedactedLogAst = $wrapperAst.Find({
         param($node)
         $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
@@ -642,6 +647,7 @@ try {
     }, $true)
     Assert-True ($null -ne $diagnosticAst) 'support exception diagnostic helper is present'
     Assert-True ($null -ne $errorIdentityDiagnosticAst) 'support error identity diagnostic helper is present'
+    Assert-True ($null -ne $jobReceiveDiagnosticAst) 'support pre-receive job diagnostic helper is present'
     Assert-True ($null -ne $copyRedactedLogAst) 'plain redaction control flow is present for stage extraction'
 
     Write-Host '== plain redaction worker compatibility =='
@@ -1181,6 +1187,156 @@ $result | ConvertTo-Json -Compress
                 '/tmp/private.log', 'AUTH_TOKEN=raw'
             )) {
                 Assert-True (-not $case.Actual.Contains($needle)) "error identity formatter excludes protected text for $($case.Name)"
+            }
+        }
+    }
+
+    if ($null -ne $jobReceiveDiagnosticAst) {
+        $jobDiagnosticResults = @(& {
+            param(
+                [string]$ExceptionDefinition,
+                [string]$IdentityDefinition,
+                [string]$JobDefinition
+            )
+            . ([scriptblock]::Create($ExceptionDefinition))
+            . ([scriptblock]::Create($IdentityDefinition))
+            . ([scriptblock]::Create($JobDefinition))
+            $protectedJobText = 'job-secret-3377 C:\private\job.log /tmp/job.log AUTH_TOKEN=raw'
+            $realJob = Start-Job -ScriptBlock {
+                Write-Error -Message 'child-error-secret-4488 C:\private\child.log' `
+                    -ErrorId 'MethodCountCouldNotFindBest,Microsoft.PowerShell.Commands.NewObjectCommand'
+            }
+            try {
+                while ($realJob.State -in @('NotStarted','Running')) {
+                    Start-Sleep -Milliseconds 25
+                }
+                [pscustomobject]@{
+                    Name = 'real completed job'
+                    Actual = Format-SupportJobReceiveDiagnostic $realJob
+                    Threw = $false
+                }
+            } catch {
+                [pscustomobject]@{
+                    Name = 'real completed job'
+                    Actual = ''
+                    Threw = $true
+                }
+            } finally {
+                if ($realJob.State -in @('NotStarted','Running','Blocked')) {
+                    Stop-Job -Job $realJob -ErrorAction SilentlyContinue
+                }
+                Remove-Job -Job $realJob -Force -ErrorAction SilentlyContinue
+            }
+
+            $protectedError = [System.Management.Automation.ErrorRecord]::new(
+                ([System.InvalidOperationException]::new($protectedJobText)),
+                'identity-secret-3377',
+                [System.Management.Automation.ErrorCategory]::InvalidArgument,
+                $null)
+            $hostileJob = [pscustomobject]@{
+                State = $protectedJobText
+                ChildJobs = @([pscustomobject]@{
+                    State = $protectedJobText
+                    Error = @($protectedError)
+                })
+            }
+            foreach ($case in @(
+                @{ Name = 'hostile job shape'; Input = $hostileJob },
+                @{ Name = 'null job'; Input = $null }
+            )) {
+                $threw = $false
+                $actual = ''
+                try {
+                    $actual = Format-SupportJobReceiveDiagnostic $case.Input
+                } catch { $threw = $true }
+                [pscustomobject]@{
+                    Name = $case.Name
+                    Actual = $actual
+                    Threw = $threw
+                }
+            }
+        } $diagnosticAst.Extent.Text $errorIdentityDiagnosticAst.Extent.Text `
+            $jobReceiveDiagnosticAst.Extent.Text)
+        $jobDiagnosticGrammar = '^support diagnostic: pre-receive job\(type=(?:unknown|[A-Za-z0-9_.+`,\[\]-]{1,160}); base=(?:unknown|[A-Za-z0-9_.+`,\[\]-]{1,160}); count=[0-9]{1,7}; state=(?:unknown|NotStarted|Running|Completed|Failed|Stopped|Blocked|Disconnected)\); child\(count=[0-9]{1,7}; state=(?:unknown|NotStarted|Running|Completed|Failed|Stopped|Blocked|Disconnected); errors=[0-9]{1,7}; first=(?:unknown exception|[A-Za-z0-9_.+`]+), HRESULT 0x[0-9A-F]{8}(?:, native error [0-9]+)?; FQID (?:unknown|[A-Za-z0-9_.+`,-]{1,160}), line (?:0|[1-9][0-9]{0,6})\)$'
+        foreach ($case in $jobDiagnosticResults) {
+            Assert-True (-not $case.Threw) "pre-receive job formatter is total for $($case.Name)"
+            Assert-True ($case.Actual -cmatch $jobDiagnosticGrammar) "pre-receive job formatter emits exact allowed grammar for $($case.Name)"
+            foreach ($needle in @(
+                'job-secret-3377', 'child-error-secret-4488',
+                'C:\private\job.log', 'C:\private\child.log',
+                '/tmp/job.log', 'AUTH_TOKEN=raw', 'identity-secret-3377'
+            )) {
+                Assert-True (-not $case.Actual.Contains($needle)) "pre-receive job formatter excludes protected text for $($case.Name)"
+            }
+        }
+        $realJobDiagnostic = @($jobDiagnosticResults |
+            Where-Object Name -eq 'real completed job')[0]
+        Assert-True ($realJobDiagnostic.Actual -cmatch 'count=1; state=Completed\); child\(count=1; state=Completed; errors=1;') 'pre-receive job formatter reports real job and child counts, states, and error count'
+        Assert-True ($realJobDiagnostic.Actual -cmatch '; FQID MethodCountCouldNotFindBest,Microsoft\.PowerShell\.Commands\.NewObjectCommand(?:,[A-Za-z0-9_.+`-]{1,80})*, line (?:0|[1-9][0-9]{0,6})\)$') 'pre-receive job formatter reports the first real child error identity'
+
+        if ($deadlineContractAsts.Count -eq 5) {
+            $preReceiveHookResult = & {
+                param(
+                    [string]$DeadlineDefinitions,
+                    [string]$ExceptionDefinition,
+                    [string]$IdentityDefinition,
+                    [string]$JobDefinition
+                )
+                . ([scriptblock]::Create($DeadlineDefinitions))
+                . ([scriptblock]::Create($ExceptionDefinition))
+                . ([scriptblock]::Create($IdentityDefinition))
+                . ([scriptblock]::Create($JobDefinition))
+                $timeoutSec = 180
+                $deadlineStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+                $deadlineInjectedStages = @{}
+                $deadlineWorkState = @{ Armed = $false }
+                $plainReceiveDiagnosticState = @{ Emitted = $false }
+                $capturedDiagnostics = New-Object System.Collections.Generic.List[string]
+                function Write-Stderr {
+                    param([string]$Message)
+                    $capturedDiagnostics.Add($Message) | Out-Null
+                }
+                $savedIdentityDiagnostic = $env:GW_SUPPORT_TEST_PLAIN_ERROR_IDENTITY
+                $env:GW_SUPPORT_TEST_PLAIN_ERROR_IDENTITY = 'true'
+                $receiveThrew = $false
+                try {
+                    $null = @(Invoke-SupportDeadlineJob -Work {
+                        Write-Error -Message 'hook-child-secret-5599 C:\private\hook.log' `
+                            -ErrorId 'MethodCountCouldNotFindBest,Microsoft.PowerShell.Commands.NewObjectCommand'
+                    } -Stage 'plain-redaction')
+                } catch {
+                    $receiveThrew = $true
+                }
+                $secondReceiveThrew = $false
+                try {
+                    $null = @(Invoke-SupportDeadlineJob -Work { 'safe output' } `
+                        -Stage 'plain-redaction')
+                } catch {
+                    $secondReceiveThrew = $true
+                } finally {
+                    [Environment]::SetEnvironmentVariable(
+                        'GW_SUPPORT_TEST_PLAIN_ERROR_IDENTITY',
+                        $savedIdentityDiagnostic, 'Process')
+                }
+                [pscustomobject]@{
+                    ReceiveThrew = $receiveThrew
+                    SecondReceiveThrew = $secondReceiveThrew
+                    Count = $capturedDiagnostics.Count
+                    Diagnostic = if ($capturedDiagnostics.Count -eq 1) {
+                        [string]$capturedDiagnostics[0]
+                    } else { '' }
+                }
+            } (@($deadlineContractAsts | ForEach-Object { $_.Extent.Text }) -join `
+                [Environment]::NewLine) $diagnosticAst.Extent.Text `
+                $errorIdentityDiagnosticAst.Extent.Text $jobReceiveDiagnosticAst.Extent.Text
+            Assert-True $preReceiveHookResult.ReceiveThrew 'pre-receive diagnostic control reaches the child error at Receive-Job'
+            Assert-True (-not $preReceiveHookResult.SecondReceiveThrew) 'pre-receive diagnostic control completes the later clean Receive-Job'
+            Assert-True ($preReceiveHookResult.Count -eq 1) 'deadline helper emits exactly one pre-receive diagnostic under the harness gate'
+            Assert-True ($preReceiveHookResult.Diagnostic -cmatch $jobDiagnosticGrammar) 'deadline helper emits the normalized pre-receive diagnostic grammar'
+            foreach ($needle in @(
+                'hook-child-secret-5599', 'C:\private\hook.log'
+            )) {
+                Assert-True (-not $preReceiveHookResult.Diagnostic.Contains($needle)) 'deadline helper pre-receive diagnostic excludes protected child error text'
             }
         }
     }
