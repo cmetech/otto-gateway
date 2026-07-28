@@ -27,6 +27,7 @@ func TestWrapperCancellationTerminatesDarwinProcessTree(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	cmd := exec.CommandContext(ctx, script, pidFile) //nolint:gosec // test-owned fixed executable and path
 	detachProcessGroup(cmd)
 	configureWrapperCancellation(cmd)
@@ -52,11 +53,14 @@ func TestWrapperCancellationTerminatesDarwinProcessTree(t *testing.T) {
 		t.Fatal("wrapper child did not start")
 	}
 
-	cancel()
+	cancelErr := cmd.Cancel()
 	select {
 	case <-done:
 	case <-time.After(3 * time.Second):
 		t.Fatal("wrapper root did not stop after cancellation")
+	}
+	if cancelErr != nil {
+		t.Fatalf("successful wrapper process-tree cancellation returned an error: %v", cancelErr)
 	}
 
 	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); {
