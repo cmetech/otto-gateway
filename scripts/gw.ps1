@@ -1863,6 +1863,17 @@ function Invoke-Support {
                 Where-Object { $_ })
             return $forcedFailures -contains $Kind.ToLowerInvariant()
         }
+        function Format-SupportExceptionDiagnostic {
+            param($ErrorRecord)
+            $exception = $ErrorRecord.Exception
+            while ($exception.InnerException) { $exception = $exception.InnerException }
+            $diagnostic = '{0}, HRESULT 0x{1:X8}' -f @(
+                $exception.GetType().FullName, [int]$exception.HResult)
+            if ($exception -is [System.ComponentModel.Win32Exception]) {
+                $diagnostic += ', native error {0}' -f $exception.NativeErrorCode
+            }
+            return $diagnostic
+        }
         function Publish-SupportArtifact {
             param(
                 [Parameter(Mandatory)][string]$Temporary,
@@ -2036,6 +2047,7 @@ function Invoke-Support {
             if (-not $snapshot) { return $false }
             $destination = Join-Path $bundleRoot $RelativePath
             $temporary = $destination + '.partial-' + [Guid]::NewGuid().ToString('N')
+            $plainFailureStage = 'plain-redaction'
             try {
                 $null = New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force
                 $plainRedactionWork = {
@@ -2086,16 +2098,20 @@ function Invoke-Support {
                     $env:GW_SUPPORT_TEST_BLOCKING_PID_FILE,
                     $env:GW_SUPPORT_TEST_BLOCKING_READY_FILE
                 ) -Stage 'plain-redaction')
+                $plainFailureStage = 'plain-publish'
                 if (Test-SupportForcedPublishFailure 'plain') {
                     throw 'forced atomic publish failure: plain'
                 }
                 Publish-SupportArtifact $temporary $destination 'plain'
+                $plainFailureStage = 'plain-metadata'
                 (Get-Item -LiteralPath $destination).LastWriteTimeUtc = $snapshot.LastWriteTimeUtc
                 return $true
             } catch {
+                $plainFailureDiagnostic = Format-SupportExceptionDiagnostic $_
                 Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
                 if ($_.Exception.Message -match '^support bundle: timed out') { throw }
-                $collectionWarnings.Add("$Label redaction failed") | Out-Null
+                $collectionWarnings.Add(
+                    "$Label redaction failed at $plainFailureStage ($plainFailureDiagnostic)") | Out-Null
                 return $false
             }
         }
