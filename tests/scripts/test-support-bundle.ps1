@@ -155,6 +155,48 @@ function Assert-NoNewSupportStaging($Snapshot, [string]$Label) {
     Assert-True ($newEntries.Count -eq 0) "$Label (new global staging: $($newEntries -join ', '))"
 }
 
+function Wait-HttpPortFile {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        $Process,
+        [int]$TimeoutMilliseconds = 5000,
+        [int]$PollMilliseconds = 100
+    )
+    $watch = [System.Diagnostics.Stopwatch]::StartNew()
+    $poll = [Math]::Max(1, $PollMilliseconds)
+
+    while ($true) {
+        if ($null -ne $Process -and [bool]$Process.HasExited) {
+            throw 'deterministic HTTP endpoint exited before publishing a valid port'
+        }
+
+        if (Test-Path -LiteralPath $Path -PathType Leaf) {
+            $rawPort = $null
+            try {
+                $rawPort = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop
+            } catch {
+                # The fixture may still be creating or replacing the file. Retry until
+                # it publishes a complete value or the bounded wait expires.
+            }
+
+            if ($null -ne $rawPort) {
+                $port = 0
+                if ([int]::TryParse(([string]$rawPort).Trim(), [ref]$port) -and
+                    $port -ge 1 -and $port -le 65535) {
+                    return [int]$port
+                }
+            }
+        }
+
+        if ($watch.ElapsedMilliseconds -ge $TimeoutMilliseconds) {
+            throw "deterministic HTTP endpoint did not publish a valid port within ${TimeoutMilliseconds}ms"
+        }
+
+        $remaining = $TimeoutMilliseconds - $watch.ElapsedMilliseconds
+        Start-Sleep -Milliseconds ([Math]::Min($poll, [Math]::Max(1, $remaining)))
+    }
+}
+
 function Get-GzipText([string]$Path) {
     $input = [System.IO.File]::OpenRead($Path)
     try {
@@ -451,6 +493,76 @@ try {
         Assert-True ($argumentCapture.Stdout.TrimEnd() -ceq 'space value||quote"value|trailing\') 'native capture preserves cross-version argument boundaries'
     } finally {
         Remove-Item -LiteralPath $argumentScript -Force -ErrorAction SilentlyContinue
+    }
+
+    Write-Host '== deterministic HTTP port readiness contract =='
+    $portReadinessRoot = Join-Path ([System.IO.Path]::GetTempPath()) (
+        'gw-port-readiness-' + [System.IO.Path]::GetRandomFileName())
+    $null = New-Item -ItemType Directory -Path $portReadinessRoot -Force
+    $liveProcess = [pscustomobject]@{ HasExited = $false }
+    try {
+        foreach ($case in @(
+            @{ Name = 'missing'; Content = $null },
+            @{ Name = 'empty'; Content = '' },
+            @{ Name = 'non-numeric'; Content = 'not-a-port' },
+            @{ Name = 'zero'; Content = '0' },
+            @{ Name = 'above-range'; Content = '65536' }
+        )) {
+            $casePath = Join-Path $portReadinessRoot "$($case.Name).port"
+            if ($null -ne $case.Content) {
+                [System.IO.File]::WriteAllText($casePath, [string]$case.Content)
+            }
+            $caseThrew = $false
+            $caseMessage = ''
+            try {
+                $null = Wait-HttpPortFile -Path $casePath -Process $liveProcess `
+                    -TimeoutMilliseconds 40 -PollMilliseconds 5
+            } catch {
+                $caseThrew = $true
+                $caseMessage = $_.Exception.Message
+            }
+            Assert-True $caseThrew "port readiness rejects $($case.Name) content"
+            Assert-True ($caseMessage -ceq 'deterministic HTTP endpoint did not publish a valid port within 40ms') "port readiness times out deterministically for $($case.Name) content"
+        }
+
+        $validPortPath = Join-Path $portReadinessRoot 'valid.port'
+        [System.IO.File]::WriteAllText($validPortPath, " 18080`r`n")
+        $validPort = Wait-HttpPortFile -Path $validPortPath -Process $liveProcess `
+            -TimeoutMilliseconds 100 -PollMilliseconds 5
+        Assert-True (($validPort -is [int]) -and $validPort -eq 18080) 'port readiness returns a parsed in-range integer'
+
+        $delayedPortPath = Join-Path $portReadinessRoot 'delayed.port'
+        [System.IO.File]::WriteAllText($delayedPortPath, '')
+        $delayedWriter = Start-Job -ScriptBlock {
+            param($Path)
+            Start-Sleep -Milliseconds 100
+            [System.IO.File]::WriteAllText($Path, '18081')
+        } -ArgumentList $delayedPortPath
+        try {
+            $delayedPort = Wait-HttpPortFile -Path $delayedPortPath -Process $liveProcess `
+                -TimeoutMilliseconds 5000 -PollMilliseconds 10
+            Assert-True (($delayedPort -is [int]) -and $delayedPort -eq 18081) 'port readiness waits past an existing empty file until valid digits are readable'
+        } finally {
+            $null = Wait-Job -Job $delayedWriter -Timeout 5 -ErrorAction SilentlyContinue
+            Remove-Job -Job $delayedWriter -Force -ErrorAction SilentlyContinue
+        }
+
+        $earlyExitPath = Join-Path $portReadinessRoot 'early-exit.port'
+        $earlyExitProcess = [pscustomobject]@{ HasExited = $true }
+        $earlyExitWatch = [System.Diagnostics.Stopwatch]::StartNew()
+        $earlyExitMessage = ''
+        try {
+            $null = Wait-HttpPortFile -Path $earlyExitPath -Process $earlyExitProcess `
+                -TimeoutMilliseconds 1000 -PollMilliseconds 10
+        } catch {
+            $earlyExitMessage = $_.Exception.Message
+        } finally {
+            $earlyExitWatch.Stop()
+        }
+        Assert-True ($earlyExitMessage -ceq 'deterministic HTTP endpoint exited before publishing a valid port') 'port readiness reports early server exit'
+        Assert-True ($earlyExitWatch.ElapsedMilliseconds -lt 500) 'port readiness observes early server exit before its timeout'
+    } finally {
+        Remove-Item -LiteralPath $portReadinessRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
 
     Write-Host '== per-request timeout budget contract =='
@@ -949,12 +1061,7 @@ server.serve_forever()
 '@ | Set-Content -LiteralPath $ServerScript -Encoding UTF8
     $script:HttpProcess = Start-Process -FilePath $Python -ArgumentList @(
         $ServerScript, $PortFile, $RequestLog, $ModeFile, $StallAcceptedFile) -PassThru
-    foreach ($attempt in 1..50) {
-        if (Test-Path -LiteralPath $PortFile) { break }
-        Start-Sleep -Milliseconds 100
-    }
-    if (-not (Test-Path -LiteralPath $PortFile)) { throw 'deterministic HTTP endpoint did not start' }
-    $HttpPort = (Get-Content -LiteralPath $PortFile -Raw).Trim()
+    $HttpPort = Wait-HttpPortFile -Path $PortFile -Process $script:HttpProcess
     @("request = POST", "url = http://127.0.0.1:$HttpPort/mutate") | Set-Content -LiteralPath (Join-Path $HomeFixture '.curlrc') -Encoding ASCII
 
     $GatewayLog = Join-Path $GatewayHome 'logs\gateway.log'
