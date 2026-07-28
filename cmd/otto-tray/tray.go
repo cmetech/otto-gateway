@@ -149,6 +149,7 @@ func newTrayState(installDir, gwHome string, cfg TrayConfig) *trayState {
 
 func (s *trayState) onReady(isFirstRun bool) func() {
 	return func() {
+		initialPreferences := s.preferenceSnapshot()
 		setBaseIcon()
 		systray.SetTooltip("Gateway")
 		platformOnReady()
@@ -178,7 +179,7 @@ func (s *trayState) onReady(isFirstRun bool) func() {
 		s.miDesktopRefresh = s.miAdvanced.AddSubMenuItem("Refresh Co-Worker Detection", "Detect installed and running Co-Worker apps now")
 		s.applyDesktopOutput(desktopOutput{State: DesktopDetecting})
 		s.miOpenGatewayFolder = s.miAdvanced.AddSubMenuItem("Open Gateway Folder (~/.gw)", "Open the Gateway data folder")
-		rwInitial := resolveMetricsRWEnabled(s.cfg, s.gwHome)
+		rwInitial := resolveMetricsRWEnabled(initialPreferences, s.gwHome)
 		s.metricsRWEnabled.Store(rwInitial)
 		s.miMetricsRW = s.miAdvanced.AddSubMenuItemCheckbox("Send metrics to Grafana Cloud", "Scrape the gateway's metrics and remote-write them to Grafana Cloud", rwInitial)
 		s.setMetricsRWChecked = func(enabled bool) {
@@ -192,8 +193,8 @@ func (s *trayState) onReady(isFirstRun bool) func() {
 		s.miSupport = systray.AddMenuItem("Create Support Bundle…", "Produce a redacted diagnostic archive")
 		systray.AddSeparator()
 		prefs := systray.AddMenuItem("Preferences", "")
-		s.miPrefsLogin = prefs.AddSubMenuItemCheckbox("Launch tray at login", "", s.cfg.LaunchAtLogin)
-		s.miPrefsStart = prefs.AddSubMenuItemCheckbox("Start gateway when tray launches", "", s.cfg.StartGatewayOnLaunch)
+		s.miPrefsLogin = prefs.AddSubMenuItemCheckbox("Launch tray at login", "", initialPreferences.LaunchAtLogin)
+		s.miPrefsStart = prefs.AddSubMenuItemCheckbox("Start gateway when tray launches", "", initialPreferences.StartGatewayOnLaunch)
 		s.miAbout = systray.AddMenuItem("About Gateway…", "")
 		systray.AddSeparator()
 		s.miQuit = systray.AddMenuItem("Quit Gateway Tray", "")
@@ -224,7 +225,7 @@ func (s *trayState) onReady(isFirstRun bool) func() {
 				offerFirstRunAutostart(s)
 				return
 			}
-			if s.cfg.StartGatewayOnLaunch {
+			if s.preferenceSnapshot().StartGatewayOnLaunch {
 				s.handleStart()
 			}
 		}()
@@ -629,12 +630,18 @@ func (s *trayState) savePreferences() {
 	s.preferenceSaveMu.Lock()
 	defer s.preferenceSaveMu.Unlock()
 
-	s.mu.Lock()
-	cfg := s.cfg
-	s.mu.Unlock()
+	cfg := s.preferenceSnapshot()
 	if err := saveTrayConfig(gwTrayConfigPath(s.gwHome), cfg); err != nil {
 		slog.Error("save tray.json", "err", err)
 	}
+}
+
+func (s *trayState) preferenceSnapshot() TrayConfig {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	cfg := s.cfg
+	return cfg
 }
 
 // resolveMetricsRWEnabled decides the checkbox's initial state: the persisted

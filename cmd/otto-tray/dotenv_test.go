@@ -40,6 +40,24 @@ KEY_WITH_EQUALS=foo=bar
 	}
 }
 
+func TestParseDotenv_AcceptsExactExportPrefixWithoutMatchingLookalikes(t *testing.T) {
+	body := `export HTTP_ADDR=:19000
+export GW_METRICS_REMOTE_WRITE_TOKEN="exported secret"
+exportHTTP_ADDR=:19100
+exported GW_METRICS_REMOTE_WRITE_TOKEN=lookalike
+`
+	got, err := parseDotenv([]byte(body))
+	if err != nil {
+		t.Fatalf("parseDotenv: %v", err)
+	}
+	if got["HTTP_ADDR"] != ":19000" {
+		t.Errorf("HTTP_ADDR = %q; want :19000 from export assignment", got["HTTP_ADDR"])
+	}
+	if got["GW_METRICS_REMOTE_WRITE_TOKEN"] != "exported secret" {
+		t.Errorf("remote-write token = %q; want exported secret", got["GW_METRICS_REMOTE_WRITE_TOKEN"])
+	}
+}
+
 func TestResolveDashboardURL_DefaultWhenNothingSet(t *testing.T) {
 	t.Setenv("HTTP_ADDR", "")
 	tmp := t.TempDir()

@@ -34,7 +34,5 @@ func offerFirstRunAutostart(s *trayState) {
 		}
 	}
 
-	if err := saveTrayConfig(gwTrayConfigPath(s.gwHome), s.cfg); err != nil {
-		slog.Error("save tray.json", "err", err)
-	}
+	s.savePreferences()
 }

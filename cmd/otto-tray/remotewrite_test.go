@@ -346,6 +346,87 @@ func TestRemoteWriteEnableWarning_OverrideTokenMakesConfigReady(t *testing.T) {
 	}
 }
 
+func TestLoadRemoteWriteConfig_ExportedAssignmentsReachEffectiveConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("GW_METRICS_REMOTE_WRITE_URL", "")
+	t.Setenv("GW_METRICS_REMOTE_WRITE_USER", "")
+	t.Setenv("GW_METRICS_REMOTE_WRITE_TOKEN", "")
+	t.Setenv("GW_METRICS_REMOTE_WRITE_INTERVAL_SEC", "")
+	const defaults = "export GW_METRICS_REMOTE_WRITE_URL=https://example.test/api/prom/push\n" +
+		"export GW_METRICS_REMOTE_WRITE_USER=3370048\n" +
+		"export GW_METRICS_REMOTE_WRITE_INTERVAL_SEC=45\n"
+	if err := os.WriteFile(filepath.Join(home, ".env"), []byte(defaults), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "overrides.env"), []byte("export GW_METRICS_REMOTE_WRITE_TOKEN=glc_exported-secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := loadRemoteWriteConfig(home)
+	if cfg.URL != "https://example.test/api/prom/push" {
+		t.Errorf("URL = %q; want exported .env value", cfg.URL)
+	}
+	if cfg.User != "3370048" {
+		t.Errorf("user = %q; want exported .env value", cfg.User)
+	}
+	if cfg.Token != "glc_exported-secret" {
+		t.Errorf("token = %q; want exported overrides.env value", cfg.Token)
+	}
+	if cfg.Interval != 45*time.Second {
+		t.Errorf("interval = %v; want 45s", cfg.Interval)
+	}
+	if !cfg.ready() {
+		t.Error("exported remote-write assignments must produce a ready config")
+	}
+}
+
+func TestLoadRemoteWriteConfig_SameKeyDotenvPrecedence(t *testing.T) {
+	tests := []struct {
+		name      string
+		defaults  string
+		overrides string
+		process   string
+		want      string
+	}{
+		{
+			name:      "overrides beats dotenv and process",
+			defaults:  "export GW_METRICS_REMOTE_WRITE_TOKEN=dotenv-token\n",
+			overrides: "export GW_METRICS_REMOTE_WRITE_TOKEN=override-token\n",
+			process:   "process-token",
+			want:      "override-token",
+		},
+		{
+			name:     "dotenv beats process",
+			defaults: "export GW_METRICS_REMOTE_WRITE_TOKEN=dotenv-token\n",
+			process:  "process-token",
+			want:     "dotenv-token",
+		},
+		{
+			name:      "empty override remains authoritative",
+			defaults:  "export GW_METRICS_REMOTE_WRITE_TOKEN=dotenv-token\n",
+			overrides: "export GW_METRICS_REMOTE_WRITE_TOKEN=\n",
+			process:   "process-token",
+			want:      "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("GW_METRICS_REMOTE_WRITE_TOKEN", tt.process)
+			if tt.defaults != "" {
+				writeTestFile(t, filepath.Join(home, ".env"), tt.defaults)
+			}
+			if tt.overrides != "" {
+				writeTestFile(t, filepath.Join(home, "overrides.env"), tt.overrides)
+			}
+
+			if got := loadRemoteWriteConfig(home).Token; got != tt.want {
+				t.Errorf("effective token = %q; want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestTrayConfig_MetricsRemoteWritePersistsBooleanOnly(t *testing.T) {
 	body, err := json.Marshal(TrayConfig{MetricsRemoteWriteEnabled: boolPtr(true)})
 	if err != nil {

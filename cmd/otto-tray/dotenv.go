@@ -12,9 +12,9 @@ import (
 
 // parseDotenv parses a minimal KEY=VALUE dotenv format. Comments
 // (lines beginning with `#`) and blank lines are ignored. Values may
-// be wrapped in single or double quotes; quotes are stripped. No
-// variable interpolation, no `export ` prefix — the wrapper scripts
-// own anything fancier.
+// be wrapped in single or double quotes; quotes are stripped. An exact
+// `export` keyword followed by whitespace is optional, matching the wrapper
+// configuration syntax. No variable interpolation is performed.
 func parseDotenv(body []byte) (map[string]string, error) {
 	out := map[string]string{}
 	s := bufio.NewScanner(bytes.NewReader(body))
@@ -22,6 +22,12 @@ func parseDotenv(body []byte) (map[string]string, error) {
 		line := strings.TrimSpace(s.Text())
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
+		}
+		if strings.HasPrefix(line, "export") && len(line) > len("export") {
+			rest := line[len("export"):]
+			if rest[0] == ' ' || rest[0] == '\t' {
+				line = strings.TrimLeft(rest, " \t")
+			}
 		}
 		eq := strings.IndexByte(line, '=')
 		if eq <= 0 {
