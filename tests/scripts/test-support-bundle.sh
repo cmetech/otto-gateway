@@ -302,6 +302,7 @@ TEST_SWAP_ANCESTOR_ONE=""
 TEST_SWAP_ANCESTOR_TARGET_ONE=""
 TEST_PYTHONOPTIMIZE=""
 TEST_REAL_PERL="$(command -v perl)"
+TEST_REAL_STAT="$(command -v stat)"
 
 reset_support_inputs() {
     TEST_GW_LOG="$GW_HOME_FIXTURE/logs/gateway.log"
@@ -372,6 +373,7 @@ run_support() {
         TASK3_SWAP_ANCESTOR_ONE="$TEST_SWAP_ANCESTOR_ONE" \
         TASK3_SWAP_ANCESTOR_TARGET_ONE="$TEST_SWAP_ANCESTOR_TARGET_ONE" \
         TASK3_REAL_PERL="$TEST_REAL_PERL" \
+        TASK3_REAL_STAT="$TEST_REAL_STAT" \
         PYTHONOPTIMIZE="$TEST_PYTHONOPTIMIZE" \
         "$BASH" "$WRAPPER" "$@" >"$stdout_file" 2>"$stderr_file"
     local rc=$?
@@ -539,7 +541,7 @@ else
     fail_with "actual final archive exceeds 4MB cap: $CAP_BYTES bytes"
 fi
 
-echo "== final-archive cap accounting =="
+echo "== GNU stat final-archive cap accounting =="
 OVERHEAD_GATEWAY="$FAKE_ROOT/overhead-gateway"
 OVERHEAD_KIRO="$FAKE_ROOT/overhead-kiro"
 mkdir -p "$OVERHEAD_GATEWAY" "$OVERHEAD_KIRO"
@@ -565,7 +567,33 @@ for last_path do :; done
 printf '1\t%s\n' "$last_path"
 EOF
 chmod +x "$UNDERREPORT_BIN/du"
-TEST_PATH="$UNDERREPORT_BIN:$PATH"
+GNU_STAT_PATH=""
+if ! stat --version 2>/dev/null | grep -Fq 'GNU coreutils'; then
+    # Exercise the Linux/GNU dialect on BSD/macOS too. GNU stat interprets
+    # `-f %m PATH` as filesystem mode: it emits a filesystem-status block for
+    # PATH, reports %m as missing, and exits non-zero. Its valid timestamp form
+    # is `-c %Y PATH`.
+    GNU_STAT_BIN="$FAKE_ROOT/gnu-stat-bin"
+    mkdir -p "$GNU_STAT_BIN"
+    cat > "$GNU_STAT_BIN/stat" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "-f" && "${2:-}" == "%m" ]]; then
+    shift 2
+    printf '  File: "%s"\n' "${1:-}"
+    printf '    ID: fixture Namelen: 255 Type: fixturefs\n'
+    printf 'Block size: 4096 Fundamental block size: 4096\n'
+    exit 1
+fi
+if [[ "${1:-}" == "-c" && "${2:-}" == "%Y" ]]; then
+    shift 2
+    exec "$TASK3_REAL_STAT" -f %m "$@"
+fi
+exec "$TASK3_REAL_STAT" "$@"
+EOF
+    chmod +x "$GNU_STAT_BIN/stat"
+    GNU_STAT_PATH="$GNU_STAT_BIN:"
+fi
+TEST_PATH="$UNDERREPORT_BIN:${GNU_STAT_PATH}$PATH"
 OVERHEAD_OUT="$EXTRACT_DIR/overhead-cap-out"
 if run_support missing "$OVERHEAD_OUT" 1 "$EXTRACT_DIR/overhead-cap.stdout" "$EXTRACT_DIR/overhead-cap.stderr"; then
     ok "near-cap support exits zero"

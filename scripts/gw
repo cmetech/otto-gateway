@@ -2511,11 +2511,20 @@ print("true" if value else "false")' "$json_file"
     # current logs, live snapshots, and the manifest remain protected.
     local dropped_files=()
 
-    # Print the oldest remaining eligible rotation, or nothing. BSD `stat
-    # -f %m` and GNU `stat -c %Y` both yield epoch seconds. Paths are paired
-    # with the epoch for deterministic oldest-first selection.
+    # Print the oldest remaining eligible rotation, or nothing. Probe one stat
+    # dialect with stdout discarded before collecting timestamps: GNU stat's
+    # failed BSD-style invocation can emit a filesystem-status block before it
+    # exits non-zero. Paths are paired with the epoch for deterministic
+    # oldest-first selection.
     oldest_support_rotation() {
-        local rotation_list="" rotation_path rotation_base rotation_suffix epoch
+        local rotation_list="" rotation_path rotation_base rotation_suffix epoch stat_dialect
+        if stat -c %Y "$bundle_root" >/dev/null 2>&1; then
+            stat_dialect="gnu"
+        elif stat -f %m "$bundle_root" >/dev/null 2>&1; then
+            stat_dialect="bsd"
+        else
+            return 0
+        fi
         while IFS= read -r rotation_path; do
             rotation_base="${rotation_path##*/}"
             case "$rotation_path" in
@@ -2535,7 +2544,14 @@ print("true" if value else "false")' "$json_file"
                     continue
                     ;;
             esac
-            epoch=$(stat -f %m "$rotation_path" 2>/dev/null || stat -c %Y "$rotation_path" 2>/dev/null || echo 0)
+            if [[ "$stat_dialect" == "gnu" ]]; then
+                epoch=$(stat -c %Y "$rotation_path" 2>/dev/null) || continue
+            else
+                epoch=$(stat -f %m "$rotation_path" 2>/dev/null) || continue
+            fi
+            case "$epoch" in
+                ""|*[!0-9]*) continue ;;
+            esac
             rotation_list+="${epoch}	${rotation_path}"$'\n'
         done < <(find "$bundle_root/logs" -type f -print 2>/dev/null)
         if [[ -n "$rotation_list" ]]; then
