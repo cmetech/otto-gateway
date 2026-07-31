@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"maps"
 	"math"
 	"net"
 	"net/netip"
@@ -249,8 +250,7 @@ type Config struct {
 	// invoked (Phase 8 D-02 two-knob model). Composes with EnabledHooks:
 	// ENABLED_HOOKS controls whether the hook IS in the chain at all;
 	// PII_REDACTION_ENABLED controls whether the hook does work when
-	// invoked. Default false (operator must explicitly opt in to PII
-	// scrubbing). Loaded from PII_REDACTION_ENABLED.
+	// invoked. Default true. Loaded from PII_REDACTION_ENABLED.
 	PIIRedactionEnabled bool
 
 	// PIIEnabledEntities is the comma-split list of recognizer Names that
@@ -279,8 +279,9 @@ type Config struct {
 	// PIIRedactionMode applies to every recognizer). When non-empty,
 	// PIIEntityActions[entity] wins over PIIRedactionMode for the named
 	// entities. Unknown entity names or unknown action values cause
-	// Load() to return an error. The five allowed action values are
-	// "replace" | "mask" | "hash" | "drop" | "encrypt".
+	// Load() to return an error. The allowed action values are "replace" |
+	// "mask" | "hash" | "drop" | "encrypt" | "pseudonymize"; the last is
+	// restricted to technical entities.
 	PIIEntityActions map[string]string
 
 	// PIIEncryptKey is the raw PII_ENCRYPT_KEY env value (any non-empty
@@ -292,12 +293,44 @@ type Config struct {
 	PIIEncryptKey string
 
 	// PIINEREnabled gates the prose-based NER engine that emits PERSON
-	// and LOCATION spans alongside the regex recognizers. Default false:
-	// the prose tokenizer/tagger state is not allocated unless the
-	// operator explicitly opts in. Loaded from PII_NER_ENABLED. English-
-	// only; see internal/plugin/pii/ner.go for the documented accuracy
-	// ceiling.
+	// and LOCATION spans alongside the regex recognizers. Default true.
+	// Loaded from PII_NER_ENABLED. English-only; see internal/plugin/pii/ner.go
+	// for the documented accuracy ceiling.
 	PIINEREnabled bool
+
+	// PrivacyDefaultProfile is the minimum privacy profile used when a request
+	// does not select one. Loaded from PRIVACY_DEFAULT_PROFILE.
+	PrivacyDefaultProfile string
+	// PrivacyRequestProfiles is the comma-split allowlist of request-selectable
+	// privacy profiles. Loaded from PRIVACY_REQUEST_PROFILES.
+	PrivacyRequestProfiles []string
+	// PrivacyAliasKey is the key used to derive stable strict-profile aliases.
+	// Loaded from PRIVACY_ALIAS_KEY.
+	PrivacyAliasKey string
+	// PrivacySecretAction controls handling of secret entities. Loaded from
+	// PRIVACY_SECRET_ACTION.
+	PrivacySecretAction string
+	// PrivacyTechnicalAction controls handling of technical identifier
+	// entities. Loaded from PRIVACY_TECHNICAL_ACTION.
+	PrivacyTechnicalAction string
+	// PrivacyScopeTTL bounds the lifetime of one aliasing scope. Loaded from
+	// PRIVACY_SCOPE_TTL.
+	PrivacyScopeTTL time.Duration
+	// PrivacyMaxScopes bounds concurrently retained aliasing scopes. Loaded
+	// from PRIVACY_MAX_SCOPES.
+	PrivacyMaxScopes int
+	// PrivacyMaxEntriesPerScope bounds aliases retained in one scope. Loaded
+	// from PRIVACY_MAX_ENTRIES_PER_SCOPE.
+	PrivacyMaxEntriesPerScope int
+	// PrivacyMaxTotalEntries bounds aliases retained across all scopes. Loaded
+	// from PRIVACY_MAX_TOTAL_ENTRIES.
+	PrivacyMaxTotalEntries int
+	// PrivacyTriageEnabled enables use of the privacy-triage token. Loaded from
+	// PRIVACY_TRIAGE_ENABLED.
+	PrivacyTriageEnabled bool
+	// PrivacyTriageToken authorizes privacy-triage behavior. Loaded from
+	// PRIVACY_TRIAGE_TOKEN.
+	PrivacyTriageToken string
 
 	// JSONFormatSteeringEnabled controls whether JSONFormatSteeringHook does
 	// WORK when invoked (Phase 08.2 D-06 two-knob model). Composes with
@@ -716,22 +749,50 @@ func Load() (Config, error) {
 		errs = append(errs, err)
 	}
 
-	// Default FALSE (changed 2026-06-04 — v1.9.8). The prose-v2 small NER
-	// model proved too weak for production address coverage: per the
-	// 2026-06-04 splunk-box probe it catches popular city names but
-	// emits PERSON false positives on street names ("Main Street",
-	// "Pennsylvania Avenue", "Apple Park" all tagged PERSON) which
-	// would be tokenized as someone's name on round-trip. Operators
-	// who explicitly want PERSON / LOCATION NER for non-address text
-	// must opt in via PII_NER_ENABLED=true. The bundled prose weights
-	// still ship in the binary; no network, no model download — only
-	// the boot-time enable-by-default is flipped. Phase 8.4 adds proper
-	// USAddress + USZIP + USState regex recognizers that supersede the
-	// NER for address text; LOCATION via NER may be re-enabled on a
-	// per-deployment basis after that lands. See Phase 8.4 entry in
-	// ROADMAP for the followup rationale.
-	piiNEREnabled, err := getEnvBool("PII_NER_ENABLED", false)
+	piiNEREnabled, err := getEnvBool("PII_NER_ENABLED", true)
 	if err != nil {
+		errs = append(errs, err)
+	}
+
+	privacyDefaultProfile := getEnvStr("PRIVACY_DEFAULT_PROFILE", "standard")
+	privacyRequestProfiles := getEnvStrSliceComma("PRIVACY_REQUEST_PROFILES", []string{"standard", "strict"})
+	privacyAliasKey := getEnvStr("PRIVACY_ALIAS_KEY", "")
+	privacySecretAction := getEnvStr("PRIVACY_SECRET_ACTION", "replace")
+	privacyTechnicalAction := getEnvStr("PRIVACY_TECHNICAL_ACTION", "pseudonymize")
+	privacyTTL, privacyTTLErr := time.ParseDuration(getEnvStr("PRIVACY_SCOPE_TTL", "1h"))
+	if privacyTTLErr != nil || privacyTTL <= 0 {
+		errs = append(errs, fmt.Errorf("PRIVACY_SCOPE_TTL: must be a positive Go duration"))
+	}
+	privacyMaxScopes, err := getEnvInt("PRIVACY_MAX_SCOPES", 128)
+	if err != nil {
+		errs = append(errs, err)
+	}
+	privacyMaxEntriesPerScope, err := getEnvInt("PRIVACY_MAX_ENTRIES_PER_SCOPE", 4096)
+	if err != nil {
+		errs = append(errs, err)
+	}
+	privacyMaxTotalEntries, err := getEnvInt("PRIVACY_MAX_TOTAL_ENTRIES", 32768)
+	if err != nil {
+		errs = append(errs, err)
+	}
+	privacyTriageEnabled, err := getEnvBool("PRIVACY_TRIAGE_ENABLED", false)
+	if err != nil {
+		errs = append(errs, err)
+	}
+	privacyTriageToken := getEnvStr("PRIVACY_TRIAGE_TOKEN", "")
+	if err := validatePrivacyConfig(
+		privacyDefaultProfile,
+		privacyRequestProfiles,
+		privacyAliasKey,
+		privacySecretAction,
+		privacyTechnicalAction,
+		privacyMaxScopes,
+		privacyMaxEntriesPerScope,
+		privacyMaxTotalEntries,
+		privacyTriageEnabled,
+		privacyTriageToken,
+		piiEnabled,
+	); err != nil {
 		errs = append(errs, err)
 	}
 
@@ -994,9 +1055,20 @@ func Load() (Config, error) {
 		PIIEnabledEntities:        piiEntities,
 		PIIRedactionMode:          piiMode,
 		PIIHashKey:                piiHashKey,
-		PIIEntityActions:          piiEntityActions,
+		PIIEntityActions:          maps.Clone(piiEntityActions),
 		PIIEncryptKey:             piiEncryptKey,
 		PIINEREnabled:             piiNEREnabled,
+		PrivacyDefaultProfile:     privacyDefaultProfile,
+		PrivacyRequestProfiles:    slices.Clone(privacyRequestProfiles),
+		PrivacyAliasKey:           privacyAliasKey,
+		PrivacySecretAction:       privacySecretAction,
+		PrivacyTechnicalAction:    privacyTechnicalAction,
+		PrivacyScopeTTL:           privacyTTL,
+		PrivacyMaxScopes:          privacyMaxScopes,
+		PrivacyMaxEntriesPerScope: privacyMaxEntriesPerScope,
+		PrivacyMaxTotalEntries:    privacyMaxTotalEntries,
+		PrivacyTriageEnabled:      privacyTriageEnabled,
+		PrivacyTriageToken:        privacyTriageToken,
 		JSONFormatSteeringEnabled: jsonFormatSteeringEnabled,
 		CompressionEnabled:        compressionEnabled,
 		CompressTriggerTokens:     compressTrigger,
@@ -1250,6 +1322,85 @@ func validatePIIMode(m string) error {
 	}
 }
 
+// validatePrivacyConfig enforces the relationships between the privacy
+// profile, bounded alias store, and existing PII boundary. Keeping these
+// checks together prevents individual valid-looking values from weakening a
+// strict-capable deployment when combined.
+func validatePrivacyConfig(
+	defaultProfile string,
+	requestProfiles []string,
+	aliasKey string,
+	secretAction string,
+	technicalAction string,
+	maxScopes int,
+	maxEntriesPerScope int,
+	maxTotalEntries int,
+	triageEnabled bool,
+	triageToken string,
+	piiEnabled bool,
+) error {
+	var errs []error
+	profiles := make(map[string]struct{}, len(requestProfiles))
+	switch defaultProfile {
+	case "standard", "strict":
+	default:
+		errs = append(errs, fmt.Errorf("PRIVACY_DEFAULT_PROFILE: unknown profile %q", defaultProfile))
+	}
+	for _, profile := range requestProfiles {
+		switch profile {
+		case "standard", "strict":
+		default:
+			errs = append(errs, fmt.Errorf("PRIVACY_REQUEST_PROFILES: unknown profile %q", profile))
+			continue
+		}
+		if _, duplicate := profiles[profile]; duplicate {
+			errs = append(errs, fmt.Errorf("PRIVACY_REQUEST_PROFILES: duplicate profile %q", profile))
+		}
+		profiles[profile] = struct{}{}
+	}
+	if _, ok := profiles[defaultProfile]; !ok {
+		errs = append(errs, fmt.Errorf("PRIVACY_DEFAULT_PROFILE: %q is not in PRIVACY_REQUEST_PROFILES", defaultProfile))
+	}
+
+	switch secretAction {
+	case "replace", "drop":
+	default:
+		errs = append(errs, fmt.Errorf("PRIVACY_SECRET_ACTION: must be replace or drop, got %q", secretAction))
+	}
+	switch technicalAction {
+	case "pseudonymize", "drop":
+	default:
+		errs = append(errs, fmt.Errorf("PRIVACY_TECHNICAL_ACTION: must be pseudonymize or drop, got %q", technicalAction))
+	}
+	if maxScopes <= 0 {
+		errs = append(errs, fmt.Errorf("PRIVACY_MAX_SCOPES: must be > 0, got %d", maxScopes))
+	}
+	if maxEntriesPerScope <= 0 {
+		errs = append(errs, fmt.Errorf("PRIVACY_MAX_ENTRIES_PER_SCOPE: must be > 0, got %d", maxEntriesPerScope))
+	}
+	if maxTotalEntries <= 0 {
+		errs = append(errs, fmt.Errorf("PRIVACY_MAX_TOTAL_ENTRIES: must be > 0, got %d", maxTotalEntries))
+	}
+	if maxEntriesPerScope > maxTotalEntries {
+		errs = append(errs, fmt.Errorf("PRIVACY_MAX_ENTRIES_PER_SCOPE: must be <= PRIVACY_MAX_TOTAL_ENTRIES (%d), got %d", maxTotalEntries, maxEntriesPerScope))
+	}
+	if _, strictAvailable := profiles["strict"]; strictAvailable {
+		if aliasKey == "" {
+			errs = append(errs, errors.New("PRIVACY_ALIAS_KEY: required when strict is available"))
+		}
+		if !piiEnabled {
+			errs = append(errs, errors.New("PII_REDACTION_ENABLED: must be true when strict is available"))
+		}
+	}
+	if triageEnabled && triageToken == "" {
+		errs = append(errs, errors.New("PRIVACY_TRIAGE_TOKEN: required when PRIVACY_TRIAGE_ENABLED is true"))
+	}
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	return nil
+}
+
 // validatePIIEntities rejects any name not in the canonical entity
 // set (see piiAllowedEntities below). Empty input returns nil
 // (default = all entities active per D-02).
@@ -1293,6 +1444,21 @@ var piiAllowedEntities = map[string]struct{}{
 	// the same redact pipeline as regex recognizers.
 	"PERSON":   {},
 	"LOCATION": {},
+}
+
+// privacyTechnicalPIIEntities are the only PII entity types which can retain
+// stable aliases. Secret and personal entities must never receive a
+// pseudonymize override.
+var privacyTechnicalPIIEntities = map[string]struct{}{
+	"IPv4":        {},
+	"IPv6":        {},
+	"SIP_URI":     {},
+	"IMEI":        {},
+	"IMSI":        {},
+	"MSISDN":      {},
+	"MAC_ADDRESS": {},
+	"COORDINATES": {},
+	"SITE":        {},
 }
 
 // piiAllowedEntitiesList returns the allowlist as a sorted slice for use
@@ -1378,15 +1544,15 @@ func parseToolAliases(raw string) (map[string]string, error) {
 // parsePIIEntityActions parses the PII_ENTITY_ACTIONS env value.
 // Shape: "Entity:action,Entity:action,..." e.g. "Email:encrypt,SSN:drop".
 // Returns (nil, nil) for an empty input. Validates every entity name
-// against piiAllowedEntities and every action against the five-action
-// set.
+// against piiAllowedEntities and every action against the allowed-action
+// set. Pseudonymize is restricted to privacyTechnicalPIIEntities.
 func parsePIIEntityActions(raw string) (map[string]string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return nil, nil
 	}
 	allowedActions := map[string]struct{}{
-		"replace": {}, "mask": {}, "hash": {}, "drop": {}, "encrypt": {},
+		"replace": {}, "mask": {}, "hash": {}, "drop": {}, "encrypt": {}, "pseudonymize": {},
 	}
 	out := make(map[string]string)
 	var errs []error
@@ -1406,8 +1572,14 @@ func parsePIIEntityActions(raw string) (map[string]string, error) {
 			continue
 		}
 		if _, ok := allowedActions[action]; !ok {
-			errs = append(errs, fmt.Errorf("unknown action %q for entity %q (allowed: replace, mask, hash, drop, encrypt)", action, entity))
+			errs = append(errs, fmt.Errorf("unknown action %q for entity %q (allowed: replace, mask, hash, drop, encrypt, pseudonymize)", action, entity))
 			continue
+		}
+		if action == "pseudonymize" {
+			if _, technical := privacyTechnicalPIIEntities[entity]; !technical {
+				errs = append(errs, fmt.Errorf("pseudonymize is only permitted for technical entities, got %q", entity))
+				continue
+			}
 		}
 		out[entity] = action
 	}

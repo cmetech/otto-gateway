@@ -13,9 +13,164 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/google/go-cmp/cmp"
 
 	"otto-gateway/internal/config"
 )
+
+// TestLoad_PrivacyDefaults locks the default privacy profile and bounded
+// pseudonymization-store contract. A regression to any default below would
+// change the privacy boundary for deployments that have not set PRIVACY_*.
+func TestLoad_PrivacyDefaults(t *testing.T) {
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.PrivacyDefaultProfile != "standard" {
+		t.Fatalf("PrivacyDefaultProfile=%q, want standard", cfg.PrivacyDefaultProfile)
+	}
+	if diff := cmp.Diff([]string{"standard", "strict"}, cfg.PrivacyRequestProfiles); diff != "" {
+		t.Fatalf("PrivacyRequestProfiles mismatch (-want +got):\n%s", diff)
+	}
+	if cfg.PrivacySecretAction != "replace" {
+		t.Fatalf("PrivacySecretAction=%q, want replace", cfg.PrivacySecretAction)
+	}
+	if cfg.PrivacyTechnicalAction != "pseudonymize" {
+		t.Fatalf("PrivacyTechnicalAction=%q, want pseudonymize", cfg.PrivacyTechnicalAction)
+	}
+	if cfg.PrivacyScopeTTL != time.Hour || cfg.PrivacyMaxScopes != 128 || cfg.PrivacyMaxEntriesPerScope != 4096 || cfg.PrivacyMaxTotalEntries != 32768 {
+		t.Fatalf("privacy capacity defaults: ttl=%v scopes=%d entries/scope=%d total=%d", cfg.PrivacyScopeTTL, cfg.PrivacyMaxScopes, cfg.PrivacyMaxEntriesPerScope, cfg.PrivacyMaxTotalEntries)
+	}
+	if cfg.PrivacyTriageEnabled {
+		t.Fatal("PrivacyTriageEnabled=true, want false")
+	}
+	if !cfg.PIIRedactionEnabled || cfg.PIIRedactionMode != "encrypt" || !cfg.PIINEREnabled {
+		t.Fatalf("PII defaults: enabled=%t mode=%q ner=%t", cfg.PIIRedactionEnabled, cfg.PIIRedactionMode, cfg.PIINEREnabled)
+	}
+}
+
+// TestLoad_PrivacyOverrides verifies every PRIVACY_* setting maps directly to
+// its Config field so a configured minimum privacy profile has no hidden
+// environment-only state.
+func TestLoad_PrivacyOverrides(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		key   string
+		value string
+	}{
+		{"default profile", "PRIVACY_DEFAULT_PROFILE", "strict"},
+		{"request profiles", "PRIVACY_REQUEST_PROFILES", "strict"},
+		{"alias key", "PRIVACY_ALIAS_KEY", "override-alias-key"},
+		{"secret action", "PRIVACY_SECRET_ACTION", "drop"},
+		{"technical action", "PRIVACY_TECHNICAL_ACTION", "drop"},
+		{"scope ttl", "PRIVACY_SCOPE_TTL", "90m"},
+		{"max scopes", "PRIVACY_MAX_SCOPES", "64"},
+		{"max entries per scope", "PRIVACY_MAX_ENTRIES_PER_SCOPE", "1024"},
+		{"max total entries", "PRIVACY_MAX_TOTAL_ENTRIES", "8192"},
+		{"triage enabled", "PRIVACY_TRIAGE_ENABLED", "true"},
+		{"triage token", "PRIVACY_TRIAGE_TOKEN", "override-triage-token"},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.key == "PRIVACY_REQUEST_PROFILES" {
+				t.Setenv("PRIVACY_DEFAULT_PROFILE", "strict")
+			}
+			t.Setenv(tc.key, tc.value)
+			cfg, err := config.Load()
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			switch tc.key {
+			case "PRIVACY_DEFAULT_PROFILE":
+				if cfg.PrivacyDefaultProfile != tc.value {
+					t.Fatalf("got %q", cfg.PrivacyDefaultProfile)
+				}
+			case "PRIVACY_REQUEST_PROFILES":
+				if diff := cmp.Diff([]string{"strict"}, cfg.PrivacyRequestProfiles); diff != "" {
+					t.Fatal(diff)
+				}
+			case "PRIVACY_ALIAS_KEY":
+				if cfg.PrivacyAliasKey != tc.value {
+					t.Fatalf("got %q", cfg.PrivacyAliasKey)
+				}
+			case "PRIVACY_SECRET_ACTION":
+				if cfg.PrivacySecretAction != tc.value {
+					t.Fatalf("got %q", cfg.PrivacySecretAction)
+				}
+			case "PRIVACY_TECHNICAL_ACTION":
+				if cfg.PrivacyTechnicalAction != tc.value {
+					t.Fatalf("got %q", cfg.PrivacyTechnicalAction)
+				}
+			case "PRIVACY_SCOPE_TTL":
+				if cfg.PrivacyScopeTTL != 90*time.Minute {
+					t.Fatalf("got %v", cfg.PrivacyScopeTTL)
+				}
+			case "PRIVACY_MAX_SCOPES":
+				if cfg.PrivacyMaxScopes != 64 {
+					t.Fatalf("got %d", cfg.PrivacyMaxScopes)
+				}
+			case "PRIVACY_MAX_ENTRIES_PER_SCOPE":
+				if cfg.PrivacyMaxEntriesPerScope != 1024 {
+					t.Fatalf("got %d", cfg.PrivacyMaxEntriesPerScope)
+				}
+			case "PRIVACY_MAX_TOTAL_ENTRIES":
+				if cfg.PrivacyMaxTotalEntries != 8192 {
+					t.Fatalf("got %d", cfg.PrivacyMaxTotalEntries)
+				}
+			case "PRIVACY_TRIAGE_ENABLED":
+				if !cfg.PrivacyTriageEnabled {
+					t.Fatal("got false")
+				}
+			case "PRIVACY_TRIAGE_TOKEN":
+				if cfg.PrivacyTriageToken != tc.value {
+					t.Fatalf("got %q", cfg.PrivacyTriageToken)
+				}
+			}
+		})
+	}
+}
+
+// TestLoad_PrivacyInvalid locks the fail-fast privacy boundary. Each case
+// represents a configuration that could otherwise weaken the configured
+// minimum profile or unbound aliasing state at runtime.
+func TestLoad_PrivacyInvalid(t *testing.T) {
+	tests := []struct {
+		name string
+		env  map[string]string
+		want string
+	}{
+		{"unknown profile", map[string]string{"PRIVACY_DEFAULT_PROFILE": "maximum"}, "PRIVACY_DEFAULT_PROFILE"},
+		{"duplicate profiles", map[string]string{"PRIVACY_REQUEST_PROFILES": "standard,standard"}, "PRIVACY_REQUEST_PROFILES"},
+		{"default not allowed", map[string]string{"PRIVACY_DEFAULT_PROFILE": "strict", "PRIVACY_REQUEST_PROFILES": "standard"}, "PRIVACY_DEFAULT_PROFILE"},
+		{"bad secret action", map[string]string{"PRIVACY_SECRET_ACTION": "encrypt"}, "PRIVACY_SECRET_ACTION"},
+		{"bad technical action", map[string]string{"PRIVACY_TECHNICAL_ACTION": "replace"}, "PRIVACY_TECHNICAL_ACTION"},
+		{"strict requires alias key", map[string]string{"PRIVACY_ALIAS_KEY": ""}, "PRIVACY_ALIAS_KEY"},
+		{"triage requires token", map[string]string{"PRIVACY_TRIAGE_ENABLED": "true", "PRIVACY_TRIAGE_TOKEN": ""}, "PRIVACY_TRIAGE_TOKEN"},
+		{"zero scope cap", map[string]string{"PRIVACY_MAX_SCOPES": "0"}, "PRIVACY_MAX_SCOPES"},
+		{"negative entries per scope", map[string]string{"PRIVACY_MAX_ENTRIES_PER_SCOPE": "-1"}, "PRIVACY_MAX_ENTRIES_PER_SCOPE"},
+		{"zero total entries", map[string]string{"PRIVACY_MAX_TOTAL_ENTRIES": "0"}, "PRIVACY_MAX_TOTAL_ENTRIES"},
+		{"scope capacity exceeds global", map[string]string{"PRIVACY_MAX_ENTRIES_PER_SCOPE": "100", "PRIVACY_MAX_TOTAL_ENTRIES": "99"}, "PRIVACY_MAX_ENTRIES_PER_SCOPE"},
+		{"strict requires PII", map[string]string{"PII_REDACTION_ENABLED": "false"}, "PII_REDACTION_ENABLED"},
+		{"pseudonymize nontechnical entity", map[string]string{"PII_REDACTION_MODE": "replace", "PII_ENTITY_ACTIONS": "Email:pseudonymize"}, "pseudonymize is only permitted for technical entities"},
+	}
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			for key, value := range tc.env {
+				t.Setenv(key, value)
+			}
+			_, err := config.Load()
+			if err == nil {
+				t.Fatal("expected config.Load to reject invalid privacy configuration")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error=%q, want it to contain %q", err, tc.want)
+			}
+		})
+	}
+}
 
 // TestLoad_EnabledHooks_Parsing — ENABLED_HOOKS comma-split + default
 // empty / unset → nil slice (default-permissive per D-02).
@@ -73,6 +228,9 @@ func TestLoad_PIIRedactionEnabled_TrueValue(t *testing.T) {
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.val, func(t *testing.T) {
+			if !tc.want {
+				t.Setenv("PRIVACY_REQUEST_PROFILES", "standard")
+			}
 			t.Setenv("PII_REDACTION_ENABLED", tc.val)
 			cfg, err := config.Load()
 			if err != nil {
@@ -244,6 +402,20 @@ func TestLoad_PIIEntityActions_Parses(t *testing.T) {
 	}
 }
 
+// TestLoad_PIIEntityActions_PseudonymizeTechnicalEntity permits stable aliases
+// only for the technical identifiers protected by the privacy profile.
+func TestLoad_PIIEntityActions_PseudonymizeTechnicalEntity(t *testing.T) {
+	t.Setenv("PII_REDACTION_MODE", "replace")
+	t.Setenv("PII_ENTITY_ACTIONS", "IMEI:pseudonymize")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.PIIEntityActions["IMEI"] != "pseudonymize" {
+		t.Fatalf("IMEI action=%q, want pseudonymize", cfg.PIIEntityActions["IMEI"])
+	}
+}
+
 func TestLoad_PIIEntityActions_UnknownEntity(t *testing.T) {
 	t.Setenv("PII_REDACTION_ENABLED", "true")
 	t.Setenv("PII_ENTITY_ACTIONS", "Emial:encrypt") // typo
@@ -299,6 +471,9 @@ func TestLoad_EncryptKeyBootValidation(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.enabled == "false" {
+				t.Setenv("PRIVACY_REQUEST_PROFILES", "standard")
+			}
 			t.Setenv("PII_REDACTION_ENABLED", tc.enabled)
 			t.Setenv("PII_REDACTION_MODE", tc.mode)
 			t.Setenv("PII_ENTITY_ACTIONS", tc.actions)
@@ -314,23 +489,15 @@ func TestLoad_EncryptKeyBootValidation(t *testing.T) {
 	}
 }
 
-// TestLoad_PIINEREnabled_Default — unset PII_NER_ENABLED → false
-// (changed 2026-06-04 — v1.9.8). The prose-v2 small NER model proved
-// too weak for production address coverage: per the 2026-06-04 splunk-box
-// probe it catches popular city names but emits PERSON false positives
-// on street names ("Main Street" → PERSON, "Pennsylvania Avenue" →
-// PERSON, "Apple Park" → PERSON). Default flipped to off; operators
-// can opt in via PII_NER_ENABLED=true. The bundled prose weights still
-// ship in the binary; only the boot-time enable-by-default changed.
-// Phase 8.4 adds proper USAddress + USZIP + USState regex recognizers
-// that supersede NER for address text.
+// TestLoad_PIINEREnabled_Default locks the default-on NER alignment required
+// by the privacy profile contract.
 func TestLoad_PIINEREnabled_Default(t *testing.T) {
 	cfg, err := config.Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.PIINEREnabled {
-		t.Errorf("PIINEREnabled default: got true, want false (NER opt-in; prose-v2 too weak — see Phase 8.4 in ROADMAP)")
+	if !cfg.PIINEREnabled {
+		t.Error("PIINEREnabled default: got false, want true")
 	}
 }
 

@@ -38,6 +38,12 @@ func TestMain(m *testing.M) {
 	if os.Getenv("KIRO_CMD") == "" {
 		_ = os.Setenv("KIRO_CMD", "go")
 	}
+	if os.Getenv("PRIVACY_ALIAS_KEY") == "" {
+		_ = os.Setenv("PRIVACY_ALIAS_KEY", "test-suite-default-alias-key")
+	}
+	if os.Getenv("PRIVACY_TRIAGE_TOKEN") == "" {
+		_ = os.Setenv("PRIVACY_TRIAGE_TOKEN", "test-suite-default-triage-token")
+	}
 	goleak.VerifyTestMain(
 		m,
 		goleak.IgnoreTopFunction("github.com/DeRuina/timberjack.(*Logger).millRun"),
