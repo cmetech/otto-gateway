@@ -13,7 +13,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 )
 
 const technicalHMACDomain = "otto-gateway/privacy/technical/v1"
@@ -51,17 +50,6 @@ func (e *TechnicalCapacityError) Error() string {
 // TechnicalMapper creates deterministic, scope-local technical aliases.
 type TechnicalMapper struct {
 	aliasKey []byte
-
-	// Lock order is coordinateMu, then a ScopeStore.mu for ID-only pruning.
-	// No scope lock is acquired in this path, and stores never call back into
-	// the mapper. Mapping callbacks run only after coordinateMu is released.
-	coordinateMu         sync.Mutex
-	coordinateRegistries map[*ScopeStore]*coordinateRotationRegistry
-}
-
-type coordinateRotationRegistry struct {
-	byScope    map[string]int
-	byRotation map[int]string
 }
 
 // NewTechnicalMapper copies the non-empty key used for candidate HMACs.
@@ -69,10 +57,7 @@ func NewTechnicalMapper(aliasKey []byte) (*TechnicalMapper, error) {
 	if len(aliasKey) == 0 {
 		return nil, errTechnicalAliasKey
 	}
-	return &TechnicalMapper{
-		aliasKey:             append([]byte(nil), aliasKey...),
-		coordinateRegistries: make(map[*ScopeStore]*coordinateRotationRegistry),
-	}, nil
+	return &TechnicalMapper{aliasKey: append([]byte(nil), aliasKey...)}, nil
 }
 
 // Map returns the stable reversible alias for one technical value.
@@ -341,62 +326,19 @@ func parseTechnicalCoordinate(original string) (technicalCoordinate, error) {
 }
 
 func (m *TechnicalMapper) coordinateRotation(lease *ScopeLease) (technicalRotation, error) {
-	rotationIndex, err := m.coordinateRotationIndex(lease)
+	rotationIndex, err := lease.store.coordinateRotationIndex(
+		lease.scope.id,
+		func(attempt uint32) (uint16, error) {
+			if attempt >= coordinateSymmetryCount {
+				return 0, &TechnicalCapacityError{Entity: "COORDINATES"}
+			}
+			return uint16(m.coordinateRotationCandidate(lease.scope.id, int(attempt))), nil
+		},
+	)
 	if err != nil {
 		return technicalRotation{}, err
 	}
-	return coordinateRotationFromIndex(rotationIndex), nil
-}
-
-func (m *TechnicalMapper) coordinateRotationIndex(lease *ScopeLease) (int, error) {
-	m.coordinateMu.Lock()
-	defer m.coordinateMu.Unlock()
-
-	m.pruneCoordinateRegistriesLocked()
-	registry := m.coordinateRegistries[lease.store]
-	if registry == nil {
-		registry = &coordinateRotationRegistry{
-			byScope:    make(map[string]int),
-			byRotation: make(map[int]string),
-		}
-		m.coordinateRegistries[lease.store] = registry
-	}
-	if rotationIndex, ok := registry.byScope[lease.scope.id]; ok {
-		return rotationIndex, nil
-	}
-
-	for attempt := 0; attempt < coordinateSymmetryCount; attempt++ {
-		rotationIndex := m.coordinateRotationCandidate(lease.scope.id, attempt)
-		if _, collision := registry.byRotation[rotationIndex]; collision {
-			continue
-		}
-		registry.byScope[lease.scope.id] = rotationIndex
-		registry.byRotation[rotationIndex] = lease.scope.id
-		return rotationIndex, nil
-	}
-	return 0, &TechnicalCapacityError{Entity: "COORDINATES"}
-}
-
-func (m *TechnicalMapper) pruneCoordinateRegistriesLocked() {
-	for store, registry := range m.coordinateRegistries {
-		store.mu.Lock()
-		retained := make(map[string]struct{}, len(store.scopes))
-		for scopeID := range store.scopes {
-			retained[scopeID] = struct{}{}
-		}
-		store.mu.Unlock()
-
-		for scopeID, rotationIndex := range registry.byScope {
-			if _, ok := retained[scopeID]; ok {
-				continue
-			}
-			delete(registry.byScope, scopeID)
-			delete(registry.byRotation, rotationIndex)
-		}
-		if len(registry.byScope) == 0 {
-			delete(m.coordinateRegistries, store)
-		}
-	}
+	return coordinateRotationFromIndex(int(rotationIndex)), nil
 }
 
 func (m *TechnicalMapper) coordinateRotationCandidate(scopeID string, attempt int) int {

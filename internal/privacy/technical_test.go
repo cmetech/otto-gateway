@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"net/netip"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -474,6 +475,68 @@ func TestTechnical_CoordinateConcreteRetainedScopeCollision(t *testing.T) {
 	}
 }
 
+func TestTechnical_CoordinateLiveMappingUsesStoreReservation(t *testing.T) {
+	mapper := newTestTechnicalMapper(t, []byte("0123456789abcdef0123456789abcdef"))
+	store := newCoordinateTestStore(t, 1)
+	lease := acquireTestScope(t, store, "coordinate-store-owned")
+	defer lease.Release()
+
+	mapTechnical(t, mapper, lease, "COORDINATES", "37.7°N, 122.4°W", ProvenanceInput)
+
+	store.coordinateMu.Lock()
+	rotation, reserved := store.coordinateByScope[lease.scope.id]
+	owner := store.coordinateByIndex[rotation]
+	store.coordinateMu.Unlock()
+	if !reserved || owner != lease.scope.id {
+		t.Fatalf("store reservation = (%d, %t, owner %q), want live scope %q", rotation, reserved, owner, lease.scope.id)
+	}
+}
+
+func TestTechnical_CoordinateMapperHasNoPerStoreRegistryAcrossTransientStores(t *testing.T) {
+	mapper := newTestTechnicalMapper(t, []byte("0123456789abcdef0123456789abcdef"))
+	stores := make([]*ScopeStore, 64)
+	for index := range stores {
+		stores[index] = newCoordinateTestStore(t, 1)
+		lease := acquireTestScope(t, stores[index], fmt.Sprintf("coordinate-transient-%02d", index))
+		mapTechnical(t, mapper, lease, "COORDINATES", "37.7°N, 122.4°W", ProvenanceInput)
+		lease.Release()
+	}
+
+	mapperType := reflect.TypeOf(*mapper)
+	storePointerType := reflect.TypeOf((*ScopeStore)(nil))
+	for index := range mapperType.NumField() {
+		field := mapperType.Field(index)
+		if field.Type.Kind() == reflect.Map && field.Type.Key() == storePointerType {
+			t.Fatalf("TechnicalMapper field %q retains per-store coordinate state", field.Name)
+		}
+	}
+}
+
+func TestTechnical_CoordinateReservationsAreIndependentAcrossStores(t *testing.T) {
+	mapper := newTestTechnicalMapper(t, []byte("0123456789abcdef0123456789abcdef"))
+	firstStore := newCoordinateTestStore(t, 1)
+	secondStore := newCoordinateTestStore(t, 1)
+	firstLease := acquireTestScope(t, firstStore, "coordinate-shared-scope")
+	defer firstLease.Release()
+	secondLease := acquireTestScope(t, secondStore, "coordinate-shared-scope")
+	defer secondLease.Release()
+
+	first := mapTechnical(t, mapper, firstLease, "COORDINATES", "37.7°N, 122.4°W", ProvenanceInput)
+	second := mapTechnical(t, mapper, secondLease, "COORDINATES", "37.7°N, 122.4°W", ProvenanceInput)
+	if first != second {
+		t.Fatalf("same scope in independent stores mapped to %q and %q", first, second)
+	}
+
+	for index, store := range []*ScopeStore{firstStore, secondStore} {
+		store.coordinateMu.Lock()
+		forward, reverse := len(store.coordinateByScope), len(store.coordinateByIndex)
+		store.coordinateMu.Unlock()
+		if forward != 1 || reverse != 1 {
+			t.Fatalf("store %d reservations = (%d forward, %d reverse), want (1, 1)", index, forward, reverse)
+		}
+	}
+}
+
 func TestTechnical_CoordinateRetainedDefaultScopeUniqueness(t *testing.T) {
 	const retainedScopes = 128
 
@@ -584,20 +647,15 @@ func TestTechnical_CoordinateRegistryPrunesClearedAndExpiredScopes(t *testing.T)
 	defer retained.Release()
 	mapTechnical(t, mapper, retained, "COORDINATES", "37.7°N, 122.4°W", ProvenanceInput)
 
-	mapper.coordinateMu.Lock()
-	registry := mapper.coordinateRegistries[store]
-	if registry == nil {
-		mapper.coordinateMu.Unlock()
-		t.Fatal("coordinate registry missing after allocation")
+	store.coordinateMu.Lock()
+	if len(store.coordinateByScope) != 1 || len(store.coordinateByIndex) != 1 {
+		store.coordinateMu.Unlock()
+		t.Fatalf("registry sizes = (%d scopes, %d rotations), want (1, 1)", len(store.coordinateByScope), len(store.coordinateByIndex))
 	}
-	if len(registry.byScope) != 1 || len(registry.byRotation) != 1 {
-		mapper.coordinateMu.Unlock()
-		t.Fatalf("registry sizes = (%d scopes, %d rotations), want (1, 1)", len(registry.byScope), len(registry.byRotation))
-	}
-	_, hasCleared := registry.byScope["coordinate-cleared"]
-	_, hasExpired := registry.byScope["coordinate-expired"]
-	_, hasRetained := registry.byScope["coordinate-retained"]
-	mapper.coordinateMu.Unlock()
+	_, hasCleared := store.coordinateByScope["coordinate-cleared"]
+	_, hasExpired := store.coordinateByScope["coordinate-expired"]
+	_, hasRetained := store.coordinateByScope["coordinate-retained"]
+	store.coordinateMu.Unlock()
 	if hasCleared || hasExpired || !hasRetained {
 		t.Fatalf("registry IDs: cleared=%t expired=%t retained=%t", hasCleared, hasExpired, hasRetained)
 	}
@@ -620,18 +678,13 @@ func TestTechnical_CoordinateSymmetryExhaustionIsTypedAndFailClosed(t *testing.T
 	target := acquireTestScope(t, store, "coordinate-capacity-target")
 	defer target.Release()
 
-	registry := &coordinateRotationRegistry{
-		byScope:    make(map[string]int, coordinateSymmetryCount),
-		byRotation: make(map[int]string, coordinateSymmetryCount),
-	}
+	store.coordinateMu.Lock()
 	for rotationIndex := 0; rotationIndex < coordinateSymmetryCount; rotationIndex++ {
 		scopeID := fmt.Sprintf("coordinate-capacity-%04d", rotationIndex)
-		registry.byScope[scopeID] = rotationIndex
-		registry.byRotation[rotationIndex] = scopeID
+		store.coordinateByScope[scopeID] = uint16(rotationIndex)
+		store.coordinateByIndex[uint16(rotationIndex)] = scopeID
 	}
-	mapper.coordinateMu.Lock()
-	mapper.coordinateRegistries[store] = registry
-	mapper.coordinateMu.Unlock()
+	store.coordinateMu.Unlock()
 
 	alias, err := mapper.Map(target, "COORDINATES", "37.7°N, 122.4°W", ProvenanceInput)
 	var capacityErr *TechnicalCapacityError
