@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -169,6 +170,162 @@ func TestScopeStore_CollisionRetryAndCandidateFailureRollback(t *testing.T) {
 	}
 	if got := store.Snapshot().Entries; got != 2 {
 		t.Fatalf("entries after invalid provenance=%d, want 2", got)
+	}
+}
+
+func TestScopeStore_ProvenancePromotesGeneratedToInput(t *testing.T) {
+	clock := newFakeClock()
+	store := newTestScopeStore(t, clock, StoreConfig{
+		TTL:                time.Hour,
+		MaxScopes:          1,
+		MaxEntriesPerScope: 1,
+		MaxTotalEntries:    1,
+	})
+	lease := acquireTestScope(t, store, "promotion")
+	defer lease.Release()
+
+	candidateCalls := 0
+	generated, created, err := lease.GetOrCreate("IMSI", "310150123456789", ProvenanceGenerated, func(uint32) (string, error) {
+		candidateCalls++
+		return "001010987654321", nil
+	})
+	if err != nil || !created || generated.Provenance != ProvenanceGenerated {
+		t.Fatalf("generated GetOrCreate()=(%+v, %t, %v)", generated, created, err)
+	}
+	clock.Advance(10 * time.Minute)
+
+	promoted, created, err := lease.GetOrCreate("IMSI", "310150123456789", ProvenanceInput, func(uint32) (string, error) {
+		candidateCalls++
+		return "must-not-replace-alias", nil
+	})
+	if err != nil || created {
+		t.Fatalf("input repeat GetOrCreate()=(%+v, %t, %v)", promoted, created, err)
+	}
+	if promoted.Provenance != ProvenanceInput {
+		t.Fatalf("promoted provenance=%q, want %q", promoted.Provenance, ProvenanceInput)
+	}
+	if promoted.Synthetic != generated.Synthetic || !promoted.CreatedAt.Equal(generated.CreatedAt) {
+		t.Fatalf("promotion changed stable entry: generated=%+v promoted=%+v", generated, promoted)
+	}
+	if candidateCalls != 1 {
+		t.Fatalf("candidate calls=%d, want 1", candidateCalls)
+	}
+	if snapshot := store.Snapshot(); snapshot.Entries != 1 {
+		t.Fatalf("entries after promotion=%d, want 1", snapshot.Entries)
+	}
+
+	reversed, ok := lease.ResolveSynthetic("IMSI", generated.Synthetic)
+	if !ok || reversed != promoted {
+		t.Fatalf("reverse after promotion=(%+v, %t), want (%+v, true)", reversed, ok, promoted)
+	}
+	inspected := mustInspect(t, store, "promotion")
+	if len(inspected) != 1 || inspected[0] != promoted {
+		t.Fatalf("forward after promotion=%+v, want [%+v]", inspected, promoted)
+	}
+}
+
+func TestScopeStore_ProvenanceNeverDowngradesInput(t *testing.T) {
+	clock := newFakeClock()
+	store := newTestScopeStore(t, clock, StoreConfig{
+		TTL:                time.Hour,
+		MaxScopes:          1,
+		MaxEntriesPerScope: 1,
+		MaxTotalEntries:    1,
+	})
+	lease := acquireTestScope(t, store, "no-downgrade")
+	defer lease.Release()
+
+	candidateCalls := 0
+	input, created, err := lease.GetOrCreate("IMEI", "490154203237518", ProvenanceInput, func(uint32) (string, error) {
+		candidateCalls++
+		return "100000000000009", nil
+	})
+	if err != nil || !created || input.Provenance != ProvenanceInput {
+		t.Fatalf("input GetOrCreate()=(%+v, %t, %v)", input, created, err)
+	}
+
+	repeated, created, err := lease.GetOrCreate("IMEI", "490154203237518", ProvenanceGenerated, func(uint32) (string, error) {
+		candidateCalls++
+		return "must-not-replace-alias", nil
+	})
+	if err != nil || created {
+		t.Fatalf("generated repeat GetOrCreate()=(%+v, %t, %v)", repeated, created, err)
+	}
+	if repeated != input || repeated.Provenance != ProvenanceInput {
+		t.Fatalf("input provenance downgraded: first=%+v repeated=%+v", input, repeated)
+	}
+	if candidateCalls != 1 || store.Snapshot().Entries != 1 {
+		t.Fatalf("candidate calls=%d entries=%d, want 1 and 1", candidateCalls, store.Snapshot().Entries)
+	}
+	if reversed, ok := lease.ResolveSynthetic("IMEI", input.Synthetic); !ok || reversed != input {
+		t.Fatalf("reverse after generated repeat=(%+v, %t), want (%+v, true)", reversed, ok, input)
+	}
+}
+
+func TestScopeStore_ProvenanceConcurrentMixedCallsConvergeToInput(t *testing.T) {
+	clock := newFakeClock()
+	store := newTestScopeStore(t, clock, StoreConfig{
+		TTL:                time.Hour,
+		MaxScopes:          1,
+		MaxEntriesPerScope: 1,
+		MaxTotalEntries:    1,
+	})
+	lease := acquireTestScope(t, store, "concurrent-provenance")
+	defer lease.Release()
+
+	seed, created, err := lease.GetOrCreate("SITE", "RAN-ABC123", ProvenanceGenerated, fixedCandidate("SITE-SYN-ABCDE12345"))
+	if err != nil || !created {
+		t.Fatalf("seed GetOrCreate()=(%+v, %t, %v)", seed, created, err)
+	}
+
+	type result struct {
+		entry   MappingEntry
+		created bool
+		err     error
+	}
+	results := make(chan result, 100)
+	var candidateCalls atomic.Int64
+	var workers sync.WaitGroup
+	workers.Add(100)
+	for i := range 100 {
+		go func() {
+			defer workers.Done()
+			provenance := ProvenanceGenerated
+			if i%2 == 0 {
+				provenance = ProvenanceInput
+			}
+			entry, created, err := lease.GetOrCreate("SITE", "RAN-ABC123", provenance, func(uint32) (string, error) {
+				candidateCalls.Add(1)
+				return "must-not-replace-alias", nil
+			})
+			results <- result{entry: entry, created: created, err: err}
+		}()
+	}
+	workers.Wait()
+	close(results)
+
+	for result := range results {
+		if result.err != nil || result.created {
+			t.Fatalf("concurrent repeat=(%+v, %t, %v)", result.entry, result.created, result.err)
+		}
+		if result.entry.Synthetic != seed.Synthetic || !result.entry.CreatedAt.Equal(seed.CreatedAt) {
+			t.Fatalf("concurrent repeat changed stable entry: seed=%+v repeat=%+v", seed, result.entry)
+		}
+	}
+	if candidateCalls.Load() != 0 {
+		t.Fatalf("repeat candidate calls=%d, want 0", candidateCalls.Load())
+	}
+	if snapshot := store.Snapshot(); snapshot.Entries != 1 {
+		t.Fatalf("concurrent entries=%d, want 1", snapshot.Entries)
+	}
+
+	final, ok := lease.ResolveSynthetic("SITE", seed.Synthetic)
+	if !ok || final.Provenance != ProvenanceInput || final.Synthetic != seed.Synthetic || !final.CreatedAt.Equal(seed.CreatedAt) {
+		t.Fatalf("final reverse entry=(%+v, %t), want promoted stable input entry", final, ok)
+	}
+	inspected := mustInspect(t, store, "concurrent-provenance")
+	if len(inspected) != 1 || inspected[0] != final {
+		t.Fatalf("final forward entries=%+v, want [%+v]", inspected, final)
 	}
 }
 

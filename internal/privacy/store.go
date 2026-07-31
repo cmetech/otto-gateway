@@ -285,6 +285,7 @@ func (l *ScopeLease) GetOrCreate(
 
 	key := mappingKey{entity: entity, value: original}
 	if entry, ok := scope.forward[key]; ok {
+		entry = promoteInputProvenanceLocked(scope, key, entry, provenance)
 		l.store.touchLocked(scope, l.store.clock.Now())
 		scope.mu.Unlock()
 		return entry, false, nil
@@ -299,6 +300,7 @@ func (l *ScopeLease) GetOrCreate(
 		scope.lock()
 
 		if entry, ok := scope.forward[key]; ok {
+			entry = promoteInputProvenanceLocked(scope, key, entry, provenance)
 			l.store.touchLocked(scope, l.store.clock.Now())
 			scope.mu.Unlock()
 			return entry, false, nil
@@ -621,6 +623,22 @@ func (s *ScopeStore) Snapshot() StoreSnapshot {
 
 func validProfile(profile Profile) bool {
 	return profile == ProfileStandard || profile == ProfileStrict
+}
+
+func promoteInputProvenanceLocked(
+	scope *scopeState,
+	forwardKey mappingKey,
+	entry MappingEntry,
+	observed Provenance,
+) MappingEntry {
+	if entry.Provenance != ProvenanceGenerated || observed != ProvenanceInput {
+		return entry
+	}
+
+	entry.Provenance = ProvenanceInput
+	scope.forward[forwardKey] = entry
+	scope.reverse[mappingKey{entity: entry.Entity, value: entry.Synthetic}] = entry
+	return entry
 }
 
 func (s *scopeState) lock() {
