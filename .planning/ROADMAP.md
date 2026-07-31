@@ -24,8 +24,13 @@ adapter-over-canonical layout (brief §3.13) and trust-gate suite (brief
 - ✅ **v1.9 Reliability Hardening** — Phases 14, 15, 16 (shipped 2026-06-11). 23 reliability findings (1 Critical + 8 High + 14 Mediums) closed; `-race` trust gate restored via REL-POOL-05 atomic.Int64 LastUsed; pool lifecycle hardened on all 3 OSes; mid-stream death surfaced honestly to clients; tray honest on macOS + Windows. 12 Lows deferred to v1.10.3. [Archive](milestones/v1.9-ROADMAP.md) · [Audit](milestones/v1.9-MILESTONE-AUDIT.md)
 - ✅ **v1.9.1 Trust-Gate Restoration** *(folded into v1.10.2 release tag)* — Phase 17 (shipped 2026-06-11). `make ci` exit 0 end-to-end restored; arch-lint TRST-04 boundary preserved via `canonical.ErrPoolExhausted`; REL-POOL-02 goleak flake closed (60/60 race-clean); gosec G301/G306 + gofmt drift + dead-code closed. Release: [v1.10.2](https://github.com/cmetech/otto-gateway/releases/tag/v1.10.2).
 - ✅ **v1.10.3 Reliability Closeout** — Phases 18, 19, 20 (shipped 2026-06-12). 17/17 requirements closed: 10 Low-severity reliability long-tail items (REL-CFG-05/06/07, REL-HTTP-06/07, REL-OBSV-02/03/04, REL-TRAY-08/09) + 1 production race (REL-ACP-01, `acp.Stream.Result` copy-under-lock) + 6 Info-level code-review cleanups (QUAL-01..06). `make ci` exits 0 end-to-end at milestone tip. No new features; no surface expansion. [Archive](milestones/v1.10.3-ROADMAP.md) · [Audit](milestones/v1.10.3-MILESTONE-AUDIT.md)
+- 🚧 **v1.10.4 Privacy Boundary Service** — Phase 21 (in progress). Imports the approved privacy-boundary design and 17-task strict-TDD implementation plan without redesign; covers PRIV-01..12 across policy, mapping lifecycle, fail-closed boundaries, surface parity, safe operations, and release gates.
 
 ## Phases
+
+### v1.10.4 Privacy Boundary Service
+
+- [ ] **Phase 21: Privacy Boundary Service** — Implement the approved modular, in-process privacy boundary shared by Ollama, OpenAI, and Anthropic. One plan executes all 17 authoritative tasks serially with observed RED/GREEN cycles, atomic task commits, review gates, race/security/conformance checks, POSIX/PowerShell parity, documentation, Grafana assets, benchmarks, and the complete release gate. Requirements: PRIV-01..12.
 
 <details>
 <summary>✅ v1.5 audit WARNINGs — SHIPPED 2026-06-04 (13 phases, 57 plans)</summary>
@@ -129,3 +134,4 @@ v1.9 + v1.10.3 phase details archived to `milestones/v{ver}-ROADMAP.md`.
 | 14, 15, 16 | v1.9 | 12/12 | Complete | 2026-06-11 |
 | 17 | v1.9.1 (folded into v1.10.2) | 3/3 | Complete | 2026-06-11 |
 | 18, 19, 20 | v1.10.3 | 5/5 | Complete | 2026-06-12 |
+| 21 | v1.10.4 | 0/1 | In Progress | — |
