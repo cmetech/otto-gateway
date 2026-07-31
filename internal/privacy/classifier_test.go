@@ -300,3 +300,88 @@ func TestSecretClassifierRejectsAcronymLookalikes(t *testing.T) {
 		}
 	}
 }
+
+func TestSecretClassifierStructuredCredentialURLs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		value     string
+		wantStart int
+		wantEnd   int
+		want      string
+	}{
+		{
+			name:      "bracketed IPv6 port and path",
+			value:     `Connect postgres://u:p@[2001:db8::1]:5432/db now`,
+			wantStart: 8,
+			wantEnd:   44,
+			want:      `Connect [REDACTED] now`,
+		},
+		{
+			name:      "encoded IPv6 zone in compact JSON",
+			value:     `{"url":"postgres://u:p@[fe80::1%25eth0]:5432/db"}`,
+			wantStart: 8,
+			wantEnd:   47,
+			want:      `{"url":"[REDACTED]"}`,
+		},
+		{
+			name:      "userinfo comma and sub-delimiter",
+			value:     `Use postgres://u:p,ass;word@host/db, then retry.`,
+			wantStart: 4,
+			wantEnd:   35,
+			want:      `Use [REDACTED], then retry.`,
+		},
+		{
+			name:      "IPv6 compact JSON adjacent field",
+			value:     `{"url":"postgres://u:p@[2001:db8::2]/db","next":"keep"}`,
+			wantStart: 8,
+			wantEnd:   39,
+			want:      `{"url":"[REDACTED]","next":"keep"}`,
+		},
+		{
+			name:      "IPv6 trailing prose punctuation",
+			value:     `Try (postgres://u:p@[2001:db8::3]/db), then continue.`,
+			wantStart: 5,
+			wantEnd:   36,
+			want:      `Try ([REDACTED]), then continue.`,
+		},
+	}
+
+	classifier := NewSecretClassifier()
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			findings := classifier.Classify("", tc.value)
+			if len(findings) != 1 {
+				t.Fatalf("finding count=%d, want 1", len(findings))
+			}
+			finding := findings[0]
+			if finding.Entity != "CREDENTIAL_URL" {
+				t.Fatalf("entity=%q, want CREDENTIAL_URL", finding.Entity)
+			}
+			if finding.Start != tc.wantStart || finding.End != tc.wantEnd {
+				t.Fatalf("span=(%d,%d), want (%d,%d)", finding.Start, finding.End, tc.wantStart, tc.wantEnd)
+			}
+			if got := classifier.Redact("", tc.value); got != tc.want {
+				t.Fatalf("Redact()=%q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSecretClassifierLeavesNonCredentialedIPv6URLsUnchanged(t *testing.T) {
+	t.Parallel()
+
+	classifier := NewSecretClassifier()
+	for _, value := range []string{
+		`{"url":"postgres://[2001:db8::1]:5432/db","next":"keep"}`,
+		`See https://[fe80::1%25eth0]/status, then retry.`,
+	} {
+		if findings := classifier.Classify("", value); len(findings) != 0 {
+			t.Errorf("Classify returned %+v for non-credentialed IPv6 URL", findings)
+		}
+		if got := classifier.Redact("", value); got != value {
+			t.Errorf("Redact changed non-credentialed IPv6 URL")
+		}
+	}
+}

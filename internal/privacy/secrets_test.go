@@ -1,10 +1,10 @@
 package privacy
 
 import (
+	"math/bits"
 	"reflect"
 	"sort"
 	"testing"
-	"time"
 )
 
 func TestArbitratePrioritizesConfidenceAcrossOverlaps(t *testing.T) {
@@ -103,7 +103,7 @@ func TestArbitrateMatchesReferenceOnOverlappingCorpus(t *testing.T) {
 	}
 }
 
-func TestArbitrateDenseNonOverlappingScales(t *testing.T) {
+func TestArbitrateDenseNonOverlapping(t *testing.T) {
 	const findingCount = 60_000
 	findings := make([]Finding, findingCount)
 	for i := range findings {
@@ -119,15 +119,47 @@ func TestArbitrateDenseNonOverlappingScales(t *testing.T) {
 		}
 	}
 
-	started := time.Now()
 	got := Arbitrate(findings)
-	elapsed := time.Since(started)
 	if len(got) != findingCount {
 		t.Fatalf("accepted=%d, want %d", len(got), findingCount)
 	}
-	if elapsed > 500*time.Millisecond {
-		t.Fatalf("dense arbitration took %v, want <=500ms bounded scaling", elapsed)
+	if got[0].Start != 3 || got[len(got)-1].Start != findingCount*3 {
+		t.Fatalf("source bounds=(%d,%d), want (3,%d)", got[0].Start, got[len(got)-1].Start, findingCount*3)
 	}
+}
+
+func TestIntervalTreeHeightIsLogarithmic(t *testing.T) {
+	t.Parallel()
+
+	const intervalCount = 4_096
+	maxHeight := 2 * bits.Len(uint(intervalCount))
+	orders := map[string]func(int) int{
+		"ascending":  func(i int) int { return i },
+		"descending": func(i int) int { return intervalCount - i - 1 },
+	}
+	for name, indexAt := range orders {
+		t.Run(name, func(t *testing.T) {
+			var root *intervalNode
+			for i := range intervalCount {
+				start := indexAt(i) * 2
+				root = insertInterval(root, Finding{Start: start, End: start + 1})
+			}
+			actualHeight := structuralIntervalHeight(root)
+			if actualHeight > maxHeight {
+				t.Fatalf("tree height=%d, want <=%d for %d adversarial inserts", actualHeight, maxHeight, intervalCount)
+			}
+			if root.height != actualHeight {
+				t.Fatalf("stored root height=%d, structural height=%d", root.height, actualHeight)
+			}
+		})
+	}
+}
+
+func structuralIntervalHeight(root *intervalNode) int {
+	if root == nil {
+		return 0
+	}
+	return max(structuralIntervalHeight(root.left), structuralIntervalHeight(root.right)) + 1
 }
 
 func BenchmarkArbitrateDenseNonOverlapping(b *testing.B) {

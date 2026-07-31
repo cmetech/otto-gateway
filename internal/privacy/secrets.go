@@ -96,12 +96,12 @@ func findCredentialURLs(value string) [][2]int {
 
 func isURLBoundary(value byte) bool {
 	return value == ' ' || value == '\t' || value == '\r' || value == '\n' ||
-		value == '"' || value == '\'' || value == ',' || value == '}' || value == ']' ||
+		value == '"' || value == '\'' || value == '}' ||
 		value == '<' || value == '>'
 }
 
 func isTrailingProsePunctuation(value byte) bool {
-	return value == '.' || value == ';' || value == '!' || value == ')'
+	return value == '.' || value == ',' || value == ';' || value == '!' || value == ')'
 }
 
 type structuredAssignment struct {
