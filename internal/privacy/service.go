@@ -18,6 +18,7 @@ var (
 	wrappedEncryptedTokenRE   = regexp.MustCompile(`\[PII:([A-Za-z0-9_]+):([A-Za-z0-9_-]+)\]`)
 	bareEncryptedPayloadRE    = regexp.MustCompile(`[A-Za-z0-9_-]{38,}`)
 	compatibilityDepthWarning sync.Once
+	serviceSequence           atomic.Uint64
 )
 
 const maxCompatibilityTraversalDepth = 64
@@ -155,7 +156,8 @@ func errorsSafe(message string) error { return safeStringError(message) }
 
 // Service owns standard privacy transformation authority.
 type Service struct {
-	config Config
+	config      Config
+	lifecycleID uint64
 
 	requestsProtected atomic.Uint64
 	requestsBlocked   atomic.Uint64
@@ -177,7 +179,7 @@ func NewService(config Config) (*Service, error) {
 	config.PIIEncryptKey = append([]byte(nil), config.PIIEncryptKey...)
 	config.Recognizers = append([]string(nil), config.Recognizers...)
 	config.PIIEntityActions = cloneActions(config.PIIEntityActions)
-	return &Service{config: config}, nil
+	return &Service{config: config, lifecycleID: serviceSequence.Add(1)}, nil
 }
 
 func cloneActions(actions map[string]Action) map[string]Action {
@@ -224,6 +226,9 @@ func (s *Service) Before(ctx context.Context, req *canonical.ChatRequest) (*cano
 			meta = state.Metadata()
 		}
 		observe(ProfileStandard, meta.Surface, meta.Workload, "pass")
+	}
+	if state != nil {
+		state.markStandardInboundPass(s.lifecycleID)
 	}
 	return nil, nil
 }
@@ -278,7 +283,10 @@ func (s *Service) After(ctx context.Context, req *canonical.ChatRequest, resp *c
 	if s == nil || !s.config.PIIEnabled || resp == nil {
 		return nil
 	}
-	state, _ := StateFromContext(ctx)
+	state, stamped := StateFromContext(ctx)
+	if stamped && !state.standardInboundPassed(s.lifecycleID) {
+		return nil
+	}
 	if s.encryptActive() {
 		entities := s.decryptEntities()
 		restore := func(_ string, value string) string {

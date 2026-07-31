@@ -31,14 +31,15 @@ type RequestMetadata struct {
 type RequestState struct {
 	mu sync.Mutex
 
-	metadata         RequestMetadata
-	profile          Profile
-	transformed      int
-	restored         int
-	blocked          int
-	lease            *ScopeLease
-	authorizedTokens map[string]struct{}
-	receipt          string
+	metadata               RequestMetadata
+	profile                Profile
+	transformed            int
+	restored               int
+	blocked                int
+	standardInboundService uint64
+	lease                  *ScopeLease
+	authorizedTokens       map[string]struct{}
+	receipt                string
 }
 
 // NewRequestState returns bounded request-local state.
@@ -94,6 +95,18 @@ func (s *RequestState) effectiveProfile() Profile {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.profile
+}
+
+func (s *RequestState) markStandardInboundPass(serviceID uint64) {
+	s.mu.Lock()
+	s.standardInboundService = serviceID
+	s.mu.Unlock()
+}
+
+func (s *RequestState) standardInboundPassed(serviceID uint64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return serviceID != 0 && s.standardInboundService == serviceID
 }
 
 func (s *RequestState) authorizeToken(token string) bool {

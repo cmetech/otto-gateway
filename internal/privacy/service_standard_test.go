@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 
 	"otto-gateway/internal/canonical"
@@ -69,6 +70,81 @@ func TestServiceStandardAggregatedOutputUpgradesReceiptToFull(t *testing.T) {
 	receipt, _ := decodeStateReceipt(t, state)
 	if receipt.Coverage != "full" || receipt.Profile != ProfileStandard || receipt.Result != "pass" {
 		t.Fatalf("receipt: got %#v", receipt)
+	}
+}
+
+// This simulates engine collection after an earlier Pre hook short-circuits:
+// the adapter stamped state, this Service's Before was skipped, and its After
+// still receives the short-circuit response.
+func TestServiceStandardEarlierPreHookShortCircuitDoesNotIssueReceipt(t *testing.T) {
+	service := newStandardTestService(t, ActionReplace, nil)
+	state := NewRequestState(RequestMetadata{ScopeID: "short-circuit"})
+	ctx := WithRequestState(context.Background(), state)
+
+	if err := service.After(ctx, &canonical.ChatRequest{Stream: false}, &canonical.ChatResponse{}); err != nil {
+		t.Fatalf("After: %v", err)
+	}
+	if got := state.receiptValue(); got != "" {
+		t.Fatalf("After without this Service's Before issued a false receipt: %q", got)
+	}
+}
+
+func TestServiceStandardInboundPassIsBoundToServiceInstance(t *testing.T) {
+	first := newStandardTestService(t, ActionReplace, nil)
+	second := newStandardTestService(t, ActionReplace, nil)
+	state := NewRequestState(RequestMetadata{ScopeID: "service-bound"})
+	ctx := WithRequestState(context.Background(), state)
+	req := &canonical.ChatRequest{Stream: false}
+
+	if _, err := first.Before(ctx, req); err != nil {
+		t.Fatalf("first Before: %v", err)
+	}
+	if err := second.After(ctx, req, &canonical.ChatResponse{}); err != nil {
+		t.Fatalf("second After: %v", err)
+	}
+	receipt, _ := decodeStateReceipt(t, state)
+	if receipt.Coverage != "input" {
+		t.Fatalf("different Service upgraded receipt: %#v", receipt)
+	}
+
+	if err := first.After(ctx, req, &canonical.ChatResponse{}); err != nil {
+		t.Fatalf("first After: %v", err)
+	}
+	receipt, _ = decodeStateReceipt(t, state)
+	if receipt.Coverage != "full" || receipt.Result != "pass" {
+		t.Fatalf("matching Service did not upgrade receipt: %#v", receipt)
+	}
+}
+
+func TestServiceStandardInboundPassLifecycleIsRaceSafe(t *testing.T) {
+	service := newStandardTestService(t, ActionReplace, nil)
+	state := NewRequestState(RequestMetadata{ScopeID: "parallel-after"})
+	ctx := WithRequestState(context.Background(), state)
+	req := &canonical.ChatRequest{Stream: false}
+	if _, err := service.Before(ctx, req); err != nil {
+		t.Fatalf("Before: %v", err)
+	}
+
+	const workers = 32
+	var wait sync.WaitGroup
+	errs := make(chan error, workers)
+	wait.Add(workers)
+	for range workers {
+		go func() {
+			defer wait.Done()
+			errs <- service.After(ctx, req, &canonical.ChatResponse{})
+		}()
+	}
+	wait.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Errorf("After: %v", err)
+		}
+	}
+	receipt, _ := decodeStateReceipt(t, state)
+	if receipt.Coverage != "full" || receipt.Result != "pass" {
+		t.Fatalf("receipt: %#v", receipt)
 	}
 }
 
