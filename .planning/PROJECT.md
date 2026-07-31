@@ -32,6 +32,13 @@ and the single governance surface are the load-bearing properties.
 
 ## Current State
 
+**In progress:** v1.10.4 — Privacy Boundary Service (2026-07-31)
+- Approved product contract: [privacy-boundary-service-design.md](../docs/superpowers/specs/2026-07-31-privacy-boundary-service-design.md).
+- Execution authority: [gateway-privacy-boundary-service.md](../docs/superpowers/plans/2026-07-31-gateway-privacy-boundary-service.md), 17 strict-TDD tasks.
+- Product decisions are locked. Phase 21 imports and tracks the approved plan without reopening design.
+- Goal: add one modular, in-process, profile-aware privacy boundary shared by Ollama, OpenAI, and Anthropic while preserving standard-mode compatibility and native wire formats.
+- Scope: privacy configuration and precedence; shared credential classification; bounded scoped mappings; strict fail-closed input/output enforcement; receipts; shared adapter policy; safe telemetry and triage; cross-platform operator tooling; read-only status; documentation, dashboards, conformance, benchmarks, and release gates.
+
 **Shipped:** v1.10.3 — Reliability Closeout (2026-06-12)
 - 17/17 requirements closed across 3 phases (18, 19, 20) and 5 plans.
 - Phase 18: 10 Low-severity reliability long-tail findings (config hardening REL-CFG-05/06/07, observability symmetry REL-HTTP-06/07 + REL-OBSV-02/03/04, tray honesty REL-TRAY-08/09).
@@ -41,9 +48,9 @@ and the single governance surface are the load-bearing properties.
 - Audit: [milestones/v1.10.3-MILESTONE-AUDIT.md](milestones/v1.10.3-MILESTONE-AUDIT.md) — 17/17 requirements, 6/6 cross-phase seams WIRED, 3/3 client flows preserved.
 - Tag pending: `v1.10.3`. Earlier release: [v1.10.2](https://github.com/cmetech/otto-gateway/releases/tag/v1.10.2).
 
-## Next Milestone Goals
+## Deferred Milestone Goals
 
-**Open via `/gsd-new-milestone v1.10.4` (or next semver).** Candidate themes surfaced by v1.10.3 close:
+The previously proposed reliability micro-batch remains deferred while the approved v1.10.4 Privacy Boundary Service milestone executes:
 
 - **v1.10.4 reliability micro-batch (proposed driver: 1 ADR + Phase 20 IN-01..IN-05 tail):**
   - Bounded `bufio.Reader.ReadString` in `stderrDrainLoop` (WR-01 ADR, captured in `.planning/todos/`).
