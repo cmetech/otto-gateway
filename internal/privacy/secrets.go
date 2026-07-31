@@ -86,18 +86,49 @@ func findCredentialURLs(value string) [][2]int {
 }
 
 func credentialURLPrefixEnd(value string, start, schemeEnd, hardEnd int) (int, bool) {
+	return credentialURLPrefixEndWithValidator(value, start, schemeEnd, hardEnd, isCredentialURL)
+}
+
+func credentialURLPrefixEndWithValidator(value string, start, schemeEnd, hardEnd int, validate func(string) bool) (int, bool) {
+	candidateEnd := hardEnd
+	inAuthority := true
+	userinfoComplete := false
+	hostStart := schemeEnd
+	inBracketedAuthority := false
+
+scan:
 	for cursor := schemeEnd; cursor < hardEnd; cursor++ {
-		if value[cursor] != ',' && value[cursor] != ']' {
-			continue
-		}
-		prefixEnd := trimURLSuffix(value, schemeEnd, cursor)
-		if isCredentialURL(value[start:prefixEnd]) {
-			return prefixEnd, true
+		switch value[cursor] {
+		case '@':
+			if inAuthority && !inBracketedAuthority {
+				userinfoComplete = true
+				hostStart = cursor + 1
+			}
+		case '[':
+			if inAuthority && cursor == hostStart {
+				inBracketedAuthority = true
+			}
+		case ']':
+			if inBracketedAuthority {
+				inBracketedAuthority = false
+				continue
+			}
+			candidateEnd = cursor
+			break scan
+		case ',':
+			if userinfoComplete && !inBracketedAuthority {
+				candidateEnd = cursor
+				break scan
+			}
+		case '/', '?', '#':
+			if !inBracketedAuthority {
+				inAuthority = false
+			}
 		}
 	}
 
-	end := trimURLSuffix(value, schemeEnd, hardEnd)
-	return end, end > schemeEnd && isCredentialURL(value[start:end])
+	end := trimURLSuffix(value, schemeEnd, candidateEnd)
+	return end, end > schemeEnd && validate(value[start:end])
 }
 
 func trimURLSuffix(value string, schemeEnd, end int) int {

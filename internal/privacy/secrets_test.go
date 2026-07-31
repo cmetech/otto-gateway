@@ -4,8 +4,73 @@ import (
 	"math/bits"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 )
+
+func TestCredentialURLCommaRichUserinfoScansLinearly(t *testing.T) {
+	const commaCount = 4_096
+	const scheme = "postgres://"
+	const userinfoPrefix = scheme + "u:p"
+	const commaChunk = ",x"
+	const credentialSuffix = ";word@host/db"
+
+	value := userinfoPrefix + strings.Repeat(commaChunk, commaCount) + credentialSuffix + ",keep]"
+	wantEnd := len(userinfoPrefix) + commaCount*len(commaChunk) + len(credentialSuffix)
+	validationAttempts := 0
+	totalValidatedBytes := 0
+	end, ok := credentialURLPrefixEndWithValidator(value, 0, len(scheme), len(value), func(candidate string) bool {
+		validationAttempts++
+		totalValidatedBytes += len(candidate)
+		return isCredentialURL(candidate)
+	})
+
+	if !ok {
+		t.Fatal("credentialURLPrefixEndWithValidator() rejected legal comma-rich userinfo")
+	}
+	if end != wantEnd {
+		t.Fatalf("end=%d, want %d", end, wantEnd)
+	}
+	if validationAttempts == 0 || validationAttempts > 2 || totalValidatedBytes > 2*len(value) {
+		t.Fatalf(
+			"validation attempts=%d and validated bytes=%d, want 1..2 attempts and <=%d bytes for %d userinfo commas (input length %d)",
+			validationAttempts,
+			totalValidatedBytes,
+			2*len(value),
+			commaCount,
+			len(value),
+		)
+	}
+
+	classifier := NewSecretClassifier()
+	findings := classifier.Classify("", value)
+	if len(findings) != 1 || findings[0].Entity != "CREDENTIAL_URL" || findings[0].Start != 0 || findings[0].End != wantEnd {
+		t.Fatalf("Classify()=%+v, want one CREDENTIAL_URL span (0,%d)", findings, wantEnd)
+	}
+	if got, want := classifier.Redact("", value), "[REDACTED],keep]"; got != want {
+		t.Fatalf("Redact()=%q, want %q", got, want)
+	}
+}
+
+func BenchmarkCredentialURLCommaRichUserinfo(b *testing.B) {
+	const commaCount = 64 * 1024
+	const scheme = "postgres://"
+	const userinfoPrefix = scheme + "u:p"
+	const commaChunk = ",x"
+	const credentialSuffix = ";word@host/db"
+
+	value := userinfoPrefix + strings.Repeat(commaChunk, commaCount) + credentialSuffix + ",keep]"
+	wantEnd := len(userinfoPrefix) + commaCount*len(commaChunk) + len(credentialSuffix)
+	b.ReportAllocs()
+	b.SetBytes(int64(len(value)))
+	b.ResetTimer()
+	for range b.N {
+		end, ok := credentialURLPrefixEnd(value, 0, len(scheme), len(value))
+		if !ok || end != wantEnd {
+			b.Fatalf("credentialURLPrefixEnd()=(%d,%t), want (%d,true)", end, ok, wantEnd)
+		}
+	}
+}
 
 func TestArbitratePrioritizesConfidenceAcrossOverlaps(t *testing.T) {
 	t.Parallel()
