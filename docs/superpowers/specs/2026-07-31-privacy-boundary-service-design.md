@@ -1,9 +1,9 @@
 # Gateway Privacy Boundary Service — Design
 
 **Date:** 2026-07-31
-**Status:** Approved design, awaiting written-spec review
+**Status:** Approved for implementation
 **Audience:** Gateway implementers, workflow-engine implementers, operators, and security reviewers
-**Post-read action:** Produce and execute a strict-TDD implementation plan without relying on the design conversation
+**Post-read action:** Execute `docs/superpowers/plans/2026-07-31-gateway-privacy-boundary-service.md` task-by-task with strict TDD
 
 ## 1. Purpose
 
