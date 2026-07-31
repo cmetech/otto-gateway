@@ -4,8 +4,8 @@ milestone: v1.10.3
 milestone_name: Reliability Closeout
 status: Awaiting next milestone
 stopped_at: Phase 20 context gathered
-last_updated: "2026-06-12T17:32:29.113Z"
-last_activity: 2026-06-12 — Milestone v1.10.3 completed and archived
+last_updated: "2026-07-31T15:41:19.062Z"
+last_activity: "2026-07-31 - Completed quick task 260731-g8f: Gateway privacy-boundary design specification"
 progress:
   total_phases: 26
   completed_phases: 25
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-06-12)
 Phase: Milestone v1.10.3 complete
 Plan: —
 Status: Awaiting next milestone
-Last activity: 2026-07-25 - Completed quick task 260725-h4g: Added the lint-darwin CI job so the darwin build arm stops drifting unlinted
+Last activity: 2026-07-31 - Completed quick task 260731-g8f: Gateway privacy-boundary design specification
 
 ## Performance Metrics
 
@@ -195,6 +195,7 @@ None yet.
 | 260725-g5z | Tray failure notifications surfaced the wrapper's routine `loaded env file: <path>` stderr line (always line 1 per REL-TRAY-06) instead of the real cause, so a fresh Windows install with no `kiro-cli` on PATH read as a broken `.env`. New `firstMeaningfulLine` helper in `cmd/otto-tray/uihelpers.go` skips the `loaded env file:` / `loaded overrides:` prefixes, falls back to the last non-empty line, then `(no stderr)`; migrated all 5 stderr call sites in `tray.go` + `desktoptray.go` and deleted the now-orphaned `firstLine` (the `unused` linter is a CI hard failure). TDD (RED confirmed via `undefined: firstMeaningfulLine`); 7 subtests incl. CRLF + interleaved blanks. Wrapper stderr contract untouched. gofumpt + golangci-lint v2.12.2 (0 new issues) + `GOOS=windows` build/vet/test-compile all clean | 2026-07-25 | 9e59166..9ae13c8 | [260725-g5z-fix-misleading-tray-failure-notification](./quick/260725-g5z-fix-misleading-tray-failure-notification/) |
 | 260725-gp6 | Cleared the two darwin-only lint findings deferred by 260725-g5z — invisible to CI because the lint job runs on `ubuntu-latest` where `desktop_darwin.go` is build-tag-excluded. (1) `desktop_darwin.go:29` wrapcheck: bare `exec.Cmd.Run()` error now `fmt.Errorf("pgrep: %w", err)`; the `errors.As`/`ExitCode()==1` no-match path still reads the raw error, so pgrep's exit-1 → `(false, nil)` is unchanged. (2) `openfolder.go:117` unparam (`goos always receives "darwin"`) confirmed a FALSE POSITIVE — `goos` drives the windows branches of `appFolderTarget`/`resolveHermesHome` and is the test seam for both arms; the sole runtime caller passes `runtime.GOOS`, a per-build constant. Fixed with a documented `//nolint:unparam`, parameter and call sites untouched. `golangci-lint run ./...` now 0 issues repo-wide on macOS; gofumpt + darwin tests + `GOOS=windows` build/vet/test-compile clean. Still open: no `GOOS=darwin` lint job exists, so the darwin arm remains unlinted in CI — and adding one would surface unwrapped `windows.OpenProcess`/`QueryFullProcessImageName` errors in `desktop_windows.go:69,76`, which need `%w` specifically because `windowsProcessGone` does `errors.Is(err, windows.ERROR_INVALID_PARAMETER)` and fails closed otherwise | 2026-07-25 | dd871d0..28bf084 | [260725-gp6-fix-the-two-pre-existing-darwin-only-lin](./quick/260725-gp6-fix-the-two-pre-existing-darwin-only-lin/) |
 | 260725-h4g | New `lint-darwin` job in `.github/workflows/ci.yml` closes the blind spot that let 260725-gp6's two findings survive: `cmd/otto-tray` has 7 darwin-only files that `ubuntu-latest` drops by build tag, so they were linted nowhere. Runs on `macos-latest`, NOT ubuntu with a `GOOS=darwin` override — proven necessary, since `golangci-lint` type-checks before linting and `energye/systray`'s darwin implementation is cgo (verified: `CGO_ENABLED=0 GOOS=darwin go vet ./cmd/otto-tray/` dies with 11 undefined symbols; `systray_darwin.go` is the only file importing `"C"`). Scope is `./...` not `./cmd/otto-tray/...` because `internal/procstat/procstat_other.go` is `!linux && !windows` — darwin-only code outside the tray — and `./...` keeps the job byte-identical to `make lint`. Reuses the existing `env.GOLANGCI_LINT_VERSION` pin (v2.12.2), no `needs:` so a darwin regression reads as its own red X, inherits workflow-level `contents: read`. macos-latest is arm64 and no GOARCH-conditional source exists, so one arch is full coverage. Local proxy verified (PyYAML parse, `golangci-lint run ./...` → 0 issues on this darwin box); the GitHub run itself was unverifiable pre-push. Still open: no `GOOS=windows` lint job — `desktop_windows.go:67,75` return unwrapped `windows.OpenProcess`/`QueryFullProcessImageName` errors, and wrapping needs `%w` because `windowsProcessGone` does `errors.Is(err, windows.ERROR_INVALID_PARAMETER)` and fails closed otherwise | 2026-07-25 | be74593 | [260725-h4g-add-a-goos-darwin-golangci-lint-job-to-c](./quick/260725-h4g-add-a-goos-darwin-golangci-lint-job-to-c/) |
+| 260731-g8f | Write the approved Gateway privacy-boundary design specification; documentation only, implementation plan intentionally held for written review | 2026-07-31 | (inline) | [260731-g8f-write-the-approved-gateway-privacy-bound](./quick/260731-g8f-write-the-approved-gateway-privacy-bound/) |
 
 ## Deferred Items
 
