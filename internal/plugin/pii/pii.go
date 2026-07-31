@@ -49,7 +49,13 @@ func (h *PIIRedactionHook) Describe() (string, map[string]any) {
 	return "Pre,Post", service.Describe()
 }
 
-func (h *PIIRedactionHook) Before(ctx context.Context, req *canonical.ChatRequest) (*canonical.ChatResponse, error) {
+func (h *PIIRedactionHook) Before(ctx context.Context, req *canonical.ChatRequest) (resp *canonical.ChatResponse, err error) {
+	defer func() {
+		if recover() != nil {
+			resp = nil
+			err = &privacy.Error{Code: privacy.CodeInternalError, Stage: "input"}
+		}
+	}()
 	service := h.delegate()
 	if service == nil {
 		return nil, nil
@@ -57,7 +63,12 @@ func (h *PIIRedactionHook) Before(ctx context.Context, req *canonical.ChatReques
 	return service.Before(ctx, req)
 }
 
-func (h *PIIRedactionHook) After(ctx context.Context, req *canonical.ChatRequest, resp *canonical.ChatResponse) error {
+func (h *PIIRedactionHook) After(ctx context.Context, req *canonical.ChatRequest, resp *canonical.ChatResponse) (err error) {
+	defer func() {
+		if recover() != nil {
+			err = &privacy.Error{Code: privacy.CodeInternalError, Stage: "output"}
+		}
+	}()
 	service := h.delegate()
 	if service == nil {
 		return nil

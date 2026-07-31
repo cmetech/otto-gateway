@@ -19,14 +19,18 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"otto-gateway/internal/acp"
 	"otto-gateway/internal/canonical"
+	"otto-gateway/internal/privacy"
 	"otto-gateway/internal/testutil"
 )
 
@@ -50,6 +54,32 @@ type fakeACP struct {
 	promptCalls     []string        // session ids
 	cancelCalls     []string        // session ids
 	lastPromptCtx   context.Context // captured from Prompt call
+}
+
+type engineResidualClassifier struct {
+	mu    sync.Mutex
+	calls int
+}
+
+type enginePanicClassifier struct{ payload string }
+
+func (c enginePanicClassifier) Classify(_, _ string) []privacy.Finding { panic(c.payload) }
+
+func (c *engineResidualClassifier) Classify(_ string, value string) []privacy.Finding {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls++
+	if c.calls != 2 {
+		return nil
+	}
+	start := strings.Index(value, "raw-protected")
+	if start < 0 {
+		return nil
+	}
+	return []privacy.Finding{{
+		Entity: "PERSON", Category: privacy.CategoryPersonal, Kind: privacy.MatchNER,
+		Start: start, End: start + len("raw-protected"),
+	}}
 }
 
 func (f *fakeACP) NewSession(_ context.Context, cwd string) (string, error) {
@@ -340,6 +370,90 @@ func TestEngineRun_PreHookEmptySlice_PassesThrough(t *testing.T) {
 	}
 	if len(ack.newSessionCalls) != 1 {
 		t.Errorf("empty PreHooks should pass through; NewSession calls: %v", ack.newSessionCalls)
+	}
+}
+
+func TestPrivacyInputBlocked_NoDispatch(t *testing.T) {
+	classifier := &engineResidualClassifier{}
+	service, err := privacy.NewService(privacy.Config{
+		DefaultProfile:     privacy.ProfileStandard,
+		RequestProfiles:    []privacy.Profile{privacy.ProfileStandard, privacy.ProfileStrict},
+		AliasKey:           []byte("engine-privacy-alias-key"),
+		SecretAction:       privacy.ActionReplace,
+		TechnicalAction:    privacy.ActionPseudonymize,
+		ScopeTTL:           time.Hour,
+		MaxScopes:          4,
+		MaxEntriesPerScope: 8,
+		MaxTotalEntries:    16,
+		PIIEnabled:         true,
+		PIIMode:            privacy.ActionReplace,
+		PIIEntityActions:   map[string]privacy.Action{},
+		Classifier:         classifier,
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	t.Cleanup(service.Close)
+	state := privacy.NewRequestState(privacy.RequestMetadata{RequestedProfile: "strict", ScopeID: "no-dispatch"})
+	ctx := privacy.WithRequestState(context.Background(), state)
+	ack := &fakeACP{}
+	eng := newTestEngine(t, ack, withPreHooks(service))
+
+	_, err = eng.Run(ctx, &canonical.ChatRequest{System: "raw-protected"})
+	if err == nil {
+		t.Fatal("Run returned nil error")
+	}
+	status, code, ok := privacy.ErrorInfo(err)
+	if !ok || status != 422 || code != privacy.CodeInputBlocked {
+		t.Fatalf("ErrorInfo=(%d,%q,%t), want (422,%q,true): %v", status, code, ok, privacy.CodeInputBlocked, err)
+	}
+	if len(ack.newSessionCalls) != 0 || len(ack.setModelCalls) != 0 || len(ack.promptCalls) != 0 {
+		t.Fatalf("blocked request dispatched: NewSession=%v SetModel=%v Prompt=%v", ack.newSessionCalls, ack.setModelCalls, ack.promptCalls)
+	}
+}
+
+func TestPrivacyPanic_NoDispatchAndNoPayloadLeak(t *testing.T) {
+	const panicPayload = "engine-raw-privacy-panic-payload"
+	service, err := privacy.NewService(privacy.Config{
+		DefaultProfile:     privacy.ProfileStandard,
+		RequestProfiles:    []privacy.Profile{privacy.ProfileStandard, privacy.ProfileStrict},
+		AliasKey:           []byte("engine-panic-alias-key"),
+		SecretAction:       privacy.ActionReplace,
+		TechnicalAction:    privacy.ActionPseudonymize,
+		ScopeTTL:           time.Hour,
+		MaxScopes:          4,
+		MaxEntriesPerScope: 8,
+		MaxTotalEntries:    16,
+		PIIEnabled:         true,
+		PIIMode:            privacy.ActionReplace,
+		PIIEntityActions:   map[string]privacy.Action{},
+		Classifier:         enginePanicClassifier{payload: panicPayload},
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	t.Cleanup(service.Close)
+	state := privacy.NewRequestState(privacy.RequestMetadata{RequestedProfile: "strict", ScopeID: "engine-panic"})
+	ctx := privacy.WithRequestState(context.Background(), state)
+	ack := &fakeACP{}
+	var logs bytes.Buffer
+	eng := New(Config{
+		Logger:     slog.New(slog.NewJSONHandler(&logs, nil)),
+		ACP:        ack,
+		DefaultCWD: "/test/default/cwd",
+		PreHooks:   []PreHook{service},
+	})
+
+	_, err = eng.Run(ctx, &canonical.ChatRequest{System: "safe input"})
+	status, code, ok := privacy.ErrorInfo(err)
+	if !ok || status != 503 || code != privacy.CodeInternalError {
+		t.Fatalf("ErrorInfo=(%d,%q,%t), want (503,%q,true): %v", status, code, ok, privacy.CodeInternalError, err)
+	}
+	if strings.Contains(err.Error(), panicPayload) || strings.Contains(logs.String(), panicPayload) {
+		t.Fatalf("panic payload leaked: error=%v logs=%s", err, logs.String())
+	}
+	if len(ack.newSessionCalls) != 0 || len(ack.setModelCalls) != 0 || len(ack.promptCalls) != 0 {
+		t.Fatalf("privacy panic dispatched: NewSession=%v SetModel=%v Prompt=%v", ack.newSessionCalls, ack.setModelCalls, ack.promptCalls)
 	}
 }
 

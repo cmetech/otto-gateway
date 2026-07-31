@@ -2,7 +2,10 @@ package privacy
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base32"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"regexp"
 	"sort"
@@ -19,9 +22,13 @@ var (
 	bareEncryptedPayloadRE    = regexp.MustCompile(`[A-Za-z0-9_-]{38,}`)
 	compatibilityDepthWarning sync.Once
 	serviceSequence           atomic.Uint64
+	scopeIDPattern            = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
+	privacyTokenPattern       = regexp.MustCompile(`\[(?:SECRET:[A-Z0-9_]+_[A-F0-9]{12}|PII:[A-Za-z0-9_]+:[A-Za-z0-9_-]+|[A-Z][A-Z0-9_]*(?:_[0-9]+)?|[A-Za-z0-9_]+:h-[A-Fa-f0-9]{8})\]`)
 )
 
 const maxCompatibilityTraversalDepth = 64
+
+const secretHMACDomain = "otto-gateway/privacy/secret-label/v1"
 
 // Observers are bounded event callbacks owned by the privacy service.
 type Observers struct {
@@ -158,11 +165,17 @@ func errorsSafe(message string) error { return safeStringError(message) }
 type Service struct {
 	config      Config
 	lifecycleID uint64
+	store       *ScopeStore
+	mapper      technicalMapping
 
 	requestsProtected atomic.Uint64
 	requestsBlocked   atomic.Uint64
 	lastErrorMu       sync.Mutex
 	lastErrorCode     string
+}
+
+type technicalMapping interface {
+	Map(*ScopeLease, string, string, Provenance) (string, error)
 }
 
 // NewService copies all mutable configuration into an immutable service.
@@ -179,7 +192,29 @@ func NewService(config Config) (*Service, error) {
 	config.PIIEncryptKey = append([]byte(nil), config.PIIEncryptKey...)
 	config.Recognizers = append([]string(nil), config.Recognizers...)
 	config.PIIEntityActions = cloneActions(config.PIIEntityActions)
-	return &Service{config: config, lifecycleID: serviceSequence.Add(1)}, nil
+	service := &Service{config: config, lifecycleID: serviceSequence.Add(1)}
+	if containsProfile(config.RequestProfiles, ProfileStrict) {
+		clock := config.Clock
+		if clock == nil {
+			clock = wallClock{}
+		}
+		store, err := NewScopeStore(StoreConfig{
+			TTL:                config.ScopeTTL,
+			MaxScopes:          config.MaxScopes,
+			MaxEntriesPerScope: config.MaxEntriesPerScope,
+			MaxTotalEntries:    config.MaxTotalEntries,
+		}, clock)
+		if err != nil {
+			return nil, err
+		}
+		mapper, err := NewTechnicalMapper(config.AliasKey)
+		if err != nil {
+			return nil, err
+		}
+		service.store = store
+		service.mapper = mapper
+	}
+	return service, nil
 }
 
 func cloneActions(actions map[string]Action) map[string]Action {
@@ -193,12 +228,38 @@ func cloneActions(actions map[string]Action) map[string]Action {
 	return out
 }
 
-// Before applies byte-compatible standard PII transformations.
-func (s *Service) Before(ctx context.Context, req *canonical.ChatRequest) (*canonical.ChatResponse, error) {
+type wallClock struct{}
+
+func (wallClock) Now() time.Time { return time.Now() }
+
+func (wallClock) NewTicker(interval time.Duration) Ticker {
+	return wallTicker{Ticker: time.NewTicker(interval)}
+}
+
+type wallTicker struct{ *time.Ticker }
+
+func (t wallTicker) C() <-chan time.Time { return t.Ticker.C }
+
+// Before applies the resolved privacy profile before worker dispatch.
+func (s *Service) Before(ctx context.Context, req *canonical.ChatRequest) (resp *canonical.ChatResponse, err error) {
+	defer func() {
+		if recover() != nil {
+			resp = nil
+			err = s.recoverInboundPanic(ctx)
+		}
+	}()
 	if s == nil || !s.config.PIIEnabled || req == nil {
 		return nil, nil
 	}
 	state, _ := StateFromContext(ctx)
+	profile, err := s.resolveProfile(state)
+	if err != nil {
+		return nil, err
+	}
+	if profile == ProfileStrict {
+		return nil, s.beforeStrict(ctx, state, req)
+	}
+
 	if state != nil {
 		state.setProfile(ProfileStandard)
 	}
@@ -231,6 +292,316 @@ func (s *Service) Before(ctx context.Context, req *canonical.ChatRequest) (*cano
 		state.markStandardInboundPass(s.lifecycleID)
 	}
 	return nil, nil
+}
+
+func (s *Service) recoverInboundPanic(ctx context.Context) error {
+	state, _ := StateFromContext(ctx)
+	if state != nil {
+		state.releaseLease()
+		profile := state.effectiveProfile()
+		if profile == "" && s != nil {
+			profile = s.config.DefaultProfile
+		}
+		transformed, restored, blocked := state.counts()
+		_ = state.setReceipt(Receipt{
+			Version: 1, Profile: profile, Scope: state.Metadata().ScopeID,
+			Coverage: "input", Result: "error",
+			Transformed: transformed, Restored: restored, Blocked: blocked,
+		})
+	}
+	if s != nil {
+		s.lastErrorMu.Lock()
+		s.lastErrorCode = CodeInternalError
+		s.lastErrorMu.Unlock()
+	}
+	return &Error{Code: CodeInternalError, Stage: "input"}
+}
+
+func (s *Service) resolveProfile(state *RequestState) (Profile, error) {
+	requested := ""
+	if state != nil {
+		requested = state.Metadata().RequestedProfile
+	}
+	if requested != "" {
+		profile := Profile(requested)
+		if !validProfile(profile) || !containsProfile(s.config.RequestProfiles, profile) {
+			return "", &Error{Code: CodeProfileUnavailable, Stage: "profile"}
+		}
+		if s.config.DefaultProfile == ProfileStrict || profile == ProfileStrict {
+			return ProfileStrict, nil
+		}
+	}
+	return s.config.DefaultProfile, nil
+}
+
+func (s *Service) beforeStrict(ctx context.Context, state *RequestState, req *canonical.ChatRequest) (err error) {
+	if state == nil || s.store == nil {
+		return &Error{Code: CodeRequestInvalid, Stage: "scope"}
+	}
+	if state.scopeInvalid() {
+		return &Error{Code: CodeRequestInvalid, Stage: "scope"}
+	}
+	meta := state.Metadata()
+	scopeID := meta.ScopeID
+	if scopeID == "" {
+		scopeID, err = generateScopeID()
+		if err != nil {
+			return &Error{Code: CodeInternalError, Stage: "scope"}
+		}
+		state.setScopeID(scopeID)
+	}
+	lease, acquireErr := s.store.Acquire(scopeID, ProfileStrict)
+	if acquireErr != nil {
+		switch {
+		case errors.Is(acquireErr, errScopeClosed):
+			return &Error{Code: CodeScopeClosed, Stage: "scope"}
+		case errors.Is(acquireErr, errCapacityExceeded):
+			return &Error{Code: CodeCapacityExceeded, Stage: "scope"}
+		default:
+			return &Error{Code: CodeInternalError, Stage: "scope"}
+		}
+	}
+	if !state.setLease(lease) {
+		lease.Release()
+		return &Error{Code: CodeInternalError, Stage: "scope"}
+	}
+	defer func() {
+		if err != nil {
+			state.releaseLease()
+		}
+	}()
+	state.setProfile(ProfileStrict)
+	req.Stream = false
+	return s.transformInbound(ctx, state, req)
+}
+
+func generateScopeID() (string, error) {
+	random := make([]byte, 16)
+	if _, err := rand.Read(random); err != nil {
+		return "", err
+	}
+	return "req-" + strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(random)), nil
+}
+
+func (s *Service) transformInbound(_ context.Context, state *RequestState, req *canonical.ChatRequest) error {
+	if state == nil || req == nil {
+		return &Error{Code: CodeInternalError, Stage: "transform"}
+	}
+	lease := state.scopeLease()
+	if lease == nil {
+		return &Error{Code: CodeInternalError, Stage: "transform"}
+	}
+
+	counters := make(map[string]int)
+	next := make(map[string]int)
+	transform := func(key, value string) (string, error) {
+		if value == "" {
+			return value, nil
+		}
+		findings := make([]Finding, 0, 4)
+		if s.config.SecretClassifier != nil {
+			findings = append(findings, s.config.SecretClassifier.Classify(key, value)...)
+		}
+		if s.config.Classifier != nil {
+			findings = append(findings, s.config.Classifier.Classify(key, value)...)
+		}
+		accepted := Arbitrate(findings)
+		if len(accepted) == 0 {
+			return value, nil
+		}
+
+		transformed := value
+		for index := len(accepted) - 1; index >= 0; index-- {
+			finding := accepted[index]
+			if finding.Start < 0 || finding.End > len(value) || finding.Start >= finding.End {
+				return "", &Error{Code: CodeInternalError, Stage: "classify"}
+			}
+			original := value[finding.Start:finding.End]
+			replacement, action, err := s.strictReplacement(state, lease, finding, original, counters, next)
+			if err != nil {
+				return "", err
+			}
+			transformed = transformed[:finding.Start] + replacement + transformed[finding.End:]
+			state.addTransformed(1)
+			if observe := s.config.Observers.Transformation; observe != nil {
+				observe(ProfileStrict, finding.Entity, action)
+			}
+		}
+		return transformed, nil
+	}
+	if err := TransformRequestStrings(req, transform); err != nil {
+		var privacyErr *Error
+		if errors.As(err, &privacyErr) {
+			return privacyErr
+		}
+		return &Error{Code: CodeInternalError, Stage: "transform", Cause: err}
+	}
+	if err := s.verifyInboundResidual(state, req); err != nil {
+		return err
+	}
+	s.requestsProtected.Add(1)
+	if observe := s.config.Observers.Request; observe != nil {
+		meta := state.Metadata()
+		observe(ProfileStrict, meta.Surface, meta.Workload, "pass")
+	}
+	return nil
+}
+
+func (s *Service) strictReplacement(
+	state *RequestState,
+	lease *ScopeLease,
+	finding Finding,
+	original string,
+	counters map[string]int,
+	next map[string]int,
+) (string, Action, error) {
+	action := s.strictAction(finding)
+	switch action {
+	case ActionPseudonymize:
+		mapped, err := s.mapper.Map(lease, finding.Entity, original, ProvenanceInput)
+		if err != nil {
+			if errors.Is(err, errCapacityExceeded) {
+				return "", action, &Error{Code: CodeCapacityExceeded, Stage: "mapping"}
+			}
+			return "", action, &Error{Code: CodeInternalError, Stage: "mapping"}
+		}
+		return mapped, action, nil
+	case ActionDrop:
+		return "", action, nil
+	case ActionEncrypt:
+		token, err := EncryptValue(s.config.PIIEncryptKey, finding.Entity, original)
+		if err != nil {
+			return "", action, &Error{Code: CodeInternalError, Stage: "encrypt"}
+		}
+		_, payload, ok := ParseEncryptedToken(token)
+		if !ok || !state.authorizeResidualSafeToken(token) || !state.authorizeResidualSafeToken(payload) {
+			return "", action, &Error{Code: CodeCapacityExceeded, Stage: "token"}
+		}
+		return token, action, nil
+	case ActionReplace:
+		if finding.Category == CategorySecret {
+			scope := secretHMACDomain + "\x00" + state.Metadata().ScopeID
+			label := OneWaySecretLabel(s.config.AliasKey, scope, finding.Entity, original)
+			if !state.authorizeResidualSafeToken(label) {
+				return "", action, &Error{Code: CodeCapacityExceeded, Stage: "token"}
+			}
+			return label, action, nil
+		}
+		identity := finding.Entity + "|" + CanonicalForm(original)
+		counter, ok := counters[identity]
+		if !ok {
+			next[finding.Entity]++
+			counter = next[finding.Entity]
+			counters[identity] = counter
+		}
+		replacement := ApplyAction(action, finding.Entity, original, counter, s.config.PIIHashKey, s.config.PIIEncryptKey)
+		if privacyTokenPattern.MatchString(replacement) && !state.authorizeToken(replacement) {
+			return "", action, &Error{Code: CodeCapacityExceeded, Stage: "token"}
+		}
+		return replacement, action, nil
+	case ActionMask, ActionHash:
+		replacement := ApplyAction(action, finding.Entity, original, 0, s.config.PIIHashKey, s.config.PIIEncryptKey)
+		if privacyTokenPattern.MatchString(replacement) && !state.authorizeToken(replacement) {
+			return "", action, &Error{Code: CodeCapacityExceeded, Stage: "token"}
+		}
+		return replacement, action, nil
+	default:
+		return "", action, &Error{Code: CodeInternalError, Stage: "action"}
+	}
+}
+
+func (s *Service) verifyInboundResidual(state *RequestState, req *canonical.ChatRequest) error {
+	lease := state.scopeLease()
+	if lease == nil {
+		return &Error{Code: CodeInternalError, Stage: "verify"}
+	}
+	return VisitRequestStrings(req, func(key, value string) error {
+		for _, marker := range []string{"[SECRET:", "[PII:"} {
+			for offset := 0; offset < len(value); {
+				index := strings.Index(value[offset:], marker)
+				if index < 0 {
+					break
+				}
+				start := offset + index
+				if !state.authorizedTokenAt(value, start) {
+					return s.blockInbound(state, "token")
+				}
+				offset = start + len(marker)
+			}
+		}
+		for _, token := range privacyTokenPattern.FindAllString(value, -1) {
+			if !state.tokenAuthorized(token) {
+				return s.blockInbound(state, "token")
+			}
+		}
+
+		findings := make([]Finding, 0, 4)
+		if s.config.SecretClassifier != nil {
+			findings = append(findings, s.config.SecretClassifier.Classify(key, value)...)
+		}
+		if s.config.Classifier != nil {
+			findings = append(findings, s.config.Classifier.Classify(key, value)...)
+		}
+		for _, finding := range Arbitrate(findings) {
+			if finding.Start < 0 || finding.End > len(value) || finding.Start >= finding.End {
+				return &Error{Code: CodeInternalError, Stage: "verify"}
+			}
+			matched := value[finding.Start:finding.End]
+			safe := state.residualFindingSafe(value, finding.Start, finding.End)
+			switch finding.Category {
+			case CategorySecret:
+				// Generated privacy wrappers and one-way labels may contain
+				// substrings that look credential-shaped. Only spans inside a
+				// service-authorized residual-safe token are accepted.
+			case CategoryTechnical:
+				entry, ok := lease.ResolveSynthetic(finding.Entity, matched)
+				safe = safe || ok && entry.Synthetic == matched && entry.Provenance == ProvenanceInput
+			default:
+				// Personal findings are accepted only when contained in an
+				// authorized encrypted token.
+			}
+			if safe {
+				continue
+			}
+			if observe := s.config.Observers.Residual; observe != nil {
+				observe(ProfileStrict, "input", finding.Entity)
+			}
+			return s.blockInbound(state, "residual")
+		}
+		return nil
+	})
+}
+
+func (s *Service) blockInbound(state *RequestState, reason string) error {
+	state.addBlocked(1)
+	s.requestsBlocked.Add(1)
+	if observe := s.config.Observers.Block; observe != nil {
+		observe(ProfileStrict, "input", reason)
+	}
+	transformed, restored, blocked := state.counts()
+	if err := state.setReceipt(Receipt{
+		Version: 1, Profile: ProfileStrict, Scope: state.Metadata().ScopeID,
+		Coverage: "input", Result: "block", Transformed: transformed, Restored: restored, Blocked: blocked,
+	}); err != nil {
+		return &Error{Code: CodeInternalError, Stage: "receipt"}
+	}
+	if observe := s.config.Observers.Receipt; observe != nil {
+		observe(ProfileStrict, "block")
+	}
+	return &Error{Code: CodeInputBlocked, Stage: "input"}
+}
+
+func (s *Service) strictAction(finding Finding) Action {
+	if finding.Category == CategorySecret {
+		return s.config.SecretAction
+	}
+	if action, ok := s.config.PIIEntityActions[finding.Entity]; ok {
+		return action
+	}
+	if finding.Category == CategoryTechnical {
+		return s.config.TechnicalAction
+	}
+	return s.config.PIIMode
 }
 
 func (s *Service) transformStandardValue(

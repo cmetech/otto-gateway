@@ -36,9 +36,11 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"net/http"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"otto-gateway/internal/canonical"
 	"otto-gateway/internal/privacy"
@@ -1420,3 +1422,60 @@ func TestStandardCompatibility_ClassifierInventory(t *testing.T) {
 		}
 	}
 }
+
+type privacyPanicClassifier struct{ payload string }
+
+func (c privacyPanicClassifier) Classify(_, _ string) []privacy.Finding { panic(c.payload) }
+
+func TestPrivacyPanic_CompatibilityHookReturnsOnlyBoundedInternalError(t *testing.T) {
+	const panicPayload = "compatibility-hook-raw-panic-payload"
+	service, err := privacy.NewService(privacy.Config{
+		DefaultProfile:     privacy.ProfileStandard,
+		RequestProfiles:    []privacy.Profile{privacy.ProfileStandard, privacy.ProfileStrict},
+		AliasKey:           []byte("pii-hook-panic-alias-key"),
+		SecretAction:       privacy.ActionReplace,
+		TechnicalAction:    privacy.ActionPseudonymize,
+		ScopeTTL:           time.Hour,
+		MaxScopes:          4,
+		MaxEntriesPerScope: 8,
+		MaxTotalEntries:    16,
+		PIIEnabled:         true,
+		PIIMode:            privacy.ActionReplace,
+		PIIEntityActions:   map[string]privacy.Action{},
+		Classifier:         privacyPanicClassifier{payload: panicPayload},
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	t.Cleanup(service.Close)
+	hook := &PIIRedactionHook{Service: service}
+	if hook.Name() != "PIIRedactionHook" {
+		t.Fatalf("compatibility name=%q", hook.Name())
+	}
+	state := privacy.NewRequestState(privacy.RequestMetadata{RequestedProfile: "strict", ScopeID: "hook-panic"})
+	ctx := privacy.WithRequestState(context.Background(), state)
+
+	_, err = hook.Before(ctx, &canonical.ChatRequest{System: "safe input"})
+	status, code, ok := privacy.ErrorInfo(err)
+	if !ok || status != 503 || code != privacy.CodeInternalError {
+		t.Fatalf("ErrorInfo=(%d,%q,%t), want (503,%q,true): %v", status, code, ok, privacy.CodeInternalError, err)
+	}
+	if strings.Contains(err.Error(), panicPayload) {
+		t.Fatalf("hook error leaked panic payload: %v", err)
+	}
+	recorder := &receiptRecorder{header: make(http.Header)}
+	if !privacy.SetReceiptHeader(recorder, ctx) {
+		t.Fatal("panic path did not set bounded receipt")
+	}
+	if encoded := recorder.header.Get("X-GW-Privacy-Receipt"); strings.Contains(encoded, panicPayload) {
+		t.Fatalf("receipt header leaked panic payload: %q", encoded)
+	}
+}
+
+type receiptRecorder struct{ header http.Header }
+
+func (r *receiptRecorder) Header() http.Header { return r.header }
+
+func (r *receiptRecorder) Write([]byte) (int, error) { return 0, nil }
+
+func (r *receiptRecorder) WriteHeader(int) {}
