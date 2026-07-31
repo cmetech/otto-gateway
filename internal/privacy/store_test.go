@@ -1,0 +1,599 @@
+package privacy
+
+import (
+	"errors"
+	"fmt"
+	"slices"
+	"sync"
+	"testing"
+	"time"
+)
+
+type fakeClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func newFakeClock() *fakeClock {
+	return &fakeClock{now: time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)}
+}
+
+func (c *fakeClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return c.now
+}
+
+func (c *fakeClock) NewTicker(time.Duration) Ticker {
+	return &fakeTicker{ch: make(chan time.Time)}
+}
+
+func (c *fakeClock) Advance(delta time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.now = c.now.Add(delta)
+}
+
+type fakeTicker struct {
+	ch chan time.Time
+}
+
+func (t *fakeTicker) C() <-chan time.Time {
+	return t.ch
+}
+
+func (t *fakeTicker) Stop() {}
+
+func TestScopeStore_AcquisitionStabilityAndExpiryRefresh(t *testing.T) {
+	clock := newFakeClock()
+	store := newTestScopeStore(t, clock, StoreConfig{
+		TTL:                10 * time.Minute,
+		MaxScopes:          4,
+		MaxEntriesPerScope: 8,
+		MaxTotalEntries:    16,
+	})
+
+	leaseA := acquireTestScope(t, store, "scope-a")
+	defer leaseA.Release()
+
+	callbackCalls := 0
+	first, created, err := leaseA.GetOrCreate("IP", "192.0.2.1", ProvenanceInput, func(attempt uint32) (string, error) {
+		callbackCalls++
+		return fmt.Sprintf("198.51.100.%d", attempt+1), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !created {
+		t.Fatal("first GetOrCreate created=false, want true")
+	}
+
+	clock.Advance(6 * time.Minute)
+	second, created, err := leaseA.GetOrCreate("IP", "192.0.2.1", ProvenanceInput, func(uint32) (string, error) {
+		callbackCalls++
+		return "must-not-run", nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created {
+		t.Fatal("second GetOrCreate created=true, want false")
+	}
+	if second != first {
+		t.Fatalf("stable entry=%+v, want %+v", second, first)
+	}
+	if callbackCalls != 1 {
+		t.Fatalf("candidate calls=%d, want 1", callbackCalls)
+	}
+
+	resolved, ok := leaseA.ResolveSynthetic("IP", first.Synthetic)
+	if !ok || resolved != first {
+		t.Fatalf("ResolveSynthetic()=(%+v, %t), want (%+v, true)", resolved, ok, first)
+	}
+
+	info := findScopeInfo(t, store.List(), "scope-a")
+	if info.Profile != ProfileStandard || info.State != "active" || info.Entries != 1 || info.InFlight != 1 {
+		t.Fatalf("scope info=%+v", info)
+	}
+	if want := clock.Now().Add(10 * time.Minute); !info.ExpiresAt.Equal(want) {
+		t.Fatalf("expiry=%v, want %v", info.ExpiresAt, want)
+	}
+	if !info.LastUsedAt.Equal(clock.Now()) {
+		t.Fatalf("last used=%v, want %v", info.LastUsedAt, clock.Now())
+	}
+
+	leaseB := acquireTestScope(t, store, "scope-b")
+	defer leaseB.Release()
+	entryB, created, err := leaseB.GetOrCreate("IP", "192.0.2.1", ProvenanceInput, func(attempt uint32) (string, error) {
+		return fmt.Sprintf("203.0.113.%d", attempt+1), nil
+	})
+	if err != nil || !created {
+		t.Fatalf("cross-scope GetOrCreate() created=%t err=%v", created, err)
+	}
+	if entryB.Synthetic == first.Synthetic {
+		t.Fatalf("cross-scope synthetic=%q, want independent from %q", entryB.Synthetic, first.Synthetic)
+	}
+}
+
+func TestScopeStore_CollisionRetryAndCandidateFailureRollback(t *testing.T) {
+	clock := newFakeClock()
+	store := newTestScopeStore(t, clock, StoreConfig{
+		TTL:                time.Hour,
+		MaxScopes:          2,
+		MaxEntriesPerScope: 3,
+		MaxTotalEntries:    3,
+	})
+	lease := acquireTestScope(t, store, "collisions")
+	defer lease.Release()
+
+	_, _, err := lease.GetOrCreate("HOST", "source-a", ProvenanceGenerated, func(uint32) (string, error) {
+		return "synthetic-a", nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var attempts []uint32
+	entry, created, err := lease.GetOrCreate("HOST", "source-b", ProvenanceGenerated, func(attempt uint32) (string, error) {
+		attempts = append(attempts, attempt)
+		if attempt == 0 {
+			return "synthetic-a", nil
+		}
+		return "synthetic-b", nil
+	})
+	if err != nil || !created {
+		t.Fatalf("collision GetOrCreate() created=%t err=%v", created, err)
+	}
+	if entry.Synthetic != "synthetic-b" || !slices.Equal(attempts, []uint32{0, 1}) {
+		t.Fatalf("entry=%+v attempts=%v", entry, attempts)
+	}
+
+	candidateErr := errors.New("candidate failed")
+	_, created, err = lease.GetOrCreate("HOST", "source-c", ProvenanceInput, func(uint32) (string, error) {
+		return "", candidateErr
+	})
+	if !errors.Is(err, candidateErr) || created {
+		t.Fatalf("candidate failure created=%t err=%v", created, err)
+	}
+	if got := store.Snapshot().Entries; got != 2 {
+		t.Fatalf("entries after candidate failure=%d, want 2", got)
+	}
+
+	_, created, err = lease.GetOrCreate("HOST", "source-c", Provenance("invalid"), func(uint32) (string, error) {
+		return "synthetic-c", nil
+	})
+	if err == nil || created {
+		t.Fatalf("invalid provenance created=%t err=%v", created, err)
+	}
+	if got := store.Snapshot().Entries; got != 2 {
+		t.Fatalf("entries after invalid provenance=%d, want 2", got)
+	}
+}
+
+func TestScopeStore_CapacityIsAtomicAndSharedWithRelations(t *testing.T) {
+	clock := newFakeClock()
+	store := newTestScopeStore(t, clock, StoreConfig{
+		TTL:                time.Hour,
+		MaxScopes:          2,
+		MaxEntriesPerScope: 2,
+		MaxTotalEntries:    3,
+	})
+
+	leaseA := acquireTestScope(t, store, "scope-a")
+	defer leaseA.Release()
+	_, _, err := leaseA.GetOrCreate("IP", "192.0.2.1", ProvenanceInput, fixedCandidate("198.51.100.1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	relation, created, err := leaseA.GetOrCreateRelation("192.0.2.0/24", fixedCandidate("198.51.100.0/24"))
+	if err != nil || !created || relation != "198.51.100.0/24" {
+		t.Fatalf("relation=%q created=%t err=%v", relation, created, err)
+	}
+	stableRelation, created, err := leaseA.GetOrCreateRelation("192.0.2.0/24", fixedCandidate("must-not-run"))
+	if err != nil || created || stableRelation != relation {
+		t.Fatalf("stable relation=%q created=%t err=%v", stableRelation, created, err)
+	}
+
+	_, created, err = leaseA.GetOrCreate("IP", "192.0.2.2", ProvenanceInput, fixedCandidate("198.51.100.2"))
+	if err == nil || created {
+		t.Fatalf("per-scope overflow created=%t err=%v", created, err)
+	}
+	if got := store.Snapshot().Entries; got != 2 {
+		t.Fatalf("entries after per-scope rejection=%d, want 2", got)
+	}
+	if got := len(mustInspect(t, store, "scope-a")); got != 1 {
+		t.Fatalf("reversible entries after rejection=%d, want 1", got)
+	}
+
+	leaseB := acquireTestScope(t, store, "scope-b")
+	defer leaseB.Release()
+	_, _, err = leaseB.GetOrCreate("IP", "203.0.113.1", ProvenanceInput, fixedCandidate("198.51.100.3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, created, err = leaseB.GetOrCreateRelation("203.0.113.0/24", fixedCandidate("198.51.101.0/24"))
+	if err == nil || created {
+		t.Fatalf("global overflow created=%t err=%v", created, err)
+	}
+	if snapshot := store.Snapshot(); snapshot.Entries != 3 || snapshot.ScopesActive != 2 {
+		t.Fatalf("snapshot after global rejection=%+v", snapshot)
+	}
+	if _, err := store.Acquire("scope-c", ProfileStandard); err == nil {
+		t.Fatal("Acquire(scope-c) succeeded at active scope capacity")
+	}
+	if got := len(store.List()); got != 2 {
+		t.Fatalf("active scopes after rejection=%d, want 2", got)
+	}
+}
+
+func TestScopeStore_CapacityReclaimsExpiredEntriesBeforeRejecting(t *testing.T) {
+	clock := newFakeClock()
+	store := newTestScopeStore(t, clock, StoreConfig{
+		TTL:                time.Minute,
+		MaxScopes:          2,
+		MaxEntriesPerScope: 1,
+		MaxTotalEntries:    1,
+	})
+
+	expired := acquireTestScope(t, store, "expired")
+	_, _, err := expired.GetOrCreate("HOST", "old", ProvenanceInput, fixedCandidate("old-synthetic"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	expired.Release()
+	clock.Advance(2 * time.Minute)
+
+	target := acquireTestScope(t, store, "target")
+	defer target.Release()
+	entry, created, err := target.GetOrCreate("HOST", "new", ProvenanceInput, fixedCandidate("new-synthetic"))
+	if err != nil || !created || entry.Synthetic != "new-synthetic" {
+		t.Fatalf("GetOrCreate() after expired global entry=(%+v, %t, %v)", entry, created, err)
+	}
+	if snapshot := store.Snapshot(); snapshot.ScopesActive != 1 || snapshot.Entries != 1 {
+		t.Fatalf("snapshot after global reclamation=%+v", snapshot)
+	}
+	if _, err := store.Inspect("expired"); err == nil {
+		t.Fatal("expired entry-owning scope was retained")
+	}
+}
+
+func TestScopeStore_CapacityNeverReclaimsExpiredInFlightEntries(t *testing.T) {
+	clock := newFakeClock()
+	store := newTestScopeStore(t, clock, StoreConfig{
+		TTL:                time.Minute,
+		MaxScopes:          2,
+		MaxEntriesPerScope: 1,
+		MaxTotalEntries:    1,
+	})
+
+	active := acquireTestScope(t, store, "active")
+	defer active.Release()
+	_, _, err := active.GetOrCreate("HOST", "old", ProvenanceInput, fixedCandidate("old-synthetic"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock.Advance(2 * time.Minute)
+
+	target := acquireTestScope(t, store, "target")
+	defer target.Release()
+	_, created, err := target.GetOrCreate("HOST", "new", ProvenanceInput, fixedCandidate("new-synthetic"))
+	if err == nil || created {
+		t.Fatalf("GetOrCreate() evicted expired in-flight entry: created=%t err=%v", created, err)
+	}
+	if snapshot := store.Snapshot(); snapshot.ScopesActive != 2 || snapshot.Entries != 1 {
+		t.Fatalf("snapshot after protected active capacity=%+v", snapshot)
+	}
+}
+
+func TestScopeStore_ReclaimsClosedAndExpiredButNeverInFlightScopes(t *testing.T) {
+	clock := newFakeClock()
+	store := newTestScopeStore(t, clock, StoreConfig{
+		TTL:                time.Minute,
+		MaxScopes:          2,
+		MaxEntriesPerScope: 2,
+		MaxTotalEntries:    4,
+	})
+
+	closed := acquireTestScope(t, store, "closed")
+	closed.Release()
+	if result, err := store.Clear("closed"); err != nil || result != ClearCompleted {
+		t.Fatalf("Clear(closed)=(%q, %v), want (%q, nil)", result, err, ClearCompleted)
+	}
+
+	inFlight := acquireTestScope(t, store, "in-flight")
+	defer inFlight.Release()
+	clock.Advance(2 * time.Minute)
+
+	replacement := acquireTestScope(t, store, "replacement")
+	defer replacement.Release()
+	if _, err := store.Acquire("third", ProfileStandard); err == nil {
+		t.Fatal("Acquire(third) evicted or bypassed capacity with two in-flight scopes")
+	}
+	if _, ok := scopeInfo(store.List(), "in-flight"); !ok {
+		t.Fatal("expired in-flight scope was evicted")
+	}
+
+	replacement.Release()
+	clock.Advance(2 * time.Minute)
+	third := acquireTestScope(t, store, "third")
+	third.Release()
+	if _, ok := scopeInfo(store.List(), "replacement"); ok {
+		t.Fatal("expired idle scope was not reclaimed")
+	}
+}
+
+func TestScopeStore_ClearDrainsActiveLeaseAndRetainsTombstone(t *testing.T) {
+	clock := newFakeClock()
+	store := newTestScopeStore(t, clock, StoreConfig{
+		TTL:                time.Hour,
+		MaxScopes:          2,
+		MaxEntriesPerScope: 4,
+		MaxTotalEntries:    8,
+	})
+
+	lease := acquireTestScope(t, store, "workflow")
+	retiredState := lease.scope
+	entry, _, err := lease.GetOrCreate("IP", "192.0.2.10", ProvenanceInput, fixedCandidate("198.51.100.10"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result, err := store.Clear("workflow"); err != nil || result != ClearClosing {
+		t.Fatalf("Clear(active)=(%q, %v), want (%q, nil)", result, err, ClearClosing)
+	}
+	if result, err := store.Clear("workflow"); err != nil || result != ClearClosing {
+		t.Fatalf("repeated Clear(active)=(%q, %v), want (%q, nil)", result, err, ClearClosing)
+	}
+	info := findScopeInfo(t, store.List(), "workflow")
+	if info.State != "closing" || info.InFlight != 1 || info.Entries != 1 {
+		t.Fatalf("closing scope info=%+v", info)
+	}
+	if _, err := store.Acquire("workflow", ProfileStandard); err == nil {
+		t.Fatal("Acquire(closing scope) succeeded")
+	}
+	if resolved, ok := lease.ResolveSynthetic("IP", entry.Synthetic); !ok || resolved != entry {
+		t.Fatalf("active lease could not finish against closing scope: (%+v, %t)", resolved, ok)
+	}
+
+	lease.Release()
+	lease.Release()
+	if snapshot := store.Snapshot(); snapshot.ScopesActive != 0 || snapshot.RequestsInFlight != 0 || snapshot.Entries != 0 {
+		t.Fatalf("snapshot after final release=%+v", snapshot)
+	}
+	retiredState.mu.Lock()
+	if retiredState.forward != nil || retiredState.reverse != nil || retiredState.relations != nil {
+		t.Fatalf("retired ledger retained values: forward=%v reverse=%v relations=%v", retiredState.forward, retiredState.reverse, retiredState.relations)
+	}
+	retiredState.mu.Unlock()
+	if _, err := store.Inspect("workflow"); err == nil {
+		t.Fatal("Inspect(cleared scope) succeeded")
+	}
+	if result, err := store.Clear("workflow"); err != nil || result != ClearCompleted {
+		t.Fatalf("Clear(tombstone)=(%q, %v), want (%q, nil)", result, err, ClearCompleted)
+	}
+	if _, err := store.Acquire("workflow", ProfileStandard); err == nil {
+		t.Fatal("Acquire(tombstoned scope) succeeded")
+	}
+
+	clock.Advance(time.Hour)
+	reused := acquireTestScope(t, store, "workflow")
+	reused.Release()
+}
+
+func TestScopeStore_ClearAllReportsCompletedAndClosing(t *testing.T) {
+	clock := newFakeClock()
+	store := newTestScopeStore(t, clock, StoreConfig{
+		TTL:                time.Hour,
+		MaxScopes:          3,
+		MaxEntriesPerScope: 2,
+		MaxTotalEntries:    6,
+	})
+
+	idle := acquireTestScope(t, store, "idle")
+	_, _, err := idle.GetOrCreate("HOST", "source", ProvenanceInput, fixedCandidate("synthetic"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	idle.Release()
+	active := acquireTestScope(t, store, "active")
+
+	if summary := store.ClearAll(); summary != (ClearSummary{Completed: 1, Closing: 1}) {
+		t.Fatalf("ClearAll()=%+v, want {Completed:1 Closing:1}", summary)
+	}
+	if snapshot := store.Snapshot(); snapshot.ScopesActive != 1 || snapshot.RequestsInFlight != 1 || snapshot.Entries != 0 {
+		t.Fatalf("snapshot while clear-all drains=%+v", snapshot)
+	}
+	if _, err := store.Acquire("idle", ProfileStandard); err == nil {
+		t.Fatal("Acquire(clear-all tombstone) succeeded")
+	}
+	if _, _, err := active.GetOrCreate("HOST", "late", ProvenanceGenerated, fixedCandidate("late-synthetic")); err != nil {
+		t.Fatalf("existing lease could not finish after ClearAll: %v", err)
+	}
+	active.Release()
+	if summary := store.ClearAll(); summary != (ClearSummary{}) {
+		t.Fatalf("idempotent ClearAll()=%+v, want zero summary", summary)
+	}
+	if snapshot := store.Snapshot(); snapshot.ScopesActive != 0 || snapshot.Entries != 0 {
+		t.Fatalf("snapshot after clear-all drain=%+v", snapshot)
+	}
+}
+
+func TestScopeStore_ExpiryNeverReapsInFlightAndTombstoneExpires(t *testing.T) {
+	clock := newFakeClock()
+	store := newTestScopeStore(t, clock, StoreConfig{
+		TTL:                time.Minute,
+		MaxScopes:          2,
+		MaxEntriesPerScope: 2,
+		MaxTotalEntries:    4,
+	})
+
+	lease := acquireTestScope(t, store, "expiring")
+	_, _, err := lease.GetOrCreate("IP", "192.0.2.20", ProvenanceInput, fixedCandidate("198.51.100.20"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock.Advance(2 * time.Minute)
+	if got := store.ReapExpired(); got != 0 {
+		t.Fatalf("ReapExpired() with active lease=%d, want 0", got)
+	}
+	if snapshot := store.Snapshot(); snapshot.ScopesActive != 1 || snapshot.RequestsInFlight != 1 || snapshot.Entries != 1 {
+		t.Fatalf("snapshot after active expiry=%+v", snapshot)
+	}
+
+	lease.Release()
+	if got := store.ReapExpired(); got != 1 {
+		t.Fatalf("ReapExpired() after release=%d, want 1", got)
+	}
+	if _, err := store.Acquire("expiring", ProfileStandard); err == nil {
+		t.Fatal("Acquire(expired tombstone) succeeded")
+	}
+	clock.Advance(time.Minute)
+	if got := store.ReapExpired(); got != 0 {
+		t.Fatalf("ReapExpired() counted tombstone expiry=%d, want 0", got)
+	}
+	reused := acquireTestScope(t, store, "expiring")
+	reused.Release()
+}
+
+func TestScopeStore_ExpiryTombstonesUseBoundedFIFO(t *testing.T) {
+	clock := newFakeClock()
+	store := newTestScopeStore(t, clock, StoreConfig{
+		TTL:                time.Hour,
+		MaxScopes:          1,
+		MaxEntriesPerScope: 1,
+		MaxTotalEntries:    1,
+	})
+
+	for i := range 129 {
+		scopeID := fmt.Sprintf("scope-%03d", i)
+		lease := acquireTestScope(t, store, scopeID)
+		_, _, err := lease.GetOrCreate("HOST", scopeID, ProvenanceInput, fixedCandidate("alias-"+scopeID))
+		if err != nil {
+			t.Fatal(err)
+		}
+		lease.Release()
+		if result, err := store.Clear(scopeID); err != nil || result != ClearCompleted {
+			t.Fatalf("Clear(%q)=(%q, %v)", scopeID, result, err)
+		}
+		if snapshot := store.Snapshot(); snapshot.ScopesActive != 0 || snapshot.Entries != 0 {
+			t.Fatalf("snapshot after churn %d=%+v", i, snapshot)
+		}
+	}
+
+	oldest := acquireTestScope(t, store, "scope-000")
+	oldest.Release()
+	if result, err := store.Clear("scope-000"); err != nil || result != ClearCompleted {
+		t.Fatalf("Clear(reused oldest)=(%q, %v)", result, err)
+	}
+	if _, err := store.Acquire("scope-128", ProfileStandard); err == nil {
+		t.Fatal("newest tombstone was not retained after FIFO churn")
+	}
+
+	clock.Advance(time.Hour)
+	newest := acquireTestScope(t, store, "scope-128")
+	newest.Release()
+}
+
+func TestScopeStore_InspectReturnsSortedIndependentCopy(t *testing.T) {
+	clock := newFakeClock()
+	store := newTestScopeStore(t, clock, StoreConfig{
+		TTL:                time.Hour,
+		MaxScopes:          1,
+		MaxEntriesPerScope: 16,
+		MaxTotalEntries:    16,
+	})
+	lease := acquireTestScope(t, store, "inspect")
+	defer lease.Release()
+
+	want := make([]MappingEntry, 0, 12)
+	for i := 11; i >= 0; i-- {
+		entity := fmt.Sprintf("ENTITY-%02d", i/3)
+		synthetic := fmt.Sprintf("synthetic-%02d", i)
+		entry, _, err := lease.GetOrCreate(entity, fmt.Sprintf("original-%02d", i), ProvenanceInput, fixedCandidate(synthetic))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want = append(want, entry)
+	}
+	slices.SortFunc(want, func(a, b MappingEntry) int {
+		if a.Entity != b.Entity {
+			if a.Entity < b.Entity {
+				return -1
+			}
+			return 1
+		}
+		if a.Synthetic < b.Synthetic {
+			return -1
+		}
+		if a.Synthetic > b.Synthetic {
+			return 1
+		}
+		return 0
+	})
+
+	got := mustInspect(t, store, "inspect")
+	if !slices.Equal(got, want) {
+		t.Fatalf("Inspect() order=%+v, want %+v", got, want)
+	}
+	got[0].Original = "mutated-copy"
+	got[0].Synthetic = "mutated-copy"
+	if second := mustInspect(t, store, "inspect"); !slices.Equal(second, want) {
+		t.Fatalf("Inspect() retained caller mutation: %+v", second)
+	}
+}
+
+func newTestScopeStore(t *testing.T, clock Clock, config StoreConfig) *ScopeStore {
+	t.Helper()
+
+	store, err := NewScopeStore(config, clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store
+}
+
+func acquireTestScope(t *testing.T, store *ScopeStore, scopeID string) *ScopeLease {
+	t.Helper()
+
+	lease, err := store.Acquire(scopeID, ProfileStandard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return lease
+}
+
+func fixedCandidate(value string) func(uint32) (string, error) {
+	return func(uint32) (string, error) {
+		return value, nil
+	}
+}
+
+func findScopeInfo(t *testing.T, infos []ScopeInfo, scopeID string) ScopeInfo {
+	t.Helper()
+
+	info, ok := scopeInfo(infos, scopeID)
+	if !ok {
+		t.Fatalf("scope %q not found in %+v", scopeID, infos)
+	}
+	return info
+}
+
+func scopeInfo(infos []ScopeInfo, scopeID string) (ScopeInfo, bool) {
+	for _, info := range infos {
+		if info.ID == scopeID {
+			return info, true
+		}
+	}
+	return ScopeInfo{}, false
+}
+
+func mustInspect(t *testing.T, store *ScopeStore, scopeID string) []MappingEntry {
+	t.Helper()
+
+	entries, err := store.Inspect(scopeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return entries
+}
