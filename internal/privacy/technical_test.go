@@ -458,6 +458,202 @@ func TestTechnical_CoordinateScopeStabilityAndUnlinkability(t *testing.T) {
 	}
 }
 
+func TestTechnical_CoordinateConcreteRetainedScopeCollision(t *testing.T) {
+	mapper := newTestTechnicalMapper(t, []byte("0123456789abcdef0123456789abcdef"))
+	store := newCoordinateTestStore(t, 2)
+	firstLease := acquireTestScope(t, store, "coordinate-many-scope-000")
+	defer firstLease.Release()
+	secondLease := acquireTestScope(t, store, "coordinate-many-scope-005")
+	defer secondLease.Release()
+
+	original := "37.7°N, 122.4°W"
+	first := mapTechnical(t, mapper, firstLease, "COORDINATES", original, ProvenanceInput)
+	second := mapTechnical(t, mapper, secondLease, "COORDINATES", original, ProvenanceInput)
+	if first == second {
+		t.Fatalf("distinct retained scopes reused coordinate alias %q", first)
+	}
+}
+
+func TestTechnical_CoordinateRetainedDefaultScopeUniqueness(t *testing.T) {
+	const retainedScopes = 128
+
+	mapper := newTestTechnicalMapper(t, []byte("0123456789abcdef0123456789abcdef"))
+	store := newCoordinateTestStore(t, retainedScopes)
+	aliases := make(map[string]string, retainedScopes)
+	leases := make([]*ScopeLease, 0, retainedScopes)
+	defer func() {
+		for _, lease := range leases {
+			lease.Release()
+		}
+	}()
+
+	for index := range retainedScopes {
+		scopeID := fmt.Sprintf("coordinate-many-scope-%03d", index)
+		lease := acquireTestScope(t, store, scopeID)
+		leases = append(leases, lease)
+		original := "37.7°N, 122.4°W"
+		alias := mapTechnical(t, mapper, lease, "COORDINATES", original, ProvenanceInput)
+		if priorScope, exists := aliases[alias]; exists {
+			t.Fatalf("scopes %q and %q reused coordinate alias %q", priorScope, scopeID, alias)
+		}
+		aliases[alias] = scopeID
+		if repeated := mapTechnical(t, mapper, lease, "COORDINATES", original, ProvenanceInput); repeated != alias {
+			t.Fatalf("scope %q repeat = %q, want %q", scopeID, repeated, alias)
+		}
+		assertTechnicalCoordinateDistance(
+			t,
+			mapper,
+			lease,
+			original,
+			"34.0°N, 118.2°W",
+		)
+	}
+}
+
+func TestTechnical_CoordinateConcurrentRetainedScopeAllocation(t *testing.T) {
+	const retainedScopes = 128
+
+	mapper := newTestTechnicalMapper(t, []byte("0123456789abcdef0123456789abcdef"))
+	store := newCoordinateTestStore(t, retainedScopes)
+	leases := make([]*ScopeLease, 0, retainedScopes)
+	for index := range retainedScopes {
+		leases = append(leases, acquireTestScope(t, store, fmt.Sprintf("coordinate-concurrent-%03d", index)))
+	}
+	defer func() {
+		for _, lease := range leases {
+			lease.Release()
+		}
+	}()
+
+	type result struct {
+		scopeID string
+		alias   string
+		err     error
+	}
+	results := make(chan result, retainedScopes)
+	var group sync.WaitGroup
+	for _, lease := range leases {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			alias, err := mapper.Map(lease, "COORDINATES", "12.3°S, 179.9°E", ProvenanceInput)
+			results <- result{scopeID: lease.scope.id, alias: alias, err: err}
+		}()
+	}
+	group.Wait()
+	close(results)
+
+	aliases := make(map[string]string, retainedScopes)
+	for mapped := range results {
+		if mapped.err != nil {
+			t.Fatalf("scope %q: %v", mapped.scopeID, mapped.err)
+		}
+		if priorScope, exists := aliases[mapped.alias]; exists {
+			t.Fatalf("concurrent scopes %q and %q reused alias %q", priorScope, mapped.scopeID, mapped.alias)
+		}
+		aliases[mapped.alias] = mapped.scopeID
+	}
+}
+
+func TestTechnical_CoordinateRegistryPrunesClearedAndExpiredScopes(t *testing.T) {
+	mapper := newTestTechnicalMapper(t, []byte("0123456789abcdef0123456789abcdef"))
+	clock := newFakeClock()
+	store := newTestScopeStore(t, clock, StoreConfig{
+		TTL:                time.Minute,
+		MaxScopes:          4,
+		MaxEntriesPerScope: 2,
+		MaxTotalEntries:    8,
+	})
+
+	cleared := acquireTestScope(t, store, "coordinate-cleared")
+	mapTechnical(t, mapper, cleared, "COORDINATES", "37.7°N, 122.4°W", ProvenanceInput)
+	cleared.Release()
+	if result, err := store.Clear("coordinate-cleared"); err != nil || result != ClearCompleted {
+		t.Fatalf("Clear(coordinate-cleared) = (%q, %v)", result, err)
+	}
+
+	expired := acquireTestScope(t, store, "coordinate-expired")
+	mapTechnical(t, mapper, expired, "COORDINATES", "37.7°N, 122.4°W", ProvenanceInput)
+	expired.Release()
+	clock.Advance(2 * time.Minute)
+	if reaped := store.ReapExpired(); reaped != 1 {
+		t.Fatalf("ReapExpired() = %d, want 1", reaped)
+	}
+
+	retained := acquireTestScope(t, store, "coordinate-retained")
+	defer retained.Release()
+	mapTechnical(t, mapper, retained, "COORDINATES", "37.7°N, 122.4°W", ProvenanceInput)
+
+	mapper.coordinateMu.Lock()
+	registry := mapper.coordinateRegistries[store]
+	if registry == nil {
+		mapper.coordinateMu.Unlock()
+		t.Fatal("coordinate registry missing after allocation")
+	}
+	if len(registry.byScope) != 1 || len(registry.byRotation) != 1 {
+		mapper.coordinateMu.Unlock()
+		t.Fatalf("registry sizes = (%d scopes, %d rotations), want (1, 1)", len(registry.byScope), len(registry.byRotation))
+	}
+	_, hasCleared := registry.byScope["coordinate-cleared"]
+	_, hasExpired := registry.byScope["coordinate-expired"]
+	_, hasRetained := registry.byScope["coordinate-retained"]
+	mapper.coordinateMu.Unlock()
+	if hasCleared || hasExpired || !hasRetained {
+		t.Fatalf("registry IDs: cleared=%t expired=%t retained=%t", hasCleared, hasExpired, hasRetained)
+	}
+}
+
+func TestTechnical_CoordinateSymmetryExhaustionIsTypedAndFailClosed(t *testing.T) {
+	const totalScopes = coordinateSymmetryCount + 1
+
+	mapper := newTestTechnicalMapper(t, []byte("0123456789abcdef0123456789abcdef"))
+	store := newTestScopeStore(t, newFakeClock(), StoreConfig{
+		TTL:                time.Hour,
+		MaxScopes:          totalScopes,
+		MaxEntriesPerScope: 1,
+		MaxTotalEntries:    totalScopes,
+	})
+	for index := 0; index < coordinateSymmetryCount; index++ {
+		lease := acquireTestScope(t, store, fmt.Sprintf("coordinate-capacity-%04d", index))
+		lease.Release()
+	}
+	target := acquireTestScope(t, store, "coordinate-capacity-target")
+	defer target.Release()
+
+	registry := &coordinateRotationRegistry{
+		byScope:    make(map[string]int, coordinateSymmetryCount),
+		byRotation: make(map[int]string, coordinateSymmetryCount),
+	}
+	for rotationIndex := 0; rotationIndex < coordinateSymmetryCount; rotationIndex++ {
+		scopeID := fmt.Sprintf("coordinate-capacity-%04d", rotationIndex)
+		registry.byScope[scopeID] = rotationIndex
+		registry.byRotation[rotationIndex] = scopeID
+	}
+	mapper.coordinateMu.Lock()
+	mapper.coordinateRegistries[store] = registry
+	mapper.coordinateMu.Unlock()
+
+	alias, err := mapper.Map(target, "COORDINATES", "37.7°N, 122.4°W", ProvenanceInput)
+	var capacityErr *TechnicalCapacityError
+	if alias != "" || !errors.As(err, &capacityErr) {
+		t.Fatalf("exhausted Map() = (%q, %v), want empty alias and *TechnicalCapacityError", alias, err)
+	}
+	if entries := mustInspect(t, store, "coordinate-capacity-target"); len(entries) != 0 {
+		t.Fatalf("exhausted target stored %d mappings, want 0", len(entries))
+	}
+}
+
+func newCoordinateTestStore(t *testing.T, maxScopes int) *ScopeStore {
+	t.Helper()
+
+	return newTestScopeStore(t, newFakeClock(), StoreConfig{
+		TTL:                time.Hour,
+		MaxScopes:          maxScopes,
+		MaxEntriesPerScope: 4,
+		MaxTotalEntries:    maxScopes * 4,
+	})
+}
+
 func assertTechnicalCoordinateDistance(
 	t *testing.T,
 	mapper *TechnicalMapper,

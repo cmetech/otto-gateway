@@ -13,9 +13,12 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 const technicalHMACDomain = "otto-gateway/privacy/technical/v1"
+
+const coordinateSymmetryCount = 7199
 
 var (
 	technicalMACPattern  = regexp.MustCompile(`^(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$|^(?:[0-9A-Fa-f]{2}-){5}[0-9A-Fa-f]{2}$`)
@@ -48,6 +51,17 @@ func (e *TechnicalCapacityError) Error() string {
 // TechnicalMapper creates deterministic, scope-local technical aliases.
 type TechnicalMapper struct {
 	aliasKey []byte
+
+	// Lock order is coordinateMu, then a ScopeStore.mu for ID-only pruning.
+	// No scope lock is acquired in this path, and stores never call back into
+	// the mapper. Mapping callbacks run only after coordinateMu is released.
+	coordinateMu         sync.Mutex
+	coordinateRegistries map[*ScopeStore]*coordinateRotationRegistry
+}
+
+type coordinateRotationRegistry struct {
+	byScope    map[string]int
+	byRotation map[int]string
 }
 
 // NewTechnicalMapper copies the non-empty key used for candidate HMACs.
@@ -55,7 +69,10 @@ func NewTechnicalMapper(aliasKey []byte) (*TechnicalMapper, error) {
 	if len(aliasKey) == 0 {
 		return nil, errTechnicalAliasKey
 	}
-	return &TechnicalMapper{aliasKey: append([]byte(nil), aliasKey...)}, nil
+	return &TechnicalMapper{
+		aliasKey:             append([]byte(nil), aliasKey...),
+		coordinateRegistries: make(map[*ScopeStore]*coordinateRotationRegistry),
+	}, nil
 }
 
 // Map returns the stable reversible alias for one technical value.
@@ -192,7 +209,10 @@ func (m *TechnicalMapper) mapCoordinates(lease *ScopeLease, original string, pro
 	if err != nil {
 		return "", err
 	}
-	rotation := m.coordinateRotation(lease.scope.id)
+	rotation, err := m.coordinateRotation(lease)
+	if err != nil {
+		return "", err
+	}
 	synthetic := rotateTechnicalCoordinate(coordinate, rotation)
 
 	entry, _, err := lease.GetOrCreate("COORDINATES", original, provenance, func(attempt uint32) (string, error) {
@@ -320,23 +340,102 @@ func parseTechnicalCoordinate(original string) (technicalCoordinate, error) {
 	}, nil
 }
 
-func (m *TechnicalMapper) coordinateRotation(scopeID string) technicalRotation {
-	digest := m.derive(scopeID, "COORDINATES", "rotation", 0)
-	// These 719 non-identity proper rotations preserve every decimal
-	// latitude/longitude grid: 359 whole-degree rotations about the polar
-	// axis, plus 360 half-turns about half-degree-spaced equatorial axes.
+func (m *TechnicalMapper) coordinateRotation(lease *ScopeLease) (technicalRotation, error) {
+	rotationIndex, err := m.coordinateRotationIndex(lease)
+	if err != nil {
+		return technicalRotation{}, err
+	}
+	return coordinateRotationFromIndex(rotationIndex), nil
+}
+
+func (m *TechnicalMapper) coordinateRotationIndex(lease *ScopeLease) (int, error) {
+	m.coordinateMu.Lock()
+	defer m.coordinateMu.Unlock()
+
+	m.pruneCoordinateRegistriesLocked()
+	registry := m.coordinateRegistries[lease.store]
+	if registry == nil {
+		registry = &coordinateRotationRegistry{
+			byScope:    make(map[string]int),
+			byRotation: make(map[int]string),
+		}
+		m.coordinateRegistries[lease.store] = registry
+	}
+	if rotationIndex, ok := registry.byScope[lease.scope.id]; ok {
+		return rotationIndex, nil
+	}
+
+	for attempt := 0; attempt < coordinateSymmetryCount; attempt++ {
+		rotationIndex := m.coordinateRotationCandidate(lease.scope.id, attempt)
+		if _, collision := registry.byRotation[rotationIndex]; collision {
+			continue
+		}
+		registry.byScope[lease.scope.id] = rotationIndex
+		registry.byRotation[rotationIndex] = lease.scope.id
+		return rotationIndex, nil
+	}
+	return 0, &TechnicalCapacityError{Entity: "COORDINATES"}
+}
+
+func (m *TechnicalMapper) pruneCoordinateRegistriesLocked() {
+	for store, registry := range m.coordinateRegistries {
+		store.mu.Lock()
+		retained := make(map[string]struct{}, len(store.scopes))
+		for scopeID := range store.scopes {
+			retained[scopeID] = struct{}{}
+		}
+		store.mu.Unlock()
+
+		for scopeID, rotationIndex := range registry.byScope {
+			if _, ok := retained[scopeID]; ok {
+				continue
+			}
+			delete(registry.byScope, scopeID)
+			delete(registry.byRotation, rotationIndex)
+		}
+		if len(registry.byScope) == 0 {
+			delete(m.coordinateRegistries, store)
+		}
+	}
+}
+
+func (m *TechnicalMapper) coordinateRotationCandidate(scopeID string, attempt int) int {
+	startDigest := m.derive(scopeID, "COORDINATES", "rotation", 0)
+	strideDigest := m.derive(scopeID, "COORDINATES", "rotation", 1)
+	start := int(binary.BigEndian.Uint64(startDigest[:8]) % coordinateSymmetryCount)
+	stride := 1 + int(binary.BigEndian.Uint64(strideDigest[:8])%(coordinateSymmetryCount-1))
+	for greatestCommonDivisor(stride, coordinateSymmetryCount) != 1 {
+		stride++
+		if stride == coordinateSymmetryCount {
+			stride = 1
+		}
+	}
+	return (start + attempt*stride) % coordinateSymmetryCount
+}
+
+func greatestCommonDivisor(left, right int) int {
+	for right != 0 {
+		left, right = right, left%right
+	}
+	return left
+}
+
+func coordinateRotationFromIndex(rotationIndex int) technicalRotation {
+	// These 7,199 non-identity proper rotations preserve every accepted
+	// decimal latitude/longitude grid: 3,599 rotations about the polar
+	// axis in 0.1-degree steps, plus 3,600 equatorial half-turns whose
+	// doubled axis longitude advances in 0.1-degree steps.
 	// Applying them through Rodrigues preserves spherical distance, while
 	// their coordinate-space symmetries avoid precision-losing rounding.
-	symmetry := int(binary.BigEndian.Uint16(digest[:2])) % 719
-	if symmetry < 359 {
+	if rotationIndex < 3599 {
 		return technicalRotation{
 			axis:  [3]float64{0, 0, 1},
-			angle: float64(symmetry+1) * math.Pi / 180,
+			angle: float64(rotationIndex+1) * math.Pi / 1800,
 		}
 	}
 
-	equatorialIndex := symmetry - 359
-	axisLongitude := float64(equatorialIndex) * math.Pi / 360
+	equatorialIndex := rotationIndex - 3599
+	axisLongitude := float64(equatorialIndex) * math.Pi / 3600
 	return technicalRotation{
 		axis:  [3]float64{math.Cos(axisLongitude), math.Sin(axisLongitude), 0},
 		angle: math.Pi,
