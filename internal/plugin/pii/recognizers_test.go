@@ -129,6 +129,36 @@ func TestIPv6Recognizer_NetParseIPValidator(t *testing.T) {
 	}
 }
 
+func TestCIDRRecognizers_IncludeValidOptionalSuffix(t *testing.T) {
+	cases := []struct {
+		entity string
+		input  string
+		want   bool
+	}{
+		{entity: "IPv4", input: "192.168.1.7", want: true},
+		{entity: "IPv4", input: "192.168.1.7/24", want: true},
+		{entity: "IPv4", input: "192.168.1.7/33", want: false},
+		{entity: "IPv6", input: "2001:db8::7", want: true},
+		{entity: "IPv6", input: "2001:db8::7/64", want: true},
+		{entity: "IPv6", input: "2001:db8::/64", want: true},
+		{entity: "IPv6", input: "fe80::/64", want: true},
+		{entity: "IPv6", input: "::/64", want: true},
+		{entity: "IPv6", input: "2001:db8::7/129", want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.entity+"/"+tc.input, func(t *testing.T) {
+			r := findRecognizer(t, tc.entity)
+			matched, validated := regexAndValidate(r, tc.input)
+			if got := matched && validated; got != tc.want {
+				t.Fatalf("recognition = %t (matched=%t validated=%t), want %t", got, matched, validated, tc.want)
+			}
+			if tc.want && r.Pattern.FindString(tc.input) != tc.input {
+				t.Fatalf("captured span = %q, want %q", r.Pattern.FindString(tc.input), tc.input)
+			}
+		})
+	}
+}
+
 // TestSSNRecognizer_ReservedRangeValidator asserts the SSN regex (RE2
 // permissive shape per RESEARCH Pitfall 1) + validateSSNRange reserved-
 // range filter.

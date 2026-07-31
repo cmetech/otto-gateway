@@ -30,6 +30,7 @@ package pii
 
 import (
 	"net"
+	"net/netip"
 	"regexp"
 	"strconv"
 	"strings"
@@ -68,8 +69,10 @@ type Recognizer struct {
 //	                with TLD 2-24 chars.
 //	ipv4Re        — permissive dotted-quad; validateIPv4Octets bounds
 //	                each octet to 0-255.
-//	ipv6Re        — permissive hex-colon shape; validateIPv6NetParseIP
-//	                defers to net.ParseIP for the actual structural check.
+//	ipv6Re        — permissive hex-colon shape with optional CIDR; the
+//	                leading alternative captures canonical one-group or
+//	                all-zero networks ending in ::/prefix. Validation
+//	                defers to netip.ParsePrefix or net.ParseIP.
 //	ssnRe         — permissive 3-2-4 segment shape per RESEARCH Pitfall 1
 //	                (RE2 has no negative lookahead); validateSSNRange
 //	                rejects SSA-reserved ranges.
@@ -78,9 +81,12 @@ type Recognizer struct {
 //	usPhoneRe     — NANP shape: optional +1 prefix, area code starts
 //	                with [2-9] per RESEARCH §Pattern 4 line 536.
 var (
-	emailRe      = regexp.MustCompile(`(?i)\b[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,24}\b`)
-	ipv4Re       = regexp.MustCompile(`\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b`)
-	ipv6Re       = regexp.MustCompile(`\b(?:[0-9A-Fa-f]{1,4}:){2,7}[0-9A-Fa-f:]{1,4}\b`)
+	emailRe = regexp.MustCompile(`(?i)\b[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,24}\b`)
+	ipv4Re  = regexp.MustCompile(`\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?:/[0-9]{1,3})?\b`)
+	ipv6Re  = regexp.MustCompile(
+		`(?:\b[0-9A-Fa-f]{1,4}::|\B::)/[0-9]{1,3}\b` +
+			`|\b(?:[0-9A-Fa-f]{1,4}:){2,7}[0-9A-Fa-f:]{1,4}(?:/[0-9]{1,3})?\b`,
+	)
 	ssnRe        = regexp.MustCompile(`\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b`)
 	creditCardRe = regexp.MustCompile(`\b(?:[0-9][ \-]?){12,18}[0-9]\b`)
 	// usPhoneRe — NANP shape with capture-fidelity boundary placement.
@@ -270,6 +276,10 @@ var (
 // already gates "1-3 digits per octet, four octets total", so a Split
 // of length 4 with each part in range is the post-filter contract.
 func validateIPv4Octets(s string) bool {
+	if strings.Contains(s, "/") {
+		prefix, err := netip.ParsePrefix(s)
+		return err == nil && prefix.Addr().Is4()
+	}
 	parts := strings.Split(s, ".")
 	if len(parts) != 4 {
 		return false
@@ -289,6 +299,10 @@ func validateIPv4Octets(s string) bool {
 // strings, so we reject those here even though the ipv6Re regex shape
 // already requires colons.
 func validateIPv6NetParseIP(s string) bool {
+	if strings.Contains(s, "/") {
+		prefix, err := netip.ParsePrefix(s)
+		return err == nil && prefix.Addr().Is6()
+	}
 	return net.ParseIP(s) != nil && strings.Contains(s, ":")
 }
 
