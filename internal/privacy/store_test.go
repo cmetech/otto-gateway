@@ -329,6 +329,248 @@ func TestScopeStore_ProvenanceConcurrentMixedCallsConvergeToInput(t *testing.T) 
 	}
 }
 
+func TestScopeStore_CoordinateRotationStableUniqueAndCollisionProbes(t *testing.T) {
+	store := newCoordinateRotationTestStore(t, 2)
+	firstLease := acquireTestScope(t, store, "coordinate-a")
+	defer firstLease.Release()
+	secondLease := acquireTestScope(t, store, "coordinate-b")
+	defer secondLease.Release()
+
+	firstCalls := 0
+	first, err := store.coordinateRotationIndex("coordinate-a", func(attempt uint32) (uint16, error) {
+		firstCalls++
+		if attempt != 0 {
+			t.Fatalf("first candidate attempt=%d, want 0", attempt)
+		}
+		return 7, nil
+	})
+	if err != nil || first != 7 {
+		t.Fatalf("first rotation=(%d, %v), want (7, nil)", first, err)
+	}
+	repeated, err := store.coordinateRotationIndex("coordinate-a", func(uint32) (uint16, error) {
+		firstCalls++
+		return 99, nil
+	})
+	if err != nil || repeated != first || firstCalls != 1 {
+		t.Fatalf("stable rotation=(%d, %v), calls=%d, want (%d, nil, 1)", repeated, err, firstCalls, first)
+	}
+
+	var secondAttempts []uint32
+	second, err := store.coordinateRotationIndex("coordinate-b", func(attempt uint32) (uint16, error) {
+		secondAttempts = append(secondAttempts, attempt)
+		if attempt == 0 {
+			return 7, nil
+		}
+		return 9, nil
+	})
+	if err != nil || second != 9 || !slices.Equal(secondAttempts, []uint32{0, 1}) {
+		t.Fatalf("collision-probed rotation=(%d, %v), attempts=%v", second, err, secondAttempts)
+	}
+	if len(store.coordinateByScope) != 2 || len(store.coordinateByIndex) != 2 {
+		t.Fatalf("registry sizes=(%d scopes, %d indices), want (2, 2)", len(store.coordinateByScope), len(store.coordinateByIndex))
+	}
+	if store.coordinateByScope["coordinate-a"] != 7 || store.coordinateByScope["coordinate-b"] != 9 ||
+		store.coordinateByIndex[7] != "coordinate-a" || store.coordinateByIndex[9] != "coordinate-b" {
+		t.Fatalf("registry forward=%v reverse=%v", store.coordinateByScope, store.coordinateByIndex)
+	}
+}
+
+func TestScopeStore_CoordinateRotationPrunesLifecycleAndRejectsAbsentScope(t *testing.T) {
+	clock := newFakeClock()
+	store := newTestScopeStore(t, clock, StoreConfig{
+		TTL:                time.Minute,
+		MaxScopes:          3,
+		MaxEntriesPerScope: 1,
+		MaxTotalEntries:    3,
+	})
+
+	cleared := acquireTestScope(t, store, "coordinate-cleared")
+	if _, err := store.coordinateRotationIndex("coordinate-cleared", fixedRotationCandidate(1)); err != nil {
+		t.Fatal(err)
+	}
+	cleared.Release()
+	if result, err := store.Clear("coordinate-cleared"); err != nil || result != ClearCompleted {
+		t.Fatalf("Clear(coordinate-cleared)=(%q, %v)", result, err)
+	}
+
+	expired := acquireTestScope(t, store, "coordinate-expired")
+	if _, err := store.coordinateRotationIndex("coordinate-expired", fixedRotationCandidate(2)); err != nil {
+		t.Fatal(err)
+	}
+	expired.Release()
+	clock.Advance(2 * time.Minute)
+	if got := store.ReapExpired(); got != 1 {
+		t.Fatalf("ReapExpired()=%d, want 1", got)
+	}
+
+	retained := acquireTestScope(t, store, "coordinate-retained")
+	defer retained.Release()
+	if _, err := store.coordinateRotationIndex("coordinate-retained", fixedRotationCandidate(3)); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.coordinateByScope) != 1 || len(store.coordinateByIndex) != 1 ||
+		store.coordinateByScope["coordinate-retained"] != 3 || store.coordinateByIndex[3] != "coordinate-retained" {
+		t.Fatalf("pruned registry forward=%v reverse=%v", store.coordinateByScope, store.coordinateByIndex)
+	}
+
+	candidateCalls := 0
+	for _, scopeID := range []string{"coordinate-cleared", "coordinate-expired", "never-retained"} {
+		if _, err := store.coordinateRotationIndex(scopeID, func(uint32) (uint16, error) {
+			candidateCalls++
+			return 4, nil
+		}); err == nil {
+			t.Fatalf("coordinateRotationIndex(%q) succeeded for absent scope", scopeID)
+		}
+	}
+	if candidateCalls != 0 {
+		t.Fatalf("absent-scope candidate calls=%d, want 0", candidateCalls)
+	}
+}
+
+func TestScopeStore_CoordinateRotationCandidateErrorStoresNoReservation(t *testing.T) {
+	store := newCoordinateRotationTestStore(t, 2)
+	firstLease := acquireTestScope(t, store, "coordinate-reserved")
+	defer firstLease.Release()
+	targetLease := acquireTestScope(t, store, "coordinate-target")
+	defer targetLease.Release()
+
+	if _, err := store.coordinateRotationIndex("coordinate-reserved", fixedRotationCandidate(12)); err != nil {
+		t.Fatal(err)
+	}
+	wantErr := &TechnicalCapacityError{Entity: "COORDINATES"}
+	rotation, err := store.coordinateRotationIndex("coordinate-target", func(attempt uint32) (uint16, error) {
+		if attempt == 0 {
+			return 12, nil
+		}
+		return 0, wantErr
+	})
+	var capacityErr *TechnicalCapacityError
+	if rotation != 0 || !errors.As(err, &capacityErr) || capacityErr != wantErr {
+		t.Fatalf("exhausted rotation=(%d, %v), want (0, typed candidate error)", rotation, err)
+	}
+	if _, reserved := store.coordinateByScope["coordinate-target"]; reserved {
+		t.Fatal("candidate error stored target reservation")
+	}
+	if len(store.coordinateByScope) != 1 || len(store.coordinateByIndex) != 1 {
+		t.Fatalf("registry after candidate error forward=%v reverse=%v", store.coordinateByScope, store.coordinateByIndex)
+	}
+}
+
+func TestScopeStore_CoordinateRotationConcurrentAllocationsAreUnique(t *testing.T) {
+	const scopeCount = 100
+
+	store := newCoordinateRotationTestStore(t, scopeCount)
+	leases := make([]*ScopeLease, 0, scopeCount)
+	for index := range scopeCount {
+		leases = append(leases, acquireTestScope(t, store, fmt.Sprintf("coordinate-concurrent-%03d", index)))
+	}
+	defer func() {
+		for _, lease := range leases {
+			lease.Release()
+		}
+	}()
+
+	type result struct {
+		scopeID string
+		index   uint16
+		err     error
+	}
+	results := make(chan result, scopeCount)
+	var workers sync.WaitGroup
+	workers.Add(scopeCount)
+	for scopeNumber, lease := range leases {
+		go func() {
+			defer workers.Done()
+			index, err := store.coordinateRotationIndex(lease.scope.id, func(attempt uint32) (uint16, error) {
+				if attempt >= scopeCount {
+					return 0, &TechnicalCapacityError{Entity: "COORDINATES"}
+				}
+				return uint16((scopeNumber + int(attempt)) % scopeCount), nil
+			})
+			results <- result{scopeID: lease.scope.id, index: index, err: err}
+		}()
+	}
+	workers.Wait()
+	close(results)
+
+	indices := make(map[uint16]string, scopeCount)
+	for result := range results {
+		if result.err != nil {
+			t.Fatalf("scope %q allocation failed: %v", result.scopeID, result.err)
+		}
+		if prior, exists := indices[result.index]; exists {
+			t.Fatalf("scopes %q and %q share rotation %d", prior, result.scopeID, result.index)
+		}
+		indices[result.index] = result.scopeID
+	}
+	if len(indices) != scopeCount || len(store.coordinateByScope) != scopeCount || len(store.coordinateByIndex) != scopeCount {
+		t.Fatalf("unique=%d forward=%d reverse=%d, want %d", len(indices), len(store.coordinateByScope), len(store.coordinateByIndex), scopeCount)
+	}
+	for _, lease := range leases {
+		want := store.coordinateByScope[lease.scope.id]
+		got, err := store.coordinateRotationIndex(lease.scope.id, func(uint32) (uint16, error) {
+			t.Fatal("stable lookup called candidate")
+			return 0, nil
+		})
+		if err != nil || got != want {
+			t.Fatalf("stable scope %q=(%d, %v), want %d", lease.scope.id, got, err, want)
+		}
+	}
+}
+
+func TestScopeStore_CoordinateRotationMultiStoreOwnershipIsIndependent(t *testing.T) {
+	const storeCount = 256
+
+	stores := make([]*ScopeStore, 0, storeCount)
+	candidateCalls := 0
+	for index := range storeCount {
+		store := newCoordinateRotationTestStore(t, 1)
+		scopeID := fmt.Sprintf("store-owned-%03d", index)
+		lease := acquireTestScope(t, store, scopeID)
+		rotation, err := store.coordinateRotationIndex(scopeID, func(attempt uint32) (uint16, error) {
+			candidateCalls++
+			if attempt != 0 {
+				t.Fatalf("store %d candidate attempt=%d, want 0", index, attempt)
+			}
+			return 41, nil
+		})
+		if err != nil || rotation != 41 {
+			t.Fatalf("store %d rotation=(%d, %v), want (41, nil)", index, rotation, err)
+		}
+		lease.Release()
+		if len(store.coordinateByScope) != 1 || len(store.coordinateByIndex) != 1 ||
+			store.coordinateByScope[scopeID] != 41 || store.coordinateByIndex[41] != scopeID {
+			t.Fatalf("store %d registry forward=%v reverse=%v", index, store.coordinateByScope, store.coordinateByIndex)
+		}
+		stores = append(stores, store)
+	}
+	if candidateCalls != storeCount {
+		t.Fatalf("candidate calls across %d stores=%d, want %d", storeCount, candidateCalls, storeCount)
+	}
+	for index, store := range stores {
+		if len(store.coordinateByScope) != 1 || len(store.coordinateByIndex) != 1 {
+			t.Fatalf("historical store %d registry sizes=(%d, %d), want (1, 1)", index, len(store.coordinateByScope), len(store.coordinateByIndex))
+		}
+	}
+}
+
+func fixedRotationCandidate(index uint16) func(uint32) (uint16, error) {
+	return func(uint32) (uint16, error) {
+		return index, nil
+	}
+}
+
+func newCoordinateRotationTestStore(t *testing.T, maxScopes int) *ScopeStore {
+	t.Helper()
+
+	return newTestScopeStore(t, newFakeClock(), StoreConfig{
+		TTL:                time.Hour,
+		MaxScopes:          maxScopes,
+		MaxEntriesPerScope: 1,
+		MaxTotalEntries:    maxScopes,
+	})
+}
+
 func TestScopeStore_CapacityIsAtomicAndSharedWithRelations(t *testing.T) {
 	clock := newFakeClock()
 	store := newTestScopeStore(t, clock, StoreConfig{

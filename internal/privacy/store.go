@@ -147,16 +147,19 @@ type tombstone struct {
 
 // ScopeStore owns bounded process-memory-only ledgers grouped by scope.
 type ScopeStore struct {
-	mu            sync.Mutex
-	config        StoreConfig
-	clock         Clock
-	scopes        map[string]*scopeState
-	totalEntries  atomic.Int64
-	tombstones    map[string]tombstone
-	tombstoneRing []tombstone
-	tombstoneHead int
-	tombstoneLen  int
-	nextSequence  uint64
+	mu                sync.Mutex
+	coordinateMu      sync.Mutex
+	config            StoreConfig
+	clock             Clock
+	scopes            map[string]*scopeState
+	coordinateByScope map[string]uint16
+	coordinateByIndex map[uint16]string
+	totalEntries      atomic.Int64
+	tombstones        map[string]tombstone
+	tombstoneRing     []tombstone
+	tombstoneHead     int
+	tombstoneLen      int
+	nextSequence      uint64
 }
 
 // ScopeLease holds one in-flight reference to a scope.
@@ -180,11 +183,13 @@ func NewScopeStore(config StoreConfig, clock Clock) (*ScopeStore, error) {
 	}
 
 	return &ScopeStore{
-		config:        config,
-		clock:         clock,
-		scopes:        make(map[string]*scopeState),
-		tombstones:    make(map[string]tombstone, tombstoneCapacity),
-		tombstoneRing: make([]tombstone, tombstoneCapacity),
+		config:            config,
+		clock:             clock,
+		scopes:            make(map[string]*scopeState),
+		coordinateByScope: make(map[string]uint16),
+		coordinateByIndex: make(map[uint16]string),
+		tombstones:        make(map[string]tombstone, tombstoneCapacity),
+		tombstoneRing:     make([]tombstone, tombstoneCapacity),
 	}, nil
 }
 
@@ -639,6 +644,84 @@ func promoteInputProvenanceLocked(
 	scope.forward[forwardKey] = entry
 	scope.reverse[mappingKey{entity: entry.Entity, value: entry.Synthetic}] = entry
 	return entry
+}
+
+func (s *ScopeStore) coordinateRotationIndex(
+	scopeID string,
+	candidate func(attempt uint32) (uint16, error),
+) (uint16, error) {
+	if candidate == nil {
+		return 0, errNilCandidate
+	}
+
+	for attempt := uint32(0); ; attempt++ {
+		s.coordinateMu.Lock()
+		retained, scopeErr := s.pruneCoordinateRotationsLocked(scopeID)
+		if !retained {
+			s.coordinateMu.Unlock()
+			return 0, scopeErr
+		}
+		if index, ok := s.coordinateByScope[scopeID]; ok {
+			s.coordinateMu.Unlock()
+			return index, nil
+		}
+		s.coordinateMu.Unlock()
+
+		index, err := candidate(attempt)
+		if err != nil {
+			return 0, err
+		}
+
+		s.coordinateMu.Lock()
+		retained, scopeErr = s.pruneCoordinateRotationsLocked(scopeID)
+		if !retained {
+			s.coordinateMu.Unlock()
+			return 0, scopeErr
+		}
+		if existing, ok := s.coordinateByScope[scopeID]; ok {
+			s.coordinateMu.Unlock()
+			return existing, nil
+		}
+		if _, collision := s.coordinateByIndex[index]; !collision {
+			s.coordinateByScope[scopeID] = index
+			s.coordinateByIndex[index] = scopeID
+			s.coordinateMu.Unlock()
+			return index, nil
+		}
+		s.coordinateMu.Unlock()
+
+		if attempt == ^uint32(0) {
+			return 0, errCandidateExhausted
+		}
+	}
+}
+
+// pruneCoordinateRotationsLocked requires coordinateMu. It snapshots only
+// retained scope IDs while briefly holding the store index lock, then releases
+// that lock before mutating the value-free coordinate registry.
+func (s *ScopeStore) pruneCoordinateRotationsLocked(scopeID string) (bool, error) {
+	s.mu.Lock()
+	retained := make(map[string]struct{}, len(s.scopes))
+	for retainedID := range s.scopes {
+		retained[retainedID] = struct{}{}
+	}
+	_, tombstoned := s.tombstones[scopeID]
+	s.mu.Unlock()
+
+	for retainedID, index := range s.coordinateByScope {
+		if _, ok := retained[retainedID]; ok {
+			continue
+		}
+		delete(s.coordinateByScope, retainedID)
+		delete(s.coordinateByIndex, index)
+	}
+	if _, ok := retained[scopeID]; ok {
+		return true, nil
+	}
+	if tombstoned {
+		return false, errScopeClosed
+	}
+	return false, errScopeNotFound
 }
 
 func (s *scopeState) lock() {

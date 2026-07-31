@@ -9,6 +9,56 @@ import (
 	"time"
 )
 
+func TestScopeStore_CoordinateRotationDifferentStoresDoNotSerialize(t *testing.T) {
+	storeA := newCoordinateRotationTestStore(t, 1)
+	leaseA := acquireTestScope(t, storeA, "coordinate-store-a")
+	defer leaseA.Release()
+	storeB := newCoordinateRotationTestStore(t, 1)
+	leaseB := acquireTestScope(t, storeB, "coordinate-store-b")
+	defer leaseB.Release()
+
+	candidateStarted := make(chan struct{})
+	releaseCandidate := make(chan struct{})
+	aDone := make(chan error, 1)
+	go func() {
+		_, err := storeA.coordinateRotationIndex("coordinate-store-a", func(uint32) (uint16, error) {
+			close(candidateStarted)
+			<-releaseCandidate
+			return 17, nil
+		})
+		aDone <- err
+	}()
+	<-candidateStarted
+
+	bDone := make(chan error, 1)
+	go func() {
+		rotation, err := storeB.coordinateRotationIndex("coordinate-store-b", fixedRotationCandidate(17))
+		if err == nil && rotation != 17 {
+			err = fmt.Errorf("store B rotation=%d, want 17", rotation)
+		}
+		bDone <- err
+	}()
+
+	select {
+	case err := <-bDone:
+		if err != nil {
+			close(releaseCandidate)
+			<-aDone
+			t.Fatal(err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		close(releaseCandidate)
+		<-aDone
+		<-bDone
+		t.Fatal("store B coordinate reservation serialized behind store A candidate")
+	}
+
+	close(releaseCandidate)
+	if err := <-aDone; err != nil {
+		t.Fatalf("store A reservation failed: %v", err)
+	}
+}
+
 func TestScopeStore_NoGlobalConvoy_AcquireSameScopeWaiter(t *testing.T) {
 	store := newParallelTestStore(t)
 	blocked := blockScopeCandidate(t, store, "scope-a")
