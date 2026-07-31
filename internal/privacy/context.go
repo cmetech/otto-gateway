@@ -3,7 +3,6 @@ package privacy
 import (
 	"context"
 	"net/http"
-	"strings"
 	"sync"
 )
 
@@ -41,8 +40,21 @@ type RequestState struct {
 	standardInboundService uint64
 	lease                  *ScopeLease
 	authorizedTokens       map[string]struct{}
-	residualSafeTokens     map[string]struct{}
+	authorizedOccurrences  []authorizedOccurrence
 	receipt                string
+}
+
+type authorizedOccurrenceKind uint8
+
+const (
+	authorizedOccurrenceGeneral authorizedOccurrenceKind = iota + 1
+	authorizedOccurrenceOpaque
+)
+
+type authorizedOccurrence struct {
+	ordinal    int
+	start, end int
+	kind       authorizedOccurrenceKind
 }
 
 // NewRequestState returns bounded request-local state.
@@ -189,54 +201,50 @@ func (s *RequestState) tokenAuthorized(token string) bool {
 	return ok
 }
 
-func (s *RequestState) authorizeResidualSafeToken(token string) bool {
-	if !s.authorizeToken(token) {
+func (s *RequestState) authorizeOccurrence(ordinal, start, end int, kind authorizedOccurrenceKind) bool {
+	if s == nil || ordinal < 0 || start < 0 || end <= start || kind == 0 {
 		return false
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.residualSafeTokens == nil {
-		s.residualSafeTokens = make(map[string]struct{})
+	if len(s.authorizedOccurrences) >= maxAuthorizedTokens {
+		return false
 	}
-	s.residualSafeTokens[token] = struct{}{}
+	s.authorizedOccurrences = append(s.authorizedOccurrences, authorizedOccurrence{
+		ordinal: ordinal,
+		start:   start,
+		end:     end,
+		kind:    kind,
+	})
 	return true
 }
 
-func (s *RequestState) residualFindingSafe(value string, start, end int) bool {
-	if s == nil || start < 0 || end > len(value) || start >= end {
+func (s *RequestState) occurrenceAt(ordinal, start, end int, kind authorizedOccurrenceKind) bool {
+	if s == nil {
 		return false
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for token := range s.residualSafeTokens {
-		for offset := 0; offset <= len(value)-len(token); {
-			index := strings.Index(value[offset:], token)
-			if index < 0 {
-				break
-			}
-			tokenStart := offset + index
-			tokenEnd := tokenStart + len(token)
-			if start >= tokenStart && end <= tokenEnd {
-				return true
-			}
-			offset = tokenEnd
-		}
-	}
-	return false
-}
-
-func (s *RequestState) authorizedTokenAt(value string, offset int) bool {
-	if s == nil || offset < 0 || offset >= len(value) {
-		return false
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for token := range s.authorizedTokens {
-		if strings.HasPrefix(value[offset:], token) {
+	for _, occurrence := range s.authorizedOccurrences {
+		if occurrence.ordinal == ordinal && occurrence.start == start && occurrence.end == end && occurrence.kind == kind {
 			return true
 		}
 	}
 	return false
+}
+
+func (s *RequestState) occurrenceContaining(ordinal, start, end int) (authorizedOccurrence, bool) {
+	if s == nil {
+		return authorizedOccurrence{}, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, occurrence := range s.authorizedOccurrences {
+		if occurrence.ordinal == ordinal && start >= occurrence.start && end <= occurrence.end {
+			return occurrence, true
+		}
+	}
+	return authorizedOccurrence{}, false
 }
 
 func (s *RequestState) setReceipt(receipt Receipt) error {

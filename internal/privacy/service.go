@@ -23,8 +23,18 @@ var (
 	compatibilityDepthWarning sync.Once
 	serviceSequence           atomic.Uint64
 	scopeIDPattern            = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
-	privacyTokenPattern       = regexp.MustCompile(`\[(?:SECRET:[A-Z0-9_]+_[A-F0-9]{12}|PII:[A-Za-z0-9_]+:[A-Za-z0-9_-]+|[A-Z][A-Z0-9_]*(?:_[0-9]+)?|[A-Za-z0-9_]+:h-[A-Fa-f0-9]{8})\]`)
+	secretTokenPattern        = regexp.MustCompile(`^\[SECRET:[A-Z0-9_]+_[A-F0-9]{12}\]$`)
+	piiTokenPattern           = regexp.MustCompile(`^\[PII:[A-Za-z0-9_]+:[A-Za-z0-9_-]+\]$`)
+	replacementTokenPattern   = regexp.MustCompile(`^\[[A-Z][A-Z0-9_]*_[1-9][0-9]*\]$`)
+	hashTokenPattern          = regexp.MustCompile(`^\[[A-Z][A-Z0-9_]*:h-[A-Fa-f0-9]{8}\]$`)
+	reservedTokenLikePrefix   = regexp.MustCompile(`(?i)^[A-Za-z][A-Za-z0-9_]*(?:_[0-9]|:h-)`)
 )
+
+var reservedPrivacyEntities = []string{
+	"Email", "IPv4", "IPv6", "SSN", "CreditCard", "USPhone", "SIP_URI",
+	"IMEI", "IMSI", "MSISDN", "MAC_ADDRESS", "COORDINATES", "SITE",
+	"USAddress", "USState", "USZIP", "PERSON", "LOCATION",
+}
 
 const maxCompatibilityTraversalDepth = 64
 
@@ -394,7 +404,10 @@ func (s *Service) transformInbound(_ context.Context, state *RequestState, req *
 
 	counters := make(map[string]int)
 	next := make(map[string]int)
+	stringOrdinal := 0
 	transform := func(key, value string) (string, error) {
+		ordinal := stringOrdinal
+		stringOrdinal++
 		if value == "" {
 			return value, nil
 		}
@@ -410,6 +423,11 @@ func (s *Service) transformInbound(_ context.Context, state *RequestState, req *
 			return value, nil
 		}
 
+		type rewrite struct {
+			replacement string
+			kind        authorizedOccurrenceKind
+		}
+		rewrites := make([]rewrite, len(accepted))
 		transformed := value
 		for index := len(accepted) - 1; index >= 0; index-- {
 			finding := accepted[index]
@@ -417,15 +435,26 @@ func (s *Service) transformInbound(_ context.Context, state *RequestState, req *
 				return "", &Error{Code: CodeInternalError, Stage: "classify"}
 			}
 			original := value[finding.Start:finding.End]
-			replacement, action, err := s.strictReplacement(state, lease, finding, original, counters, next)
+			replacement, action, kind, err := s.strictReplacement(state, lease, finding, original, counters, next)
 			if err != nil {
 				return "", err
 			}
+			rewrites[index] = rewrite{replacement: replacement, kind: kind}
 			transformed = transformed[:finding.Start] + replacement + transformed[finding.End:]
 			state.addTransformed(1)
 			if observe := s.config.Observers.Transformation; observe != nil {
 				observe(ProfileStrict, finding.Entity, action)
 			}
+		}
+		shift := 0
+		for index, finding := range accepted {
+			rewrite := rewrites[index]
+			finalStart := finding.Start + shift
+			finalEnd := finalStart + len(rewrite.replacement)
+			if rewrite.kind != 0 && !state.authorizeOccurrence(ordinal, finalStart, finalEnd, rewrite.kind) {
+				return "", &Error{Code: CodeCapacityExceeded, Stage: "token"}
+			}
+			shift += len(rewrite.replacement) - (finding.End - finding.Start)
 		}
 		return transformed, nil
 	}
@@ -454,38 +483,38 @@ func (s *Service) strictReplacement(
 	original string,
 	counters map[string]int,
 	next map[string]int,
-) (string, Action, error) {
+) (string, Action, authorizedOccurrenceKind, error) {
 	action := s.strictAction(finding)
 	switch action {
 	case ActionPseudonymize:
 		mapped, err := s.mapper.Map(lease, finding.Entity, original, ProvenanceInput)
 		if err != nil {
 			if errors.Is(err, errCapacityExceeded) {
-				return "", action, &Error{Code: CodeCapacityExceeded, Stage: "mapping"}
+				return "", action, 0, &Error{Code: CodeCapacityExceeded, Stage: "mapping"}
 			}
-			return "", action, &Error{Code: CodeInternalError, Stage: "mapping"}
+			return "", action, 0, &Error{Code: CodeInternalError, Stage: "mapping"}
 		}
-		return mapped, action, nil
+		return mapped, action, 0, nil
 	case ActionDrop:
-		return "", action, nil
+		return "", action, 0, nil
 	case ActionEncrypt:
 		token, err := EncryptValue(s.config.PIIEncryptKey, finding.Entity, original)
 		if err != nil {
-			return "", action, &Error{Code: CodeInternalError, Stage: "encrypt"}
+			return "", action, 0, &Error{Code: CodeInternalError, Stage: "encrypt"}
 		}
 		_, payload, ok := ParseEncryptedToken(token)
-		if !ok || !state.authorizeResidualSafeToken(token) || !state.authorizeResidualSafeToken(payload) {
-			return "", action, &Error{Code: CodeCapacityExceeded, Stage: "token"}
+		if !ok || !state.authorizeToken(token) || !state.authorizeToken(payload) {
+			return "", action, 0, &Error{Code: CodeCapacityExceeded, Stage: "token"}
 		}
-		return token, action, nil
+		return token, action, authorizedOccurrenceOpaque, nil
 	case ActionReplace:
 		if finding.Category == CategorySecret {
 			scope := secretHMACDomain + "\x00" + state.Metadata().ScopeID
 			label := OneWaySecretLabel(s.config.AliasKey, scope, finding.Entity, original)
-			if !state.authorizeResidualSafeToken(label) {
-				return "", action, &Error{Code: CodeCapacityExceeded, Stage: "token"}
+			if !state.authorizeToken(label) {
+				return "", action, 0, &Error{Code: CodeCapacityExceeded, Stage: "token"}
 			}
-			return label, action, nil
+			return label, action, authorizedOccurrenceOpaque, nil
 		}
 		identity := finding.Entity + "|" + CanonicalForm(original)
 		counter, ok := counters[identity]
@@ -495,18 +524,22 @@ func (s *Service) strictReplacement(
 			counters[identity] = counter
 		}
 		replacement := ApplyAction(action, finding.Entity, original, counter, s.config.PIIHashKey, s.config.PIIEncryptKey)
-		if privacyTokenPattern.MatchString(replacement) && !state.authorizeToken(replacement) {
-			return "", action, &Error{Code: CodeCapacityExceeded, Stage: "token"}
+		if !state.authorizeToken(replacement) {
+			return "", action, 0, &Error{Code: CodeCapacityExceeded, Stage: "token"}
 		}
-		return replacement, action, nil
+		return replacement, action, authorizedOccurrenceGeneral, nil
 	case ActionMask, ActionHash:
 		replacement := ApplyAction(action, finding.Entity, original, 0, s.config.PIIHashKey, s.config.PIIEncryptKey)
-		if privacyTokenPattern.MatchString(replacement) && !state.authorizeToken(replacement) {
-			return "", action, &Error{Code: CodeCapacityExceeded, Stage: "token"}
+		kind := authorizedOccurrenceKind(0)
+		if action == ActionHash {
+			if !state.authorizeToken(replacement) {
+				return "", action, 0, &Error{Code: CodeCapacityExceeded, Stage: "token"}
+			}
+			kind = authorizedOccurrenceGeneral
 		}
-		return replacement, action, nil
+		return replacement, action, kind, nil
 	default:
-		return "", action, &Error{Code: CodeInternalError, Stage: "action"}
+		return "", action, 0, &Error{Code: CodeInternalError, Stage: "action"}
 	}
 }
 
@@ -515,61 +548,180 @@ func (s *Service) verifyInboundResidual(state *RequestState, req *canonical.Chat
 	if lease == nil {
 		return &Error{Code: CodeInternalError, Stage: "verify"}
 	}
+	ordinal := 0
 	return VisitRequestStrings(req, func(key, value string) error {
-		for _, marker := range []string{"[SECRET:", "[PII:"} {
-			for offset := 0; offset < len(value); {
-				index := strings.Index(value[offset:], marker)
-				if index < 0 {
-					break
-				}
-				start := offset + index
-				if !state.authorizedTokenAt(value, start) {
-					return s.blockInbound(state, "token")
-				}
-				offset = start + len(marker)
-			}
-		}
-		for _, token := range privacyTokenPattern.FindAllString(value, -1) {
-			if !state.tokenAuthorized(token) {
+		currentOrdinal := ordinal
+		ordinal++
+		for _, token := range s.parseReservedTokens(value) {
+			if !token.valid || !state.occurrenceAt(currentOrdinal, token.start, token.end, token.kind) {
 				return s.blockInbound(state, "token")
 			}
 		}
 
-		findings := make([]Finding, 0, 4)
-		if s.config.SecretClassifier != nil {
-			findings = append(findings, s.config.SecretClassifier.Classify(key, value)...)
-		}
+		configuredFindings := make([]Finding, 0, 4)
 		if s.config.Classifier != nil {
-			findings = append(findings, s.config.Classifier.Classify(key, value)...)
+			configuredFindings = s.config.Classifier.Classify(key, value)
 		}
+		for _, finding := range configuredFindings {
+			if !validFindingRange(finding, value) {
+				return &Error{Code: CodeInternalError, Stage: "verify"}
+			}
+			if _, ok := state.occurrenceContaining(currentOrdinal, finding.Start, finding.End); ok {
+				s.observeResidual(finding.Entity)
+				return s.blockInbound(state, "residual")
+			}
+		}
+
+		secretFindings := make([]Finding, 0, 4)
+		if s.config.SecretClassifier != nil {
+			secretFindings = s.config.SecretClassifier.Classify(key, value)
+		}
+		findings := make([]Finding, 0, len(secretFindings)+len(configuredFindings))
+		findings = append(findings, secretFindings...)
+		findings = append(findings, configuredFindings...)
 		for _, finding := range Arbitrate(findings) {
-			if finding.Start < 0 || finding.End > len(value) || finding.Start >= finding.End {
+			if !validFindingRange(finding, value) {
 				return &Error{Code: CodeInternalError, Stage: "verify"}
 			}
 			matched := value[finding.Start:finding.End]
-			safe := state.residualFindingSafe(value, finding.Start, finding.End)
-			switch finding.Category {
-			case CategorySecret:
-				// Generated privacy wrappers and one-way labels may contain
-				// substrings that look credential-shaped. Only spans inside a
-				// service-authorized residual-safe token are accepted.
-			case CategoryTechnical:
+			if occurrence, ok := state.occurrenceContaining(currentOrdinal, finding.Start, finding.End); ok {
+				if occurrence.kind == authorizedOccurrenceOpaque &&
+					findingIn(secretFindings, finding) &&
+					s.expectedOpaqueArtifact(key, value, occurrence, finding) {
+					continue
+				}
+				s.observeResidual(finding.Entity)
+				return s.blockInbound(state, "residual")
+			}
+			if finding.Category == CategoryTechnical {
 				entry, ok := lease.ResolveSynthetic(finding.Entity, matched)
-				safe = safe || ok && entry.Synthetic == matched && entry.Provenance == ProvenanceInput
-			default:
-				// Personal findings are accepted only when contained in an
-				// authorized encrypted token.
+				if ok && entry.Synthetic == matched && entry.Provenance == ProvenanceInput {
+					continue
+				}
 			}
-			if safe {
-				continue
-			}
-			if observe := s.config.Observers.Residual; observe != nil {
-				observe(ProfileStrict, "input", finding.Entity)
-			}
+			s.observeResidual(finding.Entity)
 			return s.blockInbound(state, "residual")
 		}
 		return nil
 	})
+}
+
+type reservedToken struct {
+	start, end int
+	kind       authorizedOccurrenceKind
+	valid      bool
+}
+
+func (s *Service) parseReservedTokens(value string) []reservedToken {
+	var tokens []reservedToken
+	for offset := 0; offset < len(value); {
+		relativeStart := strings.IndexByte(value[offset:], '[')
+		if relativeStart < 0 {
+			break
+		}
+		start := offset + relativeStart
+		tail := value[start+1:]
+		relativeClose := strings.IndexByte(tail, ']')
+		end := len(value)
+		if relativeClose >= 0 {
+			end = start + relativeClose + 2
+		}
+		raw := value[start:end]
+		reserved := hasReservedNamespacePrefix(tail, "SECRET") || hasReservedNamespacePrefix(tail, "PII") ||
+			reservedTokenLikePrefix.MatchString(tail) || s.hasReservedEntityPrefix(tail)
+		if !reserved {
+			offset = start + 1
+			continue
+		}
+
+		kind := authorizedOccurrenceGeneral
+		valid := relativeClose >= 0 && (replacementTokenPattern.MatchString(raw) || hashTokenPattern.MatchString(raw))
+		if secretTokenPattern.MatchString(raw) || piiTokenPattern.MatchString(raw) {
+			kind = authorizedOccurrenceOpaque
+			valid = relativeClose >= 0
+		}
+		if valid && end < len(value) && (value[end] == '_' || value[end] == ':') {
+			valid = false
+		}
+		tokens = append(tokens, reservedToken{start: start, end: end, kind: kind, valid: valid})
+		if relativeClose < 0 {
+			break
+		}
+		offset = end
+	}
+	return tokens
+}
+
+func (s *Service) hasReservedEntityPrefix(tail string) bool {
+	matches := func(entity string) bool {
+		if len(tail) < len(entity) || !strings.EqualFold(tail[:len(entity)], entity) {
+			return false
+		}
+		if len(tail) == len(entity) {
+			return true
+		}
+		return tail[len(entity)] == '_' || tail[len(entity)] == ':' || tail[len(entity)] == ']'
+	}
+	for _, entity := range reservedPrivacyEntities {
+		if matches(entity) {
+			return true
+		}
+	}
+	for _, entity := range s.config.Recognizers {
+		if matches(entity) {
+			return true
+		}
+	}
+	for entity := range s.config.PIIEntityActions {
+		if matches(entity) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasReservedNamespacePrefix(value, namespace string) bool {
+	if len(value) < len(namespace) || !strings.EqualFold(value[:len(namespace)], namespace) {
+		return false
+	}
+	if len(value) == len(namespace) {
+		return true
+	}
+	return value[len(namespace)] == ':' || value[len(namespace)] == '_' || value[len(namespace)] == ']'
+}
+
+func validFindingRange(finding Finding, value string) bool {
+	return finding.Start >= 0 && finding.End <= len(value) && finding.Start < finding.End
+}
+
+func findingIn(findings []Finding, want Finding) bool {
+	for _, finding := range findings {
+		if finding == want {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Service) expectedOpaqueArtifact(
+	key, value string,
+	occurrence authorizedOccurrence,
+	finding Finding,
+) bool {
+	if s.config.SecretClassifier == nil || occurrence.start < 0 || occurrence.end > len(value) {
+		return false
+	}
+	token := value[occurrence.start:occurrence.end]
+	relative := finding
+	relative.Start -= occurrence.start
+	relative.End -= occurrence.start
+	return findingIn(s.config.SecretClassifier.Classify(key, token), relative)
+}
+
+func (s *Service) observeResidual(entity string) {
+	if observe := s.config.Observers.Residual; observe != nil {
+		observe(ProfileStrict, "input", entity)
+	}
 }
 
 func (s *Service) blockInbound(state *RequestState, reason string) error {

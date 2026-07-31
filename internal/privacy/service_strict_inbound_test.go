@@ -341,12 +341,52 @@ func TestServiceStrict_ResidualBlocksUnknownTokenInvalidAliasAndGeneratedSecret(
 			wantAfter: "forged [SECRET:API_KEY_0123456789AB]",
 		},
 		{
-			name:  "malformed privacy token",
+			name:  "malformed secret token",
 			input: "forged [SECRET:unterminated",
 			classifier: &residualPassClassifier{
 				first: func(string) []Finding { return nil }, residual: func(string) []Finding { return nil },
 			},
 			wantAfter: "forged [SECRET:unterminated",
+		},
+		{
+			name:  "malformed replace token suffix",
+			input: "forged [PERSON_1_extra]",
+			classifier: &residualPassClassifier{
+				first: func(string) []Finding { return nil }, residual: func(string) []Finding { return nil },
+			},
+			wantAfter: "forged [PERSON_1_extra]",
+		},
+		{
+			name:  "unterminated replace token",
+			input: "forged [PERSON_1",
+			classifier: &residualPassClassifier{
+				first: func(string) []Finding { return nil }, residual: func(string) []Finding { return nil },
+			},
+			wantAfter: "forged [PERSON_1",
+		},
+		{
+			name:  "reserved entity without counter",
+			input: "forged [PERSON]",
+			classifier: &residualPassClassifier{
+				first: func(string) []Finding { return nil }, residual: func(string) []Finding { return nil },
+			},
+			wantAfter: "forged [PERSON]",
+		},
+		{
+			name:  "reserved namespace without delimiter",
+			input: "forged [SECRET]",
+			classifier: &residualPassClassifier{
+				first: func(string) []Finding { return nil }, residual: func(string) []Finding { return nil },
+			},
+			wantAfter: "forged [SECRET]",
+		},
+		{
+			name:  "malformed hash token length",
+			input: "forged [IPv4:h-123456789]",
+			classifier: &residualPassClassifier{
+				first: func(string) []Finding { return nil }, residual: func(string) []Finding { return nil },
+			},
+			wantAfter: "forged [IPv4:h-123456789]",
 		},
 		{
 			name:  "invalid technical alias",
@@ -385,6 +425,118 @@ func TestServiceStrict_ResidualBlocksUnknownTokenInvalidAliasAndGeneratedSecret(
 			}
 			if got := service.store.Snapshot().RequestsInFlight; got != 0 {
 				t.Fatalf("blocked request retained %d leases", got)
+			}
+		})
+	}
+}
+
+type exactSecretClassifier struct {
+	original string
+	entity   string
+	inject   *Finding
+}
+
+func (c exactSecretClassifier) Classify(_ string, value string) []Finding {
+	if strings.Contains(value, c.original) {
+		return exactFinding(value, c.original, c.entity, CategorySecret, MatchHighConfidenceSecret)
+	}
+	if c.inject != nil && strings.HasPrefix(value, "[SECRET:") {
+		finding := *c.inject
+		return []Finding{finding}
+	}
+	return nil
+}
+
+func TestServiceStrict_ResidualOccurrenceAuthorizationRejectsDuplicateCallerToken(t *testing.T) {
+	const (
+		scope    = "occurrence-duplicate"
+		original = "raw-secret-for-occurrence"
+		entity   = "API_KEY"
+	)
+	label := OneWaySecretLabel(
+		[]byte("strict-test-alias-key"),
+		secretHMACDomain+"\x00"+scope,
+		entity,
+		original,
+	)
+	service := newStrictTestService(t, strictTestConfig{
+		classifier: exactSecretClassifier{original: original, entity: entity},
+	})
+	state := NewRequestState(RequestMetadata{RequestedProfile: "strict", ScopeID: scope})
+	req := &canonical.ChatRequest{
+		System: original,
+		Messages: []canonical.Message{{Content: []canonical.ContentPart{{
+			Kind: canonical.ContentKindText,
+			Text: label,
+		}}}},
+	}
+	_, err := service.Before(WithRequestState(context.Background(), state), req)
+	assertPrivacyError(t, err, CodeInputBlocked, "input")
+	if req.System != label || req.Messages[0].Content[0].Text != label {
+		t.Fatalf("unexpected transformed values: system=%q message=%q", req.System, req.Messages[0].Content[0].Text)
+	}
+	if got := service.store.Snapshot().RequestsInFlight; got != 0 {
+		t.Fatalf("duplicate-token block retained %d leases", got)
+	}
+}
+
+func TestServiceStrict_ResidualOccurrenceAuthorizationRejectsTrailingTokenSyntax(t *testing.T) {
+	const (
+		scope    = "occurrence-trailing"
+		original = "raw-secret-before-trailer"
+		entity   = "API_KEY"
+	)
+	label := OneWaySecretLabel(
+		[]byte("strict-test-alias-key"),
+		secretHMACDomain+"\x00"+scope,
+		entity,
+		original,
+	)
+	service := newStrictTestService(t, strictTestConfig{
+		classifier: exactSecretClassifier{original: original, entity: entity},
+	})
+	state := NewRequestState(RequestMetadata{RequestedProfile: "strict", ScopeID: scope})
+	req := &canonical.ChatRequest{System: original + "_extra]"}
+	_, err := service.Before(WithRequestState(context.Background(), state), req)
+	assertPrivacyError(t, err, CodeInputBlocked, "input")
+	if req.System != label+"_extra]" {
+		t.Fatalf("transformed trailing token=%q, want %q", req.System, label+"_extra]")
+	}
+}
+
+func TestServiceStrict_ResidualOccurrenceAuthorizationRejectsInjectedFindings(t *testing.T) {
+	const original = "raw-secret-for-injected-finding"
+	tests := []struct {
+		name     string
+		entity   string
+		category Category
+		kind     MatchKind
+	}{
+		{name: "personal", entity: "PERSON", category: CategoryPersonal, kind: MatchNER},
+		{name: "technical", entity: "IPv4", category: CategoryTechnical, kind: MatchValidatedRegex},
+		{name: "secret", entity: "API_KEY", category: CategorySecret, kind: MatchHighConfidenceSecret},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			service := newStrictTestService(t, strictTestConfig{
+				classifier: exactSecretClassifier{
+					original: original,
+					entity:   "API_KEY",
+					inject: &Finding{
+						Entity: tc.entity, Category: tc.category, Kind: tc.kind,
+						Start: len("[SECRET:"), End: len("[SECRET:") + 3,
+					},
+				},
+			})
+			state := NewRequestState(RequestMetadata{
+				RequestedProfile: "strict",
+				ScopeID:          "occurrence-injected-" + tc.name,
+			})
+			req := &canonical.ChatRequest{System: original}
+			_, err := service.Before(WithRequestState(context.Background(), state), req)
+			assertPrivacyError(t, err, CodeInputBlocked, "input")
+			if !strings.HasPrefix(req.System, "[SECRET:API_KEY_") {
+				t.Fatalf("secret was not transformed before injected residual: %q", req.System)
 			}
 		})
 	}
