@@ -32,10 +32,13 @@
 package pii
 
 import (
+	"sort"
 	"strings"
 	"sync"
 
 	"github.com/jdkato/prose/v2"
+
+	"otto-gateway/internal/privacy"
 )
 
 // nerEntityNames lists the entity names Detect's label-mapping switch
@@ -139,4 +142,127 @@ func (n *nerEngine) Detect(text string) []span {
 		// adjusting cursor (next entity's sequential scan still works).
 	}
 	return out
+}
+
+type piiClassifier struct {
+	recognizers []Recognizer
+	ner         *nerEngine
+	allowedNER  map[string]struct{}
+}
+
+// NewPIIClassifier adapts the established PII recognizer inventory to the
+// privacy classifier seam while preserving standard first-recognizer overlap
+// behavior.
+func NewPIIClassifier(recognizers []Recognizer, enabled []string, nerEnabled bool) privacy.Classifier {
+	var ner *nerEngine
+	if nerEnabled {
+		ner = NewNEREngine()
+	}
+	return newPIIClassifierWithNER(recognizers, enabled, ner)
+}
+
+func newPIIClassifierWithNER(recognizers []Recognizer, enabled []string, ner *nerEngine) privacy.Classifier {
+	allow := make(map[string]struct{}, len(enabled))
+	for _, entity := range enabled {
+		allow[entity] = struct{}{}
+	}
+	active := make([]Recognizer, 0, len(recognizers))
+	for _, recognizer := range recognizers {
+		if len(allow) != 0 {
+			if _, ok := allow[recognizer.Name]; !ok {
+				continue
+			}
+		}
+		active = append(active, recognizer)
+	}
+	var allowedNER map[string]struct{}
+	if len(allow) != 0 {
+		allowedNER = make(map[string]struct{}, len(nerEntityNames))
+		for _, entity := range nerEntityNames {
+			if _, ok := allow[entity]; ok {
+				allowedNER[entity] = struct{}{}
+			}
+		}
+		if len(allowedNER) == 0 {
+			ner = nil
+		}
+	}
+	return &piiClassifier{recognizers: active, ner: ner, allowedNER: allowedNER}
+}
+
+func (c *piiClassifier) Classify(_ string, value string) []privacy.Finding {
+	if value == "" {
+		return nil
+	}
+	findings := make([]privacy.Finding, 0, 4)
+	for order, recognizer := range c.recognizers {
+		for _, offsets := range recognizer.Pattern.FindAllStringIndex(value, -1) {
+			start, end := offsets[0], offsets[1]
+			matched := value[start:end]
+			if recognizer.Validate != nil && !recognizer.Validate(matched) {
+				continue
+			}
+			if len(recognizer.ContextKeywords) != 0 &&
+				!hasContextWithin(value, start, end, recognizer.ContextKeywords) {
+				continue
+			}
+			candidate := privacy.Finding{
+				Entity:        recognizer.Name,
+				Category:      categoryForEntity(recognizer.Name),
+				Kind:          privacy.MatchValidatedRegex,
+				Start:         start,
+				End:           end,
+				RegistryOrder: order,
+			}
+			if findingOverlaps(findings, candidate) {
+				continue
+			}
+			findings = append(findings, candidate)
+		}
+	}
+
+	if c.ner != nil {
+		for index, candidate := range c.ner.Detect(value) {
+			if c.allowedNER != nil {
+				if _, ok := c.allowedNER[candidate.Name]; !ok {
+					continue
+				}
+			}
+			finding := privacy.Finding{
+				Entity:        candidate.Name,
+				Category:      privacy.CategoryPersonal,
+				Kind:          privacy.MatchNER,
+				Start:         candidate.Start,
+				End:           candidate.End,
+				RegistryOrder: len(c.recognizers) + index,
+			}
+			if findingOverlaps(findings, finding) {
+				continue
+			}
+			findings = append(findings, finding)
+		}
+	}
+
+	sort.SliceStable(findings, func(i, j int) bool {
+		return findings[i].Start < findings[j].Start
+	})
+	return findings
+}
+
+func findingOverlaps(findings []privacy.Finding, candidate privacy.Finding) bool {
+	for _, existing := range findings {
+		if candidate.Start < existing.End && existing.Start < candidate.End {
+			return true
+		}
+	}
+	return false
+}
+
+func categoryForEntity(entity string) privacy.Category {
+	switch entity {
+	case "IPv4", "IPv6", "USPhone", "SIP_URI", "IMEI", "IMSI", "MSISDN", "MAC_ADDRESS", "COORDINATES", "SITE":
+		return privacy.CategoryTechnical
+	default:
+		return privacy.CategoryPersonal
+	}
 }

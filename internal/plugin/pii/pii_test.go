@@ -36,10 +36,12 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
 	"otto-gateway/internal/canonical"
+	"otto-gateway/internal/privacy"
 )
 
 // textPart returns a ContentPart with Kind=Text and the given text.
@@ -1190,5 +1192,231 @@ func TestPIIRedactionHook_USAddressFullCoverage(t *testing.T) {
 	// The ZIP plaintext must also be gone (it's inside the USState span).
 	if strings.Contains(got, "27584") {
 		t.Errorf("plaintext ZIP leaked through redact; got %q", got)
+	}
+}
+
+// TestStandardCompatibility_CurrentBehavior is the migration fixture for the
+// standard privacy profile. Its expectations were captured against the
+// pre-Service PIIRedactionHook at HEAD 502315a934ddceaa8a5f1eee7cd66eaed5b29944.
+func TestStandardCompatibility_CurrentBehavior(t *testing.T) {
+	t.Run("canonical request string locations", func(t *testing.T) {
+		hook := &PIIRedactionHook{Recognizers: Recognizers, Enabled: true, Mode: "replace"}
+		summary := NewSummary()
+		ctx := WithSummary(context.Background(), summary)
+		req := &canonical.ChatRequest{
+			System: "system.one@example.com",
+			Messages: []canonical.Message{{
+				Content: []canonical.ContentPart{
+					{Kind: canonical.ContentKindText, Text: "text.two@example.com"},
+					{Kind: canonical.ContentKindToolUse, ToolUse: &canonical.ToolUsePart{Input: map[string]any{
+						"nested": []any{"tool.three@example.com"},
+					}}},
+					{Kind: canonical.ContentKindToolResult, ToolResult: &canonical.ToolResultPart{Content: "result.four@example.com"}},
+				},
+				ToolCalls: []canonical.ToolCall{{Arguments: map[string]any{"legacy": "request.five@example.com"}}},
+			}},
+		}
+
+		if _, err := hook.Before(ctx, req); err != nil {
+			t.Fatalf("Before: %v", err)
+		}
+		if got, want := req.System, "[EMAIL_1]"; got != want {
+			t.Errorf("system: got %q, want %q", got, want)
+		}
+		if got, want := req.Messages[0].Content[0].Text, "[EMAIL_2]"; got != want {
+			t.Errorf("text: got %q, want %q", got, want)
+		}
+		if got, want := req.Messages[0].Content[1].ToolUse.Input["nested"].([]any)[0], "[EMAIL_3]"; got != want {
+			t.Errorf("tool input: got %q, want %q", got, want)
+		}
+		if got, want := req.Messages[0].Content[2].ToolResult.Content, "[EMAIL_4]"; got != want {
+			t.Errorf("tool result: got %q, want %q", got, want)
+		}
+		if got, want := req.Messages[0].ToolCalls[0].Arguments["legacy"], "request.five@example.com"; got != want {
+			t.Errorf("request tool-call compatibility: got %q, want %q", got, want)
+		}
+		if got, want := summary.Counts(), map[string]int{"Email": 4}; !reflect.DeepEqual(got, want) {
+			t.Errorf("summary: got %#v, want %#v", got, want)
+		}
+	})
+
+	t.Run("five actions", func(t *testing.T) {
+		key, err := DeriveKey("compat-encrypt-key")
+		if err != nil {
+			t.Fatalf("DeriveKey: %v", err)
+		}
+		cases := []struct {
+			name string
+			mode string
+			want string
+		}{
+			{name: "replace", mode: "replace", want: "[EMAIL_2]"},
+			{name: "mask", mode: "mask", want: "co***@ex***.com"},
+			{name: "hash", mode: "hash", want: "[EMAIL:h-dcf2c438]"},
+			{name: "drop", mode: "drop", want: ""},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				if got := ApplyMode(tc.mode, "Email", "corey@example.com", 2, []byte("compat-key"), key); got != tc.want {
+					t.Fatalf("ApplyMode: got %q, want %q", got, tc.want)
+				}
+			})
+		}
+
+		t.Run("encrypt", func(t *testing.T) {
+			token := ApplyMode("encrypt", "Email", "corey@example.com", 2, nil, key)
+			match := decryptTokenRe.FindStringSubmatch(token)
+			if len(match) != 3 || match[1] != "Email" {
+				t.Fatalf("encrypt token: got %q", token)
+			}
+			got, err := DecryptToken(key, match[1], match[2])
+			if err != nil {
+				t.Fatalf("DecryptToken: %v", err)
+			}
+			if got != "corey@example.com" {
+				t.Fatalf("round trip: got %q", got)
+			}
+		})
+	})
+
+	t.Run("entity overrides counter identity streaming and summary", func(t *testing.T) {
+		hook := &PIIRedactionHook{
+			Recognizers:   Recognizers,
+			Enabled:       true,
+			Mode:          "replace",
+			EntityActions: map[string]string{"SSN": "mask"},
+		}
+		summary := NewSummary()
+		req := &canonical.ChatRequest{
+			Stream: true,
+			Messages: []canonical.Message{{Content: []canonical.ContentPart{{
+				Kind: canonical.ContentKindText,
+				Text: "a@example.com a@example.com b@example.com 123-45-6789",
+			}}}},
+		}
+		if _, err := hook.Before(WithSummary(context.Background(), summary), req); err != nil {
+			t.Fatalf("Before: %v", err)
+		}
+		if got, want := req.Messages[0].Content[0].Text, "[EMAIL_1] [EMAIL_1] [EMAIL_2] 12*******89"; got != want {
+			t.Errorf("body: got %q, want %q", got, want)
+		}
+		if !req.Stream {
+			t.Error("non-encrypt standard action unexpectedly disabled streaming")
+		}
+		if got, want := summary.Counts(), map[string]int{"Email": 3, "SSN": 1}; !reflect.DeepEqual(got, want) {
+			t.Errorf("summary: got %#v, want %#v", got, want)
+		}
+	})
+
+	t.Run("AES wrapped and bare restoration across response locations", func(t *testing.T) {
+		key, err := DeriveKey("compat-round-trip-key")
+		if err != nil {
+			t.Fatalf("DeriveKey: %v", err)
+		}
+		hook := &PIIRedactionHook{Recognizers: Recognizers, Enabled: true, Mode: "encrypt", EncryptKey: key}
+		wrapped, err := EncryptValue(key, "Email", "wrapped@example.com")
+		if err != nil {
+			t.Fatalf("EncryptValue wrapped: %v", err)
+		}
+		bareToken, err := EncryptValue(key, "Email", "bare@example.com")
+		if err != nil {
+			t.Fatalf("EncryptValue bare: %v", err)
+		}
+		bare := decryptTokenRe.FindStringSubmatch(bareToken)[2]
+		resp := &canonical.ChatResponse{Message: canonical.Message{
+			Content: []canonical.ContentPart{
+				{Kind: canonical.ContentKindText, Text: wrapped},
+				{Kind: canonical.ContentKindToolUse, ToolUse: &canonical.ToolUsePart{Input: map[string]any{"email": bare}}},
+				{Kind: canonical.ContentKindToolResult, ToolResult: &canonical.ToolResultPart{Content: wrapped}},
+			},
+			ToolCalls: []canonical.ToolCall{{Arguments: map[string]any{"email": bare}}},
+		}}
+		if err := hook.After(context.Background(), nil, resp); err != nil {
+			t.Fatalf("After: %v", err)
+		}
+		if got, want := resp.Message.Content[0].Text, "wrapped@example.com"; got != want {
+			t.Errorf("response text: got %q, want %q", got, want)
+		}
+		if got, want := resp.Message.Content[1].ToolUse.Input["email"], "bare@example.com"; got != want {
+			t.Errorf("response tool input: got %q, want %q", got, want)
+		}
+		if got, want := resp.Message.Content[2].ToolResult.Content, "wrapped@example.com"; got != want {
+			t.Errorf("response tool result: got %q, want %q", got, want)
+		}
+		if got, want := resp.Message.ToolCalls[0].Arguments["email"], "bare@example.com"; got != want {
+			t.Errorf("response tool-call arguments: got %q, want %q", got, want)
+		}
+
+		streamReq := &canonical.ChatRequest{Stream: true}
+		if _, err := hook.Before(context.Background(), streamReq); err != nil {
+			t.Fatalf("Before stream: %v", err)
+		}
+		if streamReq.Stream {
+			t.Error("encrypt compatibility must downgrade streaming")
+		}
+	})
+
+	t.Run("complete recognizer inventory", func(t *testing.T) {
+		wantRegex := []string{
+			"Email", "IPv4", "IPv6", "SSN", "CreditCard", "USPhone",
+			"SIP_URI", "IMEI", "IMSI", "MSISDN", "MAC_ADDRESS",
+			"COORDINATES", "SITE", "USAddress", "USState", "USZIP",
+		}
+		if got := SourceAuditNames(); !reflect.DeepEqual(got, wantRegex) {
+			t.Fatalf("regex inventory: got %#v, want %#v", got, wantRegex)
+		}
+		wantAll := append(append([]string(nil), wantRegex...), "PERSON", "LOCATION")
+		if got := TokenEntityNames(); !reflect.DeepEqual(got, wantAll) {
+			t.Fatalf("regex plus NER inventory: got %#v, want %#v", got, wantAll)
+		}
+	})
+}
+
+func TestStandardCompatibility_ClassifierInventory(t *testing.T) {
+	cases := []struct {
+		entity   string
+		value    string
+		category privacy.Category
+	}{
+		{entity: "Email", value: "corey@example.com", category: privacy.CategoryPersonal},
+		{entity: "IPv4", value: "192.0.2.1", category: privacy.CategoryTechnical},
+		{entity: "IPv6", value: "2001:db8::1", category: privacy.CategoryTechnical},
+		{entity: "SSN", value: "123-45-6789", category: privacy.CategoryPersonal},
+		{entity: "CreditCard", value: "4111 1111 1111 1111", category: privacy.CategoryPersonal},
+		{entity: "USPhone", value: "(415) 555-2671", category: privacy.CategoryTechnical},
+		{entity: "SIP_URI", value: "sip:alice@invalid", category: privacy.CategoryTechnical},
+		{entity: "IMEI", value: "IMEI 490154203237518", category: privacy.CategoryTechnical},
+		{entity: "IMSI", value: "IMSI 310150123456789", category: privacy.CategoryTechnical},
+		{entity: "MSISDN", value: "MSISDN +447700900123", category: privacy.CategoryTechnical},
+		{entity: "MAC_ADDRESS", value: "02:42:ac:11:00:02", category: privacy.CategoryTechnical},
+		{entity: "COORDINATES", value: "37.7749 N, 122.4194 W", category: privacy.CategoryTechnical},
+		{entity: "SITE", value: "site-A12_NYC01", category: privacy.CategoryTechnical},
+		{entity: "USAddress", value: "123 Main Street", category: privacy.CategoryPersonal},
+		{entity: "USState", value: ", CA 94105", category: privacy.CategoryPersonal},
+		{entity: "USZIP", value: "27513", category: privacy.CategoryPersonal},
+	}
+	for _, tc := range cases {
+		t.Run(tc.entity, func(t *testing.T) {
+			classifier := NewPIIClassifier(Recognizers, []string{tc.entity}, false)
+			findings := classifier.Classify("", tc.value)
+			for _, finding := range findings {
+				if finding.Entity == tc.entity && finding.Category == tc.category {
+					return
+				}
+			}
+			t.Fatalf("Classify(%q): got %#v; missing %s/%s", tc.value, findings, tc.entity, tc.category)
+		})
+	}
+
+	classifier := NewPIIClassifier(Recognizers, []string{"PERSON", "LOCATION"}, true)
+	findings := classifier.Classify("", "Alice Johnson visited London.")
+	seen := make(map[string]privacy.Category, len(findings))
+	for _, finding := range findings {
+		seen[finding.Entity] = finding.Category
+	}
+	for _, entity := range []string{"PERSON", "LOCATION"} {
+		if seen[entity] != privacy.CategoryPersonal {
+			t.Errorf("NER %s: got category %q from %#v", entity, seen[entity], findings)
+		}
 	}
 }
