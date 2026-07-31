@@ -82,10 +82,10 @@ type Recognizer struct {
 //	                with [2-9] per RESEARCH §Pattern 4 line 536.
 var (
 	emailRe = regexp.MustCompile(`(?i)\b[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,24}\b`)
-	ipv4Re  = regexp.MustCompile(`\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?:/[0-9]{1,3})?\b`)
+	ipv4Re  = regexp.MustCompile(`\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?:/[0-9]+)?\b`)
 	ipv6Re  = regexp.MustCompile(
-		`(?:\b[0-9A-Fa-f]{1,4}::|\B::)/[0-9]{1,3}\b` +
-			`|\b(?:[0-9A-Fa-f]{1,4}:){2,7}[0-9A-Fa-f:]{1,4}(?:/[0-9]{1,3})?\b`,
+		`(?:\b[0-9A-Fa-f]{1,4}::|\B::)/[0-9]+\b` +
+			`|\b(?:[0-9A-Fa-f]{1,4}:){2,7}[0-9A-Fa-f:]{1,4}(?:/[0-9]+)?\b`,
 	)
 	ssnRe        = regexp.MustCompile(`\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b`)
 	creditCardRe = regexp.MustCompile(`\b(?:[0-9][ \-]?){12,18}[0-9]\b`)

@@ -159,6 +159,37 @@ func TestCIDRRecognizers_IncludeValidOptionalSuffix(t *testing.T) {
 	}
 }
 
+func TestCIDRRecognizers_NumericSuffixIsIndivisible(t *testing.T) {
+	cases := []struct {
+		entity string
+		input  string
+	}{
+		{entity: "IPv4", input: "192.168.1.7/33"},
+		{entity: "IPv4", input: "192.168.1.7/3333"},
+		{entity: "IPv6", input: "2001:db8::7/129"},
+		{entity: "IPv6", input: "2001:db8::7/1290"},
+		{entity: "IPv6", input: "fe80::/129"},
+		{entity: "IPv6", input: "fe80::/1290"},
+		{entity: "IPv6", input: "::/129"},
+		{entity: "IPv6", input: "::/1290"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.entity+"/"+tc.input, func(t *testing.T) {
+			r := findRecognizer(t, tc.entity)
+			span := r.Pattern.FindString(tc.input)
+			if span != tc.input {
+				t.Fatalf("captured span = %q, want indivisible %q", span, tc.input)
+			}
+			if r.Validate == nil {
+				t.Fatal("CIDR recognizer has no prefix validator")
+			}
+			if r.Validate(span) {
+				t.Fatalf("validator accepted out-of-range CIDR %q", span)
+			}
+		})
+	}
+}
+
 // TestSSNRecognizer_ReservedRangeValidator asserts the SSN regex (RE2
 // permissive shape per RESEARCH Pitfall 1) + validateSSNRange reserved-
 // range filter.

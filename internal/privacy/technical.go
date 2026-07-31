@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/big"
 	"net/netip"
 	"regexp"
 	"strconv"
@@ -321,21 +322,25 @@ func parseTechnicalCoordinate(original string) (technicalCoordinate, error) {
 
 func (m *TechnicalMapper) coordinateRotation(scopeID string) technicalRotation {
 	digest := m.derive(scopeID, "COORDINATES", "rotation", 0)
-	var axis [3]float64
-	for index := range axis {
-		raw := binary.BigEndian.Uint64(digest[index*8 : (index+1)*8])
-		axis[index] = 2*(float64(raw)/float64(^uint64(0))) - 1
+	// These 719 non-identity proper rotations preserve every decimal
+	// latitude/longitude grid: 359 whole-degree rotations about the polar
+	// axis, plus 360 half-turns about half-degree-spaced equatorial axes.
+	// Applying them through Rodrigues preserves spherical distance, while
+	// their coordinate-space symmetries avoid precision-losing rounding.
+	symmetry := int(binary.BigEndian.Uint16(digest[:2])) % 719
+	if symmetry < 359 {
+		return technicalRotation{
+			axis:  [3]float64{0, 0, 1},
+			angle: float64(symmetry+1) * math.Pi / 180,
+		}
 	}
-	norm := math.Sqrt(axis[0]*axis[0] + axis[1]*axis[1] + axis[2]*axis[2])
-	if norm < 1e-15 {
-		axis = [3]float64{0, 0, 1}
-	} else {
-		axis[0] /= norm
-		axis[1] /= norm
-		axis[2] /= norm
+
+	equatorialIndex := symmetry - 359
+	axisLongitude := float64(equatorialIndex) * math.Pi / 360
+	return technicalRotation{
+		axis:  [3]float64{math.Cos(axisLongitude), math.Sin(axisLongitude), 0},
+		angle: math.Pi,
 	}
-	rawAngle := binary.BigEndian.Uint64(digest[24:32])
-	return technicalRotation{axis: axis, angle: 2 * math.Pi * float64(rawAngle) / float64(^uint64(0))}
 }
 
 func rotateTechnicalCoordinate(coordinate technicalCoordinate, rotation technicalRotation) string {
@@ -414,6 +419,9 @@ func (m *TechnicalMapper) mapIP(
 		return candidate.String(), nil
 	})
 	if err != nil {
+		if errors.Is(err, errCandidateExhausted) {
+			return "", &TechnicalCapacityError{Entity: entity, PrefixBits: relationBits}
+		}
 		return "", err
 	}
 
@@ -475,24 +483,46 @@ func (m *TechnicalMapper) ipRelationCandidate(
 	attempt uint32,
 ) (netip.Prefix, error) {
 	selectorBits := prefixBits - base.Bits()
-	limit := uint64(1) << min(selectorBits, 32)
-	if selectorBits >= 32 {
-		limit = uint64(^uint32(0))
-	}
-	if uint64(attempt) >= limit {
+	if selectorBits < 32 && uint64(attempt) >= uint64(1)<<selectorBits {
 		return netip.Prefix{}, &TechnicalCapacityError{Entity: entity, PrefixBits: prefixBits}
 	}
 
-	digest := m.derive(scopeID, entity, relation, attempt)
+	// An odd stride is coprime to the power-of-two selector space, so this
+	// affine sequence visits every slot exactly once before wrapping. For
+	// selector spaces wider than uint32, every callback attempt reachable
+	// through ScopeLease is still collision-free.
+	selector := m.ipSelector(scopeID, entity, relation, selectorBits, attempt)
 	baseAddr := base.Masked().Addr()
 	if baseAddr.Is4() {
 		bytes := baseAddr.As4()
-		copyDerivedBits(bytes[:], base.Bits(), selectorBits, digest[:])
+		copySelectorBits(bytes[:], base.Bits(), selectorBits, selector)
 		return netip.PrefixFrom(netip.AddrFrom4(bytes), prefixBits).Masked(), nil
 	}
 	bytes := baseAddr.As16()
-	copyDerivedBits(bytes[:], base.Bits(), selectorBits, digest[:])
+	copySelectorBits(bytes[:], base.Bits(), selectorBits, selector)
 	return netip.PrefixFrom(netip.AddrFrom16(bytes), prefixBits).Masked(), nil
+}
+
+func (m *TechnicalMapper) ipSelector(
+	scopeID string,
+	entity string,
+	relation string,
+	selectorBits int,
+	attempt uint32,
+) *big.Int {
+	modulus := new(big.Int).Lsh(big.NewInt(1), uint(selectorBits))
+	startDigest := m.derive(scopeID, entity, relation, 0)
+	strideDigest := m.derive(scopeID, entity, relation, 1)
+
+	start := new(big.Int).SetBytes(startDigest[:])
+	start.Mod(start, modulus)
+	stride := new(big.Int).SetBytes(strideDigest[:])
+	stride.Mod(stride, modulus)
+	stride.SetBit(stride, 0, 1)
+
+	selector := new(big.Int).Mul(stride, new(big.Int).SetUint64(uint64(attempt)))
+	selector.Add(selector, start)
+	return selector.Mod(selector, modulus)
 }
 
 func (m *TechnicalMapper) derive(scopeID, entity, relation string, attempt uint32) [sha256.Size]byte {
@@ -521,11 +551,11 @@ func writeLengthPrefixed(writer byteWriter, value []byte) {
 	_, _ = writer.Write(value)
 }
 
-func copyDerivedBits(target []byte, start, count int, digest []byte) {
+func copySelectorBits(target []byte, start, count int, selector *big.Int) {
 	for bit := 0; bit < count; bit++ {
 		targetIndex := start + bit
 		mask := byte(1 << (7 - uint(targetIndex%8)))
-		if digest[bit/8]&(1<<(7-uint(bit%8))) != 0 {
+		if selector.Bit(count-1-bit) != 0 {
 			target[targetIndex/8] |= mask
 		} else {
 			target[targetIndex/8] &^= mask

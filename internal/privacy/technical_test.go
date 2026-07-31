@@ -81,6 +81,63 @@ func TestTechnical_IPv4CIDRReturnsTypedCapacityWithoutWeakeningPrefix(t *testing
 	}
 }
 
+func TestTechnical_IPv4CIDRExhaustivelyProbesFree16Relation(t *testing.T) {
+	mapper := newTestTechnicalMapper(t, []byte("0123456789abcdef0123456789abcdef"))
+	lease := newTechnicalTestLease(t, "false-exhaustion", 8)
+	defer lease.Release()
+
+	firstOriginal := "1.0.0.17/16"
+	secondOriginal := "12.0.0.203/16"
+	firstAlias := mapTechnical(t, mapper, lease, "IPv4", firstOriginal, ProvenanceInput)
+	secondAlias := mapTechnical(t, mapper, lease, "IPv4", secondOriginal, ProvenanceInput)
+
+	firstPrefix := netip.MustParsePrefix(firstAlias)
+	secondPrefix := netip.MustParsePrefix(secondAlias)
+	if firstPrefix.Masked() == secondPrefix.Masked() {
+		t.Fatalf("distinct /16 relations reused %s", firstPrefix.Masked())
+	}
+	benchmark := netip.MustParsePrefix("198.18.0.0/15")
+	assertPrefixAndOffset(t, firstOriginal, firstAlias, benchmark)
+	assertPrefixAndOffset(t, secondOriginal, secondAlias, benchmark)
+}
+
+func TestTechnical_IPv4CIDRConcurrentAllocationUsesBoth16Relations(t *testing.T) {
+	mapper := newTestTechnicalMapper(t, []byte("0123456789abcdef0123456789abcdef"))
+	lease := newTechnicalTestLease(t, "false-exhaustion", 8)
+	defer lease.Release()
+
+	originals := []string{"1.0.0.17/16", "12.0.0.203/16"}
+	type result struct {
+		original string
+		alias    string
+		err      error
+	}
+	results := make(chan result, len(originals))
+	var group sync.WaitGroup
+	for _, original := range originals {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			alias, err := mapper.Map(lease, "IPv4", original, ProvenanceInput)
+			results <- result{original: original, alias: alias, err: err}
+		}()
+	}
+	group.Wait()
+	close(results)
+
+	relations := make(map[netip.Prefix]struct{}, len(originals))
+	for mapped := range results {
+		if mapped.err != nil {
+			t.Fatalf("Map(%s): %v", mapped.original, mapped.err)
+		}
+		assertPrefixAndOffset(t, mapped.original, mapped.alias, netip.MustParsePrefix("198.18.0.0/15"))
+		relations[netip.MustParsePrefix(mapped.alias).Masked()] = struct{}{}
+	}
+	if len(relations) != 2 {
+		t.Fatalf("concurrent /16 relation count = %d, want 2", len(relations))
+	}
+}
+
 func TestTechnical_IPv6StandaloneUsesStableSource64Relation(t *testing.T) {
 	mapper := newTestTechnicalMapper(t, []byte("0123456789abcdef0123456789abcdef"))
 	lease := newTechnicalTestLease(t, "ipv6-standalone", 32)
@@ -130,6 +187,71 @@ func TestTechnical_IPv6CIDRPreservesAllowedPrefixAndHostOffset(t *testing.T) {
 
 	if _, err := mapper.Map(lease, "IPv6", "2001:4860::1/31", ProvenanceInput); err == nil {
 		t.Fatal("IPv6 /31 succeeded, want an error for a prefix broader than /32")
+	}
+}
+
+func TestTechnical_IPv6CIDR33CandidateSequenceCoversBothSlots(t *testing.T) {
+	mapper := newTestTechnicalMapper(t, []byte("0123456789abcdef0123456789abcdef"))
+	base := netip.MustParsePrefix("2001:db8::/32")
+	for _, relation := range []string{
+		"2001:4860::/33",
+		"2001:4860:8000::/33",
+		"2606:4700::/33",
+		"2606:4700:8000::/33",
+	} {
+		t.Run(relation, func(t *testing.T) {
+			candidates := make(map[netip.Prefix]struct{}, 2)
+			for attempt := uint32(0); attempt < 2; attempt++ {
+				candidate, err := mapper.ipRelationCandidate(
+					"ipv6-permutation",
+					"IPv6",
+					relation,
+					base,
+					33,
+					attempt,
+				)
+				if err != nil {
+					t.Fatal(err)
+				}
+				candidates[candidate] = struct{}{}
+			}
+			if len(candidates) != 2 {
+				t.Fatalf("/33 candidate sequence covered %d slots, want 2", len(candidates))
+			}
+
+			_, err := mapper.ipRelationCandidate("ipv6-permutation", "IPv6", relation, base, 33, 2)
+			var capacityErr *TechnicalCapacityError
+			if !errors.As(err, &capacityErr) {
+				t.Fatalf("attempt after both /33 slots returned %v, want *TechnicalCapacityError", err)
+			}
+		})
+	}
+}
+
+func TestTechnical_IPv6CIDRWideSelectorCoversReachableAttemptBounds(t *testing.T) {
+	mapper := newTestTechnicalMapper(t, []byte("0123456789abcdef0123456789abcdef"))
+	base := netip.MustParsePrefix("2001:db8::/32")
+	attempts := []uint32{0, 1, ^uint32(0) - 1, ^uint32(0)}
+	candidates := make(map[netip.Prefix]struct{}, len(attempts))
+	for _, attempt := range attempts {
+		candidate, err := mapper.ipRelationCandidate(
+			"ipv6-wide-permutation",
+			"IPv6",
+			"2001:4860:1234:5678:9abc:def0:1234:5678/128",
+			base,
+			128,
+			attempt,
+		)
+		if err != nil {
+			t.Fatalf("attempt %d: %v", attempt, err)
+		}
+		if !base.Contains(candidate.Addr()) || candidate.Bits() != 128 {
+			t.Fatalf("attempt %d candidate = %s, want IPv6 documentation /128", attempt, candidate)
+		}
+		candidates[candidate] = struct{}{}
+	}
+	if len(candidates) != len(attempts) {
+		t.Fatalf("wide selector covered %d unique candidates for %d reachable attempts", len(candidates), len(attempts))
 	}
 }
 
@@ -258,6 +380,107 @@ func TestTechnical_FormatsCoordinatesUseOneDistancePreservingScopeRotation(t *te
 	aliasDistance := testGreatCircleDistance(parseTestCoordinates(t, aliasA), parseTestCoordinates(t, aliasB))
 	if delta := math.Abs(aliasDistance - originalDistance); delta > 1e-6 {
 		t.Fatalf("great-circle distance changed by %.12f radians, want <= 0.000001", delta)
+	}
+}
+
+func TestTechnical_CoordinateFormattedDistanceAcrossAcceptedPrecisionAndEdges(t *testing.T) {
+	mapper := newTestTechnicalMapper(t, []byte("0123456789abcdef0123456789abcdef"))
+	cases := []struct {
+		name   string
+		scope  string
+		first  string
+		second string
+	}{
+		{
+			name:   "one decimal",
+			scope:  "formats-coordinates",
+			first:  "37.7°N, 122.4°W",
+			second: "34.0°N, 118.2°W",
+		},
+		{
+			name:   "two decimals near north pole",
+			scope:  "coordinate-near-pole",
+			first:  "89.91°N, 10.25°E",
+			second: "89.87°N, 170.75°W",
+		},
+		{
+			name:   "three decimals across antimeridian",
+			scope:  "coordinate-antimeridian",
+			first:  "10.125°N, 179.875°E",
+			second: "10.625°S, 179.625°W",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			lease := newTechnicalTestLease(t, tc.scope, 8)
+			defer lease.Release()
+
+			assertTechnicalCoordinateDistance(t, mapper, lease, tc.first, tc.second)
+		})
+	}
+}
+
+func TestTechnical_CoordinateFormattedDistanceAcrossDeterministicScopeTable(t *testing.T) {
+	mapper := newTestTechnicalMapper(t, []byte("0123456789abcdef0123456789abcdef"))
+	for scopeIndex := range 32 {
+		scopeID := fmt.Sprintf("coordinate-property-%02d", scopeIndex)
+		t.Run(scopeID, func(t *testing.T) {
+			lease := newTechnicalTestLease(t, scopeID, 8)
+			defer lease.Release()
+
+			assertTechnicalCoordinateDistance(
+				t,
+				mapper,
+				lease,
+				"12.3°S, 179.9°E",
+				"87.6°N, 179.8°W",
+			)
+		})
+	}
+}
+
+func TestTechnical_CoordinateScopeStabilityAndUnlinkability(t *testing.T) {
+	mapper := newTestTechnicalMapper(t, []byte("0123456789abcdef0123456789abcdef"))
+	firstScope := newTechnicalTestLease(t, "coordinate-stability-a", 8)
+	defer firstScope.Release()
+	secondScope := newTechnicalTestLease(t, "coordinate-stability-b", 8)
+	defer secondScope.Release()
+
+	original := "0.0°N, 179.9°E"
+	first := mapTechnical(t, mapper, firstScope, "COORDINATES", original, ProvenanceInput)
+	repeated := mapTechnical(t, mapper, firstScope, "COORDINATES", original, ProvenanceInput)
+	second := mapTechnical(t, mapper, secondScope, "COORDINATES", original, ProvenanceInput)
+	if repeated != first {
+		t.Fatalf("same-scope coordinate alias = %q, want stable %q", repeated, first)
+	}
+	if second == first {
+		t.Fatalf("cross-scope coordinate alias = %q in both scopes", first)
+	}
+}
+
+func assertTechnicalCoordinateDistance(
+	t *testing.T,
+	mapper *TechnicalMapper,
+	lease *ScopeLease,
+	first string,
+	second string,
+) {
+	t.Helper()
+
+	firstAlias := mapTechnical(t, mapper, lease, "COORDINATES", first, ProvenanceInput)
+	secondAlias := mapTechnical(t, mapper, lease, "COORDINATES", second, ProvenanceInput)
+	originalDistance := testGreatCircleDistance(parseTestCoordinates(t, first), parseTestCoordinates(t, second))
+	formattedAliasDistance := testGreatCircleDistance(
+		parseTestCoordinates(t, firstAlias),
+		parseTestCoordinates(t, secondAlias),
+	)
+	if delta := math.Abs(formattedAliasDistance - originalDistance); delta > 1e-6 {
+		t.Fatalf(
+			"formatted aliases %q and %q changed great-circle distance by %.12f radians",
+			firstAlias,
+			secondAlias,
+			delta,
+		)
 	}
 }
 
