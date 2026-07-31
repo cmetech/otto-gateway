@@ -385,3 +385,74 @@ func TestSecretClassifierLeavesNonCredentialedIPv6URLsUnchanged(t *testing.T) {
 		}
 	}
 }
+
+func TestSecretClassifierUnquotedCredentialURLBoundaries(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		value     string
+		wantStart int
+		wantEnd   int
+		want      string
+	}{
+		{
+			name:      "array followed by safe URL",
+			value:     `[postgres://u:p@host/db,https://safe.example/status]`,
+			wantStart: 1,
+			wantEnd:   23,
+			want:      `[[REDACTED],https://safe.example/status]`,
+		},
+		{
+			name:      "array followed by safe value",
+			value:     `[postgres://u:p@host/db,keep]`,
+			wantStart: 1,
+			wantEnd:   23,
+			want:      `[[REDACTED],keep]`,
+		},
+		{
+			name:      "object-like adjacent field",
+			value:     `{url:postgres://u:p@host/db,next:keep}`,
+			wantStart: 5,
+			wantEnd:   27,
+			want:      `{url:[REDACTED],next:keep}`,
+		},
+	}
+
+	classifier := NewSecretClassifier()
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			findings := classifier.Classify("", tc.value)
+			if len(findings) != 1 {
+				t.Fatalf("finding count=%d, want 1", len(findings))
+			}
+			finding := findings[0]
+			if finding.Entity != "CREDENTIAL_URL" {
+				t.Fatalf("entity=%q, want CREDENTIAL_URL", finding.Entity)
+			}
+			if finding.Start != tc.wantStart || finding.End != tc.wantEnd {
+				t.Fatalf("span=(%d,%d), want (%d,%d)", finding.Start, finding.End, tc.wantStart, tc.wantEnd)
+			}
+			if got := classifier.Redact("", tc.value); got != tc.want {
+				t.Fatalf("Redact()=%q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSecretClassifierMalformedUnquotedIPv6DoesNotCaptureAdjacentData(t *testing.T) {
+	t.Parallel()
+
+	classifier := NewSecretClassifier()
+	for _, value := range []string{
+		`[postgres://u:p@[2001:db8::1:5432/db,keep]`,
+		`{url:postgres://u:p@[fe80::1%25eth0:5432/db,next:keep}`,
+	} {
+		if findings := classifier.Classify("", value); len(findings) != 0 {
+			t.Errorf("Classify returned %+v for malformed bracketed IPv6 URL", findings)
+		}
+		if got := classifier.Redact("", value); got != value {
+			t.Errorf("Redact changed malformed bracketed IPv6 input")
+		}
+	}
+}

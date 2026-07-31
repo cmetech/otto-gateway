@@ -71,27 +71,49 @@ func detectSecretValues(value string) []Finding {
 func findCredentialURLs(value string) [][2]int {
 	var spans [][2]int
 	for _, scheme := range urlSchemePattern.FindAllStringIndex(value, -1) {
-		end := scheme[1]
-		for end < len(value) && !isURLBoundary(value[end]) {
-			end++
-		}
-		for end > scheme[1] && isTrailingProsePunctuation(value[end-1]) {
-			end--
-		}
-		if end <= scheme[1] {
-			continue
+		hardEnd := scheme[1]
+		for hardEnd < len(value) && !isURLBoundary(value[hardEnd]) {
+			hardEnd++
 		}
 
-		parsed, err := url.Parse(value[scheme[0]:end])
-		if err != nil || parsed.Host == "" || parsed.User == nil || parsed.User.Username() == "" {
-			continue
-		}
-		if _, hasPassword := parsed.User.Password(); !hasPassword {
+		end, ok := credentialURLPrefixEnd(value, scheme[0], scheme[1], hardEnd)
+		if !ok {
 			continue
 		}
 		spans = append(spans, [2]int{scheme[0], end})
 	}
 	return spans
+}
+
+func credentialURLPrefixEnd(value string, start, schemeEnd, hardEnd int) (int, bool) {
+	for cursor := schemeEnd; cursor < hardEnd; cursor++ {
+		if value[cursor] != ',' && value[cursor] != ']' {
+			continue
+		}
+		prefixEnd := trimURLSuffix(value, schemeEnd, cursor)
+		if isCredentialURL(value[start:prefixEnd]) {
+			return prefixEnd, true
+		}
+	}
+
+	end := trimURLSuffix(value, schemeEnd, hardEnd)
+	return end, end > schemeEnd && isCredentialURL(value[start:end])
+}
+
+func trimURLSuffix(value string, schemeEnd, end int) int {
+	for end > schemeEnd && isTrailingProsePunctuation(value[end-1]) {
+		end--
+	}
+	return end
+}
+
+func isCredentialURL(candidate string) bool {
+	parsed, err := url.Parse(candidate)
+	if err != nil || parsed.Host == "" || parsed.User == nil || parsed.User.Username() == "" {
+		return false
+	}
+	_, hasPassword := parsed.User.Password()
+	return hasPassword
 }
 
 func isURLBoundary(value byte) bool {
