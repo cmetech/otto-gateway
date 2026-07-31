@@ -125,17 +125,18 @@ type mappingKey struct {
 }
 
 type scopeState struct {
-	mu        sync.Mutex
-	id        string
-	profile   Profile
-	forward   map[mappingKey]MappingEntry
-	reverse   map[mappingKey]MappingEntry
-	relations map[string]string
-	inFlight  int
-	state     lifecycleState
-	createdAt time.Time
-	lastUsed  time.Time
-	expiresAt time.Time
+	mu          sync.Mutex
+	lockWaiters atomic.Int64
+	id          string
+	profile     Profile
+	forward     map[mappingKey]MappingEntry
+	reverse     map[mappingKey]MappingEntry
+	relations   map[string]string
+	inFlight    int
+	state       lifecycleState
+	createdAt   time.Time
+	lastUsed    time.Time
+	expiresAt   time.Time
 }
 
 type tombstone struct {
@@ -193,55 +194,71 @@ func (s *ScopeStore) Acquire(scopeID string, profile Profile) (*ScopeLease, erro
 		return nil, errInvalidProfile
 	}
 
-	now := s.clock.Now()
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	for {
+		now := s.clock.Now()
+		s.mu.Lock()
+		s.pruneTombstonesLocked(now)
 
-	s.pruneTombstonesLocked(now)
-	if scope, ok := s.scopes[scopeID]; ok {
-		scope.mu.Lock()
-		defer scope.mu.Unlock()
+		if scope, ok := s.scopes[scopeID]; ok {
+			if !scope.mu.TryLock() {
+				s.mu.Unlock()
+				scope.lock()
+				scope.mu.Unlock()
+				continue
+			}
 
-		if scope.inFlight == 0 && !scope.expiresAt.After(now) {
-			scope.state = lifecycleClosing
-			s.wipeAndRemoveLocked(scope, now)
+			if scope.inFlight == 0 && !scope.expiresAt.After(now) {
+				scope.state = lifecycleClosing
+				s.wipeAndRemoveLocked(scope, now)
+				scope.mu.Unlock()
+				s.mu.Unlock()
+				return nil, errScopeClosed
+			}
+			if scope.state != lifecycleActive {
+				scope.mu.Unlock()
+				s.mu.Unlock()
+				return nil, errScopeClosed
+			}
+			if scope.profile != profile {
+				scope.mu.Unlock()
+				s.mu.Unlock()
+				return nil, fmt.Errorf("scope profile mismatch: %w", errInvalidProfile)
+			}
+			scope.inFlight++
+			s.touchLocked(scope, now)
+			scope.mu.Unlock()
+			s.mu.Unlock()
+			return &ScopeLease{store: s, scope: scope}, nil
+		}
+		if _, closed := s.tombstones[scopeID]; closed {
+			s.mu.Unlock()
 			return nil, errScopeClosed
 		}
-		if scope.state != lifecycleActive {
-			return nil, errScopeClosed
+
+		if len(s.scopes) >= s.config.MaxScopes {
+			s.reapAvailableExpiredLocked(now)
+			if len(s.scopes) >= s.config.MaxScopes {
+				s.mu.Unlock()
+				return nil, errCapacityExceeded
+			}
 		}
-		if scope.profile != profile {
-			return nil, fmt.Errorf("scope profile mismatch: %w", errInvalidProfile)
+
+		scope := &scopeState{
+			id:        scopeID,
+			profile:   profile,
+			forward:   make(map[mappingKey]MappingEntry),
+			reverse:   make(map[mappingKey]MappingEntry),
+			relations: make(map[string]string),
+			inFlight:  1,
+			state:     lifecycleActive,
+			createdAt: now,
+			lastUsed:  now,
+			expiresAt: now.Add(s.config.TTL),
 		}
-		scope.inFlight++
-		s.touchLocked(scope, now)
+		s.scopes[scopeID] = scope
+		s.mu.Unlock()
 		return &ScopeLease{store: s, scope: scope}, nil
 	}
-	if _, closed := s.tombstones[scopeID]; closed {
-		return nil, errScopeClosed
-	}
-
-	if len(s.scopes) >= s.config.MaxScopes {
-		s.reapAvailableExpiredLocked(now)
-		if len(s.scopes) >= s.config.MaxScopes {
-			return nil, errCapacityExceeded
-		}
-	}
-
-	scope := &scopeState{
-		id:        scopeID,
-		profile:   profile,
-		forward:   make(map[mappingKey]MappingEntry),
-		reverse:   make(map[mappingKey]MappingEntry),
-		relations: make(map[string]string),
-		inFlight:  1,
-		state:     lifecycleActive,
-		createdAt: now,
-		lastUsed:  now,
-		expiresAt: now.Add(s.config.TTL),
-	}
-	s.scopes[scopeID] = scope
-	return &ScopeLease{store: s, scope: scope}, nil
 }
 
 // GetOrCreate returns the stable mapping for a tuple, retrying candidate
@@ -279,7 +296,7 @@ func (l *ScopeLease) GetOrCreate(
 	if !l.store.reserveEntry() {
 		scope.mu.Unlock()
 		l.store.reclaimAvailableExpired()
-		scope.mu.Lock()
+		scope.lock()
 
 		if entry, ok := scope.forward[key]; ok {
 			l.store.touchLocked(scope, l.store.clock.Now())
@@ -358,7 +375,7 @@ func (l *ScopeLease) GetOrCreateRelation(
 	if !l.store.reserveEntry() {
 		scope.mu.Unlock()
 		l.store.reclaimAvailableExpired()
-		scope.mu.Lock()
+		scope.lock()
 
 		if value, ok := scope.relations[key]; ok {
 			l.store.touchLocked(scope, l.store.clock.Now())
@@ -449,11 +466,15 @@ func (l *ScopeLease) Release() {
 // List returns copied metadata for retained scopes.
 func (s *ScopeStore) List() []ScopeInfo {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	infos := make([]ScopeInfo, 0, len(s.scopes))
+	scopes := make([]*scopeState, 0, len(s.scopes))
 	for _, scope := range s.scopes {
-		scope.mu.Lock()
+		scopes = append(scopes, scope)
+	}
+	s.mu.Unlock()
+
+	infos := make([]ScopeInfo, 0, len(scopes))
+	for _, scope := range scopes {
+		scope.lock()
 		infos = append(infos, s.scopeInfoLocked(scope))
 		scope.mu.Unlock()
 	}
@@ -465,73 +486,93 @@ func (s *ScopeStore) List() []ScopeInfo {
 
 // Inspect returns copied reversible entries for a retained scope.
 func (s *ScopeStore) Inspect(scopeID string) ([]MappingEntry, error) {
-	s.mu.Lock()
-	scope, ok := s.scopes[scopeID]
-	if !ok {
-		s.mu.Unlock()
-		return nil, errScopeNotFound
-	}
-	scope.mu.Lock()
-	s.mu.Unlock()
-	defer scope.mu.Unlock()
-
-	entries := make([]MappingEntry, 0, len(scope.forward))
-	for _, entry := range scope.forward {
-		entries = append(entries, entry)
-	}
-	sort.Slice(entries, func(i, j int) bool {
-		if entries[i].Entity != entries[j].Entity {
-			return entries[i].Entity < entries[j].Entity
+	for {
+		s.mu.Lock()
+		scope, ok := s.scopes[scopeID]
+		if !ok {
+			s.mu.Unlock()
+			return nil, errScopeNotFound
 		}
-		return entries[i].Synthetic < entries[j].Synthetic
-	})
-	return entries, nil
+		if !scope.mu.TryLock() {
+			s.mu.Unlock()
+			scope.lock()
+			scope.mu.Unlock()
+			continue
+		}
+		s.mu.Unlock()
+
+		entries := make([]MappingEntry, 0, len(scope.forward))
+		for _, entry := range scope.forward {
+			entries = append(entries, entry)
+		}
+		scope.mu.Unlock()
+		sort.Slice(entries, func(i, j int) bool {
+			if entries[i].Entity != entries[j].Entity {
+				return entries[i].Entity < entries[j].Entity
+			}
+			return entries[i].Synthetic < entries[j].Synthetic
+		})
+		return entries, nil
+	}
 }
 
 // Clear closes one scope immediately and wipes it once leases have drained.
 func (s *ScopeStore) Clear(scopeID string) (ClearResult, error) {
-	now := s.clock.Now()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.pruneTombstonesLocked(now)
+	for {
+		now := s.clock.Now()
+		s.mu.Lock()
+		s.pruneTombstonesLocked(now)
 
-	scope, ok := s.scopes[scopeID]
-	if !ok {
-		if _, closed := s.tombstones[scopeID]; closed {
-			return ClearCompleted, nil
+		scope, ok := s.scopes[scopeID]
+		if !ok {
+			if _, closed := s.tombstones[scopeID]; closed {
+				s.mu.Unlock()
+				return ClearCompleted, nil
+			}
+			s.mu.Unlock()
+			return "", errScopeNotFound
 		}
-		return "", errScopeNotFound
-	}
-	scope.mu.Lock()
-	defer scope.mu.Unlock()
+		if !scope.mu.TryLock() {
+			s.mu.Unlock()
+			scope.lock()
+			scope.mu.Unlock()
+			continue
+		}
 
-	scope.state = lifecycleClosing
-	if scope.inFlight > 0 {
-		return ClearClosing, nil
+		scope.state = lifecycleClosing
+		if scope.inFlight > 0 {
+			scope.mu.Unlock()
+			s.mu.Unlock()
+			return ClearClosing, nil
+		}
+		s.wipeAndRemoveLocked(scope, now)
+		scope.mu.Unlock()
+		s.mu.Unlock()
+		return ClearCompleted, nil
 	}
-	s.wipeAndRemoveLocked(scope, now)
-	return ClearCompleted, nil
 }
 
 // ClearAll closes all scopes and wipes those with no active lease.
 func (s *ScopeStore) ClearAll() ClearSummary {
-	now := s.clock.Now()
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.pruneTombstonesLocked(now)
+	scopeIDs := make([]string, 0, len(s.scopes))
+	for scopeID := range s.scopes {
+		scopeIDs = append(scopeIDs, scopeID)
+	}
+	s.mu.Unlock()
+	sort.Strings(scopeIDs)
 
 	var summary ClearSummary
-	for _, scope := range s.scopes {
-		scope.mu.Lock()
-		scope.state = lifecycleClosing
-		if scope.inFlight > 0 {
-			summary.Closing++
-			scope.mu.Unlock()
+	for _, scopeID := range scopeIDs {
+		result, err := s.Clear(scopeID)
+		if err != nil {
 			continue
 		}
-		s.wipeAndRemoveLocked(scope, now)
+		if result == ClearClosing {
+			summary.Closing++
+			continue
+		}
 		summary.Completed++
-		scope.mu.Unlock()
 	}
 	return summary
 }
@@ -543,15 +584,13 @@ func (s *ScopeStore) ReapExpired() int {
 	defer s.mu.Unlock()
 
 	s.pruneTombstonesLocked(now)
-	return s.reapExpiredLocked(now)
+	return s.reapAvailableExpiredLocked(now)
 }
 
 // Snapshot returns copied aggregate metadata.
 func (s *ScopeStore) Snapshot() StoreSnapshot {
 	now := s.clock.Now()
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	snapshot := StoreSnapshot{
 		ScopesActive:       len(s.scopes),
 		Entries:            int(s.totalEntries.Load()),
@@ -559,9 +598,15 @@ func (s *ScopeStore) Snapshot() StoreSnapshot {
 		MaxEntriesPerScope: s.config.MaxEntriesPerScope,
 		MaxTotalEntries:    s.config.MaxTotalEntries,
 	}
-	var oldest time.Time
+	scopes := make([]*scopeState, 0, len(s.scopes))
 	for _, scope := range s.scopes {
-		scope.mu.Lock()
+		scopes = append(scopes, scope)
+	}
+	s.mu.Unlock()
+
+	var oldest time.Time
+	for _, scope := range scopes {
+		scope.lock()
 		snapshot.RequestsInFlight += scope.inFlight
 		if oldest.IsZero() || scope.createdAt.Before(oldest) {
 			oldest = scope.createdAt
@@ -576,6 +621,12 @@ func (s *ScopeStore) Snapshot() StoreSnapshot {
 
 func validProfile(profile Profile) bool {
 	return profile == ProfileStandard || profile == ProfileStrict
+}
+
+func (s *scopeState) lock() {
+	s.lockWaiters.Add(1)
+	s.mu.Lock()
+	s.lockWaiters.Add(-1)
 }
 
 func (l *ScopeLease) lockOperation() bool {
@@ -616,20 +667,6 @@ func (s *ScopeStore) scopeInfoLocked(scope *scopeState) ScopeInfo {
 		LastUsedAt: scope.lastUsed,
 		ExpiresAt:  scope.expiresAt,
 	}
-}
-
-func (s *ScopeStore) reapExpiredLocked(now time.Time) int {
-	reaped := 0
-	for _, scope := range s.scopes {
-		scope.mu.Lock()
-		if scope.inFlight == 0 && (scope.state == lifecycleClosing || !scope.expiresAt.After(now)) {
-			scope.state = lifecycleClosing
-			s.wipeAndRemoveLocked(scope, now)
-			reaped++
-		}
-		scope.mu.Unlock()
-	}
-	return reaped
 }
 
 func (s *ScopeStore) reapAvailableExpiredLocked(now time.Time) int {
@@ -678,18 +715,26 @@ func (s *ScopeStore) wipeAndRemoveLocked(scope *scopeState, now time.Time) {
 }
 
 func (s *ScopeStore) finalizeClosed(scope *scopeState) {
-	now := s.clock.Now()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	current, ok := s.scopes[scope.id]
-	if !ok || current != scope {
+	for {
+		now := s.clock.Now()
+		s.mu.Lock()
+		current, ok := s.scopes[scope.id]
+		if !ok || current != scope {
+			s.mu.Unlock()
+			return
+		}
+		if !scope.mu.TryLock() {
+			s.mu.Unlock()
+			scope.lock()
+			scope.mu.Unlock()
+			continue
+		}
+		if scope.state == lifecycleClosing && scope.inFlight == 0 {
+			s.wipeAndRemoveLocked(scope, now)
+		}
+		scope.mu.Unlock()
+		s.mu.Unlock()
 		return
-	}
-	scope.mu.Lock()
-	defer scope.mu.Unlock()
-	if scope.state == lifecycleClosing && scope.inFlight == 0 {
-		s.wipeAndRemoveLocked(scope, now)
 	}
 }
 

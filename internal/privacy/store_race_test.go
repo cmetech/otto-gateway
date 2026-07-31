@@ -2,11 +2,107 @@ package privacy
 
 import (
 	"fmt"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+func TestScopeStore_NoGlobalConvoy_AcquireSameScopeWaiter(t *testing.T) {
+	store := newParallelTestStore(t)
+	blocked := blockScopeCandidate(t, store, "scope-a")
+	defer blocked.finish(t)
+
+	type acquireResult struct {
+		lease *ScopeLease
+		err   error
+	}
+	acquireDone := make(chan acquireResult, 1)
+	go func() {
+		lease, err := store.Acquire("scope-a", ProfileStandard)
+		acquireDone <- acquireResult{lease: lease, err: err}
+	}()
+	waitForScopeWaiter(t, blocked.scope)
+
+	bDone := insertIntoScopeAsync(store, "scope-b")
+	convoyed, bErr := operationConvoyed(bDone)
+	blocked.finish(t)
+	second := <-acquireDone
+	if second.err != nil {
+		t.Fatalf("second Acquire(scope-a) failed: %v", second.err)
+	}
+	second.lease.Release()
+	if convoyed {
+		bErr = <-bDone
+	}
+	if bErr != nil {
+		t.Fatalf("scope B insertion failed: %v", bErr)
+	}
+	if convoyed {
+		t.Fatal("same-scope Acquire waiter held the global store lock")
+	}
+}
+
+func TestScopeStore_NoGlobalConvoy_ReapExpired(t *testing.T) {
+	store := newParallelTestStore(t)
+	blocked := blockScopeCandidate(t, store, "scope-a")
+	defer blocked.finish(t)
+
+	reapDone := make(chan int, 1)
+	go func() {
+		reapDone <- store.ReapExpired()
+	}()
+	reapCompleted, reaped := waitForScopeWaiterOrReap(t, blocked.scope, reapDone)
+
+	bDone := insertIntoScopeAsync(store, "scope-b")
+	convoyed, bErr := operationConvoyed(bDone)
+	blocked.finish(t)
+	if !reapCompleted {
+		reaped = <-reapDone
+	}
+	if reaped != 0 {
+		t.Fatalf("ReapExpired()=%d with in-flight scope, want 0", reaped)
+	}
+	if convoyed {
+		bErr = <-bDone
+	}
+	if bErr != nil {
+		t.Fatalf("scope B insertion failed: %v", bErr)
+	}
+	if convoyed {
+		t.Fatal("ReapExpired held the global store lock while waiting on scope A")
+	}
+}
+
+func TestScopeStore_NoGlobalConvoy_List(t *testing.T) {
+	store := newParallelTestStore(t)
+	blocked := blockScopeCandidate(t, store, "scope-a")
+	defer blocked.finish(t)
+
+	listDone := make(chan []ScopeInfo, 1)
+	go func() {
+		listDone <- store.List()
+	}()
+	waitForScopeWaiter(t, blocked.scope)
+
+	bDone := insertIntoScopeAsync(store, "scope-b")
+	convoyed, bErr := operationConvoyed(bDone)
+	blocked.finish(t)
+	infos := <-listDone
+	if len(infos) == 0 {
+		t.Fatal("List() returned no scope metadata")
+	}
+	if convoyed {
+		bErr = <-bDone
+	}
+	if bErr != nil {
+		t.Fatalf("scope B insertion failed: %v", bErr)
+	}
+	if convoyed {
+		t.Fatal("List held the global store lock while waiting on scope A")
+	}
+}
 
 func TestScopeStore_ParallelScopesDoNotSerialize(t *testing.T) {
 	clock := newFakeClock()
@@ -64,6 +160,119 @@ func TestScopeStore_ParallelScopesDoNotSerialize(t *testing.T) {
 	}
 	if snapshot := store.Snapshot(); snapshot.ScopesActive != 2 || snapshot.Entries != 2 {
 		t.Fatalf("parallel snapshot=%+v", snapshot)
+	}
+}
+
+type blockedScopeCandidate struct {
+	scope   *scopeState
+	lease   *ScopeLease
+	unblock chan struct{}
+	done    chan error
+	once    sync.Once
+}
+
+func newParallelTestStore(t *testing.T) *ScopeStore {
+	t.Helper()
+
+	return newTestScopeStore(t, newFakeClock(), StoreConfig{
+		TTL:                time.Hour,
+		MaxScopes:          4,
+		MaxEntriesPerScope: 2,
+		MaxTotalEntries:    8,
+	})
+}
+
+func blockScopeCandidate(t *testing.T, store *ScopeStore, scopeID string) *blockedScopeCandidate {
+	t.Helper()
+
+	lease := acquireTestScope(t, store, scopeID)
+	blocked := &blockedScopeCandidate{
+		scope:   lease.scope,
+		lease:   lease,
+		unblock: make(chan struct{}),
+		done:    make(chan error, 1),
+	}
+	started := make(chan struct{})
+	go func() {
+		_, _, err := lease.GetOrCreate("HOST", "source-"+scopeID, ProvenanceInput, func(uint32) (string, error) {
+			close(started)
+			<-blocked.unblock
+			return "synthetic-" + scopeID, nil
+		})
+		blocked.done <- err
+	}()
+	<-started
+	return blocked
+}
+
+func (b *blockedScopeCandidate) finish(t *testing.T) {
+	t.Helper()
+
+	b.once.Do(func() {
+		close(b.unblock)
+		if err := <-b.done; err != nil {
+			t.Errorf("blocked candidate failed: %v", err)
+		}
+		b.lease.Release()
+	})
+}
+
+func waitForScopeWaiter(t *testing.T, scope *scopeState) {
+	t.Helper()
+
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+	for scope.lockWaiters.Load() == 0 {
+		select {
+		case <-deadline.C:
+			t.Fatal("operation did not reach the contested scope lock")
+		default:
+			runtime.Gosched()
+		}
+	}
+}
+
+func waitForScopeWaiterOrReap(t *testing.T, scope *scopeState, done <-chan int) (bool, int) {
+	t.Helper()
+
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+	for {
+		select {
+		case reaped := <-done:
+			return true, reaped
+		case <-deadline.C:
+			t.Fatal("ReapExpired neither completed nor reached the contested scope lock")
+		default:
+			if scope.lockWaiters.Load() > 0 {
+				return false, 0
+			}
+			runtime.Gosched()
+		}
+	}
+}
+
+func insertIntoScopeAsync(store *ScopeStore, scopeID string) <-chan error {
+	done := make(chan error, 1)
+	go func() {
+		lease, err := store.Acquire(scopeID, ProfileStandard)
+		if err != nil {
+			done <- err
+			return
+		}
+		defer lease.Release()
+		_, _, err = lease.GetOrCreate("HOST", "source-"+scopeID, ProvenanceInput, fixedCandidate("synthetic-"+scopeID))
+		done <- err
+	}()
+	return done
+}
+
+func operationConvoyed(done <-chan error) (bool, error) {
+	select {
+	case err := <-done:
+		return false, err
+	case <-time.After(500 * time.Millisecond):
+		return true, nil
 	}
 }
 
