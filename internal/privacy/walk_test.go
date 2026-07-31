@@ -1,6 +1,8 @@
 package privacy
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -39,7 +41,7 @@ func TestTransformStringsCopiesContainersAndPreservesMapKeys(t *testing.T) {
 	want := map[string]any{
 		"password": "password=alpha",
 		"nested": []any{
-			"=plain",
+			"nested=plain",
 			map[string]any{"access_token": "access_token=bravo"},
 		},
 		"number": 42,
@@ -158,7 +160,7 @@ func TestTransformRequestStringsCoversOnlyCanonicalContentSurfaces(t *testing.T)
 		t.Errorf("tool input=%q", got)
 	}
 	nested := req.Messages[0].Content[2].ToolUse.Input["nested"].([]any)
-	if nested[0] != "[]nested-secret" {
+	if nested[0] != "[nested]nested-secret" {
 		t.Errorf("nested tool input=%q", nested[0])
 	}
 	if got := req.Messages[0].Content[3].ToolResult.Content; got != "[content]result-secret" {
@@ -224,7 +226,7 @@ func TestVisitRequestStringsIsReadOnlyAndStable(t *testing.T) {
 			},
 		},
 	}
-	original := cloneRequestForTest(req)
+	before := canonicalSnapshot(t, req)
 	var visited []string
 	if err := VisitRequestStrings(&req, func(key, value string) error {
 		visited = append(visited, fmt.Sprintf("%s=%s", key, value))
@@ -236,8 +238,8 @@ func TestVisitRequestStringsIsReadOnlyAndStable(t *testing.T) {
 	if !reflect.DeepEqual(visited, want) {
 		t.Fatalf("visited=%v, want %v", visited, want)
 	}
-	if !reflect.DeepEqual(req, original) {
-		t.Fatalf("VisitRequestStrings mutated request: got %#v, want %#v", req, original)
+	if after := canonicalSnapshot(t, req); !bytes.Equal(after, before) {
+		t.Fatalf("VisitRequestStrings mutated nested request state: before=%s after=%s", before, after)
 	}
 }
 
@@ -248,9 +250,7 @@ func TestVisitResponseStringsIsReadOnly(t *testing.T) {
 		Content:   []canonical.ContentPart{{Kind: canonical.ContentKindText, Text: "response"}},
 		ToolCalls: []canonical.ToolCall{{Arguments: map[string]any{"token": "value"}}},
 	}}
-	original := resp
-	original.Message.Content = append([]canonical.ContentPart(nil), resp.Message.Content...)
-	original.Message.ToolCalls = append([]canonical.ToolCall(nil), resp.Message.ToolCalls...)
+	before := canonicalSnapshot(t, resp)
 
 	var visited []string
 	if err := VisitResponseStrings(&resp, func(key, value string) error {
@@ -263,8 +263,245 @@ func TestVisitResponseStringsIsReadOnly(t *testing.T) {
 	if !reflect.DeepEqual(visited, want) {
 		t.Fatalf("visited=%v, want %v", visited, want)
 	}
-	if !reflect.DeepEqual(resp, original) {
-		t.Fatalf("VisitResponseStrings mutated response: got %#v, want %#v", resp, original)
+	if after := canonicalSnapshot(t, resp); !bytes.Equal(after, before) {
+		t.Fatalf("VisitResponseStrings mutated nested response state: before=%s after=%s", before, after)
+	}
+}
+
+func TestCanonicalTraversalClassifiesAcronymKeys(t *testing.T) {
+	t.Parallel()
+
+	classifier := NewSecretClassifier()
+	redact := func(key, value string) (string, error) {
+		return classifier.Redact(key, value), nil
+	}
+	req := canonical.ChatRequest{Messages: []canonical.Message{{
+		Content: []canonical.ContentPart{{
+			Kind: canonical.ContentKindToolUse,
+			ToolUse: &canonical.ToolUsePart{Input: map[string]any{
+				"APIKey":             "request-api-value",
+				"AWSAccessKeyID":     "request-aws-id",
+				"AWSSecretAccessKey": "request-aws-secret",
+			}},
+		}},
+	}}}
+	resp := canonical.ChatResponse{Message: canonical.Message{ToolCalls: []canonical.ToolCall{{
+		Arguments: map[string]any{
+			"GitHubToken": "response-github-value",
+			"OAuthToken":  "response-oauth-value",
+		},
+	}}}}
+
+	if err := TransformRequestStrings(&req, redact); err != nil {
+		t.Fatal(err)
+	}
+	if err := TransformResponseStrings(&resp, redact); err != nil {
+		t.Fatal(err)
+	}
+
+	input := req.Messages[0].Content[0].ToolUse.Input
+	for _, key := range []string{"APIKey", "AWSAccessKeyID", "AWSSecretAccessKey"} {
+		if input[key] != "[REDACTED]" {
+			t.Errorf("request %s=%q, want redacted", key, input[key])
+		}
+	}
+	arguments := resp.Message.ToolCalls[0].Arguments
+	for _, key := range []string{"GitHubToken", "OAuthToken"} {
+		if arguments[key] != "[REDACTED]" {
+			t.Errorf("response %s=%q, want redacted", key, arguments[key])
+		}
+	}
+}
+
+func TestTransformAndVisitStringsPreserveArrayKeyContext(t *testing.T) {
+	t.Parallel()
+
+	input := map[string]any{
+		"password": []any{
+			"password-one",
+			[]any{"password-two"},
+			map[string]any{
+				"label":         "safe-label",
+				"client_secret": []any{"client-three"},
+			},
+		},
+		"client_secret": []any{"client-one"},
+	}
+	wantVisits := []string{
+		"client_secret=client-one",
+		"password=password-one",
+		"password=password-two",
+		"client_secret=client-three",
+		"label=safe-label",
+	}
+
+	var transformVisits []string
+	got, err := TransformStrings(input, func(key, value string) (string, error) {
+		transformVisits = append(transformVisits, key+"="+value)
+		return "[" + key + "]" + value, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var visitVisits []string
+	if err := visitStrings(input, "", 0, func(key, value string) error {
+		visitVisits = append(visitVisits, key+"="+value)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(transformVisits, wantVisits) {
+		t.Fatalf("transform visits=%v, want %v", transformVisits, wantVisits)
+	}
+	if !reflect.DeepEqual(visitVisits, transformVisits) {
+		t.Fatalf("visit sequence=%v, want transform sequence %v", visitVisits, transformVisits)
+	}
+
+	transformed := got.(map[string]any)
+	passwords := transformed["password"].([]any)
+	if passwords[0] != "[password]password-one" || passwords[1].([]any)[0] != "[password]password-two" {
+		t.Fatalf("password arrays lost key context: %#v", passwords)
+	}
+	nested := passwords[2].(map[string]any)
+	if nested["client_secret"].([]any)[0] != "[client_secret]client-three" || nested["label"] != "[label]safe-label" {
+		t.Fatalf("nested map did not override array context: %#v", nested)
+	}
+}
+
+func TestCanonicalTransformAndVisitPreserveArrayKeyContext(t *testing.T) {
+	t.Parallel()
+
+	classifier := NewSecretClassifier()
+	transformReq, transformResp := canonicalArrayFixtures()
+	visitReq, visitResp := canonicalArrayFixtures()
+	var transformVisits []string
+	transform := func(key, value string) (string, error) {
+		transformVisits = append(transformVisits, key+"="+value)
+		return classifier.Redact(key, value), nil
+	}
+	if err := TransformRequestStrings(&transformReq, transform); err != nil {
+		t.Fatal(err)
+	}
+	if err := TransformResponseStrings(&transformResp, transform); err != nil {
+		t.Fatal(err)
+	}
+
+	var visitVisits []string
+	visit := func(key, value string) error {
+		visitVisits = append(visitVisits, key+"="+value)
+		return nil
+	}
+	if err := VisitRequestStrings(&visitReq, visit); err != nil {
+		t.Fatal(err)
+	}
+	if err := VisitResponseStrings(&visitResp, visit); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(visitVisits, transformVisits) {
+		t.Fatalf("visit sequence=%v, want transform sequence %v", visitVisits, transformVisits)
+	}
+
+	requestInput := transformReq.Messages[0].Content[0].ToolUse.Input["password"].([]any)
+	if requestInput[0] != "[REDACTED]" || requestInput[1].(map[string]any)["client_secret"].([]any)[0] != "[REDACTED]" {
+		t.Fatalf("request tool input arrays were not redacted: %#v", requestInput)
+	}
+	if got := transformReq.Messages[0].ToolCalls[0].Arguments["client_secret"].([]any)[0]; got != "[REDACTED]" {
+		t.Fatalf("request tool-call argument=%q, want redacted", got)
+	}
+	if got := transformResp.Message.Content[0].ToolUse.Input["password"].([]any)[0]; got != "[REDACTED]" {
+		t.Fatalf("response tool input=%q, want redacted", got)
+	}
+	if got := transformResp.Message.ToolCalls[0].Arguments["client_secret"].([]any)[0]; got != "[REDACTED]" {
+		t.Fatalf("response tool-call argument=%q, want redacted", got)
+	}
+}
+
+func canonicalArrayFixtures() (canonical.ChatRequest, canonical.ChatResponse) {
+	req := canonical.ChatRequest{Messages: []canonical.Message{{
+		Content: []canonical.ContentPart{{
+			Kind: canonical.ContentKindToolUse,
+			ToolUse: &canonical.ToolUsePart{Input: map[string]any{
+				"password": []any{
+					"request-password",
+					map[string]any{"client_secret": []any{"request-client"}},
+				},
+			}},
+		}},
+		ToolCalls: []canonical.ToolCall{{Arguments: map[string]any{
+			"client_secret": []any{"request-argument"},
+		}}},
+	}}}
+	resp := canonical.ChatResponse{Message: canonical.Message{
+		Content: []canonical.ContentPart{{
+			Kind: canonical.ContentKindToolUse,
+			ToolUse: &canonical.ToolUsePart{Input: map[string]any{
+				"password": []any{"response-password"},
+			}},
+		}},
+		ToolCalls: []canonical.ToolCall{{Arguments: map[string]any{
+			"client_secret": []any{"response-client"},
+		}}},
+	}}
+	return req, resp
+}
+
+func TestVisitStringsDepthLimit(t *testing.T) {
+	t.Parallel()
+
+	requestAtDepth := func(depth int) canonical.ChatRequest {
+		return canonical.ChatRequest{Messages: []canonical.Message{{
+			Content: []canonical.ContentPart{{
+				Kind: canonical.ContentKindToolUse,
+				ToolUse: &canonical.ToolUsePart{
+					Input: nestedMaps(depth).(map[string]any),
+				},
+			}},
+		}}}
+	}
+	allowed := requestAtDepth(64)
+	if err := VisitRequestStrings(&allowed, func(_, _ string) error { return nil }); err != nil {
+		t.Fatalf("VisitRequestStrings depth 64 returned error: %v", err)
+	}
+
+	tooDeep := requestAtDepth(65)
+	before := canonicalSnapshot(t, tooDeep)
+	err := VisitRequestStrings(&tooDeep, func(_, _ string) error { return nil })
+	if !errors.Is(err, errStringTraversalTooDeep) {
+		t.Fatalf("VisitRequestStrings depth 65 error=%v, want %v", err, errStringTraversalTooDeep)
+	}
+	if after := canonicalSnapshot(t, tooDeep); !bytes.Equal(after, before) {
+		t.Fatalf("depth error mutated request: before=%s after=%s", before, after)
+	}
+}
+
+func TestVisitStringsPropagatesCallbackErrors(t *testing.T) {
+	t.Parallel()
+
+	wantErr := errors.New("visit stopped")
+	req := canonical.ChatRequest{System: "system", Messages: []canonical.Message{{
+		Content: []canonical.ContentPart{{Kind: canonical.ContentKindText, Text: "request-text"}},
+	}}}
+	err := VisitRequestStrings(&req, func(key, _ string) error {
+		if key == "text" {
+			return wantErr
+		}
+		return nil
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("VisitRequestStrings error=%v, want %v", err, wantErr)
+	}
+
+	resp := canonical.ChatResponse{Message: canonical.Message{ToolCalls: []canonical.ToolCall{{
+		Arguments: map[string]any{"token": "response-value"},
+	}}}}
+	err = VisitResponseStrings(&resp, func(key, _ string) error {
+		if key == "token" {
+			return wantErr
+		}
+		return nil
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("VisitResponseStrings error=%v, want %v", err, wantErr)
 	}
 }
 
@@ -283,12 +520,11 @@ func taggedTransform(key, value string) (string, error) {
 	return "[" + key + "]" + value, nil
 }
 
-func cloneRequestForTest(req canonical.ChatRequest) canonical.ChatRequest {
-	copyReq := req
-	copyReq.Messages = append([]canonical.Message(nil), req.Messages...)
-	for i := range copyReq.Messages {
-		copyReq.Messages[i].Content = append([]canonical.ContentPart(nil), req.Messages[i].Content...)
-		copyReq.Messages[i].ToolCalls = append([]canonical.ToolCall(nil), req.Messages[i].ToolCalls...)
+func canonicalSnapshot(t *testing.T, value any) []byte {
+	t.Helper()
+	snapshot, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
 	}
-	return copyReq
+	return snapshot
 }

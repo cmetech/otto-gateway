@@ -43,7 +43,7 @@ func transformStrings(v any, key string, depth int, fn func(key, value string) (
 	case []any:
 		transformed := make([]any, len(value))
 		for i, childValue := range value {
-			child, err := transformStrings(childValue, "", depth+1, fn)
+			child, err := transformStrings(childValue, key, depth+1, fn)
 			if err != nil {
 				return nil, err
 			}
@@ -199,7 +199,7 @@ func visitStrings(v any, key string, depth int, fn func(key, value string) error
 		}
 	case []any:
 		for _, childValue := range value {
-			if err := visitStrings(childValue, "", depth+1, fn); err != nil {
+			if err := visitStrings(childValue, key, depth+1, fn); err != nil {
 				return err
 			}
 		}

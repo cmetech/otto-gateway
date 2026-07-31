@@ -68,16 +68,39 @@ func normalizeKeyWords(key string) []string {
 			normalized.WriteByte(' ')
 			continue
 		}
-		if i > 0 && unicode.IsUpper(r) && (unicode.IsLower(runes[i-1]) || unicode.IsDigit(runes[i-1])) {
+		lowercaseBoundary := i > 0 && (unicode.IsLower(runes[i-1]) || unicode.IsDigit(runes[i-1]))
+		acronymBoundary := i > 0 && i+1 < len(runes) && unicode.IsUpper(runes[i-1]) && unicode.IsLower(runes[i+1])
+		if unicode.IsUpper(r) && (lowercaseBoundary || acronymBoundary) {
 			normalized.WriteByte(' ')
 		}
 		normalized.WriteRune(unicode.ToLower(r))
 	}
-	return strings.Fields(normalized.String())
+	return mergeKnownCredentialWords(strings.Fields(normalized.String()))
+}
+
+func mergeKnownCredentialWords(words []string) []string {
+	merged := make([]string, 0, len(words))
+	for i := 0; i < len(words); i++ {
+		if i+1 < len(words) && words[i] == "git" && words[i+1] == "hub" {
+			merged = append(merged, "github")
+			i++
+			continue
+		}
+		if i+1 < len(words) && words[i] == "o" && words[i+1] == "auth" {
+			merged = append(merged, "oauth")
+			i++
+			continue
+		}
+		merged = append(merged, words[i])
+	}
+	return merged
 }
 
 func containsCredentialCompound(words []string) bool {
 	if len(words) == 0 {
+		return false
+	}
+	if hasWord(words, "count") {
 		return false
 	}
 	if hasWord(words, "public") && hasWord(words, "key") {

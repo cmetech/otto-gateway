@@ -1,6 +1,7 @@
 package privacy
 
 import (
+	"net/url"
 	"regexp"
 	"sort"
 	"strings"
@@ -15,10 +16,6 @@ var secretValuePatterns = []secretPattern{
 	{
 		entity: "PRIVATE_KEY",
 		re:     regexp.MustCompile(`(?s)-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----.*?-----END (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----`),
-	},
-	{
-		entity: "CREDENTIAL_URL",
-		re:     regexp.MustCompile(`\b[a-zA-Z][a-zA-Z0-9+.-]*://[^\s/:@]+:[^\s/@]+@[^\s]+`),
 	},
 	{
 		entity: "PROXY_AUTHORIZATION",
@@ -42,7 +39,7 @@ var secretValuePatterns = []secretPattern{
 	},
 }
 
-var structuredAssignmentPattern = regexp.MustCompile(`(?i)(?:--)?[A-Za-z][A-Za-z0-9_.-]*["']?\s*[:=]\s*["']?[^\s"',}]+`)
+var urlSchemePattern = regexp.MustCompile(`\b[a-zA-Z][a-zA-Z0-9+.-]*://`)
 
 func detectSecretValues(value string) []Finding {
 	var candidates []Finding
@@ -53,23 +50,150 @@ func detectSecretValues(value string) []Finding {
 		}
 		registryOrder++
 	}
+	for _, span := range findCredentialURLs(value) {
+		candidates = append(candidates, secretFinding("CREDENTIAL_URL", span[0], span[1], registryOrder))
+	}
+	registryOrder++
 
-	for _, span := range structuredAssignmentPattern.FindAllStringIndex(value, -1) {
-		assignment := value[span[0]:span[1]]
-		separator := strings.IndexAny(assignment, ":=")
-		if separator < 0 {
-			continue
-		}
-		key := strings.Trim(strings.TrimLeft(strings.TrimSpace(assignment[:separator]), "-"), "\"'")
+	for _, assignment := range findStructuredAssignments(value) {
+		key := assignment.key
 		words := normalizeKeyWords(key)
 		if !containsCredentialCompound(words) && !containsAuthorizationName(words) {
 			continue
 		}
-		candidates = append(candidates, secretFinding(entityForKey(key), span[0], span[1], registryOrder))
+		candidates = append(candidates, secretFinding(entityForKey(key), assignment.valueStart, assignment.valueEnd, registryOrder))
 		registryOrder++
 	}
 
 	return nonOverlappingSecretFindings(candidates)
+}
+
+func findCredentialURLs(value string) [][2]int {
+	var spans [][2]int
+	for _, scheme := range urlSchemePattern.FindAllStringIndex(value, -1) {
+		end := scheme[1]
+		for end < len(value) && !isURLBoundary(value[end]) {
+			end++
+		}
+		for end > scheme[1] && isTrailingProsePunctuation(value[end-1]) {
+			end--
+		}
+		if end <= scheme[1] {
+			continue
+		}
+
+		parsed, err := url.Parse(value[scheme[0]:end])
+		if err != nil || parsed.Host == "" || parsed.User == nil || parsed.User.Username() == "" {
+			continue
+		}
+		if _, hasPassword := parsed.User.Password(); !hasPassword {
+			continue
+		}
+		spans = append(spans, [2]int{scheme[0], end})
+	}
+	return spans
+}
+
+func isURLBoundary(value byte) bool {
+	return value == ' ' || value == '\t' || value == '\r' || value == '\n' ||
+		value == '"' || value == '\'' || value == ',' || value == '}' || value == ']' ||
+		value == '<' || value == '>'
+}
+
+func isTrailingProsePunctuation(value byte) bool {
+	return value == '.' || value == ';' || value == '!' || value == ')'
+}
+
+type structuredAssignment struct {
+	key                  string
+	valueStart, valueEnd int
+}
+
+func findStructuredAssignments(value string) []structuredAssignment {
+	var assignments []structuredAssignment
+	for start := 0; start < len(value); start++ {
+		keyStart := start
+		cliPrefix := false
+		if value[keyStart] == '-' && keyStart+2 < len(value) && value[keyStart+1] == '-' {
+			keyStart += 2
+			cliPrefix = true
+		}
+		if !isASCIIAlpha(value[keyStart]) || !cliPrefix && keyStart > 0 && isAssignmentKeyByte(value[keyStart-1]) {
+			continue
+		}
+
+		keyEnd := keyStart + 1
+		for keyEnd < len(value) && isAssignmentKeyByte(value[keyEnd]) {
+			keyEnd++
+		}
+		cursor := keyEnd
+		if cursor < len(value) && (value[cursor] == '\'' || value[cursor] == '"') {
+			cursor++
+		}
+		for cursor < len(value) && (value[cursor] == ' ' || value[cursor] == '\t') {
+			cursor++
+		}
+		if cursor >= len(value) || value[cursor] != ':' && value[cursor] != '=' {
+			continue
+		}
+		cursor++
+		for cursor < len(value) && (value[cursor] == ' ' || value[cursor] == '\t') {
+			cursor++
+		}
+		if cursor >= len(value) {
+			continue
+		}
+
+		valueStart := cursor
+		valueEnd := cursor
+		if quote := value[cursor]; quote == '\'' || quote == '"' {
+			valueStart++
+			valueEnd = valueStart
+			for valueEnd < len(value) {
+				if value[valueEnd] == quote && !isEscapedAt(value, valueEnd) {
+					break
+				}
+				valueEnd++
+			}
+		} else {
+			for valueEnd < len(value) && !isUnquotedAssignmentDelimiter(value[valueEnd]) {
+				valueEnd++
+			}
+		}
+		if valueEnd == valueStart {
+			continue
+		}
+
+		assignments = append(assignments, structuredAssignment{
+			key:        strings.TrimLeft(value[keyStart:keyEnd], "-"),
+			valueStart: valueStart,
+			valueEnd:   valueEnd,
+		})
+		start = keyEnd - 1
+	}
+	return assignments
+}
+
+func isASCIIAlpha(value byte) bool {
+	return value >= 'a' && value <= 'z' || value >= 'A' && value <= 'Z'
+}
+
+func isAssignmentKeyByte(value byte) bool {
+	return isASCIIAlpha(value) || value >= '0' && value <= '9' || value == '_' || value == '-' || value == '.'
+}
+
+func isUnquotedAssignmentDelimiter(value byte) bool {
+	return value == ' ' || value == '\t' || value == '\r' || value == '\n' ||
+		value == '"' || value == '\'' || value == ',' || value == '}' || value == ']'
+}
+
+func isEscapedAt(value string, index int) bool {
+	backslashes := 0
+	for index > 0 && value[index-1] == '\\' {
+		backslashes++
+		index--
+	}
+	return backslashes%2 == 1
 }
 
 func secretFinding(entity string, start, end, order int) Finding {
@@ -104,21 +228,92 @@ func Arbitrate(findings []Finding) []Finding {
 	})
 
 	accepted := make([]Finding, 0, len(candidates))
+	var intervals *intervalNode
 	for _, candidate := range candidates {
-		overlaps := false
-		for _, existing := range accepted {
-			if candidate.Start < existing.End && existing.Start < candidate.End {
-				overlaps = true
-				break
-			}
+		if intervalOverlaps(intervals, candidate) {
+			continue
 		}
-		if !overlaps {
-			accepted = append(accepted, candidate)
-		}
+		intervals = insertInterval(intervals, candidate)
+		accepted = append(accepted, candidate)
 	}
 
 	sort.SliceStable(accepted, func(i, j int) bool {
 		return accepted[i].Start < accepted[j].Start
 	})
 	return accepted
+}
+
+type intervalNode struct {
+	finding     Finding
+	left, right *intervalNode
+	height      int
+}
+
+func intervalOverlaps(root *intervalNode, candidate Finding) bool {
+	for root != nil {
+		switch {
+		case candidate.End <= root.finding.Start:
+			root = root.left
+		case candidate.Start >= root.finding.End:
+			root = root.right
+		default:
+			return true
+		}
+	}
+	return false
+}
+
+func insertInterval(root *intervalNode, finding Finding) *intervalNode {
+	if root == nil {
+		return &intervalNode{finding: finding, height: 1}
+	}
+	if finding.Start < root.finding.Start {
+		root.left = insertInterval(root.left, finding)
+	} else {
+		root.right = insertInterval(root.right, finding)
+	}
+	return balanceIntervalNode(root)
+}
+
+func balanceIntervalNode(root *intervalNode) *intervalNode {
+	root.height = max(intervalHeight(root.left), intervalHeight(root.right)) + 1
+	balance := intervalHeight(root.left) - intervalHeight(root.right)
+	if balance > 1 {
+		if intervalHeight(root.left.left) < intervalHeight(root.left.right) {
+			root.left = rotateIntervalLeft(root.left)
+		}
+		return rotateIntervalRight(root)
+	}
+	if balance < -1 {
+		if intervalHeight(root.right.right) < intervalHeight(root.right.left) {
+			root.right = rotateIntervalRight(root.right)
+		}
+		return rotateIntervalLeft(root)
+	}
+	return root
+}
+
+func rotateIntervalLeft(root *intervalNode) *intervalNode {
+	pivot := root.right
+	root.right = pivot.left
+	pivot.left = root
+	root.height = max(intervalHeight(root.left), intervalHeight(root.right)) + 1
+	pivot.height = max(intervalHeight(pivot.left), intervalHeight(pivot.right)) + 1
+	return pivot
+}
+
+func rotateIntervalRight(root *intervalNode) *intervalNode {
+	pivot := root.left
+	root.left = pivot.right
+	pivot.right = root
+	root.height = max(intervalHeight(root.left), intervalHeight(root.right)) + 1
+	pivot.height = max(intervalHeight(pivot.left), intervalHeight(pivot.right)) + 1
+	return pivot
+}
+
+func intervalHeight(root *intervalNode) int {
+	if root == nil {
+		return 0
+	}
+	return root.height
 }

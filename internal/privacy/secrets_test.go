@@ -2,7 +2,9 @@ package privacy
 
 import (
 	"reflect"
+	"sort"
 	"testing"
+	"time"
 )
 
 func TestArbitratePrioritizesConfidenceAcrossOverlaps(t *testing.T) {
@@ -77,4 +79,99 @@ func TestArbitrateReturnsAcceptedSpansInSourceOrder(t *testing.T) {
 	if !reflect.DeepEqual(input, original) {
 		t.Fatalf("Arbitrate mutated input: got %+v, want %+v", input, original)
 	}
+}
+
+func TestArbitrateMatchesReferenceOnOverlappingCorpus(t *testing.T) {
+	t.Parallel()
+
+	findings := []Finding{
+		{Entity: "ner-a", Kind: MatchNER, Start: 0, End: 8, RegistryOrder: 0},
+		{Entity: "regex-a", Kind: MatchValidatedRegex, Start: 2, End: 9, RegistryOrder: 1},
+		{Entity: "secret-a", Kind: MatchHighConfidenceSecret, Start: 4, End: 14, RegistryOrder: 8},
+		{Entity: "structured-a", Kind: MatchStructuredAssignment, Start: 13, End: 20, RegistryOrder: 2},
+		{Entity: "technical-a", Kind: MatchContextualTechnical, Start: 21, End: 25, RegistryOrder: 4},
+		{Entity: "technical-long", Kind: MatchContextualTechnical, Start: 20, End: 26, RegistryOrder: 7},
+		{Entity: "regex-earlier", Kind: MatchValidatedRegex, Start: 30, End: 36, RegistryOrder: 3},
+		{Entity: "regex-later", Kind: MatchValidatedRegex, Start: 31, End: 37, RegistryOrder: 9},
+		{Entity: "secret-final", Kind: MatchHighConfidenceSecret, Start: 40, End: 50, RegistryOrder: 5},
+	}
+
+	want := referenceArbitrate(findings)
+	got := Arbitrate(findings)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Arbitrate()=%+v, reference=%+v", got, want)
+	}
+}
+
+func TestArbitrateDenseNonOverlappingScales(t *testing.T) {
+	const findingCount = 60_000
+	findings := make([]Finding, findingCount)
+	for i := range findings {
+		// Reverse source order makes source-ordered slice insertion quadratic;
+		// a bounded interval index remains O(N log N).
+		start := (findingCount - i) * 3
+		findings[i] = Finding{
+			Entity:        "DENSE",
+			Kind:          MatchHighConfidenceSecret,
+			Start:         start,
+			End:           start + 1,
+			RegistryOrder: i,
+		}
+	}
+
+	started := time.Now()
+	got := Arbitrate(findings)
+	elapsed := time.Since(started)
+	if len(got) != findingCount {
+		t.Fatalf("accepted=%d, want %d", len(got), findingCount)
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("dense arbitration took %v, want <=500ms bounded scaling", elapsed)
+	}
+}
+
+func BenchmarkArbitrateDenseNonOverlapping(b *testing.B) {
+	const findingCount = 60_000
+	findings := make([]Finding, findingCount)
+	for i := range findings {
+		start := (findingCount - i) * 3
+		findings[i] = Finding{Kind: MatchHighConfidenceSecret, Start: start, End: start + 1, RegistryOrder: i}
+	}
+	b.ResetTimer()
+	for range b.N {
+		Arbitrate(findings)
+	}
+}
+
+func referenceArbitrate(findings []Finding) []Finding {
+	candidates := append([]Finding(nil), findings...)
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].Kind != candidates[j].Kind {
+			return candidates[i].Kind > candidates[j].Kind
+		}
+		leftLen := candidates[i].End - candidates[i].Start
+		rightLen := candidates[j].End - candidates[j].Start
+		if leftLen != rightLen {
+			return leftLen > rightLen
+		}
+		return candidates[i].RegistryOrder < candidates[j].RegistryOrder
+	})
+
+	accepted := make([]Finding, 0, len(candidates))
+	for _, candidate := range candidates {
+		overlaps := false
+		for _, existing := range accepted {
+			if candidate.Start < existing.End && existing.Start < candidate.End {
+				overlaps = true
+				break
+			}
+		}
+		if !overlaps {
+			accepted = append(accepted, candidate)
+		}
+	}
+	sort.SliceStable(accepted, func(i, j int) bool {
+		return accepted[i].Start < accepted[j].Start
+	})
+	return accepted
 }
