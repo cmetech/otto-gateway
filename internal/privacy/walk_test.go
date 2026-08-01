@@ -416,6 +416,48 @@ func TestCanonicalTransformAndVisitPreserveArrayKeyContext(t *testing.T) {
 	}
 }
 
+func TestTransformRequestStringsPreservesExactOneWayMarkersUnderCredentialKeys(t *testing.T) {
+	t.Parallel()
+
+	const (
+		apiMarker      = "[SECRET:API_KEY_0123456789AB]"
+		passwordMarker = "[SECRET:PASSWORD_0123456789AB]"
+	)
+	classifier := NewSecretClassifier()
+	req := canonical.ChatRequest{Messages: []canonical.Message{{
+		Content: []canonical.ContentPart{{
+			Kind: canonical.ContentKindToolUse,
+			ToolUse: &canonical.ToolUsePart{Input: map[string]any{
+				"api_key": apiMarker,
+				"password": []any{
+					passwordMarker,
+					[]any{passwordMarker},
+				},
+			}},
+		}},
+		ToolCalls: []canonical.ToolCall{{Arguments: map[string]any{
+			"password": []any{passwordMarker},
+		}}},
+	}}}
+
+	if err := TransformRequestStrings(&req, func(key, value string) (string, error) {
+		return classifier.Redact(key, value), nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	input := req.Messages[0].Content[0].ToolUse.Input
+	if got := input["api_key"]; got != apiMarker {
+		t.Fatalf("tool input api_key=%q, want exact marker", got)
+	}
+	passwords := input["password"].([]any)
+	if passwords[0] != passwordMarker || passwords[1].([]any)[0] != passwordMarker {
+		t.Fatalf("nested tool input markers changed: %#v", passwords)
+	}
+	if got := req.Messages[0].ToolCalls[0].Arguments["password"].([]any)[0]; got != passwordMarker {
+		t.Fatalf("tool-call argument marker=%q, want exact marker", got)
+	}
+}
+
 func canonicalArrayFixtures() (canonical.ChatRequest, canonical.ChatResponse) {
 	req := canonical.ChatRequest{Messages: []canonical.Message{{
 		Content: []canonical.ContentPart{{

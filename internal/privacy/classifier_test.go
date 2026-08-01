@@ -230,6 +230,49 @@ func TestSecretClassifierPreservesOneWayCredentialAssignmentMarkers(t *testing.T
 	}
 }
 
+func TestSecretClassifierCredentialKeysPreserveOnlyExactOneWayMarkers(t *testing.T) {
+	t.Parallel()
+
+	classifier := NewSecretClassifier()
+	tests := []struct {
+		name, key, value string
+		wantFindings     int
+		wantRedacted     string
+	}{
+		{
+			name: "API key exact marker", key: "api_key", value: "[SECRET:API_KEY_0123456789AB]",
+			wantRedacted: "[SECRET:API_KEY_0123456789AB]",
+		},
+		{
+			name: "password exact marker", key: "password", value: "[SECRET:PASSWORD_0123456789AB]",
+			wantRedacted: "[SECRET:PASSWORD_0123456789AB]",
+		},
+		{
+			name: "malformed marker", key: "api_key", value: "[SECRET:API_KEY_NOT-HEX]",
+			wantFindings: 1, wantRedacted: redactedSecret,
+		},
+		{
+			name: "marker with suffix", key: "password", value: "[SECRET:PASSWORD_0123456789AB] trailing",
+			wantFindings: 1, wantRedacted: redactedSecret,
+		},
+		{
+			name: "raw credential", key: "api_key", value: "raw-credential-value",
+			wantFindings: 1, wantRedacted: redactedSecret,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			findings := classifier.Classify(tc.key, tc.value)
+			if len(findings) != tc.wantFindings {
+				t.Fatalf("Classify(%q, %q)=%+v, want %d findings", tc.key, tc.value, findings, tc.wantFindings)
+			}
+			if got := classifier.Redact(tc.key, tc.value); got != tc.wantRedacted {
+				t.Fatalf("Redact(%q, %q)=%q, want %q", tc.key, tc.value, got, tc.wantRedacted)
+			}
+		})
+	}
+}
+
 func TestSecretClassifierFindingDoesNotRetainSourceValue(t *testing.T) {
 	t.Parallel()
 

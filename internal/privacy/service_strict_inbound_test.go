@@ -670,6 +670,124 @@ func TestServiceStrict_ResidualRejectsForgedCredentialAssignmentMarker(t *testin
 	}
 }
 
+func TestServiceStrict_ResidualRejectsForgedStructuredSecretMarkers(t *testing.T) {
+	const (
+		apiMarker      = "[SECRET:API_KEY_0123456789AB]"
+		passwordMarker = "[SECRET:PASSWORD_0123456789AB]"
+	)
+	tests := []struct {
+		name, scope, marker string
+		request             func(string) *canonical.ChatRequest
+		value               func(*canonical.ChatRequest) string
+	}{
+		{
+			name: "tool use API key", scope: "forged-tool-use-api-key", marker: apiMarker,
+			request: func(marker string) *canonical.ChatRequest {
+				return &canonical.ChatRequest{Messages: []canonical.Message{{Content: []canonical.ContentPart{{
+					Kind: canonical.ContentKindToolUse,
+					ToolUse: &canonical.ToolUsePart{Input: map[string]any{
+						"api_key": marker,
+					}},
+				}}}}}
+			},
+			value: func(req *canonical.ChatRequest) string {
+				return req.Messages[0].Content[0].ToolUse.Input["api_key"].(string)
+			},
+		},
+		{
+			name: "tool call password nested array", scope: "forged-tool-call-password", marker: passwordMarker,
+			request: func(marker string) *canonical.ChatRequest {
+				return &canonical.ChatRequest{Messages: []canonical.Message{{ToolCalls: []canonical.ToolCall{{
+					Arguments: map[string]any{"password": []any{[]any{marker}}},
+				}}}}}
+			},
+			value: func(req *canonical.ChatRequest) string {
+				return req.Messages[0].ToolCalls[0].Arguments["password"].([]any)[0].([]any)[0].(string)
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			service := newStrictTestService(t, strictTestConfig{secret: NewSecretClassifier()})
+			state := NewRequestState(RequestMetadata{RequestedProfile: "strict", ScopeID: tc.scope})
+			req := tc.request(tc.marker)
+			t.Cleanup(state.releaseLease)
+
+			_, err := service.Before(WithRequestState(context.Background(), state), req)
+			if err == nil {
+				t.Error("Before returned nil, want privacy_input_blocked")
+			} else {
+				assertPrivacyError(t, err, CodeInputBlocked, "input")
+			}
+			if got := tc.value(req); got != tc.marker {
+				t.Fatalf("forged marker was rewritten: got %q, want %q", got, tc.marker)
+			}
+			if tokens := state.authorizedTokenValues(); len(tokens) != 0 {
+				t.Fatalf("forged marker produced authorized tokens: %v", tokens)
+			}
+			state.mu.Lock()
+			occurrences := len(state.authorizedOccurrences)
+			state.mu.Unlock()
+			if occurrences != 0 {
+				t.Fatalf("forged marker produced %d authorized occurrences", occurrences)
+			}
+			entries, inspectErr := service.store.Inspect(tc.scope)
+			if inspectErr != nil {
+				t.Fatalf("Inspect: %v", inspectErr)
+			}
+			if len(entries) != 0 {
+				t.Fatalf("forged marker entered reversible ledger: %+v", entries)
+			}
+			if got := service.store.Snapshot().RequestsInFlight; got != 0 {
+				t.Fatalf("blocked request retained %d leases", got)
+			}
+		})
+	}
+}
+
+func TestServiceStrict_InboundStructuredSecretValuesGenerateAuthorizedOneWayMarkers(t *testing.T) {
+	const (
+		rawAPI      = "task-round2-raw-api-key"
+		rawPassword = "task-round2-raw-password"
+	)
+	service := newStrictTestService(t, strictTestConfig{secret: NewSecretClassifier()})
+	state := NewRequestState(RequestMetadata{RequestedProfile: "strict", ScopeID: "generated-structured-markers"})
+	req := &canonical.ChatRequest{Messages: []canonical.Message{{
+		Content: []canonical.ContentPart{{
+			Kind: canonical.ContentKindToolUse,
+			ToolUse: &canonical.ToolUsePart{Input: map[string]any{
+				"api_key": rawAPI,
+			}},
+		}},
+		ToolCalls: []canonical.ToolCall{{Arguments: map[string]any{
+			"password": []any{rawPassword},
+		}}},
+	}}}
+
+	if _, err := service.Before(WithRequestState(context.Background(), state), req); err != nil {
+		t.Fatalf("Before: %v", err)
+	}
+	t.Cleanup(state.releaseLease)
+	apiMarker := req.Messages[0].Content[0].ToolUse.Input["api_key"].(string)
+	passwordMarker := req.Messages[0].ToolCalls[0].Arguments["password"].([]any)[0].(string)
+	if strings.Contains(apiMarker, rawAPI) || !strings.HasPrefix(apiMarker, "[SECRET:API_KEY_") {
+		t.Fatalf("api_key=%q, want one-way marker without raw value", apiMarker)
+	}
+	if strings.Contains(passwordMarker, rawPassword) || !strings.HasPrefix(passwordMarker, "[SECRET:PASSWORD_") {
+		t.Fatalf("password=%q, want one-way marker without raw value", passwordMarker)
+	}
+	if !state.tokenAuthorized(apiMarker) || !state.tokenAuthorized(passwordMarker) {
+		t.Fatal("service-generated markers were not request-authorized")
+	}
+	entries, err := service.store.Inspect("generated-structured-markers")
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("structured credentials entered reversible ledger: %+v", entries)
+	}
+}
+
 type residualPassClassifier struct {
 	mu       sync.Mutex
 	calls    int

@@ -18,7 +18,7 @@ func NewSecretClassifier() *SecretClassifier {
 
 // Classify returns high-confidence credential spans in value.
 func (c *SecretClassifier) Classify(key, value string) []Finding {
-	if value == "" || isRedactedCredentialValue(value) {
+	if value == "" || isRedactedCredentialValue(value) || secretTokenPattern.MatchString(value) {
 		return nil
 	}
 
