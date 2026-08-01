@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -40,6 +41,22 @@ func (c *lifecycleClock) NewTicker(interval time.Duration) Ticker {
 func (c *lifecycleClock) Advance(delta time.Duration) {
 	c.mu.Lock()
 	c.now = c.now.Add(delta)
+	now := c.now
+	ticker := c.ticker
+	c.mu.Unlock()
+	if ticker != nil {
+		ticker.ch <- now
+	}
+}
+
+func (c *lifecycleClock) AdvanceSilently(delta time.Duration) {
+	c.mu.Lock()
+	c.now = c.now.Add(delta)
+	c.mu.Unlock()
+}
+
+func (c *lifecycleClock) Tick() {
+	c.mu.Lock()
 	now := c.now
 	ticker := c.ticker
 	c.mu.Unlock()
@@ -209,6 +226,53 @@ func TestServiceStrict_CleanupReaperIntervalShutdownAndJoin(t *testing.T) {
 	}
 }
 
+func TestServicePrivacyObservers_ReentrantClosedObserverDoesNotDeadlock(t *testing.T) {
+	clock := newLifecycleClock()
+	var service *Service
+	var closedEvents atomic.Int32
+	observer := func(event string) {
+		if event != "closed" {
+			return
+		}
+		closedEvents.Add(1)
+		service.Close()
+	}
+	var err error
+	service, err = NewService(Config{
+		DefaultProfile: ProfileStandard, RequestProfiles: []Profile{ProfileStandard, ProfileStrict},
+		AliasKey: []byte("reentrant-close-key"), SecretAction: ActionReplace, TechnicalAction: ActionPseudonymize,
+		ScopeTTL: time.Hour, MaxScopes: 2, MaxEntriesPerScope: 8, MaxTotalEntries: 16,
+		PIIEnabled: true, PIIMode: ActionReplace, PIIEntityActions: map[string]Action{},
+		Clock: clock, Observers: Observers{ScopeEvent: observer},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := NewRequestState(RequestMetadata{RequestedProfile: "strict", ScopeID: "reentrant-close"})
+	ctx := WithRequestState(context.Background(), state)
+	if _, err := service.Before(ctx, &canonical.ChatRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.After(ctx, &canonical.ChatRequest{}, &canonical.ChatResponse{}); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		service.Close()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("Close deadlocked when the closed observer reentered Close")
+	}
+	service.Close()
+	if got := closedEvents.Load(); got != 1 {
+		t.Fatalf("closed observer events=%d, want exactly 1", got)
+	}
+}
+
 func TestServiceStrict_ClearRaceActiveFinishesClosedRejectsAndFinalReleaseWipes(t *testing.T) {
 	clock := newLifecycleClock()
 	service := newLifecycleTestService(t, clock, time.Hour)
@@ -257,6 +321,108 @@ func TestServiceStrict_ExpiryRaceActiveSurvivesThenIdleReaperWipes(t *testing.T)
 	}
 	clock.Advance(2 * time.Second)
 	waitForCondition(t, func() bool { return service.store.Snapshot().ScopesActive == 0 })
+}
+
+func TestServicePrivacyObservers_OpportunisticExpiryOutcomesAreExactlyOnce(t *testing.T) {
+	newService := func(t *testing.T, clock Clock, observer func(string)) *Service {
+		t.Helper()
+		service, err := NewService(Config{
+			DefaultProfile: ProfileStandard, RequestProfiles: []Profile{ProfileStandard, ProfileStrict},
+			AliasKey: []byte("expiry-observer-key"), SecretAction: ActionReplace, TechnicalAction: ActionPseudonymize,
+			ScopeTTL: time.Second, MaxScopes: 1, MaxEntriesPerScope: 8, MaxTotalEntries: 16,
+			PIIEnabled: true, PIIMode: ActionReplace, PIIEntityActions: map[string]Action{},
+			Clock: clock, Observers: Observers{ScopeEvent: observer},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(service.Close)
+		return service
+	}
+	runRequest := func(t *testing.T, service *Service, scopeID string) error {
+		t.Helper()
+		state := NewRequestState(RequestMetadata{RequestedProfile: "strict", ScopeID: scopeID})
+		ctx := WithRequestState(context.Background(), state)
+		req := &canonical.ChatRequest{}
+		if _, err := service.Before(ctx, req); err != nil {
+			return err
+		}
+		return service.After(ctx, req, &canonical.ChatResponse{})
+	}
+
+	t.Run("capacity reclaim", func(t *testing.T) {
+		clock := newLifecycleClock()
+		var mu sync.Mutex
+		var events []string
+		service := newService(t, clock, func(event string) {
+			mu.Lock()
+			events = append(events, event)
+			mu.Unlock()
+		})
+		if err := runRequest(t, service, "expiry-capacity-old"); err != nil {
+			t.Fatal(err)
+		}
+		mu.Lock()
+		events = nil
+		mu.Unlock()
+		clock.AdvanceSilently(2 * time.Second)
+		if err := runRequest(t, service, "expiry-capacity-new"); err != nil {
+			t.Fatal(err)
+		}
+		clock.Tick()
+		waitForCondition(t, func() bool {
+			mu.Lock()
+			defer mu.Unlock()
+			return len(events) >= 2
+		})
+		mu.Lock()
+		defer mu.Unlock()
+		if fmt.Sprint(events) != fmt.Sprint([]string{"expired", "created"}) {
+			t.Fatalf("scope events=%v, want [expired created]", events)
+		}
+		if len(service.observedScopes) != 1 {
+			t.Fatalf("observed scope identities=%d, want 1 retained identity", len(service.observedScopes))
+		}
+	})
+
+	t.Run("same ID reacquire", func(t *testing.T) {
+		clock := newLifecycleClock()
+		var mu sync.Mutex
+		var events []string
+		service := newService(t, clock, func(event string) {
+			mu.Lock()
+			events = append(events, event)
+			mu.Unlock()
+		})
+		if err := runRequest(t, service, "expiry-same-id"); err != nil {
+			t.Fatal(err)
+		}
+		mu.Lock()
+		events = nil
+		mu.Unlock()
+		clock.AdvanceSilently(2 * time.Second)
+		err := runRequest(t, service, "expiry-same-id")
+		assertPrivacyError(t, err, CodeScopeClosed, "scope")
+		clock.Tick()
+		mu.Lock()
+		defer mu.Unlock()
+		if fmt.Sprint(events) != fmt.Sprint([]string{"expired"}) {
+			t.Fatalf("scope events=%v, want [expired]", events)
+		}
+		if len(service.observedScopes) != 0 {
+			t.Fatalf("observed scope identities=%d, want 0", len(service.observedScopes))
+		}
+	})
+
+	t.Run("nil observer retains no identity bookkeeping", func(t *testing.T) {
+		service := newService(t, newLifecycleClock(), nil)
+		if err := runRequest(t, service, "expiry-no-observer"); err != nil {
+			t.Fatal(err)
+		}
+		if service.observedScopes != nil {
+			t.Fatalf("observedScopes=%v, want nil when ScopeEvent is nil", service.observedScopes)
+		}
+	})
 }
 
 func TestServiceStrict_CleanupShutdownActiveAllowsFinishAndRejectsNewAcquire(t *testing.T) {

@@ -1058,6 +1058,8 @@ type strictTestConfig struct {
 	secretAction    Action
 	technicalAction Action
 	maxScopes       int
+	maxEntries      int
+	maxTotalEntries int
 }
 
 func newStrictTestService(t *testing.T, options strictTestConfig) *Service {
@@ -1083,6 +1085,12 @@ func newStrictTestService(t *testing.T, options strictTestConfig) *Service {
 	if options.maxScopes == 0 {
 		options.maxScopes = 32
 	}
+	if options.maxEntries == 0 {
+		options.maxEntries = 128
+	}
+	if options.maxTotalEntries == 0 {
+		options.maxTotalEntries = 1024
+	}
 	service, err := NewService(Config{
 		DefaultProfile:     options.defaultProfile,
 		RequestProfiles:    options.profiles,
@@ -1091,8 +1099,8 @@ func newStrictTestService(t *testing.T, options strictTestConfig) *Service {
 		TechnicalAction:    options.technicalAction,
 		ScopeTTL:           time.Hour,
 		MaxScopes:          options.maxScopes,
-		MaxEntriesPerScope: 128,
-		MaxTotalEntries:    1024,
+		MaxEntriesPerScope: options.maxEntries,
+		MaxTotalEntries:    options.maxTotalEntries,
 		PIIEnabled:         true,
 		PIIMode:            options.piiMode,
 		PIIHashKey:         []byte("strict-test-hash-key"),

@@ -105,6 +105,27 @@ var (
 	errCandidateExhausted = errors.New("mapping candidate attempts exhausted")
 )
 
+type capacityResource string
+
+const (
+	capacityScope    capacityResource = "scope"
+	capacityPerScope capacityResource = "per_scope"
+	capacityGlobal   capacityResource = "global"
+	capacityRequest  capacityResource = "request"
+)
+
+type capacityError struct {
+	resource capacityResource
+}
+
+func (e *capacityError) Error() string { return errCapacityExceeded.Error() }
+
+func (e *capacityError) Unwrap() error { return errCapacityExceeded }
+
+func newCapacityError(resource capacityResource) error {
+	return &capacityError{resource: resource}
+}
+
 type lifecycleState uint8
 
 const (
@@ -196,9 +217,15 @@ func NewScopeStore(config StoreConfig, clock Clock) (*ScopeStore, error) {
 
 // Acquire obtains an in-flight reference, creating the scope if necessary.
 func (s *ScopeStore) Acquire(scopeID string, profile Profile) (*ScopeLease, error) {
+	lease, _, _, err := s.acquireObserved(scopeID, profile)
+	return lease, err
+}
+
+func (s *ScopeStore) acquireObserved(scopeID string, profile Profile) (*ScopeLease, bool, []*scopeState, error) {
 	if !validProfile(profile) {
-		return nil, errInvalidProfile
+		return nil, false, nil, errInvalidProfile
 	}
+	var expired []*scopeState
 
 	for {
 		now := s.clock.Now()
@@ -206,7 +233,7 @@ func (s *ScopeStore) Acquire(scopeID string, profile Profile) (*ScopeLease, erro
 		s.pruneTombstonesLocked(now)
 		if s.shutdown {
 			s.mu.Unlock()
-			return nil, errScopeClosed
+			return nil, false, expired, errScopeClosed
 		}
 
 		if scope, ok := s.scopes[scopeID]; ok {
@@ -220,36 +247,37 @@ func (s *ScopeStore) Acquire(scopeID string, profile Profile) (*ScopeLease, erro
 			if scope.inFlight == 0 && !scope.expiresAt.After(now) {
 				scope.state = lifecycleClosing
 				s.wipeAndRemoveLocked(scope, now)
+				expired = append(expired, scope)
 				scope.mu.Unlock()
 				s.mu.Unlock()
-				return nil, errScopeClosed
+				return nil, false, expired, errScopeClosed
 			}
 			if scope.state != lifecycleActive {
 				scope.mu.Unlock()
 				s.mu.Unlock()
-				return nil, errScopeClosed
+				return nil, false, expired, errScopeClosed
 			}
 			if scope.profile != profile {
 				scope.mu.Unlock()
 				s.mu.Unlock()
-				return nil, fmt.Errorf("scope profile mismatch: %w", errInvalidProfile)
+				return nil, false, expired, fmt.Errorf("scope profile mismatch: %w", errInvalidProfile)
 			}
 			scope.inFlight++
 			s.touchLocked(scope, now)
 			scope.mu.Unlock()
 			s.mu.Unlock()
-			return &ScopeLease{store: s, scope: scope}, nil
+			return &ScopeLease{store: s, scope: scope}, false, expired, nil
 		}
 		if _, closed := s.tombstones[scopeID]; closed {
 			s.mu.Unlock()
-			return nil, errScopeClosed
+			return nil, false, expired, errScopeClosed
 		}
 
 		if len(s.scopes) >= s.config.MaxScopes {
-			s.reapAvailableExpiredLocked(now)
+			expired = append(expired, s.reapAvailableExpiredLocked(now)...)
 			if len(s.scopes) >= s.config.MaxScopes {
 				s.mu.Unlock()
-				return nil, errCapacityExceeded
+				return nil, false, expired, newCapacityError(capacityScope)
 			}
 		}
 
@@ -267,7 +295,7 @@ func (s *ScopeStore) Acquire(scopeID string, profile Profile) (*ScopeLease, erro
 		}
 		s.scopes[scopeID] = scope
 		s.mu.Unlock()
-		return &ScopeLease{store: s, scope: scope}, nil
+		return &ScopeLease{store: s, scope: scope}, true, expired, nil
 	}
 }
 
@@ -279,14 +307,24 @@ func (l *ScopeLease) GetOrCreate(
 	provenance Provenance,
 	candidate func(attempt uint32) (string, error),
 ) (MappingEntry, bool, error) {
+	entry, created, _, err := l.getOrCreateObserved(entity, original, provenance, candidate)
+	return entry, created, err
+}
+
+func (l *ScopeLease) getOrCreateObserved(
+	entity string,
+	original string,
+	provenance Provenance,
+	candidate func(attempt uint32) (string, error),
+) (MappingEntry, bool, uint32, error) {
 	if provenance != ProvenanceInput && provenance != ProvenanceGenerated {
-		return MappingEntry{}, false, errInvalidProvenance
+		return MappingEntry{}, false, 0, errInvalidProvenance
 	}
 	if candidate == nil {
-		return MappingEntry{}, false, errNilCandidate
+		return MappingEntry{}, false, 0, errNilCandidate
 	}
 	if !l.lockOperation() {
-		return MappingEntry{}, false, errLeaseReleased
+		return MappingEntry{}, false, 0, errLeaseReleased
 	}
 	defer l.mu.RUnlock()
 
@@ -298,11 +336,11 @@ func (l *ScopeLease) GetOrCreate(
 		entry = promoteInputProvenanceLocked(scope, key, entry, provenance)
 		l.store.touchLocked(scope, l.store.clock.Now())
 		scope.mu.Unlock()
-		return entry, false, nil
+		return entry, false, 0, nil
 	}
 	if len(scope.forward)+len(scope.relations) >= l.store.config.MaxEntriesPerScope {
 		scope.mu.Unlock()
-		return MappingEntry{}, false, errCapacityExceeded
+		return MappingEntry{}, false, 0, newCapacityError(capacityPerScope)
 	}
 	if !l.store.reserveEntry() {
 		scope.mu.Unlock()
@@ -313,12 +351,15 @@ func (l *ScopeLease) GetOrCreate(
 			entry = promoteInputProvenanceLocked(scope, key, entry, provenance)
 			l.store.touchLocked(scope, l.store.clock.Now())
 			scope.mu.Unlock()
-			return entry, false, nil
+			return entry, false, 0, nil
 		}
-		if len(scope.forward)+len(scope.relations) >= l.store.config.MaxEntriesPerScope ||
-			!l.store.reserveEntry() {
+		if len(scope.forward)+len(scope.relations) >= l.store.config.MaxEntriesPerScope {
 			scope.mu.Unlock()
-			return MappingEntry{}, false, errCapacityExceeded
+			return MappingEntry{}, false, 0, newCapacityError(capacityPerScope)
+		}
+		if !l.store.reserveEntry() {
+			scope.mu.Unlock()
+			return MappingEntry{}, false, 0, newCapacityError(capacityGlobal)
 		}
 	}
 	defer scope.mu.Unlock()
@@ -333,12 +374,12 @@ func (l *ScopeLease) GetOrCreate(
 	for attempt := uint32(0); ; attempt++ {
 		synthetic, err := candidate(attempt)
 		if err != nil {
-			return MappingEntry{}, false, err
+			return MappingEntry{}, false, attempt, err
 		}
 		reverseKey := mappingKey{entity: entity, value: synthetic}
 		if _, collision := scope.reverse[reverseKey]; collision {
 			if attempt == ^uint32(0) {
-				return MappingEntry{}, false, errCandidateExhausted
+				return MappingEntry{}, false, attempt + 1, errCandidateExhausted
 			}
 			continue
 		}
@@ -355,7 +396,7 @@ func (l *ScopeLease) GetOrCreate(
 		scope.reverse[reverseKey] = entry
 		l.store.touchLocked(scope, now)
 		reserved = false
-		return entry, true, nil
+		return entry, true, attempt, nil
 	}
 }
 
@@ -364,11 +405,19 @@ func (l *ScopeLease) GetOrCreateRelation(
 	key string,
 	candidate func(attempt uint32) (string, error),
 ) (string, bool, error) {
+	value, created, _, err := l.getOrCreateRelationObserved(key, candidate)
+	return value, created, err
+}
+
+func (l *ScopeLease) getOrCreateRelationObserved(
+	key string,
+	candidate func(attempt uint32) (string, error),
+) (string, bool, uint32, error) {
 	if candidate == nil {
-		return "", false, errNilCandidate
+		return "", false, 0, errNilCandidate
 	}
 	if !l.lockOperation() {
-		return "", false, errLeaseReleased
+		return "", false, 0, errLeaseReleased
 	}
 	defer l.mu.RUnlock()
 
@@ -378,11 +427,11 @@ func (l *ScopeLease) GetOrCreateRelation(
 	if value, ok := scope.relations[key]; ok {
 		l.store.touchLocked(scope, l.store.clock.Now())
 		scope.mu.Unlock()
-		return value, false, nil
+		return value, false, 0, nil
 	}
 	if len(scope.forward)+len(scope.relations) >= l.store.config.MaxEntriesPerScope {
 		scope.mu.Unlock()
-		return "", false, errCapacityExceeded
+		return "", false, 0, newCapacityError(capacityPerScope)
 	}
 	if !l.store.reserveEntry() {
 		scope.mu.Unlock()
@@ -392,12 +441,15 @@ func (l *ScopeLease) GetOrCreateRelation(
 		if value, ok := scope.relations[key]; ok {
 			l.store.touchLocked(scope, l.store.clock.Now())
 			scope.mu.Unlock()
-			return value, false, nil
+			return value, false, 0, nil
 		}
-		if len(scope.forward)+len(scope.relations) >= l.store.config.MaxEntriesPerScope ||
-			!l.store.reserveEntry() {
+		if len(scope.forward)+len(scope.relations) >= l.store.config.MaxEntriesPerScope {
 			scope.mu.Unlock()
-			return "", false, errCapacityExceeded
+			return "", false, 0, newCapacityError(capacityPerScope)
+		}
+		if !l.store.reserveEntry() {
+			scope.mu.Unlock()
+			return "", false, 0, newCapacityError(capacityGlobal)
 		}
 	}
 	defer scope.mu.Unlock()
@@ -412,7 +464,7 @@ func (l *ScopeLease) GetOrCreateRelation(
 	for attempt := uint32(0); ; attempt++ {
 		value, err := candidate(attempt)
 		if err != nil {
-			return "", false, err
+			return "", false, attempt, err
 		}
 		collision := false
 		for existingKey, existingValue := range scope.relations {
@@ -423,7 +475,7 @@ func (l *ScopeLease) GetOrCreateRelation(
 		}
 		if collision {
 			if attempt == ^uint32(0) {
-				return "", false, errCandidateExhausted
+				return "", false, attempt + 1, errCandidateExhausted
 			}
 			continue
 		}
@@ -431,7 +483,7 @@ func (l *ScopeLease) GetOrCreateRelation(
 		scope.relations[key] = value
 		l.store.touchLocked(scope, l.store.clock.Now())
 		reserved = false
-		return value, true, nil
+		return value, true, attempt, nil
 	}
 }
 
@@ -622,6 +674,10 @@ func (s *ScopeStore) clearAll(shutdown bool) ClearSummary {
 
 // ReapExpired wipes expired idle scopes and returns the number reclaimed.
 func (s *ScopeStore) ReapExpired() int {
+	return len(s.reapExpiredObserved())
+}
+
+func (s *ScopeStore) reapExpiredObserved() []*scopeState {
 	now := s.clock.Now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -686,8 +742,16 @@ func (s *ScopeStore) coordinateRotationIndex(
 	scopeID string,
 	candidate func(attempt uint32) (uint16, error),
 ) (uint16, error) {
+	index, _, err := s.coordinateRotationIndexObserved(scopeID, candidate)
+	return index, err
+}
+
+func (s *ScopeStore) coordinateRotationIndexObserved(
+	scopeID string,
+	candidate func(attempt uint32) (uint16, error),
+) (uint16, uint32, error) {
 	if candidate == nil {
-		return 0, errNilCandidate
+		return 0, 0, errNilCandidate
 	}
 
 	for attempt := uint32(0); ; attempt++ {
@@ -695,39 +759,39 @@ func (s *ScopeStore) coordinateRotationIndex(
 		retained, scopeErr := s.pruneCoordinateRotationsLocked(scopeID)
 		if !retained {
 			s.coordinateMu.Unlock()
-			return 0, scopeErr
+			return 0, attempt, scopeErr
 		}
 		if index, ok := s.coordinateByScope[scopeID]; ok {
 			s.coordinateMu.Unlock()
-			return index, nil
+			return index, attempt, nil
 		}
 		s.coordinateMu.Unlock()
 
 		index, err := candidate(attempt)
 		if err != nil {
-			return 0, err
+			return 0, attempt, err
 		}
 
 		s.coordinateMu.Lock()
 		retained, scopeErr = s.pruneCoordinateRotationsLocked(scopeID)
 		if !retained {
 			s.coordinateMu.Unlock()
-			return 0, scopeErr
+			return 0, attempt, scopeErr
 		}
 		if existing, ok := s.coordinateByScope[scopeID]; ok {
 			s.coordinateMu.Unlock()
-			return existing, nil
+			return existing, attempt, nil
 		}
 		if _, collision := s.coordinateByIndex[index]; !collision {
 			s.coordinateByScope[scopeID] = index
 			s.coordinateByIndex[index] = scopeID
 			s.coordinateMu.Unlock()
-			return index, nil
+			return index, attempt, nil
 		}
 		s.coordinateMu.Unlock()
 
 		if attempt == ^uint32(0) {
-			return 0, errCandidateExhausted
+			return 0, attempt + 1, errCandidateExhausted
 		}
 	}
 }
@@ -806,8 +870,8 @@ func (s *ScopeStore) scopeInfoLocked(scope *scopeState) ScopeInfo {
 	}
 }
 
-func (s *ScopeStore) reapAvailableExpiredLocked(now time.Time) int {
-	reaped := 0
+func (s *ScopeStore) reapAvailableExpiredLocked(now time.Time) []*scopeState {
+	reaped := make([]*scopeState, 0)
 	for _, scope := range s.scopes {
 		if !scope.mu.TryLock() {
 			continue
@@ -815,7 +879,7 @@ func (s *ScopeStore) reapAvailableExpiredLocked(now time.Time) int {
 		if scope.inFlight == 0 && (scope.state == lifecycleClosing || !scope.expiresAt.After(now)) {
 			scope.state = lifecycleClosing
 			s.wipeAndRemoveLocked(scope, now)
-			reaped++
+			reaped = append(reaped, scope)
 		}
 		scope.mu.Unlock()
 	}

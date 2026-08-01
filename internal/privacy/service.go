@@ -182,6 +182,10 @@ type technicalMapping interface {
 	Map(*ScopeLease, string, string, Provenance) (string, error)
 }
 
+type observedTechnicalMapping interface {
+	MapObserved(*ScopeLease, string, string, Provenance) (string, bool, uint32, error)
+}
+
 // NewService copies all mutable configuration into an immutable service.
 func NewService(config Config) (*Service, error) {
 	if config.DefaultProfile == "" {
@@ -239,13 +243,7 @@ func (s *Service) startReaper(clock Clock, ttl time.Duration) {
 		for {
 			select {
 			case <-ticker.C():
-				reaped := s.store.ReapExpired()
-				s.pruneObservedScopes()
-				for range reaped {
-					if observe := s.config.Observers.ScopeEvent; observe != nil {
-						observe("expired")
-					}
-				}
+				s.observeScopeOutcome(nil, false, s.store.reapExpiredObserved())
 			case <-s.reaperStop:
 				return
 			}
@@ -373,7 +371,7 @@ func (s *Service) observeRequestFailure(ctx context.Context, profile Profile, er
 			result = "block"
 		}
 		if privacyErr.Code == CodeCapacityExceeded {
-			s.observeCapacityRejection(privacyErr.Stage)
+			s.observeCapacityRejection(privacyErr)
 		}
 		if privacyErr.Code == CodeInternalError {
 			s.observeInternalError(privacyErr.Stage)
@@ -392,17 +390,17 @@ func (s *Service) observeRequestOutcome(ctx context.Context, profile Profile, re
 	}
 }
 
-func (s *Service) observeCapacityRejection(stage string) {
-	resource := stage
-	switch stage {
-	case "scope":
-	case "mapping", "token":
-		resource = "per_scope"
-	default:
-		resource = "global"
+func (s *Service) observeCapacityRejection(err error) {
+	resource := capacityGlobal
+	var typed *capacityError
+	if errors.As(err, &typed) {
+		resource = typed.resource
+		if resource == capacityRequest {
+			resource = capacityPerScope
+		}
 	}
 	if observe := s.config.Observers.CapacityRejection; observe != nil {
-		observe(resource)
+		observe(string(resource))
 	}
 }
 
@@ -418,44 +416,28 @@ func (s *Service) observeDuration(profile Profile, stage string, elapsed time.Du
 	}
 }
 
-func (s *Service) observeScopeCreated(lease *ScopeLease) {
-	if lease == nil || lease.scope == nil {
+func (s *Service) observeScopeOutcome(lease *ScopeLease, created bool, expired []*scopeState) {
+	observe := s.config.Observers.ScopeEvent
+	if observe == nil {
 		return
 	}
 	s.scopeObserverMu.Lock()
 	if s.observedScopes == nil {
 		s.observedScopes = make(map[*scopeState]struct{})
 	}
-	_, seen := s.observedScopes[lease.scope]
-	if !seen {
+	for _, scope := range expired {
+		delete(s.observedScopes, scope)
+	}
+	if created && lease != nil && lease.scope != nil {
 		s.observedScopes[lease.scope] = struct{}{}
 	}
 	s.scopeObserverMu.Unlock()
-	if !seen {
-		if observe := s.config.Observers.ScopeEvent; observe != nil {
-			observe("created")
-		}
+	for range expired {
+		observe("expired")
 	}
-}
-
-func (s *Service) pruneObservedScopes() {
-	if s == nil || s.store == nil {
-		return
+	if created {
+		observe("created")
 	}
-	s.store.mu.Lock()
-	retained := make(map[*scopeState]struct{}, len(s.store.scopes))
-	for _, scope := range s.store.scopes {
-		retained[scope] = struct{}{}
-	}
-	s.store.mu.Unlock()
-
-	s.scopeObserverMu.Lock()
-	for scope := range s.observedScopes {
-		if _, ok := retained[scope]; !ok {
-			delete(s.observedScopes, scope)
-		}
-	}
-	s.scopeObserverMu.Unlock()
 }
 
 func (s *Service) finalizeInboundErrorReceipt(ctx context.Context, resolvedProfile Profile) {
@@ -531,13 +513,14 @@ func (s *Service) beforeStrict(ctx context.Context, state *RequestState, req *ca
 		}
 		state.setScopeID(scopeID)
 	}
-	lease, acquireErr := s.store.Acquire(scopeID, ProfileStrict)
+	lease, created, expired, acquireErr := s.store.acquireObserved(scopeID, ProfileStrict)
+	s.observeScopeOutcome(lease, created, expired)
 	if acquireErr != nil {
 		switch {
 		case errors.Is(acquireErr, errScopeClosed):
 			return &Error{Code: CodeScopeClosed, Stage: "scope"}
 		case errors.Is(acquireErr, errCapacityExceeded):
-			return &Error{Code: CodeCapacityExceeded, Stage: "scope"}
+			return &Error{Code: CodeCapacityExceeded, Stage: "scope", Cause: acquireErr}
 		default:
 			return &Error{Code: CodeInternalError, Stage: "scope"}
 		}
@@ -546,7 +529,6 @@ func (s *Service) beforeStrict(ctx context.Context, state *RequestState, req *ca
 		lease.Release()
 		return &Error{Code: CodeInternalError, Stage: "scope"}
 	}
-	s.observeScopeCreated(lease)
 	state.setValidatedReplay(false)
 	defer func() {
 		if err != nil {
@@ -630,7 +612,7 @@ func (s *Service) transformInbound(_ context.Context, state *RequestState, req *
 			finalStart := finding.Start + shift
 			finalEnd := finalStart + len(rewrite.replacement)
 			if rewrite.kind != 0 && !state.authorizeOccurrence(ordinal, finalStart, finalEnd, rewrite.kind) {
-				return "", &Error{Code: CodeCapacityExceeded, Stage: "token"}
+				return "", &Error{Code: CodeCapacityExceeded, Stage: "token", Cause: newCapacityError(capacityRequest)}
 			}
 			shift += len(rewrite.replacement) - (finding.End - finding.Start)
 		}
@@ -667,25 +649,12 @@ func (s *Service) strictReplacement(
 	action := s.strictAction(finding)
 	switch action {
 	case ActionPseudonymize:
-		_, existed := lease.ResolveOriginal(finding.Entity, original)
-		if observe := s.config.Observers.MappingOperation; observe != nil {
-			if existed {
-				observe("lookup", "hit")
-			} else {
-				observe("lookup", "miss")
-			}
-		}
-		mapped, err := s.mapper.Map(lease, finding.Entity, original, ProvenanceInput)
+		mapped, err := s.mapTechnicalObserved(lease, finding.Entity, original, ProvenanceInput)
 		if err != nil {
 			if errors.Is(err, errCapacityExceeded) {
-				return "", action, 0, &Error{Code: CodeCapacityExceeded, Stage: "mapping"}
+				return "", action, 0, &Error{Code: CodeCapacityExceeded, Stage: "mapping", Cause: err}
 			}
 			return "", action, 0, &Error{Code: CodeInternalError, Stage: "mapping"}
-		}
-		if !existed {
-			if observe := s.config.Observers.MappingOperation; observe != nil {
-				observe("insert", "pass")
-			}
 		}
 		return mapped, action, 0, nil
 	case ActionDrop:
@@ -697,7 +666,7 @@ func (s *Service) strictReplacement(
 		}
 		_, payload, ok := ParseEncryptedToken(token)
 		if !ok || !state.authorizeToken(token) || !state.authorizeToken(payload) {
-			return "", action, 0, &Error{Code: CodeCapacityExceeded, Stage: "token"}
+			return "", action, 0, &Error{Code: CodeCapacityExceeded, Stage: "token", Cause: newCapacityError(capacityRequest)}
 		}
 		return token, action, authorizedOccurrenceOpaque, nil
 	case ActionReplace:
@@ -705,7 +674,7 @@ func (s *Service) strictReplacement(
 			scope := secretHMACDomain + "\x00" + state.Metadata().ScopeID
 			label := OneWaySecretLabel(s.config.AliasKey, scope, finding.Entity, original)
 			if !state.authorizeToken(label) {
-				return "", action, 0, &Error{Code: CodeCapacityExceeded, Stage: "token"}
+				return "", action, 0, &Error{Code: CodeCapacityExceeded, Stage: "token", Cause: newCapacityError(capacityRequest)}
 			}
 			return label, action, authorizedOccurrenceOpaque, nil
 		}
@@ -718,7 +687,7 @@ func (s *Service) strictReplacement(
 		}
 		replacement := ApplyAction(action, finding.Entity, original, counter, s.config.PIIHashKey, s.config.PIIEncryptKey)
 		if !state.authorizeToken(replacement) {
-			return "", action, 0, &Error{Code: CodeCapacityExceeded, Stage: "token"}
+			return "", action, 0, &Error{Code: CodeCapacityExceeded, Stage: "token", Cause: newCapacityError(capacityRequest)}
 		}
 		return replacement, action, authorizedOccurrenceGeneral, nil
 	case ActionMask, ActionHash:
@@ -726,7 +695,7 @@ func (s *Service) strictReplacement(
 		kind := authorizedOccurrenceKind(0)
 		if action == ActionHash {
 			if !state.authorizeToken(replacement) {
-				return "", action, 0, &Error{Code: CodeCapacityExceeded, Stage: "token"}
+				return "", action, 0, &Error{Code: CodeCapacityExceeded, Stage: "token", Cause: newCapacityError(capacityRequest)}
 			}
 			kind = authorizedOccurrenceGeneral
 		}
@@ -734,6 +703,35 @@ func (s *Service) strictReplacement(
 	default:
 		return "", action, 0, &Error{Code: CodeInternalError, Stage: "action"}
 	}
+}
+
+func (s *Service) mapTechnicalObserved(
+	lease *ScopeLease,
+	entity string,
+	original string,
+	provenance Provenance,
+) (string, error) {
+	mapper, ok := s.mapper.(observedTechnicalMapping)
+	if !ok {
+		return s.mapper.Map(lease, entity, original, provenance)
+	}
+	mapped, created, collisions, err := mapper.MapObserved(lease, entity, original, provenance)
+	if observe := s.config.Observers.MappingOperation; observe != nil {
+		if err == nil {
+			if created {
+				observe("lookup", "miss")
+			} else {
+				observe("lookup", "hit")
+			}
+		}
+		for range collisions {
+			observe("insert", "collision")
+		}
+		if err == nil && created {
+			observe("insert", "pass")
+		}
+	}
+	return mapped, err
 }
 
 func (s *Service) verifyInboundResidual(state *RequestState, req *canonical.ChatRequest) error {
@@ -1201,6 +1199,7 @@ func (s *Service) prepareStrictOutbound(state *RequestState, resp *canonical.Cha
 		ordinal++
 		for _, token := range s.parseReservedTokens(value) {
 			if !token.valid || !state.tokenAuthorized(value[token.start:token.end]) {
+				s.observeRestoration(ProfileStrict, restorationEntity(value[token.start:token.end]), "rejected")
 				return "", s.blockOutbound(state, "token")
 			}
 		}
@@ -1247,25 +1246,12 @@ func (s *Service) prepareStrictOutbound(state *RequestState, resp *canonical.Cha
 				if reservedTechnicalAlias(finding.Entity, original) {
 					return "", s.blockOutbound(state, "alias")
 				}
-				_, existed := lease.ResolveOriginal(finding.Entity, original)
-				if observe := s.config.Observers.MappingOperation; observe != nil {
-					if existed {
-						observe("lookup", "hit")
-					} else {
-						observe("lookup", "miss")
-					}
-				}
-				mapped, err := s.mapper.Map(lease, finding.Entity, original, ProvenanceGenerated)
+				mapped, err := s.mapTechnicalObserved(lease, finding.Entity, original, ProvenanceGenerated)
 				if err != nil {
 					if errors.Is(err, errCapacityExceeded) {
-						return "", &Error{Code: CodeCapacityExceeded, Stage: "mapping"}
+						return "", &Error{Code: CodeCapacityExceeded, Stage: "mapping", Cause: err}
 					}
 					return "", &Error{Code: CodeInternalError, Stage: "mapping"}
-				}
-				if !existed {
-					if observe := s.config.Observers.MappingOperation; observe != nil {
-						observe("insert", "pass")
-					}
 				}
 				replacement = mapped
 				action = ActionPseudonymize
@@ -1301,7 +1287,7 @@ func (s *Service) prepareStrictOutbound(state *RequestState, resp *canonical.Cha
 			finalEnd := finalStart + len(rewrite.replacement)
 			if rewrite.authorize {
 				if !authorization.authorize(currentOrdinal, finalStart, finalEnd) {
-					return "", &Error{Code: CodeCapacityExceeded, Stage: "token"}
+					return "", &Error{Code: CodeCapacityExceeded, Stage: "token", Cause: newCapacityError(capacityRequest)}
 				}
 			}
 			shift += len(rewrite.replacement) - (finding.End - finding.Start)
@@ -1339,7 +1325,7 @@ func (s *Service) verifyStrictOutboundResidual(
 			if state.tokenAuthorized(raw) {
 				if _, _, encrypted := ParseEncryptedToken(raw); !encrypted {
 					if len(authorization.preservedOccurrences) >= maxAuthorizedTokens {
-						return &Error{Code: CodeCapacityExceeded, Stage: "token"}
+						return &Error{Code: CodeCapacityExceeded, Stage: "token", Cause: newCapacityError(capacityRequest)}
 					}
 					authorization.preservedOccurrences = append(authorization.preservedOccurrences, authorizedOccurrence{
 						ordinal: currentOrdinal, start: token.start, end: token.end, kind: token.kind,
@@ -1349,6 +1335,7 @@ func (s *Service) verifyStrictOutboundResidual(
 		}
 		for _, payload := range bareEncryptedPayloadRE.FindAllString(value, -1) {
 			if !state.tokenAuthorized(payload) {
+				s.observeRestoration(ProfileStrict, "other", "rejected")
 				return s.blockOutbound(state, "token")
 			}
 		}
@@ -1491,7 +1478,7 @@ func (s *Service) restoreStrictOutbound(
 			finalStart := rewrite.start + shift
 			finalEnd := finalStart + len(rewrite.replacement)
 			if len(authorization.restoredOccurrences) >= maxAuthorizedTokens {
-				return "", &Error{Code: CodeCapacityExceeded, Stage: "token"}
+				return "", &Error{Code: CodeCapacityExceeded, Stage: "token", Cause: newCapacityError(capacityRequest)}
 			}
 			authorization.restoredOccurrences = append(authorization.restoredOccurrences, authorizedOccurrence{
 				ordinal: currentOrdinal, start: finalStart, end: finalEnd, kind: authorizedOccurrenceGeneral,
@@ -1526,7 +1513,7 @@ func (s *Service) restoreStrictOutbound(
 				}
 			}
 			if len(authorization.finalArtifactOccurrences) >= 2*maxAuthorizedTokens {
-				return "", &Error{Code: CodeCapacityExceeded, Stage: "token"}
+				return "", &Error{Code: CodeCapacityExceeded, Stage: "token", Cause: newCapacityError(capacityRequest)}
 			}
 			authorization.finalArtifactOccurrences = append(authorization.finalArtifactOccurrences, translated)
 		}
@@ -1686,36 +1673,88 @@ func (s *Service) setStandardReceipt(state *RequestState, coverage string) error
 }
 
 func (s *Service) restoreStandardValue(state *RequestState, entities []string, value string) string {
-	restored := wrappedEncryptedTokenRE.ReplaceAllStringFunc(value, func(token string) string {
+	type restoration struct {
+		start, end  int
+		replacement string
+	}
+	restorations := make([]restoration, 0, 2)
+	wrappedRanges := make([]restoration, 0, 2)
+	for _, indexes := range wrappedEncryptedTokenRE.FindAllStringIndex(value, -1) {
+		token := value[indexes[0]:indexes[1]]
+		wrappedRanges = append(wrappedRanges, restoration{start: indexes[0], end: indexes[1]})
 		match := wrappedEncryptedTokenRE.FindStringSubmatch(token)
+		entity := restorationEntity(token)
 		if len(match) != 3 {
-			return token
+			s.observeRestoration(ProfileStandard, entity, "miss")
+			continue
 		}
 		plaintext, err := DecryptToken(s.config.PIIEncryptKey, match[1], match[2])
 		if err != nil {
-			return token
+			s.observeRestoration(ProfileStandard, entity, "miss")
+			continue
 		}
-		if state != nil {
-			state.addRestored(1)
-		}
-		return plaintext
-	})
-	if len(entities) == 0 {
-		return restored
+		s.observeRestoration(ProfileStandard, entity, "pass")
+		restorations = append(restorations, restoration{start: indexes[0], end: indexes[1], replacement: plaintext})
 	}
-	return bareEncryptedPayloadRE.ReplaceAllStringFunc(restored, func(payload string) string {
+	for _, indexes := range bareEncryptedPayloadRE.FindAllStringIndex(value, -1) {
+		insideWrapped := false
+		for _, wrapped := range wrappedRanges {
+			if indexes[0] >= wrapped.start && indexes[1] <= wrapped.end {
+				insideWrapped = true
+				break
+			}
+		}
+		if insideWrapped {
+			continue
+		}
+		payload := value[indexes[0]:indexes[1]]
+		matchedEntity := "other"
+		matchedPlaintext := ""
 		for _, entity := range entities {
 			plaintext, err := DecryptToken(s.config.PIIEncryptKey, entity, payload)
 			if err != nil {
 				continue
 			}
-			if state != nil {
-				state.addRestored(1)
-			}
-			return plaintext
+			matchedEntity = entity
+			matchedPlaintext = plaintext
+			break
 		}
-		return payload
+		if matchedPlaintext == "" {
+			s.observeRestoration(ProfileStandard, matchedEntity, "miss")
+			continue
+		}
+		s.observeRestoration(ProfileStandard, matchedEntity, "pass")
+		restorations = append(restorations, restoration{start: indexes[0], end: indexes[1], replacement: matchedPlaintext})
+	}
+	sort.Slice(restorations, func(left, right int) bool {
+		return restorations[left].start < restorations[right].start
 	})
+	restored := value
+	for index := len(restorations) - 1; index >= 0; index-- {
+		rewrite := restorations[index]
+		restored = restored[:rewrite.start] + rewrite.replacement + restored[rewrite.end:]
+		if state != nil {
+			state.addRestored(1)
+		}
+	}
+	return restored
+}
+
+func (s *Service) observeRestoration(profile Profile, entity, result string) {
+	if observe := s.config.Observers.Restoration; observe != nil {
+		observe(profile, entity, result)
+	}
+}
+
+func restorationEntity(token string) string {
+	const prefix = "[PII:"
+	if strings.HasPrefix(token, prefix) {
+		remainder := token[len(prefix):]
+		if separator := strings.IndexByte(remainder, ':'); separator > 0 {
+			return remainder[:separator]
+		}
+	}
+	return "other"
 }
 
 func transformStandardRequest(req *canonical.ChatRequest, transform func(key, value string) string) {
@@ -1968,22 +2007,24 @@ func (s *Service) Close() {
 	if s == nil {
 		return
 	}
+	closedEvents := 0
 	s.closeOnce.Do(func() {
 		s.closed.Store(true)
 		if s.store != nil {
 			summary := s.store.shutdownAndClear()
+			closedEvents = summary.Completed + summary.Closing
 			s.scopeObserverMu.Lock()
 			s.observedScopes = nil
 			s.scopeObserverMu.Unlock()
-			for range summary.Completed + summary.Closing {
-				if observe := s.config.Observers.ScopeEvent; observe != nil {
-					observe("closed")
-				}
-			}
 		}
 		if s.reaperStop != nil {
 			close(s.reaperStop)
 			<-s.reaperDone
 		}
 	})
+	if observe := s.config.Observers.ScopeEvent; observe != nil {
+		for range closedEvents {
+			observe("closed")
+		}
+	}
 }
