@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -346,11 +347,12 @@ func (e *anthropicPrivacyStreamingEngine) RunPostHooks(ctx context.Context, req 
 }
 
 type anthropicEventWriter struct {
-	header   http.Header
-	body     bytes.Buffer
-	statuses []int
-	flushes  int
-	events   *[]string
+	header          http.Header
+	body            bytes.Buffer
+	statuses        []int
+	flushes         int
+	receiptAtCommit string
+	events          *[]string
 }
 
 func newAnthropicEventWriter(events *[]string) *anthropicEventWriter {
@@ -363,6 +365,7 @@ func (w *anthropicEventWriter) WriteHeader(status int) {
 	if len(w.statuses) != 0 {
 		return
 	}
+	w.receiptAtCommit = w.header.Get("X-GW-Privacy-Receipt")
 	w.statuses = append(w.statuses, status)
 	*w.events = append(*w.events, "write_header")
 }
@@ -420,15 +423,310 @@ func newAnthropicStreamingPrivacyService(t *testing.T, profile privacy.Profile, 
 
 func serveAnthropicPrivacyStream(t *testing.T, writer http.ResponseWriter, eng Engine, profile string) {
 	t.Helper()
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/messages", strings.NewReader(
-		`{"model":"auto","max_tokens":256,"messages":[{"role":"user","content":"hi"}],"stream":true}`,
-	))
+	serveAnthropicPrivacyStreamBody(t, writer, eng, profile,
+		`{"model":"auto","max_tokens":256,"messages":[{"role":"user","content":"hi"}],"stream":true}`)
+}
+
+func serveAnthropicPrivacyStreamBody(t *testing.T, writer http.ResponseWriter, eng Engine, profile, body string) {
+	t.Helper()
+	headers := make(http.Header)
+	if profile != "" {
+		headers.Set("X-GW-Privacy-Profile", profile)
+	}
+	serveAnthropicPrivacyRequest(t, writer, eng, body, headers)
+}
+
+func serveAnthropicPrivacyRequest(t *testing.T, writer http.ResponseWriter, eng Engine, body string, headers http.Header) {
+	t.Helper()
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/messages", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("anthropic-version", "2023-06-01")
-	if profile != "" {
-		req.Header.Set("X-GW-Privacy-Profile", profile)
+	for name, values := range headers {
+		for _, value := range values {
+			req.Header.Add(name, value)
+		}
 	}
 	newTestAdapter(eng).ProtectedRouter().ServeHTTP(writer, req)
+}
+
+func TestAnthropicPrivacy_StrictRequestedStreamPreservesNativeToolCall(t *testing.T) {
+	var events []string
+	eng := &anthropicPrivacyStreamingEngine{
+		service: newAnthropicStreamingPrivacyService(t, privacy.ProfileStrict, nil),
+		chunks: []canonical.Chunk{{
+			Kind: canonical.ChunkKindToolCall,
+			ToolCall: &canonical.ToolCallChunk{
+				ID: "toolu_strict_01", Name: "get_weather", Args: map[string]any{"city": "Paris"},
+			},
+		}},
+		events: &events,
+	}
+	writer := newAnthropicEventWriter(&events)
+	serveAnthropicPrivacyStreamBody(t, writer, eng, "strict", `{
+		"model":"auto",
+		"max_tokens":256,
+		"messages":[{"role":"user","content":"what is the weather?"}],
+		"tools":[{"name":"get_weather","description":"weather lookup","input_schema":{"type":"object","properties":{"city":{"type":"string"}}}}],
+		"stream":true
+	}`)
+
+	assertAnthropicStrictToolReplay(t, writer, events, "toolu_strict_01", "get_weather", `{"city":"Paris"}`)
+}
+
+func TestAnthropicPrivacy_StrictRequestedStreamCoercesExplicitToolCallWrapper(t *testing.T) {
+	const wrapper = `{"tool_call":{"name":"get_weather","arguments":{"city":"Paris"}}}`
+	var events []string
+	eng := &anthropicPrivacyStreamingEngine{
+		service: newAnthropicStreamingPrivacyService(t, privacy.ProfileStrict, nil),
+		chunks: []canonical.Chunk{{
+			Kind: canonical.ChunkKindText,
+			Text: &canonical.TextChunk{Content: wrapper},
+		}},
+		events: &events,
+	}
+	writer := newAnthropicEventWriter(&events)
+	serveAnthropicPrivacyStreamBody(t, writer, eng, "strict", `{
+		"model":"auto",
+		"max_tokens":256,
+		"messages":[{"role":"user","content":"what is the weather?"}],
+		"tools":[{"name":"get_weather","description":"weather lookup","input_schema":{"type":"object","properties":{"city":{"type":"string"}}}}],
+		"stream":true
+	}`)
+
+	toolID := strictToolUseID(t, writer.body.String())
+	if !strings.HasPrefix(toolID, "call_") {
+		t.Fatalf("tool_use id=%q, want extracted call_ prefix; body=%s", toolID, writer.body.String())
+	}
+	assertAnthropicStrictToolReplay(t, writer, events, toolID, "get_weather", `{"city":"Paris"}`)
+	if strings.Contains(writer.body.String(), `tool_call`) || strings.Contains(writer.body.String(), wrapper) {
+		t.Fatalf("strict replay exposed raw tool-call wrapper: %s", writer.body.String())
+	}
+}
+
+func assertAnthropicStrictToolReplay(
+	t *testing.T,
+	writer *anthropicEventWriter,
+	events []string,
+	wantID, wantName, wantPartialJSON string,
+) {
+	t.Helper()
+	if len(writer.statuses) != 1 || writer.statuses[0] != http.StatusOK {
+		t.Fatalf("statuses=%v body=%s events=%v", writer.statuses, writer.body.String(), events)
+	}
+	wantEvents := []string{
+		"message_start",
+		"content_block_start",
+		"content_block_delta",
+		"content_block_stop",
+		"message_delta",
+		"message_stop",
+	}
+	if got := sseEventLines(writer.body.String()); !equalSlice(got, wantEvents) {
+		t.Fatalf("SSE events=%v, want %v; body=%s", got, wantEvents, writer.body.String())
+	}
+	data := sseDataLines(writer.body.String())
+	if len(data) != len(wantEvents) {
+		t.Fatalf("data frames=%d, want %d; body=%s", len(data), len(wantEvents), writer.body.String())
+	}
+	wantStart := `{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"` + wantID + `","name":"` + wantName + `","input":{}}}`
+	if data[1] != wantStart {
+		t.Fatalf("content_block_start=%s, want %s", data[1], wantStart)
+	}
+	wantDelta := `{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":` + strconv.Quote(wantPartialJSON) + `}}`
+	if data[2] != wantDelta {
+		t.Fatalf("content_block_delta=%s, want %s", data[2], wantDelta)
+	}
+	wantTail := []string{
+		`{"type":"content_block_stop","index":0}`,
+		`{"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"output_tokens":0}}`,
+		`{"type":"message_stop"}`,
+	}
+	for index, want := range wantTail {
+		if data[index+3] != want {
+			t.Fatalf("data[%d]=%s, want %s", index+3, data[index+3], want)
+		}
+	}
+	if afterTailAt, writeAt := anthropicEventPosition(events, "after_tail"), anthropicEventPosition(events, "write_header"); afterTailAt < 0 || writeAt < afterTailAt {
+		t.Fatalf("events=%v, response committed before complete Post/After chain", events)
+	}
+	if countAnthropicEvents(events, "after") != 1 || countAnthropicEvents(events, "after_tail") != 1 {
+		t.Fatalf("events=%v, want exactly one complete Post/After chain", events)
+	}
+	if writer.receiptAtCommit == "" || writer.receiptAtCommit != writer.Header().Get("X-GW-Privacy-Receipt") {
+		t.Fatalf("receipt at commit=%q final=%q", writer.receiptAtCommit, writer.Header().Get("X-GW-Privacy-Receipt"))
+	}
+	receipt := decodeAnthropicPrivacyReceipt(t, writer.receiptAtCommit)
+	if receipt.Profile != privacy.ProfileStrict || receipt.Coverage != "full" || receipt.Result != "pass" {
+		t.Fatalf("receipt=%+v", receipt)
+	}
+}
+
+func strictToolUseID(t *testing.T, body string) string {
+	t.Helper()
+	data := sseDataLines(body)
+	if len(data) < 2 {
+		t.Fatalf("missing content_block_start frame: %s", body)
+	}
+	var payload struct {
+		ContentBlock struct {
+			ID string `json:"id"`
+		} `json:"content_block"`
+	}
+	if err := json.Unmarshal([]byte(data[1]), &payload); err != nil {
+		t.Fatalf("decode content_block_start: %v; data=%s", err, data[1])
+	}
+	return payload.ContentBlock.ID
+}
+
+func countAnthropicEvents(events []string, want string) int {
+	count := 0
+	for _, event := range events {
+		if event == want {
+			count++
+		}
+	}
+	return count
+}
+
+type invalidInboundAnthropicClassifier struct{}
+
+func (invalidInboundAnthropicClassifier) Classify(_, value string) []privacy.Finding {
+	if value != "trigger-nonpanic-internal" {
+		return nil
+	}
+	return []privacy.Finding{{
+		Entity: "INVALID_FIXTURE", Category: privacy.CategoryPersonal,
+		Kind: privacy.MatchValidatedRegex, Start: 0, End: len(value) + 1,
+	}}
+}
+
+func TestAnthropicPrivacy_StampedInboundErrorsCarryReceiptBeforeCommit(t *testing.T) {
+	tests := []struct {
+		name        string
+		setup       func(*testing.T) *privacy.Service
+		profile     string
+		scope       string
+		message     string
+		wantStatus  int
+		wantType    string
+		wantCode    string
+		wantProfile privacy.Profile
+	}{
+		{
+			name: "profile unavailable",
+			setup: func(t *testing.T) *privacy.Service {
+				return newConfiguredAnthropicPrivacyService(t, privacy.Config{
+					DefaultProfile: privacy.ProfileStandard, RequestProfiles: []privacy.Profile{privacy.ProfileStandard},
+					PIIEnabled: true, PIIMode: privacy.ActionReplace,
+				})
+			},
+			profile: "strict", message: "safe", wantStatus: http.StatusBadRequest,
+			wantType: errInvalidRequest, wantCode: privacy.CodeProfileUnavailable, wantProfile: privacy.ProfileStandard,
+		},
+		{
+			name: "invalid scope",
+			setup: func(t *testing.T) *privacy.Service {
+				return newStrictConfiguredAnthropicPrivacyService(t, 8, nil)
+			},
+			profile: "strict", scope: "invalid/scope", message: "safe", wantStatus: http.StatusBadRequest,
+			wantType: errInvalidRequest, wantCode: privacy.CodeRequestInvalid, wantProfile: privacy.ProfileStrict,
+		},
+		{
+			name: "closed scope",
+			setup: func(t *testing.T) *privacy.Service {
+				service := newStrictConfiguredAnthropicPrivacyService(t, 8, nil)
+				service.Close()
+				return service
+			},
+			profile: "strict", scope: "closed-scope", message: "safe", wantStatus: http.StatusConflict,
+			wantType: errInvalidRequest, wantCode: privacy.CodeScopeClosed, wantProfile: privacy.ProfileStrict,
+		},
+		{
+			name: "scope capacity",
+			setup: func(t *testing.T) *privacy.Service {
+				service := newStrictConfiguredAnthropicPrivacyService(t, 1, nil)
+				state := privacy.NewRequestState(privacy.RequestMetadata{RequestedProfile: "strict", ScopeID: "occupied-scope"})
+				ctx := privacy.WithRequestState(context.Background(), state)
+				req := &canonical.ChatRequest{}
+				if _, err := service.Before(ctx, req); err != nil {
+					t.Fatalf("occupy scope Before: %v", err)
+				}
+				t.Cleanup(func() { _ = service.After(ctx, req, &canonical.ChatResponse{}) })
+				return service
+			},
+			profile: "strict", scope: "capacity-scope", message: "safe", wantStatus: http.StatusServiceUnavailable,
+			wantType: errAPI, wantCode: privacy.CodeCapacityExceeded, wantProfile: privacy.ProfileStrict,
+		},
+		{
+			name: "nonpanic inbound internal",
+			setup: func(t *testing.T) *privacy.Service {
+				return newStrictConfiguredAnthropicPrivacyService(t, 8, invalidInboundAnthropicClassifier{})
+			},
+			profile: "strict", scope: "internal-scope", message: "trigger-nonpanic-internal", wantStatus: http.StatusServiceUnavailable,
+			wantType: errAPI, wantCode: privacy.CodeInternalError, wantProfile: privacy.ProfileStrict,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var events []string
+			eng := &anthropicPrivacyStreamingEngine{service: tc.setup(t), events: &events}
+			writer := newAnthropicEventWriter(&events)
+			headers := make(http.Header)
+			headers.Set("X-GW-Privacy-Profile", tc.profile)
+			if tc.scope != "" {
+				headers.Set("X-GW-Privacy-Scope", tc.scope)
+			}
+			body := `{"model":"auto","max_tokens":256,"messages":[{"role":"user","content":` + strconv.Quote(tc.message) + `}],"stream":true}`
+			serveAnthropicPrivacyRequest(t, writer, eng, body, headers)
+
+			if len(writer.statuses) != 1 || writer.statuses[0] != tc.wantStatus {
+				t.Fatalf("statuses=%v, want %d; body=%s events=%v", writer.statuses, tc.wantStatus, writer.body.String(), events)
+			}
+			wantBody := `{"type":"error","error":{"type":"` + tc.wantType + `","message":"` + tc.wantCode + `"}}` + "\n"
+			if writer.body.String() != wantBody {
+				t.Fatalf("body=%q, want exact %q", writer.body.String(), wantBody)
+			}
+			if writer.receiptAtCommit == "" || writer.receiptAtCommit != writer.Header().Get("X-GW-Privacy-Receipt") {
+				t.Fatalf("receipt at commit=%q final=%q", writer.receiptAtCommit, writer.Header().Get("X-GW-Privacy-Receipt"))
+			}
+			if len(writer.receiptAtCommit) > 512 {
+				t.Fatalf("encoded receipt bytes=%d, want <=512", len(writer.receiptAtCommit))
+			}
+			receipt := decodeAnthropicPrivacyReceipt(t, writer.receiptAtCommit)
+			if receipt.Profile != tc.wantProfile || receipt.Coverage != "input" || receipt.Result != "error" {
+				t.Fatalf("receipt=%+v", receipt)
+			}
+		})
+	}
+}
+
+func newConfiguredAnthropicPrivacyService(t *testing.T, config privacy.Config) *privacy.Service {
+	t.Helper()
+	service, err := privacy.NewService(config)
+	if err != nil {
+		t.Fatalf("privacy.NewService: %v", err)
+	}
+	t.Cleanup(service.Close)
+	return service
+}
+
+func newStrictConfiguredAnthropicPrivacyService(t *testing.T, maxScopes int, classifier privacy.Classifier) *privacy.Service {
+	t.Helper()
+	return newConfiguredAnthropicPrivacyService(t, privacy.Config{
+		DefaultProfile:     privacy.ProfileStrict,
+		RequestProfiles:    []privacy.Profile{privacy.ProfileStrict},
+		AliasKey:           []byte("anthropic-inbound-errors-alias-key"),
+		SecretAction:       privacy.ActionReplace,
+		TechnicalAction:    privacy.ActionPseudonymize,
+		ScopeTTL:           time.Hour,
+		MaxScopes:          maxScopes,
+		MaxEntriesPerScope: 32,
+		MaxTotalEntries:    128,
+		PIIEnabled:         true,
+		PIIMode:            privacy.ActionReplace,
+		Classifier:         classifier,
+	})
 }
 
 func TestAnthropicPrivacy_StrictRequestedStreamCollectsAndRunsAfterBeforeNativeReplay(t *testing.T) {

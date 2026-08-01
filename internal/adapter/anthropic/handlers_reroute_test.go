@@ -2,10 +2,11 @@
 //
 // When a Pre hook (e.g., the PII encrypt Pre hook) flips req.Stream=false
 // during eng.Run, handleMessages must abandon the real SSE branch and
-// route the already-running ACP session through eng.CollectFromRun.
+// route the already-running ACP session through the Anthropic-owned
+// from-run collector.
 // Because the CLIENT wire originally had stream=true, the response must
 // still be a text/event-stream — emitted synthetically from the
-// aggregated CollectFromRun result via runSyntheticSSEFromResponse.
+// aggregated result via runSyntheticSSEFromResponse.
 // This test pins that contract.
 //
 // v1.8.3 regression fixed: prior to runSyntheticSSEFromResponse this
@@ -26,12 +27,9 @@ import (
 // rerouteFakeEngine simulates a PII-encrypt-style Pre hook by flipping
 // req.Stream=false inside its Run method, BEFORE returning the
 // RunHandle. The handler's post-Run req.Stream check then takes the
-// CollectFromRun re-route branch instead of runSSEEmitter.
+// Anthropic collector re-route branch instead of runSSEEmitter.
 type rerouteFakeEngine struct {
-	collectFromRunResp *canonical.ChatResponse
-	collectFromRunErr  error
-
-	// observation: did the handler call our CollectFromRun?
+	// observation: did the handler call the generic CollectFromRun?
 	collectFromRunCalled bool
 	// Did the original wire have Stream=true? (set by Run for assertion.)
 	sawStreamTrueAtRun bool
@@ -52,7 +50,7 @@ func (e *rerouteFakeEngine) Run(_ context.Context, req *canonical.ChatRequest) (
 	// handler's post-Run check takes the re-route branch.
 	req.Stream = false
 	ch := make(chan canonical.Chunk, 1)
-	ch <- canonical.Chunk{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "irrelevant"}}
+	ch <- canonical.Chunk{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "encrypted-response"}}
 	close(ch)
 	return &fakeRunHandle{
 		stream: &fakeStream{
@@ -63,42 +61,31 @@ func (e *rerouteFakeEngine) Run(_ context.Context, req *canonical.ChatRequest) (
 	}, nil
 }
 
-func (e *rerouteFakeEngine) RunPostHooks(_ context.Context, _ *canonical.ChatRequest, _ *canonical.ChatResponse) error {
+func (e *rerouteFakeEngine) RunPostHooks(_ context.Context, _ *canonical.ChatRequest, resp *canonical.ChatResponse) error {
 	e.postHookCalls++
+	if resp != nil && len(resp.Message.Content) > 0 {
+		resp.Message.Content[0].Text = "decrypted-response"
+	}
 	return nil
 }
 
 func (e *rerouteFakeEngine) CollectFromRun(_ context.Context, _ RunHandle, _ *canonical.ChatRequest) (*canonical.ChatResponse, error) {
 	e.collectFromRunCalled = true
-	if e.collectFromRunErr != nil {
-		return nil, e.collectFromRunErr
-	}
-	return e.collectFromRunResp, nil
+	return nil, nil
 }
 
 // TestHandleMessages_StreamReroute_OnPreHookStreamDisable asserts that a
 // Pre hook flipping req.Stream=false during eng.Run causes the handler
 // to:
-//   - call eng.CollectFromRun (NOT runSSEEmitter)
-//   - respond with Content-Type: application/json (NOT text/event-stream)
-//   - render via chatResponseToMessage (the non-streaming Anthropic shape)
-//   - emit zero SSE markers in the response body
+//   - aggregate through the Anthropic-owned from-run collector
+//   - run the PostHook chain exactly once before response bytes
+//   - respond with synthetic text/event-stream output
+//   - avoid the generic eng.CollectFromRun path
 //
 // This pins the T-5b re-route for the Anthropic surface — the load-bearing
 // behavior for the PII encrypt round-trip on streaming Anthropic clients.
 func TestHandleMessages_StreamReroute_OnPreHookStreamDisable(t *testing.T) {
-	eng := &rerouteFakeEngine{
-		collectFromRunResp: &canonical.ChatResponse{
-			Model: "auto",
-			Message: canonical.Message{
-				Role: canonical.RoleAssistant,
-				Content: []canonical.ContentPart{
-					{Kind: canonical.ContentKindText, Text: "decrypted-response"},
-				},
-			},
-			StopReason: canonical.StopEndTurn,
-		},
-	}
+	eng := &rerouteFakeEngine{}
 	a := newTestAdapter(eng)
 	// stream:true on the wire — handler must observe it at decode time,
 	// then take the re-route branch after Run flips it off.
@@ -140,10 +127,11 @@ func TestHandleMessages_StreamReroute_OnPreHookStreamDisable(t *testing.T) {
 		t.Errorf("body missing mapped stop_reason end_turn; body=%q", bodyStr)
 	}
 
-	// (3) Handler invoked CollectFromRun (NOT the real per-chunk SSE
-	// emitter) — proves the re-route branch fired.
-	if !eng.collectFromRunCalled {
-		t.Error("CollectFromRun was not called — handler took the real-SSE branch (regression: T-5b re-route guard missing)")
+	// (3) Handler used the Anthropic-owned from-run collector, not the
+	// generic engine collector. The decrypted output above proves that
+	// the already-started run was drained and its PostHook chain ran.
+	if eng.collectFromRunCalled {
+		t.Error("generic CollectFromRun was called; want Anthropic-owned from-run collector")
 	}
 
 	// (4) Run observed Stream=true on the inbound wire request — proves
@@ -152,11 +140,10 @@ func TestHandleMessages_StreamReroute_OnPreHookStreamDisable(t *testing.T) {
 		t.Error("rerouteFakeEngine.Run did not observe Stream=true on inbound req — wire-decode broken")
 	}
 
-	// (5) Audit ollama-reroute-double-posthook-fires (applies symmetrically
-	// to anthropic's synthetic-SSE re-route): handler MUST NOT call
-	// RunPostHooks — CollectFromRun already ran the chain. Pre-fix: 1.
-	// Post-fix: 0. A second call corrupts PII decrypt and double-logs.
-	if eng.postHookCalls != 0 {
-		t.Errorf("handler called RunPostHooks %d times on synthetic-SSE re-route; want 0", eng.postHookCalls)
+	// (5) The Anthropic-owned collector fires the complete PostHook chain;
+	// the handler must not fire it a second time. A second call corrupts
+	// PII decrypt and double-logs.
+	if eng.postHookCalls != 1 {
+		t.Errorf("RunPostHooks calls=%d on synthetic-SSE re-route; want exactly 1", eng.postHookCalls)
 	}
 }

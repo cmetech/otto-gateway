@@ -283,21 +283,11 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusUnauthorized, errAuthentication, shortCircuitMessage(sc))
 			return
 		}
-		// T-5b: Pre hooks (notably the PII encrypt hook) may have flipped
-		// req.Stream=false during eng.Run. When that happens we abandon
-		// the SSE branch and drain the already-running ACP session through
-		// eng.CollectFromRun, then render via the surface's non-streaming
-		// response shape. This closes the PII encrypt round-trip for
-		// streaming Anthropic clients (loop24-client) — without this
-		// re-route the SSE emitter would flush ciphertext bytes ahead of
-		// the PII decrypt PostHook.
-		//
-		// v1 limitation: this path uses the generic engine aggregator
-		// (CollectFromRun), NOT the Anthropic-local CollectAnthropicChat.
-		// Kiro-native ChunkKindToolCall chunks render as `[tool: <name>]\n`
-		// narration text on this path rather than native tool_use content
-		// blocks. Plain-text responses round-trip correctly. Documented in
-		// docs/operating.md Known Limitations.
+		// T-5b: Pre hooks (notably the privacy service) may have flipped
+		// req.Stream=false during eng.Run. When that happens, drain the
+		// already-running ACP session through the Anthropic-owned collector
+		// before replay. This preserves native tool_use and explicit wrapper
+		// semantics while keeping the complete PostHook chain before bytes.
 		if privacy.ValidatedReplayRequired(streamCtx) || !req.Stream {
 			a.cfg.Logger.Info(
 				"stream re-routed to aggregated path",
@@ -305,7 +295,9 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 				"reason", "pre_hook_disabled_streaming",
 				"request_id", plugin.RequestIDFromContext(ctx),
 			)
-			resp, cErr := eng.CollectFromRun(streamCtx, runHandle, req)
+			resp, cErr := collectAnthropicChatFromRun(
+				streamCtx, eng, runHandle, req, a.cfg.ToolAliases, a.cfg.StreamIdleTimeout,
+			)
 			if cErr != nil {
 				observation.Outcome = classifyRequestError(cErr)
 				if writePrivacyError(w, cErr) {
@@ -321,7 +313,7 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 					writeError(w, http.StatusGatewayTimeout, errAPI, "upstream stream idle timeout")
 					return
 				}
-				a.cfg.Logger.Error("anthropic: engine.CollectFromRun error", "err", cErr)
+				a.cfg.Logger.Error("anthropic: collect from run error", "err", cErr)
 				writeError(w, http.StatusInternalServerError, errAPI, "internal error")
 				return
 			}
@@ -360,8 +352,8 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 			// any other SSE consumer) with "request ended without sending
 			// any chunks" — the v1.8.3 regression that motivated this path.
 			// Audit ollama-reroute-double-posthook-fires (applies
-			// symmetrically here): CollectFromRun above already fired
-			// the PostHook chain (collect.go:179-183). Do NOT call
+			// symmetrically here): the collector above already fired
+			// the PostHook chain. Do NOT call
 			// RunPostHooks again on resp — a second pass corrupts
 			// non-idempotent hooks (PII decrypt operates on already-
 			// decrypted content) and double-logs idempotent ones.

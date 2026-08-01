@@ -72,7 +72,21 @@ func CollectAnthropicChat(ctx context.Context, eng Engine, req *canonical.ChatRe
 	if err != nil {
 		return nil, fmt.Errorf("anthropic: collect: %w", err)
 	}
+	return collectAnthropicChatFromRun(ctx, eng, run, req, aliases, streamIdle)
+}
 
+// collectAnthropicChatFromRun aggregates an already-started Anthropic run.
+// It owns the same native tool resolution, wrapper extraction, watchdog, and
+// exactly-once PostHook path as CollectAnthropicChat without invoking Run a
+// second time.
+func collectAnthropicChatFromRun(
+	ctx context.Context,
+	eng Engine,
+	run RunHandle,
+	req *canonical.ChatRequest,
+	aliases map[string]string,
+	streamIdle time.Duration,
+) (*canonical.ChatResponse, error) {
 	// Phase 8 SC1 short-circuit: if a PreHook (e.g., AuthHook) returned
 	// a synthesized response, return it verbatim. The chunk-based
 	// aggregator below would otherwise see an empty stream and drop
