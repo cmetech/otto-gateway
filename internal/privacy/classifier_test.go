@@ -77,6 +77,52 @@ func TestSecretClassifierNormalizesCredentialCompoundKeys(t *testing.T) {
 	}
 }
 
+func TestSecretClassifierRedactsManagedCredentialAssignments(t *testing.T) {
+	t.Parallel()
+
+	classifier := NewSecretClassifier()
+	tests := []struct {
+		name  string
+		key   string
+		value string
+		want  string
+	}{
+		{name: "hash key field", key: "PII_HASH_KEY", value: "hash-secret-7788", want: "[REDACTED]"},
+		{name: "hash key dotenv", value: "PII_HASH_KEY=hash-secret-7788", want: "PII_HASH_KEY=[REDACTED]"},
+		{name: "encrypt key yaml", value: "PII_ENCRYPT_KEY: encrypt-secret-8899", want: "PII_ENCRYPT_KEY: [REDACTED]"},
+		{
+			name:  "remote write token JSON",
+			value: `{"GW_METRICS_REMOTE_WRITE_TOKEN":"metrics-secret-9900","keep":"yes"}`,
+			want:  `{"GW_METRICS_REMOTE_WRITE_TOKEN":"[REDACTED]","keep":"yes"}`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := classifier.Redact(tc.key, tc.value); got != tc.want {
+				t.Fatalf("Redact()=%q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSecretClassifierRedactsTask14PrivacyCredentials(t *testing.T) {
+	t.Parallel()
+
+	classifier := NewSecretClassifier()
+	tests := []struct {
+		value string
+		want  string
+	}{
+		{value: "PRIVACY_ALIAS_KEY=alias-secret-1122", want: "PRIVACY_ALIAS_KEY=[REDACTED]"},
+		{value: "PRIVACY_TRIAGE_TOKEN=triage-secret-3344", want: "PRIVACY_TRIAGE_TOKEN=[REDACTED]"},
+	}
+	for _, tc := range tests {
+		if got := classifier.Redact("", tc.value); got != tc.want {
+			t.Errorf("Redact(%q)=%q, want %q", tc.value, got, tc.want)
+		}
+	}
+}
+
 func TestSecretClassifierRejectsGenericKeyNames(t *testing.T) {
 	t.Parallel()
 
@@ -110,6 +156,52 @@ func TestSecretClassifierRedactsOnlyMatchedSpans(t *testing.T) {
 	safe := "Press any key to continue."
 	if got := classifier.Redact("", safe); got != safe {
 		t.Fatalf("safe Redact()=%q, want unchanged input", got)
+	}
+}
+
+func TestSecretClassifierRedactsBareBearerValue(t *testing.T) {
+	t.Parallel()
+
+	classifier := NewSecretClassifier()
+	const value = "prefix Bearer bearer-secret-7788 suffix"
+	findings := classifier.Classify("", value)
+	if len(findings) != 1 {
+		t.Fatalf("finding count=%d, want 1", len(findings))
+	}
+	if got, want := findings[0].Entity, "BEARER_TOKEN"; got != want {
+		t.Fatalf("entity=%q, want %q", got, want)
+	}
+	if got, want := classifier.Redact("", value), "prefix Bearer [REDACTED] suffix"; got != want {
+		t.Fatalf("Redact()=%q, want %q", got, want)
+	}
+}
+
+func TestSecretClassifierPreservesRedactedAssignments(t *testing.T) {
+	t.Parallel()
+
+	classifier := NewSecretClassifier()
+	tests := []struct {
+		name  string
+		key   string
+		value string
+	}{
+		{name: "direct field", key: "PII_HASH_KEY", value: "[REDACTED]"},
+		{name: "dotenv", value: "AUTH_TOKEN=[REDACTED]"},
+		{name: "single quoted", value: "PII_ENCRYPT_KEY='[REDACTED]'"},
+		{name: "JSON", value: `{"GW_METRICS_REMOTE_WRITE_TOKEN":"[REDACTED]"}`},
+		{name: "authorization header", value: "Authorization: [REDACTED]"},
+		{name: "bearer authorization header", value: "Authorization: Bearer [REDACTED]"},
+		{name: "bare bearer", value: "Bearer [REDACTED]"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if findings := classifier.Classify(tc.key, tc.value); len(findings) != 0 {
+				t.Fatalf("Classify()=%+v, want no finding for an existing redaction", findings)
+			}
+			if got := classifier.Redact(tc.key, tc.value); got != tc.value {
+				t.Fatalf("Redact()=%q, want unchanged %q", got, tc.value)
+			}
+		})
 	}
 }
 

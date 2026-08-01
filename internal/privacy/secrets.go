@@ -8,8 +8,9 @@ import (
 )
 
 type secretPattern struct {
-	entity string
-	re     *regexp.Regexp
+	entity       string
+	re           *regexp.Regexp
+	valueCapture int
 }
 
 var secretValuePatterns = []secretPattern{
@@ -24,6 +25,11 @@ var secretValuePatterns = []secretPattern{
 	{
 		entity: "AUTHORIZATION",
 		re:     regexp.MustCompile(`(?i)authorization\s*:\s*(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]+`),
+	},
+	{
+		entity:       "BEARER_TOKEN",
+		re:           regexp.MustCompile(`(?i)\bbearer[ \t]+([A-Za-z0-9._~+/=-]+)`),
+		valueCapture: 1,
 	},
 	{
 		entity: "GITHUB_TOKEN",
@@ -45,8 +51,13 @@ func detectSecretValues(value string) []Finding {
 	var candidates []Finding
 	registryOrder := 0
 	for _, pattern := range secretValuePatterns {
-		for _, span := range pattern.re.FindAllStringIndex(value, -1) {
-			candidates = append(candidates, secretFinding(pattern.entity, span[0], span[1], registryOrder))
+		for _, spans := range pattern.re.FindAllStringSubmatchIndex(value, -1) {
+			start, end := spans[0], spans[1]
+			if pattern.valueCapture > 0 {
+				start = spans[pattern.valueCapture*2]
+				end = spans[pattern.valueCapture*2+1]
+			}
+			candidates = append(candidates, secretFinding(pattern.entity, start, end, registryOrder))
 		}
 		registryOrder++
 	}
@@ -58,7 +69,10 @@ func detectSecretValues(value string) []Finding {
 	for _, assignment := range findStructuredAssignments(value) {
 		key := assignment.key
 		words := normalizeKeyWords(key)
-		if !containsCredentialCompound(words) && !containsAuthorizationName(words) {
+		if !isSecretKeyWords(words) {
+			continue
+		}
+		if isRedactedAssignment(value, assignment.valueStart) {
 			continue
 		}
 		candidates = append(candidates, secretFinding(entityForKey(key), assignment.valueStart, assignment.valueEnd, registryOrder))
@@ -66,6 +80,39 @@ func detectSecretValues(value string) []Finding {
 	}
 
 	return nonOverlappingSecretFindings(candidates)
+}
+
+func isRedactedAssignment(value string, start int) bool {
+	if start < 0 || start >= len(value) {
+		return false
+	}
+
+	cursor := start
+	if end, ok := credentialSchemeEnd(value, cursor); ok {
+		cursor = end
+	}
+	if !strings.HasPrefix(value[cursor:], redactedSecret) {
+		return false
+	}
+	end := cursor + len(redactedSecret)
+	return end == len(value) || isUnquotedAssignmentDelimiter(value[end])
+}
+
+func credentialSchemeEnd(value string, start int) (int, bool) {
+	for _, scheme := range []string{"bearer", "basic"} {
+		end := start + len(scheme)
+		if end > len(value) || !strings.EqualFold(value[start:end], scheme) {
+			continue
+		}
+		cursor := end
+		for cursor < len(value) && (value[cursor] == ' ' || value[cursor] == '\t') {
+			cursor++
+		}
+		if cursor > end {
+			return cursor, true
+		}
+	}
+	return start, false
 }
 
 func findCredentialURLs(value string) [][2]int {

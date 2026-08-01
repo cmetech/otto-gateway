@@ -18,7 +18,7 @@ func NewSecretClassifier() *SecretClassifier {
 
 // Classify returns high-confidence credential spans in value.
 func (c *SecretClassifier) Classify(key, value string) []Finding {
-	if value == "" {
+	if value == "" || isRedactedCredentialValue(value) {
 		return nil
 	}
 
@@ -29,10 +29,20 @@ func (c *SecretClassifier) Classify(key, value string) []Finding {
 	return detectSecretValues(value)
 }
 
+func isRedactedCredentialValue(value string) bool {
+	fields := strings.Fields(value)
+	if len(fields) == 1 {
+		return fields[0] == redactedSecret
+	}
+	return len(fields) == 2 &&
+		(strings.EqualFold(fields[0], "bearer") || strings.EqualFold(fields[0], "basic")) &&
+		fields[1] == redactedSecret
+}
+
 // IsSecretKey reports whether key unambiguously names a credential field.
 func (c *SecretClassifier) IsSecretKey(key string) bool {
 	words := normalizeKeyWords(key)
-	return containsCredentialCompound(words) || containsAuthorizationName(words)
+	return isSecretKeyWords(words)
 }
 
 // Redact replaces detected credential spans without retaining the source.
@@ -121,6 +131,20 @@ func containsCredentialCompound(words []string) bool {
 		hasAdjacent(words, "github", "token") || hasAdjacent(words, "gitlab", "token")
 }
 
+func isSecretKeyWords(words []string) bool {
+	return isManagedCredentialKey(words) || containsCredentialCompound(words) || containsAuthorizationName(words)
+}
+
+func isManagedCredentialKey(words []string) bool {
+	switch strings.Join(words, "_") {
+	case "pii_hash_key", "pii_encrypt_key", "privacy_alias_key", "privacy_triage_token",
+		"gw_metrics_remote_write_token":
+		return true
+	default:
+		return false
+	}
+}
+
 func containsAuthorizationName(words []string) bool {
 	return len(words) == 1 && words[0] == "authorization" ||
 		len(words) == 2 && words[0] == "proxy" && words[1] == "authorization"
@@ -147,6 +171,8 @@ func hasAdjacent(words []string, first, second string) bool {
 func entityForKey(key string) string {
 	words := normalizeKeyWords(key)
 	switch {
+	case isManagedCredentialKey(words):
+		return strings.ToUpper(strings.Join(words, "_"))
 	case len(words) == 2 && words[0] == "proxy" && words[1] == "authorization":
 		return "PROXY_AUTHORIZATION"
 	case containsAuthorizationName(words):
