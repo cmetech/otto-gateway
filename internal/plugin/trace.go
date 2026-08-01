@@ -61,6 +61,13 @@ import (
 	"otto-gateway/internal/engine"
 )
 
+// ChatTracePrivacy decides whether trace records may contain sensitive fields
+// and supplies a bounded summary when sensitive serialization is disallowed.
+type ChatTracePrivacy interface {
+	AllowSensitiveTrace(context.Context) bool
+	TraceSummary(context.Context) map[string]any
+}
+
 // ChatTraceHook implements both engine.PreHook and engine.PostHook. See
 // the package docstring for the chain-order invariant and the streaming
 // scope rationale.
@@ -90,11 +97,6 @@ import (
 // request_id. LoadAndDelete in After prevents unbounded growth across
 // long-lived processes (T-ll2-08 mitigation — same pattern as
 // LoggingHook.startTimes).
-type ChatTracePrivacy interface {
-	AllowSensitiveTrace(context.Context) bool
-	TraceSummary(context.Context) map[string]any
-}
-
 type ChatTraceHook struct {
 	Writer     io.Writer
 	Enabled    bool

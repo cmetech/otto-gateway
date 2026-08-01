@@ -2,6 +2,7 @@ package pii
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"regexp"
 	"strings"
@@ -12,10 +13,7 @@ import (
 	"otto-gateway/internal/privacy"
 )
 
-var (
-	decryptTokenRe = regexp.MustCompile(`\[PII:([A-Za-z0-9_]+):([A-Za-z0-9_-]+)\]`)
-	barePayloadRe  = regexp.MustCompile(`[A-Za-z0-9_-]{38,}`)
-)
+var decryptTokenRe = regexp.MustCompile(`\[PII:([A-Za-z0-9_]+):([A-Za-z0-9_-]+)\]`)
 
 // PIIRedactionHook preserves the registered compatibility name while routing
 // all transformations through one privacy Service. The deprecated fields are
@@ -39,8 +37,10 @@ type PIIRedactionHook struct { //nolint:revive // compatibility-facing registere
 	legacyErr     error
 }
 
+// Name returns the compatibility-facing hook registration name.
 func (h *PIIRedactionHook) Name() string { return "PIIRedactionHook" }
 
+// Describe reports the hook stages and bounded privacy configuration.
 func (h *PIIRedactionHook) Describe() (string, map[string]any) {
 	service := h.delegate()
 	if service == nil {
@@ -49,6 +49,7 @@ func (h *PIIRedactionHook) Describe() (string, map[string]any) {
 	return "Pre,Post", service.Describe()
 }
 
+// Before applies inbound privacy transformations before provider dispatch.
 func (h *PIIRedactionHook) Before(ctx context.Context, req *canonical.ChatRequest) (resp *canonical.ChatResponse, err error) {
 	defer func() {
 		if recover() != nil {
@@ -60,9 +61,14 @@ func (h *PIIRedactionHook) Before(ctx context.Context, req *canonical.ChatReques
 	if service == nil {
 		return nil, nil
 	}
-	return service.Before(ctx, req)
+	resp, err = service.Before(ctx, req)
+	if err != nil {
+		return resp, fmt.Errorf("apply inbound privacy transformation: %w", err)
+	}
+	return resp, nil
 }
 
+// After applies outbound privacy transformations before returning a response.
 func (h *PIIRedactionHook) After(ctx context.Context, req *canonical.ChatRequest, resp *canonical.ChatResponse) (err error) {
 	defer func() {
 		if recover() != nil {
@@ -73,7 +79,11 @@ func (h *PIIRedactionHook) After(ctx context.Context, req *canonical.ChatRequest
 	if service == nil {
 		return nil
 	}
-	return service.After(ctx, req, resp)
+	err = service.After(ctx, req, resp)
+	if err != nil {
+		return fmt.Errorf("apply outbound privacy transformation: %w", err)
+	}
+	return nil
 }
 
 func (h *PIIRedactionHook) delegate() *privacy.Service {
