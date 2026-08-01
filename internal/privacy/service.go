@@ -372,7 +372,7 @@ func (s *Service) finalizeInboundErrorReceipt(ctx context.Context, resolvedProfi
 	}
 	transformed, restored, blocked := state.counts()
 	stored, receiptErr := state.setReceiptIfEmpty(Receipt{
-		Version: 1, Profile: profile, Scope: state.Metadata().ScopeID,
+		Version: 1, Profile: profile, Scope: state.failureReceiptScopeID(),
 		Coverage: "input", Result: "error",
 		Transformed: transformed, Restored: restored, Blocked: blocked,
 	})

@@ -128,6 +128,18 @@ func (s *RequestState) scopeInvalid() bool {
 	return s.invalidScope
 }
 
+func (s *RequestState) failureReceiptScopeID() string {
+	if s == nil {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.invalidScope {
+		return ""
+	}
+	return s.metadata.ScopeID
+}
+
 func (s *RequestState) setLease(lease *ScopeLease) bool {
 	if s == nil || lease == nil {
 		return false
