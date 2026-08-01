@@ -131,7 +131,8 @@ try {
 
     $preservedEnv = $false
     if (Test-Path (Join-Path $GwHome '.env')) {
-        Info "Existing config found — preserving it (skipping init)."
+        Info "Existing config found — refreshing generated defaults and preserving overrides/secrets."
+        & $bat init -Force -NonInteractive
         $preservedEnv = $true
     } else {
         Info "Writing default config (no auth, 127.0.0.1:18080, all hooks, PII redaction=encrypt, NER=on, chat-trace off) ..."

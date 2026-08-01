@@ -3,31 +3,14 @@
 # (Compatible with Windows PowerShell 5.x AND PowerShell 7+).
 #
 # Surface (per docs/superpowers/specs/2026-06-08-support-bundle-design.md):
-#   - Invoke-RedactStream     pipeline filter applying log-scrub rules
+#   - Invoke-RedactStream     pipeline filter backed by Gateway's classifier
 #   - Mask-EnvValue VALUE     returns "<first4>…(<N> chars)"
 #   - Test-IsSecretKey KEY    returns $true if KEY names a secret env var
 #
-# Regex rules MUST be byte-equivalent with scripts/lib/redact.sh so behavior
-# does not drift between OS wrappers.
-#
-# Log scrub rules (applied in order):
-#   1. Authorization:<space>.*       -> Authorization: [REDACTED]
-#   2. x-api-key:<space>.*           -> x-api-key: [REDACTED]   (case-insensitive)
-#   3. Bearer <hex/url-safe-base64>  -> Bearer [REDACTED]
-#   4. (^|[^A-Za-z0-9_])(AUTH_TOKEN|PII_HASH_KEY|PII_ENCRYPT_KEY|
-#      GW_METRICS_REMOTE_WRITE_TOKEN)=<value>
-#                                     -> KEY=[REDACTED]
-#
-# Rule (4) intentionally matches mid-line — slog log entries embed the
-# pattern as `... msg=AUTH_TOKEN=...`. The leading negative-char-class
-# guards against false-matching `MY_AUTH_TOKEN=foo`.
-#
-# Header rules run BEFORE the Bearer rule so `Authorization: Bearer foo`
-# collapses to `Authorization: [REDACTED]` (no leftover "Bearer" token).
-
-# Invoke-RedactStream — pipeline filter. Reads one line per pipeline element
-# (the canonical Get-Content invocation streams line-by-line), applies the
-# four log-scrub rules, emits the redacted line. Idempotent for the headers.
+# Invoke-RedactStream buffers the bounded support artifact, sends it to the
+# Gateway's hidden redact-support utility once, and emits output only after the
+# classifier exits successfully. Callers publish from their own temporary file,
+# so a missing or failed classifier cannot expose a partially redacted artifact.
 function Invoke-RedactStream {
     [CmdletBinding()]
     param(
@@ -36,15 +19,46 @@ function Invoke-RedactStream {
         [AllowEmptyString()]
         [string]$Line
     )
+    begin {
+        $records = New-Object System.Collections.Generic.List[string]
+    }
     process {
-        if ($null -eq $Line) { return }
-        $out = $Line
-        $out = $out -replace '(Authorization:\s*).*', '$1[REDACTED]'
-        # (?i) inline regex flag makes the x-api-key match case-insensitive.
-        $out = $out -replace '(?i)(x-api-key:\s*).*', '$1[REDACTED]'
-        $out = $out -replace 'Bearer [A-Za-z0-9._\-]+', 'Bearer [REDACTED]'
-        $out = $out -replace '(^|[^A-Za-z0-9_])(AUTH_TOKEN|PII_HASH_KEY|PII_ENCRYPT_KEY|GW_METRICS_REMOTE_WRITE_TOKEN)=\S+', '$1$2=[REDACTED]'
-        $out
+        if ($null -ne $Line) { $records.Add($Line) }
+    }
+    end {
+        $redactor = if ($env:GW_SUPPORT_REDACTOR_BIN) { $env:GW_SUPPORT_REDACTOR_BIN } elseif ($env:GW_BIN) { $env:GW_BIN } else { $null }
+        if (-not $redactor -or -not (Test-Path -LiteralPath $redactor -PathType Leaf)) {
+            throw 'support redactor unavailable'
+        }
+        $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+        $startInfo.FileName = $redactor
+        $startInfo.Arguments = 'redact-support'
+        $startInfo.UseShellExecute = $false
+        $startInfo.RedirectStandardInput = $true
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+        $startInfo.CreateNoWindow = $true
+        $process = New-Object System.Diagnostics.Process
+        $process.StartInfo = $startInfo
+        if (-not $process.Start()) { throw 'support redactor unavailable' }
+        $inputText = $records -join [Environment]::NewLine
+        $process.StandardInput.Write($inputText)
+        $process.StandardInput.Close()
+        $output = $process.StandardOutput.ReadToEnd()
+        $null = $process.StandardError.ReadToEnd()
+        $process.WaitForExit()
+        if ($process.ExitCode -ne 0) { throw 'support redaction failed' }
+        if ($output.Length -gt 0) {
+            $outputLines = @($output -split "\r?\n")
+            $lineCount = $outputLines.Count
+            if ($lineCount -gt 0 -and $outputLines[$lineCount - 1] -eq '' -and
+                ($output.EndsWith("`n") -or $output.EndsWith("`r"))) {
+                $lineCount--
+            }
+            for ($lineIndex = 0; $lineIndex -lt $lineCount; $lineIndex++) {
+                $outputLines[$lineIndex]
+            }
+        }
     }
 }
 

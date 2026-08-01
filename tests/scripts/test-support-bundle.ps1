@@ -23,6 +23,12 @@ $script:FixtureRoot = $null
 $script:HttpProcess = $null
 $script:WindowsJunctions = New-Object System.Collections.Generic.List[string]
 $ExtractRoot = $null
+$SupportRedactorFixtureDir = Join-Path ([System.IO.Path]::GetTempPath()) ('gw-support-bundle-redactor-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $SupportRedactorFixtureDir -Force | Out-Null
+$SupportRedactorBinary = Join-Path $SupportRedactorFixtureDir $(if ($RunningOnWindows) { 'support-redactor.exe' } else { 'support-redactor' })
+& go build -o $SupportRedactorBinary ./cmd/otto-gateway
+if ($LASTEXITCODE -ne 0) { throw 'failed to build support redactor fixture' }
+$env:GW_SUPPORT_REDACTOR_BIN = $SupportRedactorBinary
 
 function Ok([string]$Label) {
     $script:Pass++
@@ -220,25 +226,21 @@ function Write-GzipText([string]$Path, [string]$Text) {
 }
 
 function Write-RandomFile([string]$Path, [int]$Bytes, [switch]$Gzip) {
-    $data = New-Object byte[] $Bytes
+    $sourceBytes = if ($Gzip) { $Bytes } else { [Math]::Floor($Bytes * 0.75) }
+    $data = New-Object byte[] $sourceBytes
     $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
     try { $rng.GetBytes($data) } finally { $rng.Dispose() }
-    $output = [System.IO.File]::Create($Path)
-    try {
-        if ($Gzip) {
-            $compressionStream = New-Object System.IO.Compression.GzipStream($output, [System.IO.Compression.CompressionMode]::Compress)
-            try { $compressionStream.Write($data, 0, $data.Length) } finally { $compressionStream.Dispose() }
-        } else {
-            $output.Write($data, 0, $data.Length)
-        }
-    } finally { $output.Dispose() }
+    $text = [regex]::Replace([Convert]::ToBase64String($data), '(.{76})', "`$1`n")
+    if ($Gzip) { Write-GzipText $Path $text }
+    else { [System.IO.File]::WriteAllText($Path, $text, (New-Object System.Text.UTF8Encoding($false))) }
 }
 
 function Write-GzipBase64Random([string]$Path, [int]$Bytes) {
     $data = New-Object byte[] $Bytes
     $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
     try { $rng.GetBytes($data) } finally { $rng.Dispose() }
-    Write-GzipText $Path ([Convert]::ToBase64String($data))
+    $text = [regex]::Replace([Convert]::ToBase64String($data), '(.{76})', "`$1`n")
+    Write-GzipText $Path $text
 }
 
 function Expand-SupportBundle([string]$Bundle, [string]$Destination) {
@@ -263,6 +265,7 @@ function Set-SupportEnvironment {
     $env:USERPROFILE = $HomeFixture
     $env:GW_HOME = $GatewayHome
     $env:GW_BIN = if ($RunningOnWindows) { 'cmd.exe' } else { '/usr/bin/true' }
+    $env:GW_SUPPORT_REDACTOR_BIN = $SupportRedactorBinary
     $env:GW_STATE_DIR = Join-Path $GatewayHome 'state'
     $env:GW_PID = Join-Path $GatewayHome 'state\gateway.pid'
     $env:GW_LOG = $GatewayLog
@@ -936,7 +939,7 @@ try {
             $plainWorkerExpected = @(
                 'gateway current safe',
                 'AUTH_TOKEN=[REDACTED]',
-                'Authorization: [REDACTED]',
+                '[REDACTED]',
                 'x-api-key: [REDACTED]',
                 'PII_HASH_KEY=[REDACTED]',
                 'PII_ENCRYPT_KEY=[REDACTED]',
@@ -2165,6 +2168,19 @@ server.serve_forever()
         Write-Host '  skip: unreadable-source warning fixture requires Unix chmod semantics'
     }
 
+    Write-Host '== shared classifier failure boundary =='
+    Set-SupportEnvironment $GatewayLog $GatewayBoot $KiroCwdFixture 'native/kiro-current.log' $CoworkerHome
+    $env:GW_SUPPORT_REDACTOR_BIN = Join-Path $script:FixtureRoot 'missing-support-redactor'
+    $redactionFailure = Invoke-SupportRun (Join-Path $ExtractRoot 'redaction-failure-out')
+    Assert-True ($redactionFailure.ExitCode -eq 0) "support continues when the shared classifier is unavailable: $(Format-SupportResult $redactionFailure)"
+    $redactionFailureRoot = Expand-SupportBundle $redactionFailure.Bundle (Join-Path $ExtractRoot 'redaction-failure-tree')
+    Assert-Absent (Join-Path $redactionFailureRoot 'logs\gateway\gateway.log') 'failed shared classifier publishes no Gateway artifact'
+    Assert-Absent (Join-Path $redactionFailureRoot 'logs\kiro\kiro-chat.log') 'failed shared classifier publishes no Kiro artifact'
+    Assert-Absent (Join-Path $redactionFailureRoot 'logs\co-worker\agent.log') 'failed shared classifier publishes no Co-worker artifact'
+    Assert-Contains (Join-Path $redactionFailureRoot 'MANIFEST.txt') 'Gateway current log redaction failed' 'manifest warns for Gateway classifier failure'
+    Assert-Contains (Join-Path $redactionFailureRoot 'MANIFEST.txt') 'Kiro current log redaction failed' 'manifest warns for Kiro classifier failure'
+    Assert-Contains (Join-Path $redactionFailureRoot 'MANIFEST.txt') 'Co-worker agent.log redaction failed' 'manifest warns for Co-worker classifier failure'
+
     Write-Host '== per-item support deadline enforcement =='
     foreach ($deadlineStage in @(
         'source-snapshot-chunk',
@@ -2551,7 +2567,7 @@ server.serve_forever()
             if (Test-Path -LiteralPath $junction) { & cmd.exe /d /c "rmdir `"$junction`"" | Out-Null }
         }
     }
-    foreach ($path in @($script:FixtureRoot, $ExtractRoot)) {
+    foreach ($path in @($script:FixtureRoot, $ExtractRoot, $SupportRedactorFixtureDir)) {
         if ($path -and (Test-Path -LiteralPath $path)) { Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue }
     }
 }

@@ -25,10 +25,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -40,6 +42,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/DeRuina/timberjack"
 	"github.com/oklog/ulid/v2"
@@ -71,6 +74,52 @@ import (
 // stall startup forever (threat T-02-36). 30s is generous — typical
 // warmup is <1s.
 const warmupDeadline = 30 * time.Second
+
+const (
+	redactSupportMaxRecord = 1 << 20
+	redactSupportMaxInput  = 16 << 20
+)
+
+func runUtility(args []string, in io.Reader, out io.Writer) (bool, error) {
+	if len(args) == 0 || args[0] != "redact-support" {
+		return false, nil
+	}
+	if len(args) != 1 {
+		return true, errors.New("redact-support accepts no arguments")
+	}
+
+	input, err := io.ReadAll(io.LimitReader(in, redactSupportMaxInput+1))
+	if err != nil {
+		return true, errors.New("read support record")
+	}
+	if len(input) > redactSupportMaxInput {
+		return true, errors.New("support input exceeds limit")
+	}
+	if !utf8.Valid(input) {
+		return true, errors.New("support input is not valid UTF-8")
+	}
+
+	classifier := privacy.NewSecretClassifier()
+	var redacted bytes.Buffer
+	for len(input) > 0 {
+		recordEnd := bytes.IndexByte(input, '\n')
+		if recordEnd < 0 {
+			recordEnd = len(input)
+		} else {
+			recordEnd++
+		}
+		if recordEnd > redactSupportMaxRecord {
+			return true, errors.New("support record exceeds limit")
+		}
+		record := string(input[:recordEnd])
+		redacted.WriteString(classifier.Redact("", record))
+		input = input[recordEnd:]
+	}
+	if _, err := io.Copy(out, &redacted); err != nil {
+		return true, errors.New("write redacted support record")
+	}
+	return true, nil
+}
 
 // prepareKiroLaunch materializes the embedded acp_proxy agent only for the
 // gateway-owned default workspace, then records the exact subprocess launch
@@ -119,6 +168,13 @@ func kiroProcessEnv(cfg config.Config) []string {
 }
 
 func main() {
+	if handled, err := runUtility(os.Args[1:], os.Stdin, os.Stdout); handled {
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "redact-support: input rejected")
+			os.Exit(1)
+		}
+		return
+	}
 	// Install the SIGINT/SIGTERM handler at the very top of main so the
 	// boot window (config load, logger build, pool.Warmup) is covered.
 	// Without this, Ctrl-C during pool.Warmup terminates the process via
@@ -302,7 +358,8 @@ func newAppWithRegistryLoader(ctx context.Context, cfg config.Config, logger *sl
 	// (slice 5 Task 4) elides the duplicate row.
 
 	var privacyMetrics atomic.Pointer[metrics.Metrics]
-	privacyService, err := buildPrivacyService(cfg, privacy.Observers{
+	secretClassifier := privacy.NewSecretClassifier()
+	privacyService, err := buildPrivacyService(cfg, secretClassifier, privacy.Observers{
 		Request: func(profile privacy.Profile, surface, workload, result string) {
 			if recorder := privacyMetrics.Load(); recorder != nil {
 				recorder.RecordPrivacyRequest(string(profile), surface, workload, result)
@@ -1041,6 +1098,7 @@ func newAppWithRegistryLoader(ctx context.Context, cfg config.Config, logger *sl
 		PIIHashKeySet:       cfg.PIIHashKey != "",
 		PIIEncryptKeySet:    cfg.PIIEncryptKey != "",
 	})
+	adminHandler = admin.WithSecretRedactor(adminHandler, secretClassifier)
 
 	// Boot log surfaces the resolved surface set so operators see
 	// what's actually mounted (closes a Phase 2 → Phase 3.1 ops gap).
@@ -1495,7 +1553,7 @@ func filterRecognizers(recognizers []pii.Recognizer, entities []string) []pii.Re
 	return out
 }
 
-func buildPrivacyService(cfg config.Config, observers privacy.Observers) (*privacy.Service, error) {
+func buildPrivacyService(cfg config.Config, secretClassifier *privacy.SecretClassifier, observers privacy.Observers) (*privacy.Service, error) {
 	profiles := make([]privacy.Profile, len(cfg.PrivacyRequestProfiles))
 	for index, profile := range cfg.PrivacyRequestProfiles {
 		profiles[index] = privacy.Profile(profile)
@@ -1546,7 +1604,7 @@ func buildPrivacyService(cfg config.Config, observers privacy.Observers) (*priva
 		Recognizers:        recognizerNames,
 		NEREnabled:         cfg.PIINEREnabled,
 		Classifier:         pii.NewPIIClassifier(activeRecognizers, cfg.PIIEnabledEntities, cfg.PIINEREnabled),
-		SecretClassifier:   privacy.NewSecretClassifier(),
+		SecretClassifier:   secretClassifier,
 		TriageEnabled:      cfg.PrivacyTriageEnabled,
 		Observers:          observers,
 	})

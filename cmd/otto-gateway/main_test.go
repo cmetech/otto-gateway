@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/go-cmp/cmp"
 
@@ -29,6 +30,53 @@ import (
 	"otto-gateway/internal/registry"
 	"otto-gateway/internal/testutil"
 )
+
+func TestRedactSupportUsesSharedSecretClassifierBeforeStartup(t *testing.T) {
+	const input = "Authorization: Bearer bearer-secret-7788\nclient_secret=client-secret-8899\npostgres://dbuser:dbpass@db.internal/app\nghp_abcdefghijklmnopqrstuvwxyzABCDE12345\nmonkey=value\n"
+	const want = "[REDACTED]\nclient_secret=[REDACTED]\n[REDACTED]\n[REDACTED]\nmonkey=value\n"
+
+	var out bytes.Buffer
+	handled, err := runUtility([]string{"redact-support"}, strings.NewReader(input), &out)
+	if err != nil {
+		t.Fatalf("runUtility: %v", err)
+	}
+	if !handled {
+		t.Fatal("redact-support was not handled before normal startup")
+	}
+	if got := out.String(); got != want {
+		t.Fatalf("redact-support output:\n got: %q\nwant: %q", got, want)
+	}
+	for _, secret := range []string{"bearer-secret-7788", "client-secret-8899", "dbpass", "ghp_abcdefghijklmnopqrstuvwxyzABCDE12345"} {
+		if strings.Contains(out.String(), secret) {
+			t.Errorf("redact-support leaked %q", secret)
+		}
+	}
+}
+
+func TestRedactSupportRejectsInvalidOrUnboundedUTF8Records(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{name: "invalid UTF-8", input: string([]byte{0xff, '\n'})},
+		{name: "oversized record", input: strings.Repeat("a", 1<<20+1)},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			handled, err := runUtility([]string{"redact-support"}, strings.NewReader(tc.input), &out)
+			if !handled || err == nil {
+				t.Fatalf("runUtility=(%t,%v), want handled error", handled, err)
+			}
+			if out.Len() != 0 {
+				t.Fatalf("failure emitted partial artifact bytes: %q", out.String())
+			}
+			if !utf8.ValidString(err.Error()) || strings.Contains(err.Error(), tc.input) {
+				t.Fatalf("error disclosed input content: %q", err)
+			}
+		})
+	}
+}
 
 func strictPrivacyConfig() config.Config {
 	return config.Config{

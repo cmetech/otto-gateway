@@ -54,6 +54,57 @@ func redactCaptureFrames(in []CaptureFrame) []CaptureFrame {
 	return out
 }
 
+func redactCaptureFramesShared(in []CaptureFrame, redactor SecretRedactor) []CaptureFrame {
+	out := make([]CaptureFrame, len(in))
+	copy(out, in)
+	for i := range out {
+		out[i].Params = redactCapturedParamsShared(out[i].Params, redactor)
+	}
+	return out
+}
+
+func redactCapturedParamsShared(raw string, redactor SecretRedactor) string {
+	value, ok := decodeCaptureJSON(raw)
+	if !ok {
+		return redactor.Redact("", raw)
+	}
+	value = redactCaptureValueShared("", value, redactor, 0)
+	body, err := json.Marshal(value)
+	if err != nil {
+		return captureRedactionMarker
+	}
+	return string(body)
+}
+
+func redactCaptureValueShared(key string, value any, redactor SecretRedactor, depth int) any {
+	if depth >= captureRedactionMaxDepth {
+		switch value.(type) {
+		case map[string]any, []any, string:
+			return captureRedactionMarker
+		default:
+			return value
+		}
+	}
+	switch value := value.(type) {
+	case map[string]any:
+		result := make(map[string]any, len(value))
+		for childKey, childValue := range value {
+			result[childKey] = redactCaptureValueShared(childKey, childValue, redactor, depth+1)
+		}
+		return result
+	case []any:
+		result := make([]any, len(value))
+		for i, childValue := range value {
+			result[i] = redactCaptureValueShared("", childValue, redactor, depth+1)
+		}
+		return result
+	case string:
+		return redactor.Redact(key, value)
+	default:
+		return value
+	}
+}
+
 func redactCapturedParams(raw string) string {
 	// Decode before walking so redaction never runs across the serialized JSON
 	// syntax and cannot damage its quoting or structural delimiters.

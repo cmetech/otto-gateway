@@ -17,6 +17,12 @@ REPO_ROOT="$(cd -P "$(dirname "$0")/../.." >/dev/null 2>&1 && pwd)"
 # shellcheck source=../../scripts/lib/redact.sh
 source "$REPO_ROOT/scripts/lib/redact.sh"
 
+REDACTOR_DIR="$(mktemp -d "${TMPDIR:-/tmp}/gw-support-redactor-posix.XXXXXX")"
+trap 'rm -rf "$REDACTOR_DIR"' EXIT
+go build -o "$REDACTOR_DIR/gateway" ./cmd/otto-gateway
+GW_SUPPORT_REDACTOR_BIN="$REDACTOR_DIR/gateway"
+export GW_SUPPORT_REDACTOR_BIN
+
 PASS=0
 FAIL=0
 
@@ -83,7 +89,7 @@ assert_contains "$REDACTED" "AUTH_TOKEN=[REDACTED]" "AUTH_TOKEN= line rewritten"
 assert_contains "$REDACTED" "PII_HASH_KEY=[REDACTED]" "PII_HASH_KEY= line rewritten"
 assert_contains "$REDACTED" "PII_ENCRYPT_KEY=[REDACTED]" "PII_ENCRYPT_KEY= line rewritten"
 assert_contains "$REDACTED" "GW_METRICS_REMOTE_WRITE_TOKEN=[REDACTED]" "remote-write token assignment rewritten"
-assert_contains "$REDACTED" "Authorization: [REDACTED]" "Authorization header rewritten"
+assert_contains "$REDACTED" "[REDACTED]" "Authorization header rewritten as the authoritative whole span"
 assert_contains "$REDACTED" "x-api-key: [REDACTED]" "x-api-key (lower) rewritten"
 assert_contains "$REDACTED" "X-API-KEY: [REDACTED]" "X-API-KEY (upper) rewritten"
 assert_contains "$REDACTED" "hello world" "control line preserved"
@@ -101,6 +107,29 @@ assert_not_contains "$REDACTED" "BAZ" "X-API-KEY value absent"
 # Idempotency: re-redacting must be a no-op.
 REDACTED2=$(printf '%s' "$REDACTED" | redact_stream)
 assert_eq "$REDACTED" "$REDACTED2" "redact_stream is idempotent"
+
+echo "== shared classifier corpus =="
+SHARED_CORPUS=$(printf '%s\n' \
+    'Authorization: Bearer bearer-secret-7788' \
+    'client_secret=client-secret-8899' \
+    'postgres://dbuser:dbpass@db.internal/app' \
+    'ghp_abcdefghijklmnopqrstuvwxyzABCDE12345' \
+    'monkey=value')
+SHARED_WANT=$(printf '%s\n' \
+    '[REDACTED]' \
+    'client_secret=[REDACTED]' \
+    '[REDACTED]' \
+    '[REDACTED]' \
+    'monkey=value')
+assert_eq "$SHARED_WANT" "$(printf '%s' "$SHARED_CORPUS" | redact_stream)" "POSIX support uses the shared Go classifier corpus"
+
+GW_SUPPORT_REDACTOR_BIN=/usr/bin/false
+if failed_output="$(printf 'client_secret=must-not-publish' | redact_stream)"; then
+    fail_with "redactor failure returned success"
+else
+    assert_eq "" "$failed_output" "redactor failure emits no partial artifact"
+fi
+GW_SUPPORT_REDACTOR_BIN="$REDACTOR_DIR/gateway"
 
 echo "== mask_env_value =="
 

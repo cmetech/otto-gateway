@@ -3,51 +3,24 @@
 # bundle subcommand. Sourced (not executed); remains compatible with Bash 3.2.
 #
 # Surface (per docs/superpowers/specs/2026-06-08-support-bundle-design.md):
-#   - redact_stream            stdin -> stdout filter applying log-scrub rules
+#   - redact_stream            stdin -> stdout via Gateway's secret classifier
 #   - mask_env_value VALUE     echo "<first4>…(<N> chars)"  (empty in -> empty out)
 #   - is_secret_key KEY        returns 0 if KEY names a secret env var
 #
-# Rules MUST be byte-equivalent with scripts/lib/redact.ps1 so behavior does
-# not drift between OS wrappers.
-#
-# Log scrub regexes (applied in order):
-#   1. Authorization:<space>.*      -> Authorization: [REDACTED]
-#   2. x-api-key:<space>.*           -> x-api-key: [REDACTED]  (case-insensitive)
-#   3. Bearer <hex/url-safe-base64>  -> Bearer [REDACTED]
-#   4. (^|[^A-Za-z0-9_])(AUTH_TOKEN|PII_HASH_KEY|PII_ENCRYPT_KEY|
-#      GW_METRICS_REMOTE_WRITE_TOKEN)=<value>
-#                                    -> \1KEY=[REDACTED]
-#
-# Rule (4) intentionally matches the secret-key= form ANYWHERE on the line
-# (not just `^`) — slog log entries embed it mid-line as
-# `... msg=AUTH_TOKEN=...`. The leading negative-char-class guards against
-# matching `MY_AUTH_TOKEN=foo` from a `_AUTH_TOKEN`-suffixed unrelated key.
-# Value capture is `\S+` (non-space run) so the next field on the line
-# survives. The spec text uses `^` but the integration test (and the spec's
-# intent — "lines matching ... -> [REDACTED]") expects the broader match
-# to cover real log entries.
-#
-# Header rules run BEFORE the Bearer rule so that `Authorization: Bearer foo`
-# becomes `Authorization: [REDACTED]` (the entire credential, not just the
-# token after "Bearer"). The header rules consume the rest of the line, so
-# subsequent rules can't fire on a header that's already been collapsed.
-#
-# Rule (4) is implemented via an explicit character-class pattern instead of
-# the GNU-only `I` (case-insensitive) sed flag, because scripts/gw is
-# expected to remain BSD-sed-compatible (macOS ships BSD sed). See line ~841
-# of scripts/gw for the prior precedent.
-#
-# `sed -E` (POSIX ERE) is supported by both BSD and GNU sed.
-
-# redact_stream — apply the four log-scrub rules to stdin, write to stdout.
-# Idempotent: re-running over an already-redacted stream is a no-op for the
-# headers (the placeholder "[REDACTED]" lacks the trigger chars).
+# redact_stream delegates all recognition to the hidden Go utility. Output is
+# staged until the subprocess exits successfully so callers cannot publish a
+# partially redacted artifact.
 redact_stream() {
-    sed -E \
-        -e 's/(Authorization:[[:space:]]*).*/\1[REDACTED]/g' \
-        -e 's/([Xx]-[Aa][Pp][Ii]-[Kk][Ee][Yy]:[[:space:]]*).*/\1[REDACTED]/g' \
-        -e 's/Bearer [A-Za-z0-9._-]+/Bearer [REDACTED]/g' \
-        -e 's/(^|[^A-Za-z0-9_])(AUTH_TOKEN|PII_HASH_KEY|PII_ENCRYPT_KEY|GW_METRICS_REMOTE_WRITE_TOKEN)=[^[:space:]]+/\1\2=[REDACTED]/g'
+    local redactor="${GW_SUPPORT_REDACTOR_BIN:-${GW_BIN:-}}" output
+    [[ -n "$redactor" && -x "$redactor" ]] || return 1
+    output="$(mktemp "${TMPDIR:-/tmp}/gw-support-redacted.XXXXXX")"
+    if "$redactor" redact-support >"$output"; then
+        cat "$output"
+        rm -f "$output"
+        return 0
+    fi
+    rm -f "$output"
+    return 1
 }
 
 # mask_env_value VALUE — echo "<first 4 chars>…(<N> chars)". The literal

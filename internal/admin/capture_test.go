@@ -11,7 +11,41 @@ import (
 	"time"
 
 	"otto-gateway/internal/admin"
+	"otto-gateway/internal/privacy"
 )
+
+func TestSharedSecretRedactorMatchesSupportUtilityCorpus(t *testing.T) {
+	const input = "Authorization: Bearer bearer-secret-7788\nclient_secret=client-secret-8899\npostgres://dbuser:dbpass@db.internal/app\nghp_abcdefghijklmnopqrstuvwxyzABCDE12345\nmonkey=value\n"
+	const want = "[REDACTED]\nclient_secret=[REDACTED]\n[REDACTED]\n[REDACTED]\nmonkey=value\n"
+	params, err := json.Marshal(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := &fakeCaptureSource{enabled: true, size: 1, frames: []admin.CaptureFrame{{Seq: 1, Params: string(params)}}}
+	h := admin.WithSecretRedactor(admin.Handler(admin.Deps{AcpCapture: src}), privacy.NewSecretClassifier())
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/acp-capture?support=redacted", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Frames []admin.CaptureFrame `json:"frames"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Frames) != 1 {
+		t.Fatalf("frames=%d", len(body.Frames))
+	}
+	var got string
+	if err := json.Unmarshal([]byte(body.Frames[0].Params), &got); err != nil {
+		t.Fatalf("params are not a JSON string: %v", err)
+	}
+	if got != want {
+		t.Fatalf("capture redaction:\n got: %q\nwant: %q", got, want)
+	}
+}
 
 type fakeCaptureSource struct {
 	frames    []admin.CaptureFrame

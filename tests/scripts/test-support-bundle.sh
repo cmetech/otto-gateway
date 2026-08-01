@@ -138,6 +138,9 @@ EXTRACT_DIR=$(mktemp -d)
 # dedicated cases below introduce the only symlink ancestors.
 FAKE_ROOT=$(cd -P "$FAKE_ROOT" && pwd)
 EXTRACT_DIR=$(cd -P "$EXTRACT_DIR" && pwd)
+SUPPORT_REDACTOR_BIN="$FAKE_ROOT/support-redactor"
+go build -o "$SUPPORT_REDACTOR_BIN" ./cmd/otto-gateway
+TEST_SUPPORT_REDACTOR_BIN="$SUPPORT_REDACTOR_BIN"
 GW_HOME_FIXTURE="$FAKE_ROOT/gateway-home"
 KIRO_CWD_FIXTURE="$FAKE_ROOT/kiro-cwd"
 COWORKER_HOME="$FAKE_ROOT/co-worker-home"
@@ -163,7 +166,7 @@ printf '%s\n' 'gateway trace safe' > "$GW_HOME_FIXTURE/logs/gateway-chat-trace.l
 
 # A large compressed Gateway rotation keeps the size-cap fixture meaningful;
 # support must snapshot, decompress, redact, and recompress it.
-dd if=/dev/urandom bs=1024 count=1536 2>/dev/null | base64 | gzip > "$GW_HOME_FIXTURE/logs/gateway-20200101.log.gz"
+dd if=/dev/urandom bs=1024 count=1536 2>/dev/null | base64 | fold -w 76 | gzip > "$GW_HOME_FIXTURE/logs/gateway-20200101.log.gz"
 touch -t 202001010000 "$GW_HOME_FIXTURE/logs/gateway-20200101.log.gz"
 printf '%s\n' \
     'gateway compressed safe' \
@@ -178,7 +181,7 @@ cat > "$KIRO_CWD_FIXTURE/native/kiro-current.log" <<EOF
 kiro current safe
 AUTH_TOKEN=$SECRET_TOKEN_LITERAL
 EOF
-dd if=/dev/urandom bs=1024 count=1536 2>/dev/null | base64 > "$KIRO_CWD_FIXTURE/native/kiro-current.log.1"
+dd if=/dev/urandom bs=1024 count=1536 2>/dev/null | base64 | fold -w 76 > "$KIRO_CWD_FIXTURE/native/kiro-current.log.1"
 printf '%s\n' 'kiro newest rotation safe' > "$KIRO_CWD_FIXTURE/native/kiro-current.log.2"
 printf '%s\n' "$SUFFIX_DECOY_SECRET_LITERAL" > "$KIRO_CWD_FIXTURE/native/kiro-current.log.backup.99"
 printf '%s\n' 'compressed kiro must not be copied' | gzip > "$KIRO_CWD_FIXTURE/native/kiro-current.log.3.gz"
@@ -193,7 +196,7 @@ cat >> "$COWORKER_HOME/logs/agent.log" <<EOF
 AUTH_TOKEN=$SECRET_TOKEN_LITERAL
 GW_METRICS_REMOTE_WRITE_TOKEN=$SECRET_REMOTE_LITERAL
 EOF
-dd if=/dev/urandom bs=1024 count=1536 2>/dev/null | base64 > "$COWORKER_HOME/logs/agent.log.1"
+dd if=/dev/urandom bs=1024 count=1536 2>/dev/null | base64 | fold -w 76 > "$COWORKER_HOME/logs/agent.log.1"
 printf '%s\n' 'co-worker newest rotation safe' > "$COWORKER_HOME/logs/errors.log.2"
 printf '%s\n' "$SUFFIX_DECOY_SECRET_LITERAL" > "$COWORKER_HOME/logs/agent.log.private.99"
 printf '%s\n' 'compressed co-worker must not be copied' | gzip > "$COWORKER_HOME/logs/errors.log.3.gz"
@@ -347,6 +350,7 @@ run_support() {
         GW_INSTALL_DIR="$FAKE_ROOT" \
         GW_HOME="$GW_HOME_FIXTURE" \
         GW_BIN=/bin/true \
+        GW_SUPPORT_REDACTOR_BIN="$TEST_SUPPORT_REDACTOR_BIN" \
         GW_STATE_DIR="$GW_HOME_FIXTURE/state" \
         GW_PID="$GW_HOME_FIXTURE/state/gateway.pid" \
         GW_LOG="$TEST_GW_LOG" \
@@ -548,7 +552,7 @@ mkdir -p "$OVERHEAD_GATEWAY" "$OVERHEAD_KIRO"
 printf '%s\n' 'overhead current Gateway' > "$OVERHEAD_GATEWAY/gateway.log"
 printf '%s\n' 'overhead boot Gateway' > "$OVERHEAD_GATEWAY/gateway-boot.log"
 printf '%s\n' 'overhead current Kiro' > "$OVERHEAD_KIRO/kiro.log"
-dd if=/dev/urandom bs=1024 count=1030 2>/dev/null | base64 | gzip > "$OVERHEAD_GATEWAY/gateway-overhead.log.gz"
+dd if=/dev/urandom bs=1024 count=1030 2>/dev/null | base64 | fold -w 76 | gzip > "$OVERHEAD_GATEWAY/gateway-overhead.log.gz"
 touch -t 201901010000 "$OVERHEAD_GATEWAY/gateway-overhead.log.gz"
 for rotation in $(seq 100 180); do
     printf 'manifest row %s\n' "$rotation" > "$OVERHEAD_KIRO/kiro.log.$rotation"
@@ -742,14 +746,7 @@ assert_contains "$UNREADABLE_ROOT/MANIFEST.txt" 'Kiro current log unreadable' "m
 assert_contains "$UNREADABLE_ROOT/MANIFEST.txt" 'Co-worker agent.log unreadable' "manifest warns for unreadable Co-worker source"
 
 chmod 600 "$FAILURE_ROOT/gateway/gateway.log" "$FAILURE_ROOT/kiro/kiro.log" "$FAILURE_ROOT/co-worker/logs/agent.log"
-FAIL_BIN="$FAKE_ROOT/failing-redactor-bin"
-mkdir -p "$FAIL_BIN"
-cat > "$FAIL_BIN/sed" <<'EOF'
-#!/bin/sh
-exit 9
-EOF
-chmod +x "$FAIL_BIN/sed"
-TEST_PATH="$FAIL_BIN:$PATH"
+TEST_SUPPORT_REDACTOR_BIN=/usr/bin/false
 REDACTION_FAIL_OUT="$EXTRACT_DIR/redaction-fail-out"
 if run_support fallback "$REDACTION_FAIL_OUT" 50 "$EXTRACT_DIR/redaction-fail.stdout" "$EXTRACT_DIR/redaction-fail.stderr"; then
     ok "support continues when log redaction fails"
@@ -761,7 +758,11 @@ REDACTION_FAIL_ROOT=$(extract_bundle "$REDACTION_FAIL_BUNDLE" "$EXTRACT_DIR/reda
 assert_contains "$REDACTION_FAIL_ROOT/MANIFEST.txt" 'Gateway current log redaction failed' "manifest warns for Gateway redaction failure"
 assert_contains "$REDACTION_FAIL_ROOT/MANIFEST.txt" 'Kiro current log redaction failed' "manifest warns for Kiro redaction failure"
 assert_contains "$REDACTION_FAIL_ROOT/MANIFEST.txt" 'Co-worker agent.log redaction failed' "manifest warns for Co-worker redaction failure"
+assert_absent "$REDACTION_FAIL_ROOT/logs/gateway/gateway.log" "failed shared classifier publishes no Gateway artifact"
+assert_absent "$REDACTION_FAIL_ROOT/logs/kiro/kiro-chat.log" "failed shared classifier publishes no Kiro artifact"
+assert_absent "$REDACTION_FAIL_ROOT/logs/co-worker/agent.log" "failed shared classifier publishes no Co-worker artifact"
 reset_support_inputs
+TEST_SUPPORT_REDACTOR_BIN="$SUPPORT_REDACTOR_BIN"
 
 echo "== unavailable safe-open boundary =="
 NO_SAFE_OPEN_ROOT="$FAKE_ROOT/no-safe-open"

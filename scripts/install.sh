@@ -259,9 +259,11 @@ PLIST
             # the bundle still functions for users who manually grant
             # Gatekeeper consent, but flag it so the operator knows.
             if command -v codesign >/dev/null 2>&1; then
-                codesign --sign - --force --deep --options runtime "$app_dir" 2>/dev/null \
-                    && ok "signed Gateway Tray.app (adhoc)" \
-                    || warn "codesign on Gateway Tray.app failed — first-launch may need manual Gatekeeper approval"
+                if codesign --sign - --force --deep --options runtime "$app_dir" 2>/dev/null; then
+                    ok "signed Gateway Tray.app (adhoc)"
+                else
+                    warn "codesign on Gateway Tray.app failed — first-launch may need manual Gatekeeper approval"
+                fi
             else
                 warn "codesign not found — skipping ad-hoc sign of Gateway Tray.app"
             fi
@@ -278,7 +280,8 @@ PLIST
 
     preserved_env=0
     if [ -f "$GW_HOME/.env" ]; then
-        info "Existing config found — preserving it (skipping init)."
+        info "Existing config found — refreshing generated defaults and preserving overrides/secrets."
+        "$GW_INSTALL_DIR/scripts/gw" init --force --non-interactive
         preserved_env=1
     else
         info "Writing default config (no auth, 127.0.0.1:18080, all hooks, PII redaction=encrypt, NER=on, chat-trace off) ..."

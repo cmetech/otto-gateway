@@ -9,6 +9,12 @@ $ErrorActionPreference = 'Stop'
 $RepoRoot = Resolve-Path (Join-Path $PSScriptRoot '..\..')
 . (Join-Path $RepoRoot 'scripts\lib\redact.ps1')
 
+$RedactorDir = Join-Path ([System.IO.Path]::GetTempPath()) ('gw-support-redactor-pwsh-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $RedactorDir -Force | Out-Null
+$env:GW_SUPPORT_REDACTOR_BIN = Join-Path $RedactorDir 'gateway'
+& go build -o $env:GW_SUPPORT_REDACTOR_BIN ./cmd/otto-gateway
+if ($LASTEXITCODE -ne 0) { throw 'failed to build support redactor fixture' }
+
 $script:Pass = 0
 $script:Fail = 0
 
@@ -76,7 +82,7 @@ Assert-Contains $redacted 'AUTH_TOKEN=[REDACTED]' 'AUTH_TOKEN= line rewritten'
 Assert-Contains $redacted 'PII_HASH_KEY=[REDACTED]' 'PII_HASH_KEY= line rewritten'
 Assert-Contains $redacted 'PII_ENCRYPT_KEY=[REDACTED]' 'PII_ENCRYPT_KEY= line rewritten'
 Assert-Contains $redacted 'GW_METRICS_REMOTE_WRITE_TOKEN=[REDACTED]' 'remote-write token assignment rewritten'
-Assert-Contains $redacted 'Authorization: [REDACTED]' 'Authorization header rewritten'
+Assert-Contains $redacted '[REDACTED]' 'Authorization header rewritten as the authoritative whole span'
 Assert-Contains $redacted 'x-api-key: [REDACTED]' 'x-api-key (lower) rewritten'
 Assert-Contains $redacted 'X-API-KEY: [REDACTED]' 'X-API-KEY (upper) rewritten'
 Assert-Contains $redacted 'hello world' 'control line preserved'
@@ -90,6 +96,26 @@ Assert-NotContains $redacted 'eyJabc.def-ghi_jkl' 'Bearer token secret absent'
 # Idempotency.
 $redacted2 = ($redacted -split "`n" | Invoke-RedactStream) -join "`n"
 Assert-Eq $redacted $redacted2 'Invoke-RedactStream is idempotent'
+
+Write-Host '== shared classifier corpus =='
+$sharedCorpus = @(
+    'Authorization: Bearer bearer-secret-7788',
+    'client_secret=client-secret-8899',
+    'postgres://dbuser:dbpass@db.internal/app',
+    'ghp_abcdefghijklmnopqrstuvwxyzABCDE12345',
+    'monkey=value'
+)
+$sharedWant = @('[REDACTED]','client_secret=[REDACTED]','[REDACTED]','[REDACTED]','monkey=value') -join "`n"
+Assert-Eq $sharedWant (($sharedCorpus | Invoke-RedactStream) -join "`n") 'PowerShell support uses the shared Go classifier corpus'
+
+$runningOnWindows = [System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT
+$env:GW_SUPPORT_REDACTOR_BIN = if ($runningOnWindows) { "$env:WINDIR\System32\cmd.exe" } else { '/usr/bin/false' }
+$failed = @()
+$failedClosed = $false
+try { $failed = @('client_secret=must-not-publish' | Invoke-RedactStream) } catch { $failedClosed = $true }
+Assert-True $failedClosed 'redactor failure is terminating'
+Assert-Eq '' ($failed -join '') 'redactor failure emits no partial artifact'
+$env:GW_SUPPORT_REDACTOR_BIN = Join-Path $RedactorDir 'gateway'
 
 Write-Host "== Mask-EnvValue =="
 
@@ -115,4 +141,5 @@ Write-Host "== SUMMARY =="
 Write-Host "passed: $script:Pass"
 Write-Host "failed: $script:Fail"
 if ($script:Fail -gt 0) { exit 1 }
+Remove-Item -LiteralPath $RedactorDir -Recurse -Force -ErrorAction SilentlyContinue
 exit 0

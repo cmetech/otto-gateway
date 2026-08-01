@@ -1,11 +1,27 @@
 package admin
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"mime"
 	"net/http"
 )
+
+type SecretRedactor interface {
+	Redact(key, value string) string
+}
+
+type secretRedactorContextKey struct{}
+
+// WithSecretRedactor injects the process-wide credential classifier without
+// making the admin package depend on privacy service internals.
+func WithSecretRedactor(next http.Handler, redactor SecretRedactor) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		ctx := context.WithValue(req.Context(), secretRedactorContextKey{}, redactor)
+		next.ServeHTTP(w, req.WithContext(ctx))
+	})
+}
 
 // acpCaptureResponse is the GET /admin/api/acp-capture body (also returned by
 // the POST after applying an action).
@@ -37,7 +53,11 @@ func (h *handler) acpCaptureHandler(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 	if req.Method == http.MethodGet && req.URL.Query().Get("support") == "redacted" {
-		resp.Frames = redactCaptureFrames(resp.Frames)
+		if redactor, ok := req.Context().Value(secretRedactorContextKey{}).(SecretRedactor); ok && redactor != nil {
+			resp.Frames = redactCaptureFramesShared(resp.Frames, redactor)
+		} else {
+			resp.Frames = redactCaptureFrames(resp.Frames)
+		}
 	}
 	writeJSONCapture(w, http.StatusOK, resp, h)
 }
