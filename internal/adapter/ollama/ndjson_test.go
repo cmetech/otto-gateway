@@ -272,6 +272,19 @@ func TestNDJSON_FlusherAssertionFails(t *testing.T) {
 	}
 }
 
+func TestOllamaPrivacy_ReceiptWriterPreservesFlusherCapability(t *testing.T) {
+	ctx := context.Background()
+	withoutFlusher := wrapPrivacyResponseWriter(newNonFlusherWriter(), ctx)
+	if _, ok := withoutFlusher.(http.Flusher); ok {
+		t.Fatal("privacy receipt writer invented http.Flusher capability")
+	}
+
+	withFlusher := wrapPrivacyResponseWriter(httptest.NewRecorder(), ctx)
+	if _, ok := withFlusher.(http.Flusher); !ok {
+		t.Fatal("privacy receipt writer dropped http.Flusher capability")
+	}
+}
+
 // TestNDJSON_WriteError_CancelsCtx: a writer that returns an error on Write
 // must cause cancelFn to be called and the error to propagate.
 func TestNDJSON_WriteError_CancelsCtx(t *testing.T) {

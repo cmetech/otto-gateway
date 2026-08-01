@@ -3,16 +3,20 @@ package ollama
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"otto-gateway/internal/canonical"
 	"otto-gateway/internal/engine"
+	"otto-gateway/internal/plugin"
 	"otto-gateway/internal/plugin/jsonformat"
+	"otto-gateway/internal/privacy"
 	"otto-gateway/internal/testutil"
 )
 
@@ -131,12 +135,280 @@ func doPost(t *testing.T, a *Adapter, path, body string) *httptest.ResponseRecor
 	return w
 }
 
+func doPostWithHeaders(t *testing.T, a *Adapter, path, body string, headers http.Header) *httptest.ResponseRecorder {
+	t.Helper()
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodPost, path, strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	for name, values := range headers {
+		for _, value := range values {
+			r.Header.Add(name, value)
+		}
+	}
+	w := httptest.NewRecorder()
+	a.ProtectedRouter().ServeHTTP(w, r)
+	return w
+}
+
+type privacyServiceEngine struct {
+	service *privacy.Service
+	resp    *canonical.ChatResponse
+	lastCtx context.Context
+}
+
+func (e *privacyServiceEngine) Collect(ctx context.Context, req *canonical.ChatRequest) (*canonical.ChatResponse, error) {
+	e.lastCtx = ctx
+	if _, err := e.service.Before(ctx, req); err != nil {
+		return nil, err
+	}
+	resp := *e.resp
+	resp.Message.Content = append([]canonical.ContentPart(nil), e.resp.Message.Content...)
+	if err := e.service.After(ctx, req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+func (e *privacyServiceEngine) Run(context.Context, *canonical.ChatRequest) (RunHandle, error) {
+	return nil, errors.New("unexpected streaming run")
+}
+
+func (e *privacyServiceEngine) RunPostHooks(context.Context, *canonical.ChatRequest, *canonical.ChatResponse) error {
+	return nil
+}
+
+func (e *privacyServiceEngine) CollectFromRun(context.Context, RunHandle, *canonical.ChatRequest) (*canonical.ChatResponse, error) {
+	return nil, errors.New("unexpected collect from run")
+}
+
+func newStrictPrivacyTestEngine(t *testing.T, responseText string) *privacyServiceEngine {
+	return newStrictPrivacyTestEngineWithClassifier(t, responseText, nil)
+}
+
+func newStrictPrivacyTestEngineWithClassifier(t *testing.T, responseText string, classifier privacy.Classifier) *privacyServiceEngine {
+	t.Helper()
+	service, err := privacy.NewService(privacy.Config{
+		DefaultProfile:     privacy.ProfileStrict,
+		RequestProfiles:    []privacy.Profile{privacy.ProfileStrict},
+		AliasKey:           []byte("ollama-task-nine-alias-key"),
+		SecretAction:       privacy.ActionReplace,
+		TechnicalAction:    privacy.ActionPseudonymize,
+		ScopeTTL:           time.Hour,
+		MaxScopes:          8,
+		MaxEntriesPerScope: 32,
+		MaxTotalEntries:    128,
+		PIIEnabled:         true,
+		PIIMode:            privacy.ActionReplace,
+		Classifier:         classifier,
+	})
+	if err != nil {
+		t.Fatalf("privacy.NewService: %v", err)
+	}
+	t.Cleanup(service.Close)
+	return &privacyServiceEngine{
+		service: service,
+		resp: &canonical.ChatResponse{
+			Model: "auto",
+			Message: canonical.Message{
+				Role:    canonical.RoleAssistant,
+				Content: []canonical.ContentPart{{Kind: canonical.ContentKindText, Text: responseText}},
+			},
+			StopReason: canonical.StopEndTurn,
+		},
+	}
+}
+
+type panickingOllamaPrivacyClassifier struct{}
+
+func (panickingOllamaPrivacyClassifier) Classify(_, _ string) []privacy.Finding {
+	panic("private-classifier-detail")
+}
+
+func decodePrivacyReceiptHeader(t *testing.T, value string) privacy.Receipt {
+	t.Helper()
+	payload, err := base64.RawURLEncoding.DecodeString(value)
+	if err != nil {
+		t.Fatalf("decode privacy receipt: %v", err)
+	}
+	var receipt privacy.Receipt
+	if err := json.Unmarshal(payload, &receipt); err != nil {
+		t.Fatalf("unmarshal privacy receipt: %v", err)
+	}
+	return receipt
+}
+
 func doGet(t *testing.T, a *Adapter, path string) *httptest.ResponseRecorder {
 	t.Helper()
 	r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, path, nil)
 	w := httptest.NewRecorder()
 	a.ProtectedRouter().ServeHTTP(w, r)
 	return w
+}
+
+func TestOllamaPrivacy_StampsBoundedMetadataBeforeEngineDispatch(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		body string
+	}{
+		{name: "chat", path: "/chat", body: `{"model":"auto","messages":[{"role":"user","content":"hi"}],"stream":false}`},
+		{name: "generate", path: "/generate", body: `{"model":"auto","prompt":"hi","stream":false}`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			eng := &fakeEngine{resp: &canonical.ChatResponse{
+				Message:    canonical.Message{Role: canonical.RoleAssistant},
+				StopReason: canonical.StopEndTurn,
+			}}
+			headers := http.Header{
+				"X-GW-Privacy-Profile": {"strict"},
+				"X-GW-Privacy-Scope":   {"run-7f29b4d4"},
+				"X-GW-Skill":           {strings.Repeat("w", 80)},
+			}
+			w := doPostWithHeaders(t, newTestAdapter(eng, nil), tc.path, tc.body, headers)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+			}
+			state, ok := privacy.StateFromContext(eng.lastCtx)
+			if !ok {
+				t.Fatal("engine context missing privacy request state")
+			}
+			meta := state.Metadata()
+			if meta.RequestedProfile != "strict" || meta.ScopeID != "run-7f29b4d4" || meta.Surface != "ollama" {
+				t.Fatalf("privacy metadata=%+v", meta)
+			}
+			if meta.Workload != strings.Repeat("w", 64) {
+				t.Fatalf("workload=%q, want capped 64-rune value", meta.Workload)
+			}
+			if got, _ := plugin.SurfaceFromContext(eng.lastCtx); got != "ollama" {
+				t.Fatalf("trusted plugin surface=%q, want ollama", got)
+			}
+		})
+	}
+}
+
+func TestOllamaPrivacy_NativeTypedErrorsDoNotExposeCauseOrDetail(t *testing.T) {
+	endpoints := []struct {
+		name string
+		path string
+		body string
+	}{
+		{name: "chat", path: "/chat", body: `{"model":"auto","messages":[{"role":"user","content":"hi"}],"stream":false}`},
+		{name: "generate", path: "/generate", body: `{"model":"auto","prompt":"hi","stream":false}`},
+	}
+	errorsToMap := []struct {
+		code   string
+		status int
+	}{
+		{code: privacy.CodeRequestInvalid, status: http.StatusBadRequest},
+		{code: privacy.CodeProfileUnavailable, status: http.StatusBadRequest},
+		{code: privacy.CodeScopeClosed, status: http.StatusConflict},
+		{code: privacy.CodeInputBlocked, status: http.StatusUnprocessableEntity},
+		{code: privacy.CodeOutputBlocked, status: http.StatusBadGateway},
+		{code: privacy.CodeCapacityExceeded, status: http.StatusServiceUnavailable},
+		{code: privacy.CodeInternalError, status: http.StatusServiceUnavailable},
+	}
+	for _, endpoint := range endpoints {
+		for _, tc := range errorsToMap {
+			t.Run(endpoint.name+"_"+tc.code, func(t *testing.T) {
+				eng := &fakeEngine{err: &privacy.Error{
+					Code: tc.code, Stage: "private-stage-detail", Cause: errors.New("protected-cause-canary"),
+				}}
+				w := doPost(t, newTestAdapter(eng, nil), endpoint.path, endpoint.body)
+				if w.Code != tc.status {
+					t.Fatalf("status=%d, want %d; body=%s", w.Code, tc.status, w.Body.String())
+				}
+				wantBody := `{"error":"` + tc.code + `"}` + "\n"
+				if got := w.Body.String(); got != wantBody {
+					t.Fatalf("body=%q, want exact native body %q", got, wantBody)
+				}
+				if strings.Contains(w.Body.String(), "protected-cause-canary") || strings.Contains(w.Body.String(), "private-stage-detail") {
+					t.Fatalf("privacy error leaked details: %s", w.Body.String())
+				}
+			})
+		}
+	}
+}
+
+func TestOllamaPrivacy_ReceiptPrecedesSuccessfulResponse(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		body string
+	}{
+		{name: "chat", path: "/chat", body: `{"model":"auto","messages":[{"role":"user","content":"hi"}],"stream":false}`},
+		{name: "generate", path: "/generate", body: `{"model":"auto","prompt":"hi","stream":false}`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			eng := newStrictPrivacyTestEngine(t, "safe response")
+			w := doPost(t, newTestAdapter(eng, nil), tc.path, tc.body)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+			}
+			receipt := decodePrivacyReceiptHeader(t, w.Header().Get("X-GW-Privacy-Receipt"))
+			if receipt.Profile != privacy.ProfileStrict || receipt.Coverage != "full" || receipt.Result != "pass" {
+				t.Fatalf("receipt=%+v", receipt)
+			}
+		})
+	}
+}
+
+func TestOllamaPrivacy_ReceiptPrecedesBlockedAndInternalErrors(t *testing.T) {
+	endpoints := []struct {
+		name string
+		path string
+		body string
+	}{
+		{name: "chat", path: "/chat", body: `{"model":"auto","messages":[{"role":"user","content":"hi"}],"stream":false}`},
+		{name: "generate", path: "/generate", body: `{"model":"auto","prompt":"hi","stream":false}`},
+	}
+	outcomes := []struct {
+		name       string
+		newEngine  func(*testing.T) *privacyServiceEngine
+		wantStatus int
+		wantCode   string
+		wantResult string
+	}{
+		{
+			name: "output_block",
+			newEngine: func(t *testing.T) *privacyServiceEngine {
+				return newStrictPrivacyTestEngine(t, "[SECRET:API_KEY_1]")
+			},
+			wantStatus: http.StatusBadGateway,
+			wantCode:   privacy.CodeOutputBlocked,
+			wantResult: "block",
+		},
+		{
+			name: "internal_error",
+			newEngine: func(t *testing.T) *privacyServiceEngine {
+				return newStrictPrivacyTestEngineWithClassifier(t, "safe response", panickingOllamaPrivacyClassifier{})
+			},
+			wantStatus: http.StatusServiceUnavailable,
+			wantCode:   privacy.CodeInternalError,
+			wantResult: "error",
+		},
+	}
+	for _, endpoint := range endpoints {
+		for _, outcome := range outcomes {
+			t.Run(endpoint.name+"_"+outcome.name, func(t *testing.T) {
+				w := doPost(t, newTestAdapter(outcome.newEngine(t), nil), endpoint.path, endpoint.body)
+				if w.Code != outcome.wantStatus {
+					t.Fatalf("status=%d, want %d; body=%s", w.Code, outcome.wantStatus, w.Body.String())
+				}
+				wantBody := `{"error":"` + outcome.wantCode + `"}` + "\n"
+				if got := w.Body.String(); got != wantBody {
+					t.Fatalf("body=%q, want %q", got, wantBody)
+				}
+				receipt := decodePrivacyReceiptHeader(t, w.Header().Get("X-GW-Privacy-Receipt"))
+				if receipt.Profile != privacy.ProfileStrict || receipt.Result != outcome.wantResult {
+					t.Fatalf("receipt=%+v", receipt)
+				}
+				if strings.Contains(w.Body.String(), "private-classifier-detail") {
+					t.Fatalf("response leaked internal detail: %s", w.Body.String())
+				}
+			})
+		}
+	}
 }
 
 // ----------------------------------------------------------------------------

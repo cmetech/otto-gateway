@@ -15,6 +15,7 @@ import (
 	"otto-gateway/internal/canonical"
 	"otto-gateway/internal/engine"
 	"otto-gateway/internal/plugin"
+	"otto-gateway/internal/privacy"
 )
 
 // chatTraceFakeEngine drives a real ChatTraceHook chain on the
@@ -101,44 +102,19 @@ func (e *chatTraceFakeEngine) CollectFromRun(_ context.Context, _ RunHandle, _ *
 // ChatTraceHook buffer with matching request_id + non-empty content[].
 func TestChatTrace_E2E_OllamaStreaming(t *testing.T) {
 	var buf bytes.Buffer
-	hook := &plugin.ChatTraceHook{Writer: &buf, Enabled: true}
+	service := newStreamingPrivacyService(t, privacy.ProfileStandard, nil)
+	hook := &plugin.ChatTraceHook{Writer: &buf, Enabled: true, Privacy: service}
 	eng := &chatTraceFakeEngine{
 		chunks: []canonical.Chunk{
 			{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "stream"}},
 		},
 		final:     &canonical.FinalResult{StopReason: canonical.StopEndTurn},
-		preHooks:  []engine.PreHook{hook, &plugin.RequestIDHook{}},
-		postHooks: []engine.PostHook{hook},
+		preHooks:  []engine.PreHook{hook, &plugin.RequestIDHook{}, service},
+		postHooks: []engine.PostHook{service, hook},
 	}
-	req := &canonical.ChatRequest{
-		Model: "auto",
-		Messages: []canonical.Message{
-			{Role: canonical.RoleUser, Content: []canonical.ContentPart{
-				{Kind: canonical.ContentKindText, Text: "hi"},
-			}},
-		},
-	}
-	ctx := plugin.WithRequestID(context.Background(), plugin.NewRequestID())
-	ctx = plugin.WithSurface(ctx, "ollama")
-
-	// Drive Run (fires Pre) + emitter + RunPostHooks (fires Post).
-	run, err := eng.Run(ctx, req)
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	_, _, _ = runNDJSONEmitterDirect(t, ctx, run, true, req)
-	// Manually invoke RunPostHooks the way handlers.go does after
-	// runNDJSONEmitter returns.
-	resp := &canonical.ChatResponse{
-		Model: req.Model,
-		Message: canonical.Message{
-			Role:    canonical.RoleAssistant,
-			Content: []canonical.ContentPart{{Kind: canonical.ContentKindText, Text: "stream"}},
-		},
-		StopReason: canonical.StopEndTurn,
-	}
-	if err := eng.RunPostHooks(ctx, req, resp); err != nil {
-		t.Fatalf("RunPostHooks: %v", err)
+	w := doPost(t, newTestAdapter(eng, nil), "/chat", `{"model":"auto","messages":[{"role":"user","content":"hi"}],"stream":true}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
 
 	records := parseOllamaNDJSONRecords(t, buf.Bytes())

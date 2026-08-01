@@ -16,6 +16,7 @@ import (
 	"otto-gateway/internal/plugin"
 	"otto-gateway/internal/plugin/compress"
 	"otto-gateway/internal/plugin/pii"
+	"otto-gateway/internal/privacy"
 	"otto-gateway/internal/session"
 )
 
@@ -57,6 +58,52 @@ func stampPluginCtx(ctx context.Context, r *http.Request) context.Context {
 		ctx = compress.WithHeaderDirective(ctx, on)
 	}
 	return ctx
+}
+
+type privacyReceiptWriter struct {
+	http.ResponseWriter
+	ctx context.Context
+}
+
+func (w *privacyReceiptWriter) WriteHeader(status int) {
+	writePrivacyReceipt(w.ResponseWriter, w.ctx)
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *privacyReceiptWriter) Write(payload []byte) (int, error) {
+	writePrivacyReceipt(w.ResponseWriter, w.ctx)
+	return w.ResponseWriter.Write(payload)
+}
+
+type privacyReceiptFlusher struct {
+	*privacyReceiptWriter
+	flusher http.Flusher
+}
+
+func (w *privacyReceiptFlusher) Flush() {
+	writePrivacyReceipt(w.ResponseWriter, w.ctx)
+	w.flusher.Flush()
+}
+
+func wrapPrivacyResponseWriter(w http.ResponseWriter, ctx context.Context) http.ResponseWriter {
+	wrapped := &privacyReceiptWriter{ResponseWriter: w, ctx: ctx}
+	if flusher, ok := w.(http.Flusher); ok {
+		return &privacyReceiptFlusher{privacyReceiptWriter: wrapped, flusher: flusher}
+	}
+	return wrapped
+}
+
+func writePrivacyError(w http.ResponseWriter, err error) bool {
+	status, code, ok := privacy.ErrorInfo(err)
+	if !ok {
+		return false
+	}
+	writeError(w, status, code)
+	return true
+}
+
+func writePrivacyReceipt(w http.ResponseWriter, ctx context.Context) {
+	privacy.SetReceiptHeader(w, ctx)
 }
 
 // stripFencesFromResponse applies engine.StripFences to the first
@@ -141,6 +188,8 @@ func (a *Adapter) handleChat(w http.ResponseWriter, r *http.Request) {
 	ctx = stampPluginCtx(ctx, r)
 	// Quick 260529-ll2 — surface stamp for ChatTraceHook correlation.
 	ctx = plugin.WithSurface(ctx, "ollama")
+	ctx, _ = privacy.StampHTTPContext(ctx, r.Header, "ollama")
+	w = wrapPrivacyResponseWriter(w, ctx)
 
 	// Plan 05-03 D-04..D-11: when X-Session-Id is present AND the registry
 	// + factory closure are wired, route through a per-request engine bound
@@ -177,6 +226,9 @@ func (a *Adapter) handleChat(w http.ResponseWriter, r *http.Request) {
 		resp, err := eng.Collect(ctx, req)
 		if err != nil {
 			observation.Outcome = classifyRequestError(err)
+			if writePrivacyError(w, err) {
+				return
+			}
 			// D-07 REL-POOL-01: pool exhaustion maps to 503 with Ollama
 			// surface-native error body {"error":"pool_exhausted: ..."}.
 			if errors.Is(err, canonical.ErrPoolExhausted) {
@@ -265,6 +317,9 @@ func (a *Adapter) handleChat(w http.ResponseWriter, r *http.Request) {
 	run, err := eng.Run(streamCtx, req)
 	if err != nil {
 		observation.Outcome = classifyRequestError(err)
+		if writePrivacyError(w, err) {
+			return
+		}
 		// D-07 REL-POOL-01: pool exhaustion maps to 503 with an Ollama
 		// surface-native error body {"error":"pool_exhausted: ..."}.
 		if errors.Is(err, canonical.ErrPoolExhausted) {
@@ -343,6 +398,9 @@ func (a *Adapter) handleChat(w http.ResponseWriter, r *http.Request) {
 		resp, cErr := eng.CollectFromRun(streamCtx, run, req)
 		if cErr != nil {
 			observation.Outcome = classifyRequestError(cErr)
+			if writePrivacyError(w, cErr) {
+				return
+			}
 			if errors.Is(cErr, canonical.ErrStreamIdleTimeout) {
 				a.cfg.Logger.Warn(
 					"stream.idle_timeout",
@@ -508,6 +566,8 @@ func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 	ctx = stampPluginCtx(ctx, r)
 	// Quick 260529-ll2 — surface stamp for ChatTraceHook correlation.
 	ctx = plugin.WithSurface(ctx, "ollama")
+	ctx, _ = privacy.StampHTTPContext(ctx, r.Header, "ollama")
+	w = wrapPrivacyResponseWriter(w, ctx)
 
 	// Plan 05-03: X-Session-Id branch (same shape as handleChat).
 	eng, entry, sErr := a.resolveEngine(r)
@@ -536,6 +596,9 @@ func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 		resp, err := eng.Collect(ctx, req)
 		if err != nil {
 			observation.Outcome = classifyRequestError(err)
+			if writePrivacyError(w, err) {
+				return
+			}
 			// D-07 REL-POOL-01: pool exhaustion maps to 503 with Ollama
 			// surface-native error body {"error":"pool_exhausted: ..."}.
 			if errors.Is(err, canonical.ErrPoolExhausted) {
@@ -588,6 +651,9 @@ func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 	run, err := eng.Run(streamCtx, req)
 	if err != nil {
 		observation.Outcome = classifyRequestError(err)
+		if writePrivacyError(w, err) {
+			return
+		}
 		// D-07 REL-POOL-01: pool exhaustion maps to 503 with an Ollama
 		// surface-native error body {"error":"pool_exhausted: ..."}.
 		if errors.Is(err, canonical.ErrPoolExhausted) {
@@ -659,6 +725,9 @@ func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 		resp, cErr := eng.CollectFromRun(streamCtx, run, req)
 		if cErr != nil {
 			observation.Outcome = classifyRequestError(cErr)
+			if writePrivacyError(w, cErr) {
+				return
+			}
 			if errors.Is(cErr, canonical.ErrStreamIdleTimeout) {
 				a.cfg.Logger.Warn(
 					"stream.idle_timeout",

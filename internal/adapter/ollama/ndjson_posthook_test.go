@@ -10,12 +10,14 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"otto-gateway/internal/canonical"
+	"otto-gateway/internal/privacy"
 )
 
 // nilLoggerJSON returns a slog logger writing JSON records into buf.
@@ -23,6 +25,318 @@ import (
 // PostHook errors.
 func nilLoggerJSON(buf *bytes.Buffer) *slog.Logger {
 	return slog.New(slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+}
+
+type privacyStreamingEngine struct {
+	service *privacy.Service
+	chunks  []canonical.Chunk
+	events  *[]string
+}
+
+func (e *privacyStreamingEngine) Collect(ctx context.Context, req *canonical.ChatRequest) (*canonical.ChatResponse, error) {
+	run, err := e.Run(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return e.CollectFromRun(ctx, run, req)
+}
+
+func (e *privacyStreamingEngine) Run(ctx context.Context, req *canonical.ChatRequest) (RunHandle, error) {
+	*e.events = append(*e.events, "before")
+	if _, err := e.service.Before(ctx, req); err != nil {
+		return nil, err
+	}
+	return newFakeRunHandle(e.chunks, &canonical.FinalResult{StopReason: canonical.StopEndTurn}, nil), nil
+}
+
+func (e *privacyStreamingEngine) CollectFromRun(ctx context.Context, run RunHandle, req *canonical.ChatRequest) (*canonical.ChatResponse, error) {
+	*e.events = append(*e.events, "collect")
+	var text strings.Builder
+	for chunk := range run.Stream().Chunks() {
+		if chunk.Kind == canonical.ChunkKindText && chunk.Text != nil {
+			text.WriteString(chunk.Text.Content)
+		}
+	}
+	final, err := run.Stream().Result()
+	if err != nil {
+		return nil, err
+	}
+	stop := canonical.StopUnknown
+	if final != nil {
+		stop = final.StopReason
+	}
+	resp := &canonical.ChatResponse{
+		Model: req.Model,
+		Message: canonical.Message{
+			Role:    canonical.RoleAssistant,
+			Content: []canonical.ContentPart{{Kind: canonical.ContentKindText, Text: text.String()}},
+		},
+		StopReason: stop,
+	}
+	*e.events = append(*e.events, "after")
+	if err := e.service.After(ctx, req, resp); err != nil {
+		*e.events = append(*e.events, "after_error")
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (e *privacyStreamingEngine) RunPostHooks(ctx context.Context, req *canonical.ChatRequest, resp *canonical.ChatResponse) error {
+	*e.events = append(*e.events, "after")
+	return e.service.After(ctx, req, resp)
+}
+
+type eventResponseWriter struct {
+	header   http.Header
+	body     bytes.Buffer
+	statuses []int
+	flushes  int
+	events   *[]string
+}
+
+func newEventResponseWriter(events *[]string) *eventResponseWriter {
+	return &eventResponseWriter{header: make(http.Header), events: events}
+}
+
+func (w *eventResponseWriter) Header() http.Header { return w.header }
+
+func (w *eventResponseWriter) WriteHeader(status int) {
+	if len(w.statuses) != 0 {
+		return
+	}
+	w.statuses = append(w.statuses, status)
+	*w.events = append(*w.events, "write_header")
+}
+
+func (w *eventResponseWriter) Write(payload []byte) (int, error) {
+	if len(w.statuses) == 0 {
+		w.WriteHeader(http.StatusOK)
+	}
+	*w.events = append(*w.events, "write")
+	return w.body.Write(payload)
+}
+
+func (w *eventResponseWriter) Flush() {
+	if len(w.statuses) == 0 {
+		w.WriteHeader(http.StatusOK)
+	}
+	w.flushes++
+	*w.events = append(*w.events, "flush")
+}
+
+type outputPanickingOllamaClassifier struct{}
+
+func (outputPanickingOllamaClassifier) Classify(_, value string) []privacy.Finding {
+	if value == "trigger-output-panic" {
+		panic("private-output-panic-detail")
+	}
+	return nil
+}
+
+func newStreamingPrivacyService(t *testing.T, profile privacy.Profile, classifier privacy.Classifier) *privacy.Service {
+	t.Helper()
+	config := privacy.Config{
+		DefaultProfile:  profile,
+		RequestProfiles: []privacy.Profile{profile},
+		PIIEnabled:      true,
+		PIIMode:         privacy.ActionReplace,
+		Classifier:      classifier,
+	}
+	if profile == privacy.ProfileStrict {
+		config.AliasKey = []byte("ollama-streaming-alias-key")
+		config.SecretAction = privacy.ActionReplace
+		config.TechnicalAction = privacy.ActionPseudonymize
+		config.ScopeTTL = time.Hour
+		config.MaxScopes = 8
+		config.MaxEntriesPerScope = 32
+		config.MaxTotalEntries = 128
+	}
+	service, err := privacy.NewService(config)
+	if err != nil {
+		t.Fatalf("privacy.NewService: %v", err)
+	}
+	t.Cleanup(service.Close)
+	return service
+}
+
+func TestOllamaPrivacy_StrictStreamCollectsAndRunsAfterBeforeNativeReplay(t *testing.T) {
+	endpoints := []struct {
+		name       string
+		path       string
+		body       string
+		frameField string
+	}{
+		{
+			name: "chat", path: "/chat",
+			body:       `{"model":"auto","messages":[{"role":"user","content":"hi"}],"stream":true}`,
+			frameField: `"message":{"role":"assistant","content":"complete response"}`,
+		},
+		{
+			name: "generate", path: "/generate",
+			body:       `{"model":"auto","prompt":"hi","stream":true}`,
+			frameField: `"response":"complete response"`,
+		},
+	}
+	for _, endpoint := range endpoints {
+		t.Run(endpoint.name, func(t *testing.T) {
+			var events []string
+			eng := &privacyStreamingEngine{
+				service: newStreamingPrivacyService(t, privacy.ProfileStrict, nil),
+				chunks: []canonical.Chunk{
+					{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "complete "}},
+					{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "response"}},
+				},
+				events: &events,
+			}
+			writer := newEventResponseWriter(&events)
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, endpoint.path, strings.NewReader(endpoint.body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("X-GW-Privacy-Profile", "strict")
+			newTestAdapter(eng, nil).ProtectedRouter().ServeHTTP(writer, req)
+
+			if len(writer.statuses) != 1 || writer.statuses[0] != http.StatusOK {
+				t.Fatalf("statuses=%v body=%s", writer.statuses, writer.body.String())
+			}
+			afterAt := eventPosition(events, "after")
+			writeAt := eventPosition(events, "write_header")
+			if afterAt < 0 || writeAt < 0 || writeAt < afterAt {
+				t.Fatalf("events=%v, response committed before Service.After", events)
+			}
+			lines := scanNDJSON(t, writer.body.Bytes())
+			if len(lines) != 2 {
+				t.Fatalf("lines=%d, want synthetic data+terminal frames; body=%s", len(lines), writer.body.String())
+			}
+			if !strings.Contains(string(lines[0]), endpoint.frameField) || !strings.Contains(string(lines[0]), `"done":false`) {
+				t.Fatalf("native data frame=%s", lines[0])
+			}
+			if !strings.Contains(string(lines[1]), `"done":true`) || !strings.Contains(string(lines[1]), `"done_reason":"stop"`) {
+				t.Fatalf("native terminal frame=%s", lines[1])
+			}
+			receipt := decodePrivacyReceiptHeader(t, writer.Header().Get("X-GW-Privacy-Receipt"))
+			if receipt.Profile != privacy.ProfileStrict || receipt.Coverage != "full" || receipt.Result != "pass" {
+				t.Fatalf("receipt=%+v", receipt)
+			}
+		})
+	}
+}
+
+func TestOllamaPrivacy_StrictStreamBlockOrInternalWritesNoSuccessResponse(t *testing.T) {
+	endpoints := []struct {
+		name string
+		path string
+		body string
+	}{
+		{name: "chat", path: "/chat", body: `{"model":"auto","messages":[{"role":"user","content":"hi"}],"stream":true}`},
+		{name: "generate", path: "/generate", body: `{"model":"auto","prompt":"hi","stream":true}`},
+	}
+	outcomes := []struct {
+		name       string
+		text       string
+		classifier privacy.Classifier
+		wantStatus int
+		wantCode   string
+		wantResult string
+	}{
+		{
+			name: "block", text: "[SECRET:API_KEY_1]",
+			wantStatus: http.StatusBadGateway, wantCode: privacy.CodeOutputBlocked, wantResult: "block",
+		},
+		{
+			name: "internal", text: "trigger-output-panic", classifier: outputPanickingOllamaClassifier{},
+			wantStatus: http.StatusServiceUnavailable, wantCode: privacy.CodeInternalError, wantResult: "error",
+		},
+	}
+	for _, endpoint := range endpoints {
+		for _, outcome := range outcomes {
+			t.Run(endpoint.name+"_"+outcome.name, func(t *testing.T) {
+				var events []string
+				eng := &privacyStreamingEngine{
+					service: newStreamingPrivacyService(t, privacy.ProfileStrict, outcome.classifier),
+					chunks:  []canonical.Chunk{{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: outcome.text}}},
+					events:  &events,
+				}
+				writer := newEventResponseWriter(&events)
+				req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, endpoint.path, strings.NewReader(endpoint.body))
+				req.Header.Set("Content-Type", "application/json")
+				req.Header.Set("X-GW-Privacy-Profile", "strict")
+				newTestAdapter(eng, nil).ProtectedRouter().ServeHTTP(writer, req)
+
+				if len(writer.statuses) != 1 || writer.statuses[0] != outcome.wantStatus {
+					t.Fatalf("statuses=%v want=%d body=%s events=%v", writer.statuses, outcome.wantStatus, writer.body.String(), events)
+				}
+				for _, status := range writer.statuses {
+					if status == http.StatusOK {
+						t.Fatalf("strict failure committed 200: statuses=%v events=%v", writer.statuses, events)
+					}
+				}
+				wantBody := `{"error":"` + outcome.wantCode + `"}` + "\n"
+				if got := writer.body.String(); got != wantBody {
+					t.Fatalf("body=%q, want error-only %q", got, wantBody)
+				}
+				if eventPosition(events, "write_header") < eventPosition(events, "after_error") {
+					t.Fatalf("events=%v, response committed before failed Service.After", events)
+				}
+				receipt := decodePrivacyReceiptHeader(t, writer.Header().Get("X-GW-Privacy-Receipt"))
+				if receipt.Result != outcome.wantResult {
+					t.Fatalf("receipt=%+v", receipt)
+				}
+				if strings.Contains(writer.body.String(), "private-output-panic-detail") {
+					t.Fatalf("response leaked internal detail: %s", writer.body.String())
+				}
+			})
+		}
+	}
+}
+
+func TestOllamaPrivacy_StandardStreamRetainsIncrementalFlushPath(t *testing.T) {
+	endpoints := []struct {
+		name string
+		path string
+		body string
+	}{
+		{name: "chat", path: "/chat", body: `{"model":"auto","messages":[{"role":"user","content":"hi"}],"stream":true}`},
+		{name: "generate", path: "/generate", body: `{"model":"auto","prompt":"hi","stream":true}`},
+	}
+	for _, endpoint := range endpoints {
+		t.Run(endpoint.name, func(t *testing.T) {
+			var events []string
+			eng := &privacyStreamingEngine{
+				service: newStreamingPrivacyService(t, privacy.ProfileStandard, nil),
+				chunks: []canonical.Chunk{
+					{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "first"}},
+					{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "second"}},
+				},
+				events: &events,
+			}
+			writer := newEventResponseWriter(&events)
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, endpoint.path, strings.NewReader(endpoint.body))
+			req.Header.Set("Content-Type", "application/json")
+			newTestAdapter(eng, nil).ProtectedRouter().ServeHTTP(writer, req)
+
+			if len(writer.statuses) != 1 || writer.statuses[0] != http.StatusOK {
+				t.Fatalf("statuses=%v body=%s", writer.statuses, writer.body.String())
+			}
+			if writer.flushes < 3 {
+				t.Fatalf("flushes=%d, want per-chunk plus terminal flush", writer.flushes)
+			}
+			if writeAt, afterAt := eventPosition(events, "write_header"), eventPosition(events, "after"); writeAt < 0 || afterAt < 0 || writeAt > afterAt {
+				t.Fatalf("events=%v, standard stream did not write incrementally before After", events)
+			}
+			receipt := decodePrivacyReceiptHeader(t, writer.Header().Get("X-GW-Privacy-Receipt"))
+			if receipt.Profile != privacy.ProfileStandard || receipt.Coverage != "input" || receipt.Result != "pass" {
+				t.Fatalf("receipt=%+v", receipt)
+			}
+		})
+	}
+}
+
+func eventPosition(events []string, want string) int {
+	for index, event := range events {
+		if event == want {
+			return index
+		}
+	}
+	return -1
 }
 
 // runNDJSONEmitterAndPostHooks drives the NDJSON emitter against the
