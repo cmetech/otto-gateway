@@ -7,9 +7,9 @@
 //   - DescribeNoSecrets: Describe()'s map exposes only {enabled,
 //     output_path} — no keys named or hinting at request content.
 //   - DurationPositive: After's duration_ms > 0 after a >=1ms gap.
-//   - RecordsPreRedactionContent: the load-bearing ordering invariant —
+//   - RecordsPreRedactionContent: the standard-profile ordering invariant —
 //     ChatTraceHook.Before runs BEFORE PIIRedactionHook mutates req,
-//     so the NDJSON pre line contains the raw, non-redacted email
+//     so the standard NDJSON pre line contains the raw, non-redacted email
 //     string. This is the regression guard for T-ll2-07 (chain
 //     reorder).
 
@@ -20,13 +20,28 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
+
 	"otto-gateway/internal/canonical"
 	"otto-gateway/internal/plugin/pii"
 )
+
+type chatTracePrivacyStub struct {
+	allow   bool
+	summary map[string]any
+}
+
+func (s chatTracePrivacyStub) AllowSensitiveTrace(context.Context) bool { return s.allow }
+
+func (s chatTracePrivacyStub) TraceSummary(context.Context) map[string]any { return s.summary }
+
+var standardTracePrivacy = chatTracePrivacyStub{allow: true}
 
 // readNDJSON splits buf on newlines and decodes each non-empty line
 // into a map. Useful for asserting field-by-field without coupling to
@@ -85,7 +100,7 @@ func TestChatTraceHook_SharedRequestID(t *testing.T) {
 	t.Parallel()
 
 	buf := &bytes.Buffer{}
-	hook := &ChatTraceHook{Writer: buf, Enabled: true}
+	hook := &ChatTraceHook{Writer: buf, Enabled: true, Privacy: standardTracePrivacy}
 	ctx := WithRequestID(context.Background(), "TEST-RID-SHARED")
 	req := &canonical.ChatRequest{Model: "auto"}
 	resp := &canonical.ChatResponse{StopReason: canonical.StopEndTurn}
@@ -157,7 +172,7 @@ func TestChatTraceHook_DurationPositive(t *testing.T) {
 	t.Parallel()
 
 	buf := &bytes.Buffer{}
-	hook := &ChatTraceHook{Writer: buf, Enabled: true}
+	hook := &ChatTraceHook{Writer: buf, Enabled: true, Privacy: standardTracePrivacy}
 	ctx := WithRequestID(context.Background(), "TEST-RID-DUR")
 	req := &canonical.ChatRequest{Model: "auto"}
 	resp := &canonical.ChatResponse{StopReason: canonical.StopEndTurn}
@@ -201,7 +216,7 @@ func TestChatTraceHook_RecordsPreRedactionContent(t *testing.T) {
 	const rawEmail = "trace-canary@cmetech.io"
 
 	buf := &bytes.Buffer{}
-	chatTrace := &ChatTraceHook{Writer: buf, Enabled: true}
+	chatTrace := &ChatTraceHook{Writer: buf, Enabled: true, Privacy: standardTracePrivacy}
 	piiHook := &pii.PIIRedactionHook{
 		Recognizers: pii.Recognizers,
 		Enabled:     true,
@@ -268,5 +283,150 @@ func TestChatTraceHook_RecordsPreRedactionContent(t *testing.T) {
 	}
 	if !bytes.Contains(rawJSON, []byte(rawEmail)) {
 		t.Errorf("re-marshaled pre record missing raw email %q: %s", rawEmail, rawJSON)
+	}
+}
+
+func TestChatTracePrivacy_StandardPreservesRawShape(t *testing.T) {
+	buf := &bytes.Buffer{}
+	hook := &ChatTraceHook{Writer: buf, Enabled: true, Privacy: standardTracePrivacy}
+	ctx := WithSurface(WithRequestID(context.Background(), "standard-rid"), "openai")
+	req := &canonical.ChatRequest{
+		Model: "standard-model-canary",
+		Messages: []canonical.Message{{
+			Role:    canonical.RoleUser,
+			Content: []canonical.ContentPart{{Kind: canonical.ContentKindText, Text: "standard-request-canary"}},
+		}},
+		System: "standard-system-canary",
+		Tools:  []canonical.ToolSpec{{Name: "standard-tool-canary"}},
+	}
+	resp := &canonical.ChatResponse{
+		Message:    canonical.Message{Content: []canonical.ContentPart{{Kind: canonical.ContentKindText, Text: "standard-response-canary"}}},
+		StopReason: canonical.StopEndTurn,
+	}
+	if _, err := hook.Before(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	if err := hook.After(ctx, req, resp); err != nil {
+		t.Fatal(err)
+	}
+
+	raw := buf.String()
+	records := readNDJSON(t, bytes.NewBufferString(raw))
+	if len(records) != 2 {
+		t.Fatalf("records=%d, want 2", len(records))
+	}
+	wantPreKeys := []string{"message_count", "messages", "model", "request_id", "stage", "surface", "system", "tools", "ts"}
+	wantPostKeys := []string{"content", "duration_ms", "request_id", "stage", "stop_reason", "surface", "ts"}
+	for index, want := range [][]string{wantPreKeys, wantPostKeys} {
+		got := make([]string, 0, len(records[index]))
+		for key := range records[index] {
+			got = append(got, key)
+		}
+		slices.Sort(got)
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("record %d keys=%v, want existing raw shape %v", index, got, want)
+		}
+	}
+	for _, canary := range []string{
+		"standard-model-canary", "standard-request-canary", "standard-system-canary",
+		"standard-tool-canary", "standard-response-canary",
+	} {
+		if !strings.Contains(raw, canary) {
+			t.Errorf("standard trace lost raw value %q: %s", canary, raw)
+		}
+	}
+}
+
+func TestChatTracePrivacy_UnsafePosturesEmitSummaryOnly(t *testing.T) {
+	tests := []struct {
+		name    string
+		privacy ChatTracePrivacy
+		result  string
+	}{
+		{name: "strict unresolved", privacy: chatTracePrivacyStub{summary: map[string]any{
+			"surface": "anthropic", "workload": "network-hardening", "profile": "strict",
+			"coverage": "unresolved", "result": "unresolved",
+			"transformed": 0, "restored": 0, "blocked": 0,
+			"entity": "Email", "value": "summary-value-canary", "request": map[string]any{"body": "summary-body-canary"},
+		}}, result: "unresolved"},
+		{name: "strict blocked", privacy: chatTracePrivacyStub{summary: map[string]any{
+			"surface": "openai", "workload": "audit", "profile": "strict",
+			"coverage": "input", "result": "block", "transformed": 2, "restored": 0, "blocked": 1,
+		}}, result: "block"},
+		{name: "strict errored", privacy: chatTracePrivacyStub{summary: map[string]any{
+			"surface": "ollama", "workload": "triage", "profile": "strict",
+			"coverage": "full", "result": "error", "transformed": 2, "restored": 1, "blocked": 0,
+		}}, result: "error"},
+		{name: "strict pass", privacy: chatTracePrivacyStub{summary: map[string]any{
+			"surface": "openai", "workload": "safe-pass", "profile": "strict",
+			"coverage": "full", "result": "pass", "transformed": 2, "restored": 2, "blocked": 0,
+		}}, result: "pass"},
+		{name: "missing policy", privacy: nil, result: "unresolved"},
+	}
+	allowed := map[string]struct{}{
+		"ts": {}, "stage": {}, "request_id": {}, "surface": {}, "workload": {},
+		"profile": {}, "coverage": {}, "result": {}, "transformed": {}, "restored": {}, "blocked": {},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			buf := &bytes.Buffer{}
+			hook := &ChatTraceHook{Writer: buf, Enabled: true, Privacy: tc.privacy}
+			ctx := WithSurface(WithRequestID(context.Background(), "safe-rid"), "context-surface")
+			req := &canonical.ChatRequest{
+				Model: "unsafe-model-canary",
+				Messages: []canonical.Message{{
+					Role:    canonical.RoleUser,
+					Content: []canonical.ContentPart{{Kind: canonical.ContentKindText, Text: "unsafe-request-canary"}},
+				}},
+				System: "unsafe-system-canary",
+				Tools:  []canonical.ToolSpec{{Name: "unsafe-tool-canary"}},
+			}
+			resp := &canonical.ChatResponse{
+				Message:    canonical.Message{Content: []canonical.ContentPart{{Kind: canonical.ContentKindText, Text: "unsafe-response-canary"}}},
+				StopReason: canonical.StopEndTurn,
+			}
+			wantReq := *req
+			wantReq.Messages = append([]canonical.Message(nil), req.Messages...)
+			wantReq.Messages[0].Content = append([]canonical.ContentPart(nil), req.Messages[0].Content...)
+			wantResp := *resp
+			wantResp.Message.Content = append([]canonical.ContentPart(nil), resp.Message.Content...)
+
+			if _, err := hook.Before(ctx, req); err != nil {
+				t.Fatal(err)
+			}
+			if err := hook.After(ctx, req, resp); err != nil {
+				t.Fatal(err)
+			}
+			if diff := cmp.Diff(wantReq, *req); diff != "" {
+				t.Fatalf("Before mutated request (-want +got):\n%s", diff)
+			}
+			if diff := cmp.Diff(wantResp, *resp); diff != "" {
+				t.Fatalf("After mutated response (-want +got):\n%s", diff)
+			}
+
+			records := readNDJSON(t, buf)
+			if len(records) != 2 {
+				t.Fatalf("records=%d, want 2", len(records))
+			}
+			for index, record := range records {
+				for key := range record {
+					if _, ok := allowed[key]; !ok {
+						t.Errorf("record %d leaked non-summary key %q: %+v", index, key, record)
+					}
+				}
+				if record["result"] != tc.result {
+					t.Errorf("record %d result=%v, want %q", index, record["result"], tc.result)
+				}
+			}
+			raw := buf.String()
+			for _, canary := range []string{
+				"unsafe-model-canary", "unsafe-request-canary", "unsafe-system-canary", "unsafe-tool-canary",
+				"unsafe-response-canary", "summary-value-canary", "summary-body-canary", "Email",
+			} {
+				if strings.Contains(raw, canary) {
+					t.Errorf("unsafe trace leaked %q: %s", canary, raw)
+				}
+			}
+		})
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base32"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -1730,12 +1731,44 @@ func (s *Service) AllowSensitiveTrace(ctx context.Context) bool {
 func (s *Service) TraceSummary(ctx context.Context) map[string]any {
 	state, ok := StateFromContext(ctx)
 	if !ok {
-		return map[string]any{"profile": string(ProfileStandard)}
+		return map[string]any{
+			"surface": "", "workload": "", "profile": "unresolved",
+			"coverage": "unresolved", "result": "unresolved",
+			"transformed": 0, "restored": 0, "blocked": 0,
+		}
+	}
+	metadata := state.Metadata()
+	profile := state.effectiveProfile()
+	if profile == "" && s != nil {
+		if resolved, err := s.resolveProfile(state); err == nil {
+			profile = resolved
+		}
+	}
+	profileValue := string(profile)
+	if profileValue != string(ProfileStandard) && profileValue != string(ProfileStrict) {
+		profileValue = "unresolved"
+	}
+	coverage, result := "unresolved", "unresolved"
+	if encoded := state.receiptValue(); encoded != "" {
+		if payload, err := base64.RawURLEncoding.DecodeString(encoded); err == nil {
+			var receipt Receipt
+			if json.Unmarshal(payload, &receipt) == nil {
+				if receipt.Coverage == "input" || receipt.Coverage == "full" {
+					coverage = receipt.Coverage
+				}
+				if receipt.Result == "pass" || receipt.Result == "block" || receipt.Result == "error" {
+					result = receipt.Result
+				}
+			}
+		}
 	}
 	transformed, restored, blocked := state.counts()
 	return map[string]any{
-		"profile":     string(state.effectiveProfile()),
-		"scope":       state.Metadata().ScopeID,
+		"surface":     metadata.Surface,
+		"workload":    metadata.Workload,
+		"profile":     profileValue,
+		"coverage":    coverage,
+		"result":      result,
 		"transformed": transformed,
 		"restored":    restored,
 		"blocked":     blocked,

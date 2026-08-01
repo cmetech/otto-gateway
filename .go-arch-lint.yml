@@ -65,6 +65,8 @@ components:
     in: plugin/pii/**
   plugin:
     in: plugin/**
+  privacy:
+    in: privacy/**
   pool:
     in: pool/**
   registry:
@@ -125,6 +127,7 @@ deps:
                     # Without this stamp PIIRedactionHook falls back to
                     # a local Summary (counter bookkeeping correct) but
                     # LoggingHook omits the `redacted` slog attr.
+      - privacy  # Privacy request metadata, receipts, and native errors.
   adapter_anthropic:
     anyVendorDeps: true
     mayDependOn:
@@ -151,6 +154,7 @@ deps:
                 # ctx-stamp rationale as adapter_ollama.
       - plugin_pii  # Phase 8 D-04 / 08-05 Task 4b: same pii.Summary
                     # ctx-stamp rationale as adapter_ollama.
+      - privacy  # Privacy request metadata, receipts, and native errors.
   adapter_openai:
     anyVendorDeps: true
     mayDependOn:
@@ -167,6 +171,7 @@ deps:
                 # ctx-stamp rationale as adapter_ollama.
       - plugin_pii  # Phase 8 D-04 / 08-05 Task 4b: same pii.Summary
                     # ctx-stamp rationale as adapter_ollama.
+      - privacy  # Privacy request metadata, receipts, and native errors.
   auth:
     anyVendorDeps: true
   canonical:
@@ -205,6 +210,10 @@ deps:
     anyVendorDeps: true
     # Leaf package: reads /proc (linux) or the Win32 psapi/kernel32 APIs
     # (windows) via vendored procfs / x/sys. No internal deps.
+  privacy:
+    anyVendorDeps: true
+    mayDependOn:
+      - canonical
   plugin:
     anyVendorDeps: true
     mayDependOn:
@@ -232,6 +241,7 @@ deps:
                 # the engine package is impossible in Go, so the dep
                 # is honest. Mirrors the parent `plugin` component's
                 # rationale for the same edge.
+      - privacy  # Compatibility adapter delegates to the canonical privacy authority.
   pool:
     anyVendorDeps: true
     mayDependOn:

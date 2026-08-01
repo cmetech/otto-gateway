@@ -2,22 +2,20 @@
 //
 // Purpose: write one NDJSON line per chat-shaped request to a dedicated
 // chat-trace.log on engine entry (stage="pre_chain_in") and one more line
-// on engine exit (stage="post_chain_out"). The pre line captures the
-// post-adapter canonical request — full messages slice, system prompt,
-// tools shape — and the post line captures the aggregated canonical
-// response plus a duration_ms field bridging the two via request_id.
+// on engine exit (stage="post_chain_out"). Standard-profile records retain
+// the legacy raw canonical payload. Strict, unresolved, blocked, and errored
+// records contain bounded metadata and aggregate privacy counts only.
 //
 // KEY CORRECTNESS INVARIANT (load-bearing, do NOT reorder):
 //
 //	ChatTraceHook MUST be first in the Pre chain (index 0) so it
-//	observes the canonical request BEFORE PIIRedactionHook mutates
-//	req.Messages in place. The whole product value of chat-trace.log is
-//	recording what the client *actually said* — pre-redaction. main.go's
-//	wiring documents this invariant verbatim. The
+//	observes standard canonical input before PIIRedactionHook mutates it,
+//	while its privacy policy suppresses strict content before Service.Before.
+//	main.go's wiring documents this invariant verbatim. The
 //	TestChatTraceHook_RecordsPreRedactionContent regression test
 //	guards the ordering by composing the relevant chain prefix and
-//	asserting the NDJSON line emitted by ChatTraceHook.Before contains
-//	the raw, non-redacted string. A future refactor that "tidies" the
+//	asserting the standard NDJSON line emitted by ChatTraceHook.Before
+//	contains the raw, non-redacted string. A future refactor that "tidies" the
 //	Pre slice order would break this contract silently otherwise.
 //
 // STREAMING SCOPE (v1):
@@ -78,6 +76,9 @@ import (
 // effectively always true at runtime, but the toggle keeps unit tests
 // cheap).
 //
+// Privacy decides whether raw serialization is allowed and supplies the
+// bounded summary otherwise. A nil Privacy policy fails closed.
+//
 // Logger is optional; nil falls back to slog.Default() per-call so
 // tests constructing a bare &ChatTraceHook{} don't NPE on internal
 // debug emissions (currently none, but reserved).
@@ -89,10 +90,16 @@ import (
 // request_id. LoadAndDelete in After prevents unbounded growth across
 // long-lived processes (T-ll2-08 mitigation — same pattern as
 // LoggingHook.startTimes).
+type ChatTracePrivacy interface {
+	AllowSensitiveTrace(context.Context) bool
+	TraceSummary(context.Context) map[string]any
+}
+
 type ChatTraceHook struct {
 	Writer     io.Writer
 	Enabled    bool
 	Logger     *slog.Logger
+	Privacy    ChatTracePrivacy
 	mu         sync.Mutex
 	startTimes sync.Map // map[string]time.Time, request_id → Before timestamp
 }
@@ -167,6 +174,23 @@ type postRecord struct {
 	DurationMS int64                   `json:"duration_ms"`
 }
 
+// safeTraceRecord is the complete strict/unresolved trace schema. Keeping it
+// as a closed struct prevents a future privacy projection from smuggling raw
+// values or per-entity detail through an open map.
+type safeTraceRecord struct {
+	TS          string `json:"ts"`
+	Stage       string `json:"stage"`
+	RequestID   string `json:"request_id"`
+	Surface     string `json:"surface"`
+	Workload    string `json:"workload"`
+	Profile     string `json:"profile"`
+	Coverage    string `json:"coverage"`
+	Result      string `json:"result"`
+	Transformed int    `json:"transformed"`
+	Restored    int    `json:"restored"`
+	Blocked     int    `json:"blocked"`
+}
+
 // Before emits the pre_chain_in NDJSON line and stashes the start
 // timestamp in startTimes for After to consume.
 //
@@ -204,21 +228,24 @@ func (h *ChatTraceHook) Before(ctx context.Context, req *canonical.ChatRequest) 
 	}
 	surface, _ := SurfaceFromContext(ctx)
 
-	rec := preRecord{
-		TS:        nowRFC3339Nano(),
-		Stage:     "pre_chain_in",
-		RequestID: rid,
-		Surface:   surface,
+	if h.allowSensitiveTrace(ctx) {
+		rec := preRecord{
+			TS:        nowRFC3339Nano(),
+			Stage:     "pre_chain_in",
+			RequestID: rid,
+			Surface:   surface,
+		}
+		if req != nil {
+			rec.Model = req.Model
+			rec.MessageCount = len(req.Messages)
+			rec.Messages = req.Messages
+			rec.System = req.System
+			rec.Tools = req.Tools
+		}
+		h.emit(rec)
+	} else {
+		h.emit(h.safeRecord(ctx, "pre_chain_in", rid, surface))
 	}
-	if req != nil {
-		rec.Model = req.Model
-		rec.MessageCount = len(req.Messages)
-		rec.Messages = req.Messages
-		rec.System = req.System
-		rec.Tools = req.Tools
-	}
-
-	h.emit(rec)
 
 	// WR-02 (phase 16 review) — mirror the logging.go empty-rid guard.
 	// Two bugs collapsed into one fix:
@@ -290,6 +317,10 @@ func (h *ChatTraceHook) After(ctx context.Context, _ *canonical.ChatRequest, res
 		durationMS = time.Since(start).Milliseconds()
 	}
 	surface, _ := SurfaceFromContext(ctx)
+	if !h.allowSensitiveTrace(ctx) {
+		h.emit(h.safeRecord(ctx, "post_chain_out", rid, surface))
+		return nil
+	}
 
 	rec := postRecord{
 		TS:         nowRFC3339Nano(),
@@ -311,6 +342,68 @@ func (h *ChatTraceHook) After(ctx context.Context, _ *canonical.ChatRequest, res
 
 	h.emit(rec)
 	return nil
+}
+
+func (h *ChatTraceHook) allowSensitiveTrace(ctx context.Context) bool {
+	return h.Privacy != nil && h.Privacy.AllowSensitiveTrace(ctx)
+}
+
+func (h *ChatTraceHook) safeRecord(ctx context.Context, stage, requestID, fallbackSurface string) safeTraceRecord {
+	summary := map[string]any(nil)
+	if h.Privacy != nil {
+		summary = h.Privacy.TraceSummary(ctx)
+	}
+	surface := safeTraceString(summary, "surface", 32)
+	if surface == "" {
+		surface = truncateTraceString(fallbackSurface, 32)
+	}
+	return safeTraceRecord{
+		TS:          nowRFC3339Nano(),
+		Stage:       stage,
+		RequestID:   requestID,
+		Surface:     surface,
+		Workload:    safeTraceString(summary, "workload", 64),
+		Profile:     safeTraceEnum(summary, "profile", []string{"standard", "strict"}, "unresolved"),
+		Coverage:    safeTraceEnum(summary, "coverage", []string{"input", "full"}, "unresolved"),
+		Result:      safeTraceEnum(summary, "result", []string{"pass", "block", "error"}, "unresolved"),
+		Transformed: safeTraceCount(summary, "transformed"),
+		Restored:    safeTraceCount(summary, "restored"),
+		Blocked:     safeTraceCount(summary, "blocked"),
+	}
+}
+
+func safeTraceString(summary map[string]any, key string, maximum int) string {
+	value, ok := summary[key].(string)
+	if !ok {
+		return ""
+	}
+	return truncateTraceString(value, maximum)
+}
+
+func truncateTraceString(value string, maximum int) string {
+	runes := []rune(value)
+	if len(runes) <= maximum {
+		return value
+	}
+	return string(runes[:maximum])
+}
+
+func safeTraceEnum(summary map[string]any, key string, allowed []string, fallback string) string {
+	value := safeTraceString(summary, key, 16)
+	for _, candidate := range allowed {
+		if value == candidate {
+			return value
+		}
+	}
+	return fallback
+}
+
+func safeTraceCount(summary map[string]any, key string) int {
+	value, ok := summary[key].(int)
+	if !ok || value < 0 {
+		return 0
+	}
+	return value
 }
 
 // emit writes one NDJSON record. json.NewEncoder appends \n

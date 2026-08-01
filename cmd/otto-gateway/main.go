@@ -58,6 +58,7 @@ import (
 	"otto-gateway/internal/plugin/jsonformat"
 	"otto-gateway/internal/plugin/pii"
 	"otto-gateway/internal/pool"
+	"otto-gateway/internal/privacy"
 	"otto-gateway/internal/procstat"
 	"otto-gateway/internal/registry"
 	"otto-gateway/internal/server"
@@ -199,12 +200,21 @@ func main() {
 // one struct lets main_test.go assert on warmup-before-listen invariants
 // without copy-pasting the wiring graph.
 type app struct {
-	cfg      config.Config
-	logger   *slog.Logger
-	pool     *pool.Pool        // nil when KIRO_CMD unset
-	engine   *engine.Engine    // nil when pool is nil
-	registry *session.Registry // nil when KIRO_CMD unset; constructed alongside pool
-	srv      *server.Server
+	cfg             config.Config
+	logger          *slog.Logger
+	pool            *pool.Pool        // nil when KIRO_CMD unset
+	engine          *engine.Engine    // nil when pool is nil
+	registry        *session.Registry // nil when KIRO_CMD unset; constructed alongside pool
+	srv             *server.Server
+	hooks           plugin.Chain
+	privacyService  *privacy.Service
+	privacySnapshot privacySnapshotSource
+}
+
+// privacySnapshotSource is the narrow, value-free projection reserved for
+// later metrics and admin wiring. Those packages never receive the Service.
+type privacySnapshotSource interface {
+	Snapshot() privacy.SafeSnapshot
 }
 
 // newApp performs the Phase 2 wiring sequence and returns:
@@ -253,6 +263,9 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 				logger.Error("chat-trace: rotator close", "err", err)
 			}
 		}
+		if a.privacyService != nil {
+			a.privacyService.Close()
+		}
 		if a.registry != nil {
 			if err := a.registry.Close(); err != nil {
 				logger.Error("session: registry close", "err", err)
@@ -281,36 +294,14 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 	// bridges Pre→Post timings via request_id. /health/hooks dedup
 	// (slice 5 Task 4) elides the duplicate row.
 
-	// PII hook is a single instance shared between Pre (encrypt + redact)
-	// and Post (decrypt sweep). Same precedent as loggingHook below.
-	// When encrypt is NOT active anywhere, the Post side is a cheap
-	// no-op (encryptActive() returns false; After returns nil immediately).
-	piiHook := &pii.PIIRedactionHook{
-		Recognizers:     filterRecognizers(pii.Recognizers, cfg.PIIEnabledEntities),
-		Enabled:         cfg.PIIRedactionEnabled,
-		Mode:            cfg.PIIRedactionMode,
-		HashKey:         []byte(cfg.PIIHashKey),
-		EnabledEntities: cfg.PIIEnabledEntities,
-		EntityActions:   cfg.PIIEntityActions,
-		Logger:          logger,
+	privacyService, err := buildPrivacyService(cfg)
+	if err != nil {
+		cleanup()
+		return nil, func() {}, fmt.Errorf("privacy service: %w", err)
 	}
-	// Derive EncryptKey only when encrypt is active; Config validation
-	// already guarantees PIIEncryptKey is non-empty in that case.
-	if piiHook.Mode == "encrypt" || hasEncryptAction(cfg.PIIEntityActions) {
-		key, err := pii.DeriveKey(cfg.PIIEncryptKey)
-		if err != nil {
-			return nil, func() {}, fmt.Errorf("pii: derive encrypt key: %w", err)
-		}
-		piiHook.EncryptKey = key
-	}
-
-	// PII_NER_ENABLED gates the prose-based NER engine. Default off: no
-	// prose state is allocated unless an operator explicitly opts in.
-	// When enabled, prose emits PERSON / LOCATION spans that flow through
-	// the same Pre/Post hooks as regex recognizers.
-	if cfg.PIINEREnabled {
-		piiHook.NER = pii.NewNEREngine()
-	}
+	a.privacyService = privacyService
+	a.privacySnapshot = privacyService
+	piiHook := &pii.PIIRedactionHook{Service: privacyService}
 
 	// Phase 08.2 D-07: JSON-format steering hook construction. Enabled is
 	// derived from JSON_FORMAT_STEERING_ENABLED (default true). The hook is
@@ -319,9 +310,8 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 	// block (which contains no PII shapes) is never accidentally redacted.
 	jsonFormatHook := jsonformat.New(cfg.JSONFormatSteeringEnabled)
 
-	// Context compression (CompressionHook). Chain position: after
-	// piiHook (compress redacted text — never resurface raw PII into
-	// stubs), before loggingHook (log what is actually sent).
+	// Context compression runs before privacy so every mutation it makes is
+	// independently classified and verified before logging or dispatch.
 	// COMPRESSION_ENABLED is the default; X-Compression header and
 	// +compress/-compress model suffixes override per request.
 	compressHook := &compress.Hook{
@@ -332,19 +322,6 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 		ToolKeep:      cfg.CompressToolKeep,
 		Logger:        logger,
 	}
-	// Known interaction: middle-truncation can clip AES-GCM ciphertext
-	// tokens inside stale tool results, disabling their round-trip
-	// decryption (the request itself is unharmed). Gate: PII must be
-	// actually DOING encryption (PIIRedactionEnabled — the hook's real
-	// work gate, pii.go:428) — mode alone defaults to "encrypt" even when
-	// PII is off, and warning then would be noise (review 2 MINOR-7).
-	// NOT gated on cfg.CompressionEnabled: the header and +compress
-	// suffix enable compression per request even when the env default is
-	// off, and the boot warning must cover that advertised use case.
-	if cfg.PIIRedactionEnabled && (cfg.PIIRedactionMode == "encrypt" || hasEncryptAction(cfg.PIIEntityActions)) {
-		logger.Warn("PII encrypt mode active with CompressionHook available; when compression is enabled (env, X-Compression header, or +compress model suffix), truncated stale tool results may clip ciphertext tokens (see docs/operating.md)")
-	}
-
 	loggingHook := &plugin.LoggingHook{Logger: logger}
 	chain := plugin.Chain{
 		Pre: []engine.PreHook{
@@ -354,10 +331,8 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 			// wins) and before PII redaction (so steering text isn't redacted).
 			// Phase 08.2 D-07.
 			jsonFormatHook,
-			piiHook,
-			// Compression runs after PII (operates on redacted text) and
-			// before logging (log the transcript actually sent).
 			compressHook,
+			piiHook,
 			loggingHook,
 		},
 		Post: []engine.PostHook{
@@ -367,10 +342,10 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 	}
 
 	// Quick 260529-ll2 — ChatTraceHook wiring.
-	// INVARIANT: ChatTraceHook is first in Pre to observe pre-redaction
-	// content. Do not reorder. Symmetric position in Post (last) so it
-	// also observes the canonical response AFTER LoggingHook has stamped
-	// its records. Cleanup of the dedicated timberjack rotator is wired
+	// INVARIANT: ChatTraceHook is first in Pre to preserve the standard
+	// raw trace shape; its privacy policy suppresses strict content before
+	// Service.Before. Symmetric position in Post (last) lets successful strict
+	// traces see the validated full/pass summary. Cleanup of the rotator is wired
 	// into the cleanup closure above (chatTraceRotator close before
 	// registry/pool close so a crash in those still drains the trace
 	// buffer).
@@ -396,8 +371,9 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 			Writer:  chatTraceRotator,
 			Enabled: true,
 			Logger:  logger,
+			Privacy: privacyService,
 		}
-		// "ChatTraceHook is first in Pre to observe pre-redaction content. Do not reorder."
+		// ChatTraceHook stays first; Privacy decides whether raw content is safe.
 		chain.Pre = append([]engine.PreHook{chatTrace}, chain.Pre...)
 		chain.Post = append(chain.Post, chatTrace)
 	}
@@ -411,9 +387,15 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 	// not fail boot.
 	filteredChain, filterErr := chain.Filter(cfg.EnabledHooks)
 	if filterErr != nil {
+		cleanup()
 		return nil, func() {}, fmt.Errorf("chain filter: %w", filterErr)
 	}
 	chain = filteredChain
+	if strictAvailable(cfg) && !chainHasPreHook(chain, "PIIRedactionHook") {
+		cleanup()
+		return nil, func() {}, errors.New("strict privacy requires PIIRedactionHook after ENABLED_HOOKS filtering")
+	}
+	a.hooks = chain
 
 	// Effective compression posture for the admin UI (dashboard summary
 	// strip + /admin/about Feature Flags), three states:
@@ -1358,6 +1340,76 @@ func filterRecognizers(recognizers []pii.Recognizer, entities []string) []pii.Re
 		}
 	}
 	return out
+}
+
+func buildPrivacyService(cfg config.Config) (*privacy.Service, error) {
+	profiles := make([]privacy.Profile, len(cfg.PrivacyRequestProfiles))
+	for index, profile := range cfg.PrivacyRequestProfiles {
+		profiles[index] = privacy.Profile(profile)
+	}
+
+	entityActions := make(map[string]privacy.Action, len(cfg.PIIEntityActions))
+	for entity, action := range cfg.PIIEntityActions {
+		entityActions[entity] = privacy.Action(action)
+	}
+
+	var encryptKey []byte
+	if cfg.PIIRedactionMode == string(privacy.ActionEncrypt) || hasEncryptAction(cfg.PIIEntityActions) {
+		key, err := pii.DeriveKey(cfg.PIIEncryptKey)
+		if err != nil {
+			return nil, fmt.Errorf("derive PII encryption key: %w", err)
+		}
+		encryptKey = key
+	}
+
+	activeRecognizers := filterRecognizers(pii.Recognizers, cfg.PIIEnabledEntities)
+	recognizerNames := make([]string, 0, len(activeRecognizers)+2)
+	for _, recognizer := range activeRecognizers {
+		recognizerNames = append(recognizerNames, recognizer.Name)
+	}
+	if cfg.PIINEREnabled {
+		for _, entity := range []string{"PERSON", "LOCATION"} {
+			if len(cfg.PIIEnabledEntities) == 0 || slices.Contains(cfg.PIIEnabledEntities, entity) {
+				recognizerNames = append(recognizerNames, entity)
+			}
+		}
+	}
+
+	return privacy.NewService(privacy.Config{
+		DefaultProfile:     privacy.Profile(cfg.PrivacyDefaultProfile),
+		RequestProfiles:    profiles,
+		AliasKey:           []byte(cfg.PrivacyAliasKey),
+		SecretAction:       privacy.Action(cfg.PrivacySecretAction),
+		TechnicalAction:    privacy.Action(cfg.PrivacyTechnicalAction),
+		ScopeTTL:           cfg.PrivacyScopeTTL,
+		MaxScopes:          cfg.PrivacyMaxScopes,
+		MaxEntriesPerScope: cfg.PrivacyMaxEntriesPerScope,
+		MaxTotalEntries:    cfg.PrivacyMaxTotalEntries,
+		PIIEnabled:         cfg.PIIRedactionEnabled,
+		PIIMode:            privacy.Action(cfg.PIIRedactionMode),
+		PIIHashKey:         []byte(cfg.PIIHashKey),
+		PIIEncryptKey:      encryptKey,
+		PIIEntityActions:   entityActions,
+		Recognizers:        recognizerNames,
+		NEREnabled:         cfg.PIINEREnabled,
+		Classifier:         pii.NewPIIClassifier(activeRecognizers, cfg.PIIEnabledEntities, cfg.PIINEREnabled),
+		SecretClassifier:   privacy.NewSecretClassifier(),
+		TriageEnabled:      cfg.PrivacyTriageEnabled,
+	})
+}
+
+func strictAvailable(cfg config.Config) bool {
+	return cfg.PrivacyDefaultProfile == string(privacy.ProfileStrict) ||
+		slices.Contains(cfg.PrivacyRequestProfiles, string(privacy.ProfileStrict))
+}
+
+func chainHasPreHook(chain plugin.Chain, name string) bool {
+	for _, hook := range chain.Pre {
+		if named, ok := hook.(interface{ Name() string }); ok && named.Name() == name {
+			return true
+		}
+	}
+	return false
 }
 
 // hasEncryptAction returns true if any value in actions is "encrypt".

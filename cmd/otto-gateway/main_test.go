@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -18,10 +19,217 @@ import (
 	"github.com/google/go-cmp/cmp"
 
 	"otto-gateway/internal/acp"
+	"otto-gateway/internal/canonical"
 	"otto-gateway/internal/config"
 	gatewayembed "otto-gateway/internal/embed"
+	"otto-gateway/internal/engine"
+	"otto-gateway/internal/plugin"
+	"otto-gateway/internal/plugin/pii"
+	"otto-gateway/internal/privacy"
 	"otto-gateway/internal/testutil"
 )
+
+func strictPrivacyConfig() config.Config {
+	return config.Config{
+		HTTPAddr:                  ":0",
+		KiroCmd:                   "",
+		PoolSize:                  1,
+		PingInterval:              time.Minute,
+		OllamaPathPrefix:          "/api",
+		OpenAIPathPrefix:          "/v1",
+		AnthropicPathPrefix:       "/v1",
+		PIIRedactionEnabled:       true,
+		PIIRedactionMode:          "replace",
+		PIINEREnabled:             false,
+		PrivacyDefaultProfile:     "standard",
+		PrivacyRequestProfiles:    []string{"standard", "strict"},
+		PrivacyAliasKey:           "task-8-main-alias-key",
+		PrivacySecretAction:       "replace",
+		PrivacyTechnicalAction:    "pseudonymize",
+		PrivacyScopeTTL:           time.Hour,
+		PrivacyMaxScopes:          8,
+		PrivacyMaxEntriesPerScope: 32,
+		PrivacyMaxTotalEntries:    128,
+	}
+}
+
+func namedHook(hook any) string {
+	if named, ok := hook.(interface{ Name() string }); ok {
+		return named.Name()
+	}
+	typ := reflect.TypeOf(hook)
+	if typ.Kind() == reflect.Pointer {
+		typ = typ.Elem()
+	}
+	return typ.Name()
+}
+
+func preHookNames(hooks []engine.PreHook) []string {
+	names := make([]string, 0, len(hooks))
+	for _, hook := range hooks {
+		names = append(names, namedHook(hook))
+	}
+	return names
+}
+
+func postHookNames(hooks []engine.PostHook) []string {
+	names := make([]string, 0, len(hooks))
+	for _, hook := range hooks {
+		names = append(names, namedHook(hook))
+	}
+	return names
+}
+
+func TestPrivacyServiceConstructedOnceAndShared(t *testing.T) {
+	cfg := strictPrivacyConfig()
+	cfg.ChatTrace = true
+	cfg.ChatTraceFile = filepath.Join(t.TempDir(), "chat-trace.log")
+	a, cleanup, err := newApp(context.Background(), cfg, testutil.Logger(t))
+	if err != nil {
+		t.Fatalf("newApp: %v", err)
+	}
+	if a.privacyService == nil || a.privacySnapshot == nil {
+		t.Fatal("privacy service and safe snapshot projection must be available")
+	}
+
+	var privacyHook *pii.PIIRedactionHook
+	var traceHook *plugin.ChatTraceHook
+	for _, hook := range a.hooks.Pre {
+		switch typed := hook.(type) {
+		case *pii.PIIRedactionHook:
+			privacyHook = typed
+		case *plugin.ChatTraceHook:
+			traceHook = typed
+		}
+	}
+	if privacyHook == nil || traceHook == nil {
+		t.Fatalf("privacy/trace hook missing from Pre chain: %v", preHookNames(a.hooks.Pre))
+	}
+	if privacyHook.Service != a.privacyService {
+		t.Fatal("PIIRedactionHook does not share app privacy service")
+	}
+	if traceHook.Privacy != a.privacyService {
+		t.Fatal("ChatTraceHook does not share app privacy service")
+	}
+	if a.privacySnapshot != a.privacyService {
+		t.Fatal("safe snapshot projection does not share app privacy service")
+	}
+
+	cleanup()
+	state := privacy.NewRequestState(privacy.RequestMetadata{RequestedProfile: "strict", ScopeID: "after-cleanup"})
+	ctx := privacy.WithRequestState(context.Background(), state)
+	_, err = a.privacyService.Before(ctx, &canonical.ChatRequest{})
+	status, code, ok := privacy.ErrorInfo(err)
+	if !ok || status != http.StatusConflict || code != privacy.CodeScopeClosed {
+		t.Fatalf("privacy service remained open after cleanup: ErrorInfo=(%d,%q,%t), err=%v", status, code, ok, err)
+	}
+}
+
+func TestPrivacyServiceTraceSummaryLifecycle(t *testing.T) {
+	a, cleanup, err := newApp(context.Background(), strictPrivacyConfig(), testutil.Logger(t))
+	if err != nil {
+		t.Fatalf("newApp: %v", err)
+	}
+	defer cleanup()
+	state := privacy.NewRequestState(privacy.RequestMetadata{
+		RequestedProfile: "strict",
+		ScopeID:          "trace-summary",
+		Surface:          "anthropic",
+		Workload:         "network-hardening",
+	})
+	ctx := privacy.WithRequestState(context.Background(), state)
+	wantUnresolved := map[string]any{
+		"surface": "anthropic", "workload": "network-hardening", "profile": "strict",
+		"coverage": "unresolved", "result": "unresolved",
+		"transformed": 0, "restored": 0, "blocked": 0,
+	}
+	if diff := cmp.Diff(wantUnresolved, a.privacyService.TraceSummary(ctx)); diff != "" {
+		t.Fatalf("unresolved trace summary mismatch (-want +got):\n%s", diff)
+	}
+
+	req := &canonical.ChatRequest{Messages: []canonical.Message{{
+		Role: canonical.RoleUser, Content: []canonical.ContentPart{{Kind: canonical.ContentKindText, Text: "ordinary request"}},
+	}}}
+	if response, err := a.privacyService.Before(ctx, req); err != nil || response != nil {
+		t.Fatalf("Before=(%v,%v), want (nil,nil)", response, err)
+	}
+	resp := &canonical.ChatResponse{Message: canonical.Message{
+		Role: canonical.RoleAssistant, Content: []canonical.ContentPart{{Kind: canonical.ContentKindText, Text: "ordinary response"}},
+	}}
+	if err := a.privacyService.After(ctx, req, resp); err != nil {
+		t.Fatalf("After: %v", err)
+	}
+	wantPass := map[string]any{
+		"surface": "anthropic", "workload": "network-hardening", "profile": "strict",
+		"coverage": "full", "result": "pass",
+		"transformed": 0, "restored": 0, "blocked": 0,
+	}
+	if diff := cmp.Diff(wantPass, a.privacyService.TraceSummary(ctx)); diff != "" {
+		t.Fatalf("validated trace summary mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestHookOrderPrivacyBoundary(t *testing.T) {
+	cfg := strictPrivacyConfig()
+	cfg.ChatTrace = true
+	cfg.ChatTraceFile = filepath.Join(t.TempDir(), "chat-trace.log")
+	a, cleanup, err := newApp(context.Background(), cfg, testutil.Logger(t))
+	if err != nil {
+		t.Fatalf("newApp: %v", err)
+	}
+	defer cleanup()
+
+	wantPre := []string{
+		"ChatTraceHook", "RequestIDHook", "AuthHook", "JSONFormatSteeringHook",
+		"CompressionHook", "PIIRedactionHook", "LoggingHook",
+	}
+	if diff := cmp.Diff(wantPre, preHookNames(a.hooks.Pre)); diff != "" {
+		t.Fatalf("Pre hook order mismatch (-want +got):\n%s", diff)
+	}
+	wantPost := []string{"PIIRedactionHook", "LoggingHook", "ChatTraceHook"}
+	if diff := cmp.Diff(wantPost, postHookNames(a.hooks.Post)); diff != "" {
+		t.Fatalf("Post hook order mismatch (-want +got):\n%s", diff)
+	}
+
+	trace, ok := a.hooks.Pre[0].(*plugin.ChatTraceHook)
+	if !ok {
+		t.Fatalf("first Pre hook = %T, want *plugin.ChatTraceHook", a.hooks.Pre[0])
+	}
+	req := &canonical.ChatRequest{
+		Model:  "auto",
+		System: "system canary",
+		Messages: []canonical.Message{{
+			Role:    canonical.RoleUser,
+			Content: []canonical.ContentPart{{Kind: canonical.ContentKindText, Text: "request canary"}},
+		}},
+	}
+	want := *req
+	want.Messages = append([]canonical.Message(nil), req.Messages...)
+	want.Messages[0].Content = append([]canonical.ContentPart(nil), req.Messages[0].Content...)
+	state := privacy.NewRequestState(privacy.RequestMetadata{RequestedProfile: "strict", Surface: "openai"})
+	ctx := privacy.WithRequestState(plugin.WithRequestID(context.Background(), "trace-nonmutating"), state)
+	if response, err := trace.Before(ctx, req); err != nil || response != nil {
+		t.Fatalf("ChatTrace.Before = (%v,%v), want (nil,nil)", response, err)
+	}
+	if diff := cmp.Diff(want, *req); diff != "" {
+		t.Fatalf("ChatTrace mutated canonical request (-want +got):\n%s", diff)
+	}
+}
+
+func TestStrictRequiresHookAfterFiltering(t *testing.T) {
+	cfg := strictPrivacyConfig()
+	cfg.EnabledHooks = []string{
+		"RequestIDHook", "AuthHook", "JSONFormatSteeringHook", "CompressionHook", "LoggingHook",
+	}
+	a, cleanup, err := newApp(context.Background(), cfg, testutil.Logger(t))
+	cleanup()
+	if err == nil {
+		t.Fatalf("newApp = %+v, nil error; strict startup must reject missing PIIRedactionHook", a)
+	}
+	if !strings.Contains(err.Error(), "strict") || !strings.Contains(err.Error(), "PIIRedactionHook") {
+		t.Fatalf("startup error = %q, want strict + PIIRedactionHook", err)
+	}
+}
 
 func TestBuildAdminLogSourcesIncludesKiroWithFriendlyLabels(t *testing.T) {
 	paths, order, labels := buildAdminLogSources("127.0.0.1:18080", "gateway.log", "boot.log", "kiro.log", "trace.log", true)
@@ -645,7 +853,7 @@ func TestApp_WarmupBeforeListen(t *testing.T) {
 // six registered hooks at /health/hooks, in registration order:
 //
 //	RequestIDHook, AuthHook, JSONFormatSteeringHook,
-//	PIIRedactionHook, CompressionHook, LoggingHook.
+//	CompressionHook, PIIRedactionHook, LoggingHook.
 //
 // CompressionHook (context-compression feature) joined the default
 // chain after JSONFormatSteeringHook did; it is subject to the same
@@ -703,8 +911,8 @@ func TestApp_DefaultHookChain_AllSixHooksPresent(t *testing.T) {
 		"RequestIDHook",
 		"AuthHook",
 		"JSONFormatSteeringHook",
-		"PIIRedactionHook",
 		"CompressionHook",
+		"PIIRedactionHook",
 		"LoggingHook",
 	}
 	if len(body.Hooks) < len(wantOrder) {
