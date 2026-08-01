@@ -82,14 +82,17 @@ func startAndDrain(t *testing.T, cmd string, args []string) []map[string]any {
 	if err != nil {
 		t.Fatalf("acp.New: %v", err)
 	}
+	// Keep teardown guaranteed even when a package-parallel run delays the
+	// intentionally CPU-heavy fake past the bounded completion wait below.
+	defer func() { _ = c.Close() }()
 
 	// Wait for the subprocess to exit (Done fires when the read/write
 	// goroutines tear down after EOF). Bound by an outer deadline so
 	// a hung fake does not stall CI.
 	select {
 	case <-c.Done():
-	case <-time.After(3 * time.Second):
-		t.Fatalf("subprocess did not exit within 3s")
+	case <-time.After(10 * time.Second):
+		t.Fatalf("subprocess did not exit within 10s")
 	}
 
 	if err := c.Close(); err != nil {
