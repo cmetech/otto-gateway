@@ -57,6 +57,16 @@ The response path streams back to the original surface using the surface-appropr
 
 **Cross-compiled.** One Go binary, built for Linux and Windows from the same source.
 
+## Privacy boundary
+
+Gateway's `standard` privacy profile preserves secure-by-default PII handling;
+workflows can request the fail-closed `strict` profile and share an opaque scope
+across parallel calls. Strict consumers must validate the Gateway receipt and
+must never call an ACP worker directly. See the
+[privacy boundary operations guide](docs/privacy-boundary.md) for every
+configuration key, request header, stable error, receipt check, monitoring
+query, and protected local-triage procedure.
+
 ---
 
 ## Status

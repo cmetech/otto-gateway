@@ -189,6 +189,15 @@ THRESHOLDS_BAD = [
     {"color": "yellow", "value": 1},
     {"color": "red", "value": 5},
 ]
+THRESHOLDS_ANY = [
+    {"color": "green", "value": None},
+    {"color": "red", "value": 1},
+]
+THRESHOLDS_CAPACITY = [
+    {"color": "green", "value": None},
+    {"color": "yellow", "value": 70},
+    {"color": "red", "value": 80},
+]
 THRESHOLDS_CONTEXT = [
     {"color": "green", "value": None},
     {"color": "yellow", "value": 70},
@@ -368,6 +377,254 @@ def add_fleet_overview(builder):
             ),
         )
     builder.next_line(4)
+
+
+def add_privacy(builder):
+    builder.row("Privacy Boundary")
+    safe_dimensions = (
+        "Privacy telemetry contains bounded counts and enum labels only; it never "
+        "labels by scope, request, route, raw error, token, alias, or protected value."
+    )
+    builder.panel(
+        "timeseries",
+        "Privacy Request Results",
+        0,
+        12,
+        8,
+        [
+            (
+                f"sum by(profile, surface, workload, result)(rate(gw_privacy_requests_total{SEL}[$__rate_interval])) or vector(0)",
+                "{{profile}} / {{surface}} / {{workload}} / {{result}}",
+            )
+        ],
+        unit="reqps",
+        description=safe_dimensions,
+        options=timeseries_options(),
+        config=timeseries_field("reqps"),
+    )
+    builder.panel(
+        "timeseries",
+        "Privacy Receipt Outcomes",
+        12,
+        6,
+        8,
+        [
+            (
+                f"sum by(profile, result)(rate(gw_privacy_receipts_total{SEL}[$__rate_interval])) or vector(0)",
+                "{{profile}} / {{result}}",
+            )
+        ],
+        unit="reqps",
+        description="Bounded receipt creation and failure outcomes.",
+        options=timeseries_options(),
+        config=timeseries_field("reqps"),
+    )
+    builder.panel(
+        "timeseries",
+        "Privacy Internal Errors",
+        18,
+        6,
+        8,
+        [
+            (
+                f"sum by(stage, reason)(rate(gw_privacy_errors_total{SEL}[$__rate_interval])) or vector(0)",
+                "{{stage}} / {{reason}}",
+            )
+        ],
+        unit="reqps",
+        description="Bounded internal privacy failures. Raw errors are never metric labels.",
+        options=timeseries_options(),
+        config=timeseries_field("reqps"),
+    )
+    builder.next_line(8)
+
+    builder.panel(
+        "timeseries",
+        "Privacy Transformations and Restorations",
+        0,
+        12,
+        8,
+        [
+            (
+                f"sum by(profile, entity, action)(rate(gw_privacy_transformations_total{SEL}[$__rate_interval])) or vector(0)",
+                "transform / {{profile}} / {{entity}} / {{action}}",
+            ),
+            (
+                f"sum by(profile, entity, result)(rate(gw_privacy_restorations_total{SEL}[$__rate_interval])) or vector(0)",
+                "restore / {{profile}} / {{entity}} / {{result}}",
+            ),
+        ],
+        unit="ops",
+        description=safe_dimensions,
+        options=timeseries_options(),
+        config=timeseries_field("ops"),
+    )
+    builder.panel(
+        "timeseries",
+        "Privacy Blocks and Residual Findings",
+        12,
+        12,
+        8,
+        [
+            (
+                f"sum by(profile, stage, reason)(rate(gw_privacy_blocks_total{SEL}[$__rate_interval])) or vector(0)",
+                "block / {{profile}} / {{stage}} / {{reason}}",
+            ),
+            (
+                f"sum by(profile, stage, entity)(rate(gw_privacy_residual_findings_total{SEL}[$__rate_interval])) or vector(0)",
+                "residual / {{profile}} / {{stage}} / {{entity}}",
+            ),
+        ],
+        unit="reqps",
+        description=safe_dimensions,
+        options=timeseries_options(),
+        config=timeseries_field("reqps"),
+    )
+    builder.next_line(8)
+
+    builder.panel(
+        "timeseries",
+        "Privacy Processing Latency",
+        0,
+        12,
+        8,
+        [
+            (
+                f"sum by(profile, stage)(rate(gw_privacy_processing_duration_seconds_sum{SEL}[$__rate_interval])) "
+                f"/ clamp_min(sum by(profile, stage)(rate(gw_privacy_processing_duration_seconds_count{SEL}[$__rate_interval])), 0.000001) or vector(0)",
+                "average / {{profile}} / {{stage}}",
+            ),
+            (
+                f"histogram_quantile(0.95, sum by(le, profile, stage)(rate(gw_privacy_processing_duration_seconds_bucket{SEL}[$__rate_interval]))) or vector(0)",
+                "p95 / {{profile}} / {{stage}}",
+            ),
+        ],
+        unit="s",
+        description="Average and p95 privacy processing overhead by bounded stage.",
+        options=timeseries_options(),
+        config=timeseries_field("s"),
+    )
+    builder.panel(
+        "timeseries",
+        "Privacy Scope and Capacity Utilization",
+        12,
+        12,
+        8,
+        [
+            (f"gw_privacy_scopes_active{SEL}", "active scopes / {{instance}}"),
+            (f"gw_privacy_scope_capacity{SEL}", "scope maximum / {{instance}}"),
+            (f"gw_privacy_mapping_entries{SEL}", "mapping entries / {{instance}}"),
+            (f"gw_privacy_mapping_capacity{SEL}", "mapping maximum / {{instance}}"),
+            (
+                f"gw_privacy_mapping_per_scope_capacity{SEL}",
+                "per-scope mapping maximum / {{instance}}",
+            ),
+            (
+                f"gw_privacy_scope_requests_in_flight{SEL}",
+                "requests in flight / {{instance}}",
+            ),
+            (f"gw_privacy_scope_ttl_seconds{SEL}", "scope TTL seconds / {{instance}}"),
+            (
+                f"gw_privacy_oldest_scope_age_seconds{SEL}",
+                "oldest scope age seconds / {{instance}}",
+            ),
+            (
+                f"sum by(event)(rate(gw_privacy_scope_events_total{SEL}[$__rate_interval])) or vector(0)",
+                "scope event / {{event}}",
+            ),
+            (
+                f"sum by(resource)(rate(gw_privacy_capacity_rejections_total{SEL}[$__rate_interval])) or vector(0)",
+                "capacity rejection / {{resource}}",
+            ),
+            (
+                f"sum by(operation, result)(rate(gw_privacy_mapping_operations_total{SEL}[$__rate_interval])) or vector(0)",
+                "mapping / {{operation}} / {{result}}",
+            ),
+        ],
+        unit="short",
+        description="Current scope and mapping gauges are shown with their configured maxima.",
+        options=timeseries_options(),
+        config=timeseries_field("short"),
+    )
+    builder.next_line(8)
+
+    builder.panel(
+        "timeseries",
+        "Privacy Triage Operations",
+        0,
+        24,
+        7,
+        [
+            (f"gw_privacy_triage_enabled{SEL}", "triage enabled / {{instance}}"),
+            (
+                f"sum by(operation, result)(rate(gw_privacy_triage_requests_total{SEL}[$__rate_interval])) or vector(0)",
+                "{{operation}} / {{result}}",
+            ),
+        ],
+        unit="short",
+        description="Break-glass triage posture and bounded local operation outcomes.",
+        options=timeseries_options(),
+        config=timeseries_field("short"),
+    )
+    builder.next_line(7)
+
+    alert_panels = [
+        (
+            "Alert: Strict Privacy Blocks",
+            f"sum(increase(gw_privacy_blocks_total{{{BASE}, profile=\"strict\"}}[$__range])) or vector(0)",
+            "Investigate any strict fail-closed block; alert when above zero.",
+        ),
+        (
+            "Alert: Privacy Residual Findings",
+            f"sum(increase(gw_privacy_residual_findings_total{SEL}[$__range])) or vector(0)",
+            "Investigate any residual finding; alert when above zero.",
+        ),
+        (
+            "Alert: Privacy Capacity Pressure",
+            f"max(label_replace(100 * gw_privacy_scopes_active{SEL} / clamp_min(gw_privacy_scope_capacity{SEL}, 1), \"resource\", \"scope\", \"\", \"\") or "
+            f"label_replace(100 * gw_privacy_mapping_entries{SEL} / clamp_min(gw_privacy_mapping_capacity{SEL}, 1), \"resource\", \"mapping\", \"\", \"\") or "
+            f"label_replace(100 * (sum(increase(gw_privacy_capacity_rejections_total{SEL}[$__range])) > bool 0), \"resource\", \"rejection\", \"\", \"\")) or vector(0)",
+            "Alert above 80% scope or mapping utilization, or at 100% for any capacity rejection.",
+        ),
+        (
+            "Alert: Privacy Mapping Growth",
+            f"clamp_min(max_over_time(gw_privacy_mapping_entries{SEL}[$__range]) - min_over_time(gw_privacy_mapping_entries{SEL}[$__range]), 0)",
+            "Investigate sustained or unexpected reversible-ledger growth.",
+        ),
+        (
+            "Alert: Privacy Internal Errors",
+            f"sum(increase(gw_privacy_errors_total{SEL}[$__range])) or vector(0)",
+            "Investigate any bounded internal privacy error; alert when above zero.",
+        ),
+        (
+            "Alert: Missing Strict Receipts",
+            f"clamp_min(sum(increase(gw_privacy_requests_total{{{BASE}, profile=\"strict\", result=\"pass\"}}[$__range])) - "
+            f"sum(increase(gw_privacy_receipts_total{{{BASE}, profile=\"strict\", result=\"pass\"}}[$__range])), 0) or vector(0)",
+            "Alert when successful strict requests outnumber successful strict receipts.",
+        ),
+    ]
+    for index, (title, expr, description) in enumerate(alert_panels):
+        unit = "percent" if title == "Alert: Privacy Capacity Pressure" else "short"
+        thresholds = THRESHOLDS_CAPACITY if unit == "percent" else THRESHOLDS_ANY
+        builder.panel(
+            "stat",
+            title,
+            (index % 3) * 8,
+            8,
+            5,
+            [(expr, "")],
+            unit=unit,
+            description=description,
+            options=stat_options(graph=False),
+            config=field_config(
+                unit,
+                thresholds=thresholds,
+                color_mode="thresholds",
+            ),
+        )
+        if index == 2:
+            builder.next_line(5)
+    builder.next_line(5)
 
 
 def add_user_activity(builder):
@@ -1327,6 +1584,7 @@ def build_templating():
 def build_dashboard():
     builder = DashboardBuilder()
     add_fleet_overview(builder)
+    add_privacy(builder)
     add_user_activity(builder)
     add_user_failures(builder)
     add_capacity(builder)

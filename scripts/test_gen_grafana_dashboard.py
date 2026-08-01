@@ -11,6 +11,7 @@ DASHBOARD_JSON = ROOT / "docs" / "grafana" / "otto-gateway-dashboard.json"
 
 ROW_ORDER = [
     "Fleet Overview",
+    "Privacy Boundary",
     "User Activity and Adoption",
     "User Experience and Failures",
     "Gateway Capacity and Pool Health",
@@ -62,6 +63,27 @@ CUSTOM_METRICS = {
     "gw_pool_slot_recycles_total",
     "gw_pool_slot_respawns_total",
     "gw_pool_spawn_failing",
+    "gw_privacy_blocks_total",
+    "gw_privacy_capacity_rejections_total",
+    "gw_privacy_errors_total",
+    "gw_privacy_mapping_capacity",
+    "gw_privacy_mapping_entries",
+    "gw_privacy_mapping_operations_total",
+    "gw_privacy_mapping_per_scope_capacity",
+    "gw_privacy_oldest_scope_age_seconds",
+    "gw_privacy_processing_duration_seconds",
+    "gw_privacy_receipts_total",
+    "gw_privacy_requests_total",
+    "gw_privacy_residual_findings_total",
+    "gw_privacy_scope_capacity",
+    "gw_privacy_scope_events_total",
+    "gw_privacy_scope_requests_in_flight",
+    "gw_privacy_scope_ttl_seconds",
+    "gw_privacy_scopes_active",
+    "gw_privacy_transformations_total",
+    "gw_privacy_restorations_total",
+    "gw_privacy_triage_enabled",
+    "gw_privacy_triage_requests_total",
     "gw_sessions_active",
     "gw_sessions_created_total",
     "gw_sessions_reaped_total",
@@ -135,8 +157,117 @@ class DashboardGeneratorTest(unittest.TestCase):
             "Open FD Utilization",
             "Gateway Uptime",
             "Gateways Reporting Now",
+            "Privacy Request Results",
+            "Privacy Transformations and Restorations",
+            "Privacy Blocks and Residual Findings",
+            "Privacy Processing Latency",
+            "Privacy Scope and Capacity Utilization",
+            "Privacy Receipt Outcomes",
+            "Privacy Triage Operations",
+            "Privacy Internal Errors",
         }
         self.assertTrue(required <= titles, sorted(required - titles))
+
+    def test_privacy_alerts(self):
+        titles = {panel["title"] for panel in all_panels(self.dashboard)}
+        required = {
+            "Alert: Strict Privacy Blocks",
+            "Alert: Privacy Residual Findings",
+            "Alert: Privacy Capacity Pressure",
+            "Alert: Privacy Mapping Growth",
+            "Alert: Privacy Internal Errors",
+            "Alert: Missing Strict Receipts",
+        }
+        self.assertTrue(required <= titles, sorted(required - titles))
+
+    def test_privacy_request_results_are_bounded_dimensions(self):
+        panel = next(
+            panel
+            for panel in all_panels(self.dashboard)
+            if panel["title"] == "Privacy Request Results"
+        )
+        expr = panel["targets"][0]["expr"]
+        self.assertIn("gw_privacy_requests_total", expr)
+        self.assertRegex(expr, r"sum by\(profile, ?surface, ?workload, ?result\)")
+        self.assertIn("[$__rate_interval]", expr)
+
+    def test_privacy_capacity_panels_show_current_and_configured_maxima(self):
+        panel = next(
+            panel
+            for panel in all_panels(self.dashboard)
+            if panel["title"] == "Privacy Scope and Capacity Utilization"
+        )
+        exprs = "\n".join(target["expr"] for target in panel["targets"])
+        for metric in (
+            "gw_privacy_scopes_active",
+            "gw_privacy_scope_capacity",
+            "gw_privacy_mapping_entries",
+            "gw_privacy_mapping_capacity",
+            "gw_privacy_mapping_per_scope_capacity",
+            "gw_privacy_scope_requests_in_flight",
+            "gw_privacy_scope_ttl_seconds",
+            "gw_privacy_oldest_scope_age_seconds",
+        ):
+            self.assertIn(metric, exprs)
+
+    def test_privacy_queries_use_only_bounded_safe_group_labels(self):
+        allowed = {
+            "action",
+            "entity",
+            "event",
+            "instance",
+            "le",
+            "operation",
+            "profile",
+            "reason",
+            "resource",
+            "result",
+            "stage",
+            "surface",
+            "workload",
+        }
+        protected = {
+            "scope",
+            "scope_id",
+            "request",
+            "request_id",
+            "route",
+            "error",
+            "raw_error",
+            "token",
+            "alias",
+            "original",
+            "synthetic",
+            "value",
+            "session",
+            "user",
+        }
+        for panel in all_panels(self.dashboard):
+            for query in panel.get("targets", []):
+                expr = query.get("expr", "")
+                if "gw_privacy_" not in expr:
+                    continue
+                for match in re.finditer(r"\b(?:by|without)\s*\(([^)]*)\)", expr):
+                    labels = {
+                        label.strip()
+                        for label in match.group(1).split(",")
+                        if label.strip()
+                    }
+                    self.assertFalse(labels & protected, f'{panel["title"]}: {expr}')
+                    self.assertTrue(labels <= allowed, f'{panel["title"]}: {expr}')
+
+    def test_privacy_rates_and_percentages_tolerate_idle_series(self):
+        for panel in all_panels(self.dashboard):
+            for query in panel.get("targets", []):
+                expr = query.get("expr", "")
+                if "gw_privacy_" not in expr:
+                    continue
+                if "rate(" in expr:
+                    self.assertIn("[$__rate_interval]", expr, panel["title"])
+                if "100 *" in expr:
+                    self.assertIn("clamp_min(", expr, panel["title"])
+                if panel.get("type") == "stat" and "increase(" in expr:
+                    self.assertIn("or vector(0)", expr, panel["title"])
 
     def test_every_metric_panel_has_gateway_selector(self):
         for panel in all_panels(self.dashboard):

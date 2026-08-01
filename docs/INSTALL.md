@@ -2,6 +2,11 @@
 
 This file complements `README.md` (the operator quickstart that also ships in every release archive). The quickstart owns the happy path; **this file owns the nuance** — per-OS first-run checklists, the `.env` file load order with cwd-independent location recommendations, the Windows wrapper choice tradeoff table, upgrade behavior, common install pitfalls, and verification commands with expected output.
 
+Privacy-boundary upgrades add two generated secrets and restart-required
+profile, action, TTL, and capacity defaults. Before enabling strict workflows
+or rolling back to a binary that cannot issue privacy receipts, follow the
+[privacy boundary operations guide](privacy-boundary.md#upgrade-and-rollback).
+
 If you only ever run on one OS and your machine is unsurprising, the quickstart is enough. Read this file when:
 
 - You are installing on Windows for the first time (the cwd gotcha is real).

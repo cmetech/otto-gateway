@@ -4,6 +4,12 @@ A single-binary LLM gateway. Exposes OpenAI-, Ollama-, and Anthropic-compatible 
 
 This README is for **operators running the binary on a laptop**. Developers building the gateway should read the repo's top-level `README.md` and `docs/operating.md` instead.
 
+If a workflow requires fail-closed privacy enforcement, read the
+[privacy boundary operations guide](privacy-boundary.md) before enabling
+strict mode. It covers the generated secrets, restart-required settings,
+profile and scope propagation, receipt validation, monitoring, local triage,
+and rollback behavior.
+
 ---
 
 ## Install — first-time setup
@@ -301,8 +307,9 @@ KEY=$(openssl rand -hex 32)
 # entity name bound as AAD) before the worker sees it, then the response
 # Post-hook decrypts those tokens back to plaintext before the client
 # sees them — the client round-trips the original values without the
-# worker ever observing them. Streaming is auto-disabled when encrypt is
-# active (the hook flips Stream=false; adapters re-route to aggregated).
+# worker ever observing them. Policies that require response aggregation
+# validate first, then preserve the surface's native streaming framing through
+# synthetic replay.
 ```
 
 Persist by adding `PII_REDACTION_ENABLED=true`, `PII_REDACTION_MODE=encrypt`, and `PII_ENCRYPT_KEY=...` to your `.env` file instead. Rotating the encrypt key invalidates every prior encrypted token; treat rotation as a breaking change for any in-flight conversation that round-trips.

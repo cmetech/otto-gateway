@@ -11,6 +11,12 @@ process supervision on developer laptops — the binary itself has no
 [`scripts/gw`](../scripts/gw) (POSIX) and
 [`scripts/gw.ps1`](../scripts/gw.ps1) (PowerShell).
 
+Strict privacy configuration, workflow headers, receipts, bounded metrics,
+stable errors, and break-glass mapping operations are documented in the
+[privacy boundary operations guide](privacy-boundary.md). Direct worker access
+bypasses that boundary; strict workflow consumers must fail closed when the
+receipt is missing or invalid.
+
 ## Quick Start (macOS / Linux)
 
 ```bash
@@ -90,6 +96,8 @@ networks without operator-side mitigation.**
 | `run` | Run gateway in the foreground — equivalent to invoking the binary directly |
 | `env` | Print the resolved gateway env (the keys that would be passed to the binary). Secrets are masked by default; pass `--show-secrets` (bash) or `-ShowSecrets` (PowerShell) to print literals. |
 | `support` | Create a redacted, best-effort diagnostic archive. See [Support bundles](#support-bundles). |
+| `privacy status` | Show the ordinary read-only privacy posture without reading the triage token. |
+| `privacy scopes\|inspect\|clear` | Use the separately authorized, loopback-only triage surface. See the [privacy operations guide](privacy-boundary.md#status-and-protected-triage). |
 
 ## Support bundles
 
@@ -427,19 +435,19 @@ logs only; Co-worker retains its own viewer.
 
 ### Phase 8 — Plugin chain (hooks)
 
-Phase 8 ships five canonical-layer hooks (RequestIDHook, AuthHook,
-JSONFormatSteeringHook, PIIRedactionHook, LoggingHook) wired into a
-hardcoded chain in `cmd/otto-gateway/main.go`. The chain runs on
-every request that reaches the engine, in registration order:
-`RequestID → Auth → JSONFormatSteering → PII → Logging` (Pre), with
-LoggingHook also on Post for timing + structured exit records.
+Gateway ships six canonical-layer hooks. The chain runs on every request that
+reaches the engine in this fixed inbound order:
+`RequestID → Auth → JSONFormatSteering → Compression → Privacy → Logging`.
+Privacy remains registered as `PIIRedactionHook` for compatibility and is the
+final content-mutating stage. Its response enforcement and LoggingHook also
+run after the worker.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ENABLED_HOOKS` | _(empty = all enabled)_ | Comma-split allowlist of hook type names enabled at boot. Default empty means every hook in `main.go`'s slice runs (default-permissive, matches `AUTH_TOKEN` semantics). A name that does not match any registered hook causes the gateway to **refuse to start** with stderr/stdout containing `unknown hook: "<name>"`. Typo-fail-fast — `ENABLED_HOOKS=PIIRedaction` (missing the `Hook` suffix) would silently disable PII redaction; the boot error prevents this. **Registration order is preserved**: `ENABLED_HOOKS=LoggingHook,RequestIDHook` runs as `[RequestIDHook, LoggingHook]`, not the allowlist order. |
+| `ENABLED_HOOKS` | _(empty = all enabled)_ | Comma-split allowlist of registered hook names. Empty runs the complete default chain. An unknown name makes Gateway refuse startup instead of silently weakening policy. Registration order is fixed: an allowlist selects hooks but cannot reorder them. |
 | `JSON_FORMAT_STEERING_ENABLED` | `true` | Master switch for `JSONFormatSteeringHook`. When `true` (default), the hook appends verbatim GEN_RULES text to `req.System` on any Ollama request carrying `format:"json"` or a JSON-schema object — steering the model to emit raw JSON without markdown fences. Node-shim parity: the original Node proxy applied this unconditionally; the gateway default mirrors that behaviour. Set `false` to disable globally. The hook is still visible via `GET /health/hooks` when disabled. |
 | `PII_REDACTION_ENABLED` | `true` | Master switch for `PIIRedactionHook`. Default `true` — redaction is on out of the box (secure-by-default). Set `PII_REDACTION_ENABLED=false` to opt out. Two-knob composition with `ENABLED_HOOKS`: `ENABLED_HOOKS` controls whether the hook is in the chain at all; `PII_REDACTION_ENABLED` controls whether it does work when invoked. |
-| `PII_ENABLED_ENTITIES` | _(empty = all active)_ | Comma-split list of recognizer names. Default empty = all registered recognizers active. Allowed names: regex — `Email`, `IPv4`, `IPv6`, `SSN`, `CreditCard`, `USPhone`, `SIP_URI`, `IMEI`, `IMSI`, `MSISDN`, `MAC_ADDRESS`, `COORDINATES`, `SITE`; NER (requires `PII_NER_ENABLED=true`) — `PERSON`, `LOCATION`. Unknown names → boot error. Context-anchored recognizers (`IMEI`, `IMSI`, `MSISDN`, `SITE`) require a recognizer-specific keyword within ±50 bytes of the match. |
+| `PII_ENABLED_ENTITIES` | _(empty = all active)_ | Comma-split list of recognizer names. Default empty = all registered recognizers active. Regex names are `Email`, `IPv4`, `IPv6`, `SSN`, `CreditCard`, `USPhone`, `SIP_URI`, `IMEI`, `IMSI`, `MSISDN`, `MAC_ADDRESS`, `COORDINATES`, `SITE`, `USAddress`, `USState`, and `USZIP`; NER adds `PERSON` and `LOCATION` when enabled. Unknown names cause a boot error. |
 | `PII_REDACTION_MODE` | `encrypt` | One of `replace`, `mask`, `hash`, `drop`, `encrypt`. Default `encrypt`: PII is replaced with `[PII:EMAIL:base64url]` AES-256-GCM ciphertext before the worker sees the request, and the response Post-hook decrypts those tokens back to plaintext before the client sees the response (round-trip). Other modes: `replace` substitutes `[EMAIL_N]` tokens with a per-canonical-value counter; `mask` substitutes partial obfuscation (e.g., `co***@cm***.io`); `hash` substitutes `[EMAIL:h-XXXXXXXX]` with the first 8 hex chars of `HMAC-SHA256(PII_HASH_KEY, canonical(value))`; `drop` substitutes an empty string. Unknown values → boot error. |
 | `PII_HASH_KEY` | _(empty)_ | HMAC-SHA256 key for `PII_REDACTION_MODE=hash`. **Required when mode is `hash`** — boot error otherwise (no silent unkeyed-HMAC fallback). Rotating this key invalidates prior correlation tokens — feature, not a bug: rotate to break attacker correlation if a key leak is suspected. |
 | `PII_ENCRYPT_KEY` | _(empty, but install scripts auto-seed)_ | Key for `PII_REDACTION_MODE=encrypt` (the default) or any per-entity encrypt override via `PII_ENTITY_ACTIONS`. Accepts **any non-empty string** — the gateway derives a 32-byte AES-256-GCM key via SHA-256 at boot. **Required when encrypt is active anywhere** — boot error otherwise (no silent fallback). `gw init` auto-mints this alongside `AUTH_TOKEN` and `PII_HASH_KEY`, and `--regenerate-secrets` / `-RegenerateSecrets` rotates all three. Rotating invalidates prior round-trip tokens (in-flight chat history affected; new requests after restart use the new key). |
@@ -468,7 +476,8 @@ convention):
     {"name": "RequestIDHook", "kind": "Pre", "enabled": true, "config": {...}},
     {"name": "AuthHook", "kind": "Pre", "enabled": true, "config": {"token_count": 1}},
     {"name": "JSONFormatSteeringHook", "kind": "Pre", "enabled": true, "config": {"enabled": true, "default_on": true}},
-    {"name": "PIIRedactionHook", "kind": "Pre", "enabled": true, "config": {"enabled": false, "mode": "replace", "entities": [...]}},
+    {"name": "CompressionHook", "kind": "Pre", "enabled": true, "config": {"enabled": false}},
+    {"name": "PIIRedactionHook", "kind": "Pre,Post", "enabled": true, "config": {"enabled": true, "mode": "encrypt", "privacy": {...}}},
     {"name": "LoggingHook", "kind": "Pre,Post", "enabled": true, "config": {"level": "INFO"}}
   ]
 }
@@ -854,50 +863,17 @@ hand first and only then bypass.
 
 ## Known Limitations
 
-### encrypt + streaming clients (fixed in T-5b)
+### privacy buffering and streaming
 
-When `PII_REDACTION_MODE=encrypt` (or any entity is configured for
-`encrypt` via `PII_ENTITY_ACTIONS`), the PII Pre hook flips
-`req.Stream = false` so the response Post hook can decrypt the
-aggregated response before any bytes hit the wire. The three adapter
-handlers (Anthropic, OpenAI, Ollama) detect the post-Run
-`req.Stream == false` state and re-route through the engine's
-`CollectFromRun` aggregated path, rendering via the surface's
-non-streaming JSON response shape:
-
-- Anthropic `/v1/messages`: renders via `chatResponseToMessage`
-  (single `message` envelope).
-- OpenAI `/v1/chat/completions`: renders via
-  `chatResponseToCompletion` (single `chat.completion` envelope).
-- OpenAI `/v1/completions`: always non-streaming on this surface
-  (`stream:true` is silently downgraded) — no T-5b re-route needed.
-- Ollama `/api/chat`: renders via `chatResponseToWire` (single
-  Ollama response object with `done:true`, not an NDJSON record
-  stream).
-- Ollama `/api/generate`: renders via `generateResponseToWire`
-  (single Ollama generate response object).
-
-Streaming clients (Pi-SDK chat CLI, loop24-client via
-`ANTHROPIC_BASE_URL`, LangFlow flows that set `stream: true`)
-receive a single complete decrypted JSON response when encrypt mode
-is active, instead of the streaming SSE/NDJSON they would normally
-get. Total wall-clock latency is unchanged (the ACP session runs the
-same way) but the response shape switches from streamed to buffered.
-
-**Known limitation: Anthropic `tool_use` rendering on the
-encrypt re-route path.** When encrypt mode is active and the
-Anthropic surface re-routes a streaming request through the
-aggregated path, the response is rendered via the generic engine
-aggregator (`CollectFromRun`), NOT via the Anthropic-local
-`CollectAnthropicChat` aggregator that handles native `tool_use`
-chunks. Plain-text assistant responses round-trip correctly. Native
-Anthropic `tool_use` content blocks are not aggregated on this path
-— kiro-native `ChunkKindToolCall` chunks render as `[tool: <name>]`
-narration text in the assistant message body instead of as discrete
-`tool_use` blocks. This is a v1 limitation; clients that require
-`tool_use` rendering on the encrypt path can disable encrypt for
-those workflows or rely on the non-streaming Anthropic path which
-uses `CollectAnthropicChat` natively.
+When a privacy policy requires response aggregation, Gateway collects the
+complete worker response, runs output validation and authorized restoration,
+and only then commits headers or body bytes. A caller that requested streaming
+still receives the native surface framing through synthetic SSE or NDJSON
+replay. Strict output blocks and internal errors therefore release no partial
+success bytes and use the surface's native error envelope. Standard requests
+that do not require aggregation retain the incremental path. See the
+[privacy boundary operations guide](privacy-boundary.md#runtime-enforcement)
+for the strict contract and receipt rules.
 
 ### encrypt mode decrypt WARN volume
 

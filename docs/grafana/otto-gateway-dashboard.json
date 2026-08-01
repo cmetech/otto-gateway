@@ -558,7 +558,7 @@
     {
       "id": 10,
       "type": "row",
-      "title": "User Activity and Adoption",
+      "title": "Privacy Boundary",
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -571,6 +571,1227 @@
     {
       "id": 11,
       "type": "timeseries",
+      "title": "Privacy Request Results",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 6
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "sum by(profile, surface, workload, result)(rate(gw_privacy_requests_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval])) or vector(0)",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": "{{profile}} / {{surface}} / {{workload}} / {{result}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "gradientMode": "opacity",
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean",
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Privacy telemetry contains bounded counts and enum labels only; it never labels by scope, request, route, raw error, token, alias, or protected value."
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Privacy Receipt Outcomes",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 12,
+        "y": 6
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "sum by(profile, result)(rate(gw_privacy_receipts_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval])) or vector(0)",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": "{{profile}} / {{result}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "gradientMode": "opacity",
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean",
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Bounded receipt creation and failure outcomes."
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Privacy Internal Errors",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 18,
+        "y": 6
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "sum by(stage, reason)(rate(gw_privacy_errors_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval])) or vector(0)",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": "{{stage}} / {{reason}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "gradientMode": "opacity",
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean",
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Bounded internal privacy failures. Raw errors are never metric labels."
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "Privacy Transformations and Restorations",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 14
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "sum by(profile, entity, action)(rate(gw_privacy_transformations_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval])) or vector(0)",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": "transform / {{profile}} / {{entity}} / {{action}}"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "sum by(profile, entity, result)(rate(gw_privacy_restorations_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval])) or vector(0)",
+          "range": true,
+          "instant": false,
+          "refId": "B",
+          "legendFormat": "restore / {{profile}} / {{entity}} / {{result}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "gradientMode": "opacity",
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean",
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Privacy telemetry contains bounded counts and enum labels only; it never labels by scope, request, route, raw error, token, alias, or protected value."
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "Privacy Blocks and Residual Findings",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 14
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "sum by(profile, stage, reason)(rate(gw_privacy_blocks_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval])) or vector(0)",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": "block / {{profile}} / {{stage}} / {{reason}}"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "sum by(profile, stage, entity)(rate(gw_privacy_residual_findings_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval])) or vector(0)",
+          "range": true,
+          "instant": false,
+          "refId": "B",
+          "legendFormat": "residual / {{profile}} / {{stage}} / {{entity}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "gradientMode": "opacity",
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean",
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Privacy telemetry contains bounded counts and enum labels only; it never labels by scope, request, route, raw error, token, alias, or protected value."
+    },
+    {
+      "id": 16,
+      "type": "timeseries",
+      "title": "Privacy Processing Latency",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 22
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "sum by(profile, stage)(rate(gw_privacy_processing_duration_seconds_sum{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval])) / clamp_min(sum by(profile, stage)(rate(gw_privacy_processing_duration_seconds_count{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval])), 0.000001) or vector(0)",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": "average / {{profile}} / {{stage}}"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by(le, profile, stage)(rate(gw_privacy_processing_duration_seconds_bucket{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval]))) or vector(0)",
+          "range": true,
+          "instant": false,
+          "refId": "B",
+          "legendFormat": "p95 / {{profile}} / {{stage}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "gradientMode": "opacity",
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean",
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Average and p95 privacy processing overhead by bounded stage."
+    },
+    {
+      "id": 17,
+      "type": "timeseries",
+      "title": "Privacy Scope and Capacity Utilization",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 22
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "gw_privacy_scopes_active{job=\"otto-gateway\", instance=~\"$gateway_id\"}",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": "active scopes / {{instance}}"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "gw_privacy_scope_capacity{job=\"otto-gateway\", instance=~\"$gateway_id\"}",
+          "range": true,
+          "instant": false,
+          "refId": "B",
+          "legendFormat": "scope maximum / {{instance}}"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "gw_privacy_mapping_entries{job=\"otto-gateway\", instance=~\"$gateway_id\"}",
+          "range": true,
+          "instant": false,
+          "refId": "C",
+          "legendFormat": "mapping entries / {{instance}}"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "gw_privacy_mapping_capacity{job=\"otto-gateway\", instance=~\"$gateway_id\"}",
+          "range": true,
+          "instant": false,
+          "refId": "D",
+          "legendFormat": "mapping maximum / {{instance}}"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "gw_privacy_mapping_per_scope_capacity{job=\"otto-gateway\", instance=~\"$gateway_id\"}",
+          "range": true,
+          "instant": false,
+          "refId": "E",
+          "legendFormat": "per-scope mapping maximum / {{instance}}"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "gw_privacy_scope_requests_in_flight{job=\"otto-gateway\", instance=~\"$gateway_id\"}",
+          "range": true,
+          "instant": false,
+          "refId": "F",
+          "legendFormat": "requests in flight / {{instance}}"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "gw_privacy_scope_ttl_seconds{job=\"otto-gateway\", instance=~\"$gateway_id\"}",
+          "range": true,
+          "instant": false,
+          "refId": "G",
+          "legendFormat": "scope TTL seconds / {{instance}}"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "gw_privacy_oldest_scope_age_seconds{job=\"otto-gateway\", instance=~\"$gateway_id\"}",
+          "range": true,
+          "instant": false,
+          "refId": "H",
+          "legendFormat": "oldest scope age seconds / {{instance}}"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "sum by(event)(rate(gw_privacy_scope_events_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval])) or vector(0)",
+          "range": true,
+          "instant": false,
+          "refId": "I",
+          "legendFormat": "scope event / {{event}}"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "sum by(resource)(rate(gw_privacy_capacity_rejections_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval])) or vector(0)",
+          "range": true,
+          "instant": false,
+          "refId": "J",
+          "legendFormat": "capacity rejection / {{resource}}"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "sum by(operation, result)(rate(gw_privacy_mapping_operations_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval])) or vector(0)",
+          "range": true,
+          "instant": false,
+          "refId": "K",
+          "legendFormat": "mapping / {{operation}} / {{result}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "gradientMode": "opacity",
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean",
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Current scope and mapping gauges are shown with their configured maxima."
+    },
+    {
+      "id": 18,
+      "type": "timeseries",
+      "title": "Privacy Triage Operations",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 30
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "gw_privacy_triage_enabled{job=\"otto-gateway\", instance=~\"$gateway_id\"}",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": "triage enabled / {{instance}}"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "sum by(operation, result)(rate(gw_privacy_triage_requests_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval])) or vector(0)",
+          "range": true,
+          "instant": false,
+          "refId": "B",
+          "legendFormat": "{{operation}} / {{result}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "gradientMode": "opacity",
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean",
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Break-glass triage posture and bounded local operation outcomes."
+    },
+    {
+      "id": 19,
+      "type": "stat",
+      "title": "Alert: Strict Privacy Blocks",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 0,
+        "y": 37
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "sum(increase(gw_privacy_blocks_total{job=\"otto-gateway\", instance=~\"$gateway_id\", profile=\"strict\"}[$__range])) or vector(0)",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "description": "Investigate any strict fail-closed block; alert when above zero."
+    },
+    {
+      "id": 20,
+      "type": "stat",
+      "title": "Alert: Privacy Residual Findings",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 8,
+        "y": 37
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "sum(increase(gw_privacy_residual_findings_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__range])) or vector(0)",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "description": "Investigate any residual finding; alert when above zero."
+    },
+    {
+      "id": 21,
+      "type": "stat",
+      "title": "Alert: Privacy Capacity Pressure",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 16,
+        "y": 37
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "max(label_replace(100 * gw_privacy_scopes_active{job=\"otto-gateway\", instance=~\"$gateway_id\"} / clamp_min(gw_privacy_scope_capacity{job=\"otto-gateway\", instance=~\"$gateway_id\"}, 1), \"resource\", \"scope\", \"\", \"\") or label_replace(100 * gw_privacy_mapping_entries{job=\"otto-gateway\", instance=~\"$gateway_id\"} / clamp_min(gw_privacy_mapping_capacity{job=\"otto-gateway\", instance=~\"$gateway_id\"}, 1), \"resource\", \"mapping\", \"\", \"\") or label_replace(100 * (sum(increase(gw_privacy_capacity_rejections_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__range])) > bool 0), \"resource\", \"rejection\", \"\", \"\")) or vector(0)",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 70
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "description": "Alert above 80% scope or mapping utilization, or at 100% for any capacity rejection."
+    },
+    {
+      "id": 22,
+      "type": "stat",
+      "title": "Alert: Privacy Mapping Growth",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 0,
+        "y": 42
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "clamp_min(max_over_time(gw_privacy_mapping_entries{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__range]) - min_over_time(gw_privacy_mapping_entries{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__range]), 0)",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "description": "Investigate sustained or unexpected reversible-ledger growth."
+    },
+    {
+      "id": 23,
+      "type": "stat",
+      "title": "Alert: Privacy Internal Errors",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 8,
+        "y": 42
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "sum(increase(gw_privacy_errors_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__range])) or vector(0)",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "description": "Investigate any bounded internal privacy error; alert when above zero."
+    },
+    {
+      "id": 24,
+      "type": "stat",
+      "title": "Alert: Missing Strict Receipts",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 16,
+        "y": 42
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "clamp_min(sum(increase(gw_privacy_requests_total{job=\"otto-gateway\", instance=~\"$gateway_id\", profile=\"strict\", result=\"pass\"}[$__range])) - sum(increase(gw_privacy_receipts_total{job=\"otto-gateway\", instance=~\"$gateway_id\", profile=\"strict\", result=\"pass\"}[$__range])), 0) or vector(0)",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "description": "Alert when successful strict requests outnumber successful strict receipts."
+    },
+    {
+      "id": 25,
+      "type": "row",
+      "title": "User Activity and Adoption",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 47
+      },
+      "panels": []
+    },
+    {
+      "id": 26,
+      "type": "timeseries",
       "title": "Active Gateways Over Time",
       "datasource": {
         "type": "prometheus",
@@ -580,7 +1801,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 6
+        "y": 48
       },
       "targets": [
         {
@@ -649,7 +1870,7 @@
       "description": "Gateways actively serving LLM traffic, not merely reporting inventory."
     },
     {
-      "id": 12,
+      "id": 27,
       "type": "timeseries",
       "title": "Requests per Active Gateway",
       "datasource": {
@@ -660,7 +1881,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 6
+        "y": 48
       },
       "targets": [
         {
@@ -728,7 +1949,7 @@
       }
     },
     {
-      "id": 13,
+      "id": 28,
       "type": "timeseries",
       "title": "Requests by Surface",
       "datasource": {
@@ -739,7 +1960,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 6
+        "y": 48
       },
       "targets": [
         {
@@ -853,7 +2074,7 @@
       }
     },
     {
-      "id": 14,
+      "id": 29,
       "type": "piechart",
       "title": "Streaming vs Non-streaming",
       "datasource": {
@@ -864,7 +2085,7 @@
         "h": 8,
         "w": 6,
         "x": 0,
-        "y": 14
+        "y": 56
       },
       "targets": [
         {
@@ -926,7 +2147,7 @@
       }
     },
     {
-      "id": 15,
+      "id": 30,
       "type": "piechart",
       "title": "Stateful vs Stateless",
       "datasource": {
@@ -937,7 +2158,7 @@
         "h": 8,
         "w": 6,
         "x": 6,
-        "y": 14
+        "y": 56
       },
       "targets": [
         {
@@ -999,7 +2220,7 @@
       }
     },
     {
-      "id": 16,
+      "id": 31,
       "type": "timeseries",
       "title": "Requests by Skill",
       "datasource": {
@@ -1010,7 +2231,7 @@
         "h": 8,
         "w": 6,
         "x": 12,
-        "y": 14
+        "y": 56
       },
       "targets": [
         {
@@ -1078,7 +2299,7 @@
       }
     },
     {
-      "id": 17,
+      "id": 32,
       "type": "piechart",
       "title": "Requests by Client",
       "datasource": {
@@ -1089,7 +2310,7 @@
         "h": 8,
         "w": 6,
         "x": 18,
-        "y": 14
+        "y": 56
       },
       "targets": [
         {
@@ -1151,7 +2372,7 @@
       }
     },
     {
-      "id": 18,
+      "id": 33,
       "type": "piechart",
       "title": "Requests by Model",
       "datasource": {
@@ -1162,7 +2383,7 @@
         "h": 8,
         "w": 6,
         "x": 0,
-        "y": 22
+        "y": 64
       },
       "targets": [
         {
@@ -1224,7 +2445,7 @@
       }
     },
     {
-      "id": 19,
+      "id": 34,
       "type": "barchart",
       "title": "Top Gateways by Request Volume",
       "datasource": {
@@ -1235,7 +2456,7 @@
         "h": 8,
         "w": 6,
         "x": 6,
-        "y": 22
+        "y": 64
       },
       "targets": [
         {
@@ -1282,7 +2503,7 @@
       }
     },
     {
-      "id": 20,
+      "id": 35,
       "type": "table",
       "title": "Top Skills",
       "datasource": {
@@ -1293,7 +2514,7 @@
         "h": 8,
         "w": 6,
         "x": 12,
-        "y": 22
+        "y": 64
       },
       "targets": [
         {
@@ -1338,7 +2559,7 @@
       }
     },
     {
-      "id": 21,
+      "id": 36,
       "type": "table",
       "title": "Top Clients by Surface",
       "datasource": {
@@ -1349,7 +2570,7 @@
         "h": 8,
         "w": 6,
         "x": 18,
-        "y": 22
+        "y": 64
       },
       "targets": [
         {
@@ -1394,7 +2615,7 @@
       }
     },
     {
-      "id": 22,
+      "id": 37,
       "type": "timeseries",
       "title": "Attribution Completeness",
       "datasource": {
@@ -1405,7 +2626,7 @@
         "h": 7,
         "w": 24,
         "x": 0,
-        "y": 30
+        "y": 72
       },
       "targets": [
         {
@@ -1488,7 +2709,7 @@
       "description": "Share of traffic attributed to skill=\"none\" or client=\"none\"."
     },
     {
-      "id": 23,
+      "id": 38,
       "type": "row",
       "title": "User Experience and Failures",
       "collapsed": false,
@@ -1496,12 +2717,12 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 37
+        "y": 79
       },
       "panels": []
     },
     {
-      "id": 24,
+      "id": 39,
       "type": "timeseries",
       "title": "Application Outcomes Over Time",
       "datasource": {
@@ -1512,7 +2733,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 38
+        "y": 80
       },
       "targets": [
         {
@@ -1595,7 +2816,7 @@
       "description": "Application-level completion, including failures after an HTTP 200 stream begins."
     },
     {
-      "id": 25,
+      "id": 40,
       "type": "timeseries",
       "title": "Outcomes by Type",
       "datasource": {
@@ -1606,7 +2827,7 @@
         "h": 8,
         "w": 6,
         "x": 12,
-        "y": 38
+        "y": 80
       },
       "targets": [
         {
@@ -1674,7 +2895,7 @@
       }
     },
     {
-      "id": 26,
+      "id": 41,
       "type": "timeseries",
       "title": "Outcomes by Surface",
       "datasource": {
@@ -1685,7 +2906,7 @@
         "h": 8,
         "w": 6,
         "x": 18,
-        "y": 38
+        "y": 80
       },
       "targets": [
         {
@@ -1753,7 +2974,7 @@
       }
     },
     {
-      "id": 27,
+      "id": 42,
       "type": "barchart",
       "title": "Top Affected Gateways",
       "datasource": {
@@ -1764,7 +2985,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 46
+        "y": 88
       },
       "targets": [
         {
@@ -1812,7 +3033,7 @@
       "description": "Gateways with the most final application failures in the selected range."
     },
     {
-      "id": 28,
+      "id": 43,
       "type": "timeseries",
       "title": "HTTP Latency p50 / p95 / p99",
       "datasource": {
@@ -1823,7 +3044,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 46
+        "y": 88
       },
       "targets": [
         {
@@ -1915,7 +3136,7 @@
       }
     },
     {
-      "id": 29,
+      "id": 44,
       "type": "heatmap",
       "title": "HTTP Latency Distribution",
       "datasource": {
@@ -1926,7 +3147,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 46
+        "y": 88
       },
       "targets": [
         {
@@ -1982,7 +3203,7 @@
       }
     },
     {
-      "id": 30,
+      "id": 45,
       "type": "timeseries",
       "title": "HTTP Request Rate by Status",
       "datasource": {
@@ -1993,7 +3214,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 54
+        "y": 96
       },
       "targets": [
         {
@@ -2061,7 +3282,7 @@
       }
     },
     {
-      "id": 31,
+      "id": 46,
       "type": "timeseries",
       "title": "HTTP Request Rate by Route",
       "datasource": {
@@ -2072,7 +3293,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 54
+        "y": 96
       },
       "targets": [
         {
@@ -2140,7 +3361,7 @@
       }
     },
     {
-      "id": 32,
+      "id": 47,
       "type": "row",
       "title": "Gateway Capacity and Pool Health",
       "collapsed": false,
@@ -2148,12 +3369,12 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 62
+        "y": 104
       },
       "panels": []
     },
     {
-      "id": 33,
+      "id": 48,
       "type": "timeseries",
       "title": "Pool Utilization by Gateway",
       "datasource": {
@@ -2164,7 +3385,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 63
+        "y": 105
       },
       "targets": [
         {
@@ -2234,7 +3455,7 @@
       }
     },
     {
-      "id": 34,
+      "id": 49,
       "type": "timeseries",
       "title": "Pool Acquire p50 / p95 / p99",
       "datasource": {
@@ -2245,7 +3466,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 63
+        "y": 105
       },
       "targets": [
         {
@@ -2337,7 +3558,7 @@
       }
     },
     {
-      "id": 35,
+      "id": 50,
       "type": "timeseries",
       "title": "Pool Acquire Results",
       "datasource": {
@@ -2348,7 +3569,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 63
+        "y": 105
       },
       "targets": [
         {
@@ -2416,7 +3637,7 @@
       }
     },
     {
-      "id": 36,
+      "id": 51,
       "type": "timeseries",
       "title": "Seconds Since Pool Progress",
       "datasource": {
@@ -2427,7 +3648,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 71
+        "y": 113
       },
       "targets": [
         {
@@ -2496,7 +3717,7 @@
       "description": "Zero timestamps are excluded; never-initialized pools do not appear as epoch-sized ages."
     },
     {
-      "id": 37,
+      "id": 52,
       "type": "timeseries",
       "title": "Active Sessions by Gateway",
       "datasource": {
@@ -2507,7 +3728,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 71
+        "y": 113
       },
       "targets": [
         {
@@ -2575,7 +3796,7 @@
       }
     },
     {
-      "id": 38,
+      "id": 53,
       "type": "timeseries",
       "title": "Session Lifecycle Rate",
       "datasource": {
@@ -2586,7 +3807,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 71
+        "y": 113
       },
       "targets": [
         {
@@ -2678,7 +3899,7 @@
       }
     },
     {
-      "id": 39,
+      "id": 54,
       "type": "timeseries",
       "title": "Respawns, Recycles and Ping Escalations",
       "datasource": {
@@ -2689,7 +3910,7 @@
         "h": 8,
         "w": 16,
         "x": 0,
-        "y": 79
+        "y": 121
       },
       "targets": [
         {
@@ -2793,7 +4014,7 @@
       }
     },
     {
-      "id": 40,
+      "id": 55,
       "type": "timeseries",
       "title": "In-flight HTTP Requests",
       "datasource": {
@@ -2804,7 +4025,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 79
+        "y": 121
       },
       "targets": [
         {
@@ -2872,7 +4093,7 @@
       }
     },
     {
-      "id": 41,
+      "id": 56,
       "type": "table",
       "title": "Gateway Health Matrix",
       "datasource": {
@@ -2883,7 +4104,7 @@
         "h": 9,
         "w": 24,
         "x": 0,
-        "y": 87
+        "y": 129
       },
       "targets": [
         {
@@ -3019,7 +4240,7 @@
       ]
     },
     {
-      "id": 42,
+      "id": 57,
       "type": "row",
       "title": "Kiro Cost and Context",
       "collapsed": false,
@@ -3027,12 +4248,12 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 96
+        "y": 138
       },
       "panels": []
     },
     {
-      "id": 43,
+      "id": 58,
       "type": "timeseries",
       "title": "Credits and Turns Rate",
       "datasource": {
@@ -3043,7 +4264,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 97
+        "y": 139
       },
       "targets": [
         {
@@ -3123,7 +4344,7 @@
       }
     },
     {
-      "id": 44,
+      "id": 59,
       "type": "stat",
       "title": "Credits per Turn",
       "datasource": {
@@ -3134,7 +4355,7 @@
         "h": 8,
         "w": 4,
         "x": 8,
-        "y": 97
+        "y": 139
       },
       "targets": [
         {
@@ -3184,7 +4405,7 @@
       }
     },
     {
-      "id": 45,
+      "id": 60,
       "type": "stat",
       "title": "Credits per LLM Request",
       "datasource": {
@@ -3195,7 +4416,7 @@
         "h": 8,
         "w": 4,
         "x": 12,
-        "y": 97
+        "y": 139
       },
       "targets": [
         {
@@ -3245,7 +4466,7 @@
       }
     },
     {
-      "id": 46,
+      "id": 61,
       "type": "timeseries",
       "title": "Turn Duration p50 / p95",
       "datasource": {
@@ -3256,7 +4477,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 97
+        "y": 139
       },
       "targets": [
         {
@@ -3336,7 +4557,7 @@
       }
     },
     {
-      "id": 47,
+      "id": 62,
       "type": "gauge",
       "title": "Context Usage p95",
       "datasource": {
@@ -3347,7 +4568,7 @@
         "h": 8,
         "w": 6,
         "x": 0,
-        "y": 105
+        "y": 147
       },
       "targets": [
         {
@@ -3404,7 +4625,7 @@
       }
     },
     {
-      "id": 48,
+      "id": 63,
       "type": "timeseries",
       "title": "Context Usage p50 / p95",
       "datasource": {
@@ -3415,7 +4636,7 @@
         "h": 8,
         "w": 10,
         "x": 6,
-        "y": 105
+        "y": 147
       },
       "targets": [
         {
@@ -3505,7 +4726,7 @@
       }
     },
     {
-      "id": 49,
+      "id": 64,
       "type": "table",
       "title": "MCP Initialization Outcomes",
       "datasource": {
@@ -3516,7 +4737,7 @@
         "h": 8,
         "w": 5,
         "x": 16,
-        "y": 105
+        "y": 147
       },
       "targets": [
         {
@@ -3561,7 +4782,7 @@
       }
     },
     {
-      "id": 50,
+      "id": 65,
       "type": "stat",
       "title": "MCP Failure Rate",
       "datasource": {
@@ -3572,7 +4793,7 @@
         "h": 8,
         "w": 3,
         "x": 21,
-        "y": 105
+        "y": 147
       },
       "targets": [
         {
@@ -3630,7 +4851,7 @@
       }
     },
     {
-      "id": 51,
+      "id": 66,
       "type": "row",
       "title": "Compression Effectiveness",
       "collapsed": false,
@@ -3638,12 +4859,12 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 113
+        "y": 155
       },
       "panels": []
     },
     {
-      "id": 52,
+      "id": 67,
       "type": "stat",
       "title": "Compression Eligible",
       "datasource": {
@@ -3654,7 +4875,7 @@
         "h": 5,
         "w": 3,
         "x": 0,
-        "y": 114
+        "y": 156
       },
       "targets": [
         {
@@ -3705,7 +4926,7 @@
       "description": "Compression token values use an estimated UTF-8-bytes/4 heuristic; they are not model tokenizer output or billing tokens."
     },
     {
-      "id": 53,
+      "id": 68,
       "type": "stat",
       "title": "Successful Compression Runs",
       "datasource": {
@@ -3716,7 +4937,7 @@
         "h": 5,
         "w": 3,
         "x": 3,
-        "y": 114
+        "y": 156
       },
       "targets": [
         {
@@ -3767,7 +4988,7 @@
       "description": "Compression token values use an estimated UTF-8-bytes/4 heuristic; they are not model tokenizer output or billing tokens."
     },
     {
-      "id": 54,
+      "id": 69,
       "type": "stat",
       "title": "Estimated Tokens Saved",
       "datasource": {
@@ -3778,7 +4999,7 @@
         "h": 5,
         "w": 3,
         "x": 6,
-        "y": 114
+        "y": 156
       },
       "targets": [
         {
@@ -3829,7 +5050,7 @@
       "description": "Compression token values use an estimated UTF-8-bytes/4 heuristic; they are not model tokenizer output or billing tokens."
     },
     {
-      "id": 55,
+      "id": 70,
       "type": "stat",
       "title": "Estimated Tokens Saved per Run",
       "datasource": {
@@ -3840,7 +5061,7 @@
         "h": 5,
         "w": 3,
         "x": 9,
-        "y": 114
+        "y": 156
       },
       "targets": [
         {
@@ -3891,7 +5112,7 @@
       "description": "Compression token values use an estimated UTF-8-bytes/4 heuristic; they are not model tokenizer output or billing tokens."
     },
     {
-      "id": 56,
+      "id": 71,
       "type": "stat",
       "title": "Compression Success Ratio",
       "datasource": {
@@ -3902,7 +5123,7 @@
         "h": 5,
         "w": 3,
         "x": 12,
-        "y": 114
+        "y": 156
       },
       "targets": [
         {
@@ -3954,7 +5175,7 @@
       "description": "Compression token values use an estimated UTF-8-bytes/4 heuristic; they are not model tokenizer output or billing tokens."
     },
     {
-      "id": 57,
+      "id": 72,
       "type": "stat",
       "title": "Budget Unmet",
       "datasource": {
@@ -3965,7 +5186,7 @@
         "h": 5,
         "w": 3,
         "x": 15,
-        "y": 114
+        "y": 156
       },
       "targets": [
         {
@@ -4024,7 +5245,7 @@
       "description": "Compression token values use an estimated UTF-8-bytes/4 heuristic; they are not model tokenizer output or billing tokens."
     },
     {
-      "id": 58,
+      "id": 73,
       "type": "stat",
       "title": "Compression Budget Unmet Ratio",
       "datasource": {
@@ -4035,7 +5256,7 @@
         "h": 5,
         "w": 3,
         "x": 18,
-        "y": 114
+        "y": 156
       },
       "targets": [
         {
@@ -4095,7 +5316,7 @@
       "description": "Compression token values use an estimated UTF-8-bytes/4 heuristic; they are not model tokenizer output or billing tokens."
     },
     {
-      "id": 59,
+      "id": 74,
       "type": "stat",
       "title": "Compression Panic Recoveries",
       "datasource": {
@@ -4106,7 +5327,7 @@
         "h": 5,
         "w": 3,
         "x": 21,
-        "y": 114
+        "y": 156
       },
       "targets": [
         {
@@ -4165,7 +5386,7 @@
       "description": "Compression token values use an estimated UTF-8-bytes/4 heuristic; they are not model tokenizer output or billing tokens."
     },
     {
-      "id": 60,
+      "id": 75,
       "type": "timeseries",
       "title": "Compression Activity Over Time",
       "datasource": {
@@ -4176,7 +5397,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 119
+        "y": 161
       },
       "targets": [
         {
@@ -4281,7 +5502,7 @@
       "description": "Compression token values use an estimated UTF-8-bytes/4 heuristic; they are not model tokenizer output or billing tokens."
     },
     {
-      "id": 61,
+      "id": 76,
       "type": "row",
       "title": "Runtime Resources",
       "collapsed": false,
@@ -4289,12 +5510,12 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 127
+        "y": 169
       },
       "panels": []
     },
     {
-      "id": 62,
+      "id": 77,
       "type": "timeseries",
       "title": "Gateway CPU",
       "datasource": {
@@ -4305,7 +5526,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 128
+        "y": 170
       },
       "targets": [
         {
@@ -4373,7 +5594,7 @@
       }
     },
     {
-      "id": 63,
+      "id": 78,
       "type": "timeseries",
       "title": "Gateway RSS",
       "datasource": {
@@ -4384,7 +5605,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 128
+        "y": 170
       },
       "targets": [
         {
@@ -4452,7 +5673,7 @@
       }
     },
     {
-      "id": 64,
+      "id": 79,
       "type": "timeseries",
       "title": "Worker CPU",
       "datasource": {
@@ -4463,7 +5684,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 136
+        "y": 178
       },
       "targets": [
         {
@@ -4532,7 +5753,7 @@
       "description": "Worker subprocess sampling is unavailable on macOS."
     },
     {
-      "id": 65,
+      "id": 80,
       "type": "timeseries",
       "title": "Worker RSS",
       "datasource": {
@@ -4543,7 +5764,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 136
+        "y": 178
       },
       "targets": [
         {
@@ -4612,7 +5833,7 @@
       "description": "Worker subprocess sampling is unavailable on macOS."
     },
     {
-      "id": 66,
+      "id": 81,
       "type": "timeseries",
       "title": "Open FD Utilization",
       "datasource": {
@@ -4623,7 +5844,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 144
+        "y": 186
       },
       "targets": [
         {
@@ -4693,7 +5914,7 @@
       }
     },
     {
-      "id": 67,
+      "id": 82,
       "type": "timeseries",
       "title": "Gateway Uptime",
       "datasource": {
@@ -4704,7 +5925,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 144
+        "y": 186
       },
       "targets": [
         {
@@ -4772,7 +5993,7 @@
       }
     },
     {
-      "id": 68,
+      "id": 83,
       "type": "stat",
       "title": "Gateway Restarts (range)",
       "datasource": {
@@ -4783,7 +6004,7 @@
         "h": 8,
         "w": 4,
         "x": 16,
-        "y": 144
+        "y": 186
       },
       "targets": [
         {
@@ -4841,7 +6062,7 @@
       }
     },
     {
-      "id": 69,
+      "id": 84,
       "type": "timeseries",
       "title": "Goroutines (if go_* shipped)",
       "datasource": {
@@ -4852,7 +6073,7 @@
         "h": 8,
         "w": 4,
         "x": 20,
-        "y": 144
+        "y": 186
       },
       "targets": [
         {
@@ -4921,7 +6142,7 @@
       "description": "Requires GW_METRICS_SERIES_PREFIXES to include go_; the default excludes it."
     },
     {
-      "id": 70,
+      "id": 85,
       "type": "row",
       "title": "Fleet Inventory",
       "collapsed": false,
@@ -4929,12 +6150,12 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 152
+        "y": 194
       },
       "panels": []
     },
     {
-      "id": 71,
+      "id": 86,
       "type": "stat",
       "title": "Gateways Reporting Now",
       "datasource": {
@@ -4945,7 +6166,7 @@
         "h": 6,
         "w": 6,
         "x": 0,
-        "y": 153
+        "y": 195
       },
       "targets": [
         {
@@ -4996,7 +6217,7 @@
       "description": "Reporting installations are inventory, not the same as active gateways serving users."
     },
     {
-      "id": 72,
+      "id": 87,
       "type": "table",
       "title": "Gateways \u2014 Version and Build",
       "datasource": {
@@ -5007,7 +6228,7 @@
         "h": 8,
         "w": 18,
         "x": 6,
-        "y": 153
+        "y": 195
       },
       "targets": [
         {
