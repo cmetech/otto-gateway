@@ -147,7 +147,8 @@ var (
 	// span. Trailing class allows 1–12 chars; combined with the 1–2-char
 	// head this admits short codes like "site-A12" too.
 	siteRe = regexp.MustCompile(
-		`\bsite[-_\s]?[A-Z0-9]{1,2}[A-Z0-9_\-]{1,12}\b` +
+		`\bSITE-SYN-[A-Z2-7]{10}\b` +
+			`|\bsite[-_\s]?[A-Z0-9]{1,2}[A-Z0-9_\-]{1,12}\b` +
 			`|\b(?:ENB|BTS|NB|CELL|NODE|RAN|BSC|RNC|MSC|HLR|MME|SGW|PGW)[-_]?[A-Z0-9]{2,12}\b`,
 	)
 

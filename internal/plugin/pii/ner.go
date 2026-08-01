@@ -191,6 +191,27 @@ func newPIIClassifierWithNER(recognizers []Recognizer, enabled []string, ner *ne
 }
 
 func (c *piiClassifier) Classify(_ string, value string) []privacy.Finding {
+	candidates := c.ClassifyCandidates("", value)
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return candidates[i].RegistryOrder < candidates[j].RegistryOrder
+	})
+	findings := make([]privacy.Finding, 0, len(candidates))
+	for _, candidate := range candidates {
+		if findingOverlaps(findings, candidate) {
+			continue
+		}
+		findings = append(findings, candidate)
+	}
+	sort.SliceStable(findings, func(i, j int) bool {
+		return findings[i].Start < findings[j].Start
+	})
+	return findings
+}
+
+// ClassifyCandidates returns every validated candidate so the strict privacy
+// boundary can arbitrate overlaps once alongside secret findings. Classify
+// retains the historical first-registered behavior used by standard mode.
+func (c *piiClassifier) ClassifyCandidates(_ string, value string) []privacy.Finding {
 	if value == "" {
 		return nil
 	}
@@ -206,18 +227,18 @@ func (c *piiClassifier) Classify(_ string, value string) []privacy.Finding {
 				!hasContextWithin(value, start, end, recognizer.ContextKeywords) {
 				continue
 			}
-			candidate := privacy.Finding{
+			kind := privacy.MatchValidatedRegex
+			if hasStructuredEntityLabel(value, start, recognizer.ContextKeywords) {
+				kind = privacy.MatchStructuredAssignment
+			}
+			findings = append(findings, privacy.Finding{
 				Entity:        recognizer.Name,
 				Category:      categoryForEntity(recognizer.Name),
-				Kind:          privacy.MatchValidatedRegex,
+				Kind:          kind,
 				Start:         start,
 				End:           end,
 				RegistryOrder: order,
-			}
-			if findingOverlaps(findings, candidate) {
-				continue
-			}
-			findings = append(findings, candidate)
+			})
 		}
 	}
 
@@ -236,9 +257,6 @@ func (c *piiClassifier) Classify(_ string, value string) []privacy.Finding {
 				End:           candidate.End,
 				RegistryOrder: len(c.recognizers) + index,
 			}
-			if findingOverlaps(findings, finding) {
-				continue
-			}
 			findings = append(findings, finding)
 		}
 	}
@@ -247,6 +265,21 @@ func (c *piiClassifier) Classify(_ string, value string) []privacy.Finding {
 		return findings[i].Start < findings[j].Start
 	})
 	return findings
+}
+
+func hasStructuredEntityLabel(value string, matchStart int, keywords []string) bool {
+	if matchStart <= 0 || len(keywords) == 0 {
+		return false
+	}
+	prefix := strings.TrimSpace(value[:matchStart])
+	prefix = strings.ToLower(prefix)
+	for _, keyword := range keywords {
+		label := strings.ToLower(strings.TrimSpace(keyword))
+		if label != "" && (strings.HasSuffix(prefix, label+":") || strings.HasSuffix(prefix, label+"=")) {
+			return true
+		}
+	}
+	return false
 }
 
 func findingOverlaps(findings []privacy.Finding, candidate privacy.Finding) bool {

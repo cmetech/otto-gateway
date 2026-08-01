@@ -186,6 +186,17 @@ type observedTechnicalMapping interface {
 	MapObserved(*ScopeLease, string, string, Provenance) (string, mappingOutcome, error)
 }
 
+type candidateClassifier interface {
+	ClassifyCandidates(key, value string) []Finding
+}
+
+func strictClassifierCandidates(classifier Classifier, key, value string) []Finding {
+	if candidates, ok := classifier.(candidateClassifier); ok {
+		return candidates.ClassifyCandidates(key, value)
+	}
+	return classifier.Classify(key, value)
+}
+
 // NewService copies all mutable configuration into an immutable service.
 func NewService(config Config) (*Service, error) {
 	if config.DefaultProfile == "" {
@@ -576,7 +587,7 @@ func (s *Service) transformInbound(_ context.Context, state *RequestState, req *
 			findings = append(findings, s.config.SecretClassifier.Classify(key, value)...)
 		}
 		if s.config.Classifier != nil {
-			findings = append(findings, s.config.Classifier.Classify(key, value)...)
+			findings = append(findings, strictClassifierCandidates(s.config.Classifier, key, value)...)
 		}
 		accepted := Arbitrate(findings)
 		if len(accepted) == 0 {
@@ -752,7 +763,7 @@ func (s *Service) verifyInboundResidual(state *RequestState, req *canonical.Chat
 
 		configuredFindings := make([]Finding, 0, 4)
 		if s.config.Classifier != nil {
-			configuredFindings = s.config.Classifier.Classify(key, value)
+			configuredFindings = strictClassifierCandidates(s.config.Classifier, key, value)
 		}
 		for _, finding := range configuredFindings {
 			if !validFindingRange(finding, value) {
@@ -1210,7 +1221,7 @@ func (s *Service) prepareStrictOutbound(state *RequestState, resp *canonical.Cha
 			findings = append(findings, s.config.SecretClassifier.Classify(key, value)...)
 		}
 		if s.config.Classifier != nil {
-			findings = append(findings, s.config.Classifier.Classify(key, value)...)
+			findings = append(findings, strictClassifierCandidates(s.config.Classifier, key, value)...)
 		}
 		accepted := Arbitrate(findings)
 		type rewrite struct {
@@ -1348,7 +1359,7 @@ func (s *Service) verifyStrictOutboundResidual(
 		}
 		configuredFindings := []Finding(nil)
 		if s.config.Classifier != nil {
-			configuredFindings = s.config.Classifier.Classify(key, value)
+			configuredFindings = strictClassifierCandidates(s.config.Classifier, key, value)
 		}
 		findings := append(append(make([]Finding, 0, len(secretFindings)+len(configuredFindings)), secretFindings...), configuredFindings...)
 		for _, finding := range Arbitrate(findings) {
@@ -1439,7 +1450,7 @@ func (s *Service) restoreStrictOutbound(
 
 		findings := []Finding(nil)
 		if s.config.Classifier != nil {
-			findings = Arbitrate(s.config.Classifier.Classify(key, value))
+			findings = Arbitrate(strictClassifierCandidates(s.config.Classifier, key, value))
 		}
 		for _, finding := range findings {
 			if finding.Category != CategoryTechnical || !validFindingRange(finding, value) {
