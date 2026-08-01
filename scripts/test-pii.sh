@@ -141,9 +141,9 @@ scenario_diag() {
     fi
     info "active hooks: $names"
 
-    expected="RequestIDHook,AuthHook,JSONFormatSteeringHook,PIIRedactionHook,LoggingHook"
+    expected="RequestIDHook,AuthHook,JSONFormatSteeringHook,CompressionHook,PIIRedactionHook,LoggingHook"
     if [ "$names" = "$expected" ]; then
-        ok "hook chain matches expected default (5 hooks, registration order)"
+        ok "hook chain matches expected default (6 hooks, compression before privacy)"
     else
         warn "hook chain differs from default -- expected: $expected"
     fi

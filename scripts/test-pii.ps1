@@ -214,9 +214,9 @@ function Invoke-Scenario-Diag {
     $names = ($data.hooks | ForEach-Object { $_.name }) -join ','
     Write-Info "active hooks: $names"
 
-    $expected = 'RequestIDHook,AuthHook,JSONFormatSteeringHook,PIIRedactionHook,LoggingHook'
+    $expected = 'RequestIDHook,AuthHook,JSONFormatSteeringHook,CompressionHook,PIIRedactionHook,LoggingHook'
     if ($names -eq $expected) {
-        Write-Pass "hook chain matches expected default (5 hooks, registration order)"
+        Write-Pass "hook chain matches expected default (6 hooks, compression before privacy)"
     } else {
         Write-WarnLine "hook chain differs from default -- expected: $expected"
     }

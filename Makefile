@@ -19,7 +19,7 @@ PKG_SCRIPTS := scripts/gw scripts/gw.ps1 scripts/.env.example
 PKG_README  := docs/operator-quickstart.md
 PKG_INSTALL := docs/INSTALL.md
 
-.PHONY: all build run test test-race test-admin-js test-metrics-defaults test-windows-package-support lint fmt fmt-check vet examples tidy clean cross ci arch-lint start stop status e2e e2e-list e2e-sdk-setup help \
+.PHONY: all build run test test-race test-privacy test-privacy-race test-admin-js test-metrics-defaults test-windows-package-support lint fmt fmt-check vet examples tidy clean cross ci arch-lint start stop status e2e e2e-list e2e-sdk-setup help \
         cross-darwin-arm64 cross-darwin-amd64 cross-linux-amd64 cross-windows-amd64 \
         cross-otto-tray cross-otto-tray-darwin-arm64 cross-otto-tray-darwin-amd64 cross-otto-tray-windows-amd64 \
         package package-all package-checksums package-darwin-arm64 package-darwin-amd64 package-linux-amd64 package-windows-amd64
@@ -38,6 +38,19 @@ test: test-admin-js ## Run unit + integration tests
 
 test-race: ## Run tests with the race detector (CI default)
 	go test -race ./...
+
+test-privacy: ## Run focused privacy conformance, performance, and POSIX parity gates
+	go test ./tests/privacy ./internal/privacy -count=1
+	go test ./internal/privacy -run '^$$' -bench 'Privacy(Standard|Strict|Parallel)' -benchmem -benchtime=1x -count=1
+	bash tests/install/privacy_secrets_posix_test.sh
+	bash tests/scripts/test-privacy-cli.sh
+	bash tests/scripts/test-support-redact.sh
+	bash tests/scripts/test-support-bundle.sh
+	bash -n scripts/test-pii.sh
+	bash scripts/test-pii.sh --help >/dev/null
+
+test-privacy-race: ## Run focused privacy boundary and lifecycle tests under race
+	go test -race ./tests/privacy ./internal/privacy -run 'Conformance|Leakage|Parallel|Lifecycle' -count=1
 
 test-admin-js: ## Run dashboard JavaScript behavior tests (Node built-in runner)
 	node --test internal/admin/admin_js_test.js

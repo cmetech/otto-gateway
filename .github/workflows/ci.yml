@@ -42,10 +42,37 @@ env:
   NODE_VERSION:          '22'
 
 jobs:
+  privacy-posix:
+    name: privacy parity (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go (from go.mod)
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Focused privacy conformance, benchmark, and POSIX parity
+        shell: bash
+        run: make test-privacy
+
+      - name: Focused privacy race gate
+        if: runner.os == 'Linux'
+        shell: bash
+        run: make test-privacy-race
+
   support-powershell-windows:
-    name: support bundle (Windows PowerShell 5.1)
+    name: privacy + support parity (Windows)
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -61,8 +88,11 @@ jobs:
         run: |
           $files = @(
             'scripts/gw.ps1',
+            'scripts/test-pii.ps1',
             'scripts/lib/redact.ps1',
             'scripts/lib/support-safe-open.ps1',
+            'tests/install/privacy_secrets_windows_test.ps1',
+            'tests/scripts/test-privacy-cli.ps1',
             'tests/scripts/test-support-bundle.ps1',
             'tests/scripts/test-support-redact.ps1'
           )
@@ -73,6 +103,18 @@ jobs:
               (Resolve-Path $file), [ref]$tokens, [ref]$errors)
             if ($errors) { throw ($errors | Out-String) }
           }
+
+      - name: PowerShell privacy secret lifecycle
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/install/privacy_secrets_windows_test.ps1
+
+      - name: PowerShell privacy CLI parity
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/scripts/test-privacy-cli.ps1
+
+      - name: PowerShell PII smoke help
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/test-pii.ps1 -Help | Out-Null
 
       - name: PowerShell support redaction
         shell: powershell
