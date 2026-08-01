@@ -205,6 +205,31 @@ func TestSecretClassifierPreservesRedactedAssignments(t *testing.T) {
 	}
 }
 
+func TestSecretClassifierPreservesOneWayCredentialAssignmentMarkers(t *testing.T) {
+	t.Parallel()
+
+	classifier := NewSecretClassifier()
+	tests := []struct {
+		name  string
+		value string
+	}{
+		{name: "JSON password", value: `{"password":"[SECRET:PASSWORD_0123456789AB]"}`},
+		{name: "YAML client secret", value: "client_secret: [SECRET:CLIENT_SECRET_0123456789AB]"},
+		{name: "dotenv refresh token", value: "REFRESH_TOKEN=[SECRET:REFRESH_TOKEN_0123456789AB]"},
+		{name: "CLI access token", value: "--access-token=[SECRET:ACCESS_TOKEN_0123456789AB]"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if findings := classifier.Classify("", tc.value); len(findings) != 0 {
+				t.Fatalf("Classify()=%+v, want no finding for a one-way credential marker", findings)
+			}
+			if got := classifier.Redact("", tc.value); got != tc.value {
+				t.Fatalf("Redact()=%q, want unchanged %q", got, tc.value)
+			}
+		})
+	}
+}
+
 func TestSecretClassifierFindingDoesNotRetainSourceValue(t *testing.T) {
 	t.Parallel()
 

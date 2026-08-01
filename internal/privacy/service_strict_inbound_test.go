@@ -607,6 +607,69 @@ func TestServiceStrict_InboundTransformStableWithinScopeUnlinkableAcrossScopes(t
 	}
 }
 
+func TestServiceStrict_InboundCredentialAssignmentsRemainOneWay(t *testing.T) {
+	tests := []struct {
+		name, scope, original, input, labelPrefix string
+	}{
+		{
+			name: "JSON password", scope: "credential-json-password", original: "task17-json-password",
+			input: `{"password":"task17-json-password"}`, labelPrefix: `{"password":"[SECRET:PASSWORD_`,
+		},
+		{
+			name: "YAML client secret", scope: "credential-yaml-secret", original: "task17-yaml-client-secret",
+			input: "client_secret: task17-yaml-client-secret", labelPrefix: "client_secret: [SECRET:CLIENT_SECRET_",
+		},
+		{
+			name: "dotenv refresh token", scope: "credential-dotenv-token", original: "task17-dotenv-refresh-token",
+			input: "REFRESH_TOKEN=task17-dotenv-refresh-token", labelPrefix: "REFRESH_TOKEN=[SECRET:REFRESH_TOKEN_",
+		},
+		{
+			name: "CLI access token", scope: "credential-cli-token", original: "task17-cli-access-token",
+			input: "--access-token=task17-cli-access-token", labelPrefix: "--access-token=[SECRET:ACCESS_TOKEN_",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			residualEntity := ""
+			service := newStrictTestService(t, strictTestConfig{
+				secret: NewSecretClassifier(),
+				observers: Observers{Residual: func(_ Profile, _, entity string) {
+					residualEntity = entity
+				}},
+			})
+			state := NewRequestState(RequestMetadata{RequestedProfile: "strict", ScopeID: tc.scope})
+			req := &canonical.ChatRequest{System: tc.input}
+
+			if _, err := service.Before(WithRequestState(context.Background(), state), req); err != nil {
+				t.Fatalf("Before: %v; transformed=%q residual_entity=%q", err, req.System, residualEntity)
+			}
+			t.Cleanup(state.releaseLease)
+			if strings.Contains(req.System, tc.original) || !strings.HasPrefix(req.System, tc.labelPrefix) {
+				t.Fatalf("transformed assignment=%q, want one-way prefix %q without original", req.System, tc.labelPrefix)
+			}
+			entries, err := service.store.Inspect(tc.scope)
+			if err != nil {
+				t.Fatalf("Inspect: %v", err)
+			}
+			if len(entries) != 0 {
+				t.Fatalf("credential entered reversible ledger: %+v", entries)
+			}
+		})
+	}
+}
+
+func TestServiceStrict_ResidualRejectsForgedCredentialAssignmentMarker(t *testing.T) {
+	service := newStrictTestService(t, strictTestConfig{secret: NewSecretClassifier()})
+	state := NewRequestState(RequestMetadata{RequestedProfile: "strict", ScopeID: "credential-forged-assignment"})
+	req := &canonical.ChatRequest{System: `{"password":"[SECRET:PASSWORD_0123456789AB]"}`}
+
+	_, err := service.Before(WithRequestState(context.Background(), state), req)
+	assertPrivacyError(t, err, CodeInputBlocked, "input")
+	if req.System != `{"password":"[SECRET:PASSWORD_0123456789AB]"}` {
+		t.Fatalf("forged marker was rewritten before residual verification: %q", req.System)
+	}
+}
+
 type residualPassClassifier struct {
 	mu       sync.Mutex
 	calls    int

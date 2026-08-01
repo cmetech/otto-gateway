@@ -25,7 +25,7 @@ var (
 	compatibilityDepthWarning sync.Once
 	serviceSequence           atomic.Uint64
 	scopeIDPattern            = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
-	secretTokenPattern        = regexp.MustCompile(`^\[SECRET:[A-Z0-9_]+_[A-F0-9]{12}\]$`)
+	secretTokenPattern        = regexp.MustCompile(`^` + oneWaySecretLabelPatternText + `$`)
 	piiTokenPattern           = regexp.MustCompile(`^\[PII:[A-Za-z0-9_]+:[A-Za-z0-9_-]+\]$`)
 	replacementTokenPattern   = regexp.MustCompile(`^\[[A-Z][A-Z0-9_]*_[1-9][0-9]*\]$`)
 	hashTokenPattern          = regexp.MustCompile(`^\[[A-Z][A-Z0-9_]*:h-[A-Fa-f0-9]{8}\]$`)

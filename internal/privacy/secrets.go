@@ -7,6 +7,10 @@ import (
 	"strings"
 )
 
+const oneWaySecretLabelPatternText = `\[SECRET:[A-Z0-9_]+_[A-F0-9]{12}\]`
+
+var oneWaySecretLabelPattern = regexp.MustCompile(oneWaySecretLabelPatternText)
+
 type secretPattern struct {
 	entity       string
 	re           *regexp.Regexp
@@ -91,10 +95,22 @@ func isRedactedAssignment(value string, start int) bool {
 	if end, ok := credentialSchemeEnd(value, cursor); ok {
 		cursor = end
 	}
-	if !strings.HasPrefix(value[cursor:], redactedSecret) {
+	end := cursor
+	switch {
+	case strings.HasPrefix(value[cursor:], redactedSecret):
+		end += len(redactedSecret)
+	case value[cursor] == '[':
+		closeIndex := strings.IndexByte(value[cursor:], ']')
+		if closeIndex < 0 {
+			return false
+		}
+		end += closeIndex + 1
+		if !secretTokenPattern.MatchString(value[cursor:end]) {
+			return false
+		}
+	default:
 		return false
 	}
-	end := cursor + len(redactedSecret)
 	return end == len(value) || isUnquotedAssignmentDelimiter(value[end])
 }
 
@@ -211,7 +227,16 @@ type structuredAssignment struct {
 
 func findStructuredAssignments(value string) []structuredAssignment {
 	var assignments []structuredAssignment
+	oneWayLabels := oneWaySecretLabelPattern.FindAllStringIndex(value, -1)
+	labelIndex := 0
 	for start := 0; start < len(value); start++ {
+		for labelIndex < len(oneWayLabels) && oneWayLabels[labelIndex][1] <= start {
+			labelIndex++
+		}
+		if labelIndex < len(oneWayLabels) && start >= oneWayLabels[labelIndex][0] {
+			start = oneWayLabels[labelIndex][1] - 1
+			continue
+		}
 		keyStart := start
 		cliPrefix := false
 		if value[keyStart] == '-' && keyStart+2 < len(value) && value[keyStart+1] == '-' {
