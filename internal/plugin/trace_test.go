@@ -20,6 +20,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"log/slog"
 	"reflect"
 	"slices"
 	"strings"
@@ -29,7 +31,9 @@ import (
 	"github.com/google/go-cmp/cmp"
 
 	"otto-gateway/internal/canonical"
+	"otto-gateway/internal/engine"
 	"otto-gateway/internal/plugin/pii"
+	"otto-gateway/internal/privacy"
 )
 
 type chatTracePrivacyStub struct {
@@ -42,6 +46,59 @@ func (s chatTracePrivacyStub) AllowSensitiveTrace(context.Context) bool { return
 func (s chatTracePrivacyStub) TraceSummary(context.Context) map[string]any { return s.summary }
 
 var standardTracePrivacy = chatTracePrivacyStub{allow: true}
+
+type changingTracePrivacy struct{ summary map[string]any }
+
+func (*changingTracePrivacy) AllowSensitiveTrace(context.Context) bool      { return false }
+func (s *changingTracePrivacy) TraceSummary(context.Context) map[string]any { return s.summary }
+
+type privacyFailurePostHook struct {
+	policy *changingTracePrivacy
+	err    error
+}
+
+func (h privacyFailurePostHook) After(context.Context, *canonical.ChatRequest, *canonical.ChatResponse) error {
+	var pe *privacy.Error
+	errors.As(h.err, &pe)
+	h.policy.summary = map[string]any{"profile": "strict", "surface": "openai", "workload": "chat", "coverage": "complete", "result": map[string]string{privacy.CodeOutputBlocked: "block", privacy.CodeInternalError: "error"}[pe.Code]}
+	return h.err
+}
+
+func TestPostChain_PrivacyFailureStillCleansObserversAndEmitsSafeSummary(t *testing.T) {
+	for _, code := range []string{privacy.CodeOutputBlocked, privacy.CodeInternalError} {
+		t.Run(code, func(t *testing.T) {
+			var trace bytes.Buffer
+			policy := &changingTracePrivacy{summary: map[string]any{"profile": "strict", "result": "pending"}}
+			logging := &LoggingHook{Logger: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))}
+			chatTrace := &ChatTraceHook{Enabled: true, Writer: &trace, Privacy: policy}
+			ctx := WithRequestID(context.Background(), "post-cleanup-"+code)
+			req := &canonical.ChatRequest{Messages: []canonical.Message{{Role: canonical.RoleUser, Content: []canonical.ContentPart{{Kind: canonical.ContentKindText, Text: "RAW-REQUEST-CANARY"}}}}}
+			_, _ = logging.Before(ctx, req)
+			_, _ = chatTrace.Before(ctx, req)
+			first := &privacy.Error{Code: code, Stage: "output"}
+			eng := engine.New(engine.Config{Logger: slog.Default(), PostHooks: []engine.PostHook{privacyFailurePostHook{policy: policy, err: first}, logging, chatTrace}})
+			err := eng.RunPostHooks(ctx, req, &canonical.ChatResponse{Message: canonical.Message{Content: []canonical.ContentPart{{Kind: canonical.ContentKindText, Text: "RAW-RESPONSE-CANARY"}}}})
+			var got *privacy.Error
+			if !errors.As(err, &got) || got != first {
+				t.Fatalf("error = %v, want first privacy error", err)
+			}
+			if _, ok := logging.startTimes.Load("post-cleanup-" + code); ok {
+				t.Fatal("LoggingHook timestamp leaked")
+			}
+			if _, ok := chatTrace.startTimes.Load("post-cleanup-" + code); ok {
+				t.Fatal("ChatTraceHook timestamp leaked")
+			}
+			raw := trace.String()
+			if strings.Contains(raw, "RAW-REQUEST-CANARY") || strings.Contains(raw, "RAW-RESPONSE-CANARY") {
+				t.Fatalf("safe trace leaked raw body: %s", raw)
+			}
+			records := readNDJSON(t, &trace)
+			if len(records) != 2 || records[1]["result"] == "pending" {
+				t.Fatalf("post summary not emitted: %#v", records)
+			}
+		})
+	}
+}
 
 // readNDJSON splits buf on newlines and decodes each non-empty line
 // into a map. Useful for asserting field-by-field without coupling to

@@ -329,8 +329,7 @@ func (e *Engine) Run(ctx context.Context, req *canonical.ChatRequest) (*Run, err
 // (they range Stream().Chunks() themselves while emitting wire frames)
 // and by the Anthropic adapter's CollectAnthropicChat (which has its own
 // aggregator per D-07). Iterates in registration order; first non-nil
-// error aborts with the same "engine: posthook: ..." wrapping Collect
-// uses.
+// error is retained while the remaining cleanup/observer hooks still run.
 //
 // Idempotency contract: callers MUST NOT call this method when also
 // calling Collect — Collect already runs PostHooks. The two are
@@ -346,12 +345,15 @@ func (e *Engine) Run(ctx context.Context, req *canonical.ChatRequest) (*Run, err
 // PostHooks (LoggingHook, ChatTraceHook) already nil-guard their resp
 // access; this method passes the nil through without panicking.
 func (e *Engine) RunPostHooks(ctx context.Context, req *canonical.ChatRequest, resp *canonical.ChatResponse) error {
+	var firstErr error
 	for _, h := range e.cfg.PostHooks {
 		if hookErr := e.callPostHookSafe(ctx, h, req, resp); hookErr != nil {
-			return fmt.Errorf("engine: posthook: %w", hookErr)
+			if firstErr == nil {
+				firstErr = fmt.Errorf("engine: posthook: %w", hookErr)
+			}
 		}
 	}
-	return nil
+	return firstErr
 }
 
 // callPreHookSafe invokes h.Before with a defer-recover guard. A

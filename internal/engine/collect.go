@@ -248,10 +248,8 @@ func (e *Engine) CollectFromRun(ctx context.Context, run *Run, req *canonical.Ch
 	// Run) so the hooks see the assembled or short-circuit response.
 	// In-place mutation is allowed (resp is a pointer to the struct);
 	// non-nil error aborts the collect.
-	for _, h := range e.cfg.PostHooks {
-		if hookErr := e.callPostHookSafe(ctx, h, req, resp); hookErr != nil {
-			return nil, fmt.Errorf("engine: posthook: %w", hookErr)
-		}
+	if hookErr := e.RunPostHooks(ctx, req, resp); hookErr != nil {
+		return nil, hookErr
 	}
 
 	return resp, nil

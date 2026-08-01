@@ -647,22 +647,25 @@ func TestEngine_RunPostHooks_EmptyChain(t *testing.T) {
 	}
 }
 
-// TestEngine_RunPostHooks_StopsOnFirstError asserts that a non-nil
-// error from hook N aborts the loop — hook N+1 is NOT called. This
-// mirrors collect.go's traversal exactly.
-func TestEngine_RunPostHooks_StopsOnFirstError(t *testing.T) {
+// TestEngine_RunPostHooks_ContinuesAfterFirstError asserts cleanup hooks run
+// while the first error remains authoritative.
+func TestEngine_RunPostHooks_ContinuesAfterFirstError(t *testing.T) {
 	a := &fakePostHook{}
-	b := &fakePostHook{err: errors.New("b failed")}
-	c := &fakePostHook{}
+	first := &privacy.Error{Code: privacy.CodeOutputBlocked, Stage: "output"}
+	b := &fakePostHook{err: first}
+	c := &fakePostHook{err: errors.New("later failed")}
+	d := &panicPostHook{}
+	e := &fakePostHook{}
 	ack := &fakeACP{}
-	e := newTestEngine(t, ack, withPostHooks(a, b, c))
+	eng := newTestEngine(t, ack, withPostHooks(a, b, c, d, e))
 
-	err := e.RunPostHooks(context.Background(), simpleUserReq("hi", "auto"), &canonical.ChatResponse{})
+	err := eng.RunPostHooks(context.Background(), simpleUserReq("hi", "auto"), &canonical.ChatResponse{})
 	if err == nil {
 		t.Fatal("RunPostHooks: expected error, got nil")
 	}
-	if !strings.Contains(err.Error(), "b failed") {
-		t.Errorf("error: got %q, want substring 'b failed'", err.Error())
+	var got *privacy.Error
+	if !errors.As(err, &got) || got != first {
+		t.Fatalf("error = %v, want first typed privacy error", err)
 	}
 	if !a.called {
 		t.Error("first hook was not called")
@@ -670,9 +673,15 @@ func TestEngine_RunPostHooks_StopsOnFirstError(t *testing.T) {
 	if !b.called {
 		t.Error("second (erroring) hook was not called")
 	}
-	if c.called {
-		t.Error("third hook was called despite second hook returning error")
+	if !c.called || !e.called {
+		t.Error("remaining hooks did not run after errors/panic")
 	}
+}
+
+type panicPostHook struct{}
+
+func (*panicPostHook) After(context.Context, *canonical.ChatRequest, *canonical.ChatResponse) error {
+	panic("later panic")
 }
 
 // TestEngine_PostHook_RunsOnPreHookShortCircuit asserts that PostHooks

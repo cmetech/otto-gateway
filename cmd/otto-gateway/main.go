@@ -228,6 +228,12 @@ type privacySnapshotSource interface {
 //
 //nolint:cyclop,gocyclo // wiring graph is intentionally linear; refactoring obscures the order
 func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, func(), error) {
+	return newAppWithRegistryLoader(ctx, cfg, logger, func(*privacy.Service) (*registry.Registry, error) {
+		return registry.Load()
+	})
+}
+
+func newAppWithRegistryLoader(ctx context.Context, cfg config.Config, logger *slog.Logger, loadRegistry func(*privacy.Service) (*registry.Registry, error)) (*app, func(), error) {
 	a := &app{cfg: cfg, logger: logger}
 
 	// Cleanup closure — invoked once via the returned func. Plan 05-03
@@ -730,8 +736,9 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 		}
 		// Load the embedded capability registry once. A load error is a
 		// build/ship error (invalid embedded JSON) — fail fast at startup.
-		capReg, err := registry.Load()
+		capReg, err := loadRegistry(a.privacyService)
 		if err != nil {
+			cleanup()
 			return nil, func() {}, fmt.Errorf("model capability registry: %w", err)
 		}
 		openaiAdapter = openai.New(openai.Config{

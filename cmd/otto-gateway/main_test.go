@@ -26,6 +26,7 @@ import (
 	"otto-gateway/internal/plugin"
 	"otto-gateway/internal/plugin/pii"
 	"otto-gateway/internal/privacy"
+	"otto-gateway/internal/registry"
 	"otto-gateway/internal/testutil"
 )
 
@@ -50,6 +51,31 @@ func strictPrivacyConfig() config.Config {
 		PrivacyMaxScopes:          8,
 		PrivacyMaxEntriesPerScope: 32,
 		PrivacyMaxTotalEntries:    128,
+	}
+}
+
+func TestNewApp_RegistryLoadFailureClosesPrivacyService(t *testing.T) {
+	cfg := strictPrivacyConfig()
+	cfg.EnabledSurfaces = []string{"openai"}
+	var constructed *privacy.Service
+	wantErr := errors.New("registry fixture failed")
+
+	a, cleanup, err := newAppWithRegistryLoader(context.Background(), cfg, testutil.Logger(t), func(service *privacy.Service) (*registry.Registry, error) {
+		constructed = service
+		return nil, wantErr
+	})
+	if a != nil || err == nil || !errors.Is(err, wantErr) {
+		t.Fatalf("newAppWithRegistryLoader = (%v, _, %v), want nil app and wrapped loader error", a, err)
+	}
+	cleanup()
+	if constructed == nil {
+		t.Fatal("registry loader did not observe constructed privacy service")
+	}
+	state := privacy.NewRequestState(privacy.RequestMetadata{RequestedProfile: "strict", ScopeID: "after-registry-failure"})
+	_, acquireErr := constructed.Before(privacy.WithRequestState(context.Background(), state), &canonical.ChatRequest{})
+	var privacyErr *privacy.Error
+	if !errors.As(acquireErr, &privacyErr) || privacyErr.Code != privacy.CodeScopeClosed || privacyErr.Stage != "scope" {
+		t.Fatalf("strict acquisition after startup failure = %v, want closed-scope privacy error", acquireErr)
 	}
 }
 
