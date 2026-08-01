@@ -225,6 +225,14 @@ function Write-GzipText([string]$Path, [string]$Text) {
     } finally { $output.Dispose() }
 }
 
+function Write-GzipBytes([string]$Path, [byte[]]$Bytes) {
+    $output = [System.IO.File]::Create($Path)
+    try {
+        $gzip = New-Object System.IO.Compression.GzipStream($output, [System.IO.Compression.CompressionMode]::Compress)
+        try { $gzip.Write($Bytes, 0, $Bytes.Length) } finally { $gzip.Dispose() }
+    } finally { $output.Dispose() }
+}
+
 function Write-RandomFile([string]$Path, [int]$Bytes, [switch]$Gzip) {
     $sourceBytes = if ($Gzip) { $Bytes } else { [Math]::Floor($Bytes * 0.75) }
     $data = New-Object byte[] $sourceBytes
@@ -1650,18 +1658,24 @@ $result | ConvertTo-Json -Compress
     'gateway trace safe' | Set-Content -LiteralPath (Join-Path $GatewayHome 'logs\gateway-chat-trace.log') -Encoding UTF8
     Write-RandomFile (Join-Path $GatewayHome 'logs\gateway-20200101.log.gz') (1600KB) -Gzip
     Write-GzipText (Join-Path $GatewayHome 'logs\gateway-20260101.log.gz') "gateway compressed safe`nGW_METRICS_REMOTE_WRITE_TOKEN=$SecretRemote`n"
+    Write-GzipBytes (Join-Path $GatewayHome 'logs\gateway-invalid-utf8.log.gz') ([byte[]](0x69,0x6e,0x76,0x61,0x6c,0x69,0x64,0x20,0xff,0x0a))
     'not a gzip stream' | Set-Content -LiteralPath (Join-Path $GatewayHome 'logs\gateway-corrupt.log.gz') -Encoding ASCII
     (Get-Item -LiteralPath (Join-Path $GatewayHome 'logs\gateway-20200101.log.gz')).LastWriteTimeUtc = [datetime]'2020-01-01Z'
     (Get-Item -LiteralPath (Join-Path $GatewayHome 'logs\gateway-20260101.log.gz')).LastWriteTimeUtc = [datetime]'2026-01-01Z'
+    (Get-Item -LiteralPath (Join-Path $GatewayHome 'logs\gateway-invalid-utf8.log.gz')).LastWriteTimeUtc = [datetime]'2025-01-01Z'
 
     @('kiro current safe', "AUTH_TOKEN=$SecretToken") | Set-Content -LiteralPath (Join-Path $KiroCwdFixture 'native\kiro-current.log') -Encoding UTF8
     Write-RandomFile (Join-Path $KiroCwdFixture 'native\kiro-current.log.1') (2100KB)
     'kiro newest rotation safe' | Set-Content -LiteralPath (Join-Path $KiroCwdFixture 'native\kiro-current.log.2') -Encoding UTF8
+    [System.IO.File]::WriteAllBytes(
+        (Join-Path $KiroCwdFixture 'native\kiro-current.log.4'),
+        [byte[]](0x69,0x6e,0x76,0x61,0x6c,0x69,0x64,0x20,0xff,0x0a))
     $SuffixDecoySecret | Set-Content -LiteralPath (Join-Path $KiroCwdFixture 'native\kiro-current.log.backup.99') -Encoding UTF8
     Write-GzipText (Join-Path $KiroCwdFixture 'native\kiro-current.log.3.gz') 'compressed Kiro excluded'
     $UnicodeDigitSecret | Set-Content -LiteralPath (Join-Path $KiroCwdFixture "native\kiro-current.log.$([char]0x0661)") -Encoding UTF8
     (Get-Item -LiteralPath (Join-Path $KiroCwdFixture 'native\kiro-current.log.1')).LastWriteTimeUtc = [datetime]'2021-01-01Z'
     (Get-Item -LiteralPath (Join-Path $KiroCwdFixture 'native\kiro-current.log.2')).LastWriteTimeUtc = [datetime]'2023-01-01Z'
+    (Get-Item -LiteralPath (Join-Path $KiroCwdFixture 'native\kiro-current.log.4')).LastWriteTimeUtc = [datetime]'2025-01-01Z'
 
     $ApprovedLogs = @('agent.log','errors.log','gateway.log','gui.log','desktop.log','mcp-stderr.log','gateway-shutdown-watchdog.log','dashboard-auth.log','container-boot.log','tool_calls.log')
     foreach ($name in $ApprovedLogs) { "$name safe" | Set-Content -LiteralPath (Join-Path $CoworkerHome "logs\$name") -Encoding UTF8 }
@@ -1775,10 +1789,12 @@ server.serve_forever()
     Assert-True (-not $gatewayGzipText.Contains($SecretRemote)) 'Gateway gzip rotation excludes raw remote-write token'
     Assert-Contains (Join-Path $mainRoot 'logs\gateway\gateway.log') 'GW_METRICS_REMOTE_WRITE_TOKEN=[REDACTED]' 'Gateway current remote-write assignment is redacted'
     Assert-Absent (Join-Path $mainRoot 'logs\gateway\gateway-corrupt.log.gz') 'corrupt Gateway gzip leaves no partial archive artifact'
+    Assert-Absent (Join-Path $mainRoot 'logs\gateway\gateway-invalid-utf8.log.gz') 'invalid-UTF-8 Gateway gzip is omitted without a partial artifact'
     Assert-NoSupportTemporaryArtifacts $mainRoot 'corrupt gzip bundle has no partial artifacts'
     Assert-NoSupportTemporaryArtifacts (Join-Path $ExtractRoot 'main-out') 'corrupt gzip output has no partial or staging artifacts'
 
     foreach ($relative in @('kiro-chat.log','kiro-chat.log.1','kiro-chat.log.2')) { Assert-File (Join-Path $mainRoot "logs\kiro\$relative") "Kiro artifact $relative is retained" }
+    Assert-Absent (Join-Path $mainRoot 'logs\kiro\kiro-chat.log.4') 'invalid-UTF-8 Kiro rotation is omitted without a partial artifact'
     Assert-Absent (Join-Path $mainRoot 'logs\kiro\kiro-chat.log.3.gz') 'compressed Kiro rotation is excluded'
     Assert-Absent (Join-Path $mainRoot 'logs\kiro\kiro-chat.log.99') 'multi-component Kiro suffix is excluded'
     Assert-Absent (Join-Path $mainRoot "logs\kiro\kiro-chat.log.$([char]0x0661)") 'Unicode-digit Kiro suffix is excluded'
@@ -1816,6 +1832,8 @@ server.serve_forever()
     Assert-Contains $manifest 'sensitive user content' 'manifest warns about capture content'
     Assert-Contains $manifest 'review before sharing' 'manifest tells operator to review bundle'
     Assert-Line $manifest 'WARNING: Gateway rotation gateway-corrupt.log.gz decompression or redaction failed' 'manifest records corrupt gzip failure after cleanup'
+    Assert-Line $manifest 'WARNING: Gateway rotation gateway-invalid-utf8.log.gz decompression or redaction failed' 'manifest warns when strict UTF-8 rejects a Gateway gzip rotation'
+    Assert-Contains $manifest 'Kiro rotation kiro-current.log.4 redaction failed' 'manifest warns when strict UTF-8 rejects a plain Kiro rotation'
     if ($ReparseCreated) { Assert-Contains $manifest 'Co-worker agent.log.9 rejected: reparse point' 'manifest records reparse rejection' }
     Assert-NoSecretInTree $mainRoot @($SecretToken,$SecretBearer,$SecretHash,$SecretEncrypt,$SecretRemote,$ExternalSecret,$ExcludedSecret,$DecoySecret,$SuffixDecoySecret,$UnicodeDigitSecret) 'enabled bundle'
 

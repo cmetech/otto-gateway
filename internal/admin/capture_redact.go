@@ -66,7 +66,16 @@ func redactCaptureFramesShared(in []CaptureFrame, redactor SecretRedactor) []Cap
 func redactCapturedParamsShared(raw string, redactor SecretRedactor) string {
 	value, ok := decodeCaptureJSON(raw)
 	if !ok {
-		return redactor.Redact("", raw)
+		if hasEscapedCaptureSecretAssignment(raw) {
+			return captureRedactionMarker
+		}
+		// Retain the bounded legacy malformed-value parser as a fail-closed
+		// structural guard, then run the shared authority over its output. The guard
+		// understands quoted/object/array boundaries that are no longer valid
+		// JSON after a ring truncation; running it first prevents a partial shared
+		// replacement from destroying the delimiter needed to bound the subtree.
+		// Neither stage creates mappings or retains credential material.
+		return redactor.Redact("", redactCapturedParams(raw))
 	}
 	value = redactCaptureValueShared("", value, redactor, 0)
 	body, err := json.Marshal(value)
@@ -77,6 +86,12 @@ func redactCapturedParamsShared(raw string, redactor SecretRedactor) string {
 }
 
 func redactCaptureValueShared(key string, value any, redactor SecretRedactor, depth int) any {
+	if key != "" {
+		serialized, err := json.Marshal(value)
+		if err != nil || redactor.Redact(key, string(serialized)) == captureRedactionMarker {
+			return captureRedactionMarker
+		}
+	}
 	if depth >= captureRedactionMaxDepth {
 		switch value.(type) {
 		case map[string]any, []any, string:
@@ -99,10 +114,32 @@ func redactCaptureValueShared(key string, value any, redactor SecretRedactor, de
 		}
 		return result
 	case string:
-		return redactor.Redact(key, value)
+		return redactCaptureStringValueShared(value, redactor, depth+1)
 	default:
 		return value
 	}
+}
+
+func redactCaptureStringValueShared(value string, redactor SecretRedactor, depth int) string {
+	if len(value) > captureRedactionMaxJSONLen {
+		if looksLikeCaptureJSON(value) {
+			return captureRedactionMarker
+		}
+		return redactor.Redact("", value)
+	}
+	nested, ok := decodeCaptureJSON(value)
+	if !ok {
+		return redactor.Redact("", value)
+	}
+	if depth >= captureRedactionMaxDepth {
+		return captureRedactionMarker
+	}
+	nested = redactCaptureValueShared("", nested, redactor, depth)
+	body, err := json.Marshal(nested)
+	if err != nil {
+		return captureRedactionMarker
+	}
+	return string(body)
 }
 
 func redactCapturedParams(raw string) string {

@@ -47,6 +47,82 @@ func TestSharedSecretRedactorMatchesSupportUtilityCorpus(t *testing.T) {
 	}
 }
 
+// TestInjectedSharedSecretRedactorFailsClosedForStructuredAndBoundedCapture
+// catches the production WithSecretRedactor path losing a secret parent key
+// before descending into a non-string subtree or bypassing bounded malformed
+// and recursively encoded JSON handling.
+func TestInjectedSharedSecretRedactorFailsClosedForStructuredAndBoundedCapture(t *testing.T) {
+	deep := `{"password":"depth-secret"}`
+	for range 12 {
+		body, err := json.Marshal(map[string]string{"payload": deep})
+		if err != nil {
+			t.Fatal(err)
+		}
+		deep = string(body)
+	}
+	structured := `{
+		"password":{"nested":"object-secret"},
+		"apiKey":["array-secret",{"nested":"array-object-secret"}],
+		"clientSecret":123456789,
+		"privateKey":true,
+		"safe":{"requestId":9007199254740993,"enabled":true,"label":"safe-value"}
+	}`
+	encodedBody, err := json.Marshal(map[string]string{"deep": deep, "safe": "encoded-safe"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	frames := []admin.CaptureFrame{
+		{Seq: 1, Params: structured},
+		{Seq: 2, Params: string(encodedBody)},
+		{Seq: 3, Params: `prefix {\"password\" : \"ring-truncated-secret\",\"safe\":\"cut`},
+	}
+	wantSource := append([]admin.CaptureFrame(nil), frames...)
+	src := &fakeCaptureSource{enabled: true, frames: frames}
+	h := admin.WithSecretRedactor(admin.Handler(admin.Deps{AcpCapture: src}), privacy.NewSecretClassifier())
+
+	rec := doGet(t, h, "/api/acp-capture?support=redacted")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Frames []admin.CaptureFrame `json:"frames"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("response is invalid JSON: %v", err)
+	}
+	for _, secret := range []string{
+		"object-secret", "array-secret", "array-object-secret", "123456789",
+		"depth-secret", "ring-truncated-secret",
+	} {
+		if strings.Contains(rec.Body.String(), secret) {
+			t.Errorf("production support capture leaked %q", secret)
+		}
+	}
+	for _, safe := range []string{"9007199254740993", "safe-value", "encoded-safe"} {
+		if !strings.Contains(rec.Body.String(), safe) {
+			t.Errorf("production support capture removed safe value %q", safe)
+		}
+	}
+	if len(body.Frames) != 3 {
+		t.Fatalf("frames=%d, want 3", len(body.Frames))
+	}
+	var structuredResult map[string]any
+	if err := json.Unmarshal([]byte(body.Frames[0].Params), &structuredResult); err != nil {
+		t.Fatalf("structured frame params are invalid JSON: %v", err)
+	}
+	for _, key := range []string{"password", "apiKey", "clientSecret", "privateKey"} {
+		if structuredResult[key] != "[REDACTED]" {
+			t.Errorf("structured credential %s = %#v, want bounded marker", key, structuredResult[key])
+		}
+	}
+	if body.Frames[2].Params != "[REDACTED]" {
+		t.Errorf("ring-truncated credential = %q, want bounded marker", body.Frames[2].Params)
+	}
+	if !reflect.DeepEqual(src.frames, wantSource) {
+		t.Errorf("production support capture mutated source frames:\n got: %#v\nwant: %#v", src.frames, wantSource)
+	}
+}
+
 type fakeCaptureSource struct {
 	frames    []admin.CaptureFrame
 	enabled   bool
@@ -513,7 +589,7 @@ func TestAcpCaptureSupport_RecursivelyRedactsJSONStringLeaves(t *testing.T) {
 		t.Fatal(err)
 	}
 	src := &fakeCaptureSource{enabled: true, frames: []admin.CaptureFrame{{Seq: 1, Params: string(paramsBody)}}}
-	h := admin.Handler(admin.Deps{AcpCapture: src})
+	h := admin.WithSecretRedactor(admin.Handler(admin.Deps{AcpCapture: src}), privacy.NewSecretClassifier())
 
 	rec := doGet(t, h, "/api/acp-capture?support=redacted")
 	var body struct {
@@ -565,7 +641,7 @@ func TestAcpCaptureSupport_MalformedAssignmentsRedactWholeQuotedAndStructuredVal
 		`dbPassword="escaped malformed secret with \"quoted secret\" tail" ` +
 		`password_confirmation='confirmation malformed secret' final=kept`
 	src := &fakeCaptureSource{enabled: true, frames: []admin.CaptureFrame{{Seq: 1, Params: params}}}
-	h := admin.Handler(admin.Deps{AcpCapture: src})
+	h := admin.WithSecretRedactor(admin.Handler(admin.Deps{AcpCapture: src}), privacy.NewSecretClassifier())
 
 	rec := doGet(t, h, "/api/acp-capture?support=redacted")
 	var body struct {
@@ -636,7 +712,7 @@ func TestAcpCaptureSupport_RingTruncatedEscapedJSONFailsClosed(t *testing.T) {
 		frames[i] = admin.CaptureFrame{Seq: uint64(i + 1), Params: tc.params}
 	}
 	src := &fakeCaptureSource{enabled: true, frames: frames}
-	h := admin.Handler(admin.Deps{AcpCapture: src})
+	h := admin.WithSecretRedactor(admin.Handler(admin.Deps{AcpCapture: src}), privacy.NewSecretClassifier())
 
 	rec := doGet(t, h, "/api/acp-capture?support=redacted")
 	var body struct {
@@ -730,7 +806,7 @@ func TestAcpCaptureSupport_EscapedSecretDetectionIgnoresEarlierQuoteParity(t *te
 	frames = append(frames, admin.CaptureFrame{Seq: uint64(len(frames) + 1), Params: validLargeNumber})
 	sourceFrames := append([]admin.CaptureFrame(nil), frames...)
 	src := &fakeCaptureSource{enabled: true, frames: frames}
-	h := admin.Handler(admin.Deps{AcpCapture: src})
+	h := admin.WithSecretRedactor(admin.Handler(admin.Deps{AcpCapture: src}), privacy.NewSecretClassifier())
 
 	rec := doGet(t, h, "/api/acp-capture?support=redacted")
 	if rec.Code != http.StatusOK {
@@ -800,7 +876,7 @@ func TestAcpCaptureSupport_NestedJSONLimitsFailClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	src := &fakeCaptureSource{enabled: true, frames: []admin.CaptureFrame{{Seq: 1, Params: string(paramsBody)}}}
-	h := admin.Handler(admin.Deps{AcpCapture: src})
+	h := admin.WithSecretRedactor(admin.Handler(admin.Deps{AcpCapture: src}), privacy.NewSecretClassifier())
 
 	rec := doGet(t, h, "/api/acp-capture?support=redacted")
 	var body struct {

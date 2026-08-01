@@ -13,6 +13,14 @@ value_of() {
     awk -F= -v key="$key" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "$file"
 }
 
+stored_value_of() {
+    local file="$1" key="$2"
+    awk -v key="$key" '
+        { line=$0; sub(/^[[:space:]]*#[[:space:]]*/, "", line) }
+        index(line, key "=") == 1 { sub(/^[^=]*=/, "", line); print line; exit }
+    ' "$file"
+}
+
 assert_managed_secret() {
     local file="$1" key="$2" value
     value="$(value_of "$file" "$key")"
@@ -34,6 +42,16 @@ run_init() {
         bash "$REPO_ROOT/scripts/gw" init \
         --dest "$FIXTURE_ROOT/home/.env" \
         --auth-enabled --non-interactive "$@" >"$output_file" 2>&1
+}
+
+run_disabled_init() {
+    local output_file="$1"
+    shift
+    GW_HOME="$FIXTURE_ROOT/disabled-home" \
+        GW_TEMPLATE_FILE="$REPO_ROOT/scripts/.env.example" \
+        bash "$REPO_ROOT/scripts/gw" init \
+        --dest "$FIXTURE_ROOT/disabled-home/.env" \
+        --non-interactive "$@" >"$output_file" 2>&1
 }
 
 mkdir -p "$FIXTURE_ROOT/home"
@@ -97,6 +115,36 @@ done
 grep -Fq '# operator comment must survive' "$overrides" || fail "rotation removed an operator comment"
 grep -Fq 'UNRELATED_OPERATOR_SETTING=keep-me' "$overrides" || fail "rotation removed an unrelated setting"
 ok "explicit rotation atomically replaces all five secrets and warns safely"
+
+mkdir -p "$FIXTURE_ROOT/disabled-home"
+run_disabled_init "$FIXTURE_ROOT/disabled-cold.out"
+disabled_overrides="$FIXTURE_ROOT/disabled-home/overrides.env"
+declare -a disabled_keys=(AUTH_TOKEN PII_HASH_KEY PII_ENCRYPT_KEY PRIVACY_ALIAS_KEY PRIVACY_TRIAGE_TOKEN)
+declare -a disabled_before=()
+for key in "${disabled_keys[@]}"; do
+    value="$(stored_value_of "$disabled_overrides" "$key")"
+    [[ "$value" =~ ^[0-9a-f]{64}$ ]] || fail "disabled-auth cold init did not store managed $key"
+    disabled_before+=("$value")
+    ! grep -Fq "$value" "$FIXTURE_ROOT/disabled-cold.out" || fail "disabled-auth cold init printed $key"
+done
+grep -Eq '^#[[:space:]]*AUTH_TOKEN=[0-9a-f]{64}$' "$disabled_overrides" || fail "disabled-auth token is not stored commented"
+! grep -Eq '^AUTH_TOKEN=' "$disabled_overrides" || fail "disabled-auth cold init enabled authentication"
+
+run_disabled_init "$FIXTURE_ROOT/disabled-rotate.out" --force --regenerate-secrets
+for i in "${!disabled_keys[@]}"; do
+    key="${disabled_keys[$i]}"
+    value="$(stored_value_of "$disabled_overrides" "$key")"
+    [[ "$value" =~ ^[0-9a-f]{64}$ ]] || fail "disabled-auth regeneration did not store managed $key"
+    [[ "$value" != "${disabled_before[$i]}" ]] || fail "disabled-auth regeneration did not rotate $key"
+    ! grep -Fq "${disabled_before[$i]}" "$FIXTURE_ROOT/disabled-rotate.out" || fail "disabled-auth regeneration printed prior $key"
+    ! grep -Fq "$value" "$FIXTURE_ROOT/disabled-rotate.out" || fail "disabled-auth regeneration printed new $key"
+done
+grep -Eq '^#[[:space:]]*AUTH_TOKEN=[0-9a-f]{64}$' "$disabled_overrides" || fail "disabled-auth regenerated token is not stored commented"
+! grep -Eq '^AUTH_TOKEN=' "$disabled_overrides" || fail "disabled-auth regeneration enabled authentication"
+disabled_warning_line="$(grep -Ein 'mapping.*loss|mapping.*invalid' "$FIXTURE_ROOT/disabled-rotate.out" | head -n1 | cut -d: -f1)"
+disabled_write_line="$(grep -En 'wrote .*overrides' "$FIXTURE_ROOT/disabled-rotate.out" | head -n1 | cut -d: -f1)"
+[[ -n "$disabled_warning_line" && -n "$disabled_write_line" && "$disabled_warning_line" -lt "$disabled_write_line" ]] || fail "disabled-auth mapping-loss warning was not printed before mutation"
+ok "disabled auth stores and atomically rotates all five secrets without enabling auth or printing values"
 
 grep -Eq '^PRIVACY_ALIAS_KEY=(<[^>]+>|replace-.*)$' "$REPO_ROOT/scripts/.env.example" || fail ".env.example alias key is not a placeholder"
 grep -Eq '^PRIVACY_TRIAGE_TOKEN=(<[^>]+>|replace-.*)$' "$REPO_ROOT/scripts/.env.example" || fail ".env.example triage token is not a placeholder"

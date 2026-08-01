@@ -3,13 +3,21 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 FIXTURE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/gw-privacy-cli-posix.XXXXXX")"
-trap 'rm -rf "$FIXTURE_ROOT"' EXIT
+SERVER_PIDS=()
+cleanup() {
+    local pid
+    for pid in "${SERVER_PIDS[@]}"; do kill "$pid" 2>/dev/null || true; done
+    rm -rf "$FIXTURE_ROOT"
+}
+trap cleanup EXIT
 
 fail() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
 assert_contains() { grep -Fq -- "$2" "$1" || fail "$3"; }
 assert_not_contains() { ! grep -Fq -- "$2" "$1" || fail "$3"; }
 
 mkdir -p "$FIXTURE_ROOT/home" "$FIXTURE_ROOT/bin"
+ORIGINAL_PATH="$PATH"
+REAL_CURL="$(command -v curl)"
 cat >"$FIXTURE_ROOT/home/.env" <<'EOF'
 HTTP_ADDR=127.0.0.1:18080
 PRIVACY_TRIAGE_ENABLED=true
@@ -127,5 +135,94 @@ assert_not_contains "$GW_TEST_CURL_LOG" "$GW_TEST_EXPECT_TOKEN" 'triage token ap
 assert_not_contains "$GW_TEST_CURL_LOG" '--location' 'privacy CLI enabled redirects'
 assert_not_contains "$GW_TEST_CURL_LOG" ' -L' 'privacy CLI enabled redirects'
 assert_contains "$GW_TEST_CURL_LOG" '--config -' 'privacy CLI did not pass curl configuration on stdin'
+
+cat >"$FIXTURE_ROOT/http-fixture.py" <<'PY'
+import http.server, pathlib, sys, urllib.parse
+kind, port_file, request_log, mode_file = sys.argv[1:]
+request_log = pathlib.Path(request_log); mode_file = pathlib.Path(mode_file)
+class Handler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *args): pass
+    def do_GET(self):
+        parsed = urllib.parse.urlsplit(self.path)
+        path = parsed.path
+        auth = self.headers.get('Authorization', '') != ''
+        with request_log.open('a') as stream:
+            stream.write(f'{kind} {path} auth={auth}\n')
+        if kind == 'proxy':
+            self.send_response(200); self.end_headers(); self.wfile.write(b'[{"id":"proxy-escape"}]'); return
+        mode = mode_file.read_text().strip()
+        if mode == 'redirect' and path == '/admin/api/privacy/scopes':
+            port = self.server.server_address[1]
+            self.send_response(302)
+            self.send_header('Location', f'http://127.0.0.1:{port}/redirect-target')
+            self.end_headers(); return
+        self.send_response(200); self.end_headers(); self.wfile.write(b'[{"id":"direct-safe"}]')
+server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+pathlib.Path(port_file).write_text(str(server.server_address[1]))
+server.serve_forever()
+PY
+
+wait_port_file() {
+    local file="$1" attempt
+    for ((attempt = 0; attempt < 100; attempt++)); do
+        [[ -s "$file" ]] && return 0
+        sleep 0.02
+    done
+    fail "HTTP fixture did not publish $file"
+}
+
+hostile_log="$FIXTURE_ROOT/hostile.requests"
+hostile_mode="$FIXTURE_ROOT/hostile.mode"
+target_port_file="$FIXTURE_ROOT/target.port"
+proxy_port_file="$FIXTURE_ROOT/proxy.port"
+: >"$hostile_log"
+printf 'redirect\n' >"$hostile_mode"
+python3 "$FIXTURE_ROOT/http-fixture.py" target "$target_port_file" "$hostile_log" "$hostile_mode" &
+SERVER_PIDS+=("$!")
+python3 "$FIXTURE_ROOT/http-fixture.py" proxy "$proxy_port_file" "$hostile_log" "$hostile_mode" &
+SERVER_PIDS+=("$!")
+wait_port_file "$target_port_file"
+wait_port_file "$proxy_port_file"
+target_port="$(cat "$target_port_file")"
+proxy_port="$(cat "$proxy_port_file")"
+
+mkdir -p "$FIXTURE_ROOT/real-bin" "$FIXTURE_ROOT/hostile-home"
+ln -s "$REAL_CURL" "$FIXTURE_ROOT/real-bin/curl"
+hostile_trace="$FIXTURE_ROOT/hostile.trace"
+cat >"$FIXTURE_ROOT/hostile-home/.curlrc" <<EOF
+location
+trace = "$hostile_trace"
+EOF
+export PATH="$FIXTURE_ROOT/real-bin:$ORIGINAL_PATH"
+export HOME="$FIXTURE_ROOT/hostile-home"
+export GW_ADDR="http://127.0.0.1:$target_port"
+unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY no_proxy || true
+
+if GW_TEST_CURL_STATE=enabled run_privacy hostile_redirect scopes; then
+    fail 'hostile curlrc caused the credential-bearing request to follow a redirect'
+fi
+assert_not_contains "$hostile_log" 'target /redirect-target' 'hostile curlrc caused a second request'
+assert_not_contains "$FIXTURE_ROOT/hostile_redirect.out" "$GW_TEST_EXPECT_TOKEN" 'redirect rejection output exposed triage token'
+if [[ -f "$hostile_trace" ]]; then
+    assert_not_contains "$hostile_trace" "$GW_TEST_EXPECT_TOKEN" 'hostile curlrc trace exposed triage token'
+fi
+
+: >"$hostile_log"
+rm -f "$hostile_trace"
+printf 'direct\n' >"$hostile_mode"
+export http_proxy="http://127.0.0.1:$proxy_port"
+export https_proxy="$http_proxy"
+export ALL_PROXY="$http_proxy"
+export NO_PROXY=''
+export no_proxy=''
+GW_TEST_CURL_STATE=enabled run_privacy hostile_proxy scopes
+assert_not_contains "$hostile_log" 'proxy ' 'privacy request inherited a proxy from the environment'
+assert_contains "$hostile_log" 'target /admin/api/privacy/scopes auth=True' 'privacy request did not bypass proxies to the loopback target'
+assert_not_contains "$FIXTURE_ROOT/hostile_proxy.out" "$GW_TEST_EXPECT_TOKEN" 'proxy-bypass output exposed triage token'
+if [[ -f "$hostile_trace" ]]; then
+    assert_not_contains "$hostile_trace" "$GW_TEST_EXPECT_TOKEN" 'hostile curlrc trace exposed token during proxy coverage'
+fi
+
+assert_contains "$GW_TEST_CURL_LOG" '-q --noproxy * --config -' 'privacy CLI did not put curl config suppression first and bypass proxies'
 
 printf 'PASS: POSIX privacy CLI\n'

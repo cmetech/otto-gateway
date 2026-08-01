@@ -173,6 +173,8 @@ printf '%s\n' \
     "GW_METRICS_REMOTE_WRITE_TOKEN=$SECRET_REMOTE_LITERAL" | \
     gzip > "$GW_HOME_FIXTURE/logs/gateway-20260101.log.gz"
 touch -t 202601010000 "$GW_HOME_FIXTURE/logs/gateway-20260101.log.gz"
+printf 'invalid gzip utf8 \377\n' | gzip > "$GW_HOME_FIXTURE/logs/gateway-invalid-utf8.log.gz"
+touch -t 202501010000 "$GW_HOME_FIXTURE/logs/gateway-invalid-utf8.log.gz"
 
 # The explicit Kiro path is deliberately relative. Runtime interpretation is
 # relative to the final KIRO_CWD, and support collection must find that same
@@ -183,10 +185,12 @@ AUTH_TOKEN=$SECRET_TOKEN_LITERAL
 EOF
 dd if=/dev/urandom bs=1024 count=1536 2>/dev/null | base64 | fold -w 76 > "$KIRO_CWD_FIXTURE/native/kiro-current.log.1"
 printf '%s\n' 'kiro newest rotation safe' > "$KIRO_CWD_FIXTURE/native/kiro-current.log.2"
+printf 'invalid plain utf8 \377\n' > "$KIRO_CWD_FIXTURE/native/kiro-current.log.4"
 printf '%s\n' "$SUFFIX_DECOY_SECRET_LITERAL" > "$KIRO_CWD_FIXTURE/native/kiro-current.log.backup.99"
 printf '%s\n' 'compressed kiro must not be copied' | gzip > "$KIRO_CWD_FIXTURE/native/kiro-current.log.3.gz"
 touch -t 202101010000 "$KIRO_CWD_FIXTURE/native/kiro-current.log.1"
 touch -t 202301010000 "$KIRO_CWD_FIXTURE/native/kiro-current.log.2"
+touch -t 202501010000 "$KIRO_CWD_FIXTURE/native/kiro-current.log.4"
 
 APPROVED_LOGS="agent.log errors.log gateway.log gui.log desktop.log mcp-stderr.log gateway-shutdown-watchdog.log dashboard-auth.log container-boot.log tool_calls.log"
 for name in $APPROVED_LOGS; do
@@ -424,6 +428,7 @@ assert_file "$MAIN_ROOT/logs/gateway/gateway-boot.log" "Gateway boot log is orga
 assert_file "$MAIN_ROOT/logs/gateway/gateway-chat-trace.log" "Gateway chat trace is organized"
 assert_file "$MAIN_ROOT/logs/gateway/gateway-20200101.log.gz" "Gateway compressed rotation is retained"
 assert_file "$MAIN_ROOT/logs/gateway/gateway-20260101.log.gz" "Gateway credential-bearing compressed rotation is retained"
+assert_absent "$MAIN_ROOT/logs/gateway/gateway-invalid-utf8.log.gz" "invalid-UTF-8 Gateway gzip is omitted without a partial artifact"
 assert_gzip_contains "$MAIN_ROOT/logs/gateway/gateway-20260101.log.gz" 'GW_METRICS_REMOTE_WRITE_TOKEN=[REDACTED]' "Gateway compressed rotation is decompressed and redacted"
 assert_gzip_not_contains "$MAIN_ROOT/logs/gateway/gateway-20260101.log.gz" "$SECRET_REMOTE_LITERAL" "Gateway compressed rotation excludes raw remote-write token"
 assert_contains "$MAIN_ROOT/logs/gateway/gateway.log" 'AUTH_TOKEN=[REDACTED]' "Gateway log assignments are redacted"
@@ -432,6 +437,7 @@ assert_contains "$MAIN_ROOT/logs/gateway/gateway.log" 'GW_METRICS_REMOTE_WRITE_T
 assert_file "$MAIN_ROOT/logs/kiro/kiro-chat.log" "relative explicit Kiro current log is found and normalized"
 assert_file "$MAIN_ROOT/logs/kiro/kiro-chat.log.1" "Kiro numeric rotation is retained"
 assert_file "$MAIN_ROOT/logs/kiro/kiro-chat.log.2" "Kiro newest numeric rotation is retained"
+assert_absent "$MAIN_ROOT/logs/kiro/kiro-chat.log.4" "invalid-UTF-8 Kiro rotation is omitted without a partial artifact"
 assert_absent "$MAIN_ROOT/logs/kiro/kiro-chat.log.3.gz" "compressed Kiro rotation is excluded"
 assert_absent "$MAIN_ROOT/logs/kiro/kiro-chat.log.99" "multi-component Kiro suffix is not treated as numeric rotation"
 assert_contains "$MAIN_ROOT/logs/kiro/kiro-chat.log" 'AUTH_TOKEN=[REDACTED]' "Kiro current log is redacted"
@@ -491,6 +497,8 @@ assert_contains "$MAIN_ROOT/MANIFEST.txt" 'metrics: captured' "manifest records 
 assert_contains "$MAIN_ROOT/MANIFEST.txt" 'capture: captured' "manifest records captured capture"
 assert_contains "$MAIN_ROOT/MANIFEST.txt" 'sensitive user content' "manifest warns capture can retain sensitive user content"
 assert_contains "$MAIN_ROOT/MANIFEST.txt" 'review before sharing' "manifest tells operator to review before sharing"
+assert_contains "$MAIN_ROOT/MANIFEST.txt" 'Gateway rotation gateway-invalid-utf8.log.gz decompression or redaction failed' "manifest warns when strict UTF-8 rejects a Gateway gzip rotation"
+assert_contains "$MAIN_ROOT/MANIFEST.txt" 'Kiro rotation kiro-current.log.4 redaction failed' "manifest warns when strict UTF-8 rejects a plain Kiro rotation"
 
 echo "== extracted-tree secret scan =="
 for needle in \

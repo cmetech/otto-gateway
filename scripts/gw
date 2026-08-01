@@ -437,8 +437,11 @@ set_managed_secrets() {
         key="${probe%%=*}"
         case "$key" in
             AUTH_TOKEN)
-                if [[ "$auth_enabled" == "1" && "$seen_auth" == "0" ]]; then printf 'AUTH_TOKEN=%s\n' "$auth" >>"$tmp"; seen_auth=1
-                elif [[ "$auth_enabled" != "1" ]]; then printf '%s\n' "$line" >>"$tmp"
+                if [[ "$seen_auth" == "0" ]]; then
+                    if [[ "$auth_enabled" == "1" ]]; then printf 'AUTH_TOKEN=%s\n' "$auth" >>"$tmp"
+                    else printf '# AUTH_TOKEN=%s\n' "$auth" >>"$tmp"
+                    fi
+                    seen_auth=1
                 fi
                 ;;
             PII_HASH_KEY) [[ "$seen_hash" == "1" ]] || printf 'PII_HASH_KEY=%s\n' "$hash" >>"$tmp"; seen_hash=1 ;;
@@ -448,7 +451,11 @@ set_managed_secrets() {
             *) printf '%s\n' "$line" >>"$tmp" ;;
         esac
     done <"$file"
-    [[ "$auth_enabled" != "1" || "$seen_auth" == "1" ]] || printf 'AUTH_TOKEN=%s\n' "$auth" >>"$tmp"
+    if [[ "$seen_auth" != "1" ]]; then
+        if [[ "$auth_enabled" == "1" ]]; then printf 'AUTH_TOKEN=%s\n' "$auth" >>"$tmp"
+        else printf '# AUTH_TOKEN=%s\n' "$auth" >>"$tmp"
+        fi
+    fi
     [[ "$seen_hash" == "1" ]] || printf 'PII_HASH_KEY=%s\n' "$hash" >>"$tmp"
     [[ "$seen_encrypt" == "1" ]] || printf 'PII_ENCRYPT_KEY=%s\n' "$encrypt" >>"$tmp"
     [[ "$seen_alias" == "1" ]] || printf 'PRIVACY_ALIAS_KEY=%s\n' "$alias_key" >>"$tmp"
@@ -1817,7 +1824,7 @@ init_cmd() {
             echo "  AUTH:          enabled (AUTH_TOKEN=$(echo "$auth_token" | head -c 8)… in overrides)"
         fi
     else
-        echo "  AUTH:          disabled (no AUTH_TOKEN in overrides; commented placeholder in .env)"
+        echo "  AUTH:          disabled (generated token stored commented in overrides)"
     fi
     if [[ "$hash_key_preserved" -eq 1 ]]; then
         echo "  PII_HASH_KEY:  preserved (existing key reused)"
@@ -1914,7 +1921,7 @@ privacy_request() {
         printf 'header = "Authorization: Bearer %s"\n' "$token"
         [[ -z "$confirm" ]] || printf 'header = "X-GW-Privacy-Confirm: %s"\n' "$confirm"
         printf 'silent\nshow-error\nmax-time = 5\n'
-    } | curl --config - --output "$response" --write-out '%{http_code}')"; then
+    } | curl -q --noproxy '*' --config - --output "$response" --write-out '%{http_code}')"; then
         rm -f "$response"
         echo "privacy: unavailable (Gateway did not respond)" >&2
         return 1
@@ -1931,7 +1938,7 @@ privacy_status() {
     if ! code="$({
         printf 'request = "GET"\nurl = "%s/admin/api/snapshot"\n' "$base"
         printf 'silent\nshow-error\nmax-time = 5\n'
-    } | curl --config - --output "$response_file" --write-out '%{http_code}')"; then
+    } | curl -q --noproxy '*' --config - --output "$response_file" --write-out '%{http_code}')"; then
         rm -f "$response_file"
         echo "privacy: unavailable (safe snapshot did not respond)" >&2
         return 1

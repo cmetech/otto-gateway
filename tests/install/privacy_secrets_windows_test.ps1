@@ -15,6 +15,12 @@ function Get-EnvValue([string]$Path, [string]$Key) {
     if (-not $line) { return '' }
     return $line.Substring($line.IndexOf('=') + 1)
 }
+function Get-StoredEnvValue([string]$Path, [string]$Key) {
+    $pattern = '^\s*#?\s*' + [regex]::Escape($Key) + '='
+    $line = @(Get-Content -LiteralPath $Path | Where-Object { $_ -cmatch $pattern }) | Select-Object -First 1
+    if (-not $line) { return '' }
+    return $line.Substring($line.IndexOf('=') + 1)
+}
 function Assert-ManagedSecret([string]$Path, [string]$Key) {
     $value = Get-EnvValue $Path $Key
     if ($value -cnotmatch '^[0-9a-f]{64}$') { Fail-With "$Key was not generated as 32 cryptographic bytes" }
@@ -35,6 +41,39 @@ function Invoke-FixtureInit([string]$OutputPath, [switch]$Force, [switch]$Regene
     }
 }
 
+function Invoke-FixtureInitExpectFailure([string]$OutputPath) {
+    $priorHome = $env:GW_HOME
+    $priorFailure = $env:GW_TEST_MANAGED_SECRET_REPLACE_FAILURE
+    try {
+        $env:GW_HOME = $HomeFixture
+        $env:GW_TEST_MANAGED_SECRET_REPLACE_FAILURE = 'true'
+        $output = & pwsh -NoProfile -File $Wrapper init -Dest $EnvPath -Template $Template `
+            -AuthEnabled -NonInteractive -Force -RegenerateSecrets 2>&1 | Out-String
+        [System.IO.File]::WriteAllText($OutputPath, $output, (New-Object System.Text.UTF8Encoding($false)))
+        return $LASTEXITCODE
+    } finally {
+        $env:GW_HOME = $priorHome
+        $env:GW_TEST_MANAGED_SECRET_REPLACE_FAILURE = $priorFailure
+    }
+}
+
+function Assert-ManagedSecretsAcl([string]$Path) {
+    if ([System.Environment]::OSVersion.Platform -ne [System.PlatformID]::Win32NT) {
+        Write-Host 'skip: real-Windows managed-secret DACL assertion unavailable on this host'
+        return
+    }
+    $acl = Get-Acl -LiteralPath $Path
+    if (-not $acl.AreAccessRulesProtected) { Fail-With 'managed-secret DACL still inherits parent access rules' }
+    $currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $allowSids = @($acl.Access | Where-Object { $_.AccessControlType -eq 'Allow' } | ForEach-Object {
+        $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value
+    } | Sort-Object -Unique)
+    if ($allowSids.Count -ne 1 -or $allowSids[0] -cne $currentSid) {
+        Fail-With "managed-secret DACL grants access beyond the current SID: $($allowSids -join ',')"
+    }
+    Write-Host 'ok: real Windows managed-secret DACL is protected and grants only the current SID'
+}
+
 New-Item -ItemType Directory -Path $HomeFixture -Force | Out-Null
 try {
     $coldOutput = Join-Path $FixtureRoot 'cold.out'
@@ -48,7 +87,85 @@ try {
     $triageBefore = Assert-ManagedSecret $OverridesPath 'PRIVACY_TRIAGE_TOKEN'
     $coldText = Get-Content -LiteralPath $coldOutput -Raw
     if ($coldText.Contains($aliasBefore) -or $coldText.Contains($triageBefore)) { Fail-With 'privacy secret appeared in init output' }
+    Assert-ManagedSecretsAcl $OverridesPath
     Write-Host 'ok: cold init generates five managed secrets without exposing privacy values'
+
+    $beforeForcedFailure = [System.IO.File]::ReadAllText($OverridesPath)
+    $failureOutput = Join-Path $FixtureRoot 'replace-failure.out'
+    $failureExit = Invoke-FixtureInitExpectFailure $failureOutput
+    if ($failureExit -eq 0) { Fail-With 'forced atomic replacement failure unexpectedly succeeded' }
+    if ([System.IO.File]::ReadAllText($OverridesPath) -cne $beforeForcedFailure) {
+        Fail-With 'forced atomic replacement failure changed the prior overrides file'
+    }
+    if (@(Get-ChildItem -LiteralPath $HomeFixture -Force -Filter '.managed-secrets-*.tmp').Count -ne 0) {
+        Fail-With 'forced atomic replacement failure left a managed-secret temporary file'
+    }
+    Write-Host 'ok: failed atomic replacement preserves the prior file and removes its protected temporary'
+
+    $parseErrors = $null
+    $tokens = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($Wrapper, [ref]$tokens, [ref]$parseErrors)
+    if ($parseErrors.Count -ne 0) { Fail-With 'gw.ps1 does not parse for managed-secret publication inspection' }
+    $managedFunction = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Set-ManagedSecrets' }, $true)) | Select-Object -First 1
+    if (-not $managedFunction) { Fail-With 'Set-ManagedSecrets function is missing' }
+    $managedText = $managedFunction.Extent.Text
+    $aclIndex = $managedText.IndexOf('Protect-ManagedSecretTemporary')
+    $writeIndex = $managedText.IndexOf('WriteAllLines')
+    $publishIndex = $managedText.IndexOf('Publish-SupportFileAtomically')
+    if ($aclIndex -lt 0 -or $writeIndex -lt 0 -or $aclIndex -ge $writeIndex) {
+        Fail-With 'managed-secret temporary ACL is not established before secret values are written'
+    }
+    if ($publishIndex -lt 0 -or $managedText -cmatch '(?m)^\s*Remove-Item\s+[^\r\n]*\$FilePath') {
+        Fail-With 'managed-secret replacement does not use the shared no-delete atomic publication primitive'
+    }
+    Write-Host 'ok: managed-secret writer protects its sibling temporary before values and uses no-delete atomic publication'
+
+    if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
+        $readerReady = Join-Path $FixtureRoot 'reader.ready'
+        $readerStop = Join-Path $FixtureRoot 'reader.stop'
+        $oldComplete = [System.IO.File]::ReadAllText($OverridesPath)
+        $readerJob = Start-Job -ScriptBlock {
+            param($Path, $ReadyPath, $StopPath)
+            $observed = New-Object 'System.Collections.Generic.HashSet[string]'
+            [System.IO.File]::WriteAllText($ReadyPath, 'ready')
+            while (-not [System.IO.File]::Exists($StopPath)) {
+                try {
+                    $bytes = [System.Text.Encoding]::UTF8.GetBytes([System.IO.File]::ReadAllText($Path))
+                    $null = $observed.Add([Convert]::ToBase64String($bytes))
+                } catch {
+                    $null = $observed.Add('READ-ERROR:' + $_.Exception.GetType().FullName)
+                }
+                Start-Sleep -Milliseconds 1
+            }
+            return @($observed)
+        } -ArgumentList $OverridesPath, $readerReady, $readerStop
+        try {
+            $deadline = [DateTime]::UtcNow.AddSeconds(10)
+            while (-not (Test-Path -LiteralPath $readerReady)) {
+                if ([DateTime]::UtcNow -ge $deadline) { Fail-With 'continuous reader did not become ready' }
+                Start-Sleep -Milliseconds 10
+            }
+            $readerRotationOutput = Join-Path $FixtureRoot 'reader-rotation.out'
+            Invoke-FixtureInit $readerRotationOutput -Force -RegenerateSecrets
+            $newComplete = [System.IO.File]::ReadAllText($OverridesPath)
+        } finally {
+            [System.IO.File]::WriteAllText($readerStop, 'stop')
+            $null = Wait-Job -Job $readerJob -Timeout 10
+            $observations = @(Receive-Job -Job $readerJob)
+            Remove-Job -Job $readerJob -Force -ErrorAction SilentlyContinue
+        }
+        $oldEncoded = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($oldComplete))
+        $newEncoded = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($newComplete))
+        if ($observations.Count -lt 1) { Fail-With 'continuous reader observed no managed-secret contents' }
+        foreach ($observation in $observations) {
+            if ($observation -cne $oldEncoded -and $observation -cne $newEncoded) {
+                Fail-With 'continuous reader observed missing, partial, or mixed managed-secret contents'
+            }
+        }
+        Write-Host 'ok: real Windows readers observe only the old complete set or new complete set'
+    } else {
+        Write-Host 'skip: real-Windows continuous replacement assertion unavailable on this host'
+    }
 
     Add-Content -LiteralPath $OverridesPath -Value @('', '# operator comment must survive', 'UNRELATED_OPERATOR_SETTING=keep-me', 'PRIVACY_ALIAS_KEY=override-alias-value', 'PRIVACY_TRIAGE_TOKEN=override-triage-value')
     $preserveOutput = Join-Path $FixtureRoot 'preserve.out'
@@ -87,6 +204,56 @@ try {
     $rotatedContent = Get-Content -LiteralPath $OverridesPath -Raw
     if (-not $rotatedContent.Contains('# operator comment must survive') -or -not $rotatedContent.Contains('UNRELATED_OPERATOR_SETTING=keep-me')) { Fail-With 'rotation removed unrelated operator content' }
     Write-Host 'ok: explicit rotation atomically replaces all five secrets and warns safely'
+
+    $disabledHome = Join-Path $FixtureRoot 'disabled-home'
+    $disabledEnv = Join-Path $disabledHome '.env'
+    $disabledOverrides = Join-Path $disabledHome 'overrides.env'
+    $null = New-Item -ItemType Directory -Path $disabledHome -Force
+    $disabledKeys = @('AUTH_TOKEN','PII_HASH_KEY','PII_ENCRYPT_KEY','PRIVACY_ALIAS_KEY','PRIVACY_TRIAGE_TOKEN')
+    $disabledBefore = @{}
+    $priorHome = $env:GW_HOME
+    try {
+        $env:GW_HOME = $disabledHome
+        $disabledColdOutput = & pwsh -NoProfile -File $Wrapper init -Dest $disabledEnv -Template $Template -NonInteractive 2>&1 | Out-String
+        if ($LASTEXITCODE -ne 0) { Fail-With "disabled-auth cold init failed: $disabledColdOutput" }
+        foreach ($key in $disabledKeys) {
+            $value = Get-StoredEnvValue $disabledOverrides $key
+            if ($value -cnotmatch '^[0-9a-f]{64}$') { Fail-With "disabled-auth cold init did not store managed $key" }
+            $disabledBefore[$key] = $value
+            if ($disabledColdOutput.Contains($value)) { Fail-With "disabled-auth cold init printed $key" }
+        }
+        if (-not (@(Get-Content -LiteralPath $disabledOverrides | Where-Object { $_ -cmatch '^#\s*AUTH_TOKEN=[0-9a-f]{64}$' }).Count -eq 1)) {
+            Fail-With 'disabled-auth token is not stored exactly once as a comment'
+        }
+        if (@(Get-Content -LiteralPath $disabledOverrides | Where-Object { $_ -cmatch '^AUTH_TOKEN=' }).Count -ne 0) {
+            Fail-With 'disabled-auth cold init enabled authentication'
+        }
+
+        $disabledRotateOutput = & pwsh -NoProfile -File $Wrapper init -Dest $disabledEnv -Template $Template -NonInteractive -Force -RegenerateSecrets 2>&1 | Out-String
+        if ($LASTEXITCODE -ne 0) { Fail-With "disabled-auth regeneration failed: $disabledRotateOutput" }
+        foreach ($key in $disabledKeys) {
+            $value = Get-StoredEnvValue $disabledOverrides $key
+            if ($value -cnotmatch '^[0-9a-f]{64}$') { Fail-With "disabled-auth regeneration did not store managed $key" }
+            if ($value -ceq $disabledBefore[$key]) { Fail-With "disabled-auth regeneration did not rotate $key" }
+            if ($disabledRotateOutput.Contains($disabledBefore[$key]) -or $disabledRotateOutput.Contains($value)) {
+                Fail-With "disabled-auth regeneration printed $key"
+            }
+        }
+        if (-not (@(Get-Content -LiteralPath $disabledOverrides | Where-Object { $_ -cmatch '^#\s*AUTH_TOKEN=[0-9a-f]{64}$' }).Count -eq 1)) {
+            Fail-With 'disabled-auth regenerated token is not stored exactly once as a comment'
+        }
+        if (@(Get-Content -LiteralPath $disabledOverrides | Where-Object { $_ -cmatch '^AUTH_TOKEN=' }).Count -ne 0) {
+            Fail-With 'disabled-auth regeneration enabled authentication'
+        }
+        $disabledWarningIndex = [regex]::Match($disabledRotateOutput, '(?im)^.*mapping.*(loss|invalid).*$').Index
+        $disabledWriteIndex = [regex]::Match($disabledRotateOutput, '(?im)^.*wrote .*overrides.*$').Index
+        if ($disabledWarningIndex -lt 0 -or $disabledWriteIndex -lt 0 -or $disabledWarningIndex -ge $disabledWriteIndex) {
+            Fail-With 'disabled-auth mapping-loss warning was not printed before mutation'
+        }
+        Write-Host 'ok: disabled auth stores and atomically rotates all five secrets without enabling auth or printing values'
+    } finally {
+        $env:GW_HOME = $priorHome
+    }
 
     $templateText = Get-Content -LiteralPath $Template -Raw
     if ($templateText -cnotmatch '(?m)^PRIVACY_ALIAS_KEY=(<[^>]+>|replace-|)$') { Fail-With '.env.example alias key is not a placeholder' }

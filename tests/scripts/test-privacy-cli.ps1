@@ -92,11 +92,22 @@ http.server.ThreadingHTTPServer(('127.0.0.1', port), Handler).serve_forever()
         $clearAll = Invoke-Privacy 'clear-all' @('clear','--all','--yes')
         Assert-Contains $clearAll.Output 'cleared' "clear-all state missing: $($clearAll.Output)"
 
-        $before = if (Test-Path $RequestLog) { @(Get-Content $RequestLog).Count } else { 0 }
-        $missingYes = Invoke-Privacy 'missing-yes' @('clear','--all')
-        if ($missingYes.ExitCode -eq 0) { Fail-With 'clear --all succeeded without --yes' }
-        $after = @(Get-Content $RequestLog).Count
-        if ($before -ne $after) { Fail-With 'clear --all without --yes contacted API' }
+        $invalidConfirmations = @(
+            @{ Name = 'missing-yes'; Args = @('clear','--all') },
+            @{ Name = 'abbreviated-y'; Args = @('clear','--all','-Y') },
+            @{ Name = 'single-dash-yes'; Args = @('clear','--all','-Yes') },
+            @{ Name = 'wrong-case-yes'; Args = @('clear','--all','--Yes') },
+            @{ Name = 'reordered-yes'; Args = @('clear','--yes','--all') },
+            @{ Name = 'extra-after-yes'; Args = @('clear','--all','--yes','extra') }
+        )
+        foreach ($case in $invalidConfirmations) {
+            $before = if (Test-Path $RequestLog) { @(Get-Content $RequestLog).Count } else { 0 }
+            $rejected = Invoke-Privacy $case.Name $case.Args
+            if ($rejected.ExitCode -eq 0) { Fail-With "$($case.Name) clear-all confirmation unexpectedly succeeded" }
+            Assert-Contains $rejected.Output 'requires exact --yes confirmation' "$($case.Name) did not report exact confirmation requirement"
+            $after = @(Get-Content $RequestLog).Count
+            if ($before -ne $after) { Fail-With "$($case.Name) contacted API" }
+        }
 
         @('# overrides win','PRIVACY_TRIAGE_TOKEN=wrong-token') | Set-Content -LiteralPath (Join-Path $HomeFixture 'overrides.env') -Encoding UTF8
         $unauthorized = Invoke-Privacy 'unauthorized' @('scopes')
