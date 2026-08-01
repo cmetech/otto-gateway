@@ -2,8 +2,12 @@ package admin
 
 import (
 	"context"
+	"io/fs"
+	"math"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -125,9 +129,82 @@ func TestPrivacyPage_ReadOnlyAccessiblePosture(t *testing.T) {
 		}
 	}
 	lower := strings.ToLower(body)
-	for _, forbidden := range []string{"<form", "<input", "<select", "<textarea", "data-privacy-mutate", "mapping", "method=\"post\"", "method=\"delete\"", "method=\"put\"", "method=\"patch\"", "triage-token-must-not-leak"} {
+	for _, forbidden := range []string{
+		"<form", "<input", "<select", "<textarea", "<button", "<script",
+		"data-theme-toggle", "document.documentelement.dataset", "localstorage",
+		"data-privacy-mutate", "mapping", "method=\"post\"", "method=\"delete\"",
+		"method=\"put\"", "method=\"patch\"", "triage-token-must-not-leak",
+	} {
 		if strings.Contains(lower, forbidden) {
 			t.Errorf("read-only privacy page contains forbidden content %q", forbidden)
 		}
 	}
+}
+
+func TestPrivacyPage_ThemeControlsRemainOnOtherPages(t *testing.T) {
+	for _, path := range []string{"/", "/about", "/docs"} {
+		body := renderPrivacyTestPage(t, path)
+		for _, want := range []string{"<button", "data-theme-toggle", "document.documentElement.dataset", "localStorage"} {
+			if !strings.Contains(body, want) {
+				t.Errorf("GET %s lost shared theme control %q", path, want)
+			}
+		}
+	}
+}
+
+// TestPrivacyLightThemeTextContrast catches a light-theme token change that
+// makes the small eyebrow or help-link text fall below WCAG 2.1 AA's 4.5:1
+// threshold against the card surface.
+func TestPrivacyLightThemeTextContrast(t *testing.T) {
+	cssBytes, err := fs.ReadFile(assetsFS, "static/css/admin.css")
+	if err != nil {
+		t.Fatalf("read embedded admin CSS: %v", err)
+	}
+	lightBlock := regexp.MustCompile(`(?s)\[data-theme="light"\]\s*\{([^}]*)\}`).FindSubmatch(cssBytes)
+	if len(lightBlock) != 2 {
+		t.Fatal("light-theme token block missing")
+	}
+	tokens := string(lightBlock[1])
+	background := cssHexToken(t, tokens, "--gw-card")
+	for _, token := range []string{"--gw-privacy-eyebrow", "--gw-privacy-link"} {
+		foreground := cssHexToken(t, tokens, token)
+		if ratio := contrastRatio(foreground, background); ratio < 4.5 {
+			t.Errorf("%s contrast = %.2f:1, want >= 4.5:1", token, ratio)
+		}
+	}
+}
+
+func cssHexToken(t *testing.T, block, token string) [3]float64 {
+	t.Helper()
+	re := regexp.MustCompile(regexp.QuoteMeta(token) + `\s*:\s*(#[0-9A-Fa-f]{6})`)
+	match := re.FindStringSubmatch(block)
+	if len(match) != 2 {
+		t.Fatalf("light-theme token %s missing or not a stable hex color", token)
+	}
+	var rgb [3]float64
+	for i := range rgb {
+		value, err := strconv.ParseUint(match[1][1+i*2:3+i*2], 16, 8)
+		if err != nil {
+			t.Fatalf("parse %s: %v", token, err)
+		}
+		rgb[i] = float64(value) / 255
+	}
+	return rgb
+}
+
+func contrastRatio(a, b [3]float64) float64 {
+	luminance := func(rgb [3]float64) float64 {
+		linear := func(channel float64) float64 {
+			if channel <= 0.04045 {
+				return channel / 12.92
+			}
+			return math.Pow((channel+0.055)/1.055, 2.4)
+		}
+		return 0.2126*linear(rgb[0]) + 0.7152*linear(rgb[1]) + 0.0722*linear(rgb[2])
+	}
+	la, lb := luminance(a), luminance(b)
+	if la < lb {
+		la, lb = lb, la
+	}
+	return (la + 0.05) / (lb + 0.05)
 }

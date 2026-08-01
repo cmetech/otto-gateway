@@ -143,22 +143,47 @@ func TestPrivacyHealth_SafeProjection(t *testing.T) {
 		if hook.Name != "PIIRedactionHook" {
 			continue
 		}
-		privacyStatus, ok := hook.Config["privacy"].(map[string]any)
-		if !ok {
-			t.Fatalf("PIIRedactionHook config privacy projection missing: %#v", hook.Config)
+		wantRecognizers := []any{
+			"Email", "IPv4", "IPv6", "SSN", "CreditCard", "USPhone", "SIP_URI", "IMEI",
+			"IMSI", "MSISDN", "MAC_ADDRESS", "COORDINATES", "SITE", "USAddress", "USState", "USZIP",
 		}
-		for key, want := range map[string]any{
-			"default_profile":      "standard",
-			"strict_available":     true,
-			"alias_key_present":    true,
-			"triage_enabled":       true,
-			"triage_token_present": true,
-			"max_scopes":           float64(8),
-			"max_total_entries":    float64(128),
-		} {
-			if got := privacyStatus[key]; got != want {
-				t.Errorf("privacy.%s = %#v, want %#v", key, got, want)
-			}
+		wantPrivacy := map[string]any{
+			"default_profile":          "standard",
+			"request_profiles":         []any{"standard", "strict"},
+			"strict_available":         true,
+			"triage_enabled":           true,
+			"alias_key_present":        true,
+			"triage_token_present":     true,
+			"pii_enabled":              true,
+			"ner_enabled":              false,
+			"secret_action":            "replace",
+			"technical_action":         "pseudonymize",
+			"pii_mode":                 "replace",
+			"recognizers":              wantRecognizers,
+			"entity_actions":           map[string]any{},
+			"strict_full_buffering":    true,
+			"receipt_version":          float64(1),
+			"scopes_active":            float64(0),
+			"requests_in_flight":       float64(0),
+			"entries":                  float64(0),
+			"max_scopes":               float64(8),
+			"max_entries_per_scope":    float64(32),
+			"max_total_entries":        float64(128),
+			"scope_ttl_seconds":        float64(3600),
+			"oldest_scope_age_seconds": float64(0),
+			"requests_protected":       float64(0),
+			"requests_blocked":         float64(0),
+		}
+		wantConfig := map[string]any{
+			"enabled":        true,
+			"mode":           "replace",
+			"entities":       wantRecognizers,
+			"decrypt_active": false,
+			"entity_actions": map[string]any{},
+			"privacy":        wantPrivacy,
+		}
+		if diff := cmp.Diff(wantConfig, hook.Config); diff != "" {
+			t.Fatalf("PIIRedactionHook health config mismatch (-want +got):\n%s", diff)
 		}
 		return
 	}

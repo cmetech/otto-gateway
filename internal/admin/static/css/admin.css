@@ -27,6 +27,8 @@
   --gw-warning: #FF8C0A;
   --gw-failed: #FF3232;
   --gw-activity: #AF78D2;
+  --gw-privacy-eyebrow: var(--gw-accent);
+  --gw-privacy-link: var(--gw-link);
   --gw-space-xs: 4px;
   --gw-space-sm: 8px;
   --gw-space-md: 12px;
@@ -997,6 +999,8 @@ body {
   --gw-warning: #D97706;
   --gw-failed: #DC2626;
   --gw-activity: #7C3AED;
+  --gw-privacy-eyebrow: #6B5500;
+  --gw-privacy-link: #6B5500;
 }
 
 /* Header bar (wordmark + theme toggle). Always-dark surface in BOTH
@@ -1529,14 +1533,14 @@ body {
 
 .gw-eyebrow {
   margin: 0 0 var(--gw-space-xs);
-  color: var(--gw-accent);
+  color: var(--gw-privacy-eyebrow);
   font: 600 var(--gw-text-xs)/1.3 var(--gw-font-mono);
   letter-spacing: 0.12em;
   text-transform: uppercase;
 }
 
 .gw-help-link {
-  color: var(--gw-link);
+  color: var(--gw-privacy-link);
   font-size: var(--gw-text-sm);
   font-weight: 600;
   text-underline-offset: 3px;
