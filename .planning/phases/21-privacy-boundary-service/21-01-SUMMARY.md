@@ -39,24 +39,26 @@ Focused review corrections were committed atomically after their owning task. Th
 
 - `make fmt-check`, isolated-cache `make lint`, `go vet ./...`, and `make arch-lint`: PASS.
 - `make test-privacy` and `make test-privacy-race`: PASS, including conformance, leakage, lifecycle, benchmark ceilings, POSIX managed-secret/CLI parity, 43 redactor assertions, and 149 support-bundle assertions.
+- `go test ./... -count=1`: PASS at the final branch tip.
+- `go test -race ./... -count=1`: PASS at the final branch tip.
 - `GOFLAGS='-p=1' go test ./... -count=1`: PASS.
 - `GOFLAGS='-p=1' go test -race ./... -count=1`: PASS.
 - Grafana generator, privacy documentation, admin JavaScript, POSIX and available PowerShell suites: PASS.
 - `govulncheck ./...`: no called or imported vulnerabilities; one dependency advisory is unreachable.
 - cgo-free Linux amd64, Darwin arm64/amd64, and Windows amd64 cross-builds: PASS; hashes recorded in the completion report.
-- `make ci`: PASS at the Task 17 release gate.
+- `make ci`: PASS at the final branch tip.
 - Independent whole-branch review of `22b9da7..c234ccc`: PASS with no Blocking, Important, or Minor findings.
 
 ## Platform and Baseline Notes
 
 - Real-Windows-only DACL/current-SID, continuous-reader replacement, and support-bundle junction-swap assertions remain conditional on Windows. Portable PowerShell suites and live PowerShell route parity passed on the available macOS PowerShell runtime.
-- Exact default-parallel `go test ./... -count=1` can expose pre-existing fixed-timeout Darwin tray/ACP subprocess flakes under package contention. The exact affected tests pass independently; the fresh serial full normal and race suites, focused privacy races, and canonical `make ci` pass.
+- The release gate initially exposed fixed three-second subprocess assumptions in unchanged Darwin tray and ACP test harnesses. `77dd280` gives only the tray startup poll a package-parallel allowance; `565d2ff` gives the CPU-heavy ACP fake the same allowance and guarantees cleanup on timeout. Both corrections are test-only, retain the three-second cancellation assertions, pass repeated focused race runs, and make the literal package-parallel normal/race commands pass.
 - No tag, release, push, or publication was performed.
 
 ## Deviations and Follow-ups
 
 - Integration findings were returned to their owning packages and resolved with focused RED/GREEN correction commits as required by the approved plan.
-- One test-only pool singleflight race gate was made deterministic in `68ba19e`; production pool behavior was unchanged.
+- Three test-only release-gate flakes were made deterministic: pool singleflight in `68ba19e`, Darwin tray startup in `77dd280`, and ACP stderr-drain teardown in `565d2ff`; production behavior was unchanged.
 - No approved product decision was reopened. No implementation blocker or deferred privacy work remains.
 
 ## Review Result
