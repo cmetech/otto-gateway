@@ -327,10 +327,11 @@ func TestServiceStrict_ResidualFreshPassBlocksProtectedOriginal(t *testing.T) {
 
 func TestServiceStrict_ResidualBlocksUnknownTokenInvalidAliasAndGeneratedSecret(t *testing.T) {
 	tests := []struct {
-		name       string
-		input      string
-		classifier *residualPassClassifier
-		wantAfter  string
+		name        string
+		input       string
+		classifier  *residualPassClassifier
+		recognizers []string
+		wantAfter   string
 	}{
 		{
 			name:  "unknown privacy token",
@@ -389,6 +390,47 @@ func TestServiceStrict_ResidualBlocksUnknownTokenInvalidAliasAndGeneratedSecret(
 			wantAfter: "forged [IPv4:h-123456789]",
 		},
 		{
+			name:  "secret namespace bang delimiter",
+			input: "forged [SECRET!forged]",
+			classifier: &residualPassClassifier{
+				first: func(string) []Finding { return nil }, residual: func(string) []Finding { return nil },
+			},
+			wantAfter: "forged [SECRET!forged]",
+		},
+		{
+			name:  "pii namespace dash delimiter",
+			input: "forged [PII-forged]",
+			classifier: &residualPassClassifier{
+				first: func(string) []Finding { return nil }, residual: func(string) []Finding { return nil },
+			},
+			wantAfter: "forged [PII-forged]",
+		},
+		{
+			name:  "personal entity slash delimiter",
+			input: "forged [PERSON/1]",
+			classifier: &residualPassClassifier{
+				first: func(string) []Finding { return nil }, residual: func(string) []Finding { return nil },
+			},
+			wantAfter: "forged [PERSON/1]",
+		},
+		{
+			name:  "personal entity whitespace delimiter",
+			input: "forged [PERSON 1]",
+			classifier: &residualPassClassifier{
+				first: func(string) []Finding { return nil }, residual: func(string) []Finding { return nil },
+			},
+			wantAfter: "forged [PERSON 1]",
+		},
+		{
+			name:        "configured technical entity question delimiter",
+			input:       "forged [PRIVATE_IP?forged]",
+			recognizers: []string{"PRIVATE_IP"},
+			classifier: &residualPassClassifier{
+				first: func(string) []Finding { return nil }, residual: func(string) []Finding { return nil },
+			},
+			wantAfter: "forged [PRIVATE_IP?forged]",
+		},
+		{
 			name:  "invalid technical alias",
 			input: "198.18.1.1",
 			classifier: &residualPassClassifier{
@@ -415,7 +457,7 @@ func TestServiceStrict_ResidualBlocksUnknownTokenInvalidAliasAndGeneratedSecret(
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			service := newStrictTestService(t, strictTestConfig{classifier: tc.classifier})
+			service := newStrictTestService(t, strictTestConfig{classifier: tc.classifier, recognizers: tc.recognizers})
 			state := NewRequestState(RequestMetadata{RequestedProfile: "strict", ScopeID: "residual-" + strings.ReplaceAll(tc.name, " ", "-")})
 			req := &canonical.ChatRequest{System: tc.input}
 			_, err := service.Before(WithRequestState(context.Background(), state), req)
@@ -428,6 +470,48 @@ func TestServiceStrict_ResidualBlocksUnknownTokenInvalidAliasAndGeneratedSecret(
 			}
 		})
 	}
+}
+
+func TestServiceStrict_ResidualOccurrenceAllowsMultipleGeneratedOpaqueArtifacts(t *testing.T) {
+	const scope = "occurrence-multiple-opaque"
+	first := "sk-" + strings.Repeat("A", 40)
+	second := "sk-" + strings.Repeat("B", 32)
+	service := newStrictTestService(t, strictTestConfig{secret: NewSecretClassifier()})
+	state := NewRequestState(RequestMetadata{RequestedProfile: "strict", ScopeID: scope})
+	req := &canonical.ChatRequest{System: "first " + first + " middle " + second + " last"}
+
+	if _, err := service.Before(WithRequestState(context.Background(), state), req); err != nil {
+		t.Fatalf("Before: %v", err)
+	}
+	defer state.releaseLease()
+
+	firstLabel := OneWaySecretLabel(
+		[]byte("strict-test-alias-key"),
+		secretHMACDomain+"\x00"+scope,
+		"OPENAI_API_KEY",
+		first,
+	)
+	secondLabel := OneWaySecretLabel(
+		[]byte("strict-test-alias-key"),
+		secretHMACDomain+"\x00"+scope,
+		"OPENAI_API_KEY",
+		second,
+	)
+	want := "first " + firstLabel + " middle " + secondLabel + " last"
+	if req.System != want {
+		t.Fatalf("transformed=%q, want %q", req.System, want)
+	}
+}
+
+func TestServiceStrict_ResidualAllowsUnrelatedBracketedProse(t *testing.T) {
+	service := newStrictTestService(t, strictTestConfig{recognizers: []string{"PRIVATE_IP"}})
+	state := NewRequestState(RequestMetadata{RequestedProfile: "strict", ScopeID: "unrelated-bracketed-prose"})
+	req := &canonical.ChatRequest{System: "[PERSONAL note] [SECRETARY!ordinary] [PIIless-forged?] [PRIVATE_IP_RANGE? ordinary]"}
+
+	if _, err := service.Before(WithRequestState(context.Background(), state), req); err != nil {
+		t.Fatalf("Before: %v", err)
+	}
+	defer state.releaseLease()
 }
 
 type exactSecretClassifier struct {
@@ -644,6 +728,7 @@ type strictTestConfig struct {
 	observers       Observers
 	piiMode         Action
 	entityActions   map[string]Action
+	recognizers     []string
 	secretAction    Action
 	technicalAction Action
 }
@@ -683,6 +768,7 @@ func newStrictTestService(t *testing.T, options strictTestConfig) *Service {
 		PIIHashKey:         []byte("strict-test-hash-key"),
 		PIIEncryptKey:      mustEncryptionKey(t, "strict-test-encryption-key"),
 		PIIEntityActions:   options.entityActions,
+		Recognizers:        options.recognizers,
 		Classifier:         options.classifier,
 		SecretClassifier:   options.secret,
 		Clock:              newFakeClock(),

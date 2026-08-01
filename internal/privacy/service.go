@@ -660,7 +660,7 @@ func (s *Service) hasReservedEntityPrefix(tail string) bool {
 		if len(tail) == len(entity) {
 			return true
 		}
-		return tail[len(entity)] == '_' || tail[len(entity)] == ':' || tail[len(entity)] == ']'
+		return !isTokenIdentifierByte(tail[len(entity)])
 	}
 	for _, entity := range reservedPrivacyEntities {
 		if matches(entity) {
@@ -687,7 +687,12 @@ func hasReservedNamespacePrefix(value, namespace string) bool {
 	if len(value) == len(namespace) {
 		return true
 	}
-	return value[len(namespace)] == ':' || value[len(namespace)] == '_' || value[len(namespace)] == ']'
+	return !isTokenIdentifierByte(value[len(namespace)])
+}
+
+func isTokenIdentifierByte(value byte) bool {
+	return value >= 'a' && value <= 'z' || value >= 'A' && value <= 'Z' ||
+		value >= '0' && value <= '9' || value == '_'
 }
 
 func validFindingRange(finding Finding, value string) bool {
@@ -715,7 +720,17 @@ func (s *Service) expectedOpaqueArtifact(
 	relative := finding
 	relative.Start -= occurrence.start
 	relative.End -= occurrence.start
-	return findingIn(s.config.SecretClassifier.Classify(key, token), relative)
+	for _, artifact := range s.config.SecretClassifier.Classify(key, token) {
+		if sameArtifactIdentity(artifact, relative) {
+			return true
+		}
+	}
+	return false
+}
+
+func sameArtifactIdentity(left, right Finding) bool {
+	return left.Entity == right.Entity && left.Category == right.Category && left.Kind == right.Kind &&
+		left.Start == right.Start && left.End == right.End
 }
 
 func (s *Service) observeResidual(entity string) {
