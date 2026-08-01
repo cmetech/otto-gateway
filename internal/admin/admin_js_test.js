@@ -14,6 +14,7 @@ class Element {
     this.textContent = '';
     this.value = '';
     this.hidden = false;
+	this.className = '';
   }
 
   get firstChild() {
@@ -50,6 +51,22 @@ function snapshot(labels) {
     sessions: [],
     log_sources: ['main', 'kiro'],
     log_source_labels: labels,
+	privacy: {
+	  default_profile: 'strict',
+	  strict_available: true,
+	  triage_enabled: false,
+	  requests_protected: 144,
+	  requests_blocked: 7,
+	  scopes_active: 3,
+	  requests_in_flight: 2,
+	  entries: 41,
+	  max_scopes: 128,
+	  max_entries_per_scope: 4096,
+	  max_total_entries: 32768,
+	  scope_ttl_seconds: 3600,
+	  oldest_scope_age_seconds: 91,
+	  last_error_code: 'privacy_output_blocked',
+	},
   };
 }
 
@@ -60,6 +77,12 @@ function createHarness(responses) {
     '[data-log-source]': sourceSelect,
     '[data-log-status]': logStatus,
   };
+	for (const name of [
+	  'default-profile', 'strict', 'protected', 'blocked', 'scopes', 'in-flight',
+	  'entries', 'per-scope', 'ttl', 'oldest', 'triage', 'last-error',
+	]) {
+	  selectors[`[data-privacy-${name}]`] = new Element('span');
+	}
   const documentListeners = {};
   const intervals = [];
   const eventSources = [];
@@ -123,6 +146,7 @@ function createHarness(responses) {
   return {
     eventSources,
     sourceSelect,
+	selectors,
     start() {
       documentListeners.DOMContentLoaded();
     },
@@ -174,4 +198,26 @@ test('log source labels cache and selection drive the real EventSource flow', as
   );
   assert.equal(harness.sourceSelect.value, 'kiro', 'label-only rerender preserves the selected ID');
   assert.equal(harness.eventSources.length, 2, 'label-only rerender does not reconnect');
+});
+
+test('privacy snapshot hydrates read-only dashboard status and current/max limits', async () => {
+  const harness = createHarness([snapshot({ main: 'Gateway', kiro: 'Kiro' })]);
+  harness.start();
+  await settleSnapshot();
+
+  const text = (name) => harness.selectors[`[data-privacy-${name}]`].textContent;
+  assert.equal(text('default-profile'), 'strict');
+  assert.equal(text('strict'), 'AVAILABLE');
+  assert.equal(text('protected'), '144');
+  assert.equal(text('blocked'), '7');
+  assert.equal(text('scopes'), '3 / 128');
+  assert.equal(text('in-flight'), '2');
+  assert.equal(text('entries'), '41 / 32768');
+  assert.equal(text('per-scope'), '4096');
+  assert.equal(text('ttl'), '1h');
+  assert.equal(text('oldest'), '1m 31s');
+  assert.equal(text('triage'), 'DISABLED');
+  assert.equal(text('last-error'), 'privacy_output_blocked');
+  assert.match(harness.selectors['[data-privacy-strict]'].className, /is-ok/);
+  assert.match(harness.selectors['[data-privacy-triage]'].className, /is-muted/);
 });

@@ -1,0 +1,62 @@
+{{define "content"}}<main class="gw-page gw-privacy-page">
+  <header class="gw-card gw-privacy-hero">
+    <p class="gw-eyebrow">Read-only operator posture</p>
+    <h1 class="gw-h2">Privacy Boundary</h1>
+    <p>One in-process policy boundary protects all model surfaces. This page displays aggregate state and resolved configuration only; changes require editing the environment and restarting Gateway.</p>
+  </header>
+
+  <section class="gw-card" aria-labelledby="privacy-runtime-heading">
+    <h2 id="privacy-runtime-heading" class="gw-h2">Runtime status</h2>
+    <dl class="gw-privacy-status-grid gw-privacy-status-grid--detail">
+      <div><dt>Default profile</dt><dd><code>{{.Privacy.Status.DefaultProfile}}</code></dd></div>
+      <div><dt>Request profiles</dt><dd><code>{{.Privacy.RequestProfilesText}}</code></dd></div>
+      <div><dt>Strict requests</dt><dd>{{if .Privacy.Status.StrictAvailable}}<span class="gw-badge is-ok">AVAILABLE</span>{{else}}<span class="gw-badge is-warning">UNAVAILABLE</span>{{end}}</dd></div>
+      <div><dt>Protected since start</dt><dd>{{.Privacy.Status.RequestsProtected}}</dd></div>
+      <div><dt>Blocked since start</dt><dd>{{.Privacy.Status.RequestsBlocked}}</dd></div>
+      <div><dt>Active scopes</dt><dd>{{.Privacy.Status.ScopesActive}} / {{.Privacy.Status.MaxScopes}}</dd></div>
+      <div><dt>Requests in flight</dt><dd>{{.Privacy.Status.RequestsInFlight}}</dd></div>
+      <div><dt>Entries retained</dt><dd>{{.Privacy.Status.Entries}} / {{.Privacy.Status.MaxTotalEntries}}</dd></div>
+      <div><dt>Per-scope limit</dt><dd>{{.Privacy.Status.MaxEntriesPerScope}}</dd></div>
+      <div><dt>Scope TTL</dt><dd>{{.Privacy.ScopeTTL}}</dd></div>
+      <div><dt>Oldest scope</dt><dd>{{.Privacy.OldestScopeAge}}</dd></div>
+      <div><dt>Triage</dt><dd>{{if .Privacy.Status.TriageEnabled}}<span class="gw-badge is-warning">ENABLED</span>{{else}}<span class="gw-badge is-muted">DISABLED</span>{{end}}</dd></div>
+      <div><dt>Last stable error</dt><dd><code>{{if .Privacy.Status.LastErrorCode}}{{.Privacy.Status.LastErrorCode}}{{else}}none{{end}}</code></dd></div>
+    </dl>
+  </section>
+
+  <section class="gw-card" aria-labelledby="privacy-enforcement-heading">
+    <h2 id="privacy-enforcement-heading" class="gw-h2">Enforcement contract</h2>
+    <dl class="gw-about-dl gw-privacy-contract-dl">
+      <dt>PII processing</dt><dd>{{if .Privacy.Status.PIIEnabled}}<span class="gw-badge is-ok">ENABLED</span>{{else}}<span class="gw-badge is-warning">DISABLED</span>{{end}} mode <code>{{.Privacy.Status.PIIMode}}</code></dd>
+      <dt>NER</dt><dd>{{if .Privacy.Status.NEREnabled}}<span class="gw-badge is-ok">ENABLED</span>{{else}}<span class="gw-badge is-muted">DISABLED</span>{{end}}</dd>
+      <dt>Secret action</dt><dd><code>{{.Privacy.Status.SecretAction}}</code> (one-way)</dd>
+      <dt>Technical action</dt><dd><code>{{.Privacy.Status.TechnicalAction}}</code></dd>
+      <dt>Alias key</dt><dd>{{if .Privacy.Status.AliasKeyPresent}}<span class="gw-badge is-ok">present</span>{{else}}<span class="gw-badge is-warning">absent</span>{{end}}</dd>
+      <dt>Triage token</dt><dd>{{if .Privacy.Status.TriageTokenPresent}}<span class="gw-badge is-ok">present</span>{{else}}<span class="gw-badge is-warning">absent</span>{{end}}</dd>
+      <dt>Strict response handling</dt><dd>{{if .Privacy.Status.StrictFullBuffering}}Complete response buffered and validated before release{{else}}Unavailable{{end}}</dd>
+      <dt>Receipt</dt><dd>Receipt version {{.Privacy.Status.ReceiptVersion}}; strict success reports full coverage.</dd>
+    </dl>
+  </section>
+
+  <section class="gw-card" aria-labelledby="privacy-config-heading">
+    <h2 id="privacy-config-heading" class="gw-h2">Configuration</h2>
+    <p>Resolved at process start. Every setting is <strong>Restart required</strong>.</p>
+    <dl class="gw-config-dl">
+      {{range .Privacy.ConfigRows}}
+      <div>
+        <dt><code>{{.Name}}</code> <span class="gw-restart-mark">Restart required</span></dt>
+        <dd><span class="gw-config-meta">Default: <code>{{.Default}}</code> · Current: <code>{{.Current}}</code></span><br>{{.Description}}</dd>
+      </div>
+      {{end}}
+    </dl>
+  </section>
+
+  <section class="gw-card" aria-labelledby="privacy-recognizers-heading">
+    <h2 id="privacy-recognizers-heading" class="gw-h2">Recognizer inventory</h2>
+    <div class="gw-inventory-grid">
+      <div><h3 class="gw-h3">16 regex recognizers</h3><ul class="gw-token-list">{{range .Privacy.RegexRecognizers}}<li><code>{{.}}</code></li>{{end}}</ul></div>
+      <div><h3 class="gw-h3">NER recognizers</h3><ul class="gw-token-list">{{range .Privacy.NERRecognizers}}<li><code>{{.}}</code></li>{{end}}</ul></div>
+    </div>
+  </section>
+</main>{{end}}
+{{template "base" .}}

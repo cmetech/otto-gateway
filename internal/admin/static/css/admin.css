@@ -1373,7 +1373,7 @@ body {
 }
 .gw-badge.is-muted {
   background: rgba(255, 255, 255, 0.05);
-  color: var(--gw-muted);
+  color: var(--gw-fg-muted);
 }
 
 /* ====== Quick 260601-aix — admin UI redesign step 4 (Docs page) ====== */
@@ -1503,4 +1503,235 @@ body {
   width: 50%;
   word-wrap: break-word;
   overflow-wrap: break-word;
+}
+
+/* ====== Privacy boundary operator console ======
+ * Dense, read-only status instrumentation. Yellow rails echo the existing
+ * Gateway console language; fixed-width values make current/max limits scan
+ * like gauges without introducing chart motion or external assets.
+ */
+.gw-privacy-console,
+.gw-privacy-hero {
+  border-left: 4px solid var(--gw-accent);
+}
+
+.gw-section-heading-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--gw-space-base);
+  margin-bottom: var(--gw-space-base);
+}
+
+.gw-section-heading-row .gw-h2 {
+  margin-bottom: 0;
+}
+
+.gw-eyebrow {
+  margin: 0 0 var(--gw-space-xs);
+  color: var(--gw-accent);
+  font: 600 var(--gw-text-xs)/1.3 var(--gw-font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.gw-help-link {
+  color: var(--gw-link);
+  font-size: var(--gw-text-sm);
+  font-weight: 600;
+  text-underline-offset: 3px;
+  white-space: nowrap;
+}
+
+.gw-privacy-status-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 1px;
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid var(--gw-border);
+  border-radius: var(--gw-radius-input);
+  background: var(--gw-border);
+}
+
+.gw-privacy-status-grid > div {
+  min-width: 0;
+  padding: var(--gw-space-md);
+  background: var(--gw-bg);
+}
+
+.gw-privacy-status-grid dt {
+  margin-bottom: var(--gw-space-xs);
+  color: var(--gw-fg-muted);
+  font-size: var(--gw-text-xs);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.gw-privacy-status-grid dd {
+  margin: 0;
+  color: var(--gw-fg);
+  font: 600 var(--gw-text-base)/1.4 var(--gw-font-mono);
+  overflow-wrap: anywhere;
+}
+
+.gw-privacy-status-grid--detail {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.gw-privacy-footnote,
+.gw-privacy-hero p,
+.gw-privacy-about > p {
+  margin: var(--gw-space-sm) 0 0;
+  color: var(--gw-fg-muted);
+  font-size: var(--gw-text-sm);
+}
+
+.gw-privacy-hero .gw-h2 {
+  margin-bottom: var(--gw-space-xs);
+}
+
+.gw-config-dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  margin: var(--gw-space-base) 0 0;
+  overflow: hidden;
+  border: 1px solid var(--gw-border);
+  border-radius: var(--gw-radius-input);
+  background: var(--gw-border);
+}
+
+.gw-config-dl > div {
+  min-width: 0;
+  padding: var(--gw-space-md);
+  background: var(--gw-bg);
+}
+
+.gw-config-dl dt {
+  margin-bottom: var(--gw-space-xs);
+  color: var(--gw-fg);
+  overflow-wrap: anywhere;
+}
+
+.gw-config-dl dd {
+  margin: 0;
+  color: var(--gw-fg-muted);
+  font-size: var(--gw-text-sm);
+}
+
+.gw-config-meta {
+  color: var(--gw-fg);
+}
+
+.gw-restart-mark {
+  display: inline-block;
+  margin-left: var(--gw-space-xs);
+  padding: 2px 5px;
+  border: 1px solid var(--gw-border);
+  border-radius: var(--gw-radius-input);
+  color: var(--gw-fg-muted);
+  font: 600 10px/1.2 var(--gw-font-ui);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.gw-inventory-grid {
+  display: grid;
+  grid-template-columns: 3fr 1fr;
+  gap: var(--gw-space-lg);
+  margin-top: var(--gw-space-base);
+}
+
+.gw-token-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gw-space-sm);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.gw-token-list li {
+  padding: var(--gw-space-xs) var(--gw-space-sm);
+  border: 1px solid var(--gw-border);
+  border-radius: var(--gw-radius-input);
+  background: var(--gw-bg);
+}
+
+.gw-privacy-contract-dl {
+  grid-template-columns: minmax(150px, max-content) 1fr;
+}
+
+a:focus-visible,
+button:focus-visible,
+.gw-input:focus-visible,
+.gw-select:focus-visible {
+  outline: 3px solid var(--gw-accent);
+  outline-offset: 3px;
+}
+
+@media (max-width: 1023px) {
+  .gw-privacy-status-grid,
+  .gw-privacy-status-grid--detail {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .gw-config-dl {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 767px) {
+  .gw-section-heading-row {
+    flex-direction: column;
+  }
+
+  .gw-help-link {
+    white-space: normal;
+  }
+
+  .gw-privacy-status-grid,
+  .gw-privacy-status-grid--detail,
+  .gw-inventory-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .gw-about-dl,
+  .gw-privacy-contract-dl {
+    grid-template-columns: 1fr;
+  }
+
+  .gw-about-dl dt {
+    margin-top: var(--gw-space-sm);
+    white-space: normal;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+[data-theme="light"] .gw-privacy-console .gw-badge.is-ok,
+[data-theme="light"] .gw-privacy-page .gw-badge.is-ok {
+  color: #00623f;
+  background: #e4f7ef;
+}
+
+[data-theme="light"] .gw-privacy-console .gw-badge.is-warning,
+[data-theme="light"] .gw-privacy-page .gw-badge.is-warning {
+  color: #7a3600;
+  background: #fff0df;
+}
+
+[data-theme="light"] a:focus-visible,
+[data-theme="light"] button:focus-visible,
+[data-theme="light"] .gw-input:focus-visible,
+[data-theme="light"] .gw-select:focus-visible {
+  outline-color: var(--gw-activity);
 }

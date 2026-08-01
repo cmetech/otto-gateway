@@ -21,6 +21,7 @@
   <nav class="gw-tab-nav" aria-label="Primary">
     <a class="gw-tab{{if eq .TabActive "dashboard"}} is-active{{end}}"{{if eq .TabActive "dashboard"}} aria-current="page"{{end}} href="/admin/">Dashboard</a>
     <a class="gw-tab{{if eq .TabActive "about"}} is-active{{end}}"{{if eq .TabActive "about"}} aria-current="page"{{end}} href="/admin/about">About</a>
+	<a class="gw-tab{{if eq .TabActive "privacy"}} is-active{{end}}"{{if eq .TabActive "privacy"}} aria-current="page"{{end}} href="/admin/privacy">Privacy</a>
     <a class="gw-tab{{if eq .TabActive "docs"}} is-active{{end}}"{{if eq .TabActive "docs"}} aria-current="page"{{end}} href="/admin/docs">Docs</a>
   </nav>
   {{template "content" .}}

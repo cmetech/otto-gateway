@@ -102,6 +102,69 @@ func strictPrivacyConfig() config.Config {
 	}
 }
 
+// TestPrivacyHealth_SafeProjection catches health wiring that either drops the
+// privacy posture or leaks configured key/token values. Expectations are
+// literal and exercise the real /health/hooks boundary.
+func TestPrivacyHealth_SafeProjection(t *testing.T) {
+	const aliasCanary = "privacy-alias-key-MUST-NOT-LEAK"
+	const triageCanary = "privacy-triage-token-MUST-NOT-LEAK"
+	cfg := strictPrivacyConfig()
+	cfg.PrivacyAliasKey = aliasCanary
+	cfg.PrivacyTriageEnabled = true
+	cfg.PrivacyTriageToken = triageCanary
+
+	a, cleanup, err := newApp(context.Background(), cfg, testutil.Logger(t))
+	if err != nil {
+		t.Fatalf("newApp: %v", err)
+	}
+	defer cleanup()
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/health/hooks", nil)
+	rec := httptest.NewRecorder()
+	a.srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /health/hooks: got %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	for _, canary := range []string{aliasCanary, triageCanary} {
+		if strings.Contains(rec.Body.String(), canary) {
+			t.Fatalf("health response leaked protected canary %q: %s", canary, rec.Body.String())
+		}
+	}
+
+	var body struct {
+		Hooks []struct {
+			Name   string         `json:"name"`
+			Config map[string]any `json:"config"`
+		} `json:"hooks"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode /health/hooks: %v", err)
+	}
+	for _, hook := range body.Hooks {
+		if hook.Name != "PIIRedactionHook" {
+			continue
+		}
+		privacyStatus, ok := hook.Config["privacy"].(map[string]any)
+		if !ok {
+			t.Fatalf("PIIRedactionHook config privacy projection missing: %#v", hook.Config)
+		}
+		for key, want := range map[string]any{
+			"default_profile":      "standard",
+			"strict_available":     true,
+			"alias_key_present":    true,
+			"triage_enabled":       true,
+			"triage_token_present": true,
+			"max_scopes":           float64(8),
+			"max_total_entries":    float64(128),
+		} {
+			if got := privacyStatus[key]; got != want {
+				t.Errorf("privacy.%s = %#v, want %#v", key, got, want)
+			}
+		}
+		return
+	}
+	t.Fatal("/health/hooks omitted compatibility hook PIIRedactionHook")
+}
+
 func TestNewApp_RegistryLoadFailureClosesPrivacyService(t *testing.T) {
 	cfg := strictPrivacyConfig()
 	cfg.EnabledSurfaces = []string{"openai"}

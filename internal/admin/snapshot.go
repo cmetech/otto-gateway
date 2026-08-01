@@ -29,6 +29,7 @@ type Snapshot struct {
 	Sessions        []SnapshotSess    `json:"sessions"`
 	LogSources      []string          `json:"log_sources"`
 	LogSourceLabels map[string]string `json:"log_source_labels"`
+	Privacy         PrivacySnapshot   `json:"privacy"`
 
 	// Gateway process resource usage (procstat, cgo-free). ProcessCPUSeconds is
 	// cumulative CPU time — the dashboard derives a live percent by diffing
@@ -38,6 +39,45 @@ type Snapshot struct {
 	ProcessCPUSeconds float64 `json:"process_cpu_seconds"`
 	ProcessRSSBytes   uint64  `json:"process_rss_bytes"`
 	ProcessStatOK     bool    `json:"process_stat_ok"`
+}
+
+// PrivacySnapshot is the ordinary-admin projection of privacy posture and
+// aggregate runtime state. It intentionally has no scope IDs, mapping values,
+// aliases, request IDs, raw errors, or secret-bearing fields.
+type PrivacySnapshot struct {
+	DefaultProfile        string            `json:"default_profile"`
+	RequestProfiles       []string          `json:"request_profiles"`
+	StrictAvailable       bool              `json:"strict_available"`
+	TriageEnabled         bool              `json:"triage_enabled"`
+	AliasKeyPresent       bool              `json:"alias_key_present"`
+	TriageTokenPresent    bool              `json:"triage_token_present"`
+	PIIEnabled            bool              `json:"pii_enabled"`
+	NEREnabled            bool              `json:"ner_enabled"`
+	SecretAction          string            `json:"secret_action"`
+	TechnicalAction       string            `json:"technical_action"`
+	PIIMode               string            `json:"pii_mode"`
+	Recognizers           []string          `json:"recognizers"`
+	EntityActions         map[string]string `json:"entity_actions"`
+	StrictFullBuffering   bool              `json:"strict_full_buffering"`
+	ReceiptVersion        int               `json:"receipt_version"`
+	ScopesActive          int               `json:"scopes_active"`
+	RequestsInFlight      int               `json:"requests_in_flight"`
+	Entries               int               `json:"entries"`
+	MaxScopes             int               `json:"max_scopes"`
+	MaxEntriesPerScope    int               `json:"max_entries_per_scope"`
+	MaxTotalEntries       int               `json:"max_total_entries"`
+	ScopeTTLSeconds       float64           `json:"scope_ttl_seconds"`
+	OldestScopeAgeSeconds float64           `json:"oldest_scope_age_seconds"`
+	RequestsProtected     uint64            `json:"requests_protected"`
+	RequestsBlocked       uint64            `json:"requests_blocked"`
+	LastErrorCode         string            `json:"last_error_code,omitempty"`
+}
+
+// PrivacyStatusSource is the narrow, read-only interface ordinary admin and
+// health surfaces consume. Sensitive triage operations deliberately live on a
+// separate capability-scoped interface.
+type PrivacyStatusSource interface {
+	PrivacySnapshot() PrivacySnapshot
 }
 
 // SnapshotPool is the pool sub-object of Snapshot.
@@ -153,6 +193,18 @@ func (h *handler) snapshotHandler(w http.ResponseWriter, r *http.Request) {
 		ChatTrace:     h.deps.ChatTrace,
 		UptimeSeconds: time.Since(h.deps.Start).Seconds(),
 		GeneratedAt:   time.Now().UTC(),
+	}
+	if h.deps.PrivacyStatus != nil {
+		snap.Privacy = h.deps.PrivacyStatus.PrivacySnapshot()
+	}
+	if snap.Privacy.RequestProfiles == nil {
+		snap.Privacy.RequestProfiles = []string{}
+	}
+	if snap.Privacy.Recognizers == nil {
+		snap.Privacy.Recognizers = []string{}
+	}
+	if snap.Privacy.EntityActions == nil {
+		snap.Privacy.EntityActions = map[string]string{}
 	}
 
 	// Pool detail — nil-safe.

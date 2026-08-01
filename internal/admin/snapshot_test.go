@@ -15,6 +15,68 @@ import (
 	"otto-gateway/internal/testutil"
 )
 
+type stubPrivacyStatus struct {
+	snapshot PrivacySnapshot
+}
+
+func (s stubPrivacyStatus) PrivacySnapshot() PrivacySnapshot { return s.snapshot }
+
+// TestPrivacySnapshot_SafeProjection catches any regression that omits the
+// privacy posture from the ordinary admin snapshot or serializes admin Deps
+// containing protected values instead of the narrow PrivacyStatusSource.
+func TestPrivacySnapshot_SafeProjection(t *testing.T) {
+	const protectedCanary = "privacy-triage-token-MUST-NOT-LEAK"
+	privacyStatus := PrivacySnapshot{
+		DefaultProfile:        "strict",
+		RequestProfiles:       []string{"standard", "strict"},
+		StrictAvailable:       true,
+		TriageEnabled:         true,
+		AliasKeyPresent:       true,
+		TriageTokenPresent:    true,
+		PIIEnabled:            true,
+		NEREnabled:            true,
+		SecretAction:          "replace",
+		TechnicalAction:       "pseudonymize",
+		PIIMode:               "encrypt",
+		Recognizers:           []string{"Email", "IPv4", "PERSON", "LOCATION"},
+		EntityActions:         map[string]string{"IPv4": "pseudonymize"},
+		StrictFullBuffering:   true,
+		ReceiptVersion:        1,
+		ScopesActive:          3,
+		RequestsInFlight:      2,
+		Entries:               41,
+		MaxScopes:             128,
+		MaxEntriesPerScope:    4096,
+		MaxTotalEntries:       32768,
+		ScopeTTLSeconds:       3600,
+		OldestScopeAgeSeconds: 91,
+		RequestsProtected:     144,
+		RequestsBlocked:       7,
+		LastErrorCode:         "privacy_output_blocked",
+	}
+	h := Handler(Deps{
+		Logger:             testutil.Logger(t),
+		PrivacyStatus:      stubPrivacyStatus{snapshot: privacyStatus},
+		PrivacyTriageToken: protectedCanary,
+	})
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/snapshot", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/snapshot: got %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), protectedCanary) {
+		t.Fatalf("ordinary snapshot leaked protected canary: %s", rec.Body.String())
+	}
+	var got Snapshot
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("decode snapshot: %v", err)
+	}
+	if diff := cmp.Diff(privacyStatus, got.Privacy); diff != "" {
+		t.Fatalf("privacy projection mismatch (-want +got):\n%s", diff)
+	}
+}
+
 // TestAdmin_SnapshotHandler verifies GET /api/snapshot returns 200 with
 // application/json and a valid Snapshot body.
 func TestAdmin_SnapshotHandler(t *testing.T) {

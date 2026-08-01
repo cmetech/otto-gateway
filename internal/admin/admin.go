@@ -137,6 +137,10 @@ type Deps struct {
 	// PrivacyTriageObserver receives only fixed operation/result enums. It is
 	// used for bounded metrics and must never receive a scope or mapped value.
 	PrivacyTriageObserver func(operation, result string)
+	// PrivacyStatus is the value-free ordinary-admin projection. It cannot
+	// inspect or clear mappings and therefore remains safe to expose through
+	// the snapshot, dashboard, About page, and read-only privacy page.
+	PrivacyStatus PrivacyStatusSource
 
 	// CompressionState is the EFFECTIVE process-wide compression posture
 	// shown on the dashboard summary strip and /admin/about Feature
@@ -265,6 +269,9 @@ func Handler(deps Deps) http.Handler {
 
 	// GET /about — placeholder About page (real content lands in a later step).
 	r.Get("/about", h.aboutHandler)
+
+	// GET /privacy — read-only privacy posture and configuration reference.
+	r.Get("/privacy", h.privacyHandler)
 
 	// GET /docs — placeholder Docs page (real content lands in a later step).
 	r.Get("/docs", h.docsHandler)
@@ -430,6 +437,32 @@ type aboutData struct {
 	PIIEntityActionRows    []piiEntityActionRow
 	PIIHashKeySet          bool
 	PIIEncryptKeySet       bool
+	Privacy                privacyViewData
+}
+
+type privacyConfigRow struct {
+	Name        string
+	Default     string
+	Current     string
+	Description string
+}
+
+type privacyViewData struct {
+	Status              PrivacySnapshot
+	RequestProfilesText string
+	ScopeTTL            string
+	OldestScopeAge      string
+	EntityActionRows    []piiEntityActionRow
+	ConfigRows          []privacyConfigRow
+	RegexRecognizers    []string
+	NERRecognizers      []string
+}
+
+type privacyPageData struct {
+	TabActive string
+	Version   string
+	GatewayID string
+	Privacy   privacyViewData
 }
 
 // piiEntityActionRow is one row in the per-entity action override
@@ -537,6 +570,7 @@ func (h *handler) aboutHandler(w http.ResponseWriter, r *http.Request) {
 		PIIEntityActionRows:    piiEntityActionRows,
 		PIIHashKeySet:          h.deps.PIIHashKeySet,
 		PIIEncryptKeySet:       h.deps.PIIEncryptKeySet,
+		Privacy:                h.privacyView(),
 	}
 	var buf bytes.Buffer
 	if err := aboutTemplate.ExecuteTemplate(&buf, "base", data); err != nil {
@@ -548,6 +582,135 @@ func (h *handler) aboutHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	if _, err := w.Write(buf.Bytes()); err != nil {
 		h.deps.Logger.Debug("admin: about write", "err", err)
+	}
+}
+
+func (h *handler) privacySnapshot() PrivacySnapshot {
+	if h.deps.PrivacyStatus == nil {
+		return PrivacySnapshot{RequestProfiles: []string{}, Recognizers: []string{}, EntityActions: map[string]string{}}
+	}
+	status := h.deps.PrivacyStatus.PrivacySnapshot()
+	status.RequestProfiles = append([]string{}, status.RequestProfiles...)
+	status.Recognizers = append([]string{}, status.Recognizers...)
+	actions := make(map[string]string, len(status.EntityActions))
+	for entity, action := range status.EntityActions {
+		actions[entity] = action
+	}
+	status.EntityActions = actions
+	return status
+}
+
+func formatPrivacyDuration(seconds float64) string {
+	if seconds <= 0 {
+		return "none"
+	}
+	total := int64(seconds)
+	days := total / 86400
+	hours := total % 86400 / 3600
+	minutes := total % 3600 / 60
+	secs := total % 60
+	switch {
+	case days > 0:
+		return fmt.Sprintf("%dd %dh", days, hours)
+	case hours > 0 && minutes > 0:
+		return fmt.Sprintf("%dh %dm", hours, minutes)
+	case hours > 0:
+		return fmt.Sprintf("%dh", hours)
+	case minutes > 0 && secs > 0:
+		return fmt.Sprintf("%dm %ds", minutes, secs)
+	case minutes > 0:
+		return fmt.Sprintf("%dm", minutes)
+	default:
+		return fmt.Sprintf("%ds", secs)
+	}
+}
+
+func enabledText(enabled bool) string {
+	if enabled {
+		return "enabled"
+	}
+	return "disabled"
+}
+
+func presentText(present bool) string {
+	if present {
+		return "present"
+	}
+	return "absent"
+}
+
+func (h *handler) privacyView() privacyViewData {
+	status := h.privacySnapshot()
+	entities := make([]string, 0, len(status.EntityActions))
+	for entity := range status.EntityActions {
+		entities = append(entities, entity)
+	}
+	sort.Strings(entities)
+	actionRows := make([]piiEntityActionRow, 0, len(entities))
+	for _, entity := range entities {
+		actionRows = append(actionRows, piiEntityActionRow{Entity: entity, Action: status.EntityActions[entity]})
+	}
+	entityActionsText := "(none; PII mode applies)"
+	if len(actionRows) > 0 {
+		parts := make([]string, 0, len(actionRows))
+		for _, row := range actionRows {
+			parts = append(parts, row.Entity+":"+row.Action)
+		}
+		entityActionsText = strings.Join(parts, ", ")
+	}
+	enabledEntitiesText := "(all registered recognizers)"
+	if len(h.deps.PIIEnabledEntities) > 0 {
+		enabledEntitiesText = strings.Join(h.deps.PIIEnabledEntities, ", ")
+	}
+	configRows := []privacyConfigRow{
+		{Name: "PRIVACY_DEFAULT_PROFILE", Default: "standard", Current: status.DefaultProfile, Description: "Minimum profile; requests may raise but never lower it."},
+		{Name: "PRIVACY_REQUEST_PROFILES", Default: "standard,strict", Current: strings.Join(status.RequestProfiles, ","), Description: "Startup-bounded request-selectable profiles."},
+		{Name: "PRIVACY_ALIAS_KEY", Default: "generated", Current: presentText(status.AliasKeyPresent), Description: "Key-isolated alias derivation secret; value is never displayed."},
+		{Name: "PRIVACY_SECRET_ACTION", Default: "replace", Current: status.SecretAction, Description: "One-way credential action: replace or drop."},
+		{Name: "PRIVACY_TECHNICAL_ACTION", Default: "pseudonymize", Current: status.TechnicalAction, Description: "Strict technical-identifier action: pseudonymize or drop."},
+		{Name: "PRIVACY_SCOPE_TTL", Default: "1h", Current: formatPrivacyDuration(status.ScopeTTLSeconds), Description: "Idle scope lifetime; active requests prevent expiry."},
+		{Name: "PRIVACY_MAX_SCOPES", Default: "128", Current: strconv.Itoa(status.MaxScopes), Description: "Maximum retained scope records."},
+		{Name: "PRIVACY_MAX_ENTRIES_PER_SCOPE", Default: "4096", Current: strconv.Itoa(status.MaxEntriesPerScope), Description: "Maximum reversible entries retained in one scope."},
+		{Name: "PRIVACY_MAX_TOTAL_ENTRIES", Default: "32768", Current: strconv.Itoa(status.MaxTotalEntries), Description: "Maximum reversible entries retained across scopes."},
+		{Name: "PRIVACY_TRIAGE_ENABLED", Default: "false", Current: enabledText(status.TriageEnabled), Description: "Registers the local break-glass surface when enabled."},
+		{Name: "PRIVACY_TRIAGE_TOKEN", Default: "generated", Current: presentText(status.TriageTokenPresent), Description: "Separate local triage capability; value is never displayed."},
+		{Name: "PII_REDACTION_ENABLED", Default: "true", Current: enabledText(status.PIIEnabled), Description: "Compatibility hook master switch."},
+		{Name: "PII_REDACTION_MODE", Default: "encrypt", Current: status.PIIMode, Description: "Default PII action: replace, mask, hash, drop, encrypt, or supported pseudonymize override."},
+		{Name: "PII_NER_ENABLED", Default: "true", Current: enabledText(status.NEREnabled), Description: "Enables PERSON and LOCATION recognition."},
+		{Name: "PII_ENABLED_ENTITIES", Default: "empty = all", Current: enabledEntitiesText, Description: "Recognizer allowlist."},
+		{Name: "PII_ENTITY_ACTIONS", Default: "empty", Current: entityActionsText, Description: "Per-entity actions; unlisted entities use PII_REDACTION_MODE."},
+		{Name: "PII_HASH_KEY", Default: "generated", Current: presentText(h.deps.PIIHashKeySet), Description: "HMAC key presence only; value is never displayed."},
+		{Name: "PII_ENCRYPT_KEY", Default: "generated", Current: presentText(h.deps.PIIEncryptKeySet), Description: "AES derivation input presence only; value is never displayed."},
+	}
+	return privacyViewData{
+		Status:              status,
+		RequestProfilesText: strings.Join(status.RequestProfiles, ", "),
+		ScopeTTL:            formatPrivacyDuration(status.ScopeTTLSeconds),
+		OldestScopeAge:      formatPrivacyDuration(status.OldestScopeAgeSeconds),
+		EntityActionRows:    actionRows,
+		ConfigRows:          configRows,
+		RegexRecognizers:    []string{"Email", "IPv4", "IPv6", "SSN", "CreditCard", "USPhone", "SIP_URI", "IMEI", "IMSI", "MSISDN", "MAC_ADDRESS", "COORDINATES", "SITE", "USAddress", "USState", "USZIP"},
+		NERRecognizers:      []string{"PERSON", "LOCATION"},
+	}
+}
+
+func (h *handler) privacyHandler(w http.ResponseWriter, r *http.Request) {
+	data := privacyPageData{
+		TabActive: "privacy",
+		Version:   h.deps.Version,
+		GatewayID: h.deps.GatewayID,
+		Privacy:   h.privacyView(),
+	}
+	var buf bytes.Buffer
+	if err := privacyTemplate.ExecuteTemplate(&buf, "base", data); err != nil {
+		h.deps.Logger.Error("admin: privacy render", "err", err)
+		http.Error(w, "admin privacy render failed", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	if _, err := w.Write(buf.Bytes()); err != nil {
+		h.deps.Logger.Debug("admin: privacy write", "err", err)
 	}
 }
 

@@ -34,6 +34,7 @@ var (
 	dashboardTemplate = template.Must(template.ParseFS(assetsFS, "templates/base.html.tmpl", "templates/dashboard.html.tmpl"))
 	aboutTemplate     = template.Must(template.ParseFS(assetsFS, "templates/base.html.tmpl", "templates/about.html.tmpl"))
 	docsTemplate      = template.Must(template.ParseFS(assetsFS, "templates/base.html.tmpl", "templates/docs.html.tmpl"))
+	privacyTemplate   = template.Must(template.ParseFS(assetsFS, "templates/base.html.tmpl", "templates/privacy.html.tmpl"))
 )
 
 // mustSub returns fs.Sub(f, dir) or panics. This is init-time only;

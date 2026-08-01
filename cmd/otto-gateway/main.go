@@ -274,6 +274,56 @@ type privacySnapshotSource interface {
 	Snapshot() privacy.SafeSnapshot
 }
 
+// adminPrivacyStatusAdapter translates the privacy-owned safe runtime value to
+// the ordinary-admin wire contract. It has no service or triage capability.
+type adminPrivacyStatusAdapter struct {
+	source             privacySnapshotSource
+	triageTokenPresent bool
+}
+
+func (a adminPrivacyStatusAdapter) PrivacySnapshot() admin.PrivacySnapshot {
+	if a.source == nil {
+		return admin.PrivacySnapshot{}
+	}
+	snapshot := a.source.Snapshot()
+	profiles := make([]string, len(snapshot.RequestProfiles))
+	for i, profile := range snapshot.RequestProfiles {
+		profiles[i] = string(profile)
+	}
+	entityActions := make(map[string]string, len(snapshot.EntityActions))
+	for entity, action := range snapshot.EntityActions {
+		entityActions[entity] = string(action)
+	}
+	return admin.PrivacySnapshot{
+		DefaultProfile:        string(snapshot.DefaultProfile),
+		RequestProfiles:       profiles,
+		StrictAvailable:       snapshot.StrictAvailable,
+		TriageEnabled:         snapshot.TriageEnabled,
+		AliasKeyPresent:       snapshot.AliasKeyPresent,
+		TriageTokenPresent:    a.triageTokenPresent,
+		PIIEnabled:            snapshot.PIIEnabled,
+		NEREnabled:            snapshot.NEREnabled,
+		SecretAction:          string(snapshot.SecretAction),
+		TechnicalAction:       string(snapshot.TechnicalAction),
+		PIIMode:               string(snapshot.PIIMode),
+		Recognizers:           append([]string(nil), snapshot.Recognizers...),
+		EntityActions:         entityActions,
+		StrictFullBuffering:   true,
+		ReceiptVersion:        1,
+		ScopesActive:          snapshot.ScopesActive,
+		RequestsInFlight:      snapshot.RequestsInFlight,
+		Entries:               snapshot.Entries,
+		MaxScopes:             snapshot.MaxScopes,
+		MaxEntriesPerScope:    snapshot.MaxEntriesPerScope,
+		MaxTotalEntries:       snapshot.MaxTotalEntries,
+		ScopeTTLSeconds:       snapshot.ScopeTTL.Seconds(),
+		OldestScopeAgeSeconds: snapshot.OldestScopeAge.Seconds(),
+		RequestsProtected:     snapshot.RequestsProtected,
+		RequestsBlocked:       snapshot.RequestsBlocked,
+		LastErrorCode:         snapshot.LastErrorCode,
+	}
+}
+
 // newApp performs the Phase 2 wiring sequence and returns:
 //   - the assembled *app
 //   - a cleanup func the caller MUST defer (closes pool + logs errors)
@@ -1026,6 +1076,10 @@ func newAppWithRegistryLoader(ctx context.Context, cfg config.Config, logger *sl
 	// server.Config.ShutdownCh carries the full chan struct{} so the server
 	// can close it (idempotent select guard in RegisterOnShutdown callback).
 	sharedShutdownCh := make(chan struct{})
+	privacyStatus := adminPrivacyStatusAdapter{
+		source:             a.privacySnapshot,
+		triageTokenPresent: cfg.PrivacyTriageToken != "",
+	}
 
 	adminHandler := admin.Handler(admin.Deps{
 		Logger:               logger,
@@ -1039,6 +1093,7 @@ func newAppWithRegistryLoader(ctx context.Context, cfg config.Config, logger *sl
 		PrivacyTriage:        adminPrivacyTriage(a.privacyService),
 		PrivacyTriageEnabled: cfg.PrivacyTriageEnabled,
 		PrivacyTriageToken:   cfg.PrivacyTriageToken,
+		PrivacyStatus:        privacyStatus,
 		PrivacyTriageObserver: func(operation, result string) {
 			if recorder := privacyMetrics.Load(); recorder != nil {
 				recorder.RecordPrivacyTriage(operation, result)
@@ -1111,6 +1166,7 @@ func newAppWithRegistryLoader(ctx context.Context, cfg config.Config, logger *sl
 		"anthropic_mounted", anthropicAdapter != nil,
 		"openai_mounted", openaiAdapter != nil,
 	)
+	hooksForServer := hooksDescriptionAdapter{chain: chain, tracker: hookErrors, privacy: privacyStatus}
 
 	// Track 4 Prometheus metrics (gwMetrics) are constructed earlier — before
 	// the pool/session are built — so the shared recorder can be wired into
@@ -1130,15 +1186,15 @@ func newAppWithRegistryLoader(ctx context.Context, cfg config.Config, logger *sl
 		OllamaVersionHandler: ollamaVersionHandler, // Codex M-4 split accessor
 		Surfaces:             surfaces,
 		Pool:                 poolForServer,
-		PoolDetail:           poolDetailForServer,                                        // Plan 05-03 D-15
-		PoolHealth:           poolHealthForServer,                                        // /health/pool — pool serving-health probe
-		Registry:             registryForServer,                                          // Plan 05-03 D-14/D-16
-		AdminHandler:         adminHandler,                                               // Phase 6.1 admin observability UI
-		Hooks:                hooksDescriptionAdapter{chain: chain, tracker: hookErrors}, // Phase 8 OBSV-04 — /health/hooks
-		ShutdownCh:           sharedShutdownCh,                                           // REL-HTTP-01 — shared with admin SSE handler
-		BodyReadTimeout:      cfg.BodyReadTimeout,                                        // REL-HTTP-04 — Plan 16-02 consumes this for the body-read deadline wrapper
-		MetricsHandler:       gwMetrics.Handler(),                                        // Track 4 — GET /metrics (behind IPAllowlist)
-		MetricsMiddleware:    gwMetrics.Middleware,                                       // Track 4 — request instrumentation
+		PoolDetail:           poolDetailForServer,  // Plan 05-03 D-15
+		PoolHealth:           poolHealthForServer,  // /health/pool — pool serving-health probe
+		Registry:             registryForServer,    // Plan 05-03 D-14/D-16
+		AdminHandler:         adminHandler,         // Phase 6.1 admin observability UI
+		Hooks:                hooksForServer,       // Phase 8 OBSV-04 — /health/hooks
+		ShutdownCh:           sharedShutdownCh,     // REL-HTTP-01 — shared with admin SSE handler
+		BodyReadTimeout:      cfg.BodyReadTimeout,  // REL-HTTP-04 — Plan 16-02 consumes this for the body-read deadline wrapper
+		MetricsHandler:       gwMetrics.Handler(),  // Track 4 — GET /metrics (behind IPAllowlist)
+		MetricsMiddleware:    gwMetrics.Middleware, // Track 4 — request instrumentation
 	})
 
 	return a, cleanup, nil
@@ -1504,11 +1560,27 @@ func (a cmdPoolHealthAdapter) Health() server.PoolHealth {
 type hooksDescriptionAdapter struct {
 	chain   plugin.Chain
 	tracker *plugin.HookErrorTracker
+	privacy admin.PrivacyStatusSource
 }
 
 func (h hooksDescriptionAdapter) Describe() (pre, post []server.HookDescription) {
 	pluginPre, pluginPost := h.chain.DescribeWith(h.tracker)
-	return convertHookDescriptions(pluginPre), convertHookDescriptions(pluginPost)
+	pre = convertHookDescriptions(pluginPre)
+	post = convertHookDescriptions(pluginPost)
+	if h.privacy == nil {
+		return pre, post
+	}
+	for i := range pre {
+		if pre[i].Name != "PIIRedactionHook" {
+			continue
+		}
+		if pre[i].Config == nil {
+			pre[i].Config = make(map[string]any)
+		}
+		pre[i].Config["privacy"] = h.privacy.PrivacySnapshot()
+		break
+	}
+	return pre, post
 }
 
 // convertHookDescriptions field-copies []plugin.HookDescription to

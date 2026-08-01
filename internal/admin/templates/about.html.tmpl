@@ -79,7 +79,7 @@
         <div class="gw-about-pii-block">
           <h3 class="gw-h3">Active recognizers</h3>
           <p class="gw-about-pii-entities">{{.PIIEnabledEntitiesText}}</p>
-          <p class="gw-about-pii-note">The full registry is 13 regex recognizers (Email, IPv4, IPv6, SSN, CreditCard, USPhone, SIP_URI, IMEI, IMSI, MSISDN, MAC_ADDRESS, COORDINATES, SITE) plus 2 NER recognizers (PERSON, LOCATION) when <code>PII_NER_ENABLED=true</code>. Context-anchored recognizers (IMEI, IMSI, MSISDN, SITE) require a recognizer-specific keyword within ±50 bytes of the match.</p>
+		  <p class="gw-about-pii-note">The full registry is 16 regex recognizers (Email, IPv4, IPv6, SSN, CreditCard, USPhone, SIP_URI, IMEI, IMSI, MSISDN, MAC_ADDRESS, COORDINATES, SITE, USAddress, USState, USZIP) plus 2 NER recognizers (PERSON, LOCATION) when <code>PII_NER_ENABLED=true</code>. Context-anchored recognizers (IMEI, IMSI, MSISDN, SITE) require a recognizer-specific keyword within ±50 bytes of the match.</p>
         </div>
         <div class="gw-about-pii-block">
           <h3 class="gw-h3">Per-entity action overrides</h3>
@@ -99,6 +99,36 @@
         </div>
       </div>
     </article>
+  </section>
+
+  <section class="gw-card gw-privacy-about" aria-labelledby="about-privacy-heading">
+    <div class="gw-section-heading-row">
+      <div>
+        <p class="gw-eyebrow">Resolved at process start</p>
+        <h2 id="about-privacy-heading" class="gw-h2">Privacy configuration</h2>
+      </div>
+      <a class="gw-help-link" href="/admin/privacy">Open full privacy posture <span aria-hidden="true">→</span></a>
+    </div>
+    <p>All settings below are read-only. <strong>Restart required</strong> after an environment change. Capacity is shown as current / maximum on the dashboard and privacy page.</p>
+    <p>Under strict enforcement, strict requests buffer the complete response before release. Receipt version {{.Privacy.Status.ReceiptVersion}} proves full input/output enforcement completed.</p>
+    <dl class="gw-config-dl">
+      {{range .Privacy.ConfigRows}}
+      <div>
+        <dt><code>{{.Name}}</code> <span class="gw-restart-mark">Restart required</span></dt>
+        <dd><span class="gw-config-meta">Default: <code>{{.Default}}</code> · Current: <code>{{.Current}}</code></span><br>{{.Description}}</dd>
+      </div>
+      {{end}}
+    </dl>
+    <div class="gw-inventory-grid">
+      <div>
+        <h3 class="gw-h3">16 regex recognizers</h3>
+        <ul class="gw-token-list" aria-label="Regex recognizers">{{range .Privacy.RegexRecognizers}}<li><code>{{.}}</code></li>{{end}}</ul>
+      </div>
+      <div>
+        <h3 class="gw-h3">NER recognizers</h3>
+        <ul class="gw-token-list" aria-label="NER recognizers">{{range .Privacy.NERRecognizers}}<li><code>{{.}}</code></li>{{end}}</ul>
+      </div>
+    </div>
   </section>
 </main>{{end}}
 {{template "base" .}}

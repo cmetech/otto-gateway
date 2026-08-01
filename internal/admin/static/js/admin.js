@@ -584,6 +584,50 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Privacy boundary: hydrate the compact read-only operator projection.
+  // Values are written with textContent only; the ordinary snapshot contains
+  // aggregate counts, fixed enums, limits, and presence booleans.
+  // ---------------------------------------------------------------------------
+
+  function privacyDuration(seconds) {
+    var total = Math.max(0, Math.floor(seconds || 0));
+    if (total === 0) return 'none';
+    var days = Math.floor(total / 86400);
+    var hours = Math.floor((total % 86400) / 3600);
+    var mins = Math.floor((total % 3600) / 60);
+    var secs = total % 60;
+    if (days > 0) return days + 'd ' + hours + 'h';
+    if (hours > 0 && mins > 0) return hours + 'h ' + mins + 'm';
+    if (hours > 0) return hours + 'h';
+    if (mins > 0 && secs > 0) return mins + 'm ' + secs + 's';
+    if (mins > 0) return mins + 'm';
+    return secs + 's';
+  }
+
+  function privacyBadge(attr, enabled, onText, offText, warningWhenOn) {
+    var el = qs(attr);
+    if (!el) return;
+    el.textContent = enabled ? onText : offText;
+    el.className = 'gw-badge ' + (enabled ? (warningWhenOn ? 'is-warning' : 'is-ok') : 'is-muted');
+  }
+
+  function renderPrivacy(privacy) {
+    privacy = privacy || {};
+    setText('data-privacy-default-profile', privacy.default_profile || 'unavailable');
+    privacyBadge('data-privacy-strict', !!privacy.strict_available, 'AVAILABLE', 'UNAVAILABLE', false);
+    setText('data-privacy-protected', String(privacy.requests_protected || 0));
+    setText('data-privacy-blocked', String(privacy.requests_blocked || 0));
+    setText('data-privacy-scopes', String(privacy.scopes_active || 0) + ' / ' + String(privacy.max_scopes || 0));
+    setText('data-privacy-in-flight', String(privacy.requests_in_flight || 0));
+    setText('data-privacy-entries', String(privacy.entries || 0) + ' / ' + String(privacy.max_total_entries || 0));
+    setText('data-privacy-per-scope', String(privacy.max_entries_per_scope || 0));
+    setText('data-privacy-ttl', privacyDuration(privacy.scope_ttl_seconds));
+    setText('data-privacy-oldest', privacyDuration(privacy.oldest_scope_age_seconds));
+    privacyBadge('data-privacy-triage', !!privacy.triage_enabled, 'ENABLED', 'DISABLED', true);
+    setText('data-privacy-last-error', privacy.last_error_code || 'none');
+  }
+
+  // ---------------------------------------------------------------------------
   // fetchSnapshot: poll /admin/api/snapshot
   // ---------------------------------------------------------------------------
 
@@ -600,6 +644,7 @@
         // the summary tiles and slot cards read a current window this poll.
         ingestPerf(snap);
         renderSummary(snap);
+		renderPrivacy(snap.privacy);
         // A not-alive slot is a genuine failure (red) only when the pool cannot
         // serve right now (status "down") or a current spawn failure is flagged;
         // otherwise it is a transient recycle rendered yellow "Recovering…".

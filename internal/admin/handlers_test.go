@@ -39,7 +39,7 @@ func TestAdmin_FaviconUsesGatewayTrayIcon(t *testing.T) {
 	h := Handler(Deps{Logger: testutil.Logger(t)})
 	const faviconLink = `<link rel="icon" href="/admin/static/favicon.ico" sizes="any">`
 
-	for _, page := range []string{"/", "/about", "/docs"} {
+	for _, page := range []string{"/", "/about", "/privacy", "/docs"} {
 		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, page, nil)
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
@@ -501,6 +501,7 @@ func TestAdmin_AssetsFSContains(t *testing.T) {
 		"templates/base.html.tmpl",
 		"templates/dashboard.html.tmpl",
 		"templates/about.html.tmpl",
+		"templates/privacy.html.tmpl",
 		"templates/docs.html.tmpl",
 		"static/css/admin.css",
 		"static/js/admin.js",
