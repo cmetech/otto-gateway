@@ -38,6 +38,8 @@ type RequestState struct {
 	restored               int
 	blocked                int
 	standardInboundService uint64
+	streamRequested        bool
+	validatedReplay        bool
 	lease                  *ScopeLease
 	afterStarted           bool
 	authorizedTokens       map[string]struct{}
@@ -180,6 +182,42 @@ func (s *RequestState) markStandardInboundPass(serviceID uint64) {
 	s.mu.Unlock()
 }
 
+func (s *RequestState) markStreamRequested(requested bool) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.streamRequested = requested
+	s.mu.Unlock()
+}
+
+func (s *RequestState) streamWasRequested() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.streamRequested
+}
+
+func (s *RequestState) setValidatedReplay(required bool) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.validatedReplay = required
+	s.mu.Unlock()
+}
+
+func (s *RequestState) validatedReplayRequired() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.validatedReplay
+}
+
 func (s *RequestState) standardInboundPassed(serviceID uint64) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -308,6 +346,23 @@ func StateFromContext(ctx context.Context) (*RequestState, bool) {
 	}
 	state, ok := ctx.Value(requestStateContextKey{}).(*RequestState)
 	return state, ok && state != nil
+}
+
+// MarkStreamRequested records trusted adapter transport intent. It does not
+// authorize replay; only successful strict inbound validation can do that.
+func MarkStreamRequested(ctx context.Context, requested bool) {
+	state, ok := StateFromContext(ctx)
+	if !ok {
+		return
+	}
+	state.markStreamRequested(requested)
+}
+
+// ValidatedReplayRequired reports the service-owned post-validation transport
+// outcome. Missing, standard, unresolved, and failed requests return false.
+func ValidatedReplayRequired(ctx context.Context) bool {
+	state, ok := StateFromContext(ctx)
+	return ok && state.validatedReplayRequired()
 }
 
 // StampHTTPContext extracts caller privacy metadata and stamps the trusted

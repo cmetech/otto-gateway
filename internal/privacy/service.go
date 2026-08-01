@@ -305,6 +305,7 @@ func (s *Service) Before(ctx context.Context, req *canonical.ChatRequest) (resp 
 
 	if state != nil {
 		state.setProfile(ProfileStandard)
+		state.setValidatedReplay(false)
 	}
 	if s.encryptActive() && req.Stream {
 		req.Stream = false
@@ -411,14 +412,20 @@ func (s *Service) beforeStrict(ctx context.Context, state *RequestState, req *ca
 		lease.Release()
 		return &Error{Code: CodeInternalError, Stage: "scope"}
 	}
+	state.setValidatedReplay(false)
 	defer func() {
 		if err != nil {
 			state.releaseLease()
 		}
 	}()
 	state.setProfile(ProfileStrict)
+	replayRequested := req.Stream || state.streamWasRequested()
 	req.Stream = false
-	return s.transformInbound(ctx, state, req)
+	if err := s.transformInbound(ctx, state, req); err != nil {
+		return err
+	}
+	state.setValidatedReplay(replayRequested)
+	return nil
 }
 
 func generateScopeID() (string, error) {
