@@ -54,6 +54,33 @@ type lifecycleTicker struct {
 	stopped  chan struct{}
 }
 
+type acquireGateClock struct {
+	now     time.Time
+	entered chan struct{}
+	resume  chan struct{}
+	once    sync.Once
+}
+
+func newAcquireGateClock() *acquireGateClock {
+	return &acquireGateClock{
+		now:     time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC),
+		entered: make(chan struct{}),
+		resume:  make(chan struct{}),
+	}
+}
+
+func (c *acquireGateClock) Now() time.Time {
+	c.once.Do(func() {
+		close(c.entered)
+		<-c.resume
+	})
+	return c.now
+}
+
+func (c *acquireGateClock) NewTicker(time.Duration) Ticker {
+	return &lifecycleTicker{ch: make(chan time.Time), stopped: make(chan struct{})}
+}
+
 func (t *lifecycleTicker) C() <-chan time.Time { return t.ch }
 
 func (t *lifecycleTicker) Stop() {
@@ -253,6 +280,135 @@ func TestServiceStrict_CleanupShutdownActiveAllowsFinishAndRejectsNewAcquire(t *
 	if snapshot := service.store.Snapshot(); snapshot.ScopesActive != 0 || snapshot.RequestsInFlight != 0 || snapshot.Entries != 0 {
 		t.Fatalf("shutdown snapshot=%+v", snapshot)
 	}
+}
+
+func TestServiceStrict_CleanupCloseAcquireRaceRejectsPausedAcquisition(t *testing.T) {
+	clock := newAcquireGateClock()
+	service := newLifecycleTestService(t, clock, time.Hour)
+	state := NewRequestState(RequestMetadata{RequestedProfile: "strict", ScopeID: "shutdown-paused-acquire"})
+	ctx := WithRequestState(context.Background(), state)
+	beforeErr := make(chan error, 1)
+	go func() {
+		_, err := service.Before(ctx, &canonical.ChatRequest{})
+		beforeErr <- err
+	}()
+
+	<-clock.entered
+	service.Close()
+	close(clock.resume)
+	err := <-beforeErr
+	assertPrivacyError(t, err, CodeScopeClosed, "scope")
+	if snapshot := service.store.Snapshot(); snapshot.ScopesActive != 0 || snapshot.RequestsInFlight != 0 || snapshot.Entries != 0 {
+		t.Fatalf("post-close acquire retained state: %+v", snapshot)
+	}
+}
+
+func TestServiceStrict_AllowSensitiveTraceDeniesUnresolvedAndEarlyStrictErrors(t *testing.T) {
+	t.Run("before Before and missing state", func(t *testing.T) {
+		standard := newStrictTestService(t, strictTestConfig{})
+		strictRequested := NewRequestState(RequestMetadata{RequestedProfile: "strict"})
+		if standard.AllowSensitiveTrace(WithRequestState(context.Background(), strictRequested)) {
+			t.Fatal("requested strict was allowed before Before")
+		}
+		if standard.AllowSensitiveTrace(context.Background()) {
+			t.Fatal("missing request state was allowed")
+		}
+
+		strictDefault := newStrictTestService(t, strictTestConfig{defaultProfile: ProfileStrict})
+		for _, requested := range []string{"", "standard"} {
+			state := NewRequestState(RequestMetadata{RequestedProfile: requested})
+			if strictDefault.AllowSensitiveTrace(WithRequestState(context.Background(), state)) {
+				t.Fatalf("strict default allowed requested profile %q before Before", requested)
+			}
+		}
+	})
+
+	t.Run("unknown and invalid strict metadata", func(t *testing.T) {
+		service := newStrictTestService(t, strictTestConfig{})
+		unknown := NewRequestState(RequestMetadata{RequestedProfile: "maximum"})
+		unknownCtx := WithRequestState(context.Background(), unknown)
+		_, err := service.Before(unknownCtx, &canonical.ChatRequest{})
+		assertPrivacyError(t, err, CodeProfileUnavailable, "profile")
+		if service.AllowSensitiveTrace(unknownCtx) {
+			t.Fatal("unknown profile error was allowed")
+		}
+
+		invalid := NewRequestState(RequestMetadata{RequestedProfile: "strict", ScopeID: "invalid scope"})
+		invalidCtx := WithRequestState(context.Background(), invalid)
+		_, err = service.Before(invalidCtx, &canonical.ChatRequest{})
+		assertPrivacyError(t, err, CodeRequestInvalid, "scope")
+		if service.AllowSensitiveTrace(invalidCtx) {
+			t.Fatal("invalid strict scope was allowed")
+		}
+	})
+
+	t.Run("closed and capacity strict scope errors", func(t *testing.T) {
+		service := newStrictTestService(t, strictTestConfig{})
+		closed := NewRequestState(RequestMetadata{RequestedProfile: "strict", ScopeID: "trace-closed"})
+		closedCtx := WithRequestState(context.Background(), closed)
+		if _, err := service.Before(closedCtx, &canonical.ChatRequest{}); err != nil {
+			t.Fatalf("seed closed scope: %v", err)
+		}
+		closed.releaseLease()
+		if _, err := service.store.Clear("trace-closed"); err != nil {
+			t.Fatalf("Clear: %v", err)
+		}
+		reuse := NewRequestState(RequestMetadata{RequestedProfile: "strict", ScopeID: "trace-closed"})
+		reuseCtx := WithRequestState(context.Background(), reuse)
+		_, err := service.Before(reuseCtx, &canonical.ChatRequest{})
+		assertPrivacyError(t, err, CodeScopeClosed, "scope")
+		if service.AllowSensitiveTrace(reuseCtx) {
+			t.Fatal("closed strict scope was allowed")
+		}
+
+		var held []*RequestState
+		for index := range 32 {
+			state := NewRequestState(RequestMetadata{RequestedProfile: "strict", ScopeID: fmt.Sprintf("trace-capacity-%02d", index)})
+			if _, err := service.Before(WithRequestState(context.Background(), state), &canonical.ChatRequest{}); err != nil {
+				t.Fatalf("fill capacity %d: %v", index, err)
+			}
+			held = append(held, state)
+		}
+		defer func() {
+			for _, state := range held {
+				state.releaseLease()
+			}
+		}()
+		capacity := NewRequestState(RequestMetadata{RequestedProfile: "strict", ScopeID: "trace-capacity-rejected"})
+		capacityCtx := WithRequestState(context.Background(), capacity)
+		_, err = service.Before(capacityCtx, &canonical.ChatRequest{})
+		assertPrivacyError(t, err, CodeCapacityExceeded, "scope")
+		if service.AllowSensitiveTrace(capacityCtx) {
+			t.Fatal("capacity-rejected strict scope was allowed")
+		}
+	})
+
+	t.Run("trusted standard compatibility", func(t *testing.T) {
+		service := newStrictTestService(t, strictTestConfig{})
+		defaultState := NewRequestState(RequestMetadata{})
+		defaultCtx := WithRequestState(context.Background(), defaultState)
+		if !service.AllowSensitiveTrace(defaultCtx) {
+			t.Fatal("default standard was denied before Before")
+		}
+		if _, err := service.Before(defaultCtx, &canonical.ChatRequest{}); err != nil {
+			t.Fatalf("default standard Before: %v", err)
+		}
+		if !service.AllowSensitiveTrace(defaultCtx) {
+			t.Fatal("resolved default standard was denied")
+		}
+
+		state := NewRequestState(RequestMetadata{RequestedProfile: "standard"})
+		ctx := WithRequestState(context.Background(), state)
+		if !service.AllowSensitiveTrace(ctx) {
+			t.Fatal("explicit standard was denied before Before")
+		}
+		if _, err := service.Before(ctx, &canonical.ChatRequest{}); err != nil {
+			t.Fatalf("standard Before: %v", err)
+		}
+		if !service.AllowSensitiveTrace(ctx) {
+			t.Fatal("resolved standard was denied")
+		}
+	})
 }
 
 func newLifecycleTestService(t *testing.T, clock Clock, ttl time.Duration) *Service {

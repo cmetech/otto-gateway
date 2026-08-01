@@ -163,6 +163,52 @@ func TestServiceStrict_OutboundResidualRestoresAuthorizedBareInputToken(t *testi
 	}
 }
 
+func TestServiceStrict_OutboundResidualReservedInputOriginalUsesExactRestoredOccurrence(t *testing.T) {
+	service := newStrictTestService(t, strictTestConfig{
+		classifier:  outboundFixtureClassifier{},
+		piiMode:     ActionEncrypt,
+		recognizers: []string{"Email", "IPv4"},
+	})
+	state := NewRequestState(RequestMetadata{RequestedProfile: "strict", ScopeID: "reserved-input-original"})
+	ctx := WithRequestState(context.Background(), state)
+	req := &canonical.ChatRequest{System: "198.18.1.10 corey@example.com"}
+	if _, err := service.Before(ctx, req); err != nil {
+		t.Fatalf("Before: %v", err)
+	}
+	inputAlias, inputToken := strings.Fields(req.System)[0], strings.Fields(req.System)[1]
+	resp := &canonical.ChatResponse{Message: canonical.Message{ToolCalls: []canonical.ToolCall{{
+		Arguments: map[string]any{
+			"nested": []any{map[string]any{
+				"answer": "prefix " + inputToken + " middle " + inputAlias + " suffix",
+			}},
+		},
+	}}}}
+
+	if err := service.After(ctx, req, resp); err != nil {
+		t.Fatalf("After reserved input original: %v", err)
+	}
+	got := resp.Message.ToolCalls[0].Arguments["nested"].([]any)[0].(map[string]any)["answer"]
+	const want = "prefix corey@example.com middle 198.18.1.10 suffix"
+	if got != want {
+		t.Fatalf("nested restored output=%q, want %q", got, want)
+	}
+
+	unbackedState := NewRequestState(RequestMetadata{RequestedProfile: "strict", ScopeID: "reserved-unbacked-control"})
+	unbackedCtx := WithRequestState(context.Background(), unbackedState)
+	unbackedReq := &canonical.ChatRequest{}
+	if _, err := service.Before(unbackedCtx, unbackedReq); err != nil {
+		t.Fatalf("unbacked Before: %v", err)
+	}
+	unbacked := &canonical.ChatResponse{Message: canonical.Message{Content: []canonical.ContentPart{{
+		Kind: canonical.ContentKindText, Text: "198.18.1.10",
+	}}}}
+	err := service.After(unbackedCtx, unbackedReq, unbacked)
+	assertPrivacyError(t, err, CodeOutputBlocked, "output")
+	if got := unbacked.Message.Content[0].Text; got != "198.18.1.10" {
+		t.Fatalf("blocked unbacked response mutated to %q", got)
+	}
+}
+
 func TestServiceStrict_ReceiptPassBlockAndInternalError(t *testing.T) {
 	tests := []struct {
 		name      string

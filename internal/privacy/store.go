@@ -148,6 +148,7 @@ type tombstone struct {
 // ScopeStore owns bounded process-memory-only ledgers grouped by scope.
 type ScopeStore struct {
 	mu                sync.Mutex
+	shutdown          bool
 	coordinateMu      sync.Mutex
 	config            StoreConfig
 	clock             Clock
@@ -203,6 +204,10 @@ func (s *ScopeStore) Acquire(scopeID string, profile Profile) (*ScopeLease, erro
 		now := s.clock.Now()
 		s.mu.Lock()
 		s.pruneTombstonesLocked(now)
+		if s.shutdown {
+			s.mu.Unlock()
+			return nil, errScopeClosed
+		}
 
 		if scope, ok := s.scopes[scopeID]; ok {
 			if !scope.mu.TryLock() {
@@ -579,7 +584,20 @@ func (s *ScopeStore) Clear(scopeID string) (ClearResult, error) {
 
 // ClearAll closes all scopes and wipes those with no active lease.
 func (s *ScopeStore) ClearAll() ClearSummary {
+	return s.clearAll(false)
+}
+
+// shutdownAndClear permanently rejects future acquisitions and closes every
+// retained scope. Existing leases may finish against closing scope state.
+func (s *ScopeStore) shutdownAndClear() ClearSummary {
+	return s.clearAll(true)
+}
+
+func (s *ScopeStore) clearAll(shutdown bool) ClearSummary {
 	s.mu.Lock()
+	if shutdown {
+		s.shutdown = true
+	}
 	scopeIDs := make([]string, 0, len(s.scopes))
 	for scopeID := range s.scopes {
 		scopeIDs = append(scopeIDs, scopeID)

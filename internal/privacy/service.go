@@ -925,7 +925,7 @@ func (s *Service) transformOutbound(_ context.Context, state *RequestState, resp
 	if err := s.verifyStrictOutboundResidual(state, resp, authorization); err != nil {
 		return err
 	}
-	if err := s.restoreStrictOutbound(state, resp); err != nil {
+	if err := s.restoreStrictOutbound(state, resp, authorization); err != nil {
 		return err
 	}
 	return s.verifyStrictOutboundIntegrity(state, resp, authorization)
@@ -960,21 +960,23 @@ func (s *Service) setStrictReceipt(state *RequestState, result string) error {
 }
 
 type outboundAuthorization struct {
-	occurrences     []authorizedOccurrence
-	generatedTokens map[string]struct{}
+	occurrences              []authorizedOccurrence
+	preservedOccurrences     []authorizedOccurrence
+	finalArtifactOccurrences []authorizedOccurrence
+	restoredOccurrences      []authorizedOccurrence
 }
 
-func (a *outboundAuthorization) authorize(ordinal, start, end int, token string) {
+func (a *outboundAuthorization) authorize(ordinal, start, end int) bool {
+	if len(a.occurrences) >= maxAuthorizedTokens {
+		return false
+	}
 	a.occurrences = append(a.occurrences, authorizedOccurrence{
 		ordinal: ordinal,
 		start:   start,
 		end:     end,
 		kind:    authorizedOccurrenceGeneral,
 	})
-	if a.generatedTokens == nil {
-		a.generatedTokens = make(map[string]struct{})
-	}
-	a.generatedTokens[token] = struct{}{}
+	return true
 }
 
 func (a *outboundAuthorization) occurrenceAt(ordinal, start, end int) bool {
@@ -988,6 +990,24 @@ func (a *outboundAuthorization) occurrenceAt(ordinal, start, end int) bool {
 
 func (a *outboundAuthorization) occurrenceContaining(ordinal, start, end int) bool {
 	for _, occurrence := range a.occurrences {
+		if occurrence.ordinal == ordinal && start >= occurrence.start && end <= occurrence.end {
+			return true
+		}
+	}
+	return false
+}
+
+func occurrenceAt(occurrences []authorizedOccurrence, ordinal, start, end int) bool {
+	for _, occurrence := range occurrences {
+		if occurrence.ordinal == ordinal && occurrence.start == start && occurrence.end == end {
+			return true
+		}
+	}
+	return false
+}
+
+func occurrenceContaining(occurrences []authorizedOccurrence, ordinal, start, end int) bool {
+	for _, occurrence := range occurrences {
 		if occurrence.ordinal == ordinal && start >= occurrence.start && end <= occurrence.end {
 			return true
 		}
@@ -1095,7 +1115,9 @@ func (s *Service) prepareStrictOutbound(state *RequestState, resp *canonical.Cha
 			finalStart := finding.Start + shift
 			finalEnd := finalStart + len(rewrite.replacement)
 			if rewrite.authorize {
-				authorization.authorize(currentOrdinal, finalStart, finalEnd, rewrite.replacement)
+				if !authorization.authorize(currentOrdinal, finalStart, finalEnd) {
+					return "", &Error{Code: CodeCapacityExceeded, Stage: "token"}
+				}
 			}
 			shift += len(rewrite.replacement) - (finding.End - finding.Start)
 		}
@@ -1128,6 +1150,16 @@ func (s *Service) verifyStrictOutboundResidual(
 			raw := value[token.start:token.end]
 			if !token.valid || (!state.tokenAuthorized(raw) && !authorization.occurrenceAt(currentOrdinal, token.start, token.end)) {
 				return s.blockOutbound(state, "token")
+			}
+			if state.tokenAuthorized(raw) {
+				if _, _, encrypted := ParseEncryptedToken(raw); !encrypted {
+					if len(authorization.preservedOccurrences) >= maxAuthorizedTokens {
+						return &Error{Code: CodeCapacityExceeded, Stage: "token"}
+					}
+					authorization.preservedOccurrences = append(authorization.preservedOccurrences, authorizedOccurrence{
+						ordinal: currentOrdinal, start: token.start, end: token.end, kind: token.kind,
+					})
+				}
 			}
 		}
 		for _, payload := range bareEncryptedPayloadRE.FindAllString(value, -1) {
@@ -1167,19 +1199,75 @@ func (s *Service) verifyStrictOutboundResidual(
 	})
 }
 
-func (s *Service) restoreStrictOutbound(state *RequestState, resp *canonical.ChatResponse) error {
+func (s *Service) restoreStrictOutbound(
+	state *RequestState,
+	resp *canonical.ChatResponse,
+	authorization *outboundAuthorization,
+) error {
 	lease := state.scopeLease()
 	if lease == nil {
 		return &Error{Code: CodeInternalError, Stage: "output"}
 	}
+	type restoration struct {
+		start, end  int
+		replacement string
+		entity      string
+	}
+	ordinal := 0
 	restore := func(key, value string) (string, error) {
+		currentOrdinal := ordinal
+		ordinal++
+		restorations := make([]restoration, 0, 4)
+		wrappedRanges := make([]restoration, 0, 2)
+		for _, indexes := range wrappedEncryptedTokenRE.FindAllStringIndex(value, -1) {
+			token := value[indexes[0]:indexes[1]]
+			if !state.tokenAuthorized(token) {
+				continue
+			}
+			match := wrappedEncryptedTokenRE.FindStringSubmatch(token)
+			if len(match) != 3 || !state.tokenAuthorized(match[2]) {
+				continue
+			}
+			plaintext, err := DecryptToken(s.config.PIIEncryptKey, match[1], match[2])
+			if err != nil {
+				continue
+			}
+			candidate := restoration{start: indexes[0], end: indexes[1], replacement: plaintext, entity: match[1]}
+			wrappedRanges = append(wrappedRanges, candidate)
+			restorations = append(restorations, candidate)
+		}
+		for _, indexes := range bareEncryptedPayloadRE.FindAllStringIndex(value, -1) {
+			insideWrapped := false
+			for _, wrapped := range wrappedRanges {
+				if indexes[0] >= wrapped.start && indexes[1] <= wrapped.end {
+					insideWrapped = true
+					break
+				}
+			}
+			if insideWrapped {
+				continue
+			}
+			payload := value[indexes[0]:indexes[1]]
+			if !state.tokenAuthorized(payload) {
+				continue
+			}
+			for _, entity := range s.decryptEntities() {
+				plaintext, err := DecryptToken(s.config.PIIEncryptKey, entity, payload)
+				if err != nil {
+					continue
+				}
+				restorations = append(restorations, restoration{
+					start: indexes[0], end: indexes[1], replacement: plaintext, entity: entity,
+				})
+				break
+			}
+		}
+
 		findings := []Finding(nil)
 		if s.config.Classifier != nil {
 			findings = Arbitrate(s.config.Classifier.Classify(key, value))
 		}
-		restored := value
-		for index := len(findings) - 1; index >= 0; index-- {
-			finding := findings[index]
+		for _, finding := range findings {
 			if finding.Category != CategoryTechnical || !validFindingRange(finding, value) {
 				continue
 			}
@@ -1188,47 +1276,73 @@ func (s *Service) restoreStrictOutbound(state *RequestState, resp *canonical.Cha
 			if !ok || entry.Provenance != ProvenanceInput || entry.Synthetic != matched {
 				continue
 			}
-			restored = restored[:finding.Start] + entry.Original + restored[finding.End:]
-			state.addRestored(1)
-			if observe := s.config.Observers.Restoration; observe != nil {
-				observe(ProfileStrict, finding.Entity, "pass")
+			overlaps := false
+			for _, existing := range restorations {
+				if finding.Start < existing.end && existing.start < finding.End {
+					overlaps = true
+					break
+				}
+			}
+			if !overlaps {
+				restorations = append(restorations, restoration{
+					start: finding.Start, end: finding.End, replacement: entry.Original, entity: finding.Entity,
+				})
 			}
 		}
-		restored = wrappedEncryptedTokenRE.ReplaceAllStringFunc(restored, func(token string) string {
-			if !state.tokenAuthorized(token) {
-				return token
+		sort.Slice(restorations, func(i, j int) bool { return restorations[i].start < restorations[j].start })
+		for index := 1; index < len(restorations); index++ {
+			if restorations[index].start < restorations[index-1].end {
+				return "", &Error{Code: CodeInternalError, Stage: "output"}
 			}
-			match := wrappedEncryptedTokenRE.FindStringSubmatch(token)
-			if len(match) != 3 || !state.tokenAuthorized(match[2]) {
-				return token
+		}
+
+		restored := value
+		for index := len(restorations) - 1; index >= 0; index-- {
+			rewrite := restorations[index]
+			restored = restored[:rewrite.start] + rewrite.replacement + restored[rewrite.end:]
+		}
+		shift := 0
+		for _, rewrite := range restorations {
+			finalStart := rewrite.start + shift
+			finalEnd := finalStart + len(rewrite.replacement)
+			if len(authorization.restoredOccurrences) >= maxAuthorizedTokens {
+				return "", &Error{Code: CodeCapacityExceeded, Stage: "token"}
 			}
-			plaintext, err := DecryptToken(s.config.PIIEncryptKey, match[1], match[2])
-			if err != nil {
-				return token
-			}
+			authorization.restoredOccurrences = append(authorization.restoredOccurrences, authorizedOccurrence{
+				ordinal: currentOrdinal, start: finalStart, end: finalEnd, kind: authorizedOccurrenceGeneral,
+			})
+			shift += len(rewrite.replacement) - (rewrite.end - rewrite.start)
 			state.addRestored(1)
 			if observe := s.config.Observers.Restoration; observe != nil {
-				observe(ProfileStrict, match[1], "pass")
+				observe(ProfileStrict, rewrite.entity, "pass")
 			}
-			return plaintext
-		})
-		return bareEncryptedPayloadRE.ReplaceAllStringFunc(restored, func(payload string) string {
-			if !state.tokenAuthorized(payload) {
-				return payload
+		}
+
+		artifacts := make([]authorizedOccurrence, 0, len(authorization.occurrences)+len(authorization.preservedOccurrences))
+		artifacts = append(artifacts, authorization.occurrences...)
+		artifacts = append(artifacts, authorization.preservedOccurrences...)
+		for _, occurrence := range artifacts {
+			if occurrence.ordinal != currentOrdinal {
+				continue
 			}
-			for _, entity := range s.decryptEntities() {
-				plaintext, err := DecryptToken(s.config.PIIEncryptKey, entity, payload)
-				if err != nil {
+			translated := occurrence
+			for _, rewrite := range restorations {
+				if rewrite.end <= occurrence.start {
+					delta := len(rewrite.replacement) - (rewrite.end - rewrite.start)
+					translated.start += delta
+					translated.end += delta
 					continue
 				}
-				state.addRestored(1)
-				if observe := s.config.Observers.Restoration; observe != nil {
-					observe(ProfileStrict, entity, "pass")
+				if rewrite.start < occurrence.end && occurrence.start < rewrite.end {
+					return "", &Error{Code: CodeInternalError, Stage: "output"}
 				}
-				return plaintext
 			}
-			return payload
-		}), nil
+			if len(authorization.finalArtifactOccurrences) >= 2*maxAuthorizedTokens {
+				return "", &Error{Code: CodeCapacityExceeded, Stage: "token"}
+			}
+			authorization.finalArtifactOccurrences = append(authorization.finalArtifactOccurrences, translated)
+		}
+		return restored, nil
 	}
 	if err := TransformResponseStrings(resp, restore); err != nil {
 		return &Error{Code: CodeInternalError, Stage: "output"}
@@ -1245,21 +1359,26 @@ func (s *Service) verifyStrictOutboundIntegrity(
 	if lease == nil {
 		return &Error{Code: CodeInternalError, Stage: "output"}
 	}
+	ordinal := 0
 	return VisitResponseStrings(resp, func(_ string, value string) error {
+		currentOrdinal := ordinal
+		ordinal++
 		for _, token := range s.parseReservedTokens(value) {
-			raw := value[token.start:token.end]
-			_, generated := authorization.generatedTokens[raw]
-			if !token.valid || (!state.tokenAuthorized(raw) && !generated) {
+			artifact := occurrenceAt(authorization.finalArtifactOccurrences, currentOrdinal, token.start, token.end)
+			restored := occurrenceContaining(authorization.restoredOccurrences, currentOrdinal, token.start, token.end)
+			if !token.valid || (!artifact && !restored) {
 				return s.blockOutbound(state, "integrity")
 			}
 		}
-		for _, match := range outboundIPv4PatternInternal.FindAllString(value, -1) {
+		for _, indexes := range outboundIPv4PatternInternal.FindAllStringIndex(value, -1) {
+			match := value[indexes[0]:indexes[1]]
 			address, err := netip.ParseAddr(match)
 			if err != nil || !netip.MustParsePrefix("198.18.0.0/15").Contains(address) {
 				continue
 			}
 			entry, ok := lease.ResolveSynthetic("IPv4", match)
-			if !ok || entry.Provenance != ProvenanceGenerated {
+			restored := occurrenceContaining(authorization.restoredOccurrences, currentOrdinal, indexes[0], indexes[1])
+			if !restored && (!ok || entry.Provenance != ProvenanceGenerated) {
 				return s.blockOutbound(state, "integrity")
 			}
 		}
@@ -1590,8 +1709,21 @@ func containsProfile(profiles []Profile, want Profile) bool {
 // AllowSensitiveTrace reports whether the current request may use the legacy
 // explicitly sensitive trace path. Strict requests never may.
 func (s *Service) AllowSensitiveTrace(ctx context.Context) bool {
+	if s == nil {
+		return false
+	}
 	state, ok := StateFromContext(ctx)
-	return !ok || state.effectiveProfile() != ProfileStrict
+	if !ok {
+		return false
+	}
+	switch state.effectiveProfile() {
+	case ProfileStrict:
+		return false
+	case ProfileStandard:
+		return true
+	}
+	profile, err := s.resolveProfile(state)
+	return err == nil && profile == ProfileStandard
 }
 
 // TraceSummary returns bounded aggregate metadata only.
@@ -1618,12 +1750,12 @@ func (s *Service) Close() {
 	}
 	s.closeOnce.Do(func() {
 		s.closed.Store(true)
+		if s.store != nil {
+			s.store.shutdownAndClear()
+		}
 		if s.reaperStop != nil {
 			close(s.reaperStop)
 			<-s.reaperDone
-		}
-		if s.store != nil {
-			s.store.ClearAll()
 		}
 	})
 }
