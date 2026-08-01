@@ -7,15 +7,20 @@ package openai
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/go-chi/chi/v5"
 	"go.uber.org/goleak"
 
 	"otto-gateway/internal/canonical"
+	"otto-gateway/internal/privacy"
 )
 
 // jsonCaptureLogger returns a slog logger writing JSON records into buf
@@ -227,4 +232,318 @@ func TestOpenAISSE_PostHookSeesToolCallsAfterStreamingCoerce(t *testing.T) {
 			t.Errorf("Content[0].Text: missing JSON payload (coerce miss path); got %+v", resp.Message.Content)
 		}
 	}
+}
+
+type openAIPrivacyStreamingEngine struct {
+	service *privacy.Service
+	chunks  []canonical.Chunk
+	events  *[]string
+}
+
+func (e *openAIPrivacyStreamingEngine) Collect(ctx context.Context, req *canonical.ChatRequest) (*canonical.ChatResponse, error) {
+	run, err := e.Run(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return e.CollectFromRun(ctx, run, req)
+}
+
+func (e *openAIPrivacyStreamingEngine) Run(ctx context.Context, req *canonical.ChatRequest) (RunHandle, error) {
+	*e.events = append(*e.events, "before")
+	if _, err := e.service.Before(ctx, req); err != nil {
+		return nil, err
+	}
+	ch := make(chan canonical.Chunk, len(e.chunks))
+	for _, chunk := range e.chunks {
+		ch <- chunk
+	}
+	close(ch)
+	return &fakeRunHandle{
+		stream: &fakeStream{
+			chunks: ch,
+			final:  &canonical.FinalResult{StopReason: canonical.StopEndTurn},
+		},
+		sessionID: "privacy-stream",
+	}, nil
+}
+
+func (e *openAIPrivacyStreamingEngine) CollectFromRun(ctx context.Context, run RunHandle, req *canonical.ChatRequest) (*canonical.ChatResponse, error) {
+	*e.events = append(*e.events, "collect")
+	var content strings.Builder
+	for chunk := range run.Stream().Chunks() {
+		if chunk.Kind == canonical.ChunkKindText && chunk.Text != nil {
+			content.WriteString(chunk.Text.Content)
+		}
+	}
+	final, err := run.Stream().Result()
+	if err != nil {
+		return nil, err
+	}
+	stopReason := canonical.StopUnknown
+	if final != nil {
+		stopReason = final.StopReason
+	}
+	resp := &canonical.ChatResponse{
+		Model: req.Model,
+		Message: canonical.Message{
+			Role:    canonical.RoleAssistant,
+			Content: []canonical.ContentPart{{Kind: canonical.ContentKindText, Text: content.String()}},
+		},
+		StopReason: stopReason,
+	}
+	*e.events = append(*e.events, "after")
+	if err := e.service.After(ctx, req, resp); err != nil {
+		*e.events = append(*e.events, "after_error")
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (e *openAIPrivacyStreamingEngine) RunPostHooks(ctx context.Context, req *canonical.ChatRequest, resp *canonical.ChatResponse) error {
+	*e.events = append(*e.events, "after")
+	return e.service.After(ctx, req, resp)
+}
+
+type openAIEventWriter struct {
+	header   http.Header
+	body     bytes.Buffer
+	statuses []int
+	flushes  int
+	events   *[]string
+}
+
+func newOpenAIEventWriter(events *[]string) *openAIEventWriter {
+	return &openAIEventWriter{header: make(http.Header), events: events}
+}
+
+func (w *openAIEventWriter) Header() http.Header { return w.header }
+
+func (w *openAIEventWriter) WriteHeader(status int) {
+	if len(w.statuses) != 0 {
+		return
+	}
+	w.statuses = append(w.statuses, status)
+	*w.events = append(*w.events, "write_header")
+}
+
+func (w *openAIEventWriter) Write(payload []byte) (int, error) {
+	if len(w.statuses) == 0 {
+		w.WriteHeader(http.StatusOK)
+	}
+	*w.events = append(*w.events, "write")
+	return w.body.Write(payload)
+}
+
+func (w *openAIEventWriter) Flush() {
+	if len(w.statuses) == 0 {
+		w.WriteHeader(http.StatusOK)
+	}
+	w.flushes++
+	*w.events = append(*w.events, "flush")
+}
+
+type outputPanickingOpenAIClassifier struct{}
+
+func (outputPanickingOpenAIClassifier) Classify(_, value string) []privacy.Finding {
+	if value == "trigger-output-panic" {
+		panic("private-output-panic-detail")
+	}
+	return nil
+}
+
+func newOpenAIStreamingPrivacyService(t *testing.T, profile privacy.Profile, classifier privacy.Classifier) *privacy.Service {
+	t.Helper()
+	config := privacy.Config{
+		DefaultProfile:  profile,
+		RequestProfiles: []privacy.Profile{profile},
+		PIIEnabled:      true,
+		PIIMode:         privacy.ActionReplace,
+		Classifier:      classifier,
+	}
+	if profile == privacy.ProfileStrict {
+		config.AliasKey = []byte("openai-streaming-alias-key")
+		config.SecretAction = privacy.ActionReplace
+		config.TechnicalAction = privacy.ActionPseudonymize
+		config.ScopeTTL = time.Hour
+		config.MaxScopes = 8
+		config.MaxEntriesPerScope = 32
+		config.MaxTotalEntries = 128
+	}
+	service, err := privacy.NewService(config)
+	if err != nil {
+		t.Fatalf("privacy.NewService: %v", err)
+	}
+	t.Cleanup(service.Close)
+	return service
+}
+
+func openAIPrivacyStreamEndpoints() []struct {
+	name        string
+	path        string
+	body        string
+	objectField string
+	content     string
+} {
+	return []struct {
+		name        string
+		path        string
+		body        string
+		objectField string
+		content     string
+	}{
+		{
+			name: "chat", path: "/chat/completions",
+			body:        `{"model":"auto","messages":[{"role":"user","content":"hi"}],"stream":true}`,
+			objectField: `"object":"chat.completion.chunk"`,
+			content:     `"content":"complete response"`,
+		},
+		{
+			name: "completions", path: "/completions",
+			body:        `{"model":"auto","prompt":"hi","stream":true}`,
+			objectField: `"object":"text_completion"`,
+			content:     `"text":"complete response"`,
+		},
+	}
+}
+
+func TestOpenAIPrivacy_StrictRequestedStreamCollectsAndRunsAfterBeforeNativeReplay(t *testing.T) {
+	for _, endpoint := range openAIPrivacyStreamEndpoints() {
+		t.Run(endpoint.name, func(t *testing.T) {
+			var events []string
+			eng := &openAIPrivacyStreamingEngine{
+				service: newOpenAIStreamingPrivacyService(t, privacy.ProfileStrict, nil),
+				chunks: []canonical.Chunk{
+					{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "complete "}},
+					{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "response"}},
+				},
+				events: &events,
+			}
+			writer := newOpenAIEventWriter(&events)
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1"+endpoint.path, strings.NewReader(endpoint.body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("X-GW-Privacy-Profile", "strict")
+			a := New(Config{Logger: nullLogger(), Engine: eng})
+			router := chi.NewRouter()
+			router.Route("/v1", func(sub chi.Router) { a.RegisterRoutes(sub) })
+			router.ServeHTTP(writer, req)
+
+			if len(writer.statuses) != 1 || writer.statuses[0] != http.StatusOK {
+				t.Fatalf("statuses=%v body=%s events=%v", writer.statuses, writer.body.String(), events)
+			}
+			afterAt := openAIEventPosition(events, "after")
+			writeAt := openAIEventPosition(events, "write_header")
+			if afterAt < 0 || writeAt < 0 || writeAt < afterAt {
+				t.Fatalf("events=%v, response committed before Service.After", events)
+			}
+			for _, want := range []string{endpoint.objectField, endpoint.content, `"finish_reason":"stop"`, "data: [DONE]"} {
+				if !strings.Contains(writer.body.String(), want) {
+					t.Fatalf("body missing %q: %s", want, writer.body.String())
+				}
+			}
+			receipt := decodeOpenAIPrivacyReceipt(t, writer.Header().Get("X-GW-Privacy-Receipt"))
+			if receipt.Profile != privacy.ProfileStrict || receipt.Coverage != "full" || receipt.Result != "pass" {
+				t.Fatalf("receipt=%+v", receipt)
+			}
+		})
+	}
+}
+
+func TestOpenAIPrivacy_StrictRequestedStreamBlockOrInternalWritesNoSuccessResponse(t *testing.T) {
+	outcomes := []struct {
+		name       string
+		text       string
+		classifier privacy.Classifier
+		wantStatus int
+		wantCode   string
+		wantResult string
+	}{
+		{name: "block", text: "[SECRET:API_KEY_1]", wantStatus: http.StatusBadGateway, wantCode: privacy.CodeOutputBlocked, wantResult: "block"},
+		{name: "internal", text: "trigger-output-panic", classifier: outputPanickingOpenAIClassifier{}, wantStatus: http.StatusServiceUnavailable, wantCode: privacy.CodeInternalError, wantResult: "error"},
+	}
+	for _, endpoint := range openAIPrivacyStreamEndpoints() {
+		for _, outcome := range outcomes {
+			t.Run(endpoint.name+"_"+outcome.name, func(t *testing.T) {
+				var events []string
+				eng := &openAIPrivacyStreamingEngine{
+					service: newOpenAIStreamingPrivacyService(t, privacy.ProfileStrict, outcome.classifier),
+					chunks:  []canonical.Chunk{{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: outcome.text}}},
+					events:  &events,
+				}
+				writer := newOpenAIEventWriter(&events)
+				req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1"+endpoint.path, strings.NewReader(endpoint.body))
+				req.Header.Set("Content-Type", "application/json")
+				req.Header.Set("X-GW-Privacy-Profile", "strict")
+				a := New(Config{Logger: nullLogger(), Engine: eng})
+				router := chi.NewRouter()
+				router.Route("/v1", func(sub chi.Router) { a.RegisterRoutes(sub) })
+				router.ServeHTTP(writer, req)
+
+				if len(writer.statuses) != 1 || writer.statuses[0] != outcome.wantStatus {
+					t.Fatalf("statuses=%v want=%d body=%s events=%v", writer.statuses, outcome.wantStatus, writer.body.String(), events)
+				}
+				if strings.Contains(writer.body.String(), "data:") || strings.Contains(writer.body.String(), "[DONE]") {
+					t.Fatalf("strict failure emitted success SSE: %s", writer.body.String())
+				}
+				var envelope errorEnvelope
+				if err := json.Unmarshal(writer.body.Bytes(), &envelope); err != nil {
+					t.Fatalf("decode error envelope: %v; body=%s", err, writer.body.String())
+				}
+				if envelope.Error.Type != errAPI || envelope.Error.Message != outcome.wantCode || envelope.Error.Code == nil || *envelope.Error.Code != outcome.wantCode {
+					t.Fatalf("error=%+v", envelope.Error)
+				}
+				if openAIEventPosition(events, "write_header") < openAIEventPosition(events, "after_error") {
+					t.Fatalf("events=%v, response committed before failed Service.After", events)
+				}
+				receipt := decodeOpenAIPrivacyReceipt(t, writer.Header().Get("X-GW-Privacy-Receipt"))
+				if receipt.Result != outcome.wantResult {
+					t.Fatalf("receipt=%+v", receipt)
+				}
+				if strings.Contains(writer.body.String(), "private-output-panic-detail") {
+					t.Fatalf("response leaked internal detail: %s", writer.body.String())
+				}
+			})
+		}
+	}
+}
+
+func TestOpenAIPrivacy_StandardChatStreamRetainsIncrementalFlushPath(t *testing.T) {
+	var events []string
+	eng := &openAIPrivacyStreamingEngine{
+		service: newOpenAIStreamingPrivacyService(t, privacy.ProfileStandard, nil),
+		chunks: []canonical.Chunk{
+			{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "first"}},
+			{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "second"}},
+		},
+		events: &events,
+	}
+	writer := newOpenAIEventWriter(&events)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"auto","messages":[{"role":"user","content":"hi"}],"stream":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	a := New(Config{Logger: nullLogger(), Engine: eng})
+	router := chi.NewRouter()
+	router.Route("/v1", func(sub chi.Router) { a.RegisterRoutes(sub) })
+	router.ServeHTTP(writer, req)
+
+	if len(writer.statuses) != 1 || writer.statuses[0] != http.StatusOK {
+		t.Fatalf("statuses=%v body=%s", writer.statuses, writer.body.String())
+	}
+	if writer.flushes < 4 {
+		t.Fatalf("flushes=%d, want role, per-chunk, terminal, and done flushes", writer.flushes)
+	}
+	if writeAt, afterAt := openAIEventPosition(events, "write_header"), openAIEventPosition(events, "after"); writeAt < 0 || afterAt < 0 || writeAt > afterAt {
+		t.Fatalf("events=%v, standard stream did not write incrementally before After", events)
+	}
+	receipt := decodeOpenAIPrivacyReceipt(t, writer.Header().Get("X-GW-Privacy-Receipt"))
+	if receipt.Profile != privacy.ProfileStandard || receipt.Coverage != "input" || receipt.Result != "pass" {
+		t.Fatalf("receipt=%+v", receipt)
+	}
+}
+
+func openAIEventPosition(events []string, want string) int {
+	for index, event := range events {
+		if event == want {
+			return index
+		}
+	}
+	return -1
 }

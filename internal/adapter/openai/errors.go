@@ -3,6 +3,8 @@ package openai
 import (
 	"encoding/json"
 	"net/http"
+
+	"otto-gateway/internal/privacy"
 )
 
 // OpenAI error envelope per docs.openai.com/api-reference/errors and
@@ -59,6 +61,10 @@ const (
 // constructing engine-error messages should log the raw err separately via
 // the adapter's *slog.Logger and pass a generic message string here.
 func writeError(w http.ResponseWriter, status int, errorType, message string) {
+	writeErrorWithCode(w, status, errorType, message, nil)
+}
+
+func writeErrorWithCode(w http.ResponseWriter, status int, errorType, message string, code *string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	// Encoder errors here mean the client disconnected mid-write — the
@@ -68,8 +74,22 @@ func writeError(w http.ResponseWriter, status int, errorType, message string) {
 		Error: errorInner{
 			Type:    errorType,
 			Message: message,
+			Code:    code,
 		},
 	})
+}
+
+func writePrivacyError(w http.ResponseWriter, err error) bool {
+	status, code, ok := privacy.ErrorInfo(err)
+	if !ok {
+		return false
+	}
+	errorType := errInvalidRequest
+	if status >= http.StatusInternalServerError {
+		errorType = errAPI
+	}
+	writeErrorWithCode(w, status, errorType, code, &code)
+	return true
 }
 
 // writeJSON writes Content-Type: application/json + status 200 + the

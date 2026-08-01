@@ -948,6 +948,74 @@ func runSyntheticSSEFromResponse(_ context.Context, w http.ResponseWriter, resp 
 	return nil
 }
 
+type textCompletionStreamChunk struct {
+	ID      string                       `json:"id"`
+	Object  string                       `json:"object"`
+	Created int64                        `json:"created"`
+	Model   string                       `json:"model"`
+	Choices []textCompletionStreamChoice `json:"choices"`
+}
+
+type textCompletionStreamChoice struct {
+	Index        int     `json:"index"`
+	Text         string  `json:"text"`
+	FinishReason *string `json:"finish_reason"`
+	Logprobs     any     `json:"logprobs"`
+}
+
+// runSyntheticTextCompletionSSEFromResponse replays an already-validated
+// legacy completion using the endpoint's native text_completion SSE shape.
+// The caller invokes this only after full aggregation and all Post hooks.
+func runSyntheticTextCompletionSSEFromResponse(w http.ResponseWriter, resp *canonical.ChatResponse, requestedModel string) error {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		return errors.New("openai: response writer is not flusher")
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+
+	completion := chatResponseToTextCompletion(resp, requestedModel)
+	base := textCompletionStreamChunk{
+		ID:      completion.ID,
+		Object:  completion.Object,
+		Created: completion.Created,
+		Model:   completion.Model,
+	}
+	text := ""
+	finishReason := "stop"
+	if len(completion.Choices) > 0 {
+		text = completion.Choices[0].Text
+		finishReason = completion.Choices[0].FinishReason
+	}
+	writeChunk := func(choice textCompletionStreamChoice) error {
+		chunk := base
+		chunk.Choices = []textCompletionStreamChoice{choice}
+		payload, err := json.Marshal(chunk)
+		if err != nil {
+			return fmt.Errorf("openai: marshal synthetic text completion chunk: %w", err)
+		}
+		if _, err := fmt.Fprintf(w, "data: %s\n\n", payload); err != nil {
+			return fmt.Errorf("openai: write synthetic text completion chunk: %w", err)
+		}
+		flusher.Flush()
+		return nil
+	}
+	if err := writeChunk(textCompletionStreamChoice{Index: 0, Text: text}); err != nil {
+		return err
+	}
+	if err := writeChunk(textCompletionStreamChoice{Index: 0, FinishReason: &finishReason}); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprint(w, "data: [DONE]\n\n"); err != nil {
+		return fmt.Errorf("openai: write synthetic text completion [DONE]: %w", err)
+	}
+	flusher.Flush()
+	return nil
+}
+
 // writePoolExhaustedOpenAI writes a 503 response with the D-07 OpenAI
 // surface-native pool-exhaustion body and a Retry-After: 5 header.
 //

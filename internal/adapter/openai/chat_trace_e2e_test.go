@@ -7,12 +7,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net/http"
 	"sync/atomic"
 	"testing"
 
 	"otto-gateway/internal/canonical"
 	"otto-gateway/internal/engine"
 	"otto-gateway/internal/plugin"
+	"otto-gateway/internal/privacy"
 )
 
 // chatTraceFakeEngine drives a real ChatTraceHook chain on the
@@ -96,42 +98,19 @@ func (e *chatTraceFakeEngine) CollectFromRun(_ context.Context, _ RunHandle, _ *
 // matching request_id + non-empty content[].
 func TestChatTrace_E2E_OpenAIStreaming(t *testing.T) {
 	var buf bytes.Buffer
-	hook := &plugin.ChatTraceHook{Writer: &buf, Enabled: true}
+	service := newOpenAIStreamingPrivacyService(t, privacy.ProfileStandard, nil)
+	hook := &plugin.ChatTraceHook{Writer: &buf, Enabled: true, Privacy: service}
 	eng := &chatTraceFakeEngine{
 		chunks: []canonical.Chunk{
 			{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "streaming"}},
 		},
 		final:     &canonical.FinalResult{StopReason: canonical.StopEndTurn},
-		preHooks:  []engine.PreHook{hook, &plugin.RequestIDHook{}},
-		postHooks: []engine.PostHook{hook},
+		preHooks:  []engine.PreHook{hook, &plugin.RequestIDHook{}, service},
+		postHooks: []engine.PostHook{service, hook},
 	}
-	req := &canonical.ChatRequest{
-		Model: "auto",
-		Messages: []canonical.Message{
-			{Role: canonical.RoleUser, Content: []canonical.ContentPart{
-				{Kind: canonical.ContentKindText, Text: "hi"},
-			}},
-		},
-	}
-	ctx := plugin.WithRequestID(context.Background(), plugin.NewRequestID())
-	ctx = plugin.WithSurface(ctx, "openai")
-
-	// Run Pre via eng.Run, then drive the SSE emitter, then fire Post
-	// the way handlers.go does.
-	_, err := eng.Run(ctx, req)
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	// We already exercised PreHooks via Run above. Now drive the
-	// emitter on a fresh RunHandle (with chunks) and then trigger
-	// Post via eng.RunPostHooks.
-	_, _, sseErr := runSSEEmitterAndPostHooks(t, ctx, eng, req,
-		[]canonical.Chunk{
-			{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "streaming"}},
-		},
-		&canonical.FinalResult{StopReason: canonical.StopEndTurn}, nil, nullLogger())
-	if sseErr != nil {
-		t.Fatalf("runSSEEmitter: %v", sseErr)
+	rec := doOpenAIPost(t, eng, "/chat/completions", `{"model":"auto","messages":[{"role":"user","content":"hi"}],"stream":true}`, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 
 	records := parseOpenAINDJSONRecords(t, buf.Bytes())

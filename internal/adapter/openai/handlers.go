@@ -13,6 +13,7 @@ import (
 	"otto-gateway/internal/plugin"
 	"otto-gateway/internal/plugin/compress"
 	"otto-gateway/internal/plugin/pii"
+	"otto-gateway/internal/privacy"
 	"otto-gateway/internal/session"
 )
 
@@ -51,6 +52,40 @@ func stampPluginCtx(ctx context.Context, r *http.Request) context.Context {
 		ctx = compress.WithHeaderDirective(ctx, on)
 	}
 	return ctx
+}
+
+type privacyReceiptWriter struct {
+	http.ResponseWriter
+	ctx context.Context
+}
+
+func (w *privacyReceiptWriter) WriteHeader(status int) {
+	privacy.SetReceiptHeader(w.ResponseWriter, w.ctx)
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *privacyReceiptWriter) Write(payload []byte) (int, error) {
+	privacy.SetReceiptHeader(w.ResponseWriter, w.ctx)
+	return w.ResponseWriter.Write(payload)
+}
+
+type privacyReceiptFlusher struct {
+	*privacyReceiptWriter
+	flusher http.Flusher
+}
+
+func (w *privacyReceiptFlusher) Flush() {
+	privacy.SetReceiptHeader(w.ResponseWriter, w.ctx)
+	w.flusher.Flush()
+}
+
+func stampPrivacyContext(ctx context.Context, w http.ResponseWriter, r *http.Request) (context.Context, http.ResponseWriter) {
+	ctx, _ = privacy.StampHTTPContext(ctx, r.Header, "openai")
+	wrapped := &privacyReceiptWriter{ResponseWriter: w, ctx: ctx}
+	if flusher, ok := w.(http.Flusher); ok {
+		return ctx, &privacyReceiptFlusher{privacyReceiptWriter: wrapped, flusher: flusher}
+	}
+	return ctx, wrapped
 }
 
 // handleChatCompletions handles POST /chat/completions.
@@ -129,6 +164,7 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 	// Placed AFTER stampPluginCtx so request_id is already on ctx when
 	// SurfaceFromContext fires inside ChatTraceHook.Before.
 	ctx = plugin.WithSurface(ctx, "openai")
+	ctx, w = stampPrivacyContext(ctx, w, r)
 
 	// Plan 05-03 D-04..D-11: X-Session-Id branch.
 	eng, entry, sErr := a.resolveEngine(r)
@@ -172,6 +208,9 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 		runHandle, err := eng.Run(streamCtx, req)
 		if err != nil {
 			observation.Outcome = classifyRequestError(err)
+			if writePrivacyError(w, err) {
+				return
+			}
 			// engine.Run failed BEFORE any SSE headers were written — safe to
 			// respond with a normal JSON 500 envelope (T-02-33: log raw, generic message).
 			// D-07 REL-POOL-01: pool exhaustion maps to 503 + Retry-After:5 with
@@ -225,6 +264,9 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 			resp, cErr := eng.CollectFromRun(streamCtx, runHandle, req)
 			if cErr != nil {
 				observation.Outcome = classifyRequestError(cErr)
+				if writePrivacyError(w, cErr) {
+					return
+				}
 				if errors.Is(cErr, canonical.ErrStreamIdleTimeout) {
 					a.cfg.Logger.Warn(
 						"stream.idle_timeout",
@@ -321,6 +363,9 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 	resp, err := eng.Collect(ctx, req)
 	if err != nil {
 		observation.Outcome = classifyRequestError(err)
+		if writePrivacyError(w, err) {
+			return
+		}
 		// D-07 REL-POOL-01: pool exhaustion maps to 503 + Retry-After:5.
 		if errors.Is(err, canonical.ErrPoolExhausted) {
 			writePoolExhaustedOpenAI(w)
@@ -413,9 +458,12 @@ func (a *Adapter) handleCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// D-03: JSON-only shim; stream is silently downgraded.
-	// (Mirror ollama/handlers.go:42-45 pattern.)
-	wire.Stream = false
+	// D-03 remains a JSON-only shim for ordinary requests. Preserve the
+	// caller's requested-stream bit on the canonical request so a Pre hook
+	// that requires full response aggregation can disable it. That generic
+	// mutation is the replay signal below; the adapter does not resolve or
+	// branch on a privacy profile itself.
+	requestedStream := wire.Stream
 	observation.Stream = "false"
 
 	msgs, err := promptToMessages(wire.Prompt)
@@ -432,6 +480,7 @@ func (a *Adapter) handleCompletions(w http.ResponseWriter, r *http.Request) {
 	req := &canonical.ChatRequest{
 		Model:              baseModel,
 		Messages:           msgs,
+		Stream:             requestedStream,
 		WorkingDirOverride: r.Header.Get("X-Working-Dir"),
 	}
 	if compressDir != nil {
@@ -448,6 +497,7 @@ func (a *Adapter) handleCompletions(w http.ResponseWriter, r *http.Request) {
 	ctx = stampPluginCtx(ctx, r)
 	// Quick 260529-ll2 — surface stamp for ChatTraceHook correlation.
 	ctx = plugin.WithSurface(ctx, "openai")
+	ctx, w = stampPrivacyContext(ctx, w, r)
 
 	// Plan 05-03: X-Session-Id branch (same shape as handleChatCompletions).
 	eng, entry, sErr := a.resolveEngine(r)
@@ -473,6 +523,9 @@ func (a *Adapter) handleCompletions(w http.ResponseWriter, r *http.Request) {
 	resp, err := eng.Collect(ctx, req)
 	if err != nil {
 		observation.Outcome = classifyRequestError(err)
+		if writePrivacyError(w, err) {
+			return
+		}
 		// Quick 260531-ruv — idle-timeout maps to 504.
 		if errors.Is(err, canonical.ErrStreamIdleTimeout) {
 			a.cfg.Logger.Warn(
@@ -493,6 +546,15 @@ func (a *Adapter) handleCompletions(w http.ResponseWriter, r *http.Request) {
 	if resp != nil && resp.StopReason == canonical.StopError {
 		observation.Outcome = "authentication"
 		writeError(w, http.StatusUnauthorized, errAuthentication, shortCircuitMessage(resp))
+		return
+	}
+	if requestedStream && !req.Stream {
+		if err := runSyntheticTextCompletionSSEFromResponse(w, resp, wire.Model); err != nil {
+			observation.Outcome = classifyStreamingError(err)
+			a.cfg.Logger.Debug("openai: synthetic text completion SSE terminated", "err", err)
+		} else {
+			observation.Outcome = "success"
+		}
 		return
 	}
 
