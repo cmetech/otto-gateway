@@ -38,7 +38,9 @@ func TestWrapperCancellationTerminatesDarwinProcessTree(t *testing.T) {
 	go func() { done <- cmd.Wait() }()
 
 	var childPID int
-	deadline := time.Now().Add(3 * time.Second)
+	// Package-parallel release tests can delay the shell before it writes the
+	// PID file; keep this startup gate looser than the cancellation assertions.
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		body, err := os.ReadFile(pidFile)
 		if err == nil {
