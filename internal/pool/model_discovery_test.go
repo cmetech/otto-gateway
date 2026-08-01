@@ -88,8 +88,27 @@ func TestPool_ModelDiscovery_PersistentColdDegradesNotAbort(t *testing.T) {
 // triggers exactly ONE probe.
 func TestPool_ModelDiscovery_LazySelfHealOnRead(t *testing.T) {
 	var warm atomic.Bool
+	probeStarted := make(chan struct{}, 1)
+	releaseProbe := make(chan struct{})
+	var releaseProbeOnce sync.Once
+	unblockProbe := func() {
+		releaseProbeOnce.Do(func() { close(releaseProbe) })
+	}
 	fc := &fakeClient{
-		newSessionFn: func(_ context.Context, _ string) (string, error) { return "sess", nil },
+		newSessionFn: func(ctx context.Context, _ string) (string, error) {
+			if warm.Load() {
+				select {
+				case probeStarted <- struct{}{}:
+				default:
+				}
+				select {
+				case <-releaseProbe:
+				case <-ctx.Done():
+					return "", ctx.Err()
+				}
+			}
+			return "sess", nil
+		},
 		availableModelsFn: func() []canonical.ModelInfo {
 			if warm.Load() {
 				return []canonical.ModelInfo{{ID: "kiro-3.5"}, {ID: "kiro-lite"}}
@@ -100,16 +119,17 @@ func TestPool_ModelDiscovery_LazySelfHealOnRead(t *testing.T) {
 	p := pool.New(pool.Config{Logger: testutil.Logger(t), Size: 1, Factory: &fakeClientFactory{clients: []pool.PoolClient{fc}}})
 	p.SetCatalogRetryForTesting(nil) // no warmup retries → exactly 1 warmup NewSession
 	defer func() { _ = p.Close() }()
+	defer unblockProbe()
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	if err := p.Warmup(ctx); err != nil {
 		t.Fatalf("Warmup: %v", err)
 	}
-	if got := p.Models(); len(got) != 0 {
-		t.Fatalf("Models() = %v; want empty at cold boot", got)
+	baseline := fc.newSessionCount()
+	if baseline != 1 {
+		t.Fatalf("warmup NewSession attempts = %d; want exactly 1", baseline)
 	}
-	baseline := fc.newSessionCount() // warmup consumed exactly 1
 
 	// kiro is now warm. A burst of concurrent reads must trigger exactly ONE
 	// background re-probe (singleflight), and the catalog heals.
@@ -120,6 +140,17 @@ func TestPool_ModelDiscovery_LazySelfHealOnRead(t *testing.T) {
 		go func() { defer wg.Done(); _ = p.Models() }()
 	}
 	wg.Wait()
+	select {
+	case <-probeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("self-heal probe did not reach the NewSession barrier")
+	}
+	unblockProbe()
+	probeSlot, ok := p.WaitForSlotRelease(time.Second)
+	if !ok {
+		t.Fatal("self-heal probe did not return its slot after release")
+	}
+	p.PutSlotBack(probeSlot)
 
 	// Poll for the heal (the probe runs in the background).
 	healed := false
