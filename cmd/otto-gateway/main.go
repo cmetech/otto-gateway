@@ -971,14 +971,22 @@ func newAppWithRegistryLoader(ctx context.Context, cfg config.Config, logger *sl
 	sharedShutdownCh := make(chan struct{})
 
 	adminHandler := admin.Handler(admin.Deps{
-		Logger:        logger,
-		Version:       version.Version,
-		Commit:        version.Commit(),
-		GatewayID:     gatewayID,
-		Start:         time.Now(),
-		PoolDetail:    adminPoolDetail,
-		Registry:      adminRegistry,
-		AcpCapture:    adminAcpCapture(acpCapture),
+		Logger:               logger,
+		Version:              version.Version,
+		Commit:               version.Commit(),
+		GatewayID:            gatewayID,
+		Start:                time.Now(),
+		PoolDetail:           adminPoolDetail,
+		Registry:             adminRegistry,
+		AcpCapture:           adminAcpCapture(acpCapture),
+		PrivacyTriage:        adminPrivacyTriage(a.privacyService),
+		PrivacyTriageEnabled: cfg.PrivacyTriageEnabled,
+		PrivacyTriageToken:   cfg.PrivacyTriageToken,
+		PrivacyTriageObserver: func(operation, result string) {
+			if recorder := privacyMetrics.Load(); recorder != nil {
+				recorder.RecordPrivacyTriage(operation, result)
+			}
+		},
 		Proc:          adminProcSampler{pool: a.pool},
 		LogPaths:      logPaths,
 		LogPathOrder:  logPathOrder,
@@ -1191,6 +1199,66 @@ func adminAcpCapture(c *capture.Controller) admin.AcpCaptureSource {
 	}
 	return acpCaptureAdapter{ctrl: c}
 }
+
+type privacyTriageAdapter struct {
+	source privacy.TriageCapability
+}
+
+func (a privacyTriageAdapter) ListPrivacyScopes() []admin.PrivacyScopeRow {
+	rows := a.source.ListScopes()
+	out := make([]admin.PrivacyScopeRow, len(rows))
+	for index, row := range rows {
+		out[index] = admin.PrivacyScopeRow{
+			ID: row.ID, Profile: string(row.Profile), State: row.State,
+			Entries: row.Entries, InFlight: row.InFlight, CreatedAt: row.CreatedAt,
+			LastUsedAt: row.LastUsedAt, ExpiresAt: row.ExpiresAt,
+		}
+	}
+	return out
+}
+
+func (a privacyTriageAdapter) InspectPrivacyScope(scopeID string) ([]admin.PrivacyMappingRow, error) {
+	rows, err := a.source.InspectScope(scopeID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]admin.PrivacyMappingRow, len(rows))
+	for index, row := range rows {
+		out[index] = admin.PrivacyMappingRow{
+			Entity: row.Entity, Original: row.Original, Synthetic: row.Synthetic,
+			Provenance: string(row.Provenance), CreatedAt: row.CreatedAt,
+		}
+	}
+	return out, nil
+}
+
+func (a privacyTriageAdapter) ClearPrivacyScope(scopeID string) (admin.PrivacyClearResult, error) {
+	result, err := a.source.ClearScope(scopeID)
+	if err != nil {
+		return admin.PrivacyClearResult{}, err
+	}
+	return admin.PrivacyClearResult{State: adminPrivacyClearState(result)}, nil
+}
+
+func (a privacyTriageAdapter) ClearAllPrivacyScopes() admin.PrivacyClearResult {
+	return admin.PrivacyClearResult{State: adminPrivacyClearState(a.source.ClearAllScopes())}
+}
+
+func adminPrivacyClearState(result privacy.ClearResult) string {
+	if result == privacy.ClearClosing {
+		return "closing"
+	}
+	return "wiped"
+}
+
+func adminPrivacyTriage(service *privacy.Service) admin.PrivacyTriageSource {
+	if service == nil {
+		return nil
+	}
+	return privacyTriageAdapter{source: service.TriageCapability()}
+}
+
+var _ admin.PrivacyTriageSource = privacyTriageAdapter{}
 
 // poolDetailAdapter wraps *pool.Pool to satisfy server.PoolDetailSource.
 // pool.AgentSlot (plan 05-01) and server.AgentSlot (plan 05-03) are

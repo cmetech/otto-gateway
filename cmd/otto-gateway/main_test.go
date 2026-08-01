@@ -274,6 +274,86 @@ func TestPrivacyMetricsWiredAndNoLeak(t *testing.T) {
 	}
 }
 
+func TestPrivacyTriageLiveWiringUsesSharedServiceAndMetrics(t *testing.T) {
+	cfg := strictPrivacyConfig()
+	cfg.PrivacyTriageEnabled = true
+	cfg.PrivacyTriageToken = "task-13-live-token"
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+	a, cleanup, err := newApp(context.Background(), cfg, logger)
+	if err != nil {
+		t.Fatalf("newApp: %v", err)
+	}
+	defer cleanup()
+
+	state := privacy.NewRequestState(privacy.RequestMetadata{RequestedProfile: "strict", ScopeID: "task-13-live"})
+	ctx := privacy.WithRequestState(context.Background(), state)
+	req := &canonical.ChatRequest{Messages: []canonical.Message{{
+		Role:    canonical.RoleUser,
+		Content: []canonical.ContentPart{{Kind: canonical.ContentKindText, Text: "peer 10.23.45.67"}},
+	}}}
+	if response, beforeErr := a.privacyService.Before(ctx, req); beforeErr != nil || response != nil {
+		t.Fatalf("Before=(%v,%v), want nil,nil", response, beforeErr)
+	}
+
+	request := func(method, path string) *httptest.ResponseRecorder {
+		t.Helper()
+		r := httptest.NewRequestWithContext(context.Background(), method, path, nil)
+		r.RemoteAddr = "127.0.0.1:43120"
+		r.Header.Set("Authorization", "Bearer "+cfg.PrivacyTriageToken)
+		recorder := httptest.NewRecorder()
+		a.srv.ServeHTTP(recorder, r)
+		return recorder
+	}
+
+	list := request(http.MethodGet, "/admin/api/privacy/scopes")
+	if list.Code != http.StatusOK || !strings.Contains(list.Body.String(), `"id":"task-13-live"`) {
+		t.Fatalf("list=(%d,%q), want shared live scope", list.Code, list.Body.String())
+	}
+	inspect := request(http.MethodGet, "/admin/api/privacy/scopes/task-13-live/mapping")
+	if inspect.Code != http.StatusOK || !strings.Contains(inspect.Body.String(), `"original":"10.23.45.67"`) {
+		t.Fatalf("inspect=(%d,%q), want shared live mapping", inspect.Code, inspect.Body.String())
+	}
+	clear := request(http.MethodDelete, "/admin/api/privacy/scopes/task-13-live")
+	if clear.Code != http.StatusAccepted || clear.Body.String() != "{\"state\":\"closing\"}\n" {
+		t.Fatalf("active clear=(%d,%q), want 202 closing", clear.Code, clear.Body.String())
+	}
+
+	resp := &canonical.ChatResponse{Message: canonical.Message{
+		Role:    canonical.RoleAssistant,
+		Content: []canonical.ContentPart{{Kind: canonical.ContentKindText, Text: req.Messages[0].Content[0].Text}},
+	}}
+	if afterErr := a.privacyService.After(ctx, req, resp); afterErr != nil {
+		t.Fatalf("After while scope closing: %v", afterErr)
+	}
+	clear = request(http.MethodDelete, "/admin/api/privacy/scopes/task-13-live")
+	if clear.Code != http.StatusNoContent || clear.Body.Len() != 0 {
+		t.Fatalf("repeated clear=(%d,%q), want 204", clear.Code, clear.Body.String())
+	}
+
+	metricsRecorder := httptest.NewRecorder()
+	a.srv.ServeHTTP(metricsRecorder, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/metrics", nil))
+	metricsBody := metricsRecorder.Body.String()
+	for _, want := range []string{
+		`operation="list",result="completed"`,
+		`operation="inspect",result="completed"`,
+		`operation="clear",result="closing"`,
+		`operation="clear",result="completed"`,
+	} {
+		if !strings.Contains(metricsBody, want) {
+			t.Errorf("metrics missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{"task-13-live", "10.23.45.67", cfg.PrivacyTriageToken} {
+		if strings.Contains(metricsBody, forbidden) {
+			t.Errorf("metrics leaked %q", forbidden)
+		}
+		if strings.Contains(logs.String(), forbidden) {
+			t.Errorf("ordinary logs leaked %q: %s", forbidden, logs.String())
+		}
+	}
+}
+
 func TestHookOrderPrivacyBoundary(t *testing.T) {
 	cfg := strictPrivacyConfig()
 	cfg.ChatTrace = true

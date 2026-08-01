@@ -127,6 +127,17 @@ type Deps struct {
 	Debug         bool
 	ChatTrace     bool
 
+	// PrivacyTriage is the capability-scoped source for the disabled-by-default
+	// local mapping triage API. The sensitive routes are registered only when
+	// PrivacyTriageEnabled is true. PrivacyTriageToken is never rendered or
+	// logged.
+	PrivacyTriage        PrivacyTriageSource
+	PrivacyTriageEnabled bool
+	PrivacyTriageToken   string
+	// PrivacyTriageObserver receives only fixed operation/result enums. It is
+	// used for bounded metrics and must never receive a scope or mapped value.
+	PrivacyTriageObserver func(operation, result string)
+
 	// CompressionState is the EFFECTIVE process-wide compression posture
 	// shown on the dashboard summary strip and /admin/about Feature
 	// Flags. Three values:
@@ -267,6 +278,16 @@ func Handler(deps Deps) http.Handler {
 	// POST /api/acp-capture — enable|disable|clear capture at runtime. The only
 	// admin mutation route; 403 unless ACP_CAPTURE_RUNTIME opted in.
 	r.Post("/api/acp-capture", h.acpCapturePostHandler)
+
+	if deps.PrivacyTriageEnabled {
+		r.Route("/api/privacy", func(r chi.Router) {
+			r.Use(h.privacyTriageProtection)
+			r.Get("/scopes", h.listPrivacyScopes)
+			r.Get("/scopes/{scope-id}/mapping", h.inspectPrivacyScope)
+			r.Delete("/scopes/{scope-id}", h.clearPrivacyScope)
+			r.Delete("/scopes", h.clearAllPrivacyScopes)
+		})
+	}
 
 	// GET /static/* — serve embedded CSS/JS assets.
 	// chi.Mount("/admin", h) does NOT rewrite r.URL.Path in the sub-router;
