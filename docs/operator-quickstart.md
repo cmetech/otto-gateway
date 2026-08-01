@@ -260,6 +260,49 @@ The file is `KEY=value` per line, `#` for comments, `export ` prefix tolerated. 
 
 ---
 
+## Upgrade an existing installation
+
+The one-line installer runs normal preserve-and-fill re-init automatically. If
+you replace the release files manually, a pre-privacy environment needs the
+new template and two privacy secrets before the upgraded Gateway can restart.
+Normal re-init preserves existing `AUTH_TOKEN`, `PII_HASH_KEY`, and
+`PII_ENCRYPT_KEY` and mints only missing `PRIVACY_ALIAS_KEY` and
+`PRIVACY_TRIAGE_TOKEN`; it also preserves usable existing privacy values. Omit
+the secret-regeneration flag during a normal upgrade.
+
+macOS / Linux:
+
+```bash
+./scripts/gw upgrade-env --dry-run
+./scripts/gw upgrade-env
+./scripts/gw init --force --non-interactive
+```
+
+Run the [canonical value-free privacy-secret presence check](privacy-boundary.md#privacy-settings); it prints only `privacy secrets: present`. Restart only after it passes:
+
+```bash
+./scripts/gw restart
+```
+
+Windows PowerShell:
+
+```powershell
+.\scripts\gw.ps1 upgrade-env -DryRun
+.\scripts\gw.ps1 upgrade-env
+.\scripts\gw.ps1 init -Force -NonInteractive
+```
+
+Run the same [canonical value-free privacy-secret presence check](privacy-boundary.md#privacy-settings) in PowerShell; it prints only `privacy secrets: present`. Restart only after it passes:
+
+```powershell
+.\scripts\gw.ps1 restart
+```
+
+See the [install and upgrade reference](INSTALL.md#upgrade-behavior) for manual
+archive extraction and platform-specific details.
+
+---
+
 ## Common operator tasks
 
 ### Send metrics to Grafana Cloud
@@ -274,12 +317,12 @@ operator-owned override file:
 GW_METRICS_REMOTE_WRITE_TOKEN=<Grafana API key>
 ```
 
-Run `gw upgrade-env` when upgrading to refresh shared defaults; it does not
-touch `overrides.env`. Sending remains disabled until you enable **Send metrics
-to Grafana Cloud** in the tray. The tray stores only that enabled boolean in
-`tray.json`, never the endpoint, user, or token. If the key is missing when
-you enable it, the tray gives feedback then, without recurring notification
-spam.
+If this key is being added during an upgrade, first complete the
+[privacy-safe upgrade sequence](#upgrade-an-existing-installation). Sending
+remains disabled until you enable **Send metrics to Grafana Cloud** in the
+tray. The tray stores only that enabled boolean in `tray.json`, never the
+endpoint, user, or token. If the key is missing when you enable it, the tray
+gives feedback then, without recurring notification spam.
 
 ### Enable PII redaction (replace mode — easy to read in logs)
 

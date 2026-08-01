@@ -3,9 +3,11 @@
 This file complements `README.md` (the operator quickstart that also ships in every release archive). The quickstart owns the happy path; **this file owns the nuance** — per-OS first-run checklists, the `.env` file load order with cwd-independent location recommendations, the Windows wrapper choice tradeoff table, upgrade behavior, common install pitfalls, and verification commands with expected output.
 
 Privacy-boundary upgrades add two generated secrets and restart-required
-profile, action, TTL, and capacity defaults. Before enabling strict workflows
-or rolling back to a binary that cannot issue privacy receipts, follow the
-[privacy boundary operations guide](privacy-boundary.md#upgrade-and-rollback).
+profile, action, TTL, and capacity defaults. A pre-privacy environment must be
+upgraded and filled before the new binary can start, even when `standard`
+remains the minimum profile. Follow the
+[privacy boundary operations guide](privacy-boundary.md#privacy-settings) for
+the copy-safe secret check and strict or rollback implications.
 
 If you only ever run on one OS and your machine is unsurprising, the quickstart is enough. Read this file when:
 
@@ -60,9 +62,9 @@ code (default per OS — `~/Library/Application Support/Gateway` on macOS,
 (default `~/.gw` / `%USERPROFILE%\.gw`). Both are environment overrides.
 `GW_VERSION` pins a release tag (default latest).
 
-Re-running the command upgrades in place and preserves your `.env` — it lives
-in `GW_HOME`, which the installer never overwrites, regardless of what
-happens to `GW_INSTALL_DIR`. If it finds a legacy `~/.otto-gw.env` (or its
+Re-running the command upgrades in place and preserves your configured values
+while refreshing generated defaults and filling missing managed secrets in
+`GW_HOME`. If it finds a legacy `~/.otto-gw.env` (or its
 `.overrides.env` / `tray.json` companions) from a pre-relayout install, it
 auto-migrates them into `GW_HOME` on that first run — nothing to do by hand.
 The Windows installer also sets `CurrentUser` execution policy to
@@ -330,12 +332,12 @@ The `init` subcommand generates an `.env` file with sensible defaults and pregen
 | `--kiro PATH` / `-Kiro PATH` | Skip the `KIRO_CMD` prompt. |
 | `--addr ADDR` / `-Addr ADDR` | Skip the `HTTP_ADDR` prompt (default `127.0.0.1:18080`). |
 | `--pii MODE` / `-Pii MODE` | Skip the PII mode prompt. One of `off`, `replace`, `mask`, `hash`, `drop`, `encrypt` (default `off`). |
-| `--encrypt-key KEY` / `-EncryptKey KEY` | Operator-supplied `PII_ENCRYPT_KEY` for encrypt mode. Required when `--pii encrypt` (boot error otherwise). Any non-empty string — the gateway derives a 32-byte AES-256-GCM key via SHA-256 at boot. **Not minted by `--regenerate-secrets`** — encrypt keys are caller-owned so rotation is an explicit operator action. |
+| `--encrypt-key KEY` / `-EncryptKey KEY` | Operator-supplied `PII_ENCRYPT_KEY` for encrypt mode. Required when `--pii encrypt` (boot error otherwise). Any non-empty string — the gateway derives a 32-byte AES-256-GCM key via SHA-256 at boot. Init auto-mints a value when none exists; explicit secret regeneration rotates it with the other four managed secrets. |
 | `--auth-enabled` / `-AuthEnabled` | Enable bearer-token auth. Default off — when disabled the `AUTH_TOKEN=` line is pregenerated but written commented out, so flipping the leading `#` enables it without re-running init. |
 | `--auth-token TOK` / `-AuthToken TOK` | Use TOK instead of generating a random token. Implies `--auth-enabled`. |
 | `--chat-trace` / `-ChatTrace` | Enable chat-trace NDJSON tracer. Default off — when enabled, every chat request writes two NDJSON records (pre-redaction request + post-chain response) to a separate `chat-trace.log` (mode `0600`, 3-day retention). Records contain **raw user content** — treat the file as sensitive. |
 | `--hash-key KEY` / `-HashKey KEY` | Use KEY instead of generating a random PII hash key. Useful when restoring an install from backup and you need to preserve `hash`-mode log correlation tags across the rebuild. |
-| `--regenerate-secrets` / `-RegenerateSecrets` | On re-init (`--force` against an existing dest), mint fresh `AUTH_TOKEN` + `PII_HASH_KEY` instead of reusing the existing ones. Use for post-leak rotation. **Breaks every client carrying the old token and unlinks all prior hash-mode log correlations** — explicit by design. |
+| `--regenerate-secrets` / `-RegenerateSecrets` | On re-init (`--force` against an existing destination), rotate all five managed secrets instead of preserving usable values. Use only for intentional rotation: auth clients, hash correlations, encrypted round trips, and active privacy aliases are invalidated. Normal upgrades omit this flag. |
 
 **Defaults shipped by init (cold start):**
 
@@ -371,13 +373,13 @@ Multiple ways to invoke the gateway. Pick the one that matches your workflow.
 
 ## Upgrade behavior
 
-**Recommended:** re-run the one-liner installer (`curl ... | sh` / `irm ... | iex`). It stops the running gateway, extracts the new release into `GW_INSTALL_DIR`, and never touches `GW_HOME` — your `.env`, `overrides.env`, logs, and state all live outside the install dir by default (`~/.gw`), so an upgrade is safe by construction. This is the layout's whole point: replace the code anchor freely, the config anchor never moves.
+**Recommended:** re-run the one-liner installer (`curl ... | sh` / `irm ... | iex`). It stops the running gateway, extracts the new release into `GW_INSTALL_DIR`, and runs normal re-init. Existing config and usable managed secrets in `GW_HOME` are preserved; generated defaults are refreshed and missing privacy secrets are filled. The code and config anchors remain separate, so replacing the release cannot discard operator state.
 
 The rest of this section covers the manual archive path — download + extract + run in place yourself, without the installer. The supported pattern there is "extract the new archive over the old install location." The semantics differ subtly between the POSIX `tar` and Windows `Expand-Archive` paths — read both rows for the OS you operate on.
 
 ### How to upgrade (step-by-step)
 
-Same pattern on every OS: stop the gateway, extract the new archive **on top of** the existing `otto_gateway/` folder (do not delete the old folder first), restart. The extract overlays the version-locked files (binary, wrappers, READMEs); it never touches `GW_HOME` (`.env`, `overrides.env`, `logs/`, `state/`) because none of that lives inside the extracted folder by default — see [File Locations](../docs/operating.md#file-locations) for where it actually lives. You do **not** re-run `init` — your existing `.env` carries forward.
+For a manual archive upgrade, stop Gateway and extract the new archive **on top of** the existing `otto_gateway/` folder (do not delete the old folder first). Before restart, preview and apply the new template, then run normal re-init. Normal re-init preserves existing `AUTH_TOKEN`, `PII_HASH_KEY`, and `PII_ENCRYPT_KEY` and mints only missing `PRIVACY_ALIAS_KEY` and `PRIVACY_TRIAGE_TOKEN`. It also preserves usable existing privacy values. Do not pass the secret-regeneration flag during a normal upgrade.
 
 **macOS / Linux:**
 
@@ -387,39 +389,60 @@ cd /path/containing/otto_gateway   # the parent dir, NOT otto_gateway/ itself
 tar -xzf otto_gateway-darwin-arm64-<version>.tar.gz   # overlays into ./otto_gateway/
 cd otto_gateway
 xattr -d com.apple.quarantine bin/gateway 2>/dev/null || true   # macOS only
-./scripts/gw start
-./scripts/gw version                    # confirm the new version is live
+./scripts/gw upgrade-env --dry-run
+./scripts/gw upgrade-env
+./scripts/gw init --force --non-interactive
+```
+
+Run the [canonical value-free privacy-secret presence check](privacy-boundary.md#privacy-settings) now; it prints only `privacy secrets: present`. Restart only after that check passes:
+
+```bash
+./scripts/gw restart
+./scripts/gw version
 ```
 
 **Windows (PowerShell):**
 
 ```powershell
 cd C:\path\containing\otto_gateway          # parent of otto_gateway\
-.\otto_gateway\scripts\gw.bat stop      # OK if "not running"
+.\otto_gateway\scripts\gw.ps1 stop      # OK if "not running"
 Expand-Archive -Force otto_gateway-windows-amd64-<version>.zip
 cd otto_gateway
 .\scripts\setup.bat                          # re-strip MOTW on newly-extracted files
-.\scripts\gw.bat start
-.\scripts\gw.bat version                # confirm
+.\scripts\gw.ps1 upgrade-env -DryRun
+.\scripts\gw.ps1 upgrade-env
+.\scripts\gw.ps1 init -Force -NonInteractive
+```
+
+Run the same [canonical value-free privacy-secret presence check](privacy-boundary.md#privacy-settings) in PowerShell; it prints only `privacy secrets: present`. Restart only after it passes:
+
+```powershell
+.\scripts\gw.ps1 restart
+.\scripts\gw.ps1 version
 ```
 
 The `setup.bat` re-run on Windows is necessary because Mark-of-the-Web Zone.Identifier streams are attached to every freshly-extracted file. Execution policy is per-user and persists across upgrades, so only the MOTW strip half of `setup.bat` is doing real work the second time.
 
 ### Re-running init on an upgraded install
 
-You normally do **not** need to re-run `init` after an upgrade — your `.env` keeps working as-is. The one case to re-run is when a new version adds a new config knob (like `CHAT_TRACE` in v1.5.6) that you want surfaced in your file with the official commented template above it.
+Normal forced re-init is required when moving a pre-privacy environment to a privacy-capable release. It is also safe on later upgrades: usable existing values are preserved while newly introduced defaults and missing managed-secret entries are filled. Skipping re-init is safe only for a legacy-to-legacy upgrade whose target predates the privacy defaults and introduces no required configuration.
 
-When you do re-run, `init --force` / `init -Force` now preserves your existing values instead of cold-starting:
+Use the non-interactive preserve-and-fill form on the platform you operate:
 
 ```bash
 ./scripts/gw init --force --non-interactive
 ```
 
-- Existing `AUTH_TOKEN`, `PII_HASH_KEY`, `PII_ENCRYPT_KEY`, `KIRO_CMD`, `HTTP_ADDR`, `PII_REDACTION_MODE`, `PII_ENTITY_ACTIONS`, `CHAT_TRACE` state — **preserved**.
-- New fields introduced by the upgraded wrapper — **added** with sensible defaults (commented if off).
+```powershell
+.\scripts\gw.ps1 init -Force -NonInteractive
+```
+
+- Existing `AUTH_TOKEN`, `PII_HASH_KEY`, `PII_ENCRYPT_KEY`, usable privacy secrets, `KIRO_CMD`, `HTTP_ADDR`, `PII_REDACTION_MODE`, `PII_ENTITY_ACTIONS`, and `CHAT_TRACE` state — **preserved**.
+- A missing or shipped-placeholder `PRIVACY_ALIAS_KEY` or `PRIVACY_TRIAGE_TOKEN` — **minted independently**.
+- Other new fields introduced by the upgraded wrapper — **added** with sensible defaults (commented if off).
 - Comment formatting / section dividers — **refreshed** from the new template.
 
-Secrets are reused bit-for-bit unless you explicitly pass `--regenerate-secrets` / `-RegenerateSecrets`. Use that flag when rotating after a suspected leak; do not use it casually because every client carrying the old `AUTH_TOKEN` will start getting 401s and every prior hash-mode log correlation tag becomes un-linkable to live data.
+Explicit `--regenerate-secrets` / `-RegenerateSecrets` rotates all five managed secrets. Use it only for intentional rotation; omit it from upgrades because it invalidates auth clients, hash correlations, encrypted round trips, and active privacy aliases.
 
 The interactive form (`init --force` without `--non-interactive`) prompts for every field with the existing value as the default — hit Enter to keep, type to change.
 
@@ -656,7 +679,7 @@ PII_REDACTION_MODE=encrypt
 PII_ENCRYPT_KEY=<any non-empty string; high-entropy random is the operator-grade default>
 ```
 
-Rotating `PII_ENCRYPT_KEY` invalidates every prior encrypted token — treat rotation as a breaking change for any in-flight conversation that round-trips. `--regenerate-secrets` does **not** rotate this key; rotation is an explicit operator action.
+Rotating `PII_ENCRYPT_KEY` invalidates every prior encrypted token — treat rotation as a breaking change for any in-flight conversation that round-trips. Explicit `--regenerate-secrets` rotates this key with the other four managed secrets; normal upgrades omit that flag and preserve it.
 
 ---
 

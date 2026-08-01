@@ -3,6 +3,7 @@
 
 import re
 import unittest
+from hashlib import sha256
 from html import unescape
 from pathlib import Path
 
@@ -29,6 +30,20 @@ REGEX_RECOGNIZERS = (
 )
 NER_RECOGNIZERS = ("PERSON", "LOCATION")
 ENTITY_ACTIONS = ("replace", "mask", "hash", "drop", "encrypt", "pseudonymize")
+UPGRADE_COMMANDS = {
+    "posix": (
+        "./scripts/gw upgrade-env --dry-run",
+        "./scripts/gw upgrade-env",
+        "./scripts/gw init --force --non-interactive",
+        "./scripts/gw restart",
+    ),
+    "powershell": (
+        r".\scripts\gw.ps1 upgrade-env -DryRun",
+        r".\scripts\gw.ps1 upgrade-env",
+        r".\scripts\gw.ps1 init -Force -NonInteractive",
+        r".\scripts\gw.ps1 restart",
+    ),
+}
 
 
 def read(relative_path):
@@ -55,7 +70,53 @@ def plain_text(text):
     without_markup = re.sub(
         r"</?[A-Za-z][A-Za-z0-9]*(?:\s+[^>]*)?>|[`#*]", " ", unescape(text)
     )
-    return re.sub(r"\s+", " ", without_markup).strip()
+    collapsed = re.sub(r"\s+", " ", without_markup).strip()
+    return re.sub(r"\s+([,.;:])", r"\1", collapsed)
+
+
+def markdown_section(text, heading):
+    start = text.find(heading)
+    if start < 0:
+        return ""
+    level = heading.split(" ", 1)[0]
+    match = re.search(rf"(?m)^{re.escape(level)}\s+", text[start + len(heading) :])
+    end = start + len(heading) + match.start() if match else len(text)
+    return text[start:end]
+
+
+def owned_upgrade_sections(install, quickstart):
+    return {
+        "manual-install": markdown_section(install, "### How to upgrade (step-by-step)"),
+        "operator-quickstart": markdown_section(
+            quickstart, "## Upgrade an existing installation"
+        ),
+    }
+
+
+def simulate_preprivacy_upgrade(commands, fixture_name):
+    """Walk documented commands using the approved preserve-and-fill behavior."""
+    existing = {
+        "AUTH_TOKEN": "existing-auth",
+        "PII_HASH_KEY": "existing-hash",
+        "PII_ENCRYPT_KEY": "existing-encrypt",
+    }
+    state = dict(existing)
+    startable = False
+    for command in commands:
+        lowered = command.lower()
+        if "upgrade-env" in lowered and "dryrun" not in lowered and "dry-run" not in lowered:
+            state.setdefault("PRIVACY_ALIAS_KEY", "<generated-by-gw-init>")
+            state.setdefault("PRIVACY_TRIAGE_TOKEN", "<generated-by-gw-init>")
+        elif " init " in f" {lowered} ":
+            for key in ("PRIVACY_ALIAS_KEY", "PRIVACY_TRIAGE_TOKEN"):
+                if state.get(key) in (None, "", "<generated-by-gw-init>"):
+                    state[key] = sha256(f"{fixture_name}:{key}".encode()).hexdigest()
+        elif lowered.endswith(" restart"):
+            startable = all(state.get(key) for key in existing) and all(
+                re.fullmatch(r"[0-9a-f]{64}", state.get(key, ""))
+                for key in ("PRIVACY_ALIAS_KEY", "PRIVACY_TRIAGE_TOKEN")
+            )
+    return existing, state, startable
 
 
 class PrivacyDocsTest(unittest.TestCase):
@@ -65,6 +126,8 @@ class PrivacyDocsTest(unittest.TestCase):
         cls.env = read("scripts/.env.example")
         cls.operating = read("docs/operating.md")
         cls.admin = read("internal/admin/templates/docs.html.tmpl")
+        cls.install = read("docs/INSTALL.md")
+        cls.quickstart = read("docs/operator-quickstart.md")
 
     def assertGuideContains(self, *needles):
         for needle in needles:
@@ -228,6 +291,99 @@ class PrivacyDocsTest(unittest.TestCase):
         self.assertIn("length($2) == 64", procedure)
         self.assertIn("[0-9a-f]{64}", procedure)
         self.assertNotIn("--show-secrets", procedure)
+
+    def test_owned_preprivacy_upgrade_paths_have_exact_sequence(self):
+        surfaces = owned_upgrade_sections(self.install, self.quickstart)
+        for surface_name, section in surfaces.items():
+            with self.subTest(surface=surface_name):
+                self.assertTrue(section, f"{surface_name} upgrade section is absent")
+                command_lines = [line.strip() for line in section.splitlines()]
+                normalized = plain_text(section)
+                for platform, commands in UPGRADE_COMMANDS.items():
+                    positions = []
+                    for command in commands:
+                        self.assertIn(
+                            command,
+                            command_lines,
+                            f"{surface_name} {platform} path omits exact command: {command}",
+                        )
+                        positions.append(command_lines.index(command))
+                    self.assertEqual(
+                        positions,
+                        sorted(positions),
+                        f"{surface_name} {platform} upgrade order is unsafe",
+                    )
+                self.assertNotRegex(
+                    section,
+                    r"(?i)(?:do|normally do|need)\s+not.{0,40}re-run\s+`?init",
+                    f"{surface_name} contains an unqualified no-init upgrade path",
+                )
+                self.assertIn("privacy-boundary.md#privacy-settings", section)
+                self.assertIn("value-free privacy-secret presence check", section)
+                self.assertIn("prints only privacy secrets: present", normalized)
+                self.assertIn(
+                    "preserves existing AUTH_TOKEN, PII_HASH_KEY, and PII_ENCRYPT_KEY",
+                    normalized,
+                )
+                self.assertIn(
+                    "mints only missing PRIVACY_ALIAS_KEY and PRIVACY_TRIAGE_TOKEN",
+                    normalized,
+                )
+                normal_commands = "\n".join(
+                    line
+                    for line in command_lines
+                    if " upgrade-env" in line
+                    or " init " in f" {line} "
+                    or line.endswith(" restart")
+                )
+                self.assertNotRegex(normal_commands, r"(?i)regenerate[- ]?secrets")
+        for source_name, source in {
+            "install reference": self.install,
+            "operator quickstart": self.quickstart,
+        }.items():
+            self.assertNotRegex(
+                plain_text(source),
+                r"(?i)(?:do|normally do|need)\s+not.{0,40}re-run\s+`?init",
+                f"{source_name} contains an unqualified no-init statement",
+            )
+
+    def test_owned_upgrade_paths_are_startable_from_three_secret_fixture(self):
+        surfaces = owned_upgrade_sections(self.install, self.quickstart)
+        generated_privacy_values = set()
+        for surface_name, section in surfaces.items():
+            for platform, expected_commands in UPGRADE_COMMANDS.items():
+                with self.subTest(surface=surface_name, platform=platform):
+                    documented = [
+                        command
+                        for command in expected_commands
+                        if command in [line.strip() for line in section.splitlines()]
+                    ]
+                    self.assertEqual(documented, list(expected_commands))
+                    existing, result, startable = simulate_preprivacy_upgrade(
+                        documented, f"{surface_name}:{platform}"
+                    )
+                    for key, value in existing.items():
+                        self.assertEqual(result[key], value, f"{key} rotated during normal upgrade")
+                    alias = result.get("PRIVACY_ALIAS_KEY", "")
+                    triage = result.get("PRIVACY_TRIAGE_TOKEN", "")
+                    self.assertRegex(alias, r"^[0-9a-f]{64}$")
+                    self.assertRegex(triage, r"^[0-9a-f]{64}$")
+                    self.assertNotEqual(alias, triage)
+                    self.assertNotEqual(alias, "<generated-by-gw-init>")
+                    self.assertNotEqual(triage, "<generated-by-gw-init>")
+                    self.assertTrue(startable, "documented restart would fail config validation")
+                    generated_privacy_values.update((alias, triage))
+        self.assertEqual(len(generated_privacy_values), 8)
+
+    def test_install_rotation_guidance_has_no_legacy_encrypt_exception(self):
+        self.assertIn(
+            "Explicit `--regenerate-secrets` / `-RegenerateSecrets` rotates all five managed secrets.",
+            self.install,
+        )
+        self.assertNotRegex(
+            plain_text(self.install),
+            r"(?i)regenerate-secrets.{0,80}does not.{0,40}rotate",
+        )
 
     def test_restart_override_and_secret_lifecycle(self):
         self.assertGuideContains(
