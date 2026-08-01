@@ -448,6 +448,24 @@ func (l *ScopeLease) ResolveSynthetic(entity, synthetic string) (MappingEntry, b
 	return entry, ok
 }
 
+// ResolveOriginal looks up a reversible entry by entity and original value.
+func (l *ScopeLease) ResolveOriginal(entity, original string) (MappingEntry, bool) {
+	if !l.lockOperation() {
+		return MappingEntry{}, false
+	}
+	defer l.mu.RUnlock()
+
+	scope := l.scope
+	scope.mu.Lock()
+	defer scope.mu.Unlock()
+
+	entry, ok := scope.forward[mappingKey{entity: entity, value: original}]
+	if ok {
+		l.store.touchLocked(scope, l.store.clock.Now())
+	}
+	return entry, ok
+}
+
 // Release drops an in-flight reference exactly once.
 func (l *ScopeLease) Release() {
 	l.mu.Lock()

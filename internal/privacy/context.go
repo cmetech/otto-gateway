@@ -39,6 +39,7 @@ type RequestState struct {
 	blocked                int
 	standardInboundService uint64
 	lease                  *ScopeLease
+	afterStarted           bool
 	authorizedTokens       map[string]struct{}
 	authorizedOccurrences  []authorizedOccurrence
 	receipt                string
@@ -147,6 +148,19 @@ func (s *RequestState) scopeLease() *ScopeLease {
 	return s.lease
 }
 
+func (s *RequestState) beginAfter() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.afterStarted || s.lease == nil {
+		return false
+	}
+	s.afterStarted = true
+	return true
+}
+
 func (s *RequestState) releaseLease() {
 	if s == nil {
 		return
@@ -199,6 +213,19 @@ func (s *RequestState) tokenAuthorized(token string) bool {
 	defer s.mu.Unlock()
 	_, ok := s.authorizedTokens[token]
 	return ok
+}
+
+func (s *RequestState) authorizedTokenValues() []string {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tokens := make([]string, 0, len(s.authorizedTokens))
+	for token := range s.authorizedTokens {
+		tokens = append(tokens, token)
+	}
+	return tokens
 }
 
 func (s *RequestState) authorizeOccurrence(ordinal, start, end int, kind authorizedOccurrenceKind) bool {
