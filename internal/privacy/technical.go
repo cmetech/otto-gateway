@@ -67,7 +67,7 @@ func (m *TechnicalMapper) Map(
 	original string,
 	provenance Provenance,
 ) (string, error) {
-	value, _, _, err := m.MapObserved(lease, entity, original, provenance)
+	value, _, err := m.MapObserved(lease, entity, original, provenance)
 	return value, err
 }
 
@@ -76,12 +76,12 @@ func (m *TechnicalMapper) MapObserved(
 	entity string,
 	original string,
 	provenance Provenance,
-) (string, bool, uint32, error) {
+) (string, mappingOutcome, error) {
 	if m == nil || len(m.aliasKey) == 0 || lease == nil {
-		return "", false, 0, errTechnicalValue
+		return "", mappingOutcome{}, errTechnicalValue
 	}
 	if provenance != ProvenanceInput && provenance != ProvenanceGenerated {
-		return "", false, 0, errInvalidProvenance
+		return "", mappingOutcome{}, errInvalidProvenance
 	}
 
 	switch entity {
@@ -102,13 +102,13 @@ func (m *TechnicalMapper) MapObserved(
 	case "COORDINATES":
 		return m.mapCoordinates(lease, original, provenance)
 	default:
-		return "", false, 0, fmt.Errorf("%s: %w", entity, errTechnicalEntity)
+		return "", mappingOutcome{}, fmt.Errorf("%s: %w", entity, errTechnicalEntity)
 	}
 }
 
-func (m *TechnicalMapper) mapMAC(lease *ScopeLease, original string, provenance Provenance) (string, bool, uint32, error) {
+func (m *TechnicalMapper) mapMAC(lease *ScopeLease, original string, provenance Provenance) (string, mappingOutcome, error) {
 	if !technicalMACPattern.MatchString(original) {
-		return "", false, 0, fmt.Errorf("MAC_ADDRESS: %w", errTechnicalValue)
+		return "", mappingOutcome{}, fmt.Errorf("MAC_ADDRESS: %w", errTechnicalValue)
 	}
 	separator := original[2]
 	uppercase := original == strings.ToUpper(original)
@@ -127,9 +127,9 @@ func (m *TechnicalMapper) mapMAC(lease *ScopeLease, original string, provenance 
 	})
 }
 
-func (m *TechnicalMapper) mapIMEI(lease *ScopeLease, original string, provenance Provenance) (string, bool, uint32, error) {
+func (m *TechnicalMapper) mapIMEI(lease *ScopeLease, original string, provenance Provenance) (string, mappingOutcome, error) {
 	if len(original) != 15 || !decimalDigits(original) || !luhnValid(original) {
-		return "", false, 0, fmt.Errorf("IMEI: %w", errTechnicalValue)
+		return "", mappingOutcome{}, fmt.Errorf("IMEI: %w", errTechnicalValue)
 	}
 	return m.mapDerived(lease, "IMEI", original, provenance, func(digest [sha256.Size]byte) string {
 		body := decimalFromDigest(digest, 14, false)
@@ -137,34 +137,34 @@ func (m *TechnicalMapper) mapIMEI(lease *ScopeLease, original string, provenance
 	})
 }
 
-func (m *TechnicalMapper) mapIMSI(lease *ScopeLease, original string, provenance Provenance) (string, bool, uint32, error) {
+func (m *TechnicalMapper) mapIMSI(lease *ScopeLease, original string, provenance Provenance) (string, mappingOutcome, error) {
 	if len(original) != 15 || !decimalDigits(original) {
-		return "", false, 0, fmt.Errorf("IMSI: %w", errTechnicalValue)
+		return "", mappingOutcome{}, fmt.Errorf("IMSI: %w", errTechnicalValue)
 	}
 	return m.mapDerived(lease, "IMSI", original, provenance, func(digest [sha256.Size]byte) string {
 		return decimalFromDigest(digest, len(original), false)
 	})
 }
 
-func (m *TechnicalMapper) mapMSISDN(lease *ScopeLease, original string, provenance Provenance) (string, bool, uint32, error) {
+func (m *TechnicalMapper) mapMSISDN(lease *ScopeLease, original string, provenance Provenance) (string, mappingOutcome, error) {
 	if len(original) < 9 || len(original) > 16 || original[0] != '+' ||
 		!decimalDigits(original[1:]) || original[1] == '0' {
-		return "", false, 0, fmt.Errorf("MSISDN: %w", errTechnicalValue)
+		return "", mappingOutcome{}, fmt.Errorf("MSISDN: %w", errTechnicalValue)
 	}
 	return m.mapDerived(lease, "MSISDN", original, provenance, func(digest [sha256.Size]byte) string {
 		return "+" + decimalFromDigest(digest, len(original)-1, true)
 	})
 }
 
-func (m *TechnicalMapper) mapSIP(lease *ScopeLease, original string, provenance Provenance) (string, bool, uint32, error) {
+func (m *TechnicalMapper) mapSIP(lease *ScopeLease, original string, provenance Provenance) (string, mappingOutcome, error) {
 	match := technicalSIPPattern.FindStringSubmatch(original)
 	if match == nil {
-		return "", false, 0, fmt.Errorf("SIP_URI: %w", errTechnicalValue)
+		return "", mappingOutcome{}, fmt.Errorf("SIP_URI: %w", errTechnicalValue)
 	}
 	if match[2] != "" {
 		port, err := strconv.ParseUint(match[2], 10, 16)
 		if err != nil || port == 0 {
-			return "", false, 0, fmt.Errorf("SIP_URI port: %w", errTechnicalValue)
+			return "", mappingOutcome{}, fmt.Errorf("SIP_URI port: %w", errTechnicalValue)
 		}
 	}
 
@@ -183,10 +183,10 @@ func (m *TechnicalMapper) mapSIP(lease *ScopeLease, original string, provenance 
 	})
 }
 
-func (m *TechnicalMapper) mapSite(lease *ScopeLease, original string, provenance Provenance) (string, bool, uint32, error) {
+func (m *TechnicalMapper) mapSite(lease *ScopeLease, original string, provenance Provenance) (string, mappingOutcome, error) {
 	match := technicalSitePattern.FindStringSubmatch(original)
 	if match == nil {
-		return "", false, 0, fmt.Errorf("SITE: %w", errTechnicalValue)
+		return "", mappingOutcome{}, fmt.Errorf("SITE: %w", errTechnicalValue)
 	}
 	typePrefix := match[1]
 	if strings.HasPrefix(strings.ToLower(original), "site") {
@@ -199,27 +199,29 @@ func (m *TechnicalMapper) mapSite(lease *ScopeLease, original string, provenance
 	})
 }
 
-func (m *TechnicalMapper) mapCoordinates(lease *ScopeLease, original string, provenance Provenance) (string, bool, uint32, error) {
+func (m *TechnicalMapper) mapCoordinates(lease *ScopeLease, original string, provenance Provenance) (string, mappingOutcome, error) {
 	coordinate, err := parseTechnicalCoordinate(original)
 	if err != nil {
-		return "", false, 0, err
+		return "", mappingOutcome{}, err
 	}
 	rotation, rotationCollisions, err := m.coordinateRotation(lease)
 	if err != nil {
-		return "", false, rotationCollisions, err
+		return "", mappingOutcome{collisions: rotationCollisions}, err
 	}
 	synthetic := rotateTechnicalCoordinate(coordinate, rotation)
 
-	entry, created, mappingCollisions, err := lease.getOrCreateObserved("COORDINATES", original, provenance, func(attempt uint32) (string, error) {
+	entry, outcome, err := lease.getOrCreateObserved("COORDINATES", original, provenance, func(attempt uint32) (string, error) {
 		if attempt != 0 {
 			return "", &TechnicalCapacityError{Entity: "COORDINATES"}
 		}
 		return synthetic, nil
 	})
 	if err != nil {
-		return "", false, rotationCollisions + mappingCollisions, err
+		outcome.collisions += rotationCollisions
+		return "", outcome, err
 	}
-	return entry.Synthetic, created, rotationCollisions + mappingCollisions, nil
+	outcome.collisions += rotationCollisions
+	return entry.Synthetic, outcome, nil
 }
 
 func (m *TechnicalMapper) mapDerived(
@@ -228,17 +230,17 @@ func (m *TechnicalMapper) mapDerived(
 	original string,
 	provenance Provenance,
 	format func([sha256.Size]byte) string,
-) (string, bool, uint32, error) {
-	entry, created, collisions, err := lease.getOrCreateObserved(entity, original, provenance, func(attempt uint32) (string, error) {
+) (string, mappingOutcome, error) {
+	entry, outcome, err := lease.getOrCreateObserved(entity, original, provenance, func(attempt uint32) (string, error) {
 		if attempt == ^uint32(0) {
 			return "", &TechnicalCapacityError{Entity: entity}
 		}
 		return format(m.derive(lease.scope.id, entity, original, attempt)), nil
 	})
 	if err != nil {
-		return "", false, collisions, err
+		return "", outcome, err
 	}
-	return entry.Synthetic, created, collisions, nil
+	return entry.Synthetic, outcome, nil
 }
 
 func decimalDigits(value string) bool {
@@ -438,10 +440,10 @@ func (m *TechnicalMapper) mapIP(
 	entity string,
 	original string,
 	provenance Provenance,
-) (string, bool, uint32, error) {
+) (string, mappingOutcome, error) {
 	addr, sourceBits, explicit, err := parseTechnicalIP(entity, original)
 	if err != nil {
-		return "", false, 0, err
+		return "", mappingOutcome{}, err
 	}
 
 	base, minimumBits, standaloneBits := technicalIPRange(entity)
@@ -449,13 +451,13 @@ func (m *TechnicalMapper) mapIP(
 	if explicit {
 		relationBits = sourceBits
 		if relationBits < minimumBits {
-			return "", false, 0, fmt.Errorf("%s prefix /%d is broader than /%d: %w", entity, relationBits, minimumBits, errTechnicalValue)
+			return "", mappingOutcome{}, fmt.Errorf("%s prefix /%d is broader than /%d: %w", entity, relationBits, minimumBits, errTechnicalValue)
 		}
 	}
 
 	sourceRelation := netip.PrefixFrom(addr, relationBits).Masked()
 	relationKey := entity + ":" + sourceRelation.String()
-	targetRelation, _, relationCollisions, err := lease.getOrCreateRelationObserved(relationKey, func(attempt uint32) (string, error) {
+	targetRelation, relationOutcome, err := lease.getOrCreateRelationObserved(relationKey, func(attempt uint32) (string, error) {
 		candidate, candidateErr := m.ipRelationCandidate(
 			lease.scope.id,
 			entity,
@@ -471,14 +473,14 @@ func (m *TechnicalMapper) mapIP(
 	})
 	if err != nil {
 		if errors.Is(err, errCandidateExhausted) {
-			return "", false, relationCollisions, &TechnicalCapacityError{Entity: entity, PrefixBits: relationBits}
+			return "", relationOutcome, &TechnicalCapacityError{Entity: entity, PrefixBits: relationBits}
 		}
-		return "", false, relationCollisions, err
+		return "", relationOutcome, err
 	}
 
 	syntheticRelation, err := netip.ParsePrefix(targetRelation)
 	if err != nil {
-		return "", false, relationCollisions, fmt.Errorf("stored %s relation: %w", entity, errTechnicalValue)
+		return "", relationOutcome, fmt.Errorf("stored %s relation: %w", entity, errTechnicalValue)
 	}
 	syntheticAddr := preserveIPHostOffset(syntheticRelation.Masked().Addr(), addr, relationBits)
 	synthetic := syntheticAddr.String()
@@ -486,16 +488,24 @@ func (m *TechnicalMapper) mapIP(
 		synthetic = netip.PrefixFrom(syntheticAddr, sourceBits).String()
 	}
 
-	entry, created, mappingCollisions, err := lease.getOrCreateObserved(entity, original, provenance, func(attempt uint32) (string, error) {
+	entry, mappingOutcome, err := lease.getOrCreateObserved(entity, original, provenance, func(attempt uint32) (string, error) {
 		if attempt != 0 {
 			return "", &TechnicalCapacityError{Entity: entity, PrefixBits: relationBits}
 		}
 		return synthetic, nil
 	})
 	if err != nil {
-		return "", false, relationCollisions + mappingCollisions, err
+		return "", combineMappingOutcomes(relationOutcome, mappingOutcome), err
 	}
-	return entry.Synthetic, created, relationCollisions + mappingCollisions, nil
+	return entry.Synthetic, combineMappingOutcomes(relationOutcome, mappingOutcome), nil
+}
+
+func combineMappingOutcomes(first, second mappingOutcome) mappingOutcome {
+	return mappingOutcome{
+		created:    second.created,
+		collisions: first.collisions + second.collisions,
+		expired:    append(first.expired, second.expired...),
+	}
 }
 
 func parseTechnicalIP(entity, original string) (netip.Addr, int, bool, error) {

@@ -44,14 +44,23 @@ func (m *gatedMappingObserver) Map(lease *ScopeLease, entity, original string, p
 	return entry.Synthetic, err
 }
 
-func (m *gatedMappingObserver) MapObserved(lease *ScopeLease, entity, original string, provenance Provenance) (string, bool, uint32, error) {
+func (m *gatedMappingObserver) MapObserved(lease *ScopeLease, entity, original string, provenance Provenance) (string, mappingOutcome, error) {
 	m.ready.Done()
 	<-m.release
 	entry, created, err := lease.GetOrCreate(entity, original, provenance, fixedCandidate("198.18.0.1"))
-	return entry.Synthetic, created, 0, err
+	return entry.Synthetic, mappingOutcome{created: created}, err
 }
 
 type collidingMappingObserver struct{}
+
+type exactTechnicalObserverClassifier struct {
+	entity string
+	value  string
+}
+
+func (c exactTechnicalObserverClassifier) Classify(_ string, value string) []Finding {
+	return exactFinding(value, c.value, c.entity, CategoryTechnical, MatchValidatedRegex)
+}
 
 func (collidingMappingObserver) Map(lease *ScopeLease, entity, original string, provenance Provenance) (string, error) {
 	entry, _, err := lease.GetOrCreate(entity, original, provenance, func(attempt uint32) (string, error) {
@@ -63,14 +72,14 @@ func (collidingMappingObserver) Map(lease *ScopeLease, entity, original string, 
 	return entry.Synthetic, err
 }
 
-func (collidingMappingObserver) MapObserved(lease *ScopeLease, entity, original string, provenance Provenance) (string, bool, uint32, error) {
+func (collidingMappingObserver) MapObserved(lease *ScopeLease, entity, original string, provenance Provenance) (string, mappingOutcome, error) {
 	entry, created, err := lease.GetOrCreate(entity, original, provenance, func(attempt uint32) (string, error) {
 		if attempt == 0 {
 			return "reserved-alias", nil
 		}
 		return "accepted-alias", nil
 	})
-	return entry.Synthetic, created, 1, err
+	return entry.Synthetic, mappingOutcome{created: created, collisions: 1}, err
 }
 
 func TestServicePrivacyObservers_MappingOutcomeIsAtomicUnderConcurrency(t *testing.T) {
@@ -403,6 +412,51 @@ func TestServicePrivacyObservers_StrictRestorationPassAndRejectedAttempts(t *tes
 			}
 			if strings.Contains(events.restores[0], "corey@example.com") || strings.Contains(events.restores[0], output) {
 				t.Fatalf("restoration event leaked protected value: %q", events.restores[0])
+			}
+		})
+	}
+}
+
+func TestServicePrivacyObservers_InventedReservedTechnicalAliasIsRejected(t *testing.T) {
+	tests := []struct {
+		name   string
+		entity string
+		alias  string
+	}{
+		{name: "IPv4", entity: "IPv4", alias: "198.18.1.10"},
+		{name: "SIP", entity: "SIP_URI", alias: "sip:u-inventedalias@gw.invalid"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			events := &privacyObserverEvents{}
+			scopeCanary := "reserved-alias-scope-canary-" + strings.ToLower(test.name)
+			service := newStrictTestService(t, strictTestConfig{
+				classifier: exactTechnicalObserverClassifier{entity: test.entity, value: test.alias},
+				observers:  events.observers(),
+			})
+			state := NewRequestState(RequestMetadata{RequestedProfile: "strict", ScopeID: scopeCanary})
+			context := WithRequestState(context.Background(), state)
+			request := &canonical.ChatRequest{}
+			if _, err := service.Before(context, request); err != nil {
+				t.Fatal(err)
+			}
+			response := &canonical.ChatResponse{Message: canonical.Message{Content: []canonical.ContentPart{{
+				Kind: canonical.ContentKindText, Text: test.alias,
+			}}}}
+			err := service.After(context, request, response)
+			assertPrivacyError(t, err, CodeOutputBlocked, "output")
+
+			events.mu.Lock()
+			defer events.mu.Unlock()
+			want := "strict:" + test.entity + ":rejected"
+			if len(events.restores) != 1 || events.restores[0] != want {
+				t.Fatalf("restoration events=%v, want [%s]", events.restores, want)
+			}
+			for _, event := range events.restores {
+				if strings.Contains(event, ":pass") || strings.Contains(event, ":miss") ||
+					strings.Contains(event, test.alias) || strings.Contains(event, scopeCanary) {
+					t.Fatalf("restoration event leaked or used wrong outcome: %q", event)
+				}
 			}
 		})
 	}

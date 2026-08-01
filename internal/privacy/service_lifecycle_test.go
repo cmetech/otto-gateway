@@ -425,6 +425,145 @@ func TestServicePrivacyObservers_OpportunisticExpiryOutcomesAreExactlyOnce(t *te
 	})
 }
 
+func TestServicePrivacyObservers_MappingCapacityReclaimReportsExpiredScope(t *testing.T) {
+	tests := []struct {
+		name       string
+		maxEntries int
+		entity     string
+		oldValue   string
+		newValue   string
+	}{
+		{name: "mapping", maxEntries: 1, entity: "SITE", oldValue: "RAN-OLD123", newValue: "RAN-NEW123"},
+		{name: "relationship", maxEntries: 2, entity: "IPv4", oldValue: "10.20.30.40", newValue: "10.20.30.41"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			clock := newLifecycleClock()
+			var eventMu sync.Mutex
+			var events []string
+			service, err := NewService(Config{
+				DefaultProfile: ProfileStandard, RequestProfiles: []Profile{ProfileStandard, ProfileStrict},
+				AliasKey: []byte("mapping-reclaim-observer-key"), SecretAction: ActionReplace, TechnicalAction: ActionPseudonymize,
+				ScopeTTL: time.Second, MaxScopes: 2, MaxEntriesPerScope: 8, MaxTotalEntries: test.maxEntries,
+				PIIEnabled: true, PIIMode: ActionReplace, PIIEntityActions: map[string]Action{},
+				Clock: clock, Observers: Observers{ScopeEvent: func(event string) {
+					eventMu.Lock()
+					events = append(events, event)
+					eventMu.Unlock()
+				}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(service.Close)
+
+			oldState := NewRequestState(RequestMetadata{RequestedProfile: "strict", ScopeID: "mapping-reclaim-old-" + test.name})
+			oldContext := WithRequestState(context.Background(), oldState)
+			if _, err := service.Before(oldContext, &canonical.ChatRequest{}); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, _, err := service.strictReplacement(
+				oldState, oldState.scopeLease(),
+				Finding{Entity: test.entity, Category: CategoryTechnical, Kind: MatchValidatedRegex},
+				test.oldValue, map[string]int{}, map[string]int{},
+			); err != nil {
+				t.Fatalf("seed mapping: %v", err)
+			}
+			if err := service.After(oldContext, &canonical.ChatRequest{}, &canonical.ChatResponse{}); err != nil {
+				t.Fatal(err)
+			}
+
+			retainedState := NewRequestState(RequestMetadata{RequestedProfile: "strict", ScopeID: "mapping-reclaim-retained-" + test.name})
+			retainedContext := WithRequestState(context.Background(), retainedState)
+			if _, err := service.Before(retainedContext, &canonical.ChatRequest{}); err != nil {
+				t.Fatal(err)
+			}
+			defer retainedState.releaseLease()
+			service.store.mu.Lock()
+			oldIdentity := service.store.scopes[oldState.Metadata().ScopeID]
+			retainedIdentity := service.store.scopes[retainedState.Metadata().ScopeID]
+			service.store.mu.Unlock()
+			eventMu.Lock()
+			events = nil
+			eventMu.Unlock()
+
+			clock.AdvanceSilently(2 * time.Second)
+			if _, _, _, err := service.strictReplacement(
+				retainedState, retainedState.scopeLease(),
+				Finding{Entity: test.entity, Category: CategoryTechnical, Kind: MatchValidatedRegex},
+				test.newValue, map[string]int{}, map[string]int{},
+			); err != nil {
+				t.Fatalf("mapping after capacity reclaim: %v", err)
+			}
+
+			eventMu.Lock()
+			if fmt.Sprint(events) != fmt.Sprint([]string{"expired"}) {
+				eventMu.Unlock()
+				t.Fatalf("scope events=%v, want [expired] before ticker", events)
+			}
+			eventMu.Unlock()
+			service.scopeObserverMu.Lock()
+			_, oldObserved := service.observedScopes[oldIdentity]
+			_, retainedObserved := service.observedScopes[retainedIdentity]
+			observedCount := len(service.observedScopes)
+			service.scopeObserverMu.Unlock()
+			if oldObserved || !retainedObserved || observedCount != 1 {
+				t.Fatalf("observed identities old=%t retained=%t count=%d, want false/true/1", oldObserved, retainedObserved, observedCount)
+			}
+
+			clock.Tick()
+			time.Sleep(20 * time.Millisecond)
+			eventMu.Lock()
+			defer eventMu.Unlock()
+			if fmt.Sprint(events) != fmt.Sprint([]string{"expired"}) {
+				t.Fatalf("scope events after ticker=%v, want no duplicate", events)
+			}
+		})
+	}
+}
+
+func TestServicePrivacyObservers_MappingCapacityReclaimWithNilObserverKeepsNoLedger(t *testing.T) {
+	clock := newLifecycleClock()
+	service, err := NewService(Config{
+		DefaultProfile: ProfileStandard, RequestProfiles: []Profile{ProfileStandard, ProfileStrict},
+		AliasKey: []byte("mapping-reclaim-nil-key"), SecretAction: ActionReplace, TechnicalAction: ActionPseudonymize,
+		ScopeTTL: time.Second, MaxScopes: 2, MaxEntriesPerScope: 8, MaxTotalEntries: 1,
+		PIIEnabled: true, PIIMode: ActionReplace, PIIEntityActions: map[string]Action{}, Clock: clock,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(service.Close)
+
+	old := NewRequestState(RequestMetadata{RequestedProfile: "strict", ScopeID: "mapping-reclaim-nil-old"})
+	oldContext := WithRequestState(context.Background(), old)
+	if _, err := service.Before(oldContext, &canonical.ChatRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := service.strictReplacement(old, old.scopeLease(), Finding{
+		Entity: "SITE", Category: CategoryTechnical, Kind: MatchValidatedRegex,
+	}, "RAN-OLD123", map[string]int{}, map[string]int{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.After(oldContext, &canonical.ChatRequest{}, &canonical.ChatResponse{}); err != nil {
+		t.Fatal(err)
+	}
+	retained := NewRequestState(RequestMetadata{RequestedProfile: "strict", ScopeID: "mapping-reclaim-nil-retained"})
+	if _, err := service.Before(WithRequestState(context.Background(), retained), &canonical.ChatRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	defer retained.releaseLease()
+	clock.AdvanceSilently(2 * time.Second)
+	if _, _, _, err := service.strictReplacement(retained, retained.scopeLease(), Finding{
+		Entity: "SITE", Category: CategoryTechnical, Kind: MatchValidatedRegex,
+	}, "RAN-NEW123", map[string]int{}, map[string]int{}); err != nil {
+		t.Fatal(err)
+	}
+	if service.observedScopes != nil {
+		t.Fatalf("observedScopes=%v, want nil without ScopeEvent", service.observedScopes)
+	}
+}
+
 func TestServiceStrict_CleanupShutdownActiveAllowsFinishAndRejectsNewAcquire(t *testing.T) {
 	clock := newLifecycleClock()
 	service := newLifecycleTestService(t, clock, time.Hour)

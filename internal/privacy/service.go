@@ -183,7 +183,7 @@ type technicalMapping interface {
 }
 
 type observedTechnicalMapping interface {
-	MapObserved(*ScopeLease, string, string, Provenance) (string, bool, uint32, error)
+	MapObserved(*ScopeLease, string, string, Provenance) (string, mappingOutcome, error)
 }
 
 // NewService copies all mutable configuration into an immutable service.
@@ -715,19 +715,20 @@ func (s *Service) mapTechnicalObserved(
 	if !ok {
 		return s.mapper.Map(lease, entity, original, provenance)
 	}
-	mapped, created, collisions, err := mapper.MapObserved(lease, entity, original, provenance)
+	mapped, outcome, err := mapper.MapObserved(lease, entity, original, provenance)
+	s.observeScopeOutcome(nil, false, outcome.expired)
 	if observe := s.config.Observers.MappingOperation; observe != nil {
 		if err == nil {
-			if created {
+			if outcome.created {
 				observe("lookup", "miss")
 			} else {
 				observe("lookup", "hit")
 			}
 		}
-		for range collisions {
+		for range outcome.collisions {
 			observe("insert", "collision")
 		}
-		if err == nil && created {
+		if err == nil && outcome.created {
 			observe("insert", "pass")
 		}
 	}
@@ -1244,6 +1245,7 @@ func (s *Service) prepareStrictOutbound(state *RequestState, resp *canonical.Cha
 					return "", s.blockOutbound(state, "original")
 				}
 				if reservedTechnicalAlias(finding.Entity, original) {
+					s.observeRestoration(ProfileStrict, finding.Entity, "rejected")
 					return "", s.blockOutbound(state, "alias")
 				}
 				mapped, err := s.mapTechnicalObserved(lease, finding.Entity, original, ProvenanceGenerated)
