@@ -458,11 +458,9 @@ func (a *Adapter) handleCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// D-03 remains a JSON-only shim for ordinary requests. Preserve the
-	// caller's requested-stream bit on the canonical request so a Pre hook
-	// that requires full response aggregation can disable it. That generic
-	// mutation is the replay signal below; the adapter does not resolve or
-	// branch on a privacy profile itself.
+	// D-03 remains a JSON-only shim for ordinary requests. Transport intent
+	// is recorded on the stamped privacy state below; the canonical request
+	// stays non-streaming so standard output is fully aggregated.
 	requestedStream := wire.Stream
 	observation.Stream = "false"
 
@@ -480,7 +478,7 @@ func (a *Adapter) handleCompletions(w http.ResponseWriter, r *http.Request) {
 	req := &canonical.ChatRequest{
 		Model:              baseModel,
 		Messages:           msgs,
-		Stream:             requestedStream,
+		Stream:             false,
 		WorkingDirOverride: r.Header.Get("X-Working-Dir"),
 	}
 	if compressDir != nil {
@@ -498,6 +496,7 @@ func (a *Adapter) handleCompletions(w http.ResponseWriter, r *http.Request) {
 	// Quick 260529-ll2 — surface stamp for ChatTraceHook correlation.
 	ctx = plugin.WithSurface(ctx, "openai")
 	ctx, w = stampPrivacyContext(ctx, w, r)
+	privacy.MarkStreamRequested(ctx, requestedStream)
 
 	// Plan 05-03: X-Session-Id branch (same shape as handleChatCompletions).
 	eng, entry, sErr := a.resolveEngine(r)
@@ -548,7 +547,7 @@ func (a *Adapter) handleCompletions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, errAuthentication, shortCircuitMessage(resp))
 		return
 	}
-	if requestedStream && !req.Stream {
+	if requestedStream && privacy.ValidatedReplayRequired(ctx) {
 		if err := runSyntheticTextCompletionSSEFromResponse(w, resp, wire.Model); err != nil {
 			observation.Outcome = classifyStreamingError(err)
 			a.cfg.Logger.Debug("openai: synthetic text completion SSE terminated", "err", err)

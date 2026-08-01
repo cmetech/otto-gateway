@@ -377,6 +377,110 @@ func newOpenAIStreamingPrivacyService(t *testing.T, profile privacy.Profile, cla
 	return service
 }
 
+func newOpenAIStandardCompletionsPrivacyService(t *testing.T, mode privacy.Action) *privacy.Service {
+	t.Helper()
+	config := privacy.Config{
+		DefaultProfile:  privacy.ProfileStandard,
+		RequestProfiles: []privacy.Profile{privacy.ProfileStandard},
+		PIIEnabled:      true,
+		PIIMode:         mode,
+	}
+	if mode == privacy.ActionEncrypt {
+		config.PIIEncryptKey = []byte("0123456789abcdef0123456789abcdef")
+	}
+	service, err := privacy.NewService(config)
+	if err != nil {
+		t.Fatalf("privacy.NewService: %v", err)
+	}
+	t.Cleanup(service.Close)
+	return service
+}
+
+func TestOpenAIPrivacy_LegacyCompletionsRequestedStreamUsesValidatedReplayOutcome(t *testing.T) {
+	tests := []struct {
+		name            string
+		service         func(*testing.T) *privacy.Service
+		profileHeader   string
+		wantContentType string
+		wantProfile     privacy.Profile
+		wantSSE         bool
+	}{
+		{
+			name: "default_standard_encrypt_retains_JSON_downgrade",
+			service: func(t *testing.T) *privacy.Service {
+				return newOpenAIStandardCompletionsPrivacyService(t, privacy.ActionEncrypt)
+			},
+			wantContentType: "application/json",
+			wantProfile:     privacy.ProfileStandard,
+		},
+		{
+			name: "standard_replace_retains_JSON_downgrade_and_full_coverage",
+			service: func(t *testing.T) *privacy.Service {
+				return newOpenAIStandardCompletionsPrivacyService(t, privacy.ActionReplace)
+			},
+			wantContentType: "application/json",
+			wantProfile:     privacy.ProfileStandard,
+		},
+		{
+			name: "strict_replays_validated_native_SSE",
+			service: func(t *testing.T) *privacy.Service {
+				return newOpenAIStreamingPrivacyService(t, privacy.ProfileStrict, nil)
+			},
+			profileHeader:   "strict",
+			wantContentType: "text/event-stream",
+			wantProfile:     privacy.ProfileStrict,
+			wantSSE:         true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var events []string
+			eng := &openAIPrivacyStreamingEngine{
+				service: tc.service(t),
+				chunks: []canonical.Chunk{
+					{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "complete "}},
+					{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "response"}},
+				},
+				events: &events,
+			}
+			headers := make(http.Header)
+			if tc.profileHeader != "" {
+				headers.Set("X-GW-Privacy-Profile", tc.profileHeader)
+			}
+			rec := doOpenAIPost(t, eng, "/completions", `{"model":"auto","prompt":"hi","stream":true}`, headers)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s events=%v", rec.Code, rec.Body.String(), events)
+			}
+			if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, tc.wantContentType) {
+				t.Fatalf("Content-Type=%q, want prefix %q; body=%s", got, tc.wantContentType, rec.Body.String())
+			}
+			receipt := decodeOpenAIPrivacyReceipt(t, rec.Header().Get("X-GW-Privacy-Receipt"))
+			if receipt.Profile != tc.wantProfile || receipt.Coverage != "full" || receipt.Result != "pass" {
+				t.Fatalf("receipt=%+v, want profile=%s coverage=full result=pass", receipt, tc.wantProfile)
+			}
+			body := rec.Body.String()
+			if tc.wantSSE {
+				for _, want := range []string{`"object":"text_completion"`, `"text":"complete response"`, `"finish_reason":"stop"`, "data: [DONE]"} {
+					if !strings.Contains(body, want) {
+						t.Fatalf("SSE body missing %q: %s", want, body)
+					}
+				}
+				return
+			}
+			if strings.Contains(body, "data:") || strings.Contains(body, "[DONE]") {
+				t.Fatalf("standard legacy response changed to SSE: %s", body)
+			}
+			var completion textCompletion
+			if err := json.Unmarshal(rec.Body.Bytes(), &completion); err != nil {
+				t.Fatalf("decode text completion JSON: %v; body=%s", err, body)
+			}
+			if completion.Object != "text_completion" || completion.Model != "auto" || len(completion.Choices) != 1 || completion.Choices[0].Text != "complete response" || completion.Choices[0].FinishReason != "stop" {
+				t.Fatalf("legacy text completion body=%+v", completion)
+			}
+		})
+	}
+}
+
 func openAIPrivacyStreamEndpoints() []struct {
 	name        string
 	path        string
