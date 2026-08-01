@@ -3,11 +3,32 @@
 
 import re
 import unittest
+from html import unescape
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
 GUIDE = ROOT / "docs" / "privacy-boundary.md"
+REGEX_RECOGNIZERS = (
+    "Email",
+    "IPv4",
+    "IPv6",
+    "SSN",
+    "CreditCard",
+    "USPhone",
+    "SIP_URI",
+    "IMEI",
+    "IMSI",
+    "MSISDN",
+    "MAC_ADDRESS",
+    "COORDINATES",
+    "SITE",
+    "USAddress",
+    "USState",
+    "USZIP",
+)
+NER_RECOGNIZERS = ("PERSON", "LOCATION")
+ENTITY_ACTIONS = ("replace", "mask", "hash", "drop", "encrypt", "pseudonymize")
 
 
 def read(relative_path):
@@ -15,11 +36,35 @@ def read(relative_path):
     return path.read_text() if path.exists() else ""
 
 
+def line_containing(text, *needles):
+    for line in text.splitlines():
+        if all(needle in line for needle in needles):
+            return line
+    return ""
+
+
+def mentioned_names(text, names):
+    return {
+        name
+        for name in names
+        if re.search(rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])", text)
+    }
+
+
+def plain_text(text):
+    without_markup = re.sub(
+        r"</?[A-Za-z][A-Za-z0-9]*(?:\s+[^>]*)?>|[`#*]", " ", unescape(text)
+    )
+    return re.sub(r"\s+", " ", without_markup).strip()
+
+
 class PrivacyDocsTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.guide = read("docs/privacy-boundary.md")
         cls.env = read("scripts/.env.example")
+        cls.operating = read("docs/operating.md")
+        cls.admin = read("internal/admin/templates/docs.html.tmpl")
 
     def assertGuideContains(self, *needles):
         for needle in needles:
@@ -89,12 +134,108 @@ class PrivacyDocsTest(unittest.TestCase):
         self.assertRegex(self.guide, r"PII_REDACTION_MODE.{0,120}`encrypt`")
         self.assertRegex(self.guide, r"PII_NER_ENABLED.{0,120}`true`")
 
+    def test_every_owned_inventory_is_exactly_16_regex_plus_2_ner(self):
+        expected = set(REGEX_RECOGNIZERS + NER_RECOGNIZERS)
+        env_match = re.search(r"# Comma list from \{([^}]+)\}", self.env, re.DOTALL)
+        self.assertIsNotNone(env_match, "environment recognizer inventory is absent")
+        surfaces = {
+            "environment template": env_match.group(1),
+            "operating flag": line_containing(self.operating, "--entities LIST"),
+            "operating setting": line_containing(self.operating, "| `PII_ENABLED_ENTITIES` |"),
+            "admin flag": line_containing(self.admin, "--entities LIST"),
+            "admin setting": line_containing(self.admin, "<dt><code>PII_ENABLED_ENTITIES</code>"),
+            "canonical guide": line_containing(self.guide, "The inventory is 16 regex recognizers"),
+        }
+        for label, inventory in surfaces.items():
+            self.assertEqual(
+                mentioned_names(inventory, expected),
+                expected,
+                f"{label} does not enumerate the exact 16 regex + 2 NER inventory",
+            )
+        for label, source in {
+            "environment template": self.env,
+            "operating guide": self.operating,
+            "admin guide": self.admin,
+        }.items():
+            self.assertNotRegex(source, r"(?i)13 regex|all 15 recognizers|six original \+ seven telecom")
+
+    def test_entity_action_contract_is_exact_and_strict_technical_only(self):
+        expected = set(ENTITY_ACTIONS)
+        sections = {
+            "environment template": self.env[
+                self.env.index("# Per-entity action override map") : self.env.index("# PII_ENTITY_ACTIONS=")
+            ],
+            "operating guide": line_containing(self.operating, "| `PII_ENTITY_ACTIONS` |"),
+            "admin guide": line_containing(self.admin, "<dt><code>PII_ENTITY_ACTIONS</code>"),
+            "canonical guide": line_containing(self.guide, "| `PII_ENTITY_ACTIONS`"),
+        }
+        for label, section in sections.items():
+            normalized = plain_text(section)
+            self.assertEqual(
+                mentioned_names(section, expected),
+                expected,
+                f"{label} does not enumerate the exact six actions",
+            )
+            self.assertIn("pseudonymize is supported only for technical identifiers", normalized)
+            self.assertIn("Compatible listed overrides win", normalized)
+            self.assertIn("unlisted personal data uses PII_REDACTION_MODE", normalized)
+            self.assertIn(
+                "unlisted strict technical data uses PRIVACY_TECHNICAL_ACTION",
+                normalized,
+            )
+
+    def test_env_operating_and_admin_agree_on_five_secret_lifecycle(self):
+        required = (
+            "The five managed secrets are AUTH_TOKEN, PII_HASH_KEY, PII_ENCRYPT_KEY, PRIVACY_ALIAS_KEY, and PRIVACY_TRIAGE_TOKEN.",
+            "A normal re-init preserves existing AUTH_TOKEN, PII_HASH_KEY, and PII_ENCRYPT_KEY and mints only missing PRIVACY_ALIAS_KEY and PRIVACY_TRIAGE_TOKEN.",
+            "Explicit secret regeneration rotates all five.",
+            "The shipped <generated-by-gw-init> placeholders are invalid at startup when strict or triage requires them.",
+        )
+        for label, source in {
+            "environment template": self.env,
+            "operating guide": self.operating,
+            "admin guide": self.admin,
+        }.items():
+            normalized = plain_text(source)
+            for sentence in required:
+                self.assertIn(sentence, normalized, f"{label} is missing lifecycle fact: {sentence}")
+            self.assertNotRegex(
+                normalized,
+                r"(?i)(rotates|mints|managed secrets).{0,80}(all three|three secrets)",
+            )
+
+    def test_strict_minimum_upgrade_is_copy_safe_and_value_free(self):
+        start = self.guide.index("To make strict the minimum")
+        end = self.guide.index("### Retained PII settings")
+        procedure = self.guide[start:end]
+        commands = (
+            "gw upgrade-env --dry-run",
+            "gw upgrade-env",
+            "gw init --force --non-interactive",
+            "gw.ps1 upgrade-env -DryRun",
+            "gw.ps1 upgrade-env",
+            "gw.ps1 init -Force -NonInteractive",
+        )
+        for command in commands:
+            self.assertIn(command, procedure, f"strict-minimum procedure omits {command}")
+        self.assertLess(procedure.index("gw upgrade-env\n"), procedure.index("gw init --force"))
+        self.assertLess(procedure.index("gw.ps1 upgrade-env\n"), procedure.index("gw.ps1 init -Force"))
+        self.assertLess(procedure.index("gw init --force"), procedure.index("PRIVACY_DEFAULT_PROFILE=strict"))
+        self.assertIn("mints only missing privacy secrets", procedure)
+        self.assertIn("preserves existing `AUTH_TOKEN`, `PII_HASH_KEY`, and `PII_ENCRYPT_KEY`", procedure)
+        self.assertIn("placeholders are invalid at startup", procedure)
+        self.assertIn("without printing either value", procedure)
+        self.assertIn("length($2) == 64", procedure)
+        self.assertIn("[0-9a-f]{64}", procedure)
+        self.assertNotIn("--show-secrets", procedure)
+
     def test_restart_override_and_secret_lifecycle(self):
         self.assertGuideContains(
             "overrides.env",
             "loaded last",
             "Restart required",
-            "preserves all five managed secrets",
+            "preserves every usable existing managed secret",
+            "mints only a missing or shipped-placeholder privacy alias key or triage token",
             "--regenerate-secrets",
             "mapping loss",
             "Rotating `PRIVACY_ALIAS_KEY`",

@@ -113,6 +113,18 @@ def metric_family(name):
     return name
 
 
+def promql_or_vector_zero_label_sets(left_label_sets):
+    """Model PromQL `left or vector(0)` label-set union for static fixtures."""
+    result = set(left_label_sets)
+    result.add(())
+    return result
+
+
+def count_gated_histogram_value(count_rate, quantile_value):
+    """Model `quantile and on(...) count_rate > 0` for an idle fixture."""
+    return quantile_value if count_rate > 0 else None
+
+
 class DashboardGeneratorTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -268,6 +280,70 @@ class DashboardGeneratorTest(unittest.TestCase):
                     self.assertIn("clamp_min(", expr, panel["title"])
                 if panel.get("type") == "stat" and "increase(" in expr:
                     self.assertIn("or vector(0)", expr, panel["title"])
+
+    def test_privacy_dimensioned_reports_do_not_add_unlabeled_zero(self):
+        for panel in all_panels(self.dashboard):
+            if panel.get("type") == "stat":
+                continue
+            for query in panel.get("targets", []):
+                expr = query.get("expr", "")
+                if "gw_privacy_" not in expr:
+                    continue
+                if "sum by(" in expr or "histogram_quantile(" in expr:
+                    self.assertNotRegex(
+                        expr,
+                        r"\bor\s+vector\(0\)\s*$",
+                        f'{panel["title"]} creates an unlabeled ghost series: {expr}',
+                    )
+
+    def test_unqualified_zero_fallback_fixture_exposes_ghost_label_semantics(self):
+        active = {
+            (("profile", "strict"), ("stage", "input")),
+        }
+        self.assertEqual(promql_or_vector_zero_label_sets(set()), {()})
+        self.assertEqual(
+            promql_or_vector_zero_label_sets(active),
+            active | {()},
+            "an unqualified fallback must not be treated as label-compatible",
+        )
+
+    def test_privacy_latency_is_no_data_when_matching_count_rate_is_idle(self):
+        panel = next(
+            panel
+            for panel in all_panels(self.dashboard)
+            if panel["title"] == "Privacy Processing Latency"
+        )
+        targets = {target["legendFormat"].split(" / ", 1)[0]: target["expr"] for target in panel["targets"]}
+        for name in ("average", "p95"):
+            expr = targets[name]
+            self.assertIn(
+                "gw_privacy_processing_duration_seconds_count",
+                expr,
+                f"{name} lacks a matching observation-count gate",
+            )
+            self.assertRegex(expr, r"\band on\(profile, ?stage\)")
+            self.assertRegex(expr, r"_count[^\n]+>\s*0")
+            self.assertNotRegex(expr, r"\bor\s+vector\(0\)")
+        self.assertIsNone(
+            count_gated_histogram_value(0, float("nan")),
+            "idle p95 must be no-data rather than NaN beside an unrelated zero",
+        )
+        self.assertEqual(count_gated_histogram_value(1, 0.125), 0.125)
+
+    def test_scalar_privacy_alerts_keep_honest_zero_fallbacks(self):
+        fallbacks = []
+        for panel in all_panels(self.dashboard):
+            privacy_alert = panel.get("title", "").startswith(
+                "Alert: Privacy"
+            ) or panel.get("title") == "Alert: Strict Privacy Blocks"
+            if panel.get("type") != "stat" or not privacy_alert:
+                continue
+            for query in panel.get("targets", []):
+                expr = query.get("expr", "")
+                if "gw_privacy_" in expr and re.search(r"\bor\s+vector\(0\)\s*$", expr):
+                    fallbacks.append(panel["title"])
+        self.assertIn("Alert: Strict Privacy Blocks", fallbacks)
+        self.assertIn("Alert: Privacy Capacity Pressure", fallbacks)
 
     def test_every_metric_panel_has_gateway_selector(self):
         for panel in all_panels(self.dashboard):

@@ -393,7 +393,7 @@ def add_privacy(builder):
         8,
         [
             (
-                f"sum by(profile, surface, workload, result)(rate(gw_privacy_requests_total{SEL}[$__rate_interval])) or vector(0)",
+                f"sum by(profile, surface, workload, result)(rate(gw_privacy_requests_total{SEL}[$__rate_interval]))",
                 "{{profile}} / {{surface}} / {{workload}} / {{result}}",
             )
         ],
@@ -410,7 +410,7 @@ def add_privacy(builder):
         8,
         [
             (
-                f"sum by(profile, result)(rate(gw_privacy_receipts_total{SEL}[$__rate_interval])) or vector(0)",
+                f"sum by(profile, result)(rate(gw_privacy_receipts_total{SEL}[$__rate_interval]))",
                 "{{profile}} / {{result}}",
             )
         ],
@@ -427,7 +427,7 @@ def add_privacy(builder):
         8,
         [
             (
-                f"sum by(stage, reason)(rate(gw_privacy_errors_total{SEL}[$__rate_interval])) or vector(0)",
+                f"sum by(stage, reason)(rate(gw_privacy_errors_total{SEL}[$__rate_interval]))",
                 "{{stage}} / {{reason}}",
             )
         ],
@@ -446,11 +446,11 @@ def add_privacy(builder):
         8,
         [
             (
-                f"sum by(profile, entity, action)(rate(gw_privacy_transformations_total{SEL}[$__rate_interval])) or vector(0)",
+                f"sum by(profile, entity, action)(rate(gw_privacy_transformations_total{SEL}[$__rate_interval]))",
                 "transform / {{profile}} / {{entity}} / {{action}}",
             ),
             (
-                f"sum by(profile, entity, result)(rate(gw_privacy_restorations_total{SEL}[$__rate_interval])) or vector(0)",
+                f"sum by(profile, entity, result)(rate(gw_privacy_restorations_total{SEL}[$__rate_interval]))",
                 "restore / {{profile}} / {{entity}} / {{result}}",
             ),
         ],
@@ -467,11 +467,11 @@ def add_privacy(builder):
         8,
         [
             (
-                f"sum by(profile, stage, reason)(rate(gw_privacy_blocks_total{SEL}[$__rate_interval])) or vector(0)",
+                f"sum by(profile, stage, reason)(rate(gw_privacy_blocks_total{SEL}[$__rate_interval]))",
                 "block / {{profile}} / {{stage}} / {{reason}}",
             ),
             (
-                f"sum by(profile, stage, entity)(rate(gw_privacy_residual_findings_total{SEL}[$__rate_interval])) or vector(0)",
+                f"sum by(profile, stage, entity)(rate(gw_privacy_residual_findings_total{SEL}[$__rate_interval]))",
                 "residual / {{profile}} / {{stage}} / {{entity}}",
             ),
         ],
@@ -490,12 +490,16 @@ def add_privacy(builder):
         8,
         [
             (
-                f"sum by(profile, stage)(rate(gw_privacy_processing_duration_seconds_sum{SEL}[$__rate_interval])) "
-                f"/ clamp_min(sum by(profile, stage)(rate(gw_privacy_processing_duration_seconds_count{SEL}[$__rate_interval])), 0.000001) or vector(0)",
+                f"(sum by(profile, stage)(rate(gw_privacy_processing_duration_seconds_sum{SEL}[$__rate_interval])) "
+                f"/ sum by(profile, stage)(rate(gw_privacy_processing_duration_seconds_count{SEL}[$__rate_interval]))) "
+                f"and on(profile, stage) "
+                f"(sum by(profile, stage)(rate(gw_privacy_processing_duration_seconds_count{SEL}[$__rate_interval])) > 0)",
                 "average / {{profile}} / {{stage}}",
             ),
             (
-                f"histogram_quantile(0.95, sum by(le, profile, stage)(rate(gw_privacy_processing_duration_seconds_bucket{SEL}[$__rate_interval]))) or vector(0)",
+                f"histogram_quantile(0.95, sum by(le, profile, stage)(rate(gw_privacy_processing_duration_seconds_bucket{SEL}[$__rate_interval]))) "
+                f"and on(profile, stage) "
+                f"(sum by(profile, stage)(rate(gw_privacy_processing_duration_seconds_count{SEL}[$__rate_interval])) > 0)",
                 "p95 / {{profile}} / {{stage}}",
             ),
         ],
@@ -529,15 +533,15 @@ def add_privacy(builder):
                 "oldest scope age seconds / {{instance}}",
             ),
             (
-                f"sum by(event)(rate(gw_privacy_scope_events_total{SEL}[$__rate_interval])) or vector(0)",
+                f"sum by(event)(rate(gw_privacy_scope_events_total{SEL}[$__rate_interval]))",
                 "scope event / {{event}}",
             ),
             (
-                f"sum by(resource)(rate(gw_privacy_capacity_rejections_total{SEL}[$__rate_interval])) or vector(0)",
+                f"sum by(resource)(rate(gw_privacy_capacity_rejections_total{SEL}[$__rate_interval]))",
                 "capacity rejection / {{resource}}",
             ),
             (
-                f"sum by(operation, result)(rate(gw_privacy_mapping_operations_total{SEL}[$__rate_interval])) or vector(0)",
+                f"sum by(operation, result)(rate(gw_privacy_mapping_operations_total{SEL}[$__rate_interval]))",
                 "mapping / {{operation}} / {{result}}",
             ),
         ],
@@ -557,7 +561,7 @@ def add_privacy(builder):
         [
             (f"gw_privacy_triage_enabled{SEL}", "triage enabled / {{instance}}"),
             (
-                f"sum by(operation, result)(rate(gw_privacy_triage_requests_total{SEL}[$__rate_interval])) or vector(0)",
+                f"sum by(operation, result)(rate(gw_privacy_triage_requests_total{SEL}[$__rate_interval]))",
                 "{{operation}} / {{result}}",
             ),
         ],

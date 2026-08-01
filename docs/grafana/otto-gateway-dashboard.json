@@ -589,7 +589,7 @@
             "uid": "${DS_PROM}"
           },
           "editorMode": "code",
-          "expr": "sum by(profile, surface, workload, result)(rate(gw_privacy_requests_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval])) or vector(0)",
+          "expr": "sum by(profile, surface, workload, result)(rate(gw_privacy_requests_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval]))",
           "range": true,
           "instant": false,
           "refId": "A",
@@ -669,7 +669,7 @@
             "uid": "${DS_PROM}"
           },
           "editorMode": "code",
-          "expr": "sum by(profile, result)(rate(gw_privacy_receipts_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval])) or vector(0)",
+          "expr": "sum by(profile, result)(rate(gw_privacy_receipts_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval]))",
           "range": true,
           "instant": false,
           "refId": "A",
@@ -749,7 +749,7 @@
             "uid": "${DS_PROM}"
           },
           "editorMode": "code",
-          "expr": "sum by(stage, reason)(rate(gw_privacy_errors_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval])) or vector(0)",
+          "expr": "sum by(stage, reason)(rate(gw_privacy_errors_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval]))",
           "range": true,
           "instant": false,
           "refId": "A",
@@ -829,7 +829,7 @@
             "uid": "${DS_PROM}"
           },
           "editorMode": "code",
-          "expr": "sum by(profile, entity, action)(rate(gw_privacy_transformations_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval])) or vector(0)",
+          "expr": "sum by(profile, entity, action)(rate(gw_privacy_transformations_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval]))",
           "range": true,
           "instant": false,
           "refId": "A",
@@ -841,7 +841,7 @@
             "uid": "${DS_PROM}"
           },
           "editorMode": "code",
-          "expr": "sum by(profile, entity, result)(rate(gw_privacy_restorations_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval])) or vector(0)",
+          "expr": "sum by(profile, entity, result)(rate(gw_privacy_restorations_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval]))",
           "range": true,
           "instant": false,
           "refId": "B",
@@ -921,7 +921,7 @@
             "uid": "${DS_PROM}"
           },
           "editorMode": "code",
-          "expr": "sum by(profile, stage, reason)(rate(gw_privacy_blocks_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval])) or vector(0)",
+          "expr": "sum by(profile, stage, reason)(rate(gw_privacy_blocks_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval]))",
           "range": true,
           "instant": false,
           "refId": "A",
@@ -933,7 +933,7 @@
             "uid": "${DS_PROM}"
           },
           "editorMode": "code",
-          "expr": "sum by(profile, stage, entity)(rate(gw_privacy_residual_findings_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval])) or vector(0)",
+          "expr": "sum by(profile, stage, entity)(rate(gw_privacy_residual_findings_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval]))",
           "range": true,
           "instant": false,
           "refId": "B",
@@ -1013,7 +1013,7 @@
             "uid": "${DS_PROM}"
           },
           "editorMode": "code",
-          "expr": "sum by(profile, stage)(rate(gw_privacy_processing_duration_seconds_sum{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval])) / clamp_min(sum by(profile, stage)(rate(gw_privacy_processing_duration_seconds_count{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval])), 0.000001) or vector(0)",
+          "expr": "(sum by(profile, stage)(rate(gw_privacy_processing_duration_seconds_sum{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval])) / sum by(profile, stage)(rate(gw_privacy_processing_duration_seconds_count{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval]))) and on(profile, stage) (sum by(profile, stage)(rate(gw_privacy_processing_duration_seconds_count{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval])) > 0)",
           "range": true,
           "instant": false,
           "refId": "A",
@@ -1025,7 +1025,7 @@
             "uid": "${DS_PROM}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by(le, profile, stage)(rate(gw_privacy_processing_duration_seconds_bucket{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval]))) or vector(0)",
+          "expr": "histogram_quantile(0.95, sum by(le, profile, stage)(rate(gw_privacy_processing_duration_seconds_bucket{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval]))) and on(profile, stage) (sum by(profile, stage)(rate(gw_privacy_processing_duration_seconds_count{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval])) > 0)",
           "range": true,
           "instant": false,
           "refId": "B",
@@ -1201,7 +1201,7 @@
             "uid": "${DS_PROM}"
           },
           "editorMode": "code",
-          "expr": "sum by(event)(rate(gw_privacy_scope_events_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval])) or vector(0)",
+          "expr": "sum by(event)(rate(gw_privacy_scope_events_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval]))",
           "range": true,
           "instant": false,
           "refId": "I",
@@ -1213,7 +1213,7 @@
             "uid": "${DS_PROM}"
           },
           "editorMode": "code",
-          "expr": "sum by(resource)(rate(gw_privacy_capacity_rejections_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval])) or vector(0)",
+          "expr": "sum by(resource)(rate(gw_privacy_capacity_rejections_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval]))",
           "range": true,
           "instant": false,
           "refId": "J",
@@ -1225,7 +1225,7 @@
             "uid": "${DS_PROM}"
           },
           "editorMode": "code",
-          "expr": "sum by(operation, result)(rate(gw_privacy_mapping_operations_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval])) or vector(0)",
+          "expr": "sum by(operation, result)(rate(gw_privacy_mapping_operations_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval]))",
           "range": true,
           "instant": false,
           "refId": "K",
@@ -1317,7 +1317,7 @@
             "uid": "${DS_PROM}"
           },
           "editorMode": "code",
-          "expr": "sum by(operation, result)(rate(gw_privacy_triage_requests_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval])) or vector(0)",
+          "expr": "sum by(operation, result)(rate(gw_privacy_triage_requests_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval]))",
           "range": true,
           "instant": false,
           "refId": "B",

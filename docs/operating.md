@@ -242,7 +242,7 @@ have to remember the underlying env-var names. Flags are valid on `start`,
 |-------------|-------------------|----------------|-------|
 | `--pii MODE` | `-Pii MODE` | `PII_REDACTION_ENABLED` + `PII_REDACTION_MODE` | `MODE` ∈ `off,replace,mask,hash,drop,encrypt`. `off` sets `PII_REDACTION_ENABLED=false`; any other mode sets `=true` and the mode. |
 | `--hash-key KEY` | `-HashKey KEY` | `PII_HASH_KEY` | Required when `--pii hash` (boot error otherwise). |
-| `--entities LIST` | `-Entities LIST` | `PII_ENABLED_ENTITIES` | Comma list. Empty = all registered recognizers. Accepts the six original + seven telecom (`SIP_URI,IMEI,IMSI,MSISDN,MAC_ADDRESS,COORDINATES,SITE`) + two NER (`PERSON,LOCATION`, requires `PII_NER_ENABLED=true` to fire). |
+| `--entities LIST` | `-Entities LIST` | `PII_ENABLED_ENTITIES` | Comma list. Empty = all registered recognizers: `Email`, `IPv4`, `IPv6`, `SSN`, `CreditCard`, `USPhone`, `SIP_URI`, `IMEI`, `IMSI`, `MSISDN`, `MAC_ADDRESS`, `COORDINATES`, `SITE`, `USAddress`, `USState`, `USZIP`, `PERSON`, and `LOCATION`. The final two are NER recognizers and require `PII_NER_ENABLED=true` to fire. |
 | `--hooks LIST` | `-Hooks LIST` | `ENABLED_HOOKS` | Allowlist; empty = all hooks. |
 | `--auth TOKEN` | `-Auth TOKEN` | `AUTH_TOKEN` | Comma-separated for rotation. |
 | `--env-file PATH` | `-EnvFile PATH` | _(loader)_ | Override the .env search. |
@@ -256,8 +256,16 @@ have to remember the underlying env-var names. Flags are valid on `start`,
 
 An `overrides.env` file chains on top the same way (`./overrides.env` →
 `$GW_HOME/overrides.env`) and loads SECOND, so its values win on any shared
-key — this is the operator-owned layer for secrets/customizations that
-survives `gw upgrade-env` / `gw init --force` untouched.
+key — this is the operator-owned layer for secrets/customizations.
+`gw upgrade-env` never touches it. Normal `gw init --force` preserves existing
+operator values and adds only missing managed-secret entries.
+
+The five managed secrets are AUTH_TOKEN, PII_HASH_KEY, PII_ENCRYPT_KEY,
+PRIVACY_ALIAS_KEY, and PRIVACY_TRIAGE_TOKEN. A normal re-init preserves
+existing AUTH_TOKEN, PII_HASH_KEY, and PII_ENCRYPT_KEY and mints only missing
+PRIVACY_ALIAS_KEY and PRIVACY_TRIAGE_TOKEN. Explicit secret regeneration
+rotates all five. The shipped `<generated-by-gw-init>` placeholders are invalid
+at startup when strict or triage requires them.
 
 If a match is found it is sourced before the binary starts. Format is the
 standard `KEY=value` per line; `#` comments and blank lines are skipped;
@@ -450,8 +458,8 @@ run after the worker.
 | `PII_ENABLED_ENTITIES` | _(empty = all active)_ | Comma-split list of recognizer names. Default empty = all registered recognizers active. Regex names are `Email`, `IPv4`, `IPv6`, `SSN`, `CreditCard`, `USPhone`, `SIP_URI`, `IMEI`, `IMSI`, `MSISDN`, `MAC_ADDRESS`, `COORDINATES`, `SITE`, `USAddress`, `USState`, and `USZIP`; NER adds `PERSON` and `LOCATION` when enabled. Unknown names cause a boot error. |
 | `PII_REDACTION_MODE` | `encrypt` | One of `replace`, `mask`, `hash`, `drop`, `encrypt`. Default `encrypt`: PII is replaced with `[PII:EMAIL:base64url]` AES-256-GCM ciphertext before the worker sees the request, and the response Post-hook decrypts those tokens back to plaintext before the client sees the response (round-trip). Other modes: `replace` substitutes `[EMAIL_N]` tokens with a per-canonical-value counter; `mask` substitutes partial obfuscation (e.g., `co***@cm***.io`); `hash` substitutes `[EMAIL:h-XXXXXXXX]` with the first 8 hex chars of `HMAC-SHA256(PII_HASH_KEY, canonical(value))`; `drop` substitutes an empty string. Unknown values → boot error. |
 | `PII_HASH_KEY` | _(empty)_ | HMAC-SHA256 key for `PII_REDACTION_MODE=hash`. **Required when mode is `hash`** — boot error otherwise (no silent unkeyed-HMAC fallback). Rotating this key invalidates prior correlation tokens — feature, not a bug: rotate to break attacker correlation if a key leak is suspected. |
-| `PII_ENCRYPT_KEY` | _(empty, but install scripts auto-seed)_ | Key for `PII_REDACTION_MODE=encrypt` (the default) or any per-entity encrypt override via `PII_ENTITY_ACTIONS`. Accepts **any non-empty string** — the gateway derives a 32-byte AES-256-GCM key via SHA-256 at boot. **Required when encrypt is active anywhere** — boot error otherwise (no silent fallback). `gw init` auto-mints this alongside `AUTH_TOKEN` and `PII_HASH_KEY`, and `--regenerate-secrets` / `-RegenerateSecrets` rotates all three. Rotating invalidates prior round-trip tokens (in-flight chat history affected; new requests after restart use the new key). |
-| `PII_ENTITY_ACTIONS` | _(empty)_ | Per-entity action overrides. Shape: `Entity:action,Entity:action,...` e.g. `Email:encrypt,SSN:drop,PERSON:mask`. When non-empty, the listed entities use the specified action instead of the global `PII_REDACTION_MODE`. Unlisted entities fall back to the global mode. Allowed entity names: see `PII_ENABLED_ENTITIES`. Allowed actions: `replace`, `mask`, `hash`, `drop`, `encrypt`. Unknown entity names or unknown action values → boot error. |
+| `PII_ENCRYPT_KEY` | _(empty, but install scripts auto-seed)_ | Key for `PII_REDACTION_MODE=encrypt` (the default) or any per-entity encrypt override via `PII_ENTITY_ACTIONS`. Accepts **any non-empty string** — the gateway derives a 32-byte AES-256-GCM key via SHA-256 at boot. **Required when encrypt is active anywhere** — boot error otherwise (no silent fallback). `gw init` auto-mints this as one of the five managed secrets, and `--regenerate-secrets` / `-RegenerateSecrets` rotates all five. Rotating invalidates prior round-trip tokens (in-flight chat history affected; new requests after restart use the new key). |
+| `PII_ENTITY_ACTIONS` | _(empty)_ | Per-entity action overrides. Allowed actions are `replace`, `mask`, `hash`, `drop`, `encrypt`, and `pseudonymize`; pseudonymize is supported only for technical identifiers. Compatible listed overrides win; unlisted personal data uses PII_REDACTION_MODE, and unlisted strict technical data uses PRIVACY_TECHNICAL_ACTION. Unknown entities, actions, or category-incompatible actions cause a boot error. |
 | `PII_NER_ENABLED` | `true` | Master switch for the `jdkato/prose/v2` NER engine that emits `PERSON` and `LOCATION` spans alongside the regex recognizers. Default `true` (secure-by-default). Set `PII_NER_ENABLED=false` to skip the prose model load — the binary impact (~7 MB, 10 MB → 17 MB) is baked into the build either way; this flag controls the runtime tokenizer/tagger allocation. English-only; accuracy is decent on common Western names and major place names but weaker on Asian / multilingual names — see `docs/superpowers/specs/2026-06-01-pii-encrypt-design.md` §11.2 for the documented accuracy ceiling. |
 
 #### Restart-to-apply rule (SC7)

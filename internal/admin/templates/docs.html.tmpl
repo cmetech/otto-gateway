@@ -106,8 +106,8 @@ gw upgrade-env              # regenerate .env from the template (prompts unless 
       <tbody>
         <tr><td><code>--pii MODE</code></td><td><code>-Pii MODE</code></td><td>PII redaction mode (<code>off</code>, <code>replace</code>, <code>mask</code>, <code>hash</code>, <code>drop</code>, <code>encrypt</code>). <code>off</code> sets <code>PII_REDACTION_ENABLED=false</code>; any other value enables redaction with that mode.</td></tr>
         <tr><td><code>--hash-key KEY</code></td><td><code>-HashKey KEY</code></td><td>Sets <code>PII_HASH_KEY</code>. Required when <code>--pii hash</code> / <code>-Pii hash</code> is in effect.</td></tr>
-        <tr><td><code>--encrypt-key KEY</code></td><td><code>-EncryptKey KEY</code></td><td>Sets <code>PII_ENCRYPT_KEY</code>. Required when <code>--pii encrypt</code> / <code>-Pii encrypt</code> is in effect (the default), or any <code>PII_ENTITY_ACTIONS</code> entry uses <code>:encrypt</code>. Any non-empty string — the gateway derives a 32-byte AES-256-GCM key via SHA-256 at boot. <code>gw init</code> auto-mints one; <code>--regenerate-secrets</code> rotates it alongside <code>AUTH_TOKEN</code> and <code>PII_HASH_KEY</code>.</td></tr>
-        <tr><td><code>--entities LIST</code></td><td><code>-Entities LIST</code></td><td>Comma-split <code>PII_ENABLED_ENTITIES</code> allowlist (e.g. <code>Email,SSN,PERSON</code>). Empty = all registered recognizers (16 regex + 2 NER when <code>PII_NER_ENABLED=true</code>).</td></tr>
+        <tr><td><code>--encrypt-key KEY</code></td><td><code>-EncryptKey KEY</code></td><td>Sets <code>PII_ENCRYPT_KEY</code>. Required when <code>--pii encrypt</code> / <code>-Pii encrypt</code> is in effect (the default), or any <code>PII_ENTITY_ACTIONS</code> entry uses <code>:encrypt</code>. Any non-empty string — the gateway derives a 32-byte AES-256-GCM key via SHA-256 at boot. <code>gw init</code> auto-mints it as one of the five managed secrets; <code>--regenerate-secrets</code> rotates all five.</td></tr>
+        <tr><td><code>--entities LIST</code></td><td><code>-Entities LIST</code></td><td>Comma-split <code>PII_ENABLED_ENTITIES</code> allowlist: <code>Email</code>, <code>IPv4</code>, <code>IPv6</code>, <code>SSN</code>, <code>CreditCard</code>, <code>USPhone</code>, <code>SIP_URI</code>, <code>IMEI</code>, <code>IMSI</code>, <code>MSISDN</code>, <code>MAC_ADDRESS</code>, <code>COORDINATES</code>, <code>SITE</code>, <code>USAddress</code>, <code>USState</code>, <code>USZIP</code>, <code>PERSON</code>, and <code>LOCATION</code>. Empty means all registered recognizers; the final two require <code>PII_NER_ENABLED=true</code>.</td></tr>
         <tr><td><code>--hooks LIST</code></td><td><code>-Hooks LIST</code></td><td>Comma-split <code>ENABLED_HOOKS</code> allowlist. Empty = all hooks in the chain enabled.</td></tr>
         <tr><td><code>--auth TOKEN</code></td><td><code>-Auth TOKEN</code></td><td>Sets <code>AUTH_TOKEN</code> for bearer-token auth.</td></tr>
         <tr><td><code>--idle-timeout SEC</code></td><td><code>-IdleTimeout SEC</code></td><td>Sets <code>STREAM_IDLE_TIMEOUT_SEC</code> (0 disables the watchdog; negative is a boot error).</td></tr>
@@ -123,7 +123,7 @@ gw upgrade-env              # regenerate .env from the template (prompts unless 
         <tr><td><code>--trace</code></td><td><code>-Trace</code></td><td>Set <code>DEBUG=true</code> AND <code>CHAT_TRACE=true</code> in one go. SENSITIVE: writes raw prompts to <code>CHAT_TRACE_FILE</code>.</td></tr>
         <tr><td>—</td><td><code>-Follow</code></td><td>PowerShell-only: <code>logs -Follow</code> is the equivalent of POSIX <code>logs -f</code> (positional, not a flag on POSIX).</td></tr>
         <tr><td><code>--here</code></td><td><code>-Here</code></td><td><code>init</code> shortcut: write the env file into the current directory instead of <code>$HOME</code> / <code>$env:USERPROFILE</code>.</td></tr>
-        <tr><td><code>--force</code></td><td><code>-Force</code></td><td><code>init</code>: overwrite existing dest. Combine with <code>--regenerate-secrets</code> to mint new <code>AUTH_TOKEN</code> / <code>PII_HASH_KEY</code> / <code>PII_ENCRYPT_KEY</code>.</td></tr>
+        <tr><td><code>--force</code></td><td><code>-Force</code></td><td><code>init</code>: overwrite existing dest. Combine with <code>--regenerate-secrets</code> to rotate all five managed secrets.</td></tr>
         <tr><td><code>--non-interactive</code></td><td><code>-NonInteractive</code></td><td><code>init</code>: never prompt; use defaults for anything unset.</td></tr>
         <tr><td><code>--auth-enabled</code></td><td><code>-AuthEnabled</code></td><td><code>init</code>: enable bearer-token auth (default off; mints <code>AUTH_TOKEN</code> if no <code>--auth-token</code> supplied).</td></tr>
         <tr><td><code>--chat-trace</code></td><td><code>-ChatTrace</code></td><td><code>init</code>: enable chat-trace NDJSON tracer (default off; writes raw prompts to disk).</td></tr>
@@ -137,32 +137,37 @@ gw upgrade-env              # regenerate .env from the template (prompts unless 
 
   <section class="gw-card">
     <h2 class="gw-h2">Upgrading</h2>
-    <p>Gateway uses a <strong>two-file env model</strong> so upgrades absorb new template defaults without clobbering your secrets. The generated <code>.env</code> file is rewritten from the template on every upgrade. Your <code>overrides.env</code> file is operator-owned, loaded last, and is NEVER touched by <code>upgrade-env</code> or <code>init</code> — its values win on shared keys.</p>
+    <p>Gateway uses a <strong>two-file env model</strong> so upgrades absorb new template defaults without clobbering your secrets. The generated <code>.env</code> file is rewritten from the template on every upgrade. Your <code>overrides.env</code> file is operator-owned and loaded last, so its values win on shared keys. <code>upgrade-env</code> never touches it; normal <code>init</code> preserves its existing managed-secret values while adding only missing managed-secret entries.</p>
 
-    <p><strong>Do not delete <code>.env</code> to "start fresh".</strong> Deleting it means <code>init</code> mints a brand-new <code>AUTH_TOKEN</code> and rotates <code>PII_HASH_KEY</code>, breaking any existing auth setup and invalidating prior hash-mode correlation tokens. Use the proper upgrade flow below — it preserves existing secrets by default.</p>
+    <p>The five managed secrets are AUTH_TOKEN, PII_HASH_KEY, PII_ENCRYPT_KEY, PRIVACY_ALIAS_KEY, and PRIVACY_TRIAGE_TOKEN. A normal re-init preserves existing AUTH_TOKEN, PII_HASH_KEY, and PII_ENCRYPT_KEY and mints only missing PRIVACY_ALIAS_KEY and PRIVACY_TRIAGE_TOKEN. Explicit secret regeneration rotates all five. The shipped <code>&lt;generated-by-gw-init&gt;</code> placeholders are invalid at startup when strict or triage requires them.</p>
 
-    <h3 class="gw-h3">Three-step upgrade flow</h3>
+    <p><strong>Do not delete either env file to "start fresh" during an upgrade.</strong> Preserve the existing <code>overrides.env</code> managed-secret layer and use the flow below; normal re-init preserves existing auth/PII secrets and fills only missing privacy secrets.</p>
+
+    <h3 class="gw-h3">Four-step upgrade flow</h3>
     <ol class="gw-docs-bullets">
       <li><strong>Pull the new install</strong> — fetches the v1.8.2 (or later) binary, template, and wrapper scripts.</li>
       <li><strong>Preview the diff</strong> — <code>upgrade-env --dry-run</code> reports which template keys would be added, orphaned, or unchanged in your env file. No disk writes.</li>
-      <li><strong>Apply</strong> — re-run <code>init --force --non-interactive</code>. Existing secrets (<code>AUTH_TOKEN</code>, <code>PII_HASH_KEY</code>, <code>PII_ENCRYPT_KEY</code>) are <em>preserved across re-init</em>; missing ones are minted; new env vars (e.g., <code>PII_NER_ENABLED</code>) are added with template defaults. Restart to apply.</li>
+      <li><strong>Apply the template</strong> — run <code>upgrade-env</code> without the dry-run flag.</li>
+      <li><strong>Fill and restart</strong> — re-run <code>init --force --non-interactive</code>. Existing <code>AUTH_TOKEN</code>, <code>PII_HASH_KEY</code>, and <code>PII_ENCRYPT_KEY</code> are preserved; only a missing or shipped-placeholder privacy alias key or triage token is minted. Restart to apply.</li>
     </ol>
 
     <h3 class="gw-h3">macOS / Linux (POSIX)</h3>
     <pre class="gw-code-block">curl -fsSL https://raw.githubusercontent.com/cmetech/otto-gateway/main/scripts/install.sh | sh
 gw upgrade-env --dry-run             # 1. preview
-gw init --force --non-interactive    # 2. absorb new defaults; mint missing keys
-gw restart                            # 3. apply</pre>
+gw upgrade-env                       # 2. apply the new template
+gw init --force --non-interactive    # 3. mint only missing privacy secrets
+gw restart                           # 4. apply</pre>
 
     <h3 class="gw-h3">Windows (PowerShell)</h3>
     <pre class="gw-code-block">irm https://raw.githubusercontent.com/cmetech/otto-gateway/main/scripts/install.ps1 | iex
 gw.ps1 upgrade-env -DryRun           # 1. preview
-gw.ps1 init -Force -NonInteractive   # 2. absorb new defaults; mint missing keys
-gw.ps1 restart                        # 3. apply</pre>
+gw.ps1 upgrade-env                   # 2. apply the new template
+gw.ps1 init -Force -NonInteractive   # 3. mint only missing privacy secrets
+gw.ps1 restart                       # 4. apply</pre>
     <p>The <code>.bat</code> dispatcher forwards arguments to PowerShell, so <code>gw init -Force -NonInteractive</code> works the same from <code>cmd.exe</code>.</p>
 
     <h3 class="gw-h3">Preserve vs. rotate secrets</h3>
-    <p>The default behavior of <code>init --force</code> is <strong>preserve</strong> — your existing <code>AUTH_TOKEN</code>, <code>PII_HASH_KEY</code>, and <code>PII_ENCRYPT_KEY</code> are carried across the upgrade verbatim. Add <code>--regenerate-secrets</code> (POSIX) or <code>-RegenerateSecrets</code> (PowerShell) to discard the existing values and mint fresh ones:</p>
+    <p>The default behavior of <code>init --force</code> is <strong>preserve-and-fill</strong>: existing <code>AUTH_TOKEN</code>, <code>PII_HASH_KEY</code>, and <code>PII_ENCRYPT_KEY</code> are carried across verbatim, while only a missing or shipped-placeholder <code>PRIVACY_ALIAS_KEY</code> or <code>PRIVACY_TRIAGE_TOKEN</code> is minted. Add <code>--regenerate-secrets</code> (POSIX) or <code>-RegenerateSecrets</code> (PowerShell) only to rotate all five intentionally:</p>
     <pre class="gw-code-block">gw init --force --non-interactive --regenerate-secrets    # POSIX
 gw.ps1 init -Force -NonInteractive -RegenerateSecrets     # PowerShell</pre>
     <p><strong>Rotating <code>PII_ENCRYPT_KEY</code> is a breaking change for in-flight encrypted conversations</strong> — every prior <code>[PII:Entity:base64url(...)]</code> token becomes undecryptable. Only rotate it intentionally (suspected key leak, routine secret rotation, etc.). Rotating <code>PII_HASH_KEY</code> invalidates prior hash-mode correlation tokens — the same correlation-break-on-purpose property.</p>
@@ -179,13 +184,13 @@ gw.ps1 init -Force -NonInteractive -RegenerateSecrets     # PowerShell</pre>
     <pre class="gw-code-block">PII_REDACTION_ENABLED=false
 PII_REDACTION_MODE=replace
 PII_NER_ENABLED=false</pre>
-    <p>The overrides file is loaded last, so its values win — and <code>upgrade-env</code> / <code>init</code> never touch it.</p>
+    <p>The overrides file is loaded last, so its values win. <code>upgrade-env</code> never touches it; normal <code>init</code> preserves existing managed values and fills only missing managed-secret entries.</p>
 
     <h3 class="gw-h3">When to keep the file vs. nuke it</h3>
     <dl class="gw-about-dl">
-      <dt>Keep the file (recommended)</dt><dd>Use <code>gw init --force --non-interactive</code>. Existing secrets carry across; new env vars get template defaults. No restart-without-auth window.</dd>
-      <dt>Nuke <code>.env</code> only when</dt><dd>The file is in a weird half-edited state you'd rather start fresh from. Back it up first (<code>cp .env .env.bak</code>) so you can recover the prior <code>AUTH_TOKEN</code> if you need to. <code>gw init</code> on an absent file is a cold install and mints all three secrets fresh.</dd>
-      <dt>Don't touch <code>overrides.env</code></dt><dd>Operator-owned. <code>upgrade-env</code> and <code>init</code> never write to it. If you want to opt out of the new secure-by-default behavior, this is where the override lines go.</dd>
+      <dt>Keep the file (recommended)</dt><dd>Run template apply followed by <code>gw init --force --non-interactive</code>. Existing auth/PII secrets carry across, only missing privacy secrets are minted, and new env vars get template defaults. No restart-without-auth window.</dd>
+      <dt>Nuke <code>.env</code> only when</dt><dd>The file is in a weird half-edited state you'd rather start fresh from. Back it up first (<code>cp .env .env.bak</code>) and preserve <code>overrides.env</code>. A cold install with no existing managed-secret layer mints all five secrets fresh.</dd>
+      <dt>Preserve <code>overrides.env</code></dt><dd>Operator-owned. <code>upgrade-env</code> never writes it; normal <code>init</code> preserves existing values and adds only missing managed-secret lines. Put secure-default opt-outs here.</dd>
     </dl>
 
     <h3 class="gw-h3">After upgrade — verify</h3>
@@ -254,8 +259,8 @@ curl -sf http://127.0.0.1:18080/health/hooks | jq    # confirm PIIRedactionHook 
       <dt><code>PII_REDACTION_ENABLED</code></dt><dd>default <code>true</code> — master switch. Set to <code>false</code> to keep the hook in the chain but inert (operator opt-out).</dd>
       <dt><code>PII_REDACTION_MODE</code></dt><dd>default <code>encrypt</code> — one of <code>replace</code> (numbered sentinel per match), <code>mask</code> (partial obfuscation), <code>hash</code> (HMAC-keyed correlation token), <code>drop</code> (matched substring removed entirely), <code>encrypt</code> (AES-256-GCM round-trip — request encrypted, response decrypted by the Post hook before the client sees it).</dd>
       <dt><code>PII_NER_ENABLED</code></dt><dd>default <code>true</code> — master switch for the prose-based PERSON/LOCATION recognizer. When <code>true</code>, the bundled averaged-perceptron model lazy-loads on first request. Set to <code>false</code> to skip the runtime tokenizer/tagger allocation (the ~7 MB binary impact is baked into the build either way). English-only; accuracy is decent on common Western names and major place names but weaker on Asian / multilingual names.</dd>
-      <dt><code>PII_ENABLED_ENTITIES</code></dt><dd>default empty (all registered recognizers active) — comma-separated allowlist from <code>Email,IPv4,IPv6,SSN,CreditCard,USPhone,SIP_URI,IMEI,IMSI,MSISDN,MAC_ADDRESS,COORDINATES,SITE,PERSON,LOCATION</code>. <code>PERSON</code> and <code>LOCATION</code> require <code>PII_NER_ENABLED=true</code> to actually fire.</dd>
-      <dt><code>PII_ENTITY_ACTIONS</code></dt><dd>default empty — per-entity action override map. Shape: <code>Entity:action,Entity:action,…</code> (e.g. <code>Email:encrypt,SSN:drop,PERSON:mask</code>). Listed entities use the named action; unlisted entities fall back to <code>PII_REDACTION_MODE</code>. Allowed actions: <code>replace</code>, <code>mask</code>, <code>hash</code>, <code>drop</code>, <code>encrypt</code>. Unknown entity name or action ⇒ boot error.</dd>
+      <dt><code>PII_ENABLED_ENTITIES</code></dt><dd>default empty (all registered recognizers active) — comma-separated allowlist from <code>Email,IPv4,IPv6,SSN,CreditCard,USPhone,SIP_URI,IMEI,IMSI,MSISDN,MAC_ADDRESS,COORDINATES,SITE,USAddress,USState,USZIP,PERSON,LOCATION</code>. <code>PERSON</code> and <code>LOCATION</code> require <code>PII_NER_ENABLED=true</code> to actually fire.</dd>
+      <dt><code>PII_ENTITY_ACTIONS</code></dt><dd>default empty — allowed actions are <code>replace</code>, <code>mask</code>, <code>hash</code>, <code>drop</code>, <code>encrypt</code>, and <code>pseudonymize</code>; pseudonymize is supported only for technical identifiers. Compatible listed overrides win; unlisted personal data uses PII_REDACTION_MODE, and unlisted strict technical data uses PRIVACY_TECHNICAL_ACTION. Unknown entities, actions, or category-incompatible actions cause a boot error.</dd>
       <dt><code>PII_HASH_KEY</code></dt><dd>auto-minted by <code>gw init</code> — REQUIRED when <code>PII_REDACTION_MODE=hash</code> (boot error otherwise). HMAC-SHA256 key. Rotating it invalidates prior session correlation tokens.</dd>
       <dt><code>PII_ENCRYPT_KEY</code></dt><dd>auto-minted by <code>gw init</code> — REQUIRED when encrypt is active anywhere. Rotation invalidates prior encrypted tokens. When aggregation is required, adapters validate completely and then preserve native streaming framing through synthetic replay.</dd>
     </dl>

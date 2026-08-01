@@ -55,14 +55,79 @@ Gateway reads privacy configuration once at process start. Every change below is
 
 Gateway refuses to start for an invalid profile, action, duration, or capacity; inconsistent maxima; strict without core PII and the privacy hook; strict without the alias key; triage without its token; or an unsupported per-entity action. To intentionally disable PII, also remove `strict` from `PRIVACY_REQUEST_PROFILES`.
 
-To make strict the minimum for every request, first run `gw upgrade-env --dry-run` and apply the normal environment upgrade if it reports missing privacy keys. Then add this non-secret override to the operator-owned `overrides.env`:
+To make strict the minimum for every request on a pre-privacy installation, use this order. Do not enable strict between the template upgrade and normal re-init: the shipped placeholders are invalid at startup when strict or triage requires them.
 
-```dotenv
-PRIVACY_DEFAULT_PROFILE=strict
-PRIVACY_REQUEST_PROFILES=standard,strict
-```
+1. Preview and apply the current template.
 
-Leave the generated alias key unchanged. Run `gw restart`, then `gw privacy status`; continue only when it reports profile `strict` and strict availability `yes`. To keep standard as the minimum and let individual workflows opt into strict, retain the defaults and send the strict request header instead.
+   POSIX:
+
+   ```sh
+   gw upgrade-env --dry-run
+   gw upgrade-env
+   ```
+
+   PowerShell:
+
+   ```powershell
+   gw.ps1 upgrade-env -DryRun
+   gw.ps1 upgrade-env
+   ```
+
+2. Run normal re-init. It mints only missing privacy secrets and preserves existing `AUTH_TOKEN`, `PII_HASH_KEY`, and `PII_ENCRYPT_KEY`. Do not add the regeneration flag during an upgrade.
+
+   POSIX:
+
+   ```sh
+   gw init --force --non-interactive
+   ```
+
+   PowerShell:
+
+   ```powershell
+   gw.ps1 init -Force -NonInteractive
+   ```
+
+3. Verify that both privacy values are lowercase 64-hex values without printing either value. These examples inspect the standard per-user `overrides.env`; set `GW_OVERRIDES_FILE` first when the installation uses a project-local or custom overrides file.
+
+   POSIX:
+
+   ```sh
+   privacy_overrides="${GW_OVERRIDES_FILE:-${GW_HOME:-$HOME/.gw}/overrides.env}"
+   awk -F= '
+     ($1 == "PRIVACY_ALIAS_KEY" || $1 == "PRIVACY_TRIAGE_TOKEN") &&
+       length($2) == 64 && $2 !~ /[^0-9a-f]/ { present[$1] = 1 }
+     END { exit !(present["PRIVACY_ALIAS_KEY"] && present["PRIVACY_TRIAGE_TOKEN"]) }
+   ' "$privacy_overrides" && printf '%s\n' 'privacy secrets: present'
+   ```
+
+   PowerShell:
+
+   ```powershell
+   $privacyOverrides = if ($env:GW_OVERRIDES_FILE) {
+     $env:GW_OVERRIDES_FILE
+   } elseif ($env:GW_HOME) {
+     Join-Path $env:GW_HOME 'overrides.env'
+   } else {
+     Join-Path (Join-Path $HOME '.gw') 'overrides.env'
+   }
+   $privacySecrets = @{}
+   Get-Content -LiteralPath $privacyOverrides | ForEach-Object {
+     if ($_ -cmatch '^(PRIVACY_ALIAS_KEY|PRIVACY_TRIAGE_TOKEN)=([0-9a-f]{64})$') {
+       $privacySecrets[$Matches[1]] = $true
+     }
+   }
+   if ($privacySecrets.Count -ne 2) { throw 'privacy secrets missing or placeholder' }
+   'privacy secrets: present'
+   ```
+
+4. Add this non-secret override to the operator-owned `overrides.env`:
+
+   ```dotenv
+   PRIVACY_DEFAULT_PROFILE=strict
+   PRIVACY_REQUEST_PROFILES=standard,strict
+   ```
+
+Leave both generated privacy values unchanged. Run `gw restart`, then `gw privacy status`; continue only when it reports profile `strict` and strict availability `yes`. To keep standard as the minimum and let individual workflows opt into strict, retain the defaults and send the strict request header instead.
 
 ### Retained PII settings
 
@@ -75,14 +140,14 @@ The new profiles do not replace the existing `PII_*` contract:
 | `PII_ENABLED_ENTITIES` | empty = all | Selects from the registered recognizers; unknown names fail startup. |
 | `PII_HASH_KEY` | generated | Required when hash is active. Rotation breaks prior correlation tokens. |
 | `PII_ENCRYPT_KEY` | generated | Required when encrypt is active. Rotation invalidates prior encrypted round-trip tokens. |
-| `PII_ENTITY_ACTIONS` | empty | Compatible per-entity overrides win; unlisted personal data uses `PII_REDACTION_MODE`, and unlisted strict technical data uses `PRIVACY_TECHNICAL_ACTION`. |
+| `PII_ENTITY_ACTIONS` | empty | Allowed actions are `replace`, `mask`, `hash`, `drop`, `encrypt`, and `pseudonymize`; pseudonymize is supported only for technical identifiers. Compatible listed overrides win; unlisted personal data uses PII_REDACTION_MODE, and unlisted strict technical data uses PRIVACY_TECHNICAL_ACTION. |
 | `PII_NER_ENABLED` | `true` | Enables English PERSON and LOCATION recognition; it remains explicitly configurable under strict. |
 
 The inventory is 16 regex recognizers: Email, IPv4, IPv6, SSN, CreditCard, USPhone, SIP_URI, IMEI, IMSI, MSISDN, MAC_ADDRESS, COORDINATES, SITE, USAddress, USState, and USZIP. PERSON and LOCATION are the two NER recognizers. NER is English-only and has reduced coverage for multilingual names and places. The binary's `PII_NER_ENABLED` compiled default is `true`; an operator can explicitly set it to `false` to avoid the runtime model allocation.
 
 ### Managed secrets
 
-`gw init` and the PowerShell equivalent mint `AUTH_TOKEN`, `PII_HASH_KEY`, `PII_ENCRYPT_KEY`, `PRIVACY_ALIAS_KEY`, and `PRIVACY_TRIAGE_TOKEN`. A normal forced reinitialization preserves all five managed secrets. Explicit `--regenerate-secrets` (or `-RegenerateSecrets`) rotates them together and warns about mapping loss and restart impact before writing.
+The five managed secrets are `AUTH_TOKEN`, `PII_HASH_KEY`, `PII_ENCRYPT_KEY`, `PRIVACY_ALIAS_KEY`, and `PRIVACY_TRIAGE_TOKEN`. A normal forced re-init preserves every usable existing managed secret and mints only a missing or shipped-placeholder privacy alias key or triage token. Explicit `--regenerate-secrets` (or `-RegenerateSecrets`) rotates all five together and warns about mapping loss and restart impact before writing.
 
 Rotating `PRIVACY_ALIAS_KEY` invalidates active aliases. Coordinate the rotation with workflow owners, stop accepting calls, restart Gateway, and start affected workflows with new scope IDs. Never place a real managed secret in source control, examples, tickets, logs, or command arguments.
 
@@ -235,7 +300,7 @@ Use this sequence without collecting request bodies:
 
 ### Upgrade
 
-Run `gw upgrade-env --dry-run`, apply the normal upgrade flow, and restart. The generated template introduces all `PRIVACY_*` defaults while `overrides.env` continues to win. Normal reinitialization preserves all five managed secrets. The NER template, admin posture, operator guide, and binary agree that the `PII_NER_ENABLED` compiled default is `true`.
+Run `gw upgrade-env --dry-run`, `gw upgrade-env`, and then normal `gw init --force --non-interactive` before restart. PowerShell uses `gw.ps1 upgrade-env -DryRun`, `gw.ps1 upgrade-env`, and `gw.ps1 init -Force -NonInteractive`. The generated template introduces all `PRIVACY_*` defaults while `overrides.env` continues to win. Normal re-init preserves the existing auth/PII secrets and independently mints only a missing or shipped-placeholder privacy alias key or triage token. The NER template, admin posture, operator guide, and binary agree that the `PII_NER_ENABLED` compiled default is `true`.
 
 Plan alias-key rotation as a mapping-loss event. Drain workflows, rotate explicitly, restart, and require new scope IDs. Strict buffering also changes response timing: clients still receive native-compatible stream framing, but the first strict byte is delayed until complete validation.
 
