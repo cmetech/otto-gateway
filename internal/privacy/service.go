@@ -285,21 +285,25 @@ func (t wallTicker) C() <-chan time.Time { return t.Ticker.C }
 
 // Before applies the resolved privacy profile before worker dispatch.
 func (s *Service) Before(ctx context.Context, req *canonical.ChatRequest) (resp *canonical.ChatResponse, err error) {
+	var resolvedProfile Profile
 	defer func() {
 		if recover() != nil {
 			resp = nil
 			err = s.recoverInboundPanic(ctx)
+		}
+		if err != nil {
+			s.finalizeInboundErrorReceipt(ctx, resolvedProfile)
 		}
 	}()
 	if s == nil || !s.config.PIIEnabled || req == nil {
 		return nil, nil
 	}
 	state, _ := StateFromContext(ctx)
-	profile, err := s.resolveProfile(state)
+	resolvedProfile, err = s.resolveProfile(state)
 	if err != nil {
 		return nil, err
 	}
-	if profile == ProfileStrict {
+	if resolvedProfile == ProfileStrict {
 		return nil, s.beforeStrict(ctx, state, req)
 	}
 
@@ -342,16 +346,6 @@ func (s *Service) recoverInboundPanic(ctx context.Context) error {
 	state, _ := StateFromContext(ctx)
 	if state != nil {
 		state.releaseLease()
-		profile := state.effectiveProfile()
-		if profile == "" && s != nil {
-			profile = s.config.DefaultProfile
-		}
-		transformed, restored, blocked := state.counts()
-		_ = state.setReceipt(Receipt{
-			Version: 1, Profile: profile, Scope: state.Metadata().ScopeID,
-			Coverage: "input", Result: "error",
-			Transformed: transformed, Restored: restored, Blocked: blocked,
-		})
 	}
 	if s != nil {
 		s.lastErrorMu.Lock()
@@ -359,6 +353,43 @@ func (s *Service) recoverInboundPanic(ctx context.Context) error {
 		s.lastErrorMu.Unlock()
 	}
 	return &Error{Code: CodeInternalError, Stage: "input"}
+}
+
+func (s *Service) finalizeInboundErrorReceipt(ctx context.Context, resolvedProfile Profile) {
+	state, ok := StateFromContext(ctx)
+	if !ok {
+		return
+	}
+	profile := resolvedProfile
+	if !validProfile(profile) {
+		profile = state.effectiveProfile()
+	}
+	if !validProfile(profile) && s != nil {
+		profile = s.config.DefaultProfile
+	}
+	if !validProfile(profile) {
+		profile = ProfileStandard
+	}
+	transformed, restored, blocked := state.counts()
+	stored, receiptErr := state.setReceiptIfEmpty(Receipt{
+		Version: 1, Profile: profile, Scope: state.Metadata().ScopeID,
+		Coverage: "input", Result: "error",
+		Transformed: transformed, Restored: restored, Blocked: blocked,
+	})
+	if receiptErr != nil || !stored {
+		return
+	}
+	s.observeReceiptSafely(profile, "error")
+}
+
+func (s *Service) observeReceiptSafely(profile Profile, result string) {
+	if s == nil {
+		return
+	}
+	if observe := s.config.Observers.Receipt; observe != nil {
+		defer func() { _ = recover() }()
+		observe(profile, result)
+	}
 }
 
 func (s *Service) resolveProfile(state *RequestState) (Profile, error) {
@@ -795,9 +826,7 @@ func (s *Service) blockInbound(state *RequestState, reason string) error {
 	}); err != nil {
 		return &Error{Code: CodeInternalError, Stage: "receipt"}
 	}
-	if observe := s.config.Observers.Receipt; observe != nil {
-		observe(ProfileStrict, "block")
-	}
+	s.observeReceiptSafely(ProfileStrict, "block")
 	return &Error{Code: CodeInputBlocked, Stage: "input"}
 }
 

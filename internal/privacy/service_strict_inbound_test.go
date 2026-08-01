@@ -132,6 +132,252 @@ func TestServiceStrict_ScopeRejectsInvalidAndClosed(t *testing.T) {
 	assertPrivacyError(t, err, CodeScopeClosed, "scope")
 }
 
+const inboundReceiptProtectedCanary = "raw-protected-inbound-receipt-canary"
+
+type receiptObservation struct {
+	profile Profile
+	result  string
+}
+
+type receiptObserverRecorder struct {
+	mu     sync.Mutex
+	events []receiptObservation
+}
+
+func (r *receiptObserverRecorder) observe(profile Profile, result string) {
+	r.mu.Lock()
+	r.events = append(r.events, receiptObservation{profile: profile, result: result})
+	r.mu.Unlock()
+}
+
+func (r *receiptObserverRecorder) snapshot() []receiptObservation {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]receiptObservation(nil), r.events...)
+}
+
+type failingTechnicalMapper struct{ err error }
+
+func (m failingTechnicalMapper) Map(*ScopeLease, string, string, Provenance) (string, error) {
+	return "", m.err
+}
+
+func TestServiceBefore_StampedInboundFailuresSetOneErrorReceipt(t *testing.T) {
+	tests := []struct {
+		name        string
+		code        string
+		stage       string
+		wantProfile Profile
+		setup       func(*testing.T, *receiptObserverRecorder) (*Service, *RequestState, *canonical.ChatRequest)
+	}{
+		{
+			name:        "requested profile unavailable",
+			code:        CodeProfileUnavailable,
+			stage:       "profile",
+			wantProfile: ProfileStandard,
+			setup: func(t *testing.T, recorder *receiptObserverRecorder) (*Service, *RequestState, *canonical.ChatRequest) {
+				service := newStrictTestService(t, strictTestConfig{
+					profiles:  []Profile{ProfileStandard},
+					observers: Observers{Receipt: recorder.observe},
+				})
+				state := NewRequestState(RequestMetadata{RequestedProfile: "strict", ScopeID: "profile-error"})
+				return service, state, &canonical.ChatRequest{System: inboundReceiptProtectedCanary}
+			},
+		},
+		{
+			name:        "invalid scope",
+			code:        CodeRequestInvalid,
+			stage:       "scope",
+			wantProfile: ProfileStrict,
+			setup: func(t *testing.T, recorder *receiptObserverRecorder) (*Service, *RequestState, *canonical.ChatRequest) {
+				service := newStrictTestService(t, strictTestConfig{observers: Observers{Receipt: recorder.observe}})
+				state := NewRequestState(RequestMetadata{RequestedProfile: "strict", ScopeID: "invalid scope"})
+				return service, state, &canonical.ChatRequest{System: inboundReceiptProtectedCanary}
+			},
+		},
+		{
+			name:        "closed scope",
+			code:        CodeScopeClosed,
+			stage:       "scope",
+			wantProfile: ProfileStrict,
+			setup: func(t *testing.T, recorder *receiptObserverRecorder) (*Service, *RequestState, *canonical.ChatRequest) {
+				service := newStrictTestService(t, strictTestConfig{observers: Observers{Receipt: recorder.observe}})
+				seed := NewRequestState(RequestMetadata{RequestedProfile: "strict", ScopeID: "closed-receipt-scope"})
+				if _, err := service.Before(WithRequestState(context.Background(), seed), &canonical.ChatRequest{}); err != nil {
+					t.Fatalf("seed Before: %v", err)
+				}
+				seed.releaseLease()
+				if result, err := service.store.Clear("closed-receipt-scope"); err != nil || result != ClearCompleted {
+					t.Fatalf("Clear=(%q,%v), want completed", result, err)
+				}
+				state := NewRequestState(RequestMetadata{RequestedProfile: "strict", ScopeID: "closed-receipt-scope"})
+				return service, state, &canonical.ChatRequest{System: inboundReceiptProtectedCanary}
+			},
+		},
+		{
+			name:        "scope capacity exhaustion",
+			code:        CodeCapacityExceeded,
+			stage:       "scope",
+			wantProfile: ProfileStrict,
+			setup: func(t *testing.T, recorder *receiptObserverRecorder) (*Service, *RequestState, *canonical.ChatRequest) {
+				service := newStrictTestService(t, strictTestConfig{
+					maxScopes: 1,
+					observers: Observers{Receipt: recorder.observe},
+				})
+				lease, err := service.store.Acquire("occupied-receipt-scope", ProfileStrict)
+				if err != nil {
+					t.Fatalf("occupy scope: %v", err)
+				}
+				t.Cleanup(lease.Release)
+				state := NewRequestState(RequestMetadata{RequestedProfile: "strict", ScopeID: "capacity-receipt-scope"})
+				return service, state, &canonical.ChatRequest{System: inboundReceiptProtectedCanary}
+			},
+		},
+		{
+			name:        "non-panic mapper internal failure",
+			code:        CodeInternalError,
+			stage:       "mapping",
+			wantProfile: ProfileStrict,
+			setup: func(t *testing.T, recorder *receiptObserverRecorder) (*Service, *RequestState, *canonical.ChatRequest) {
+				service := newStrictTestService(t, strictTestConfig{
+					classifier: strictFixtureClassifier{},
+					observers:  Observers{Receipt: recorder.observe},
+				})
+				service.mapper = failingTechnicalMapper{err: errors.New(inboundReceiptProtectedCanary)}
+				state := NewRequestState(RequestMetadata{RequestedProfile: "strict", ScopeID: "mapper-error-scope"})
+				return service, state, &canonical.ChatRequest{System: "10.20.30.40"}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := &receiptObserverRecorder{}
+			service, state, req := tc.setup(t, recorder)
+			_, err := service.Before(WithRequestState(context.Background(), state), req)
+			assertPrivacyError(t, err, tc.code, tc.stage)
+			if strings.Contains(err.Error(), inboundReceiptProtectedCanary) {
+				t.Fatalf("typed error leaked protected canary: %v", err)
+			}
+
+			receipt, payload := decodeStateReceipt(t, state)
+			if receipt != (Receipt{
+				Version: 1, Profile: tc.wantProfile, Scope: state.Metadata().ScopeID,
+				Coverage: "input", Result: "error",
+			}) {
+				t.Fatalf("receipt=%+v", receipt)
+			}
+			if len(state.receiptValue()) > maxEncodedReceiptBytes {
+				t.Fatalf("encoded receipt bytes=%d, want <=%d", len(state.receiptValue()), maxEncodedReceiptBytes)
+			}
+			for _, forbidden := range []string{inboundReceiptProtectedCanary, "IPv4", "[SECRET:", "token"} {
+				if strings.Contains(payload, forbidden) {
+					t.Fatalf("receipt leaked %q: %s", forbidden, payload)
+				}
+			}
+			if got := recorder.snapshot(); len(got) != 1 || got[0] != (receiptObservation{profile: tc.wantProfile, result: "error"}) {
+				t.Fatalf("receipt observer events=%+v, want one error", got)
+			}
+			if service.store != nil {
+				if got := service.store.Snapshot().RequestsInFlight; got != 0 && tc.name != "scope capacity exhaustion" {
+					t.Fatalf("failure retained %d leases", got)
+				}
+			}
+		})
+	}
+}
+
+func TestServiceBefore_ErrorReceiptFinalizerPreservesBlockAndPanic(t *testing.T) {
+	tests := []struct {
+		name       string
+		options    strictTestConfig
+		req        *canonical.ChatRequest
+		code       string
+		wantResult string
+	}{
+		{
+			name: "block", req: &canonical.ChatRequest{System: "[SECRET:API_KEY_0123456789AB]"},
+			code: CodeInputBlocked, wantResult: "block",
+		},
+		{
+			name: "panic", options: strictTestConfig{
+				classifier: panickingPrivacyClassifier{payload: inboundReceiptProtectedCanary},
+			},
+			req: &canonical.ChatRequest{System: "panic"}, code: CodeInternalError, wantResult: "error",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := &receiptObserverRecorder{}
+			tc.options.observers.Receipt = recorder.observe
+			service := newStrictTestService(t, tc.options)
+			state := NewRequestState(RequestMetadata{RequestedProfile: "strict", ScopeID: "preserve-" + tc.name})
+			_, err := service.Before(WithRequestState(context.Background(), state), tc.req)
+			assertPrivacyError(t, err, tc.code, "input")
+			receipt, payload := decodeStateReceipt(t, state)
+			if receipt.Profile != ProfileStrict || receipt.Coverage != "input" || receipt.Result != tc.wantResult {
+				t.Fatalf("receipt=%+v", receipt)
+			}
+			if strings.Contains(payload, inboundReceiptProtectedCanary) {
+				t.Fatalf("receipt leaked protected canary: %s", payload)
+			}
+			if got := recorder.snapshot(); len(got) != 1 || got[0].result != tc.wantResult {
+				t.Fatalf("receipt observer events=%+v, want one %q", got, tc.wantResult)
+			}
+		})
+	}
+}
+
+func TestServiceBefore_ErrorReceiptObserverPanicPreservesOriginalTypedError(t *testing.T) {
+	calls := 0
+	service := newStrictTestService(t, strictTestConfig{
+		profiles: []Profile{ProfileStandard},
+		observers: Observers{Receipt: func(Profile, string) {
+			calls++
+			panic(inboundReceiptProtectedCanary)
+		}},
+	})
+	state := NewRequestState(RequestMetadata{RequestedProfile: "strict", ScopeID: "observer-error"})
+	_, err := service.Before(WithRequestState(context.Background(), state), &canonical.ChatRequest{})
+	assertPrivacyError(t, err, CodeProfileUnavailable, "profile")
+	if calls != 1 {
+		t.Fatalf("receipt observer calls=%d, want 1", calls)
+	}
+	receipt, payload := decodeStateReceipt(t, state)
+	if receipt.Profile != ProfileStandard || receipt.Coverage != "input" || receipt.Result != "error" {
+		t.Fatalf("receipt=%+v", receipt)
+	}
+	if strings.Contains(err.Error(), inboundReceiptProtectedCanary) || strings.Contains(payload, inboundReceiptProtectedCanary) {
+		t.Fatalf("observer panic payload leaked: err=%v receipt=%s", err, payload)
+	}
+}
+
+func TestServiceBefore_BlockReceiptObserverPanicPreservesInputBlocked(t *testing.T) {
+	calls := 0
+	service := newStrictTestService(t, strictTestConfig{
+		observers: Observers{Receipt: func(Profile, string) {
+			calls++
+			panic(inboundReceiptProtectedCanary)
+		}},
+	})
+	state := NewRequestState(RequestMetadata{RequestedProfile: "strict", ScopeID: "block-observer-error"})
+	_, err := service.Before(
+		WithRequestState(context.Background(), state),
+		&canonical.ChatRequest{System: "[SECRET:API_KEY_0123456789AB]"},
+	)
+	assertPrivacyError(t, err, CodeInputBlocked, "input")
+	if calls != 1 {
+		t.Fatalf("receipt observer calls=%d, want 1", calls)
+	}
+	receipt, payload := decodeStateReceipt(t, state)
+	if receipt.Profile != ProfileStrict || receipt.Coverage != "input" || receipt.Result != "block" {
+		t.Fatalf("receipt=%+v", receipt)
+	}
+	if strings.Contains(err.Error(), inboundReceiptProtectedCanary) || strings.Contains(payload, inboundReceiptProtectedCanary) {
+		t.Fatalf("observer panic payload leaked: err=%v receipt=%s", err, payload)
+	}
+}
+
 type strictFixtureClassifier struct{}
 
 func (strictFixtureClassifier) Classify(_ string, value string) []Finding {
@@ -731,6 +977,7 @@ type strictTestConfig struct {
 	recognizers     []string
 	secretAction    Action
 	technicalAction Action
+	maxScopes       int
 }
 
 func newStrictTestService(t *testing.T, options strictTestConfig) *Service {
@@ -753,6 +1000,9 @@ func newStrictTestService(t *testing.T, options strictTestConfig) *Service {
 	if options.technicalAction == "" {
 		options.technicalAction = ActionPseudonymize
 	}
+	if options.maxScopes == 0 {
+		options.maxScopes = 32
+	}
 	service, err := NewService(Config{
 		DefaultProfile:     options.defaultProfile,
 		RequestProfiles:    options.profiles,
@@ -760,7 +1010,7 @@ func newStrictTestService(t *testing.T, options strictTestConfig) *Service {
 		SecretAction:       options.secretAction,
 		TechnicalAction:    options.technicalAction,
 		ScopeTTL:           time.Hour,
-		MaxScopes:          32,
+		MaxScopes:          options.maxScopes,
 		MaxEntriesPerScope: 128,
 		MaxTotalEntries:    1024,
 		PIIEnabled:         true,

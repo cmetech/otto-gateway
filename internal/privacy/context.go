@@ -323,6 +323,23 @@ func (s *RequestState) setReceipt(receipt Receipt) error {
 	return nil
 }
 
+func (s *RequestState) setReceiptIfEmpty(receipt Receipt) (bool, error) {
+	if s == nil {
+		return false, nil
+	}
+	encoded, err := encodeReceipt(receipt)
+	if err != nil {
+		return false, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.receipt != "" {
+		return false, nil
+	}
+	s.receipt = encoded
+	return true, nil
+}
+
 func (s *RequestState) receiptValue() string {
 	if s == nil {
 		return ""
