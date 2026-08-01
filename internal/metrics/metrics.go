@@ -110,6 +110,20 @@ type Metrics struct {
 	// hookReg is the gateway_id-wrapped registerer retained so optional
 	// feature series (RegisterCompression) can attach after New.
 	hookReg prometheus.Registerer
+
+	privacyRequests           *prometheus.CounterVec
+	privacyTransformations    *prometheus.CounterVec
+	privacyRestorations       *prometheus.CounterVec
+	privacyBlocks             *prometheus.CounterVec
+	privacyResidualFindings   *prometheus.CounterVec
+	privacyReceipts           *prometheus.CounterVec
+	privacyDuration           *prometheus.HistogramVec
+	privacyScopeEvents        *prometheus.CounterVec
+	privacyCapacityRejections *prometheus.CounterVec
+	privacyMappingOperations  *prometheus.CounterVec
+	privacyErrors             *prometheus.CounterVec
+	privacyTriageRequests     *prometheus.CounterVec
+	privacyWorkloads          *skillLimiter
 }
 
 // RecordTurnMeter records one completed kiro turn: increments the turn counter,
@@ -390,6 +404,248 @@ func (m *Metrics) RegisterCompression(stats func() CompressionStats) {
 		}, func() float64 { return float64(stats().PanicRecoveries) }),
 	)
 }
+
+// PrivacyStats is the bounded, value-free privacy posture read at scrape time.
+type PrivacyStats struct {
+	ScopesActive       int
+	RequestsInFlight   int
+	Entries            int
+	MaxScopes          int
+	MaxEntriesPerScope int
+	MaxTotalEntries    int
+	ScopeTTL           time.Duration
+	OldestScopeAge     time.Duration
+	TriageEnabled      bool
+}
+
+// RegisterPrivacy attaches privacy event collectors and pull gauges to the
+// existing Gateway registry. Call once after New.
+func (m *Metrics) RegisterPrivacy(stats func() PrivacyStats) {
+	m.privacyRequests = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "gw_privacy_requests_total",
+		Help: "Privacy-boundary request outcomes by bounded profile, surface, workload, and result.",
+	}, []string{"profile", "surface", "workload", "result"})
+	m.privacyTransformations = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "gw_privacy_transformations_total",
+		Help: "Privacy transformations by bounded profile, entity, and action.",
+	}, []string{"profile", "entity", "action"})
+	m.privacyRestorations = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "gw_privacy_restorations_total",
+		Help: "Privacy restoration outcomes by bounded profile and entity.",
+	}, []string{"profile", "entity", "result"})
+	m.privacyBlocks = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "gw_privacy_blocks_total",
+		Help: "Privacy fail-closed blocks by bounded profile, stage, and reason.",
+	}, []string{"profile", "stage", "reason"})
+	m.privacyResidualFindings = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "gw_privacy_residual_findings_total",
+		Help: "Privacy residual-scan findings by bounded profile, stage, and entity.",
+	}, []string{"profile", "stage", "entity"})
+	m.privacyReceipts = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "gw_privacy_receipts_total",
+		Help: "Privacy receipt outcomes by bounded profile and result.",
+	}, []string{"profile", "result"})
+	m.privacyDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "gw_privacy_processing_duration_seconds",
+		Help:    "Privacy processing duration in seconds by bounded profile and stage.",
+		Buckets: prometheus.DefBuckets,
+	}, []string{"profile", "stage"})
+	m.privacyScopeEvents = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "gw_privacy_scope_events_total",
+		Help: "Privacy scope lifecycle events by bounded event.",
+	}, []string{"event"})
+	m.privacyCapacityRejections = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "gw_privacy_capacity_rejections_total",
+		Help: "Privacy capacity rejections by bounded resource.",
+	}, []string{"resource"})
+	m.privacyMappingOperations = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "gw_privacy_mapping_operations_total",
+		Help: "Privacy mapping operations by bounded operation and result.",
+	}, []string{"operation", "result"})
+	m.privacyErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "gw_privacy_errors_total",
+		Help: "Privacy internal errors by bounded stage and reason.",
+	}, []string{"stage", "reason"})
+	m.privacyTriageRequests = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "gw_privacy_triage_requests_total",
+		Help: "Privacy triage operations by bounded operation and result.",
+	}, []string{"operation", "result"})
+	m.privacyWorkloads = newSkillLimiter()
+
+	m.hookReg.MustRegister(
+		m.privacyRequests,
+		m.privacyTransformations,
+		m.privacyRestorations,
+		m.privacyBlocks,
+		m.privacyResidualFindings,
+		m.privacyReceipts,
+		m.privacyDuration,
+		m.privacyScopeEvents,
+		m.privacyCapacityRejections,
+		m.privacyMappingOperations,
+		m.privacyErrors,
+		m.privacyTriageRequests,
+		prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "gw_privacy_scopes_active", Help: "Current retained privacy scopes."}, func() float64 { return float64(stats().ScopesActive) }),
+		prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "gw_privacy_scope_requests_in_flight", Help: "Current requests holding privacy scope references."}, func() float64 { return float64(stats().RequestsInFlight) }),
+		prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "gw_privacy_mapping_entries", Help: "Current reversible privacy mapping entries."}, func() float64 { return float64(stats().Entries) }),
+		prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "gw_privacy_scope_capacity", Help: "Configured maximum retained privacy scopes."}, func() float64 { return float64(stats().MaxScopes) }),
+		prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "gw_privacy_mapping_capacity", Help: "Configured global reversible privacy mapping capacity."}, func() float64 { return float64(stats().MaxTotalEntries) }),
+		prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "gw_privacy_mapping_per_scope_capacity", Help: "Configured reversible privacy mapping capacity per scope."}, func() float64 { return float64(stats().MaxEntriesPerScope) }),
+		prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "gw_privacy_scope_ttl_seconds", Help: "Configured privacy scope idle TTL in seconds."}, func() float64 { return stats().ScopeTTL.Seconds() }),
+		prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "gw_privacy_oldest_scope_age_seconds", Help: "Age in seconds of the oldest retained privacy scope."}, func() float64 { return stats().OldestScopeAge.Seconds() }),
+		prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "gw_privacy_triage_enabled", Help: "Whether break-glass privacy triage is enabled (1 or 0)."}, func() float64 {
+			if stats().TriageEnabled {
+				return 1
+			}
+			return 0
+		}),
+	)
+}
+
+func (m *Metrics) RecordPrivacyRequest(profile, surface, workload, result string) {
+	if m.privacyRequests != nil {
+		m.privacyRequests.WithLabelValues(
+			privacyLabel(profile, privacyProfiles),
+			privacyLabel(surface, privacySurfaces),
+			m.privacyWorkloads.bucket(workload),
+			privacyLabel(result, privacyResults),
+		).Inc()
+	}
+}
+
+func (m *Metrics) RecordPrivacyTransformation(profile, entity, action string) {
+	if m.privacyTransformations != nil {
+		m.privacyTransformations.WithLabelValues(
+			privacyLabel(profile, privacyProfiles),
+			privacyLabel(entity, privacyEntities),
+			privacyLabel(action, privacyActions),
+		).Inc()
+	}
+}
+
+func (m *Metrics) RecordPrivacyRestoration(profile, entity, result string) {
+	if m.privacyRestorations != nil {
+		m.privacyRestorations.WithLabelValues(
+			privacyLabel(profile, privacyProfiles),
+			privacyLabel(entity, privacyEntities),
+			privacyLabel(result, privacyResults),
+		).Inc()
+	}
+}
+
+func (m *Metrics) RecordPrivacyBlock(profile, stage, reason string) {
+	if m.privacyBlocks != nil {
+		m.privacyBlocks.WithLabelValues(
+			privacyLabel(profile, privacyProfiles),
+			privacyLabel(stage, privacyStages),
+			privacyLabel(reason, privacyReasons),
+		).Inc()
+	}
+}
+
+func (m *Metrics) RecordPrivacyResidual(profile, stage, entity string) {
+	if m.privacyResidualFindings != nil {
+		m.privacyResidualFindings.WithLabelValues(
+			privacyLabel(profile, privacyProfiles),
+			privacyLabel(stage, privacyStages),
+			privacyLabel(entity, privacyEntities),
+		).Inc()
+	}
+}
+
+func (m *Metrics) RecordPrivacyReceipt(profile, result string) {
+	if m.privacyReceipts != nil {
+		m.privacyReceipts.WithLabelValues(
+			privacyLabel(profile, privacyProfiles),
+			privacyLabel(result, privacyResults),
+		).Inc()
+	}
+}
+
+func (m *Metrics) ObservePrivacyDuration(profile, stage string, elapsed time.Duration) {
+	if m.privacyDuration != nil {
+		m.privacyDuration.WithLabelValues(
+			privacyLabel(profile, privacyProfiles),
+			privacyLabel(stage, privacyStages),
+		).Observe(elapsed.Seconds())
+	}
+}
+
+func (m *Metrics) RecordPrivacyScopeEvent(event string) {
+	if m.privacyScopeEvents != nil {
+		m.privacyScopeEvents.WithLabelValues(privacyLabel(event, privacyScopeEvents)).Inc()
+	}
+}
+
+func (m *Metrics) RecordPrivacyCapacityRejection(resource string) {
+	if m.privacyCapacityRejections != nil {
+		m.privacyCapacityRejections.WithLabelValues(privacyLabel(resource, privacyResources)).Inc()
+	}
+}
+
+func (m *Metrics) RecordPrivacyMappingOperation(operation, result string) {
+	if m.privacyMappingOperations != nil {
+		m.privacyMappingOperations.WithLabelValues(
+			privacyLabel(operation, privacyMappingOperations),
+			privacyLabel(result, privacyResults),
+		).Inc()
+	}
+}
+
+func (m *Metrics) RecordPrivacyError(stage, reason string) {
+	if m.privacyErrors != nil {
+		m.privacyErrors.WithLabelValues(
+			privacyLabel(stage, privacyStages),
+			privacyLabel(reason, privacyReasons),
+		).Inc()
+	}
+}
+
+func (m *Metrics) RecordPrivacyTriage(operation, result string) {
+	if m.privacyTriageRequests != nil {
+		m.privacyTriageRequests.WithLabelValues(
+			privacyLabel(operation, privacyTriageOperations),
+			privacyLabel(result, privacyResults),
+		).Inc()
+	}
+}
+
+func privacyLabel(value string, allowed map[string]struct{}) string {
+	if _, ok := allowed[value]; ok {
+		return value
+	}
+	return "other"
+}
+
+func privacyValues(values ...string) map[string]struct{} {
+	allowed := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		allowed[value] = struct{}{}
+	}
+	return allowed
+}
+
+var (
+	privacyProfiles          = privacyValues("standard", "strict")
+	privacySurfaces          = privacyValues("ollama", "openai", "anthropic")
+	privacyActions           = privacyValues("replace", "mask", "hash", "drop", "encrypt", "pseudonymize")
+	privacyStages            = privacyValues("profile", "scope", "input", "output", "classify", "transform", "verify", "restore", "mapping", "encrypt", "token", "action", "receipt", "triage")
+	privacyReasons           = privacyValues("token", "residual", "secret", "original", "alias", "integrity", "internal", "panic", "capacity", "closed", "invalid", "unavailable")
+	privacyResults           = privacyValues("pass", "block", "error", "hit", "miss", "insert", "restore", "collision", "rejected", "denied", "failed", "completed", "closing")
+	privacyScopeEvents       = privacyValues("created", "expired", "closed", "cleared")
+	privacyResources         = privacyValues("scope", "per_scope", "global")
+	privacyMappingOperations = privacyValues("lookup", "insert", "restore", "collision")
+	privacyTriageOperations  = privacyValues("status", "list", "inspect", "clear", "clear_all")
+	privacyEntities          = privacyValues(
+		"Email", "IPv4", "IPv6", "SSN", "CreditCard", "USPhone", "SIP_URI",
+		"IMEI", "IMSI", "MSISDN", "MAC_ADDRESS", "COORDINATES", "SITE",
+		"USAddress", "USState", "USZIP", "PERSON", "LOCATION",
+		"PRIVATE_KEY", "PROXY_AUTHORIZATION", "AUTHORIZATION", "GITHUB_TOKEN",
+		"GITLAB_TOKEN", "OPENAI_API_KEY", "CREDENTIAL_URL", "PASSPHRASE",
+		"PASSWORD", "AWS_SECRET_ACCESS_KEY", "AWS_ACCESS_KEY_ID", "CLIENT_SECRET",
+		"REFRESH_TOKEN", "OAUTH_TOKEN", "ACCESS_TOKEN", "API_KEY", "SECRET",
+	)
+)
 
 // Handler serves the Prometheus exposition format. Mount at GET /metrics.
 func (m *Metrics) Handler() http.Handler {

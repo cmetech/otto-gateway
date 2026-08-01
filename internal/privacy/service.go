@@ -42,21 +42,6 @@ const maxCompatibilityTraversalDepth = 64
 
 const secretHMACDomain = "otto-gateway/privacy/secret-label/v1"
 
-// Observers are bounded event callbacks owned by the privacy service.
-type Observers struct {
-	Request           func(profile Profile, surface, workload, result string)
-	Transformation    func(profile Profile, entity string, action Action)
-	Restoration       func(profile Profile, entity, result string)
-	Block             func(profile Profile, stage, reason string)
-	Residual          func(profile Profile, stage, entity string)
-	Receipt           func(profile Profile, result string)
-	Duration          func(profile Profile, stage string, elapsed time.Duration)
-	ScopeEvent        func(event string)
-	CapacityRejection func(resource string)
-	MappingOperation  func(operation, result string)
-	InternalError     func(stage, reason string)
-}
-
 // Config is the immutable privacy-service configuration.
 type Config struct {
 	DefaultProfile     Profile
@@ -184,6 +169,8 @@ type Service struct {
 	requestsBlocked   atomic.Uint64
 	lastErrorMu       sync.Mutex
 	lastErrorCode     string
+	scopeObserverMu   sync.Mutex
+	observedScopes    map[*scopeState]struct{}
 
 	closed     atomic.Bool
 	closeOnce  sync.Once
@@ -252,7 +239,13 @@ func (s *Service) startReaper(clock Clock, ttl time.Duration) {
 		for {
 			select {
 			case <-ticker.C():
-				s.store.ReapExpired()
+				reaped := s.store.ReapExpired()
+				s.pruneObservedScopes()
+				for range reaped {
+					if observe := s.config.Observers.ScopeEvent; observe != nil {
+						observe("expired")
+					}
+				}
 			case <-s.reaperStop:
 				return
 			}
@@ -293,6 +286,7 @@ func (s *Service) Before(ctx context.Context, req *canonical.ChatRequest) (resp 
 		}
 		if err != nil {
 			s.finalizeInboundErrorReceipt(ctx, resolvedProfile)
+			s.observeRequestFailure(ctx, resolvedProfile, err)
 		}
 	}()
 	if s == nil || !s.config.PIIEnabled || req == nil {
@@ -324,7 +318,9 @@ func (s *Service) Before(ctx context.Context, req *canonical.ChatRequest) (resp 
 	transform := func(key, value string) string {
 		return s.transformStandardValue(state, summary, counters, next, key, value)
 	}
+	started := time.Now()
 	transformStandardRequest(req, transform)
+	s.observeDuration(ProfileStandard, "transform", time.Since(started))
 	if err := s.setStandardReceipt(state, "input"); err != nil {
 		return nil, err
 	}
@@ -353,6 +349,113 @@ func (s *Service) recoverInboundPanic(ctx context.Context) error {
 		s.lastErrorMu.Unlock()
 	}
 	return &Error{Code: CodeInternalError, Stage: "input"}
+}
+
+func (s *Service) observeRequestFailure(ctx context.Context, profile Profile, err error) {
+	if s == nil || err == nil {
+		return
+	}
+	if !validProfile(profile) {
+		if state, ok := StateFromContext(ctx); ok {
+			profile = state.effectiveProfile()
+		}
+	}
+	if !validProfile(profile) {
+		profile = s.config.DefaultProfile
+	}
+	if !validProfile(profile) {
+		profile = ProfileStandard
+	}
+	result := "error"
+	var privacyErr *Error
+	if errors.As(err, &privacyErr) {
+		if privacyErr.Code == CodeInputBlocked || privacyErr.Code == CodeOutputBlocked {
+			result = "block"
+		}
+		if privacyErr.Code == CodeCapacityExceeded {
+			s.observeCapacityRejection(privacyErr.Stage)
+		}
+		if privacyErr.Code == CodeInternalError {
+			s.observeInternalError(privacyErr.Stage)
+		}
+	}
+	s.observeRequestOutcome(ctx, profile, result)
+}
+
+func (s *Service) observeRequestOutcome(ctx context.Context, profile Profile, result string) {
+	meta := RequestMetadata{}
+	if state, ok := StateFromContext(ctx); ok {
+		meta = state.Metadata()
+	}
+	if observe := s.config.Observers.Request; observe != nil {
+		observe(profile, meta.Surface, meta.Workload, result)
+	}
+}
+
+func (s *Service) observeCapacityRejection(stage string) {
+	resource := stage
+	switch stage {
+	case "scope":
+	case "mapping", "token":
+		resource = "per_scope"
+	default:
+		resource = "global"
+	}
+	if observe := s.config.Observers.CapacityRejection; observe != nil {
+		observe(resource)
+	}
+}
+
+func (s *Service) observeInternalError(stage string) {
+	if observe := s.config.Observers.InternalError; observe != nil {
+		observe(stage, "internal")
+	}
+}
+
+func (s *Service) observeDuration(profile Profile, stage string, elapsed time.Duration) {
+	if observe := s.config.Observers.Duration; observe != nil {
+		observe(profile, stage, elapsed)
+	}
+}
+
+func (s *Service) observeScopeCreated(lease *ScopeLease) {
+	if lease == nil || lease.scope == nil {
+		return
+	}
+	s.scopeObserverMu.Lock()
+	if s.observedScopes == nil {
+		s.observedScopes = make(map[*scopeState]struct{})
+	}
+	_, seen := s.observedScopes[lease.scope]
+	if !seen {
+		s.observedScopes[lease.scope] = struct{}{}
+	}
+	s.scopeObserverMu.Unlock()
+	if !seen {
+		if observe := s.config.Observers.ScopeEvent; observe != nil {
+			observe("created")
+		}
+	}
+}
+
+func (s *Service) pruneObservedScopes() {
+	if s == nil || s.store == nil {
+		return
+	}
+	s.store.mu.Lock()
+	retained := make(map[*scopeState]struct{}, len(s.store.scopes))
+	for _, scope := range s.store.scopes {
+		retained[scope] = struct{}{}
+	}
+	s.store.mu.Unlock()
+
+	s.scopeObserverMu.Lock()
+	for scope := range s.observedScopes {
+		if _, ok := retained[scope]; !ok {
+			delete(s.observedScopes, scope)
+		}
+	}
+	s.scopeObserverMu.Unlock()
 }
 
 func (s *Service) finalizeInboundErrorReceipt(ctx context.Context, resolvedProfile Profile) {
@@ -443,6 +546,7 @@ func (s *Service) beforeStrict(ctx context.Context, state *RequestState, req *ca
 		lease.Release()
 		return &Error{Code: CodeInternalError, Stage: "scope"}
 	}
+	s.observeScopeCreated(lease)
 	state.setValidatedReplay(false)
 	defer func() {
 		if err != nil {
@@ -532,21 +636,23 @@ func (s *Service) transformInbound(_ context.Context, state *RequestState, req *
 		}
 		return transformed, nil
 	}
+	started := time.Now()
 	if err := TransformRequestStrings(req, transform); err != nil {
+		s.observeDuration(ProfileStrict, "transform", time.Since(started))
 		var privacyErr *Error
 		if errors.As(err, &privacyErr) {
 			return privacyErr
 		}
 		return &Error{Code: CodeInternalError, Stage: "transform", Cause: err}
 	}
+	s.observeDuration(ProfileStrict, "transform", time.Since(started))
+	started = time.Now()
 	if err := s.verifyInboundResidual(state, req); err != nil {
+		s.observeDuration(ProfileStrict, "verify", time.Since(started))
 		return err
 	}
+	s.observeDuration(ProfileStrict, "verify", time.Since(started))
 	s.requestsProtected.Add(1)
-	if observe := s.config.Observers.Request; observe != nil {
-		meta := state.Metadata()
-		observe(ProfileStrict, meta.Surface, meta.Workload, "pass")
-	}
 	return nil
 }
 
@@ -561,12 +667,25 @@ func (s *Service) strictReplacement(
 	action := s.strictAction(finding)
 	switch action {
 	case ActionPseudonymize:
+		_, existed := lease.ResolveOriginal(finding.Entity, original)
+		if observe := s.config.Observers.MappingOperation; observe != nil {
+			if existed {
+				observe("lookup", "hit")
+			} else {
+				observe("lookup", "miss")
+			}
+		}
 		mapped, err := s.mapper.Map(lease, finding.Entity, original, ProvenanceInput)
 		if err != nil {
 			if errors.Is(err, errCapacityExceeded) {
 				return "", action, 0, &Error{Code: CodeCapacityExceeded, Stage: "mapping"}
 			}
 			return "", action, 0, &Error{Code: CodeInternalError, Stage: "mapping"}
+		}
+		if !existed {
+			if observe := s.config.Observers.MappingOperation; observe != nil {
+				observe("insert", "pass")
+			}
 		}
 		return mapped, action, 0, nil
 	case ActionDrop:
@@ -913,12 +1032,14 @@ func (s *Service) After(ctx context.Context, req *canonical.ChatRequest, resp *c
 				if receiptErr := s.setStrictReceipt(state, result); receiptErr != nil {
 					err = receiptErr
 				}
+				s.observeRequestFailure(ctx, ProfileStrict, err)
 			}
 		}()
 		if resp == nil {
 			if receiptErr := s.setStrictReceipt(state, "error"); receiptErr != nil {
 				return receiptErr
 			}
+			s.observeRequestOutcome(ctx, ProfileStrict, "error")
 			return nil
 		}
 		working, err := cloneChatResponse(resp)
@@ -932,6 +1053,7 @@ func (s *Service) After(ctx context.Context, req *canonical.ChatRequest, resp *c
 			return err
 		}
 		*resp = *working
+		s.observeRequestOutcome(ctx, ProfileStrict, "pass")
 		return nil
 	}
 	if resp == nil {
@@ -945,7 +1067,9 @@ func (s *Service) After(ctx context.Context, req *canonical.ChatRequest, resp *c
 		restore := func(_ string, value string) string {
 			return s.restoreStandardValue(state, entities, value)
 		}
+		started := time.Now()
 		transformStandardResponse(resp, restore)
+		s.observeDuration(ProfileStandard, "restore", time.Since(started))
 	}
 	coverage := "full"
 	if req != nil && req.Stream {
@@ -955,17 +1079,28 @@ func (s *Service) After(ctx context.Context, req *canonical.ChatRequest, resp *c
 }
 
 func (s *Service) transformOutbound(_ context.Context, state *RequestState, resp *canonical.ChatResponse) error {
+	started := time.Now()
 	authorization, err := s.prepareStrictOutbound(state, resp)
+	s.observeDuration(ProfileStrict, "transform", time.Since(started))
 	if err != nil {
 		return err
 	}
+	started = time.Now()
 	if err := s.verifyStrictOutboundResidual(state, resp, authorization); err != nil {
+		s.observeDuration(ProfileStrict, "verify", time.Since(started))
 		return err
 	}
+	s.observeDuration(ProfileStrict, "verify", time.Since(started))
+	started = time.Now()
 	if err := s.restoreStrictOutbound(state, resp, authorization); err != nil {
+		s.observeDuration(ProfileStrict, "restore", time.Since(started))
 		return err
 	}
-	return s.verifyStrictOutboundIntegrity(state, resp, authorization)
+	s.observeDuration(ProfileStrict, "restore", time.Since(started))
+	started = time.Now()
+	err = s.verifyStrictOutboundIntegrity(state, resp, authorization)
+	s.observeDuration(ProfileStrict, "verify", time.Since(started))
+	return err
 }
 
 func (s *Service) setStrictReceipt(state *RequestState, result string) error {
@@ -1112,12 +1247,25 @@ func (s *Service) prepareStrictOutbound(state *RequestState, resp *canonical.Cha
 				if reservedTechnicalAlias(finding.Entity, original) {
 					return "", s.blockOutbound(state, "alias")
 				}
+				_, existed := lease.ResolveOriginal(finding.Entity, original)
+				if observe := s.config.Observers.MappingOperation; observe != nil {
+					if existed {
+						observe("lookup", "hit")
+					} else {
+						observe("lookup", "miss")
+					}
+				}
 				mapped, err := s.mapper.Map(lease, finding.Entity, original, ProvenanceGenerated)
 				if err != nil {
 					if errors.Is(err, errCapacityExceeded) {
 						return "", &Error{Code: CodeCapacityExceeded, Stage: "mapping"}
 					}
 					return "", &Error{Code: CodeInternalError, Stage: "mapping"}
+				}
+				if !existed {
+					if observe := s.config.Observers.MappingOperation; observe != nil {
+						observe("insert", "pass")
+					}
 				}
 				replacement = mapped
 				action = ActionPseudonymize
@@ -1352,6 +1500,9 @@ func (s *Service) restoreStrictOutbound(
 			state.addRestored(1)
 			if observe := s.config.Observers.Restoration; observe != nil {
 				observe(ProfileStrict, rewrite.entity, "pass")
+			}
+			if observe := s.config.Observers.MappingOperation; observe != nil {
+				observe("restore", "pass")
 			}
 		}
 
@@ -1820,7 +1971,15 @@ func (s *Service) Close() {
 	s.closeOnce.Do(func() {
 		s.closed.Store(true)
 		if s.store != nil {
-			s.store.shutdownAndClear()
+			summary := s.store.shutdownAndClear()
+			s.scopeObserverMu.Lock()
+			s.observedScopes = nil
+			s.scopeObserverMu.Unlock()
+			for range summary.Completed + summary.Closing {
+				if observe := s.config.Observers.ScopeEvent; observe != nil {
+					observe("closed")
+				}
+			}
 		}
 		if s.reaperStop != nil {
 			close(s.reaperStop)

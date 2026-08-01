@@ -195,6 +195,85 @@ func TestPrivacyServiceTraceSummaryLifecycle(t *testing.T) {
 	}
 }
 
+// TestPrivacyMetricsWiredAndNoLeak catches a metrics registry that is not
+// connected to the one app privacy service, stale push-style gauges, or any
+// accidental serialization of protected request content into a scrape.
+func TestPrivacyMetricsWiredAndNoLeak(t *testing.T) {
+	a, cleanup, err := newApp(context.Background(), strictPrivacyConfig(), testutil.Logger(t))
+	if err != nil {
+		t.Fatalf("newApp: %v", err)
+	}
+	defer cleanup()
+
+	const protectedCanary = "10.23.45.67"
+	state := privacy.NewRequestState(privacy.RequestMetadata{
+		RequestedProfile: "strict",
+		ScopeID:          "task12-metrics",
+		Surface:          "openai",
+		Workload:         "network-hardening",
+	})
+	ctx := privacy.WithRequestState(context.Background(), state)
+	req := &canonical.ChatRequest{Messages: []canonical.Message{{
+		Role: canonical.RoleUser,
+		Content: []canonical.ContentPart{{
+			Kind: canonical.ContentKindText,
+			Text: "peer " + protectedCanary,
+		}},
+	}}}
+	if response, err := a.privacyService.Before(ctx, req); err != nil || response != nil {
+		t.Fatalf("Before = (%v, %v), want (nil, nil)", response, err)
+	}
+	resp := &canonical.ChatResponse{Message: canonical.Message{
+		Role: canonical.RoleAssistant,
+		Content: []canonical.ContentPart{{
+			Kind: canonical.ContentKindText,
+			Text: req.Messages[0].Content[0].Text,
+		}},
+	}}
+	if err := a.privacyService.After(ctx, req, resp); err != nil {
+		t.Fatalf("After: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	a.srv.ServeHTTP(recorder, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/metrics", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("GET /metrics = %d, want 200", recorder.Code)
+	}
+	body := recorder.Body.String()
+	for _, want := range []string{
+		`gw_privacy_requests_total{gateway_id=`,
+		`profile="strict",result="pass",surface="openai",workload="network-hardening"} 1`,
+		`gw_privacy_receipts_total{gateway_id=`,
+		`profile="strict",result="pass"} 1`,
+		`gw_privacy_transformations_total{action="pseudonymize",entity="IPv4",gateway_id=`,
+		`gw_privacy_restorations_total{entity="IPv4",gateway_id=`,
+		`profile="strict",result="pass"} 1`,
+		`gw_privacy_mapping_operations_total{gateway_id=`,
+		`operation="lookup",result="miss"} 1`,
+		`operation="insert",result="pass"} 1`,
+		`operation="restore",result="pass"} 1`,
+		`gw_privacy_scope_events_total{event="created",gateway_id=`,
+		`gw_privacy_processing_duration_seconds_count{gateway_id=`,
+		`gw_privacy_scopes_active{gateway_id=`,
+		`gw_privacy_mapping_entries{gateway_id=`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("privacy scrape missing %q\n%s", want, body)
+		}
+	}
+	for _, forbidden := range []string{protectedCanary, "task12-metrics"} {
+		if strings.Contains(body, forbidden) {
+			t.Errorf("privacy scrape leaked protected value %q", forbidden)
+		}
+	}
+
+	triage := httptest.NewRecorder()
+	a.srv.ServeHTTP(triage, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/admin/api/privacy/scopes", nil))
+	if triage.Code != http.StatusNotFound {
+		t.Fatalf("Task 12 introduced privacy triage policy/route: status=%d", triage.Code)
+	}
+}
+
 func TestHookOrderPrivacyBoundary(t *testing.T) {
 	cfg := strictPrivacyConfig()
 	cfg.ChatTrace = true

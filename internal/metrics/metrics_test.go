@@ -278,6 +278,139 @@ func TestRegisterCompression_SeriesExposed(t *testing.T) {
 	}
 }
 
+// TestRegisterPrivacy_ExactContract catches missing or renamed privacy series,
+// wrong collector types, missing fixed labels, and gauges that cache startup
+// state instead of pulling a fresh value at scrape time.
+func TestRegisterPrivacy_ExactContract(t *testing.T) {
+	m := testMetrics(metrics.PoolStats{}, metrics.SessionStats{})
+	stats := metrics.PrivacyStats{
+		ScopesActive:       2,
+		RequestsInFlight:   3,
+		Entries:            5,
+		MaxScopes:          128,
+		MaxEntriesPerScope: 4096,
+		MaxTotalEntries:    32768,
+		ScopeTTL:           time.Hour,
+		OldestScopeAge:     7 * time.Minute,
+		TriageEnabled:      true,
+	}
+	m.RegisterPrivacy(func() metrics.PrivacyStats { return stats })
+
+	m.RecordPrivacyRequest("strict", "openai", "network-hardening", "pass")
+	m.RecordPrivacyTransformation("strict", "IPv4", "pseudonymize")
+	m.RecordPrivacyRestoration("strict", "IPv4", "pass")
+	m.RecordPrivacyBlock("strict", "output", "residual")
+	m.RecordPrivacyResidual("strict", "output", "IPv4")
+	m.RecordPrivacyReceipt("strict", "pass")
+	m.ObservePrivacyDuration("strict", "transform", 25*time.Millisecond)
+	m.RecordPrivacyScopeEvent("created")
+	m.RecordPrivacyCapacityRejection("global")
+	m.RecordPrivacyMappingOperation("insert", "pass")
+	m.RecordPrivacyError("mapping", "internal")
+	m.RecordPrivacyTriage("inspect", "pass")
+
+	body := scrape(t, m)
+	for _, name := range []string{
+		"gw_privacy_requests_total", "gw_privacy_transformations_total",
+		"gw_privacy_restorations_total", "gw_privacy_blocks_total",
+		"gw_privacy_residual_findings_total", "gw_privacy_receipts_total",
+		"gw_privacy_processing_duration_seconds", "gw_privacy_scope_events_total",
+		"gw_privacy_capacity_rejections_total", "gw_privacy_mapping_operations_total",
+		"gw_privacy_errors_total", "gw_privacy_triage_requests_total",
+		"gw_privacy_scopes_active", "gw_privacy_scope_requests_in_flight",
+		"gw_privacy_mapping_entries", "gw_privacy_scope_capacity",
+		"gw_privacy_mapping_capacity", "gw_privacy_mapping_per_scope_capacity",
+		"gw_privacy_scope_ttl_seconds", "gw_privacy_oldest_scope_age_seconds",
+		"gw_privacy_triage_enabled",
+	} {
+		if !strings.Contains(body, "# HELP "+name+" ") || !strings.Contains(body, "# TYPE "+name+" ") {
+			t.Errorf("privacy collector %q missing HELP/TYPE metadata\n%s", name, body)
+		}
+	}
+	for _, want := range []string{
+		"# TYPE gw_privacy_requests_total counter",
+		`gw_privacy_requests_total{gateway_id="gw-test-123",profile="strict",result="pass",surface="openai",workload="network-hardening"} 1`,
+		"# TYPE gw_privacy_transformations_total counter",
+		"# TYPE gw_privacy_restorations_total counter",
+		"# TYPE gw_privacy_blocks_total counter",
+		"# TYPE gw_privacy_residual_findings_total counter",
+		"# TYPE gw_privacy_receipts_total counter",
+		"# TYPE gw_privacy_processing_duration_seconds histogram",
+		"# TYPE gw_privacy_scope_events_total counter",
+		"# TYPE gw_privacy_capacity_rejections_total counter",
+		"# TYPE gw_privacy_mapping_operations_total counter",
+		"# TYPE gw_privacy_errors_total counter",
+		"# TYPE gw_privacy_triage_requests_total counter",
+		`gw_privacy_scopes_active{gateway_id="gw-test-123"} 2`,
+		`gw_privacy_scope_requests_in_flight{gateway_id="gw-test-123"} 3`,
+		`gw_privacy_mapping_entries{gateway_id="gw-test-123"} 5`,
+		`gw_privacy_scope_capacity{gateway_id="gw-test-123"} 128`,
+		`gw_privacy_mapping_capacity{gateway_id="gw-test-123"} 32768`,
+		`gw_privacy_mapping_per_scope_capacity{gateway_id="gw-test-123"} 4096`,
+		`gw_privacy_scope_ttl_seconds{gateway_id="gw-test-123"} 3600`,
+		`gw_privacy_oldest_scope_age_seconds{gateway_id="gw-test-123"} 420`,
+		`gw_privacy_triage_enabled{gateway_id="gw-test-123"} 1`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("privacy scrape missing %q\n%s", want, body)
+		}
+	}
+
+	stats.ScopesActive = 9
+	if body = scrape(t, m); !strings.Contains(body, `gw_privacy_scopes_active{gateway_id="gw-test-123"} 9`) {
+		t.Errorf("privacy pull gauge did not refresh from stats source:\n%s", body)
+	}
+}
+
+// TestPrivacyLabels_MapUnexpectedValuesToOther catches accidental use of
+// caller-controlled or failure-detail strings as unbounded metric labels.
+func TestPrivacyLabels_MapUnexpectedValuesToOther(t *testing.T) {
+	m := testMetrics(metrics.PoolStats{}, metrics.SessionStats{})
+	m.RegisterPrivacy(func() metrics.PrivacyStats { return metrics.PrivacyStats{} })
+	canary := "protected-canary-9f24d6"
+
+	m.RecordPrivacyRequest(canary, canary, "known-workload", canary)
+	m.RecordPrivacyTransformation(canary, canary, canary)
+	m.RecordPrivacyRestoration(canary, canary, canary)
+	m.RecordPrivacyBlock(canary, canary, canary)
+	m.RecordPrivacyResidual(canary, canary, canary)
+	m.RecordPrivacyReceipt(canary, canary)
+	m.ObservePrivacyDuration(canary, canary, time.Millisecond)
+	m.RecordPrivacyScopeEvent(canary)
+	m.RecordPrivacyCapacityRejection(canary)
+	m.RecordPrivacyMappingOperation(canary, canary)
+	m.RecordPrivacyError(canary, canary)
+	m.RecordPrivacyTriage(canary, canary)
+
+	body := scrape(t, m)
+	if strings.Contains(body, canary) {
+		t.Fatalf("unexpected privacy label leaked into scrape: %s", canary)
+	}
+	for _, want := range []string{
+		`profile="other"`, `surface="other"`, `result="other"`,
+		`entity="other"`, `action="other"`, `stage="other"`,
+		`reason="other"`, `event="other"`, `resource="other"`,
+		`operation="other"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("scrape missing bounded fallback %q\n%s", want, body)
+		}
+	}
+}
+
+// TestPrivacyWorkload_CardinalityCap catches a separate privacy workload
+// limiter being omitted or sharing state with unrelated LLM labels.
+func TestPrivacyWorkload_CardinalityCap(t *testing.T) {
+	m := testMetrics(metrics.PoolStats{}, metrics.SessionStats{})
+	m.RegisterPrivacy(func() metrics.PrivacyStats { return metrics.PrivacyStats{} })
+	for i := 0; i < metrics.MaxSkillCardinality+1; i++ {
+		m.RecordPrivacyRequest("strict", "openai", "privacy-workload-"+itoa(i), "pass")
+	}
+	if body := scrape(t, m); !strings.Contains(body, `workload="other"`) {
+		t.Errorf("privacy workloads past the cap must bucket to other:\n%s", body)
+	}
+}
+
 func TestPoolAcquireDuration_SeriesAndBuckets(t *testing.T) {
 	m := testMetrics(metrics.PoolStats{}, metrics.SessionStats{})
 	for _, result := range []string{"immediate", "waited", "timeout", "cancelled", "closed"} {

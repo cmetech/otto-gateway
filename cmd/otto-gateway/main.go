@@ -37,6 +37,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -300,7 +301,69 @@ func newAppWithRegistryLoader(ctx context.Context, cfg config.Config, logger *sl
 	// bridges Pre→Post timings via request_id. /health/hooks dedup
 	// (slice 5 Task 4) elides the duplicate row.
 
-	privacyService, err := buildPrivacyService(cfg)
+	var privacyMetrics atomic.Pointer[metrics.Metrics]
+	privacyService, err := buildPrivacyService(cfg, privacy.Observers{
+		Request: func(profile privacy.Profile, surface, workload, result string) {
+			if recorder := privacyMetrics.Load(); recorder != nil {
+				recorder.RecordPrivacyRequest(string(profile), surface, workload, result)
+			}
+		},
+		Transformation: func(profile privacy.Profile, entity string, action privacy.Action) {
+			if recorder := privacyMetrics.Load(); recorder != nil {
+				recorder.RecordPrivacyTransformation(string(profile), entity, string(action))
+			}
+		},
+		Restoration: func(profile privacy.Profile, entity, result string) {
+			if recorder := privacyMetrics.Load(); recorder != nil {
+				recorder.RecordPrivacyRestoration(string(profile), entity, result)
+			}
+		},
+		Block: func(profile privacy.Profile, stage, reason string) {
+			if recorder := privacyMetrics.Load(); recorder != nil {
+				recorder.RecordPrivacyBlock(string(profile), stage, reason)
+			}
+		},
+		Residual: func(profile privacy.Profile, stage, entity string) {
+			if recorder := privacyMetrics.Load(); recorder != nil {
+				recorder.RecordPrivacyResidual(string(profile), stage, entity)
+			}
+		},
+		Receipt: func(profile privacy.Profile, result string) {
+			if recorder := privacyMetrics.Load(); recorder != nil {
+				recorder.RecordPrivacyReceipt(string(profile), result)
+			}
+		},
+		Duration: func(profile privacy.Profile, stage string, elapsed time.Duration) {
+			if recorder := privacyMetrics.Load(); recorder != nil {
+				recorder.ObservePrivacyDuration(string(profile), stage, elapsed)
+			}
+		},
+		ScopeEvent: func(event string) {
+			if recorder := privacyMetrics.Load(); recorder != nil {
+				recorder.RecordPrivacyScopeEvent(event)
+			}
+		},
+		CapacityRejection: func(resource string) {
+			if recorder := privacyMetrics.Load(); recorder != nil {
+				recorder.RecordPrivacyCapacityRejection(resource)
+			}
+		},
+		MappingOperation: func(operation, result string) {
+			if recorder := privacyMetrics.Load(); recorder != nil {
+				recorder.RecordPrivacyMappingOperation(operation, result)
+			}
+		},
+		InternalError: func(stage, reason string) {
+			if recorder := privacyMetrics.Load(); recorder != nil {
+				recorder.RecordPrivacyError(stage, reason)
+			}
+		},
+		Triage: func(operation, result string) {
+			if recorder := privacyMetrics.Load(); recorder != nil {
+				recorder.RecordPrivacyTriage(operation, result)
+			}
+		},
+	})
 	if err != nil {
 		cleanup()
 		return nil, func() {}, fmt.Errorf("privacy service: %w", err)
@@ -502,6 +565,7 @@ func newAppWithRegistryLoader(ctx context.Context, cfg config.Config, logger *sl
 			return out
 		},
 	)
+	privacyMetrics.Store(gwMetrics)
 	gwMetrics.RegisterCompression(func() metrics.CompressionStats {
 		stats := compressHook.Stats()
 		return metrics.CompressionStats{
@@ -510,6 +574,20 @@ func newAppWithRegistryLoader(ctx context.Context, cfg config.Config, logger *sl
 			SavedTokens:     stats.SavedTokens,
 			BudgetUnmet:     stats.BudgetUnmet,
 			PanicRecoveries: stats.PanicRecoveries,
+		}
+	})
+	gwMetrics.RegisterPrivacy(func() metrics.PrivacyStats {
+		snapshot := a.privacySnapshot.Snapshot()
+		return metrics.PrivacyStats{
+			ScopesActive:       snapshot.ScopesActive,
+			RequestsInFlight:   snapshot.RequestsInFlight,
+			Entries:            snapshot.Entries,
+			MaxScopes:          snapshot.MaxScopes,
+			MaxEntriesPerScope: snapshot.MaxEntriesPerScope,
+			MaxTotalEntries:    snapshot.MaxTotalEntries,
+			ScopeTTL:           snapshot.ScopeTTL,
+			OldestScopeAge:     snapshot.OldestScopeAge,
+			TriageEnabled:      snapshot.TriageEnabled,
 		}
 	})
 
@@ -1349,7 +1427,7 @@ func filterRecognizers(recognizers []pii.Recognizer, entities []string) []pii.Re
 	return out
 }
 
-func buildPrivacyService(cfg config.Config) (*privacy.Service, error) {
+func buildPrivacyService(cfg config.Config, observers privacy.Observers) (*privacy.Service, error) {
 	profiles := make([]privacy.Profile, len(cfg.PrivacyRequestProfiles))
 	for index, profile := range cfg.PrivacyRequestProfiles {
 		profiles[index] = privacy.Profile(profile)
@@ -1402,6 +1480,7 @@ func buildPrivacyService(cfg config.Config) (*privacy.Service, error) {
 		Classifier:         pii.NewPIIClassifier(activeRecognizers, cfg.PIIEnabledEntities, cfg.PIINEREnabled),
 		SecretClassifier:   privacy.NewSecretClassifier(),
 		TriageEnabled:      cfg.PrivacyTriageEnabled,
+		Observers:          observers,
 	})
 }
 
