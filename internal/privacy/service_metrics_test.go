@@ -26,7 +26,6 @@ type privacyObserverEvents struct {
 }
 
 type gatedMappingObserver struct {
-	store   *ScopeStore
 	ready   sync.WaitGroup
 	release chan struct{}
 }
@@ -44,7 +43,7 @@ func (m *gatedMappingObserver) Map(lease *ScopeLease, entity, original string, p
 	return entry.Synthetic, err
 }
 
-func (m *gatedMappingObserver) MapObserved(lease *ScopeLease, entity, original string, provenance Provenance) (string, mappingOutcome, error) {
+func (m *gatedMappingObserver) mapObserved(lease *ScopeLease, entity, original string, provenance Provenance) (string, mappingOutcome, error) {
 	m.ready.Done()
 	<-m.release
 	entry, created, err := lease.GetOrCreate(entity, original, provenance, fixedCandidate("198.18.0.1"))
@@ -72,7 +71,7 @@ func (collidingMappingObserver) Map(lease *ScopeLease, entity, original string, 
 	return entry.Synthetic, err
 }
 
-func (collidingMappingObserver) MapObserved(lease *ScopeLease, entity, original string, provenance Provenance) (string, mappingOutcome, error) {
+func (collidingMappingObserver) mapObserved(lease *ScopeLease, entity, original string, provenance Provenance) (string, mappingOutcome, error) {
 	entry, created, err := lease.GetOrCreate(entity, original, provenance, func(attempt uint32) (string, error) {
 		if attempt == 0 {
 			return "reserved-alias", nil

@@ -12,6 +12,7 @@ import (
 // Profile selects the privacy policy applied to a scope.
 type Profile string
 
+// Supported Profile values select the standard or strict privacy boundary.
 const (
 	ProfileStandard Profile = "standard"
 	ProfileStrict   Profile = "strict"
@@ -33,6 +34,7 @@ type Clock interface {
 // generated while processing a response.
 type Provenance string
 
+// Provenance values distinguish caller input from generated response data.
 const (
 	ProvenanceInput     Provenance = "input"
 	ProvenanceGenerated Provenance = "generated"
@@ -59,6 +61,7 @@ type MappingEntry struct {
 // leases that were already acquired.
 type ClearResult string
 
+// ClearResult values describe immediate completion or lease draining.
 const (
 	ClearCompleted ClearResult = "completed"
 	ClearClosing   ClearResult = "closing"

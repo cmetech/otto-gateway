@@ -19,6 +19,7 @@ import (
 // Action selects how a finding is transformed.
 type Action string
 
+// Supported Action values select the standard and strict transformations.
 const (
 	ActionReplace      Action = "replace"
 	ActionMask         Action = "mask"
@@ -28,6 +29,7 @@ const (
 	ActionPseudonymize Action = "pseudonymize"
 )
 
+// Hash and encrypted-token constants define privacy wire-format details.
 const (
 	hashTagLength        = 8
 	UnkeyedHashSentinel  = "UNKEYED"
@@ -179,9 +181,20 @@ func ParseEncryptedToken(token string) (entity, payload string, ok bool) {
 // OneWaySecretLabel returns a scoped label without retaining canonical.
 func OneWaySecretLabel(aliasKey []byte, scopeID, entity, canonical string) string {
 	mac := hmac.New(sha256.New, aliasKey)
-	writeLengthPrefixed(mac, []byte(scopeID))
-	writeLengthPrefixed(mac, []byte(entity))
-	writeLengthPrefixed(mac, []byte(canonical))
+	fields := [][]byte{[]byte(scopeID), []byte(entity), []byte(canonical)}
+	for _, field := range fields {
+		if writeLengthPrefixed(mac, field) {
+			continue
+		}
+
+		// Preserve unambiguous framing on 64-bit systems even if a caller
+		// supplies a field larger than the ordinary uint32 wire length.
+		mac = hmac.New(sha256.New, aliasKey)
+		for _, wideField := range fields {
+			writeWideLengthPrefixed(mac, wideField)
+		}
+		break
+	}
 	tag := strings.ToUpper(hex.EncodeToString(mac.Sum(nil))[:12])
 	return fmt.Sprintf("[SECRET:%s_%s]", strings.ToUpper(entity), tag)
 }

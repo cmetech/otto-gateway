@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/netip"
 	"regexp"
@@ -98,10 +99,12 @@ type Summary struct {
 	counts map[string]int
 }
 
+// NewSummary creates an empty request-local transformation summary.
 func NewSummary() *Summary {
 	return &Summary{counts: make(map[string]int)}
 }
 
+// Add records one transformation for entity.
 func (s *Summary) Add(entity string) {
 	if s == nil {
 		return
@@ -114,6 +117,7 @@ func (s *Summary) Add(entity string) {
 	s.mu.Unlock()
 }
 
+// Counts returns an independent copy of the entity counts.
 func (s *Summary) Counts() map[string]int {
 	if s == nil {
 		return nil
@@ -127,6 +131,7 @@ func (s *Summary) Counts() map[string]int {
 	return out
 }
 
+// MarshalJSON implements json.Marshaler without exposing mutable state.
 func (s *Summary) MarshalJSON() ([]byte, error) {
 	if s == nil {
 		return []byte("null"), nil
@@ -140,10 +145,12 @@ func (s *Summary) MarshalJSON() ([]byte, error) {
 
 type summaryContextKey struct{}
 
+// WithSummary attaches a request-local transformation summary to ctx.
 func WithSummary(ctx context.Context, summary *Summary) context.Context {
 	return context.WithValue(ctx, summaryContextKey{}, summary)
 }
 
+// SummaryFromContext returns the request-local transformation summary, if present.
 func SummaryFromContext(ctx context.Context) (*Summary, bool) {
 	if ctx == nil {
 		return nil, false
@@ -183,7 +190,7 @@ type technicalMapping interface {
 }
 
 type observedTechnicalMapping interface {
-	MapObserved(*ScopeLease, string, string, Provenance) (string, mappingOutcome, error)
+	mapObserved(*ScopeLease, string, string, Provenance) (string, mappingOutcome, error)
 }
 
 type candidateClassifier interface {
@@ -559,7 +566,7 @@ func (s *Service) beforeStrict(ctx context.Context, state *RequestState, req *ca
 func generateScopeID() (string, error) {
 	random := make([]byte, 16)
 	if _, err := rand.Read(random); err != nil {
-		return "", err
+		return "", fmt.Errorf("generate privacy scope identifier: %w", err)
 	}
 	return "req-" + strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(random)), nil
 }
@@ -612,7 +619,7 @@ func (s *Service) transformInbound(_ context.Context, state *RequestState, req *
 			}
 			rewrites[index] = rewrite{replacement: replacement, kind: kind}
 			transformed = transformed[:finding.Start] + replacement + transformed[finding.End:]
-			state.addTransformed(1)
+			state.addTransformed()
 			if observe := s.config.Observers.Transformation; observe != nil {
 				observe(ProfileStrict, finding.Entity, action)
 			}
@@ -724,9 +731,13 @@ func (s *Service) mapTechnicalObserved(
 ) (string, error) {
 	mapper, ok := s.mapper.(observedTechnicalMapping)
 	if !ok {
-		return s.mapper.Map(lease, entity, original, provenance)
+		mapped, err := s.mapper.Map(lease, entity, original, provenance)
+		if err != nil {
+			return "", fmt.Errorf("map technical value: %w", err)
+		}
+		return mapped, nil
 	}
-	mapped, outcome, err := mapper.MapObserved(lease, entity, original, provenance)
+	mapped, outcome, err := mapper.mapObserved(lease, entity, original, provenance)
 	s.observeScopeOutcome(nil, false, outcome.expired)
 	if observe := s.config.Observers.MappingOperation; observe != nil {
 		if err == nil {
@@ -743,7 +754,10 @@ func (s *Service) mapTechnicalObserved(
 			observe("insert", "pass")
 		}
 	}
-	return mapped, err
+	if err != nil {
+		return "", fmt.Errorf("map observed technical value: %w", err)
+	}
+	return mapped, nil
 }
 
 func (s *Service) verifyInboundResidual(state *RequestState, req *canonical.ChatRequest) error {
@@ -1007,7 +1021,7 @@ func (s *Service) transformStandardValue(
 		cursor = finding.End
 		summary.Add(finding.Entity)
 		if state != nil {
-			state.addTransformed(1)
+			state.addTransformed()
 		}
 		if observe := s.config.Observers.Transformation; observe != nil {
 			observe(ProfileStandard, finding.Entity, action)
@@ -1285,7 +1299,7 @@ func (s *Service) prepareStrictOutbound(state *RequestState, resp *canonical.Cha
 			transformed = transformed[:finding.Start] + replacement + transformed[finding.End:]
 			rewrites[index].replacement = replacement
 			rewrites[index].changed = true
-			state.addTransformed(1)
+			state.addTransformed()
 			if observe := s.config.Observers.Transformation; observe != nil {
 				observe(ProfileStrict, finding.Entity, action)
 			}

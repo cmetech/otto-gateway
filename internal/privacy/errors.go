@@ -5,6 +5,7 @@ import (
 	"net/http"
 )
 
+// Error code values are the bounded public privacy failure vocabulary.
 const (
 	CodeRequestInvalid     = "privacy_request_invalid"
 	CodeProfileUnavailable = "privacy_profile_unavailable"

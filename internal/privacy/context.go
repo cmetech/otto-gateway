@@ -80,9 +80,9 @@ func (s *RequestState) Metadata() RequestMetadata {
 	return s.metadata
 }
 
-func (s *RequestState) addTransformed(delta int) {
+func (s *RequestState) addTransformed() {
 	s.mu.Lock()
-	s.transformed = addBounded(s.transformed, delta)
+	s.transformed = addBounded(s.transformed, 1)
 	s.mu.Unlock()
 }
 

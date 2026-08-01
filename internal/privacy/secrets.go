@@ -7,6 +7,7 @@ import (
 	"strings"
 )
 
+// #nosec G101 -- this is the reserved generated-label grammar, not a credential.
 const oneWaySecretLabelPatternText = `\[SECRET:[A-Z0-9_]+_[A-F0-9]{12}\]`
 
 var oneWaySecretLabelPattern = regexp.MustCompile(oneWaySecretLabelPatternText)

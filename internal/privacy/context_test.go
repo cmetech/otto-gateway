@@ -50,7 +50,7 @@ func TestContextRequestStateCountersAreBoundedAndConcurrentSafe(t *testing.T) {
 	}
 
 	for range 10 {
-		state.addTransformed(1)
+		state.addTransformed()
 		state.addRestored(1)
 		state.addBlocked(1)
 	}

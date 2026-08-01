@@ -67,11 +67,11 @@ func (m *TechnicalMapper) Map(
 	original string,
 	provenance Provenance,
 ) (string, error) {
-	value, _, err := m.MapObserved(lease, entity, original, provenance)
+	value, _, err := m.mapObserved(lease, entity, original, provenance)
 	return value, err
 }
 
-func (m *TechnicalMapper) MapObserved(
+func (m *TechnicalMapper) mapObserved(
 	lease *ScopeLease,
 	entity string,
 	original string,
@@ -344,7 +344,11 @@ func (m *TechnicalMapper) coordinateRotation(lease *ScopeLease) (technicalRotati
 			if attempt >= coordinateSymmetryCount {
 				return 0, &TechnicalCapacityError{Entity: "COORDINATES"}
 			}
-			return uint16(m.coordinateRotationCandidate(lease.scope.id, int(attempt))), nil
+			candidate := m.coordinateRotationCandidate(lease.scope.id, int(attempt))
+			if candidate < 0 || candidate > math.MaxUint16 {
+				return 0, errTechnicalValue
+			}
+			return uint16(candidate), nil
 		},
 	)
 	if err != nil {
@@ -588,13 +592,28 @@ func (m *TechnicalMapper) ipSelector(
 
 func (m *TechnicalMapper) derive(scopeID, entity, relation string, attempt uint32) [sha256.Size]byte {
 	mac := hmac.New(sha256.New, m.aliasKey)
-	writeLengthPrefixed(mac, []byte(technicalHMACDomain))
-	writeLengthPrefixed(mac, []byte(scopeID))
-	writeLengthPrefixed(mac, []byte(entity))
-	writeLengthPrefixed(mac, []byte(relation))
 	var attemptBytes [4]byte
 	binary.BigEndian.PutUint32(attemptBytes[:], attempt)
-	writeLengthPrefixed(mac, attemptBytes[:])
+	fields := [][]byte{
+		[]byte(technicalHMACDomain),
+		[]byte(scopeID),
+		[]byte(entity),
+		[]byte(relation),
+		attemptBytes[:],
+	}
+	for _, field := range fields {
+		if writeLengthPrefixed(mac, field) {
+			continue
+		}
+
+		// Valid technical fields are far below uint32, but retain
+		// unambiguous framing if this internal helper is ever reused.
+		mac = hmac.New(sha256.New, m.aliasKey)
+		for _, wideField := range fields {
+			writeWideLengthPrefixed(mac, wideField)
+		}
+		break
+	}
 
 	var digest [sha256.Size]byte
 	copy(digest[:], mac.Sum(nil))
@@ -605,9 +624,21 @@ type byteWriter interface {
 	Write([]byte) (int, error)
 }
 
-func writeLengthPrefixed(writer byteWriter, value []byte) {
+func writeLengthPrefixed(writer byteWriter, value []byte) bool {
+	valueLength := uint64(len(value))
+	if valueLength > math.MaxUint32 {
+		return false
+	}
 	var length [4]byte
-	binary.BigEndian.PutUint32(length[:], uint32(len(value)))
+	binary.BigEndian.PutUint32(length[:], uint32(valueLength))
+	_, _ = writer.Write(length[:])
+	_, _ = writer.Write(value)
+	return true
+}
+
+func writeWideLengthPrefixed(writer byteWriter, value []byte) {
+	var length [8]byte
+	binary.BigEndian.PutUint64(length[:], uint64(len(value)))
 	_, _ = writer.Write(length[:])
 	_, _ = writer.Write(value)
 }

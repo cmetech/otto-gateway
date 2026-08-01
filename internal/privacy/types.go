@@ -8,6 +8,7 @@ import "time"
 // higher priority when findings overlap.
 type MatchKind uint8
 
+// MatchKind values are ordered from lowest to highest overlap priority.
 const (
 	MatchNER MatchKind = iota + 1
 	MatchContextualTechnical
@@ -19,6 +20,7 @@ const (
 // Category groups findings by the policy family that handles them.
 type Category string
 
+// Category values select the policy family for a finding.
 const (
 	CategorySecret    Category = "secret"
 	CategoryTechnical Category = "technical"
