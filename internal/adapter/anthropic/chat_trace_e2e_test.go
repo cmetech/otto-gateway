@@ -17,12 +17,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net/http"
 	"sync/atomic"
 	"testing"
 
 	"otto-gateway/internal/canonical"
 	"otto-gateway/internal/engine"
 	"otto-gateway/internal/plugin"
+	"otto-gateway/internal/privacy"
 )
 
 // chatTraceFakeEngine drives a real ChatTraceHook chain on the
@@ -111,53 +113,26 @@ func (e *chatTraceFakeEngine) RunPostHooks(ctx context.Context, req *canonical.C
 // appeared on streaming requests.
 func TestChatTrace_E2E_AnthropicStreaming(t *testing.T) {
 	var buf bytes.Buffer
+	service := newAnthropicStreamingPrivacyService(t, privacy.ProfileStandard, nil)
 	hook := &plugin.ChatTraceHook{
 		Writer:  &buf,
 		Enabled: true,
+		Privacy: service,
 	}
 	eng := &chatTraceFakeEngine{
 		chunks: []canonical.Chunk{
 			{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "hello"}},
 			{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: " world"}},
 		},
-		final: &canonical.FinalResult{StopReason: canonical.StopEndTurn},
-		// Pre = [ChatTraceHook, RequestIDHook]; Post = [ChatTraceHook]
-		// Mirrors main.go's wiring (trace.go:303-309).
-		preHooks:  []engine.PreHook{hook, &plugin.RequestIDHook{}},
-		postHooks: []engine.PostHook{hook},
+		final:     &canonical.FinalResult{StopReason: canonical.StopEndTurn},
+		preHooks:  []engine.PreHook{hook, &plugin.RequestIDHook{}, service},
+		postHooks: []engine.PostHook{service, hook},
 	}
-	req := &canonical.ChatRequest{
-		Model: "auto",
-		Messages: []canonical.Message{
-			{Role: canonical.RoleUser, Content: []canonical.ContentPart{
-				{Kind: canonical.ContentKindText, Text: "hi"},
-			}},
-		},
+	rec := doPost(t, newTestAdapter(eng), "/messages",
+		`{"model":"auto","max_tokens":256,"messages":[{"role":"user","content":"hi"}],"stream":true}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	// Production handlers also stamp request_id + surface; mirror that.
-	ctx := plugin.WithRequestID(context.Background(), plugin.NewRequestID())
-	ctx = plugin.WithSurface(ctx, "anthropic")
-
-	_, _, err := runSSEEmitterAndPostHooks(t, ctx, eng, req,
-		[]canonical.Chunk{
-			{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "hello"}},
-			{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: " world"}},
-		},
-		&canonical.FinalResult{StopReason: canonical.StopEndTurn}, nil, nullLogger())
-	if err != nil {
-		t.Fatalf("runSSEEmitter: %v", err)
-	}
-	// Drive Pre traversal manually (the runSSEEmitter test helper
-	// doesn't go through eng.Run — it skips PreHooks). For the e2e
-	// test we want both NDJSON records, so call Before ourselves.
-	if _, err := hook.Before(ctx, req); err != nil {
-		t.Fatalf("ChatTraceHook.Before: %v", err)
-	}
-	// Re-trigger After through the engine PostHook invocation we
-	// already exercised. The helper called eng.RunPostHooks which
-	// iterates hook.After above. So the buffer should now have one
-	// post + one pre record (in the order: post from emitter, pre
-	// from this explicit call). Reorder by parsing the records.
 
 	records := parseNDJSONRecords(t, buf.Bytes())
 	if len(records) != 2 {

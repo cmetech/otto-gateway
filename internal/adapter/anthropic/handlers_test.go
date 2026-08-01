@@ -3,6 +3,7 @@ package anthropic
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -10,11 +11,13 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
 	"otto-gateway/internal/auth"
 	"otto-gateway/internal/canonical"
+	"otto-gateway/internal/privacy"
 )
 
 // ----------------------------------------------------------------------------
@@ -275,6 +278,229 @@ func assertErrorEnvelope(t *testing.T, w *httptest.ResponseRecorder, wantStatus 
 	}
 	if wantMessageContains != "" && !strings.Contains(env.Error.Message, wantMessageContains) {
 		t.Errorf("envelope message: got %q, want contains %q", env.Error.Message, wantMessageContains)
+	}
+}
+
+func decodeAnthropicPrivacyReceipt(t *testing.T, value string) privacy.Receipt {
+	t.Helper()
+	payload, err := base64.RawURLEncoding.DecodeString(value)
+	if err != nil {
+		t.Fatalf("decode privacy receipt: %v", err)
+	}
+	var receipt privacy.Receipt
+	if err := json.Unmarshal(payload, &receipt); err != nil {
+		t.Fatalf("unmarshal privacy receipt: %v", err)
+	}
+	return receipt
+}
+
+func TestAnthropicPrivacy_StampsBoundedMetadataBeforeEngineDispatch(t *testing.T) {
+	eng := &fakeEngine{collectResp: &canonical.ChatResponse{
+		Message: canonical.Message{
+			Role:    canonical.RoleAssistant,
+			Content: []canonical.ContentPart{{Kind: canonical.ContentKindText, Text: "ok"}},
+		},
+		StopReason: canonical.StopEndTurn,
+	}}
+	rec := doPostWithHeader(t, newTestAdapter(eng), "/messages",
+		`{"model":"auto","max_tokens":256,"messages":[{"role":"user","content":"hi"}]}`,
+		map[string]string{
+			"X-GW-Privacy-Profile": "strict",
+			"X-GW-Privacy-Scope":   "run-7f29b4d4",
+			"X-GW-Skill":           strings.Repeat("w", 80),
+		})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	state, ok := privacy.StateFromContext(eng.lastCtx)
+	if !ok {
+		t.Fatal("engine context missing privacy request state")
+	}
+	meta := state.Metadata()
+	if meta.RequestedProfile != "strict" || meta.ScopeID != "run-7f29b4d4" || meta.Surface != "anthropic" {
+		t.Fatalf("privacy metadata=%+v", meta)
+	}
+	if meta.Workload != strings.Repeat("w", 64) {
+		t.Fatalf("workload=%q, want capped 64-rune value", meta.Workload)
+	}
+}
+
+func TestAnthropicPrivacy_NativeTypedErrorsDoNotExposeCauseOrDetail(t *testing.T) {
+	errorsToMap := []struct {
+		code      string
+		status    int
+		errorType string
+	}{
+		{code: privacy.CodeRequestInvalid, status: http.StatusBadRequest, errorType: errInvalidRequest},
+		{code: privacy.CodeProfileUnavailable, status: http.StatusBadRequest, errorType: errInvalidRequest},
+		{code: privacy.CodeScopeClosed, status: http.StatusConflict, errorType: errInvalidRequest},
+		{code: privacy.CodeInputBlocked, status: http.StatusUnprocessableEntity, errorType: errInvalidRequest},
+		{code: privacy.CodeOutputBlocked, status: http.StatusBadGateway, errorType: errAPI},
+		{code: privacy.CodeCapacityExceeded, status: http.StatusServiceUnavailable, errorType: errAPI},
+		{code: privacy.CodeInternalError, status: http.StatusServiceUnavailable, errorType: errAPI},
+	}
+	for _, tc := range errorsToMap {
+		t.Run(tc.code, func(t *testing.T) {
+			eng := &fakeEngine{collectErr: &privacy.Error{
+				Code: tc.code, Stage: "private-stage-detail", Cause: errors.New("protected-cause-canary"),
+			}}
+			rec := doPost(t, newTestAdapter(eng), "/messages",
+				`{"model":"auto","max_tokens":256,"messages":[{"role":"user","content":"hi"}]}`)
+			if rec.Code != tc.status {
+				t.Fatalf("status=%d, want %d; body=%s", rec.Code, tc.status, rec.Body.String())
+			}
+			var envelope errorEnvelope
+			if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+				t.Fatalf("decode error envelope: %v; body=%s", err, rec.Body.String())
+			}
+			if envelope.Type != "error" || envelope.Error.Type != tc.errorType || envelope.Error.Message != tc.code {
+				t.Fatalf("envelope=%+v", envelope)
+			}
+			wantBody := `{"type":"error","error":{"type":"` + tc.errorType + `","message":"` + tc.code + `"}}` + "\n"
+			if rec.Body.String() != wantBody {
+				t.Fatalf("body=%q, want exact Anthropic envelope %q", rec.Body.String(), wantBody)
+			}
+			if strings.Contains(rec.Body.String(), "protected-cause-canary") || strings.Contains(rec.Body.String(), "private-stage-detail") {
+				t.Fatalf("privacy error leaked details: %s", rec.Body.String())
+			}
+		})
+	}
+}
+
+type anthropicPrivacyServiceEngine struct {
+	service *privacy.Service
+	chunks  []canonical.Chunk
+	lastCtx context.Context
+}
+
+func (e *anthropicPrivacyServiceEngine) Collect(ctx context.Context, req *canonical.ChatRequest) (*canonical.ChatResponse, error) {
+	run, err := e.Run(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return e.CollectFromRun(ctx, run, req)
+}
+
+func (e *anthropicPrivacyServiceEngine) Run(ctx context.Context, req *canonical.ChatRequest) (RunHandle, error) {
+	e.lastCtx = ctx
+	if _, err := e.service.Before(ctx, req); err != nil {
+		return nil, err
+	}
+	ch := make(chan canonical.Chunk, len(e.chunks))
+	for _, chunk := range e.chunks {
+		ch <- chunk
+	}
+	close(ch)
+	return &fakeRunHandle{
+		stream: &fakeStream{
+			chunks: ch,
+			final:  &canonical.FinalResult{StopReason: canonical.StopEndTurn},
+		},
+		sessionID: "privacy",
+	}, nil
+}
+
+func (e *anthropicPrivacyServiceEngine) RunPostHooks(ctx context.Context, req *canonical.ChatRequest, resp *canonical.ChatResponse) error {
+	return e.service.After(ctx, req, resp)
+}
+
+func (e *anthropicPrivacyServiceEngine) CollectFromRun(ctx context.Context, run RunHandle, req *canonical.ChatRequest) (*canonical.ChatResponse, error) {
+	var content strings.Builder
+	for chunk := range run.Stream().Chunks() {
+		if chunk.Kind == canonical.ChunkKindText && chunk.Text != nil {
+			content.WriteString(chunk.Text.Content)
+		}
+	}
+	if _, err := run.Stream().Result(); err != nil {
+		return nil, err
+	}
+	resp := &canonical.ChatResponse{
+		Model: req.Model,
+		Message: canonical.Message{
+			Role:    canonical.RoleAssistant,
+			Content: []canonical.ContentPart{{Kind: canonical.ContentKindText, Text: content.String()}},
+		},
+		StopReason: canonical.StopEndTurn,
+	}
+	if err := e.RunPostHooks(ctx, req, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func newStrictAnthropicPrivacyEngine(t *testing.T, responseText string, classifier privacy.Classifier) *anthropicPrivacyServiceEngine {
+	t.Helper()
+	service, err := privacy.NewService(privacy.Config{
+		DefaultProfile:     privacy.ProfileStrict,
+		RequestProfiles:    []privacy.Profile{privacy.ProfileStrict},
+		AliasKey:           []byte("anthropic-task-eleven-alias-key"),
+		SecretAction:       privacy.ActionReplace,
+		TechnicalAction:    privacy.ActionPseudonymize,
+		ScopeTTL:           time.Hour,
+		MaxScopes:          8,
+		MaxEntriesPerScope: 32,
+		MaxTotalEntries:    128,
+		PIIEnabled:         true,
+		PIIMode:            privacy.ActionReplace,
+		Classifier:         classifier,
+	})
+	if err != nil {
+		t.Fatalf("privacy.NewService: %v", err)
+	}
+	t.Cleanup(service.Close)
+	return &anthropicPrivacyServiceEngine{
+		service: service,
+		chunks: []canonical.Chunk{{
+			Kind: canonical.ChunkKindText,
+			Text: &canonical.TextChunk{Content: responseText},
+		}},
+	}
+}
+
+type panickingAnthropicPrivacyClassifier struct{}
+
+func (panickingAnthropicPrivacyClassifier) Classify(_, _ string) []privacy.Finding {
+	panic("private-classifier-detail")
+}
+
+func TestAnthropicPrivacy_ReceiptPrecedesPassBlockAndInternalResponses(t *testing.T) {
+	outcomes := []struct {
+		name       string
+		text       string
+		classifier privacy.Classifier
+		wantStatus int
+		wantCode   string
+		wantCover  string
+		wantResult string
+	}{
+		{name: "pass", text: "safe response", wantStatus: http.StatusOK, wantCover: "full", wantResult: "pass"},
+		{name: "block", text: "[SECRET:API_KEY_1]", wantStatus: http.StatusBadGateway, wantCode: privacy.CodeOutputBlocked, wantCover: "full", wantResult: "block"},
+		{name: "internal", text: "safe response", classifier: panickingAnthropicPrivacyClassifier{}, wantStatus: http.StatusServiceUnavailable, wantCode: privacy.CodeInternalError, wantCover: "input", wantResult: "error"},
+	}
+	for _, outcome := range outcomes {
+		t.Run(outcome.name, func(t *testing.T) {
+			rec := doPost(t, newTestAdapter(newStrictAnthropicPrivacyEngine(t, outcome.text, outcome.classifier)), "/messages",
+				`{"model":"auto","max_tokens":256,"messages":[{"role":"user","content":"hi"}]}`)
+			if rec.Code != outcome.wantStatus {
+				t.Fatalf("status=%d, want %d; body=%s", rec.Code, outcome.wantStatus, rec.Body.String())
+			}
+			if outcome.wantCode != "" {
+				var envelope errorEnvelope
+				if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+					t.Fatalf("decode error envelope: %v", err)
+				}
+				if envelope.Type != "error" || envelope.Error.Message != outcome.wantCode {
+					t.Fatalf("envelope=%+v", envelope)
+				}
+			}
+			receipt := decodeAnthropicPrivacyReceipt(t, rec.Header().Get("X-GW-Privacy-Receipt"))
+			if receipt.Profile != privacy.ProfileStrict || receipt.Coverage != outcome.wantCover || receipt.Result != outcome.wantResult {
+				t.Fatalf("receipt=%+v", receipt)
+			}
+			if strings.Contains(rec.Body.String(), "private-classifier-detail") {
+				t.Fatalf("response leaked internal detail: %s", rec.Body.String())
+			}
+		})
 	}
 }
 

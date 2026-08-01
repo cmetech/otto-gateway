@@ -11,15 +11,19 @@ package anthropic
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"go.uber.org/goleak"
 
 	"otto-gateway/internal/canonical"
+	"otto-gateway/internal/privacy"
 )
 
 // runSSEEmitterAndPostHooks drives runSSEEmitter against the supplied
@@ -265,4 +269,314 @@ func TestAnthropicSSE_PostHooksFireOnClientDisconnect(t *testing.T) {
 	if eng.postN != 1 {
 		t.Errorf("postN: got %d, want 1 (PostHook must fire on disconnect with partial aggregation)", eng.postN)
 	}
+}
+
+type anthropicPrivacyStreamingEngine struct {
+	service *privacy.Service
+	chunks  []canonical.Chunk
+	events  *[]string
+}
+
+func (e *anthropicPrivacyStreamingEngine) appendEvent(event string) {
+	if e.events != nil {
+		*e.events = append(*e.events, event)
+	}
+}
+
+func (e *anthropicPrivacyStreamingEngine) Collect(ctx context.Context, req *canonical.ChatRequest) (*canonical.ChatResponse, error) {
+	run, err := e.Run(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return e.CollectFromRun(ctx, run, req)
+}
+
+func (e *anthropicPrivacyStreamingEngine) Run(ctx context.Context, req *canonical.ChatRequest) (RunHandle, error) {
+	e.appendEvent("before")
+	if _, err := e.service.Before(ctx, req); err != nil {
+		return nil, err
+	}
+	ch := make(chan canonical.Chunk, len(e.chunks))
+	for _, chunk := range e.chunks {
+		ch <- chunk
+	}
+	close(ch)
+	return &fakeRunHandle{
+		stream: &fakeStream{
+			chunks: ch,
+			final:  &canonical.FinalResult{StopReason: canonical.StopEndTurn},
+		},
+		sessionID: "privacy-stream",
+	}, nil
+}
+
+func (e *anthropicPrivacyStreamingEngine) CollectFromRun(ctx context.Context, run RunHandle, req *canonical.ChatRequest) (*canonical.ChatResponse, error) {
+	e.appendEvent("collect")
+	var content strings.Builder
+	for chunk := range run.Stream().Chunks() {
+		if chunk.Kind == canonical.ChunkKindText && chunk.Text != nil {
+			content.WriteString(chunk.Text.Content)
+		}
+	}
+	if _, err := run.Stream().Result(); err != nil {
+		return nil, err
+	}
+	resp := &canonical.ChatResponse{
+		Model: req.Model,
+		Message: canonical.Message{
+			Role:    canonical.RoleAssistant,
+			Content: []canonical.ContentPart{{Kind: canonical.ContentKindText, Text: content.String()}},
+		},
+		StopReason: canonical.StopEndTurn,
+	}
+	if err := e.RunPostHooks(ctx, req, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (e *anthropicPrivacyStreamingEngine) RunPostHooks(ctx context.Context, req *canonical.ChatRequest, resp *canonical.ChatResponse) error {
+	e.appendEvent("after")
+	if err := e.service.After(ctx, req, resp); err != nil {
+		e.appendEvent("after_error")
+		return err
+	}
+	e.appendEvent("after_tail")
+	return nil
+}
+
+type anthropicEventWriter struct {
+	header   http.Header
+	body     bytes.Buffer
+	statuses []int
+	flushes  int
+	events   *[]string
+}
+
+func newAnthropicEventWriter(events *[]string) *anthropicEventWriter {
+	return &anthropicEventWriter{header: make(http.Header), events: events}
+}
+
+func (w *anthropicEventWriter) Header() http.Header { return w.header }
+
+func (w *anthropicEventWriter) WriteHeader(status int) {
+	if len(w.statuses) != 0 {
+		return
+	}
+	w.statuses = append(w.statuses, status)
+	*w.events = append(*w.events, "write_header")
+}
+
+func (w *anthropicEventWriter) Write(payload []byte) (int, error) {
+	if len(w.statuses) == 0 {
+		w.WriteHeader(http.StatusOK)
+	}
+	*w.events = append(*w.events, "write")
+	return w.body.Write(payload)
+}
+
+func (w *anthropicEventWriter) Flush() {
+	if len(w.statuses) == 0 {
+		w.WriteHeader(http.StatusOK)
+	}
+	w.flushes++
+	*w.events = append(*w.events, "flush")
+}
+
+type outputPanickingAnthropicClassifier struct{}
+
+func (outputPanickingAnthropicClassifier) Classify(_, value string) []privacy.Finding {
+	if value == "trigger-output-panic" {
+		panic("private-output-panic-detail")
+	}
+	return nil
+}
+
+func newAnthropicStreamingPrivacyService(t *testing.T, profile privacy.Profile, classifier privacy.Classifier) *privacy.Service {
+	t.Helper()
+	config := privacy.Config{
+		DefaultProfile:  profile,
+		RequestProfiles: []privacy.Profile{profile},
+		PIIEnabled:      true,
+		PIIMode:         privacy.ActionReplace,
+		Classifier:      classifier,
+	}
+	if profile == privacy.ProfileStrict {
+		config.AliasKey = []byte("anthropic-streaming-alias-key")
+		config.SecretAction = privacy.ActionReplace
+		config.TechnicalAction = privacy.ActionPseudonymize
+		config.ScopeTTL = time.Hour
+		config.MaxScopes = 8
+		config.MaxEntriesPerScope = 32
+		config.MaxTotalEntries = 128
+	}
+	service, err := privacy.NewService(config)
+	if err != nil {
+		t.Fatalf("privacy.NewService: %v", err)
+	}
+	t.Cleanup(service.Close)
+	return service
+}
+
+func serveAnthropicPrivacyStream(t *testing.T, writer http.ResponseWriter, eng Engine, profile string) {
+	t.Helper()
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/messages", strings.NewReader(
+		`{"model":"auto","max_tokens":256,"messages":[{"role":"user","content":"hi"}],"stream":true}`,
+	))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("anthropic-version", "2023-06-01")
+	if profile != "" {
+		req.Header.Set("X-GW-Privacy-Profile", profile)
+	}
+	newTestAdapter(eng).ProtectedRouter().ServeHTTP(writer, req)
+}
+
+func TestAnthropicPrivacy_StrictRequestedStreamCollectsAndRunsAfterBeforeNativeReplay(t *testing.T) {
+	var events []string
+	eng := &anthropicPrivacyStreamingEngine{
+		service: newAnthropicStreamingPrivacyService(t, privacy.ProfileStrict, nil),
+		chunks: []canonical.Chunk{
+			{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "complete "}},
+			{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "response"}},
+		},
+		events: &events,
+	}
+	writer := newAnthropicEventWriter(&events)
+	serveAnthropicPrivacyStream(t, writer, eng, "strict")
+
+	if len(writer.statuses) != 1 || writer.statuses[0] != http.StatusOK {
+		t.Fatalf("statuses=%v body=%s events=%v", writer.statuses, writer.body.String(), events)
+	}
+	afterAt := anthropicEventPosition(events, "after")
+	afterTailAt := anthropicEventPosition(events, "after_tail")
+	writeAt := anthropicEventPosition(events, "write_header")
+	if afterAt < 0 || afterTailAt < afterAt || writeAt < afterTailAt {
+		t.Fatalf("events=%v, response committed before Service.After", events)
+	}
+	wantEvents := []string{
+		"message_start",
+		"content_block_start",
+		"content_block_delta",
+		"content_block_stop",
+		"message_delta",
+		"message_stop",
+	}
+	if got := sseEventLines(writer.body.String()); !equalSlice(got, wantEvents) {
+		t.Fatalf("SSE events=%v, want %v; body=%s", got, wantEvents, writer.body.String())
+	}
+	data := sseDataLines(writer.body.String())
+	if len(data) != len(wantEvents) {
+		t.Fatalf("data frames=%d, want %d; body=%s", len(data), len(wantEvents), writer.body.String())
+	}
+	var start messageStart
+	if err := json.Unmarshal([]byte(data[0]), &start); err != nil {
+		t.Fatalf("decode message_start: %v", err)
+	}
+	if start.Type != "message_start" || !strings.HasPrefix(start.Message.ID, "msg_01") || start.Message.Type != "message" || start.Message.Role != "assistant" || start.Message.Model != "auto" || start.Message.Content == nil || len(start.Message.Content) != 0 || start.Message.StopReason != nil || start.Message.StopSequence != nil || start.Message.Usage != (usage{}) {
+		t.Fatalf("message_start=%+v", start)
+	}
+	wantData := []string{
+		`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"complete response"}}`,
+		`{"type":"content_block_stop","index":0}`,
+		`{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":0}}`,
+		`{"type":"message_stop"}`,
+	}
+	for index, want := range wantData {
+		if data[index+1] != want {
+			t.Fatalf("data[%d]=%s, want %s", index+1, data[index+1], want)
+		}
+	}
+	receipt := decodeAnthropicPrivacyReceipt(t, writer.Header().Get("X-GW-Privacy-Receipt"))
+	if receipt.Profile != privacy.ProfileStrict || receipt.Coverage != "full" || receipt.Result != "pass" {
+		t.Fatalf("receipt=%+v", receipt)
+	}
+}
+
+func TestAnthropicPrivacy_StrictRequestedStreamBlockOrInternalWritesOnlyNativeError(t *testing.T) {
+	outcomes := []struct {
+		name       string
+		text       string
+		classifier privacy.Classifier
+		wantStatus int
+		wantCode   string
+		wantResult string
+	}{
+		{name: "block", text: "[SECRET:API_KEY_1]", wantStatus: http.StatusBadGateway, wantCode: privacy.CodeOutputBlocked, wantResult: "block"},
+		{name: "internal", text: "trigger-output-panic", classifier: outputPanickingAnthropicClassifier{}, wantStatus: http.StatusServiceUnavailable, wantCode: privacy.CodeInternalError, wantResult: "error"},
+	}
+	for _, outcome := range outcomes {
+		t.Run(outcome.name, func(t *testing.T) {
+			var events []string
+			eng := &anthropicPrivacyStreamingEngine{
+				service: newAnthropicStreamingPrivacyService(t, privacy.ProfileStrict, outcome.classifier),
+				chunks:  []canonical.Chunk{{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: outcome.text}}},
+				events:  &events,
+			}
+			writer := newAnthropicEventWriter(&events)
+			serveAnthropicPrivacyStream(t, writer, eng, "strict")
+
+			if len(writer.statuses) != 1 || writer.statuses[0] != outcome.wantStatus {
+				t.Fatalf("statuses=%v want=%d body=%s events=%v", writer.statuses, outcome.wantStatus, writer.body.String(), events)
+			}
+			if strings.Contains(writer.body.String(), "event: message_") || strings.Contains(writer.body.String(), "event: content_block_") || strings.Contains(writer.body.String(), "data:") {
+				t.Fatalf("strict failure emitted success SSE: %s", writer.body.String())
+			}
+			var envelope errorEnvelope
+			if err := json.Unmarshal(writer.body.Bytes(), &envelope); err != nil {
+				t.Fatalf("decode error envelope: %v; body=%s", err, writer.body.String())
+			}
+			if envelope.Type != "error" || envelope.Error.Type != errAPI || envelope.Error.Message != outcome.wantCode {
+				t.Fatalf("envelope=%+v", envelope)
+			}
+			afterErrorAt := anthropicEventPosition(events, "after_error")
+			if afterErrorAt < 0 || anthropicEventPosition(events, "write_header") < afterErrorAt {
+				t.Fatalf("events=%v, response committed before failed Service.After", events)
+			}
+			receipt := decodeAnthropicPrivacyReceipt(t, writer.Header().Get("X-GW-Privacy-Receipt"))
+			if receipt.Result != outcome.wantResult {
+				t.Fatalf("receipt=%+v", receipt)
+			}
+			if strings.Contains(writer.body.String(), "private-output-panic-detail") {
+				t.Fatalf("response leaked internal detail: %s", writer.body.String())
+			}
+		})
+	}
+}
+
+func TestAnthropicPrivacy_StandardStreamRetainsIncrementalFlushPath(t *testing.T) {
+	var events []string
+	eng := &anthropicPrivacyStreamingEngine{
+		service: newAnthropicStreamingPrivacyService(t, privacy.ProfileStandard, nil),
+		chunks: []canonical.Chunk{
+			{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "first"}},
+			{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "second"}},
+		},
+		events: &events,
+	}
+	writer := newAnthropicEventWriter(&events)
+	serveAnthropicPrivacyStream(t, writer, eng, "")
+
+	if len(writer.statuses) != 1 || writer.statuses[0] != http.StatusOK {
+		t.Fatalf("statuses=%v body=%s", writer.statuses, writer.body.String())
+	}
+	if writer.flushes < 7 {
+		t.Fatalf("flushes=%d, want message, per-chunk, and terminal event flushes", writer.flushes)
+	}
+	if writeAt, afterAt := anthropicEventPosition(events, "write_header"), anthropicEventPosition(events, "after"); writeAt < 0 || afterAt < 0 || writeAt > afterAt {
+		t.Fatalf("events=%v, standard stream did not write incrementally before After", events)
+	}
+	receipt := decodeAnthropicPrivacyReceipt(t, writer.Header().Get("X-GW-Privacy-Receipt"))
+	if receipt.Profile != privacy.ProfileStandard || receipt.Coverage != "input" || receipt.Result != "pass" {
+		t.Fatalf("receipt=%+v", receipt)
+	}
+}
+
+func anthropicEventPosition(events []string, want string) int {
+	for index, event := range events {
+		if event == want {
+			return index
+		}
+	}
+	return -1
 }

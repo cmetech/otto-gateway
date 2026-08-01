@@ -11,6 +11,7 @@ import (
 	"otto-gateway/internal/plugin"
 	"otto-gateway/internal/plugin/compress"
 	"otto-gateway/internal/plugin/pii"
+	"otto-gateway/internal/privacy"
 	"otto-gateway/internal/session"
 )
 
@@ -34,6 +35,40 @@ func stampPluginCtx(ctx context.Context, r *http.Request) context.Context {
 		ctx = compress.WithHeaderDirective(ctx, on)
 	}
 	return ctx
+}
+
+type privacyReceiptWriter struct {
+	http.ResponseWriter
+	ctx context.Context
+}
+
+func (w *privacyReceiptWriter) WriteHeader(status int) {
+	privacy.SetReceiptHeader(w.ResponseWriter, w.ctx)
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *privacyReceiptWriter) Write(payload []byte) (int, error) {
+	privacy.SetReceiptHeader(w.ResponseWriter, w.ctx)
+	return w.ResponseWriter.Write(payload)
+}
+
+type privacyReceiptFlusher struct {
+	*privacyReceiptWriter
+	flusher http.Flusher
+}
+
+func (w *privacyReceiptFlusher) Flush() {
+	privacy.SetReceiptHeader(w.ResponseWriter, w.ctx)
+	w.flusher.Flush()
+}
+
+func stampPrivacyContext(ctx context.Context, w http.ResponseWriter, r *http.Request) (context.Context, http.ResponseWriter) {
+	ctx, _ = privacy.StampHTTPContext(ctx, r.Header, "anthropic")
+	wrapped := &privacyReceiptWriter{ResponseWriter: w, ctx: ctx}
+	if flusher, ok := w.(http.Flusher); ok {
+		return ctx, &privacyReceiptFlusher{privacyReceiptWriter: wrapped, flusher: flusher}
+	}
+	return ctx, wrapped
 }
 
 // PHASE 6 INVARIANT: Anthropic does NOT call engine.CoerceToolCall.
@@ -170,6 +205,8 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 	ctx = stampPluginCtx(ctx, r)
 	// Quick 260529-ll2 — surface stamp for ChatTraceHook correlation.
 	ctx = plugin.WithSurface(ctx, "anthropic")
+	ctx, w = stampPrivacyContext(ctx, w, r)
+	privacy.MarkStreamRequested(ctx, wire.Stream)
 
 	// Plan 05-03 D-04..D-11: X-Session-Id branch.
 	eng, entry, sErr := a.resolveEngine(r)
@@ -203,6 +240,9 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 		runHandle, err := eng.Run(streamCtx, req)
 		if err != nil {
 			observation.Outcome = classifyRequestError(err)
+			if writePrivacyError(w, err) {
+				return
+			}
 			// Engine.Run failed BEFORE any SSE headers were written —
 			// respond with a normal JSON 500 envelope (T-02-33: never
 			// echo err.Error() which may contain request fragments).
@@ -258,7 +298,7 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 		// narration text on this path rather than native tool_use content
 		// blocks. Plain-text responses round-trip correctly. Documented in
 		// docs/operating.md Known Limitations.
-		if !req.Stream {
+		if privacy.ValidatedReplayRequired(streamCtx) || !req.Stream {
 			a.cfg.Logger.Info(
 				"stream re-routed to aggregated path",
 				"surface", "anthropic",
@@ -268,6 +308,9 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 			resp, cErr := eng.CollectFromRun(streamCtx, runHandle, req)
 			if cErr != nil {
 				observation.Outcome = classifyRequestError(cErr)
+				if writePrivacyError(w, cErr) {
+					return
+				}
 				if errors.Is(cErr, canonical.ErrStreamIdleTimeout) {
 					a.cfg.Logger.Warn(
 						"stream.idle_timeout",
@@ -397,6 +440,9 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 	resp, err := CollectAnthropicChat(ctx, eng, req, a.cfg.ToolAliases, a.cfg.StreamIdleTimeout)
 	if err != nil {
 		observation.Outcome = classifyRequestError(err)
+		if writePrivacyError(w, err) {
+			return
+		}
 		// D-07 REL-POOL-01: pool exhaustion maps to 503 with Anthropic
 		// overloaded_error body on the non-streaming path.
 		if errors.Is(err, canonical.ErrPoolExhausted) {

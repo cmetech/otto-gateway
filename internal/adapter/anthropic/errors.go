@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+
+	"otto-gateway/internal/privacy"
 )
 
 // Anthropic error envelope per docs.anthropic.com/en/api/errors and
@@ -89,6 +91,19 @@ func writeError(w http.ResponseWriter, status int, errorType, message string) {
 		Type:  "error",
 		Error: errorInner{Type: errorType, Message: message},
 	})
+}
+
+func writePrivacyError(w http.ResponseWriter, err error) bool {
+	status, code, ok := privacy.ErrorInfo(err)
+	if !ok {
+		return false
+	}
+	errorType := errInvalidRequest
+	if status >= http.StatusInternalServerError {
+		errorType = errAPI
+	}
+	writeError(w, status, errorType, code)
+	return true
 }
 
 // writeSSEError writes a mid-stream SSE error frame:
