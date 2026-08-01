@@ -1557,13 +1557,17 @@ init_cmd() {
         fi
     fi
     local privacy_alias_key=""
-    if [[ "$reinit" -eq 1 && "$arg_regenerate_secrets" -ne 1 && -n "$existing_privacy_alias_key" ]]; then
+    if [[ "$reinit" -eq 1 && "$arg_regenerate_secrets" -ne 1 &&
+          -n "$existing_privacy_alias_key" &&
+          "$existing_privacy_alias_key" != '<generated-by-gw-init>' ]]; then
         privacy_alias_key="$existing_privacy_alias_key"
     else
         privacy_alias_key="$(gen_random_hex 32)"
     fi
     local privacy_triage_token=""
-    if [[ "$reinit" -eq 1 && "$arg_regenerate_secrets" -ne 1 && -n "$existing_privacy_triage_token" ]]; then
+    if [[ "$reinit" -eq 1 && "$arg_regenerate_secrets" -ne 1 &&
+          -n "$existing_privacy_triage_token" &&
+          "$existing_privacy_triage_token" != '<generated-by-gw-init>' ]]; then
         privacy_triage_token="$existing_privacy_triage_token"
     else
         privacy_triage_token="$(gen_random_hex 32)"

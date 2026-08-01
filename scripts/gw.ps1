@@ -1167,12 +1167,18 @@ function Invoke-Init {
     } else {
         $encryptKeyValue = New-RandomHex 32
     }
-    if ($reinit -and -not $RegenerateSecrets -and $existing.ContainsKey('PRIVACY_ALIAS_KEY') -and $existing['PRIVACY_ALIAS_KEY']) {
+    if ($reinit -and -not $RegenerateSecrets -and
+        $existing.ContainsKey('PRIVACY_ALIAS_KEY') -and
+        $existing['PRIVACY_ALIAS_KEY'] -and
+        $existing['PRIVACY_ALIAS_KEY'] -cne '<generated-by-gw-init>') {
         $privacyAliasKeyValue = $existing['PRIVACY_ALIAS_KEY']
     } else {
         $privacyAliasKeyValue = New-RandomHex 32
     }
-    if ($reinit -and -not $RegenerateSecrets -and $existing.ContainsKey('PRIVACY_TRIAGE_TOKEN') -and $existing['PRIVACY_TRIAGE_TOKEN']) {
+    if ($reinit -and -not $RegenerateSecrets -and
+        $existing.ContainsKey('PRIVACY_TRIAGE_TOKEN') -and
+        $existing['PRIVACY_TRIAGE_TOKEN'] -and
+        $existing['PRIVACY_TRIAGE_TOKEN'] -cne '<generated-by-gw-init>') {
         $privacyTriageTokenValue = $existing['PRIVACY_TRIAGE_TOKEN']
     } else {
         $privacyTriageTokenValue = New-RandomHex 32

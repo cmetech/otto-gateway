@@ -172,6 +172,48 @@ func TestLoad_PrivacyInvalid(t *testing.T) {
 	}
 }
 
+// TestLoad_PrivacyRejectsShippedSecretPlaceholders catches startup treating a
+// public template sentinel as an installed alias key or triage capability.
+// Errors remain stable and must not echo the placeholder value.
+func TestLoad_PrivacyRejectsShippedSecretPlaceholders(t *testing.T) {
+	const shippedPlaceholder = "<generated-by-gw-init>"
+	for _, tc := range []struct {
+		name string
+		env  map[string]string
+		want string
+	}{
+		{
+			name: "strict alias key",
+			env:  map[string]string{"PRIVACY_ALIAS_KEY": shippedPlaceholder},
+			want: "PRIVACY_ALIAS_KEY: required when strict is available",
+		},
+		{
+			name: "enabled triage token",
+			env: map[string]string{
+				"PRIVACY_TRIAGE_ENABLED": "true",
+				"PRIVACY_TRIAGE_TOKEN":   shippedPlaceholder,
+			},
+			want: "PRIVACY_TRIAGE_TOKEN: required when PRIVACY_TRIAGE_ENABLED is true",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for key, value := range tc.env {
+				t.Setenv(key, value)
+			}
+			_, err := config.Load()
+			if err == nil {
+				t.Fatal("expected config.Load to reject a shipped privacy placeholder")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error=%q, want stable validation %q", err, tc.want)
+			}
+			if strings.Contains(err.Error(), shippedPlaceholder) {
+				t.Fatalf("startup error exposed the shipped placeholder: %q", err)
+			}
+		})
+	}
+}
+
 // TestLoad_EnabledHooks_Parsing — ENABLED_HOOKS comma-split + default
 // empty / unset → nil slice (default-permissive per D-02).
 func TestLoad_EnabledHooks_Parsing(t *testing.T) {

@@ -54,6 +54,63 @@ run_disabled_init() {
         --non-interactive "$@" >"$output_file" 2>&1
 }
 
+run_preprivacy_upgrade_flow() {
+    local name="$1" auth="$2" hash="$3" encrypt="$4"
+    local install_home="$FIXTURE_ROOT/$name" env_file="$FIXTURE_ROOT/$name/.env"
+    local overrides_file="$FIXTURE_ROOT/$name/overrides.env" output_file="$FIXTURE_ROOT/$name.out"
+    mkdir -p "$install_home"
+    cat >"$env_file" <<'EOF'
+HTTP_ADDR=127.0.0.1:18080
+PII_REDACTION_ENABLED=true
+PII_REDACTION_MODE=encrypt
+EOF
+    cat >"$overrides_file" <<EOF
+AUTH_TOKEN=$auth
+PII_HASH_KEY=$hash
+PII_ENCRYPT_KEY=$encrypt
+EOF
+
+    if ! GW_HOME="$install_home" GW_TEMPLATE_FILE="$REPO_ROOT/scripts/.env.example" \
+        GW_UPGRADE_LOG="$install_home/upgrade.log" \
+        bash "$REPO_ROOT/scripts/gw" upgrade-env --dry-run --dest "$env_file" \
+        >"$output_file" 2>&1; then
+        cat "$output_file" >&2
+        fail "$name upgrade preview failed"
+    fi
+    if ! GW_HOME="$install_home" GW_TEMPLATE_FILE="$REPO_ROOT/scripts/.env.example" \
+        GW_UPGRADE_LOG="$install_home/upgrade.log" \
+        bash "$REPO_ROOT/scripts/gw" upgrade-env --yes --dest "$env_file" \
+        >>"$output_file" 2>&1; then
+        cat "$output_file" >&2
+        fail "$name upgrade apply failed"
+    fi
+    grep -Fqx 'PRIVACY_ALIAS_KEY=<generated-by-gw-init>' "$env_file" || fail "$name upgrade did not apply the shipped alias placeholder"
+    grep -Fqx 'PRIVACY_TRIAGE_TOKEN=<generated-by-gw-init>' "$env_file" || fail "$name upgrade did not apply the shipped triage placeholder"
+    if ! GW_HOME="$install_home" GW_TEMPLATE_FILE="$REPO_ROOT/scripts/.env.example" \
+        bash "$REPO_ROOT/scripts/gw" init --dest "$env_file" \
+        --force --non-interactive \
+        >>"$output_file" 2>&1; then
+        cat "$output_file" >&2
+        fail "$name normal re-init failed"
+    fi
+
+    [[ "$(value_of "$overrides_file" AUTH_TOKEN)" == "$auth" ]] || fail "$name rotated existing AUTH_TOKEN"
+    [[ "$(value_of "$overrides_file" PII_HASH_KEY)" == "$hash" ]] || fail "$name rotated existing PII_HASH_KEY"
+    [[ "$(value_of "$overrides_file" PII_ENCRYPT_KEY)" == "$encrypt" ]] || fail "$name rotated existing PII_ENCRYPT_KEY"
+    local alias_value triage_value secret mode
+    alias_value="$(value_of "$overrides_file" PRIVACY_ALIAS_KEY)"
+    triage_value="$(value_of "$overrides_file" PRIVACY_TRIAGE_TOKEN)"
+    [[ "$alias_value" =~ ^[0-9a-f]{64}$ ]] || fail "$name preserved the shipped alias placeholder"
+    [[ "$triage_value" =~ ^[0-9a-f]{64}$ ]] || fail "$name preserved the shipped triage placeholder"
+    [[ "$alias_value" != "$triage_value" ]] || fail "$name minted identical privacy secrets"
+    for secret in "$auth" "$hash" "$encrypt" "$alias_value" "$triage_value"; do
+        ! grep -Fq "$secret" "$output_file" || fail "$name printed a managed secret"
+    done
+    mode="$(stat -f '%Lp' "$overrides_file" 2>/dev/null || stat -c '%a' "$overrides_file")"
+    [[ "$mode" == "600" ]] || fail "$name overrides mode is $mode, want 600"
+    ! find "$install_home" -maxdepth 1 -name '.managed-secrets-*' -o -name 'overrides.env.tmp.*' | grep -q . || fail "$name left a secret temporary"
+}
+
 mkdir -p "$FIXTURE_ROOT/home"
 run_init "$FIXTURE_ROOT/cold.out"
 
@@ -145,6 +202,25 @@ disabled_warning_line="$(grep -Ein 'mapping.*loss|mapping.*invalid' "$FIXTURE_RO
 disabled_write_line="$(grep -En 'wrote .*overrides' "$FIXTURE_ROOT/disabled-rotate.out" | head -n1 | cut -d: -f1)"
 [[ -n "$disabled_warning_line" && -n "$disabled_write_line" && "$disabled_warning_line" -lt "$disabled_write_line" ]] || fail "disabled-auth mapping-loss warning was not printed before mutation"
 ok "disabled auth stores and atomically rotates all five secrets without enabling auth or printing values"
+
+legacy_auth_one=1111111111111111111111111111111111111111111111111111111111111111
+legacy_hash_one=2222222222222222222222222222222222222222222222222222222222222222
+legacy_encrypt_one=3333333333333333333333333333333333333333333333333333333333333333
+legacy_auth_two=4444444444444444444444444444444444444444444444444444444444444444
+legacy_hash_two=5555555555555555555555555555555555555555555555555555555555555555
+legacy_encrypt_two=6666666666666666666666666666666666666666666666666666666666666666
+run_preprivacy_upgrade_flow preprivacy-one "$legacy_auth_one" "$legacy_hash_one" "$legacy_encrypt_one"
+run_preprivacy_upgrade_flow preprivacy-two "$legacy_auth_two" "$legacy_hash_two" "$legacy_encrypt_two"
+alias_one="$(value_of "$FIXTURE_ROOT/preprivacy-one/overrides.env" PRIVACY_ALIAS_KEY)"
+triage_one="$(value_of "$FIXTURE_ROOT/preprivacy-one/overrides.env" PRIVACY_TRIAGE_TOKEN)"
+alias_two="$(value_of "$FIXTURE_ROOT/preprivacy-two/overrides.env" PRIVACY_ALIAS_KEY)"
+triage_two="$(value_of "$FIXTURE_ROOT/preprivacy-two/overrides.env" PRIVACY_TRIAGE_TOKEN)"
+for left in "$alias_one" "$triage_one"; do
+    for right in "$alias_two" "$triage_two"; do
+        [[ "$left" != "$right" ]] || fail 'independent upgraded installs reused a privacy secret'
+    done
+done
+ok "pre-privacy upgrade and normal re-init mint per-install privacy secrets while preserving the existing three"
 
 grep -Eq '^PRIVACY_ALIAS_KEY=(<[^>]+>|replace-.*)$' "$REPO_ROOT/scripts/.env.example" || fail ".env.example alias key is not a placeholder"
 grep -Eq '^PRIVACY_TRIAGE_TOKEN=(<[^>]+>|replace-.*)$' "$REPO_ROOT/scripts/.env.example" || fail ".env.example triage token is not a placeholder"

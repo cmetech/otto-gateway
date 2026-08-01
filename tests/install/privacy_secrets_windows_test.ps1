@@ -74,6 +74,72 @@ function Assert-ManagedSecretsAcl([string]$Path) {
     Write-Host 'ok: real Windows managed-secret DACL is protected and grants only the current SID'
 }
 
+function Invoke-PrePrivacyUpgradeFlow(
+    [string]$Name,
+    [string]$ExistingAuth,
+    [string]$ExistingHash,
+    [string]$ExistingEncrypt
+) {
+    $installHome = Join-Path $FixtureRoot $Name
+    $envFile = Join-Path $installHome '.env'
+    $overridesFile = Join-Path $installHome 'overrides.env'
+    $outputFile = Join-Path $FixtureRoot "$Name.out"
+    $null = New-Item -ItemType Directory -Path $installHome -Force
+    @(
+        'HTTP_ADDR=127.0.0.1:18080',
+        'PII_REDACTION_ENABLED=true',
+        'PII_REDACTION_MODE=encrypt'
+    ) | Set-Content -LiteralPath $envFile -Encoding UTF8
+    @(
+        "AUTH_TOKEN=$ExistingAuth",
+        "PII_HASH_KEY=$ExistingHash",
+        "PII_ENCRYPT_KEY=$ExistingEncrypt"
+    ) | Set-Content -LiteralPath $overridesFile -Encoding UTF8
+
+    $priorHome = $env:GW_HOME
+    $priorTemplate = $env:GW_TEMPLATE_FILE
+    $priorUpgradeLog = $env:GW_UPGRADE_LOG
+    try {
+        $env:GW_HOME = $installHome
+        $env:GW_TEMPLATE_FILE = $Template
+        $env:GW_UPGRADE_LOG = Join-Path $installHome 'upgrade.log'
+        $allOutput = & pwsh -NoProfile -File $Wrapper upgrade-env -DryRun -Dest $envFile -Template $Template 2>&1 | Out-String
+        if ($LASTEXITCODE -ne 0) { Fail-With "$Name upgrade preview failed: $allOutput" }
+        $applyOutput = & pwsh -NoProfile -File $Wrapper upgrade-env -Yes -Dest $envFile -Template $Template 2>&1 | Out-String
+        if ($LASTEXITCODE -ne 0) { Fail-With "$Name upgrade apply failed: $applyOutput" }
+        $allOutput += $applyOutput
+        if ((Get-EnvValue $envFile 'PRIVACY_ALIAS_KEY') -cne '<generated-by-gw-init>') { Fail-With "$Name upgrade did not apply the shipped alias placeholder" }
+        if ((Get-EnvValue $envFile 'PRIVACY_TRIAGE_TOKEN') -cne '<generated-by-gw-init>') { Fail-With "$Name upgrade did not apply the shipped triage placeholder" }
+        $initOutput = & pwsh -NoProfile -File $Wrapper init -Dest $envFile -OverridesDest $overridesFile `
+            -Template $Template -Force -NonInteractive 2>&1 | Out-String
+        if ($LASTEXITCODE -ne 0) { Fail-With "$Name normal re-init failed: $initOutput" }
+        $allOutput += $initOutput
+        [System.IO.File]::WriteAllText($outputFile, $allOutput, (New-Object System.Text.UTF8Encoding($false)))
+    } finally {
+        $env:GW_HOME = $priorHome
+        $env:GW_TEMPLATE_FILE = $priorTemplate
+        $env:GW_UPGRADE_LOG = $priorUpgradeLog
+    }
+
+    if ((Get-EnvValue $overridesFile 'AUTH_TOKEN') -cne $ExistingAuth) { Fail-With "$Name rotated existing AUTH_TOKEN" }
+    if ((Get-EnvValue $overridesFile 'PII_HASH_KEY') -cne $ExistingHash) { Fail-With "$Name rotated existing PII_HASH_KEY" }
+    if ((Get-EnvValue $overridesFile 'PII_ENCRYPT_KEY') -cne $ExistingEncrypt) { Fail-With "$Name rotated existing PII_ENCRYPT_KEY" }
+    $aliasValue = Get-EnvValue $overridesFile 'PRIVACY_ALIAS_KEY'
+    $triageValue = Get-EnvValue $overridesFile 'PRIVACY_TRIAGE_TOKEN'
+    if ($aliasValue -cnotmatch '^[0-9a-f]{64}$') { Fail-With "$Name preserved the shipped alias placeholder" }
+    if ($triageValue -cnotmatch '^[0-9a-f]{64}$') { Fail-With "$Name preserved the shipped triage placeholder" }
+    if ($aliasValue -ceq $triageValue) { Fail-With "$Name minted identical privacy secrets" }
+    $outputText = Get-Content -LiteralPath $outputFile -Raw
+    foreach ($secret in @($ExistingAuth,$ExistingHash,$ExistingEncrypt,$aliasValue,$triageValue)) {
+        if ($outputText.Contains($secret)) { Fail-With "$Name printed a managed secret" }
+    }
+    Assert-ManagedSecretsAcl $overridesFile
+    if (@(Get-ChildItem -LiteralPath $installHome -Force | Where-Object { $_.Name -like '.managed-secrets-*' -or $_.Name -like 'overrides.env.tmp.*' }).Count -ne 0) {
+        Fail-With "$Name left a secret temporary"
+    }
+    return [pscustomobject]@{ Alias = $aliasValue; Triage = $triageValue }
+}
+
 New-Item -ItemType Directory -Path $HomeFixture -Force | Out-Null
 try {
     $coldOutput = Join-Path $FixtureRoot 'cold.out'
@@ -254,6 +320,21 @@ try {
     } finally {
         $env:GW_HOME = $priorHome
     }
+
+    $legacyAuthOne = '1111111111111111111111111111111111111111111111111111111111111111'
+    $legacyHashOne = '2222222222222222222222222222222222222222222222222222222222222222'
+    $legacyEncryptOne = '3333333333333333333333333333333333333333333333333333333333333333'
+    $legacyAuthTwo = '4444444444444444444444444444444444444444444444444444444444444444'
+    $legacyHashTwo = '5555555555555555555555555555555555555555555555555555555555555555'
+    $legacyEncryptTwo = '6666666666666666666666666666666666666666666666666666666666666666'
+    $upgradedOne = Invoke-PrePrivacyUpgradeFlow 'preprivacy-one' $legacyAuthOne $legacyHashOne $legacyEncryptOne
+    $upgradedTwo = Invoke-PrePrivacyUpgradeFlow 'preprivacy-two' $legacyAuthTwo $legacyHashTwo $legacyEncryptTwo
+    foreach ($left in @($upgradedOne.Alias,$upgradedOne.Triage)) {
+        foreach ($right in @($upgradedTwo.Alias,$upgradedTwo.Triage)) {
+            if ($left -ceq $right) { Fail-With 'independent upgraded installs reused a privacy secret' }
+        }
+    }
+    Write-Host 'ok: pre-privacy upgrade and normal re-init mint per-install privacy secrets while preserving the existing three'
 
     $templateText = Get-Content -LiteralPath $Template -Raw
     if ($templateText -cnotmatch '(?m)^PRIVACY_ALIAS_KEY=(<[^>]+>|replace-|)$') { Fail-With '.env.example alias key is not a placeholder' }

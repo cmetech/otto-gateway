@@ -1339,6 +1339,7 @@ func validatePrivacyConfig(
 	triageToken string,
 	piiEnabled bool,
 ) error {
+	const generatedSecretPlaceholder = "<generated-by-gw-init>"
 	var errs []error
 	profiles := make(map[string]struct{}, len(requestProfiles))
 	switch defaultProfile {
@@ -1385,14 +1386,14 @@ func validatePrivacyConfig(
 		errs = append(errs, fmt.Errorf("PRIVACY_MAX_ENTRIES_PER_SCOPE: must be <= PRIVACY_MAX_TOTAL_ENTRIES (%d), got %d", maxTotalEntries, maxEntriesPerScope))
 	}
 	if _, strictAvailable := profiles["strict"]; strictAvailable {
-		if aliasKey == "" {
+		if aliasKey == "" || aliasKey == generatedSecretPlaceholder {
 			errs = append(errs, errors.New("PRIVACY_ALIAS_KEY: required when strict is available"))
 		}
 		if !piiEnabled {
 			errs = append(errs, errors.New("PII_REDACTION_ENABLED: must be true when strict is available"))
 		}
 	}
-	if triageEnabled && triageToken == "" {
+	if triageEnabled && (triageToken == "" || triageToken == generatedSecretPlaceholder) {
 		errs = append(errs, errors.New("PRIVACY_TRIAGE_TOKEN: required when PRIVACY_TRIAGE_ENABLED is true"))
 	}
 	if len(errs) > 0 {
