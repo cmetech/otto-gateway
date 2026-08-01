@@ -8,6 +8,7 @@ import (
 	"net/http"
 )
 
+// SecretRedactor redacts a named secret value before it crosses an admin boundary.
 type SecretRedactor interface {
 	Redact(key, value string) string
 }

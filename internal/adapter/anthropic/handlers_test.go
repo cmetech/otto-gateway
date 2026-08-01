@@ -249,6 +249,7 @@ func doPostNoVersion(t *testing.T, a *Adapter, path, body string) *httptest.Resp
 	return w
 }
 
+//nolint:unparam // Keep the route explicit for package-wide test callers sharing this helper.
 func doPostWithHeader(t *testing.T, a *Adapter, path, body string, headers map[string]string) *httptest.ResponseRecorder {
 	t.Helper()
 	r := httptest.NewRequestWithContext(context.Background(), http.MethodPost, path, strings.NewReader(body))

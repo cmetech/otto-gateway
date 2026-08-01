@@ -450,9 +450,9 @@ func TestPrivacyTriageLiveWiringUsesSharedServiceAndMetrics(t *testing.T) {
 	if inspect.Code != http.StatusOK || !strings.Contains(inspect.Body.String(), `"original":"10.23.45.67"`) {
 		t.Fatalf("inspect=(%d,%q), want shared live mapping", inspect.Code, inspect.Body.String())
 	}
-	clear := request(http.MethodDelete, "/admin/api/privacy/scopes/task-13-live")
-	if clear.Code != http.StatusAccepted || clear.Body.String() != "{\"state\":\"closing\"}\n" {
-		t.Fatalf("active clear=(%d,%q), want 202 closing", clear.Code, clear.Body.String())
+	clearResp := request(http.MethodDelete, "/admin/api/privacy/scopes/task-13-live")
+	if clearResp.Code != http.StatusAccepted || clearResp.Body.String() != "{\"state\":\"closing\"}\n" {
+		t.Fatalf("active clear=(%d,%q), want 202 closing", clearResp.Code, clearResp.Body.String())
 	}
 
 	resp := &canonical.ChatResponse{Message: canonical.Message{
@@ -462,9 +462,9 @@ func TestPrivacyTriageLiveWiringUsesSharedServiceAndMetrics(t *testing.T) {
 	if afterErr := a.privacyService.After(ctx, req, resp); afterErr != nil {
 		t.Fatalf("After while scope closing: %v", afterErr)
 	}
-	clear = request(http.MethodDelete, "/admin/api/privacy/scopes/task-13-live")
-	if clear.Code != http.StatusNoContent || clear.Body.Len() != 0 {
-		t.Fatalf("repeated clear=(%d,%q), want 204", clear.Code, clear.Body.String())
+	clearResp = request(http.MethodDelete, "/admin/api/privacy/scopes/task-13-live")
+	if clearResp.Code != http.StatusNoContent || clearResp.Body.Len() != 0 {
+		t.Fatalf("repeated clear=(%d,%q), want 204", clearResp.Code, clearResp.Body.String())
 	}
 
 	metricsRecorder := httptest.NewRecorder()

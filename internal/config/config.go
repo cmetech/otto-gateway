@@ -1339,6 +1339,7 @@ func validatePrivacyConfig(
 	triageToken string,
 	piiEnabled bool,
 ) error {
+	// #nosec G101 -- This public sentinel requests generated credentials; it is not a credential.
 	const generatedSecretPlaceholder = "<generated-by-gw-init>"
 	var errs []error
 	profiles := make(map[string]struct{}, len(requestProfiles))

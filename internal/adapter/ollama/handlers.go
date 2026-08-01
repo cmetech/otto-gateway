@@ -72,7 +72,11 @@ func (w *privacyReceiptWriter) WriteHeader(status int) {
 
 func (w *privacyReceiptWriter) Write(payload []byte) (int, error) {
 	writePrivacyReceipt(w.ResponseWriter, w.ctx)
-	return w.ResponseWriter.Write(payload)
+	n, err := w.ResponseWriter.Write(payload)
+	if err != nil {
+		return n, fmt.Errorf("write privacy response: %w", err)
+	}
+	return n, nil
 }
 
 type privacyReceiptFlusher struct {

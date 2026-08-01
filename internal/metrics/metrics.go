@@ -502,6 +502,7 @@ func (m *Metrics) RegisterPrivacy(stats func() PrivacyStats) {
 	)
 }
 
+// RecordPrivacyRequest records the outcome of one privacy-aware request.
 func (m *Metrics) RecordPrivacyRequest(profile, surface, workload, result string) {
 	if m.privacyRequests != nil {
 		m.privacyRequests.WithLabelValues(
@@ -513,6 +514,7 @@ func (m *Metrics) RecordPrivacyRequest(profile, surface, workload, result string
 	}
 }
 
+// RecordPrivacyTransformation records a privacy transformation by entity and action.
 func (m *Metrics) RecordPrivacyTransformation(profile, entity, action string) {
 	if m.privacyTransformations != nil {
 		m.privacyTransformations.WithLabelValues(
@@ -523,6 +525,7 @@ func (m *Metrics) RecordPrivacyTransformation(profile, entity, action string) {
 	}
 }
 
+// RecordPrivacyRestoration records the outcome of restoring a transformed entity.
 func (m *Metrics) RecordPrivacyRestoration(profile, entity, result string) {
 	if m.privacyRestorations != nil {
 		m.privacyRestorations.WithLabelValues(
@@ -533,6 +536,7 @@ func (m *Metrics) RecordPrivacyRestoration(profile, entity, result string) {
 	}
 }
 
+// RecordPrivacyBlock records a request blocked at a privacy processing stage.
 func (m *Metrics) RecordPrivacyBlock(profile, stage, reason string) {
 	if m.privacyBlocks != nil {
 		m.privacyBlocks.WithLabelValues(
@@ -543,6 +547,7 @@ func (m *Metrics) RecordPrivacyBlock(profile, stage, reason string) {
 	}
 }
 
+// RecordPrivacyResidual records a residual sensitive entity found after processing.
 func (m *Metrics) RecordPrivacyResidual(profile, stage, entity string) {
 	if m.privacyResidualFindings != nil {
 		m.privacyResidualFindings.WithLabelValues(
@@ -553,6 +558,7 @@ func (m *Metrics) RecordPrivacyResidual(profile, stage, entity string) {
 	}
 }
 
+// RecordPrivacyReceipt records the outcome represented by a privacy receipt.
 func (m *Metrics) RecordPrivacyReceipt(profile, result string) {
 	if m.privacyReceipts != nil {
 		m.privacyReceipts.WithLabelValues(
@@ -562,6 +568,7 @@ func (m *Metrics) RecordPrivacyReceipt(profile, result string) {
 	}
 }
 
+// ObservePrivacyDuration records the elapsed time for a privacy processing stage.
 func (m *Metrics) ObservePrivacyDuration(profile, stage string, elapsed time.Duration) {
 	if m.privacyDuration != nil {
 		m.privacyDuration.WithLabelValues(
@@ -571,18 +578,21 @@ func (m *Metrics) ObservePrivacyDuration(profile, stage string, elapsed time.Dur
 	}
 }
 
+// RecordPrivacyScopeEvent records a privacy scope lifecycle event.
 func (m *Metrics) RecordPrivacyScopeEvent(event string) {
 	if m.privacyScopeEvents != nil {
 		m.privacyScopeEvents.WithLabelValues(privacyLabel(event, privacyScopeEvents)).Inc()
 	}
 }
 
+// RecordPrivacyCapacityRejection records a rejected privacy resource allocation.
 func (m *Metrics) RecordPrivacyCapacityRejection(resource string) {
 	if m.privacyCapacityRejections != nil {
 		m.privacyCapacityRejections.WithLabelValues(privacyLabel(resource, privacyResources)).Inc()
 	}
 }
 
+// RecordPrivacyMappingOperation records the outcome of a privacy mapping operation.
 func (m *Metrics) RecordPrivacyMappingOperation(operation, result string) {
 	if m.privacyMappingOperations != nil {
 		m.privacyMappingOperations.WithLabelValues(
@@ -592,6 +602,7 @@ func (m *Metrics) RecordPrivacyMappingOperation(operation, result string) {
 	}
 }
 
+// RecordPrivacyError records a privacy processing error by stage and reason.
 func (m *Metrics) RecordPrivacyError(stage, reason string) {
 	if m.privacyErrors != nil {
 		m.privacyErrors.WithLabelValues(
@@ -601,6 +612,7 @@ func (m *Metrics) RecordPrivacyError(stage, reason string) {
 	}
 }
 
+// RecordPrivacyTriage records the outcome of a privacy triage operation.
 func (m *Metrics) RecordPrivacyTriage(operation, result string) {
 	if m.privacyTriageRequests != nil {
 		m.privacyTriageRequests.WithLabelValues(

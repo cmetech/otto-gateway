@@ -54,6 +54,7 @@ type PrivacyMappingRow struct {
 	CreatedAt  time.Time `json:"created_at"`
 }
 
+// PrivacyClearResult describes the lifecycle state after clearing a privacy scope.
 type PrivacyClearResult struct {
 	State string `json:"state"`
 }
@@ -320,5 +321,8 @@ func (b *privacyTriageLimitedBuffer) Write(p []byte) (int, error) {
 	}
 	n, err := b.Buffer.Write(p)
 	b.remaining -= n
-	return n, err
+	if err != nil {
+		return n, fmt.Errorf("write privacy triage response: %w", err)
+	}
+	return n, nil
 }
