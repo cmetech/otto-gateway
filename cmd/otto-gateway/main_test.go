@@ -354,6 +354,96 @@ func TestPrivacyTriageLiveWiringUsesSharedServiceAndMetrics(t *testing.T) {
 	}
 }
 
+func TestPrivacyTriageDeniedParameterizedPathsRedactedFromAccessLog(t *testing.T) {
+	cfg := strictPrivacyConfig()
+	cfg.PrivacyTriageEnabled = true
+	cfg.PrivacyTriageToken = "task-13-denied-token"
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+	a, cleanup, err := newApp(context.Background(), cfg, logger)
+	if err != nil {
+		t.Fatalf("newApp: %v", err)
+	}
+	defer cleanup()
+
+	const (
+		rawScope     = "denied-scope-canary"
+		encodedScope = "denied%2Dscope%2Dcanary"
+	)
+	operations := []struct {
+		name        string
+		method      string
+		suffix      string
+		wantLogPath string
+	}{
+		{
+			name: "inspect", method: http.MethodGet, suffix: "/mapping",
+			wantLogPath: `"path":"/admin/api/privacy/scopes/{scope-id}/mapping"`,
+		},
+		{
+			name: "single-clear", method: http.MethodDelete,
+			wantLogPath: `"path":"/admin/api/privacy/scopes/{scope-id}"`,
+		},
+	}
+	forms := []struct {
+		name  string
+		scope string
+	}{
+		{name: "raw", scope: rawScope},
+		{name: "encoded", scope: encodedScope},
+	}
+	denials := []struct {
+		name       string
+		remoteAddr string
+		token      string
+		wantStatus int
+	}{
+		{name: "missing-token", remoteAddr: "127.0.0.1:43120", wantStatus: http.StatusUnauthorized},
+		{name: "wrong-token", remoteAddr: "127.0.0.1:43120", token: "wrong-token", wantStatus: http.StatusUnauthorized},
+		{name: "non-loopback", remoteAddr: "192.0.2.10:43120", token: cfg.PrivacyTriageToken, wantStatus: http.StatusForbidden},
+	}
+
+	for _, operation := range operations {
+		for _, form := range forms {
+			for _, denial := range denials {
+				name := operation.name + "/" + form.name + "/" + denial.name
+				t.Run(name, func(t *testing.T) {
+					logs.Reset()
+					path := "/admin/api/privacy/scopes/" + form.scope + operation.suffix
+					req := httptest.NewRequestWithContext(context.Background(), operation.method, path, nil)
+					req.RemoteAddr = denial.remoteAddr
+					req.Header.Set("Forwarded", "for=127.0.0.1")
+					req.Header.Set("X-Forwarded-For", "127.0.0.1")
+					if denial.token != "" {
+						req.Header.Set("Authorization", "Bearer "+denial.token)
+					}
+					recorder := httptest.NewRecorder()
+					a.srv.ServeHTTP(recorder, req)
+
+					if recorder.Code != denial.wantStatus {
+						t.Fatalf("status=%d, want %d; body=%s", recorder.Code, denial.wantStatus, recorder.Body.String())
+					}
+					if got := recorder.Header().Get("Cache-Control"); got != "no-store" {
+						t.Errorf("Cache-Control=%q, want no-store", got)
+					}
+					if got := recorder.Header().Get("Access-Control-Allow-Origin"); got != "" {
+						t.Errorf("Access-Control-Allow-Origin=%q, want absent", got)
+					}
+					accessLog := logs.String()
+					for _, forbidden := range []string{rawScope, encodedScope} {
+						if strings.Contains(accessLog, forbidden) {
+							t.Errorf("access log leaked scope form %q: %s", forbidden, accessLog)
+						}
+					}
+					if !strings.Contains(accessLog, operation.wantLogPath) {
+						t.Errorf("access log path not sanitized to matched route: %s", accessLog)
+					}
+				})
+			}
+		}
+	}
+}
+
 func TestHookOrderPrivacyBoundary(t *testing.T) {
 	cfg := strictPrivacyConfig()
 	cfg.ChatTrace = true

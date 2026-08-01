@@ -72,6 +72,7 @@ type privacyTriagePeerContextKey struct{}
 func (h *handler) privacyTriageProtection(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
+		redactPrivacyTriageRequestPath(r)
 		peer, ok := privacyTriagePeer(r.RemoteAddr)
 		if !ok || !peer.IsLoopback() {
 			h.auditPrivacyTriage(r, "denied", netip.Addr{}, "")
@@ -83,7 +84,6 @@ func (h *handler) privacyTriageProtection(next http.Handler) http.Handler {
 			writePrivacyTriageError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
-		redactPrivacyTriageRequestPath(r)
 		ctx := context.WithValue(r.Context(), privacyTriagePeerContextKey{}, peer)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
