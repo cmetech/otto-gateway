@@ -214,6 +214,8 @@ Privacy is the final content-mutating inbound stage. Compression may handle raw 
 
 Strict output handling buffers the complete worker response and validates or transforms it before restoring approved aliases and before releasing headers or body bytes. A caller may request streaming, but strict mode emits a native synthetic replay only after full validation. Strict failures use each surface's native error envelope; no partial success has already escaped. Standard streaming remains compatible, except where its existing encrypt round trip requires aggregation.
 
+Strict output also reserves every unbroken run of 38 or more ASCII letters, digits, `_`, or `-` as a possible bare encrypted privacy payload. An unrecognized run is blocked even when it is benign, such as a long Git object ID, base64url blob, or JWT segment. This conservative rule prevents malformed or key-rotated privacy payloads from passing as ordinary text. A workflow that must return such an opaque value should have the model split or escape it with non-reserved delimiters, enforce the strict receipt, then validate and reassemble it downstream.
+
 Under strict, strict chat trace is metadata-only with a bounded privacy summary. Standard chat trace remains sensitive and opt-in because it retains its existing raw-content behavior. Ordinary logs, health, metrics, dashboard status, receipts, and support bundles never contain mappings or protected values.
 
 ### Stable errors
