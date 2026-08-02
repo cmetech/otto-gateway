@@ -153,6 +153,26 @@ func TestPrivacyTriageEnabledRequiresActualLoopbackPeerAndSeparateBearer(t *test
 	}
 }
 
+func TestPrivacyTriageDeniedSingleScopeDeleteRecordsClearOperation(t *testing.T) {
+	var events []string
+	h := Handler(Deps{
+		PrivacyTriage:        &stubPrivacyTriage{},
+		PrivacyTriageToken:   privacyTriageTestToken,
+		PrivacyTriageEnabled: true,
+		PrivacyTriageObserver: func(operation, result string) {
+			events = append(events, operation+":"+result)
+		},
+	})
+
+	rec := privacyTriageRequest(t, h, http.MethodDelete, "/api/privacy/scopes/run-1", "127.0.0.1:43120", "wrong-token")
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d, want %d; body=%s", rec.Code, http.StatusUnauthorized, rec.Body.String())
+	}
+	if fmt.Sprint(events) != "[clear:denied]" {
+		t.Fatalf("triage events=%v, want [clear:denied]", events)
+	}
+}
+
 func TestPrivacyTriageEnabledRegistersOnlySpecifiedOperations(t *testing.T) {
 	source := &stubPrivacyTriage{mappings: map[string][]PrivacyMappingRow{"run-1": {}}}
 	h := Handler(Deps{

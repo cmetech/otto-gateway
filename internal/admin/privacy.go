@@ -269,7 +269,7 @@ func privacyTriageOperation(r *http.Request) string {
 		return "inspect"
 	}
 	if r.Method == http.MethodDelete {
-		if chi.URLParam(r, "scope-id") == "" {
+		if strings.HasSuffix(strings.TrimSuffix(r.URL.Path, "/"), "/api/privacy/scopes") {
 			return "clear_all"
 		}
 		return "clear"
