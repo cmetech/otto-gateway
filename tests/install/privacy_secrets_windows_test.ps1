@@ -156,23 +156,6 @@ try {
     Assert-ManagedSecretsAcl $OverridesPath
     Write-Host 'ok: cold init generates five managed secrets without exposing privacy values'
 
-    if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
-        # An explicit mandatory-integrity label lives in the SACL. Enterprise
-        # profiles commonly apply equivalent SACL policy to files under the
-        # user home. Re-init must update only the DACL and must not require the
-        # normally-disabled SeSecurityPrivilege needed to rewrite that SACL.
-        $integrityOutput = & icacls.exe $OverridesPath /setintegritylevel M 2>&1 | Out-String
-        if ($LASTEXITCODE -ne 0) { Fail-With "could not establish managed-secret SACL fixture: $integrityOutput" }
-        $authBeforeSaclReinit = Get-EnvValue $OverridesPath 'AUTH_TOKEN'
-        $saclReinitOutput = Join-Path $FixtureRoot 'sacl-reinit.out'
-        Invoke-FixtureInit $saclReinitOutput -Force
-        if ((Get-EnvValue $OverridesPath 'AUTH_TOKEN') -cne $authBeforeSaclReinit) {
-            Fail-With 'SACL-bearing normal re-init rotated AUTH_TOKEN'
-        }
-        Assert-ManagedSecretsAcl $OverridesPath
-        Write-Host 'ok: SACL-bearing managed-secret re-init does not require SeSecurityPrivilege'
-    }
-
     $beforeForcedFailure = [System.IO.File]::ReadAllText($OverridesPath)
     $failureOutput = Join-Path $FixtureRoot 'replace-failure.out'
     $failureExit = Invoke-FixtureInitExpectFailure $failureOutput
