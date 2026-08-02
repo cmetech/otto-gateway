@@ -133,10 +133,18 @@ try {
     if (Test-Path (Join-Path $GwHome '.env')) {
         Info "Existing config found — refreshing generated defaults and preserving overrides/secrets."
         & $bat init -Force -NonInteractive
+        $initExitCode = $LASTEXITCODE
+        if ($initExitCode -ne 0) {
+            throw "Gateway config initialization failed (exit code $initExitCode). Installation was not completed."
+        }
         $preservedEnv = $true
     } else {
         Info "Writing default config (no auth, 127.0.0.1:18080, all hooks, PII redaction=encrypt, NER=on, chat-trace off) ..."
         & $bat init -NonInteractive
+        $initExitCode = $LASTEXITCODE
+        if ($initExitCode -ne 0) {
+            throw "Gateway config initialization failed (exit code $initExitCode). Installation was not completed."
+        }
     }
 
     # PATH: expose gw.bat (PATHEXT prioritizes .bat over .ps1, so 'gw' resolves to the dispatcher).
