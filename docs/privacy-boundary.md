@@ -165,10 +165,10 @@ Scope IDs are caller-generated opaque identifiers, not secrets. They may contain
 Protected responses carry:
 
 ```http
-X-GW-Privacy-Receipt: <base64url-encoded-JSON>
+X-GW-Privacy-Receipt: <unpadded-base64url-encoded-JSON>
 ```
 
-The version 1 JSON contains bounded fields only: version, effective profile, scope, coverage, result, and transform/restore/block counts. It contains no entity values or key material. A strict consumer accepts only `profile == "strict"`, `coverage == "full"`, and `result == "pass"`.
+The header uses the RFC 4648 URL-safe alphabet without `=` padding. The version 1 JSON contains bounded fields only: version, effective profile, scope, coverage, result, and transform/restore/block counts. It contains no entity values or key material. A strict consumer accepts only `profile == "strict"`, `coverage == "full"`, and `result == "pass"`.
 
 This Python example decodes and validates a value already obtained from the response header. It does not log the header or decoded scope:
 
