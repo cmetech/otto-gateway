@@ -87,6 +87,7 @@ jobs:
         shell: powershell
         run: |
           $files = @(
+            'scripts/install.ps1',
             'scripts/gw.ps1',
             'scripts/test-pii.ps1',
             'scripts/lib/redact.ps1',
