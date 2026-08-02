@@ -209,8 +209,9 @@ try {
                     $null = $observed.Add([Convert]::ToBase64String($bytes))
                 } catch {
                     $baseException = $_.Exception.GetBaseException()
-                    $null = $observed.Add(
-                        'READ-ERROR:{0}:{1}' -f $baseException.GetType().FullName, $baseException.HResult)
+                    $readError = 'READ-ERROR:{0}:{1}' -f `
+                        $baseException.GetType().FullName, $baseException.HResult
+                    $null = $observed.Add($readError)
                 }
                 Start-Sleep -Milliseconds 1
             }
