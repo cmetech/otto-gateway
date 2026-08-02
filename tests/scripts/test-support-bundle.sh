@@ -315,7 +315,7 @@ TEST_SWAP_TARGET_TWO=""
 TEST_SWAP_ANCESTOR_ONE=""
 TEST_SWAP_ANCESTOR_TARGET_ONE=""
 TEST_PYTHONOPTIMIZE=""
-TEST_REAL_PERL="$(command -v perl)"
+TEST_REAL_SAFE_OPEN="$(command -v python3)"
 TEST_REAL_STAT="$(command -v stat)"
 
 reset_support_inputs() {
@@ -387,7 +387,7 @@ run_support() {
         TASK3_SWAP_TARGET_TWO="$TEST_SWAP_TARGET_TWO" \
         TASK3_SWAP_ANCESTOR_ONE="$TEST_SWAP_ANCESTOR_ONE" \
         TASK3_SWAP_ANCESTOR_TARGET_ONE="$TEST_SWAP_ANCESTOR_TARGET_ONE" \
-        TASK3_REAL_PERL="$TEST_REAL_PERL" \
+        TASK3_REAL_SAFE_OPEN="$TEST_REAL_SAFE_OPEN" \
         TASK3_REAL_STAT="$TEST_REAL_STAT" \
         PYTHONOPTIMIZE="$TEST_PYTHONOPTIMIZE" \
         "$BASH" "$WRAPPER" "$@" >"$stdout_file" 2>"$stderr_file"
@@ -786,11 +786,11 @@ printf '%s\n' 'unavailable Gateway current' > "$NO_SAFE_OPEN_ROOT/gateway/gatewa
 printf '%s\n' 'unavailable Gateway boot' > "$NO_SAFE_OPEN_ROOT/gateway/gateway-boot.log"
 printf '%s\n' 'unavailable Kiro' > "$NO_SAFE_OPEN_ROOT/kiro/kiro.log"
 printf '%s\n' 'unavailable Co-worker' > "$NO_SAFE_OPEN_ROOT/co-worker/logs/agent.log"
-cat > "$NO_SAFE_OPEN_ROOT/bin/perl" <<'EOF'
+cat > "$NO_SAFE_OPEN_ROOT/bin/python3" <<'EOF'
 #!/bin/sh
 exit 127
 EOF
-chmod +x "$NO_SAFE_OPEN_ROOT/bin/perl"
+chmod +x "$NO_SAFE_OPEN_ROOT/bin/python3"
 TEST_GW_LOG="$NO_SAFE_OPEN_ROOT/gateway/gateway.log"
 TEST_GW_LOG_BOOT="$NO_SAFE_OPEN_ROOT/gateway/gateway-boot.log"
 TEST_KIRO_CWD="$NO_SAFE_OPEN_ROOT/kiro"
@@ -826,7 +826,7 @@ printf '%s\n' "$RACE_GZIP_SECRET" | gzip > "$RACE_ROOT/external-secret.log.gz"
 printf '%s\n' "$STATIC_ANCESTOR_SECRET" > "$RACE_ROOT/boot target/gateway boot.log"
 ln -s "$RACE_ROOT/boot target" "$RACE_ROOT/boot ancestor link"
 ln -s "$RACE_ROOT/external-secret.log" "$RACE_ROOT/co-worker/logs/agent.log"
-cat > "$RACE_ROOT/bin/perl" <<'EOF'
+cat > "$RACE_ROOT/bin/python3" <<'EOF'
 #!/bin/sh
 task3_copy_mode=false
 task3_source_one=false
@@ -852,9 +852,9 @@ if [ "$task3_copy_mode" = true ]; then
         ln -s "$TASK3_SWAP_TARGET_TWO" "$TASK3_SWAP_SOURCE_TWO"
     fi
 fi
-exec "$TASK3_REAL_PERL" "$@"
+exec "$TASK3_REAL_SAFE_OPEN" "$@"
 EOF
-chmod +x "$RACE_ROOT/bin/perl"
+chmod +x "$RACE_ROOT/bin/python3"
 TEST_GW_LOG="$RACE_ROOT/gateway logs/gateway current.log"
 TEST_GW_LOG_BOOT="$RACE_ROOT/boot ancestor link/gateway boot.log"
 TEST_KIRO_CWD="$RACE_ROOT/kiro/source parent"

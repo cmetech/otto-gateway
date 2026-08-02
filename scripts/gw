@@ -2225,25 +2225,22 @@ EOF
 
     local collection_warnings=()
     local source_snapshot_seq=0 source_snapshot=""
-    local safe_open_perl="" safe_open_candidate="" safe_open_program
+    local safe_open_python="" safe_open_candidate="" safe_open_program
 
-    # Perl is part of the macOS base system and gives Bash 3.2 access to the
-    # native openat syscall. Probe the exact constants and supported syscall
-    # ABIs used below. If the interpreter or primitive is unavailable,
-    # collection fails closed.
-    # shellcheck disable=SC2016 # This is Perl source, not a shell expression.
-    if safe_open_candidate="$(command -v perl 2>/dev/null)" && \
+    # Python exposes openat through os.open(dir_fd=...), giving Bash 3.2 a
+    # stable interface on both Linux and macOS. Probe every primitive used
+    # below; if the interpreter or capability is unavailable, collection
+    # fails closed.
+    # shellcheck disable=SC2016 # This is Python source, not a shell expression.
+    if safe_open_candidate="$(command -v python3 2>/dev/null)" && \
        [[ -n "$safe_open_candidate" ]] && \
-       "$safe_open_candidate" -MConfig -MFcntl=:DEFAULT -e \
-           'my $arch = $Config::Config{archname} // "";
-            my $darwin = ($^O eq "darwin");
-            my $supported = $darwin ||
-                ($^O eq "linux" && $arch =~ /(?:x86_64|aarch64|arm64)/);
-            my $flags = $darwin || (defined(&O_DIRECTORY) &&
-                defined(&O_NOFOLLOW) && defined(&O_NONBLOCK));
-            exit(!($supported && $flags));' \
+       "$safe_open_candidate" -c \
+           'import os, sys
+required = ("O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK")
+supported = os.open in os.supports_dir_fd and all(hasattr(os, name) for name in required)
+sys.exit(0 if supported else 1)' \
            >/dev/null 2>&1; then
-        safe_open_perl="$safe_open_candidate"
+        safe_open_python="$safe_open_candidate"
     fi
 
     # Both phases traverse from an opened filesystem root with openat,
@@ -2252,150 +2249,100 @@ EOF
     # the copy phase read from that same descriptor. Keeping each directory
     # descriptor open until its child is opened prevents rename/symlink races;
     # O_NONBLOCK keeps a raced FIFO from hanging before fstat.
-    # shellcheck disable=SC2016 # This is Perl source, not a shell expression.
-    safe_open_program='use strict;
-	use warnings;
-	use Config;
-	use Cwd ();
-	use Fcntl qw(:DEFAULT);
-	use Errno qw(ELOOP ENOENT ENOTDIR);
-	use POSIX ();
+    # shellcheck disable=SC2016 # This is Python source, not a shell expression.
+    safe_open_program='import errno
+import os
+import stat
+import sys
 
-	# Newer Homebrew Perl builds on macOS omit these open(2) flags from
-	# Fcntl even though the Darwin ABI remains stable. Linux continues to use
-	# the interpreter-provided values for its platform headers.
-	my $o_directory = $^O eq "darwin" ? 0x00100000 : Fcntl::O_DIRECTORY();
-	my $o_nofollow = $^O eq "darwin" ? 0x00000100 : Fcntl::O_NOFOLLOW();
-	my $o_nonblock = $^O eq "darwin" ? 0x00000004 : Fcntl::O_NONBLOCK();
-	my $s_ifmt = 0170000;
-	my $s_ifreg = 0100000;
+def secure_open_source(source):
+    absolute = source if source.startswith("/") else os.getcwd() + "/" + source
+    components = []
+    for component in absolute.split("/"):
+        if component in ("", "."):
+            continue
+        if component == "..":
+            if components:
+                components.pop()
+            continue
+        if "\0" in component:
+            raise OSError(errno.ENOENT, "NUL in path")
+        components.append(component)
+    if not components:
+        raise OSError(errno.ENOTDIR, "missing leaf")
 
-	sub is_regular_mode {
-	    my ($mode) = @_;
-	    return ($mode & $s_ifmt) == $s_ifreg;
-	}
+    directory_fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for component in components[:-1]:
+            next_fd = os.open(
+                component,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=directory_fd,
+            )
+            os.close(directory_fd)
+            directory_fd = next_fd
+        return os.open(
+            components[-1],
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+            dir_fd=directory_fd,
+        )
+    finally:
+        os.close(directory_fd)
 
-	sub openat_syscall_number {
-	    my $arch = $Config::Config{archname} // "";
-	    return 463 if $^O eq "darwin";
-	    return 257 if $^O eq "linux" && $arch =~ /x86_64/;
-	    return 56 if $^O eq "linux" && $arch =~ /(?:aarch64|arm64)/;
-	    return undef;
-	}
+def open_source_or_exit(source, replaced_code, unreadable_code):
+    try:
+        return secure_open_source(source)
+    except OSError as exc:
+        replaced = exc.errno in (errno.ELOOP, errno.ENOENT, errno.ENOTDIR)
+        sys.exit(replaced_code if replaced else unreadable_code)
 
-	sub secure_open_source {
-	    my ($source) = @_;
-	    my $openat_number = openat_syscall_number();
-	    return (undef, ENOTDIR) unless defined($openat_number);
+operation = sys.argv[1] if len(sys.argv) > 1 else ""
+if operation == "inspect":
+    if len(sys.argv) != 3:
+        sys.exit(20)
+    input_fd = open_source_or_exit(sys.argv[2], 22, 21)
+    try:
+        source_stat = os.fstat(input_fd)
+        if not stat.S_ISREG(source_stat.st_mode):
+            sys.exit(23)
+        print(f"{source_stat.st_dev}:{source_stat.st_ino}")
+    finally:
+        os.close(input_fd)
+    sys.exit(0)
 
-	    my $absolute = $source;
-	    if (substr($absolute, 0, 1) ne "/") {
-	        my $cwd = Cwd::getcwd();
-	        return (undef, ENOENT) unless defined($cwd);
-	        $absolute = $cwd . "/" . $absolute;
-	    }
-
-	    my @components;
-	    for my $component (split(m{/+}, $absolute)) {
-	        next if $component eq "" || $component eq ".";
-	        if ($component eq "..") {
-	            pop(@components) if @components;
-	            next;
-	        }
-	        return (undef, ENOENT) if index($component, "\0") >= 0;
-	        push(@components, $component);
-	    }
-	    return (undef, ENOTDIR) unless @components;
-
-	    my $directory;
-	    unless (sysopen($directory, "/", O_RDONLY | $o_directory | $o_nofollow)) {
-	        return (undef, 0 + $!);
-	    }
-	    for (my $index = 0; $index < @components - 1; $index++) {
-	        my $component = $components[$index];
-	        my $next_fd = syscall($openat_number, fileno($directory), $component,
-	            O_RDONLY | $o_directory | $o_nofollow, 0);
-	        if ($next_fd < 0) {
-	            my $open_errno = 0 + $!;
-	            close($directory);
-	            return (undef, $open_errno);
-	        }
-	        my $next_directory;
-	        unless (open($next_directory, "<&=$next_fd")) {
-	            my $open_errno = 0 + $!;
-	            POSIX::close($next_fd);
-	            close($directory);
-	            return (undef, $open_errno);
-	        }
-	        close($directory);
-	        $directory = $next_directory;
-	    }
-
-	    my $leaf = $components[-1];
-	    my $input_fd = syscall($openat_number, fileno($directory), $leaf,
-	        O_RDONLY | $o_nofollow | $o_nonblock, 0);
-	    if ($input_fd < 0) {
-	        my $open_errno = 0 + $!;
-	        close($directory);
-	        return (undef, $open_errno);
-	    }
-	    my $input;
-	    unless (open($input, "<&=$input_fd")) {
-	        my $open_errno = 0 + $!;
-	        POSIX::close($input_fd);
-	        close($directory);
-	        return (undef, $open_errno);
-	    }
-	    close($directory);
-	    return ($input, 0);
-	}
-
-	my $operation = shift(@ARGV) // "";
-	if ($operation eq "inspect") {
-	    my $source = shift(@ARGV) // exit 20;
-	    my ($input, $open_errno) = secure_open_source($source);
-	    exit(($open_errno == ELOOP || $open_errno == ENOENT || $open_errno == ENOTDIR) ? 22 : 21)
-	        unless defined($input);
-	    my @source_stat = stat($input);
-	    exit 21 unless @source_stat;
-	    exit 23 unless is_regular_mode($source_stat[2]);
-	    print $source_stat[0], ":", $source_stat[1], "\n";
-	    close($input) or exit 21;
-	    exit 0;
-	}
-
-exit 20 unless $operation eq "copy";
-my ($expected_device, $expected_inode, $source, $destination) = @ARGV;
-exit 20 unless defined($destination);
-
-	my ($input, $open_errno) = secure_open_source($source);
-	exit(($open_errno == ELOOP || $open_errno == ENOENT || $open_errno == ENOTDIR) ? 31 : 32)
-	    unless defined($input);
-binmode($input);
-my @opened_stat = stat($input);
-exit 33 unless @opened_stat && is_regular_mode($opened_stat[2]);
-exit 34 unless "$opened_stat[0]" eq "$expected_device" &&
-               "$opened_stat[1]" eq "$expected_inode";
-
-my $output_flags = O_WRONLY | O_CREAT | O_EXCL;
-my $output;
-sysopen($output, $destination, $output_flags, 0600) or exit 35;
-binmode($output);
-while (1) {
-    my $read_count = sysread($input, my $buffer, 65536);
-    exit 35 unless defined($read_count);
-    last if $read_count == 0;
-    my $offset = 0;
-    while ($offset < $read_count) {
-        my $write_count = syswrite($output, $buffer, $read_count - $offset, $offset);
-        exit 35 unless defined($write_count) && $write_count > 0;
-        $offset += $write_count;
-    }
-}
-close($output) or exit 35;
-close($input) or exit 35;
-utime($opened_stat[8], $opened_stat[9], $destination);
-exit 0;'
+if operation != "copy" or len(sys.argv) != 6:
+    sys.exit(20)
+expected_device, expected_inode, source, destination = sys.argv[2:]
+input_fd = open_source_or_exit(source, 31, 32)
+output_fd = None
+try:
+    opened_stat = os.fstat(input_fd)
+    if not stat.S_ISREG(opened_stat.st_mode):
+        sys.exit(33)
+    if str(opened_stat.st_dev) != expected_device or str(opened_stat.st_ino) != expected_inode:
+        sys.exit(34)
+    try:
+        output_fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        while True:
+            chunk = os.read(input_fd, 65536)
+            if not chunk:
+                break
+            view = memoryview(chunk)
+            while view:
+                written = os.write(output_fd, view)
+                if written <= 0:
+                    sys.exit(35)
+                view = view[written:]
+        os.close(output_fd)
+        output_fd = None
+        os.utime(destination, ns=(opened_stat.st_atime_ns, opened_stat.st_mtime_ns))
+    except OSError:
+        sys.exit(35)
+finally:
+    if output_fd is not None:
+        os.close(output_fd)
+    os.close(input_fd)
+sys.exit(0)'
 
     # snapshot_regular_source SOURCE LABEL WARN_IF_MISSING
     # Atomically safe-open a verified regular source and copy its already-open
@@ -2424,12 +2371,12 @@ exit 0;'
             collection_warnings+=("$snapshot_label unreadable")
             return 1
         fi
-        if [[ -z "$safe_open_perl" ]]; then
+        if [[ -z "$safe_open_python" ]]; then
             collection_warnings+=("$snapshot_label safe-open unavailable")
             return 1
         fi
 
-        source_identity="$("$safe_open_perl" -e "$safe_open_program" -- inspect "$snapshot_src" 2>/dev/null)"
+        source_identity="$("$safe_open_python" -c "$safe_open_program" inspect "$snapshot_src" 2>/dev/null)"
         safe_open_rc=$?
         if [[ "$safe_open_rc" -ne 0 ]]; then
             case "$safe_open_rc" in
@@ -2463,7 +2410,7 @@ exit 0;'
         fi
         source_snapshot_seq=$((source_snapshot_seq + 1))
         snapshot_path="$snapshot_dir/source-$source_snapshot_seq"
-        "$safe_open_perl" -e "$safe_open_program" -- copy \
+        "$safe_open_python" -c "$safe_open_program" copy \
             "$source_device" "$source_inode" "$snapshot_src" "$snapshot_path" 2>/dev/null
         safe_open_rc=$?
         if [[ "$safe_open_rc" -ne 0 ]]; then
