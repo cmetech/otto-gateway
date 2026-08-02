@@ -109,7 +109,7 @@ $sharedWant = @('[REDACTED]','client_secret=[REDACTED]','[REDACTED]','[REDACTED]
 Assert-Eq $sharedWant (($sharedCorpus | Invoke-RedactStream) -join "`n") 'PowerShell support uses the shared Go classifier corpus'
 
 $runningOnWindows = [System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT
-$env:GW_SUPPORT_REDACTOR_BIN = if ($runningOnWindows) { "$env:WINDIR\System32\cmd.exe" } else { '/usr/bin/false' }
+$env:GW_SUPPORT_REDACTOR_BIN = if ($runningOnWindows) { "$env:WINDIR\System32\where.exe" } else { '/usr/bin/false' }
 $failed = @()
 $failedClosed = $false
 try { $failed = @('client_secret=must-not-publish' | Invoke-RedactStream) } catch { $failedClosed = $true }
