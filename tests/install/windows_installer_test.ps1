@@ -17,6 +17,16 @@ $server = $null
 
 function Fail-With([string]$Message) { throw "FAIL: $Message" }
 
+$installerBytes = [System.IO.File]::ReadAllBytes($Installer)
+$installerText = (New-Object System.Text.UTF8Encoding($false, $true)).GetString($installerBytes)
+$installerFirstLine = ($installerText -split "`r?`n", 2)[0]
+try {
+    Invoke-Expression $installerFirstLine
+} catch {
+    Fail-With "downloaded installer cannot be piped to Invoke-Expression: $($_.Exception.Message)"
+}
+Write-Host 'ok: downloaded installer first line is Invoke-Expression compatible'
+
 New-Item -ItemType Directory -Path (Join-Path $ArchiveRoot 'otto_gateway\scripts') -Force | Out-Null
 New-Item -ItemType Directory -Path $ReleaseRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $GwHome -Force | Out-Null

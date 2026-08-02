@@ -1,12 +1,12 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 <#
-  scripts/install.ps1 — one-liner installer for Gateway (Windows).
+  scripts/install.ps1 -- one-liner installer for Gateway (Windows).
     irm https://raw.githubusercontent.com/cmetech/otto-gateway/main/scripts/install.ps1 | iex
 
   Layout (post de-brand relayout):
-    GW_INSTALL_DIR  code (binaries, scripts) — replaceable on upgrade.
+    GW_INSTALL_DIR  code (binaries, scripts) -- replaceable on upgrade.
       default $env:LOCALAPPDATA\Gateway
-    GW_HOME         config (.env, logs, state) — precious, never overwritten.
+    GW_HOME         config (.env, logs, state) -- precious, never overwritten.
       default $env:USERPROFILE\.gw
 
   Env overrides:
@@ -30,7 +30,7 @@ function Ok($m)   { Write-Host "[ok] $m" -ForegroundColor Green }
 function Warn($m) { Write-Warning $m }
 function Die($m)  { Write-Error $m; exit 1 }
 
-# Arch — only amd64 Windows builds are published today.
+# Arch -- only amd64 Windows builds are published today.
 $arch = $env:PROCESSOR_ARCHITECTURE
 if ($arch -ne 'AMD64') { Die "unsupported arch '$arch'. Only amd64 Windows builds are published." }
 $platform = 'windows-amd64'
@@ -73,7 +73,7 @@ try {
         $global:LASTEXITCODE = 0
     }
 
-    # Stop a running gateway-tray before extraction — the .exe is locked by
+    # Stop a running gateway-tray before extraction -- the .exe is locked by
     # the running process otherwise and Copy-Item fails with "in use".
     Info "Stopping running tray (if any) ..."
     Get-Process gateway-tray -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
@@ -107,7 +107,7 @@ try {
     # first (present when this script is run from a checked-out repo),
     # falling back to the copy inside the just-extracted install dir
     # (present on every real release install). Either miss is silently
-    # tolerated — migration is advisory only, never required for a
+    # tolerated -- migration is advisory only, never required for a
     # fresh install.
     if ($PSScriptRoot) {
         $localMigrate = Join-Path $PSScriptRoot 'lib\migrate.ps1'
@@ -131,7 +131,7 @@ try {
 
     $preservedEnv = $false
     if (Test-Path (Join-Path $GwHome '.env')) {
-        Info "Existing config found — refreshing generated defaults and preserving overrides/secrets."
+        Info "Existing config found -- refreshing generated defaults and preserving overrides/secrets."
         & $bat init -Force -NonInteractive
         $initExitCode = $LASTEXITCODE
         if ($initExitCode -ne 0) {
@@ -153,7 +153,7 @@ try {
     if (-not $userPath) { $userPath = '' }
     $pathEntries = $userPath -split ';'
 
-    # Legacy cleanup: drop any stale `.otto-gw\scripts` PATH entry —
+    # Legacy cleanup: drop any stale `.otto-gw\scripts` PATH entry --
     # superseded by $scripts above. Matches case-insensitively (Windows
     # PATH semantics) and by suffix so it works regardless of which
     # legacy install dir the entry pointed at.
@@ -172,9 +172,9 @@ try {
         Ok "added $scripts to your user PATH (open a new terminal to pick it up)"
     }
 
-    # Legacy cleanup: remove the old OttoTray HKCU Run-key autostart entry —
+    # Legacy cleanup: remove the old OttoTray HKCU Run-key autostart entry --
     # superseded by the GatewayTray value the tray itself registers. Autostart
-    # is opt-in via the tray, so we do not install a replacement here — just
+    # is opt-in via the tray, so we do not install a replacement here -- just
     # unset the stale one so operators upgrading from an OTTO Gateway install
     # don't end up with a dead Run entry pointing at a binary path that no
     # longer exists.
