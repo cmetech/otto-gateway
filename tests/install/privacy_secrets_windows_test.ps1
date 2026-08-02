@@ -204,19 +204,27 @@ try {
             $observed = New-Object 'System.Collections.Generic.HashSet[string]'
             [System.IO.File]::WriteAllText($ReadyPath, 'ready')
             while (-not [System.IO.File]::Exists($StopPath)) {
-                try {
-                    $bytes = [System.Text.Encoding]::UTF8.GetBytes([System.IO.File]::ReadAllText($Path))
-                    $null = $observed.Add([Convert]::ToBase64String($bytes))
-                } catch {
-                    $baseException = $_.Exception.GetBaseException()
-                    # ReplaceFile briefly takes an exclusive Windows handle.
-                    # Retry only ERROR_SHARING_VIOLATION (0x80070020); missing
-                    # files, access failures, and all other errors still fail.
-                    if (-not ($baseException -is [System.IO.IOException] -and
-                        $baseException.HResult -eq -2147024864)) {
+                $readDeadline = [DateTime]::UtcNow.AddMilliseconds(100)
+                while ($true) {
+                    try {
+                        $bytes = [System.Text.Encoding]::UTF8.GetBytes([System.IO.File]::ReadAllText($Path))
+                        $null = $observed.Add([Convert]::ToBase64String($bytes))
+                        break
+                    } catch {
+                        $baseException = $_.Exception.GetBaseException()
+                        # ReplaceFile can briefly collide with a fresh path
+                        # open. Bound retries to the two exact native errors;
+                        # access failures and persistent absence still fail.
+                        $retryable = $baseException -is [System.IO.IOException] -and
+                            $baseException.HResult -in @(-2147024864, -2147024894)
+                        if ($retryable -and [DateTime]::UtcNow -lt $readDeadline) {
+                            Start-Sleep -Milliseconds 1
+                            continue
+                        }
                         $readError = 'READ-ERROR:{0}:{1}' -f `
                             $baseException.GetType().FullName, $baseException.HResult
                         $null = $observed.Add($readError)
+                        break
                     }
                 }
                 Start-Sleep -Milliseconds 1
