@@ -1012,6 +1012,11 @@ function Set-ManagedSecrets {
         $stream.Dispose()
         Protect-ManagedSecretTemporary -FilePath $temporary
         [System.IO.File]::WriteAllLines($temporary, $updated, (New-Object System.Text.UTF8Encoding($false)))
+        if (Test-Path -LiteralPath $FilePath -PathType Leaf) {
+            # ReplaceFile preserves the destination DACL. Harden legacy files
+            # before publication so the replacement is never broadly readable.
+            Protect-ManagedSecretTemporary -FilePath $FilePath
+        }
         if ($env:GW_TEST_MANAGED_SECRET_REPLACE_FAILURE -match '^(?i:true|1|yes)$') {
             throw 'forced managed-secret atomic replacement failure'
         }
