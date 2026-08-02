@@ -110,13 +110,13 @@ jobs:
         shell: powershell
         run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/install/windows_nonadmin_acl_test.ps1
 
-      - name: PowerShell privacy secret lifecycle
-        shell: pwsh
-        run: pwsh -NoProfile -File tests/install/privacy_secrets_windows_test.ps1
-
       - name: PowerShell installer failure propagation
         shell: powershell
         run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/install/windows_installer_test.ps1
+
+      - name: PowerShell privacy secret lifecycle
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/install/privacy_secrets_windows_test.ps1
 
       - name: PowerShell privacy CLI parity
         shell: pwsh
