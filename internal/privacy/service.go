@@ -388,6 +388,11 @@ func (s *Service) observeRequestFailure(ctx context.Context, profile Profile, er
 	result := "error"
 	var privacyErr *Error
 	if errors.As(err, &privacyErr) {
+		if _, code, ok := ErrorInfo(privacyErr); ok {
+			s.lastErrorMu.Lock()
+			s.lastErrorCode = code
+			s.lastErrorMu.Unlock()
+		}
 		if privacyErr.Code == CodeInputBlocked || privacyErr.Code == CodeOutputBlocked {
 			result = "block"
 		}

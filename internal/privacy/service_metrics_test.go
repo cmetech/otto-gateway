@@ -583,6 +583,23 @@ func TestServicePrivacyObservers_ExactlyOnceForBlockErrorAndCapacity(t *testing.
 	})
 }
 
+func TestServiceSnapshotLastErrorCodeTracksBoundedInputFailure(t *testing.T) {
+	classifier := &residualPassClassifier{
+		first: func(string) []Finding { return nil },
+		residual: func(value string) []Finding {
+			return exactFinding(value, "raw-protected", "PERSON", CategoryPersonal, MatchNER)
+		},
+	}
+	service := newStrictTestService(t, strictTestConfig{classifier: classifier})
+	state := NewRequestState(RequestMetadata{RequestedProfile: "strict", ScopeID: "posture-input-block"})
+	_, err := service.Before(WithRequestState(context.Background(), state), &canonical.ChatRequest{System: "raw-protected"})
+	assertPrivacyError(t, err, CodeInputBlocked, "input")
+
+	if got := service.Snapshot().LastErrorCode; got != CodeInputBlocked {
+		t.Fatalf("LastErrorCode=%q, want %q", got, CodeInputBlocked)
+	}
+}
+
 func TestServicePrivacyObservers_MappingCapacityReportsExactResource(t *testing.T) {
 	tests := []struct {
 		name       string
