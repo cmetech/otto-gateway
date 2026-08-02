@@ -278,7 +278,8 @@ server.serve_forever()
 PY
 HTTP_PID=$!
 
-for ((_attempt = 0; _attempt < 100; _attempt++)); do
+HTTP_START_DEADLINE=$((SECONDS + 60))
+while ((SECONDS < HTTP_START_DEADLINE)); do
     [[ -s "$HTTP_PORT_FILE" ]] && break
     if ! kill -0 "$HTTP_PID" 2>/dev/null; then
         HTTP_RC=0
