@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
   scripts/install.ps1 — one-liner installer for Gateway (Windows).
     irm https://raw.githubusercontent.com/cmetech/otto-gateway/main/scripts/install.ps1 | iex
