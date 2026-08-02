@@ -1709,6 +1709,23 @@ function Test-PrivacyScope([string]$Scope) {
     return $Scope -cmatch '^[A-Za-z0-9._:-]{1,128}$'
 }
 
+function Invoke-PrivacyRestMethodNoProxy {
+    param([Parameter(Mandatory)][hashtable]$Parameters)
+    $command = Get-Command Invoke-RestMethod -ErrorAction Stop
+    if ($command.Parameters.ContainsKey('NoProxy')) {
+        $Parameters['NoProxy'] = $true
+        return Invoke-RestMethod @Parameters
+    }
+
+    $priorProxy = [System.Net.WebRequest]::DefaultWebProxy
+    try {
+        [System.Net.WebRequest]::DefaultWebProxy = New-Object System.Net.WebProxy
+        return Invoke-RestMethod @Parameters
+    } finally {
+        [System.Net.WebRequest]::DefaultWebProxy = $priorProxy
+    }
+}
+
 function Invoke-PrivacyRequest {
     param([string]$Method, [string]$Path, [switch]$ConfirmAll)
     $base = Get-PrivacyBaseUrl
@@ -1719,7 +1736,15 @@ function Invoke-PrivacyRequest {
     $headers = @{ Authorization = "Bearer $token" }
     if ($ConfirmAll) { $headers['X-GW-Privacy-Confirm'] = 'clear-all' }
     try {
-        $result = Invoke-RestMethod -Method $Method -Uri ($base + $Path) -Headers $headers -TimeoutSec 5 -MaximumRedirection 0 -ErrorAction Stop
+        $parameters = @{
+            Method = $Method
+            Uri = $base + $Path
+            Headers = $headers
+            TimeoutSec = 5
+            MaximumRedirection = 0
+            ErrorAction = 'Stop'
+        }
+        $result = Invoke-PrivacyRestMethodNoProxy -Parameters $parameters
         $emptyResult = $null -eq $result -or ($result -is [string] -and [string]::IsNullOrEmpty($result))
         return [pscustomobject]@{ Status = if ($emptyResult) { 204 } elseif ($result.PSObject.Properties['state'] -and $result.state -ceq 'closing') { 202 } else { 200 }; Body = $result }
     } catch {
@@ -1735,7 +1760,14 @@ function Invoke-PrivacyRequest {
 function Invoke-PrivacyStatus {
     $base = Get-PrivacyBaseUrl
     try {
-        $snapshot = Invoke-RestMethod -Method Get -Uri ($base + '/admin/api/snapshot') -TimeoutSec 5 -MaximumRedirection 0 -ErrorAction Stop
+        $parameters = @{
+            Method = 'Get'
+            Uri = $base + '/admin/api/snapshot'
+            TimeoutSec = 5
+            MaximumRedirection = 0
+            ErrorAction = 'Stop'
+        }
+        $snapshot = Invoke-PrivacyRestMethodNoProxy -Parameters $parameters
     } catch {
         throw 'privacy: unavailable (safe snapshot did not respond)'
     }

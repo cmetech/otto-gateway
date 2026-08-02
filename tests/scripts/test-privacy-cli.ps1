@@ -8,6 +8,7 @@ $HomeFixture = Join-Path $FixtureRoot 'home'
 $ServerScript = Join-Path $FixtureRoot 'server.py'
 $StateFile = Join-Path $FixtureRoot 'state'
 $RequestLog = Join-Path $FixtureRoot 'requests.log'
+$ProxyLog = Join-Path $FixtureRoot 'proxy-requests.log'
 $Token = 'override-triage-token-7788'
 
 function Fail-With([string]$Message) { throw "FAIL: $Message" }
@@ -32,27 +33,33 @@ try {
     $listener.Start()
     $port = ([System.Net.IPEndPoint]$listener.LocalEndpoint).Port
     $listener.Stop()
+    $proxyListener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+    $proxyListener.Start()
+    $proxyPort = ([System.Net.IPEndPoint]$proxyListener.LocalEndpoint).Port
+    $proxyListener.Stop()
     $python = @'
-import http.server, os, pathlib, sys
-port = int(sys.argv[1]); state_path = pathlib.Path(sys.argv[2]); log_path = pathlib.Path(sys.argv[3]); token = os.environ['GW_TEST_EXPECT_TOKEN']
+import http.server, os, pathlib, sys, urllib.parse
+port = int(sys.argv[1]); state_path = pathlib.Path(sys.argv[2]); log_path = pathlib.Path(sys.argv[3]); kind = sys.argv[4]; token = os.environ['GW_TEST_EXPECT_TOKEN']
 class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *args): pass
     def handle_one(self):
         state = state_path.read_text().strip()
         auth = self.headers.get('Authorization', '')
-        with log_path.open('a') as f: f.write(f'{self.command} {self.path} auth={auth == "Bearer " + token} confirm={self.headers.get("X-GW-Privacy-Confirm", "")}\n')
-        if self.path == '/admin/api/snapshot':
+        raw_path = self.path
+        path = urllib.parse.urlsplit(raw_path).path
+        with log_path.open('a') as f: f.write(f'{kind} {self.command} {raw_path} auth={auth == "Bearer " + token} confirm={self.headers.get("X-GW-Privacy-Confirm", "")}\n')
+        if path == '/admin/api/snapshot':
             triage = 'false' if state == 'disabled' else 'true'
             self.send_response(200); self.end_headers(); self.wfile.write(f'{{"privacy":{{"default_profile":"strict","strict_available":true,"triage_enabled":{triage},"active_scopes":2,"mapping_entries":4}}}}'.encode()); return
         if auth != 'Bearer ' + token:
             self.send_response(401); self.end_headers(); self.wfile.write(b'{"error":{"code":"unauthorized"}}'); return
         if state == 'redirect':
             self.send_response(302); self.send_header('Location', 'http://192.0.2.1/privacy-escaped'); self.end_headers(); return
-        if self.command == 'GET' and self.path.endswith('/mapping'):
+        if self.command == 'GET' and path.endswith('/mapping'):
             self.send_response(200); self.end_headers(); self.wfile.write(b'[{"entity":"IPv4","original":"10.0.0.8","synthetic":"198.18.0.8","provenance":"input"}]'); return
         if self.command == 'GET':
             self.send_response(200); self.end_headers(); self.wfile.write(b'[{"id":"scope-safe","profile":"strict","state":"active","entries":2,"in_flight":0}]'); return
-        if self.path == '/admin/api/privacy/scopes':
+        if path == '/admin/api/privacy/scopes':
             if self.headers.get('X-GW-Privacy-Confirm') != 'clear-all':
                 self.send_response(400); self.end_headers(); self.wfile.write(b'{"error":{"code":"confirmation_required"}}'); return
             self.send_response(204); self.end_headers(); return
@@ -64,13 +71,24 @@ http.server.ThreadingHTTPServer(('127.0.0.1', port), Handler).serve_forever()
     [System.IO.File]::WriteAllText($ServerScript, $python, (New-Object System.Text.UTF8Encoding($false)))
     Set-State 'enabled'
     $env:GW_TEST_EXPECT_TOKEN = $Token
-    $server = Start-Process python3 -ArgumentList @($ServerScript, "$port", $StateFile, $RequestLog) -PassThru -NoNewWindow
+    $server = Start-Process python3 -ArgumentList @($ServerScript, "$port", $StateFile, $RequestLog, 'target') -PassThru -NoNewWindow
+    $proxyServer = Start-Process python3 -ArgumentList @($ServerScript, "$proxyPort", $StateFile, $ProxyLog, 'proxy') -PassThru -NoNewWindow
     try {
         $env:GW_HOME = $HomeFixture
         $env:GW_ADDR = "http://127.0.0.1:$port"
         for ($attempt = 0; $attempt -lt 40; $attempt++) {
             try { $null = Invoke-RestMethod -Uri "$($env:GW_ADDR)/admin/api/snapshot" -TimeoutSec 1; break } catch { Start-Sleep -Milliseconds 50 }
         }
+        $proxyReady = $false
+        for ($attempt = 0; $attempt -lt 40; $attempt++) {
+            try {
+                $null = Invoke-RestMethod -Uri "http://127.0.0.1:$proxyPort/admin/api/snapshot" -TimeoutSec 1
+                $proxyReady = $true
+                break
+            } catch { Start-Sleep -Milliseconds 50 }
+        }
+        if (-not $proxyReady) { Fail-With 'proxy fixture did not become ready' }
+        Remove-Item -LiteralPath $ProxyLog -Force -ErrorAction SilentlyContinue
 
         $status = Invoke-Privacy 'status' @('status')
         if ($status.ExitCode -ne 0) { Fail-With "privacy status failed: $($status.Output)" }
@@ -91,6 +109,34 @@ http.server.ThreadingHTTPServer(('127.0.0.1', port), Handler).serve_forever()
         Assert-Contains $closing.Output 'closing' 'closing state missing'
         $clearAll = Invoke-Privacy 'clear-all' @('clear','--all','--yes')
         Assert-Contains $clearAll.Output 'cleared' "clear-all state missing: $($clearAll.Output)"
+
+        $proxyVariables = @('HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','http_proxy','https_proxy','all_proxy','NO_PROXY','no_proxy')
+        $savedProxyEnvironment = @{}
+        foreach ($name in $proxyVariables) { $savedProxyEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
+        try {
+            foreach ($name in @('HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','http_proxy','https_proxy','all_proxy')) {
+                [Environment]::SetEnvironmentVariable($name, "http://127.0.0.1:$proxyPort", 'Process')
+            }
+            [Environment]::SetEnvironmentVariable('NO_PROXY', '', 'Process')
+            [Environment]::SetEnvironmentVariable('no_proxy', '', 'Process')
+
+            $proxyScopes = Invoke-Privacy 'proxy-scopes' @('scopes')
+            $proxyInspect = Invoke-Privacy 'proxy-inspect' @('inspect','scope-safe')
+            $proxyStatus = Invoke-Privacy 'proxy-status' @('status')
+            if ($proxyScopes.ExitCode -ne 0 -or $proxyInspect.ExitCode -ne 0 -or $proxyStatus.ExitCode -ne 0) {
+                Fail-With 'proxy-confinement requests did not reach the direct loopback target'
+            }
+            Assert-Contains $proxyScopes.Output 'scope-safe' 'proxy-confinement scopes response missing'
+            Assert-Contains $proxyInspect.Output '198.18.0.8' 'proxy-confinement inspect response missing'
+            Assert-Contains $proxyStatus.Output 'profile: strict' 'proxy-confinement status response missing'
+            if (Test-Path -LiteralPath $ProxyLog) {
+                Fail-With "privacy commands contacted the configured proxy: $(Get-Content -LiteralPath $ProxyLog -Raw)"
+            }
+        } finally {
+            foreach ($name in $proxyVariables) {
+                [Environment]::SetEnvironmentVariable($name, $savedProxyEnvironment[$name], 'Process')
+            }
+        }
 
         $invalidConfirmations = @(
             @{ Name = 'missing-yes'; Args = @('clear','--all') },
@@ -145,6 +191,7 @@ http.server.ThreadingHTTPServer(('127.0.0.1', port), Handler).serve_forever()
         Write-Host 'PASS: PowerShell privacy CLI'
     } finally {
         if ($server -and -not $server.HasExited) { $server.Kill(); $server.WaitForExit() }
+        if ($proxyServer -and -not $proxyServer.HasExited) { $proxyServer.Kill(); $proxyServer.WaitForExit() }
     }
 } finally {
     Remove-Item -LiteralPath $FixtureRoot -Recurse -Force -ErrorAction SilentlyContinue
