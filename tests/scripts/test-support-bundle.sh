@@ -278,8 +278,14 @@ server.serve_forever()
 PY
 HTTP_PID=$!
 
-for _attempt in 1 2 3 4 5 6 7 8 9 10; do
+for ((_attempt = 0; _attempt < 100; _attempt++)); do
     [[ -s "$HTTP_PORT_FILE" ]] && break
+    if ! kill -0 "$HTTP_PID" 2>/dev/null; then
+        HTTP_RC=0
+        wait "$HTTP_PID" || HTTP_RC=$?
+        echo "FATAL: deterministic HTTP endpoint exited with status $HTTP_RC" >&2
+        exit 1
+    fi
     sleep 0.1
 done
 if [[ ! -s "$HTTP_PORT_FILE" ]]; then
