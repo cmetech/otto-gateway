@@ -1019,7 +1019,19 @@ function Set-ManagedSecrets {
         if (Test-Path -LiteralPath $FilePath -PathType Leaf) {
             # ReplaceFile preserves the destination DACL. Harden legacy files
             # before publication so the replacement is never broadly readable.
-            Protect-ManagedSecretTemporary -FilePath $FilePath
+            # Avoid rewriting an already-correct Windows DACL: doing so can
+            # transiently disrupt concurrent readers even though the file
+            # contents are replaced atomically.
+            $destinationNeedsProtection = $true
+            if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
+                try {
+                    Confirm-ManagedSecretProtection -FilePath $FilePath
+                    $destinationNeedsProtection = $false
+                } catch { }
+            }
+            if ($destinationNeedsProtection) {
+                Protect-ManagedSecretTemporary -FilePath $FilePath
+            }
         }
         if ($env:GW_TEST_MANAGED_SECRET_REPLACE_FAILURE -match '^(?i:true|1|yes)$') {
             throw 'forced managed-secret atomic replacement failure'
