@@ -412,6 +412,66 @@ func TestPrivacyInputBlocked_NoDispatch(t *testing.T) {
 	}
 }
 
+func TestPrivacyUnavailableProfileWhenPIIDisabled_NoDispatch(t *testing.T) {
+	service, err := privacy.NewService(privacy.Config{
+		DefaultProfile:   privacy.ProfileStandard,
+		RequestProfiles:  []privacy.Profile{privacy.ProfileStandard},
+		PIIEnabled:       false,
+		PIIMode:          privacy.ActionReplace,
+		PIIEntityActions: map[string]privacy.Action{},
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	t.Cleanup(service.Close)
+
+	state := privacy.NewRequestState(privacy.RequestMetadata{RequestedProfile: "strict"})
+	ctx := privacy.WithRequestState(context.Background(), state)
+	ack := &fakeACP{}
+	eng := newTestEngine(t, ack, withPreHooks(service))
+
+	_, err = eng.Run(ctx, simpleUserReq("credential stays local", "auto"))
+	status, code, ok := privacy.ErrorInfo(err)
+	if !ok || status != 400 || code != privacy.CodeProfileUnavailable {
+		t.Fatalf("ErrorInfo=(%d,%q,%t), want (400,%q,true): %v", status, code, ok, privacy.CodeProfileUnavailable, err)
+	}
+	if len(ack.newSessionCalls) != 0 || len(ack.setModelCalls) != 0 || len(ack.promptCalls) != 0 {
+		t.Fatalf("unavailable profile dispatched: NewSession=%v SetModel=%v Prompt=%v", ack.newSessionCalls, ack.setModelCalls, ack.promptCalls)
+	}
+}
+
+func TestPrivacyStandardRequestWhenPIIDisabled_PassesThroughUnchanged(t *testing.T) {
+	service, err := privacy.NewService(privacy.Config{
+		DefaultProfile:   privacy.ProfileStandard,
+		RequestProfiles:  []privacy.Profile{privacy.ProfileStandard},
+		PIIEnabled:       false,
+		PIIMode:          privacy.ActionReplace,
+		PIIEntityActions: map[string]privacy.Action{},
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	t.Cleanup(service.Close)
+
+	state := privacy.NewRequestState(privacy.RequestMetadata{})
+	ctx := privacy.WithRequestState(context.Background(), state)
+	ack := &fakeACP{}
+	eng := newTestEngine(t, ack, withPreHooks(service))
+	req := simpleUserReq("person@example.com", "auto")
+
+	run, err := eng.Run(ctx, req)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	defer run.StopWatchdog()()
+	if len(ack.newSessionCalls) != 1 || len(ack.promptCalls) != 1 {
+		t.Fatalf("standard request did not dispatch once: NewSession=%v Prompt=%v", ack.newSessionCalls, ack.promptCalls)
+	}
+	if got := req.Messages[0].Content[0].Text; got != "person@example.com" {
+		t.Fatalf("PII-disabled request content=%q, want unchanged", got)
+	}
+}
+
 func TestPrivacyPanic_NoDispatchAndNoPayloadLeak(t *testing.T) {
 	const panicPayload = "engine-raw-privacy-panic-payload"
 	service, err := privacy.NewService(privacy.Config{

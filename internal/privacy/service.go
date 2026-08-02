@@ -305,13 +305,16 @@ func (s *Service) Before(ctx context.Context, req *canonical.ChatRequest) (resp 
 			s.observeRequestFailure(ctx, resolvedProfile, err)
 		}
 	}()
-	if s == nil || !s.config.PIIEnabled || req == nil {
+	if s == nil || req == nil {
 		return nil, nil
 	}
 	state, _ := StateFromContext(ctx)
 	resolvedProfile, err = s.resolveProfile(state)
 	if err != nil {
 		return nil, err
+	}
+	if !s.config.PIIEnabled {
+		return nil, nil
 	}
 	if resolvedProfile == ProfileStrict {
 		return nil, s.beforeStrict(ctx, state, req)
