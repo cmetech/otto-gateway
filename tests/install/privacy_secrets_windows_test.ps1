@@ -186,6 +186,15 @@ try {
     }
     Write-Host 'ok: managed-secret writer protects its sibling temporary before values and uses no-delete atomic publication'
 
+    $overridesFunction = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Set-OverridesLine' }, $true)) | Select-Object -First 1
+    if (-not $overridesFunction) { Fail-With 'Set-OverridesLine function is missing' }
+    $overridesText = $overridesFunction.Extent.Text
+    if ($overridesText -cnotmatch 'Publish-SupportFileAtomically' -or
+        $overridesText -cmatch '(?m)^\s*(Set-Content|Add-Content)\b') {
+        Fail-With 'operator override updates can expose truncated managed-secret contents'
+    }
+    Write-Host 'ok: operator override updates use no-delete atomic publication'
+
     if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
         $readerReady = Join-Path $FixtureRoot 'reader.ready'
         $readerStop = Join-Path $FixtureRoot 'reader.stop'
@@ -199,7 +208,16 @@ try {
                     $bytes = [System.Text.Encoding]::UTF8.GetBytes([System.IO.File]::ReadAllText($Path))
                     $null = $observed.Add([Convert]::ToBase64String($bytes))
                 } catch {
-                    $null = $observed.Add('READ-ERROR:' + $_.Exception.GetType().FullName)
+                    $baseException = $_.Exception.GetBaseException()
+                    # ReplaceFile briefly takes an exclusive Windows handle.
+                    # Retry only ERROR_SHARING_VIOLATION (0x80070020); missing
+                    # files, access failures, and all other errors still fail.
+                    if (-not ($baseException -is [System.IO.IOException] -and
+                        $baseException.HResult -eq -2147024864)) {
+                        $readError = 'READ-ERROR:{0}:{1}' -f `
+                            $baseException.GetType().FullName, $baseException.HResult
+                        $null = $observed.Add($readError)
+                    }
                 }
                 Start-Sleep -Milliseconds 1
             }
@@ -225,7 +243,11 @@ try {
         if ($observations.Count -lt 1) { Fail-With 'continuous reader observed no managed-secret contents' }
         foreach ($observation in $observations) {
             if ($observation -cne $oldEncoded -and $observation -cne $newEncoded) {
-                Fail-With 'continuous reader observed missing, partial, or mixed managed-secret contents'
+                if ($observation.StartsWith('READ-ERROR:')) {
+                    Fail-With "continuous reader failed while secrets were replaced: $observation"
+                }
+                $observedLength = ([Convert]::FromBase64String($observation)).Length
+                Fail-With "continuous reader observed an unexpected $observedLength-byte managed-secret snapshot"
             }
         }
         Write-Host 'ok: real Windows readers observe only the old complete set or new complete set'
