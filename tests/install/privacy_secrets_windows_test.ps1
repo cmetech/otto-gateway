@@ -186,6 +186,15 @@ try {
     }
     Write-Host 'ok: managed-secret writer protects its sibling temporary before values and uses no-delete atomic publication'
 
+    $overridesFunction = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Set-OverridesLine' }, $true)) | Select-Object -First 1
+    if (-not $overridesFunction) { Fail-With 'Set-OverridesLine function is missing' }
+    $overridesText = $overridesFunction.Extent.Text
+    if ($overridesText -cnotmatch 'Publish-SupportFileAtomically' -or
+        $overridesText -cmatch '(?m)^\s*(Set-Content|Add-Content)\b') {
+        Fail-With 'operator override updates can expose truncated managed-secret contents'
+    }
+    Write-Host 'ok: operator override updates use no-delete atomic publication'
+
     if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
         $readerReady = Join-Path $FixtureRoot 'reader.ready'
         $readerStop = Join-Path $FixtureRoot 'reader.stop'
