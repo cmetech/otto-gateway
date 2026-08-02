@@ -209,9 +209,15 @@ try {
                     $null = $observed.Add([Convert]::ToBase64String($bytes))
                 } catch {
                     $baseException = $_.Exception.GetBaseException()
-                    $readError = 'READ-ERROR:{0}:{1}' -f `
-                        $baseException.GetType().FullName, $baseException.HResult
-                    $null = $observed.Add($readError)
+                    # ReplaceFile briefly takes an exclusive Windows handle.
+                    # Retry only ERROR_SHARING_VIOLATION (0x80070020); missing
+                    # files, access failures, and all other errors still fail.
+                    if (-not ($baseException -is [System.IO.IOException] -and
+                        $baseException.HResult -eq -2147024864)) {
+                        $readError = 'READ-ERROR:{0}:{1}' -f `
+                            $baseException.GetType().FullName, $baseException.HResult
+                        $null = $observed.Add($readError)
+                    }
                 }
                 Start-Sleep -Milliseconds 1
             }
