@@ -49,12 +49,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
         path = urllib.parse.urlsplit(raw_path).path
         with log_path.open('a') as f: f.write(f'{kind} {self.command} {raw_path} auth={auth == "Bearer " + token} confirm={self.headers.get("X-GW-Privacy-Confirm", "")}\n')
         if path == '/admin/api/snapshot':
+            if state == 'status-unauthorized':
+                self.send_response(401); self.end_headers(); self.wfile.write(b'{"error":{"code":"unauthorized"}}'); return
             triage = 'false' if state == 'disabled' else 'true'
             self.send_response(200); self.end_headers(); self.wfile.write(f'{{"privacy":{{"default_profile":"strict","strict_available":true,"triage_enabled":{triage},"active_scopes":2,"mapping_entries":4}}}}'.encode()); return
         if auth != 'Bearer ' + token:
             self.send_response(401); self.end_headers(); self.wfile.write(b'{"error":{"code":"unauthorized"}}'); return
         if state == 'redirect':
             self.send_response(302); self.send_header('Location', 'http://192.0.2.1/privacy-escaped'); self.end_headers(); return
+        if state == 'empty' and self.command == 'GET' and path == '/admin/api/privacy/scopes':
+            self.send_response(200); self.end_headers(); self.wfile.write(b'[]'); return
         if self.command == 'GET' and path.endswith('/mapping'):
             self.send_response(200); self.end_headers(); self.wfile.write(b'[{"entity":"IPv4","original":"10.0.0.8","synthetic":"198.18.0.8","provenance":"input"}]'); return
         if self.command == 'GET':
@@ -98,11 +102,21 @@ http.server.ThreadingHTTPServer(('127.0.0.1', port), Handler).serve_forever()
         Set-State 'disabled'
         $disabled = Invoke-Privacy 'disabled' @('status')
         Assert-Contains $disabled.Output 'triage: disabled' 'status did not render disabled triage'
+        Set-State 'status-unauthorized'
+        $statusUnauthorized = Invoke-Privacy 'status-unauthorized' @('status')
+        if ($statusUnauthorized.ExitCode -ne 1) { Fail-With "unauthorized status returned $($statusUnauthorized.ExitCode), expected operation exit code 1" }
+        Assert-Contains $statusUnauthorized.Output 'HTTP 401' 'unauthorized status did not surface its HTTP status'
         Set-State 'enabled'
 
         $scopes = Invoke-Privacy 'scopes' @('scopes')
         if ($scopes.ExitCode -ne 0) { Fail-With 'scopes failed' }
         Assert-Contains $scopes.Output 'scope-safe' 'scopes response missing'
+        Set-State 'empty'
+        $emptyScopes = Invoke-Privacy 'empty-scopes' @('scopes')
+        if ($emptyScopes.ExitCode -ne 0) { Fail-With "empty scopes failed: $($emptyScopes.Output)" }
+        if (@($emptyScopes.Output -split '\r?\n') -cnotcontains '[]') { Fail-With "empty scopes rendered incorrectly: $($emptyScopes.Output)" }
+        if ($emptyScopes.Output.Contains('privacy: cleared')) { Fail-With 'empty scopes was misreported as a clear operation' }
+        Set-State 'enabled'
         $inspect = Invoke-Privacy 'inspect' @('inspect','scope-safe')
         Assert-Contains $inspect.Output '198.18.0.8' 'inspect response missing'
         $closing = Invoke-Privacy 'closing' @('clear','scope-safe')
@@ -150,6 +164,7 @@ http.server.ThreadingHTTPServer(('127.0.0.1', port), Handler).serve_forever()
             $before = if (Test-Path $RequestLog) { @(Get-Content $RequestLog).Count } else { 0 }
             $rejected = Invoke-Privacy $case.Name $case.Args
             if ($rejected.ExitCode -eq 0) { Fail-With "$($case.Name) clear-all confirmation unexpectedly succeeded" }
+            if ($rejected.ExitCode -ne 2) { Fail-With "$($case.Name) returned $($rejected.ExitCode), expected usage exit code 2" }
             Assert-Contains $rejected.Output 'requires exact --yes confirmation' "$($case.Name) did not report exact confirmation requirement"
             $after = @(Get-Content $RequestLog).Count
             if ($before -ne $after) { Fail-With "$($case.Name) contacted API" }

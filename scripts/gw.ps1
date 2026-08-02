@@ -1709,21 +1709,29 @@ function Test-PrivacyScope([string]$Scope) {
     return $Scope -cmatch '^[A-Za-z0-9._:-]{1,128}$'
 }
 
-function Invoke-PrivacyRestMethodNoProxy {
+function Invoke-PrivacyWebRequestNoProxy {
     param([Parameter(Mandatory)][hashtable]$Parameters)
-    $command = Get-Command Invoke-RestMethod -ErrorAction Stop
+    $command = Get-Command Invoke-WebRequest -ErrorAction Stop
     if ($command.Parameters.ContainsKey('NoProxy')) {
         $Parameters['NoProxy'] = $true
-        return Invoke-RestMethod @Parameters
+        return Invoke-WebRequest @Parameters
     }
 
     $priorProxy = [System.Net.WebRequest]::DefaultWebProxy
     try {
         [System.Net.WebRequest]::DefaultWebProxy = New-Object System.Net.WebProxy
-        return Invoke-RestMethod @Parameters
+        return Invoke-WebRequest @Parameters
     } finally {
         [System.Net.WebRequest]::DefaultWebProxy = $priorProxy
     }
+}
+
+function ConvertFrom-PrivacyWebContent {
+    param($Content)
+    if ($Content -is [byte[]]) {
+        return [System.Text.Encoding]::UTF8.GetString($Content)
+    }
+    return [string]$Content
 }
 
 function Invoke-PrivacyRequest {
@@ -1742,11 +1750,21 @@ function Invoke-PrivacyRequest {
             Headers = $headers
             TimeoutSec = 5
             MaximumRedirection = 0
+            UseBasicParsing = $true
             ErrorAction = 'Stop'
         }
-        $result = Invoke-PrivacyRestMethodNoProxy -Parameters $parameters
-        $emptyResult = $null -eq $result -or ($result -is [string] -and [string]::IsNullOrEmpty($result))
-        return [pscustomobject]@{ Status = if ($emptyResult) { 204 } elseif ($result.PSObject.Properties['state'] -and $result.state -ceq 'closing') { 202 } else { 200 }; Body = $result }
+        $webResponse = Invoke-PrivacyWebRequestNoProxy -Parameters $parameters
+        $result = $null
+        $content = ConvertFrom-PrivacyWebContent $webResponse.Content
+        if (-not [string]::IsNullOrEmpty($content)) {
+            try {
+                $parsed = @(ConvertFrom-Json -InputObject $content -ErrorAction Stop)
+                if ($content.TrimStart().StartsWith('[')) { $result = [object]$parsed }
+                else { $result = $parsed[0] }
+            }
+            catch { $result = $content }
+        }
+        return [pscustomobject]@{ Status = [int]$webResponse.StatusCode; Body = $result }
     } catch {
         $status = 0
         $responseProperty = $_.Exception.PSObject.Properties['Response']
@@ -1765,10 +1783,17 @@ function Invoke-PrivacyStatus {
             Uri = $base + '/admin/api/snapshot'
             TimeoutSec = 5
             MaximumRedirection = 0
+            UseBasicParsing = $true
             ErrorAction = 'Stop'
         }
-        $snapshot = Invoke-PrivacyRestMethodNoProxy -Parameters $parameters
+        $webResponse = Invoke-PrivacyWebRequestNoProxy -Parameters $parameters
+        $content = ConvertFrom-PrivacyWebContent $webResponse.Content
+        $snapshot = ConvertFrom-Json -InputObject $content -ErrorAction Stop
     } catch {
+        $responseProperty = $_.Exception.PSObject.Properties['Response']
+        if ($responseProperty -and $responseProperty.Value -and $responseProperty.Value.StatusCode) {
+            throw "privacy: unavailable (safe snapshot returned HTTP $([int]$responseProperty.Value.StatusCode))"
+        }
         throw 'privacy: unavailable (safe snapshot did not respond)'
     }
     if (-not $snapshot.PSObject.Properties['privacy'] -or -not $snapshot.privacy) {
@@ -1819,34 +1844,34 @@ function Invoke-Privacy {
     try {
         switch ($action) {
             'status' {
-                if ($rest.Count -ne 0) { throw 'privacy status: unexpected argument' }
+                if ($rest.Count -ne 0) { throw [System.ArgumentException]::new('privacy status: unexpected argument') }
                 Invoke-PrivacyStatus
                 return
             }
             'scopes' {
-                if ($rest.Count -ne 0) { throw 'privacy scopes: unexpected argument' }
+                if ($rest.Count -ne 0) { throw [System.ArgumentException]::new('privacy scopes: unexpected argument') }
                 $response = Invoke-PrivacyRequest -Method Get -Path '/admin/api/privacy/scopes'
             }
             'inspect' {
-                if ($rest.Count -ne 1 -or -not (Test-PrivacyScope $rest[0])) { throw 'privacy inspect: invalid scope ID' }
+                if ($rest.Count -ne 1 -or -not (Test-PrivacyScope $rest[0])) { throw [System.ArgumentException]::new('privacy inspect: invalid scope ID') }
                 $scope = [uri]::EscapeDataString($rest[0])
                 $response = Invoke-PrivacyRequest -Method Get -Path "/admin/api/privacy/scopes/$scope/mapping"
             }
             'clear' {
                 if ($rest.Count -eq 1 -and $rest[0] -cne '--all') {
-                    if (-not (Test-PrivacyScope $rest[0])) { throw 'privacy clear: invalid scope ID' }
+                    if (-not (Test-PrivacyScope $rest[0])) { throw [System.ArgumentException]::new('privacy clear: invalid scope ID') }
                     $scope = [uri]::EscapeDataString($rest[0])
                     $response = Invoke-PrivacyRequest -Method Delete -Path "/admin/api/privacy/scopes/$scope"
                 } elseif ($rest.Count -eq 2 -and $rest[0] -ceq '--all' -and $rest[1] -ceq '--yes') {
                     $response = Invoke-PrivacyRequest -Method Delete -Path '/admin/api/privacy/scopes' -ConfirmAll
                 } else {
-                    throw 'privacy clear --all requires exact --yes confirmation'
+                    throw [System.ArgumentException]::new('privacy clear --all requires exact --yes confirmation')
                 }
             }
-            default { throw 'Usage: gw.ps1 privacy status|scopes|inspect <scope>|clear <scope>|clear --all --yes' }
+            default { throw [System.ArgumentException]::new('Usage: gw.ps1 privacy status|scopes|inspect <scope>|clear <scope>|clear --all --yes') }
         }
         switch ($response.Status) {
-            200 { $response.Body | ConvertTo-Json -Depth 8 -Compress | Write-Output }
+            200 { ConvertTo-Json -InputObject $response.Body -Depth 8 -Compress | Write-Output }
             202 { Write-Host 'privacy: closing' }
             204 { Write-Host 'privacy: cleared' }
             { $_ -in @(401,403) } { throw 'privacy: unauthorized' }
@@ -1855,7 +1880,8 @@ function Invoke-Privacy {
             default { throw "privacy: request failed (HTTP $($response.Status))" }
         }
     } catch {
-        Write-Error $_.Exception.Message
+        [Console]::Error.WriteLine($_.Exception.Message)
+        if ($_.Exception -is [System.ArgumentException]) { exit 2 }
         exit 1
     }
 }
