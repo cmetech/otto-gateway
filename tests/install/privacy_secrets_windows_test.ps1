@@ -225,7 +225,11 @@ try {
         if ($observations.Count -lt 1) { Fail-With 'continuous reader observed no managed-secret contents' }
         foreach ($observation in $observations) {
             if ($observation -cne $oldEncoded -and $observation -cne $newEncoded) {
-                Fail-With 'continuous reader observed missing, partial, or mixed managed-secret contents'
+                if ($observation.StartsWith('READ-ERROR:')) {
+                    Fail-With "continuous reader failed while secrets were replaced: $observation"
+                }
+                $observedLength = ([Convert]::FromBase64String($observation)).Length
+                Fail-With "continuous reader observed an unexpected $observedLength-byte managed-secret snapshot"
             }
         }
         Write-Host 'ok: real Windows readers observe only the old complete set or new complete set'
