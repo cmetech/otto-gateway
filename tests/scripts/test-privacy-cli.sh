@@ -218,9 +218,14 @@ server.serve_forever()
 PY
 
 wait_port_file() {
-    local file="$1" attempt
-    for ((attempt = 0; attempt < 100; attempt++)); do
+    local file="$1" server_pid="$2" attempt server_rc
+    for ((attempt = 0; attempt < 500; attempt++)); do
         [[ -s "$file" ]] && return 0
+        if ! kill -0 "$server_pid" 2>/dev/null; then
+            server_rc=0
+            wait "$server_pid" || server_rc=$?
+            fail "HTTP fixture exited with status $server_rc before publishing $file"
+        fi
         sleep 0.02
     done
     fail "HTTP fixture did not publish $file"
@@ -233,11 +238,13 @@ proxy_port_file="$FIXTURE_ROOT/proxy.port"
 : >"$hostile_log"
 printf 'redirect\n' >"$hostile_mode"
 python3 "$FIXTURE_ROOT/http-fixture.py" target "$target_port_file" "$hostile_log" "$hostile_mode" &
-SERVER_PIDS+=("$!")
+target_server_pid=$!
+SERVER_PIDS+=("$target_server_pid")
 python3 "$FIXTURE_ROOT/http-fixture.py" proxy "$proxy_port_file" "$hostile_log" "$hostile_mode" &
-SERVER_PIDS+=("$!")
-wait_port_file "$target_port_file"
-wait_port_file "$proxy_port_file"
+proxy_server_pid=$!
+SERVER_PIDS+=("$proxy_server_pid")
+wait_port_file "$target_port_file" "$target_server_pid"
+wait_port_file "$proxy_port_file" "$proxy_server_pid"
 target_port="$(cat "$target_port_file")"
 proxy_port="$(cat "$proxy_port_file")"
 
