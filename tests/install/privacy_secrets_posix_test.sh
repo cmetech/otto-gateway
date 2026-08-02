@@ -124,7 +124,13 @@ EOF
     for secret in "$auth" "$hash" "$encrypt" "$alias_value" "$triage_value"; do
         ! grep -Fq "$secret" "$output_file" || fail "$name printed a managed secret"
     done
-    mode="$(stat -f '%Lp' "$overrides_file" 2>/dev/null || stat -c '%a' "$overrides_file")"
+    if mode="$(stat -c '%a' "$overrides_file" 2>/dev/null)" && [[ "$mode" =~ ^[0-7]{3,4}$ ]]; then
+        : # GNU stat
+    elif mode="$(stat -f '%Lp' "$overrides_file" 2>/dev/null)" && [[ "$mode" =~ ^[0-7]{3,4}$ ]]; then
+        : # BSD stat
+    else
+        fail "$name could not determine overrides mode"
+    fi
     [[ "$mode" == "600" ]] || fail "$name overrides mode is $mode, want 600"
     ! find "$install_home" -maxdepth 1 -name '.managed-secrets-*' -o -name 'overrides.env.tmp.*' | grep -q . || fail "$name left a secret temporary"
 }
