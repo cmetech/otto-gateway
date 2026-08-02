@@ -69,8 +69,17 @@ try {
         $env:GW_TEST_INSTALL_ARCHIVE = $ArchivePath
         $env:GW_TEST_INSTALL_CHECKSUMS = $ChecksumPath
         $env:GW_TEST_INSTALL_SCRIPT = $Installer
-        $output = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Harness 2>&1 | Out-String
-        $exitCode = $LASTEXITCODE
+        # A failing child writes to stderr. Capture that output for the
+        # assertions without allowing this test process's Stop preference to
+        # turn the native stderr record into a premature test failure.
+        $savedErrorActionPreference = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            $output = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Harness 2>&1 | Out-String
+            $exitCode = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $savedErrorActionPreference
+        }
         [System.IO.File]::WriteAllText($OutputPath, $output, (New-Object System.Text.UTF8Encoding($false)))
     } finally {
         foreach ($entry in $prior.GetEnumerator()) {
