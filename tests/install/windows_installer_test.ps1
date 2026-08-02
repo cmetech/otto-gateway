@@ -11,6 +11,7 @@ $InstallDir = Join-Path $FixtureRoot 'install'
 $GwHome = Join-Path $FixtureRoot 'home'
 $Harness = Join-Path $FixtureRoot 'harness.ps1'
 $OutputPath = Join-Path $FixtureRoot 'installer.out'
+$InitMarkerPath = Join-Path $FixtureRoot 'init.called'
 $priorUserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 
 function Fail-With([string]$Message) { throw "FAIL: $Message" }
@@ -19,7 +20,10 @@ New-Item -ItemType Directory -Path (Join-Path $ArchiveRoot 'otto_gateway\scripts
 New-Item -ItemType Directory -Path $GwHome -Force | Out-Null
 @'
 @echo off
-if /I "%~1"=="init" exit /b 23
+if /I "%~1"=="init" (
+  type nul > "%GW_TEST_INIT_MARKER%"
+  exit /b 23
+)
 exit /b 0
 '@ | Set-Content -LiteralPath (Join-Path $ArchiveRoot 'otto_gateway\scripts\gw.bat') -Encoding ASCII
 'HTTP_ADDR=127.0.0.1:18080' | Set-Content -LiteralPath (Join-Path $GwHome '.env') -Encoding ASCII
@@ -60,6 +64,7 @@ try {
         GW_TEST_INSTALL_ARCHIVE = $env:GW_TEST_INSTALL_ARCHIVE
         GW_TEST_INSTALL_CHECKSUMS = $env:GW_TEST_INSTALL_CHECKSUMS
         GW_TEST_INSTALL_SCRIPT = $env:GW_TEST_INSTALL_SCRIPT
+        GW_TEST_INIT_MARKER = $env:GW_TEST_INIT_MARKER
     }
     try {
         $env:GW_VERSION = 'vtest'
@@ -69,6 +74,7 @@ try {
         $env:GW_TEST_INSTALL_ARCHIVE = $ArchivePath
         $env:GW_TEST_INSTALL_CHECKSUMS = $ChecksumPath
         $env:GW_TEST_INSTALL_SCRIPT = $Installer
+        $env:GW_TEST_INIT_MARKER = $InitMarkerPath
         # A failing child writes to stderr. Capture that output for the
         # assertions without allowing this test process's Stop preference to
         # turn the native stderr record into a premature test failure.
@@ -87,9 +93,15 @@ try {
         }
     }
 
+    if (-not (Test-Path -LiteralPath $InitMarkerPath)) {
+        Fail-With "fixture did not reach gw init; installer output:`n$output"
+    }
     if ($exitCode -eq 0) { Fail-With 'installer returned success after gw init exited 23' }
     if ($output -match '\[ok\]\s+Gateway vtest installed') {
         Fail-With 'installer reported success after gw init failed'
+    }
+    if ($output -notmatch 'config initialization failed.*exit code 23') {
+        Fail-With "installer did not report the gw init failure; output:`n$output"
     }
     Write-Host 'PASS: Windows installer fails closed when generated config initialization fails'
 } finally {
