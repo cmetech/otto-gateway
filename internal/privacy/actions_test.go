@@ -1,6 +1,8 @@
 package privacy
 
 import (
+	"bytes"
+	"log/slog"
 	"strings"
 	"testing"
 )
@@ -50,6 +52,21 @@ func TestActionsEncryptionFailureNeverReturnsRawValue(t *testing.T) {
 	got := ApplyAction(ActionEncrypt, "Email", raw, 7, nil, nil)
 	if strings.Contains(got, raw) || got != "[EMAIL_7]" {
 		t.Fatalf("encrypt failure: got %q", got)
+	}
+}
+
+func TestActionsStandardPseudonymizeDeliberatelyReplacesWithoutUnknownWarning(t *testing.T) {
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	got := ApplyAction(ActionPseudonymize, "IPv4", "192.0.2.10", 3, nil, nil)
+	if got != "[IPV4_3]" {
+		t.Fatalf("ApplyAction(pseudonymize)=%q, want deliberate standard replacement", got)
+	}
+	if strings.Contains(logs.String(), "privacy.action.unknown") {
+		t.Fatalf("valid pseudonymize action logged as unknown: %s", logs.String())
 	}
 }
 

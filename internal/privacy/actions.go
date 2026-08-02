@@ -51,7 +51,7 @@ func CanonicalForm(value string) string {
 func ApplyAction(action Action, entity, value string, counter int, hashKey, encryptKey []byte) string {
 	upperEntity := strings.ToUpper(entity)
 	switch action {
-	case ActionReplace:
+	case ActionReplace, ActionPseudonymize:
 		return replacementToken(upperEntity, counter)
 	case ActionMask:
 		return maskValue(value)
