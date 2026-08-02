@@ -1036,7 +1036,7 @@ func (s *Service) transformStandardValue(
 
 // After validates strict output or restores standard AES tokens from
 // aggregated responses.
-func (s *Service) After(ctx context.Context, req *canonical.ChatRequest, resp *canonical.ChatResponse) (err error) {
+func (s *Service) After(ctx context.Context, _ *canonical.ChatRequest, resp *canonical.ChatResponse) (err error) {
 	if s == nil || !s.config.PIIEnabled {
 		return nil
 	}
@@ -1098,11 +1098,7 @@ func (s *Service) After(ctx context.Context, req *canonical.ChatRequest, resp *c
 		transformStandardResponse(resp, restore)
 		s.observeDuration(ProfileStandard, "restore", time.Since(started))
 	}
-	coverage := "full"
-	if req != nil && req.Stream {
-		coverage = "input"
-	}
-	return s.setStandardReceipt(state, coverage)
+	return s.setStandardReceipt(state, "input")
 }
 
 func (s *Service) transformOutbound(_ context.Context, state *RequestState, resp *canonical.ChatResponse) error {
@@ -1132,11 +1128,15 @@ func (s *Service) transformOutbound(_ context.Context, state *RequestState, resp
 
 func (s *Service) setStrictReceipt(state *RequestState, result string) error {
 	transformed, restored, blocked := state.counts()
+	coverage := "input"
+	if result == "pass" || result == "block" {
+		coverage = "full"
+	}
 	receipt := Receipt{
 		Version:     1,
 		Profile:     ProfileStrict,
 		Scope:       state.Metadata().ScopeID,
-		Coverage:    "full",
+		Coverage:    coverage,
 		Result:      result,
 		Transformed: transformed,
 		Restored:    restored,

@@ -56,7 +56,7 @@ func TestServiceStandardInboundReceiptIsInputCoverageAndValueFree(t *testing.T) 
 	}
 }
 
-func TestServiceStandardAggregatedOutputUpgradesReceiptToFull(t *testing.T) {
+func TestServiceStandardAggregatedOutputDoesNotClaimFullCoverage(t *testing.T) {
 	service := newStandardTestService(t, ActionReplace, nil)
 	state := NewRequestState(RequestMetadata{ScopeID: "aggregate"})
 	ctx := WithRequestState(context.Background(), state)
@@ -68,7 +68,7 @@ func TestServiceStandardAggregatedOutputUpgradesReceiptToFull(t *testing.T) {
 		t.Fatalf("After: %v", err)
 	}
 	receipt, _ := decodeStateReceipt(t, state)
-	if receipt.Coverage != "full" || receipt.Profile != ProfileStandard || receipt.Result != "pass" {
+	if receipt.Coverage != "input" || receipt.Profile != ProfileStandard || receipt.Result != "pass" {
 		t.Fatalf("receipt: got %#v", receipt)
 	}
 }
@@ -111,8 +111,8 @@ func TestServiceStandardInboundPassIsBoundToServiceInstance(t *testing.T) {
 		t.Fatalf("first After: %v", err)
 	}
 	receipt, _ = decodeStateReceipt(t, state)
-	if receipt.Coverage != "full" || receipt.Result != "pass" {
-		t.Fatalf("matching Service did not upgrade receipt: %#v", receipt)
+	if receipt.Coverage != "input" || receipt.Result != "pass" {
+		t.Fatalf("matching Service claimed incorrect standard coverage: %#v", receipt)
 	}
 }
 
@@ -143,7 +143,7 @@ func TestServiceStandardInboundPassLifecycleIsRaceSafe(t *testing.T) {
 		}
 	}
 	receipt, _ := decodeStateReceipt(t, state)
-	if receipt.Coverage != "full" || receipt.Result != "pass" {
+	if receipt.Coverage != "input" || receipt.Result != "pass" {
 		t.Fatalf("receipt: %#v", receipt)
 	}
 }
@@ -165,7 +165,7 @@ func TestServiceStandardTrueStreamingOutputKeepsInputCoverage(t *testing.T) {
 	}
 }
 
-func TestServiceStandardEncryptDowngradeRestoresAndReportsFull(t *testing.T) {
+func TestServiceStandardEncryptDowngradeRestoresAndReportsInputCoverage(t *testing.T) {
 	key, err := DeriveEncryptionKey("standard-receipt-key")
 	if err != nil {
 		t.Fatalf("DeriveEncryptionKey: %v", err)
@@ -198,7 +198,7 @@ func TestServiceStandardEncryptDowngradeRestoresAndReportsFull(t *testing.T) {
 		t.Fatalf("restored: got %q", got)
 	}
 	receipt, payload := decodeStateReceipt(t, state)
-	if receipt.Coverage != "full" || receipt.Transformed != 1 || receipt.Restored != 1 || receipt.Blocked != 0 {
+	if receipt.Coverage != "input" || receipt.Transformed != 1 || receipt.Restored != 1 || receipt.Blocked != 0 {
 		t.Fatalf("receipt: got %#v", receipt)
 	}
 	if strings.Contains(payload, "corey@example.com") || strings.Contains(payload, token) {

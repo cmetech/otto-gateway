@@ -126,7 +126,7 @@ func TestServiceStrict_CleanupNilWorkerErrorPostErrorRepeatedAfterAndTrace(t *te
 			t.Fatal("nil worker response retained lease")
 		}
 		receipt, _ := decodeStateReceipt(t, state)
-		if receipt.Result != "error" || receipt.Coverage != "full" {
+		if receipt.Result != "error" || receipt.Coverage != "input" {
 			t.Fatalf("worker-error receipt=%+v", receipt)
 		}
 	})

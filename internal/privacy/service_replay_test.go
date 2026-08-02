@@ -72,7 +72,7 @@ func TestServiceValidatedReplay_RequiresSuccessfulStrictInbound(t *testing.T) {
 				t.Fatalf("After: %v", err)
 			}
 			receipt, _ := decodeStateReceipt(t, state)
-			if receipt.Profile != ProfileStandard || receipt.Coverage != "full" || receipt.Result != "pass" {
+			if receipt.Profile != ProfileStandard || receipt.Coverage != "input" || receipt.Result != "pass" {
 				t.Fatalf("standard aggregated receipt=%+v", receipt)
 			}
 		})

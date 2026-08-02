@@ -403,6 +403,7 @@ func TestOpenAIPrivacy_LegacyCompletionsRequestedStreamUsesValidatedReplayOutcom
 		profileHeader   string
 		wantContentType string
 		wantProfile     privacy.Profile
+		wantCoverage    string
 		wantSSE         bool
 	}{
 		{
@@ -412,14 +413,16 @@ func TestOpenAIPrivacy_LegacyCompletionsRequestedStreamUsesValidatedReplayOutcom
 			},
 			wantContentType: "application/json",
 			wantProfile:     privacy.ProfileStandard,
+			wantCoverage:    "input",
 		},
 		{
-			name: "standard_replace_retains_JSON_downgrade_and_full_coverage",
+			name: "standard_replace_retains_JSON_downgrade_and_input_coverage",
 			service: func(t *testing.T) *privacy.Service {
 				return newOpenAIStandardCompletionsPrivacyService(t, privacy.ActionReplace)
 			},
 			wantContentType: "application/json",
 			wantProfile:     privacy.ProfileStandard,
+			wantCoverage:    "input",
 		},
 		{
 			name: "strict_replays_validated_native_SSE",
@@ -429,6 +432,7 @@ func TestOpenAIPrivacy_LegacyCompletionsRequestedStreamUsesValidatedReplayOutcom
 			profileHeader:   "strict",
 			wantContentType: "text/event-stream",
 			wantProfile:     privacy.ProfileStrict,
+			wantCoverage:    "full",
 			wantSSE:         true,
 		},
 	}
@@ -455,8 +459,8 @@ func TestOpenAIPrivacy_LegacyCompletionsRequestedStreamUsesValidatedReplayOutcom
 				t.Fatalf("Content-Type=%q, want prefix %q; body=%s", got, tc.wantContentType, rec.Body.String())
 			}
 			receipt := decodeOpenAIPrivacyReceipt(t, rec.Header().Get("X-GW-Privacy-Receipt"))
-			if receipt.Profile != tc.wantProfile || receipt.Coverage != "full" || receipt.Result != "pass" {
-				t.Fatalf("receipt=%+v, want profile=%s coverage=full result=pass", receipt, tc.wantProfile)
+			if receipt.Profile != tc.wantProfile || receipt.Coverage != tc.wantCoverage || receipt.Result != "pass" {
+				t.Fatalf("receipt=%+v, want profile=%s coverage=%s result=pass", receipt, tc.wantProfile, tc.wantCoverage)
 			}
 			body := rec.Body.String()
 			if tc.wantSSE {

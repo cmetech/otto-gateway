@@ -211,22 +211,24 @@ func TestServiceStrict_OutboundResidualReservedInputOriginalUsesExactRestoredOcc
 
 func TestServiceStrict_ReceiptPassBlockAndInternalError(t *testing.T) {
 	tests := []struct {
-		name      string
-		output    string
-		configure func(*Service)
-		wantCode  string
-		want      string
+		name         string
+		output       string
+		configure    func(*Service)
+		wantCode     string
+		wantResult   string
+		wantCoverage string
 	}{
-		{name: "pass", output: "ordinary", want: "pass"},
-		{name: "block", output: "api_key=sk-abcdefghijklmnopqrstuvwxyz123456", wantCode: CodeOutputBlocked, want: "block"},
+		{name: "pass", output: "ordinary", wantResult: "pass", wantCoverage: "full"},
+		{name: "block", output: "api_key=sk-abcdefghijklmnopqrstuvwxyz123456", wantCode: CodeOutputBlocked, wantResult: "block", wantCoverage: "full"},
 		{
 			name:   "internal error",
 			output: "10.20.30.41",
 			configure: func(service *Service) {
 				service.mapper = panickingTechnicalMapper{payload: "receipt-internal-detail"}
 			},
-			wantCode: CodeInternalError,
-			want:     "error",
+			wantCode:     CodeInternalError,
+			wantResult:   "error",
+			wantCoverage: "input",
 		},
 	}
 	for _, tc := range tests {
@@ -254,7 +256,7 @@ func TestServiceStrict_ReceiptPassBlockAndInternalError(t *testing.T) {
 				assertPrivacyError(t, err, tc.wantCode, "output")
 			}
 			receipt, payload := decodeStateReceipt(t, state)
-			if receipt.Version != 1 || receipt.Profile != ProfileStrict || receipt.Coverage != "full" || receipt.Result != tc.want {
+			if receipt.Version != 1 || receipt.Profile != ProfileStrict || receipt.Coverage != tc.wantCoverage || receipt.Result != tc.wantResult {
 				t.Fatalf("receipt=%+v", receipt)
 			}
 			if len(state.receiptValue()) > maxEncodedReceiptBytes {
