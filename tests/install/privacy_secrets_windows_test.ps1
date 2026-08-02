@@ -353,8 +353,8 @@ try {
     Write-Host 'ok: pre-privacy upgrade and normal re-init mint per-install privacy secrets while preserving the existing three'
 
     $templateText = Get-Content -LiteralPath $Template -Raw
-    if ($templateText -cnotmatch '(?m)^PRIVACY_ALIAS_KEY=(<[^>]+>|replace-|)$') { Fail-With '.env.example alias key is not a placeholder' }
-    if ($templateText -cnotmatch '(?m)^PRIVACY_TRIAGE_TOKEN=(<[^>]+>|replace-|)$') { Fail-With '.env.example triage token is not a placeholder' }
+    if ($templateText -cnotmatch '(?m)^PRIVACY_ALIAS_KEY=(<[^>]+>|replace-|)\r?$') { Fail-With '.env.example alias key is not a placeholder' }
+    if ($templateText -cnotmatch '(?m)^PRIVACY_TRIAGE_TOKEN=(<[^>]+>|replace-|)\r?$') { Fail-With '.env.example triage token is not a placeholder' }
     Write-Host 'PASS: PowerShell managed privacy secrets'
 } finally {
     Remove-Item -LiteralPath $FixtureRoot -Recurse -Force -ErrorAction SilentlyContinue
