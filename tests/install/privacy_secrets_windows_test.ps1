@@ -208,7 +208,9 @@ try {
                     $bytes = [System.Text.Encoding]::UTF8.GetBytes([System.IO.File]::ReadAllText($Path))
                     $null = $observed.Add([Convert]::ToBase64String($bytes))
                 } catch {
-                    $null = $observed.Add('READ-ERROR:' + $_.Exception.GetType().FullName)
+                    $baseException = $_.Exception.GetBaseException()
+                    $null = $observed.Add(
+                        'READ-ERROR:{0}:{1}' -f $baseException.GetType().FullName, $baseException.HResult)
                 }
                 Start-Sleep -Milliseconds 1
             }
