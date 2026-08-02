@@ -84,7 +84,6 @@ namespace GatewaySupport {
         const uint FILE_TYPE_DISK = 0x0001;
         const uint S_IFMT = 0xF000;
         const uint S_IFREG = 0x8000;
-        const uint MOVEFILE_REPLACE_EXISTING = 0x00000001;
         const uint MOVEFILE_WRITE_THROUGH = 0x00000008;
 
         [StructLayout(LayoutKind.Sequential)]
@@ -174,6 +173,12 @@ namespace GatewaySupport {
         [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
         static extern bool MoveFileEx(string existingFileName, string newFileName,
             uint flags);
+
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode,
+            EntryPoint = "ReplaceFileW")]
+        static extern bool ReplaceFile(string replacedFileName,
+            string replacementFileName, string backupFileName,
+            uint replaceFlags, IntPtr exclude, IntPtr reserved);
 
         [DllImport("libc", SetLastError = true)]
         static extern int open(string path, int flags);
@@ -418,17 +423,19 @@ namespace GatewaySupport {
             }
         }
 
-        // MoveFileEx with REPLACE_EXISTING is the native Windows primitive
-        // that keeps an existing destination continuously visible until the
-        // replacement commits. WRITE_THROUGH asks Windows not to return until
-        // the move has reached the filesystem. The PowerShell wrapper enforces
-        // same-directory publication before entering this method.
+        // ReplaceFile is Windows' single-call replacement primitive and keeps
+        // the destination identity and metadata while swapping its contents.
+        // A first publication has no destination to replace, so MoveFileEx with
+        // WRITE_THROUGH publishes that sibling temporary directly.
         public static void PublishAtomicWindows(string temporaryPath, string destinationPath) {
             if (Environment.OSVersion.Platform != PlatformID.Win32NT)
                 throw new PlatformNotSupportedException(
                     "native atomic publication is available only on Windows");
-            if (!MoveFileEx(temporaryPath, destinationPath,
-                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+            bool published = File.Exists(destinationPath)
+                ? ReplaceFile(destinationPath, temporaryPath, null, 0,
+                    IntPtr.Zero, IntPtr.Zero)
+                : MoveFileEx(temporaryPath, destinationPath, MOVEFILE_WRITE_THROUGH);
+            if (!published) {
                 throw new Win32Exception(Marshal.GetLastWin32Error(),
                     "atomic support publication failed");
             }
@@ -458,10 +465,10 @@ function Write-SupportUtf8NoBom {
 }
 
 # Publish a completed sibling temporary file without first deleting an
-# existing destination. Windows uses MoveFileEx(REPLACE_EXISTING|WRITE_THROUGH)
-# for the native guarantee. The non-Windows branch exists only so the portable
-# PowerShell harness can exercise the same replacement semantics; it does not
-# claim the Windows durability guarantee.
+# existing destination. Windows uses ReplaceFile for replacements and
+# MoveFileEx(WRITE_THROUGH) for first publication. The non-Windows branch
+# exists only so the portable PowerShell harness can exercise the same
+# replacement semantics; it does not claim the Windows durability guarantee.
 function Publish-SupportFileAtomically {
     param(
         [Parameter(Mandatory)][string]$TemporaryPath,
