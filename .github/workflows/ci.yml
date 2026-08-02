@@ -87,11 +87,14 @@ jobs:
         shell: powershell
         run: |
           $files = @(
+            'scripts/install.ps1',
             'scripts/gw.ps1',
             'scripts/test-pii.ps1',
             'scripts/lib/redact.ps1',
             'scripts/lib/support-safe-open.ps1',
             'tests/install/privacy_secrets_windows_test.ps1',
+            'tests/install/windows_nonadmin_acl_test.ps1',
+            'tests/install/windows_installer_test.ps1',
             'tests/scripts/test-privacy-cli.ps1',
             'tests/scripts/test-support-bundle.ps1',
             'tests/scripts/test-support-redact.ps1'
@@ -103,6 +106,14 @@ jobs:
               (Resolve-Path $file), [ref]$tokens, [ref]$errors)
             if ($errors) { throw ($errors | Out-String) }
           }
+
+      - name: Non-administrator managed-secret ACL lifecycle
+        shell: powershell
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/install/windows_nonadmin_acl_test.ps1
+
+      - name: PowerShell installer failure propagation
+        shell: powershell
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/install/windows_installer_test.ps1
 
       - name: PowerShell privacy secret lifecycle
         shell: pwsh

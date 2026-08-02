@@ -919,14 +919,18 @@ function Protect-ManagedSecretTemporary {
         $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
         $security = New-Object System.Security.AccessControl.FileSecurity
         $security.SetAccessRuleProtection($true, $false)
-        $security.SetOwner($identity.User)
         $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
             $identity.User,
             [System.Security.AccessControl.FileSystemRights]::FullControl,
             [System.Security.AccessControl.AccessControlType]::Allow
         )
-        $security.AddAccessRule($rule)
-        Set-Acl -LiteralPath $FilePath -AclObject $security -ErrorAction Stop
+        $security.SetAccessRule($rule)
+        $fileInfo = New-Object System.IO.FileInfo($FilePath)
+        if ($fileInfo.PSObject.Methods.Name -contains 'SetAccessControl') {
+            $fileInfo.SetAccessControl($security)
+        } else {
+            [System.IO.FileSystemAclExtensions]::SetAccessControl($fileInfo, $security)
+        }
         return
     }
 
