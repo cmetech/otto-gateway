@@ -2234,14 +2234,14 @@ EOF
     # shellcheck disable=SC2016 # This is Perl source, not a shell expression.
     if safe_open_candidate="$(command -v perl 2>/dev/null)" && \
        [[ -n "$safe_open_candidate" ]] && \
-       "$safe_open_candidate" -MConfig -MFcntl=:DEFAULT,:mode -e \
+       "$safe_open_candidate" -MConfig -MFcntl=:DEFAULT -e \
            'my $arch = $Config::Config{archname} // "";
             my $darwin = ($^O eq "darwin");
             my $supported = $darwin ||
                 ($^O eq "linux" && $arch =~ /(?:x86_64|aarch64|arm64)/);
             my $flags = $darwin || (defined(&O_DIRECTORY) &&
                 defined(&O_NOFOLLOW) && defined(&O_NONBLOCK));
-            exit(!($supported && $flags && defined(&S_ISREG)));' \
+            exit(!($supported && $flags));' \
            >/dev/null 2>&1; then
         safe_open_perl="$safe_open_candidate"
     fi
@@ -2257,7 +2257,7 @@ EOF
 	use warnings;
 	use Config;
 	use Cwd ();
-	use Fcntl qw(:DEFAULT :mode);
+	use Fcntl qw(:DEFAULT);
 	use Errno qw(ELOOP ENOENT ENOTDIR);
 	use POSIX ();
 
@@ -2267,6 +2267,13 @@ EOF
 	my $o_directory = $^O eq "darwin" ? 0x00100000 : Fcntl::O_DIRECTORY();
 	my $o_nofollow = $^O eq "darwin" ? 0x00000100 : Fcntl::O_NOFOLLOW();
 	my $o_nonblock = $^O eq "darwin" ? 0x00000004 : Fcntl::O_NONBLOCK();
+	my $s_ifmt = 0170000;
+	my $s_ifreg = 0100000;
+
+	sub is_regular_mode {
+	    my ($mode) = @_;
+	    return ($mode & $s_ifmt) == $s_ifreg;
+	}
 
 	sub openat_syscall_number {
 	    my $arch = $Config::Config{archname} // "";
@@ -2351,7 +2358,7 @@ EOF
 	        unless defined($input);
 	    my @source_stat = stat($input);
 	    exit 21 unless @source_stat;
-	    exit 23 unless S_ISREG($source_stat[2]);
+	    exit 23 unless is_regular_mode($source_stat[2]);
 	    print $source_stat[0], ":", $source_stat[1], "\n";
 	    close($input) or exit 21;
 	    exit 0;
@@ -2366,7 +2373,7 @@ exit 20 unless defined($destination);
 	    unless defined($input);
 binmode($input);
 my @opened_stat = stat($input);
-exit 33 unless @opened_stat && S_ISREG($opened_stat[2]);
+exit 33 unless @opened_stat && is_regular_mode($opened_stat[2]);
 exit 34 unless "$opened_stat[0]" eq "$expected_device" &&
                "$opened_stat[1]" eq "$expected_inode";
 
