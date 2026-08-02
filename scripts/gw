@@ -1919,6 +1919,7 @@ privacy_request() {
         return 1
     fi
     response="$(mktemp "${TMPDIR:-/tmp}/gw-privacy-response.XXXXXX")"
+    trap 'rm -f "$response"; trap - RETURN HUP INT TERM' RETURN HUP INT TERM
     if ! code="$({
         printf 'request = "%s"\n' "$method"
         printf 'url = "%s%s"\n' "$base" "$path"
@@ -1939,6 +1940,7 @@ privacy_status() {
     local base response_file response code profile strict triage scopes entries
     base="$(privacy_api_base)" || return 1
     response_file="$(mktemp "${TMPDIR:-/tmp}/gw-privacy-status.XXXXXX")"
+    trap 'rm -f "$response_file"; trap - RETURN HUP INT TERM' RETURN HUP INT TERM
     if ! code="$({
         printf 'request = "GET"\nurl = "%s/admin/api/snapshot"\n' "$base"
         printf 'silent\nshow-error\nmax-time = 5\n'

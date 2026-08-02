@@ -43,6 +43,13 @@ done
 config="$(cat)"
 url="$(printf '%s\n' "$config" | sed -n 's/^url = "\(.*\)"$/\1/p')"
 method="$(printf '%s\n' "$config" | sed -n 's/^request = "\(.*\)"$/\1/p')"
+if [[ "$GW_TEST_CURL_STATE" == "stalled" ]]; then
+    : "${GW_TEST_RESPONSE_PATH_FILE:?}" "${GW_TEST_CURL_PID_FILE:?}"
+    printf '[{"entity":"IPv4","original":"10.0.0.8","synthetic":"198.18.0.8"}]' >"$output"
+    printf '%s' "$output" >"$GW_TEST_RESPONSE_PATH_FILE"
+    printf '%s' "$$" >"$GW_TEST_CURL_PID_FILE"
+    while true; do sleep 1; done
+fi
 case "$url" in
     */admin/api/snapshot) ;;
     *) printf '%s\n' "$config" | grep -Fqx "header = \"Authorization: Bearer $GW_TEST_EXPECT_TOKEN\"" || { printf 'missing protected header\n' >&2; exit 90; } ;;
@@ -77,6 +84,33 @@ run_privacy() {
         cat "$FIXTURE_ROOT/$name.out" >&2
         return 1
     fi
+}
+
+assert_terminated_privacy_temp_cleanup() {
+    local name="$1" response_path_file curl_pid_file wrapper_pid response_path curl_pid attempt
+    shift
+    response_path_file="$FIXTURE_ROOT/${name}-response.path"
+    curl_pid_file="$FIXTURE_ROOT/${name}-curl.pid"
+    GW_TEST_CURL_STATE=stalled \
+    GW_TEST_RESPONSE_PATH_FILE="$response_path_file" \
+    GW_TEST_CURL_PID_FILE="$curl_pid_file" \
+    bash "$REPO_ROOT/scripts/gw" privacy "$@" >"$FIXTURE_ROOT/${name}.out" 2>&1 &
+    wrapper_pid=$!
+    SERVER_PIDS+=("$wrapper_pid")
+    for ((attempt = 0; attempt < 100; attempt++)); do
+        [[ -s "$response_path_file" && -s "$curl_pid_file" ]] && break
+        sleep 0.02
+    done
+    [[ -s "$response_path_file" && -s "$curl_pid_file" ]] || fail "$name did not publish its cleanup fixture"
+    response_path="$(cat "$response_path_file")"
+    curl_pid="$(cat "$curl_pid_file")"
+    SERVER_PIDS+=("$curl_pid")
+    [[ -f "$response_path" ]] || fail "$name response file was not created"
+    kill -TERM "$wrapper_pid" 2>/dev/null || true
+    sleep 0.1
+    kill -TERM "$curl_pid" 2>/dev/null || true
+    wait "$wrapper_pid" 2>/dev/null || true
+    [[ ! -e "$response_path" ]] || fail "$name left protected content in its response temp file"
 }
 
 : >"$GW_TEST_CURL_LOG"
@@ -116,6 +150,9 @@ if GW_TEST_CURL_STATE=enabled run_privacy unsafe_scope inspect '../escape'; then
     fail 'unsafe scope identifier was accepted'
 fi
 assert_contains "$FIXTURE_ROOT/unsafe_scope.out" 'invalid scope' 'unsafe scope rejection was not safe and explicit'
+
+assert_terminated_privacy_temp_cleanup 'terminated privacy inspect' inspect scope-safe
+assert_terminated_privacy_temp_cleanup 'terminated privacy status' status
 
 before_count="$(wc -l <"$GW_TEST_CURL_LOG" | tr -d ' ')"
 saved_gw_addr="$GW_ADDR"
