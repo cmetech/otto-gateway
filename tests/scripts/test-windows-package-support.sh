@@ -27,6 +27,12 @@ extract_dir="$tmp_root/package"
 unzip -q "$archive" -d "$extract_dir"
 package_root="$extract_dir/otto_gateway"
 helper="$package_root/scripts/lib/support-safe-open.ps1"
+support_redactor="$package_root/bin/support-redactor"
+
+# The packaged gateway.exe is intentionally a Windows binary and cannot run on
+# this Unix host. Build the same classifier for the host so the package smoke
+# exercises the shipped PowerShell wrapper and helpers end to end.
+go build -o "$support_redactor" "$repo_root/cmd/otto-gateway"
 
 failures=0
 assert_file() {
@@ -63,6 +69,7 @@ support_stdout="$({
     GW_ADDR='http://127.0.0.1:1' \
     GW_ENV_FILE="$tmp_root/missing.env" \
     GW_OVERRIDES_FILE="$tmp_root/missing-overrides.env" \
+    GW_SUPPORT_REDACTOR_BIN="$support_redactor" \
     KIRO_CHAT_LOG_FILE="$gateway_home/logs/kiro-chat.log" \
     HERMES_HOME="$coworker_home" \
     pwsh -NoProfile -File "$package_root/scripts/gw.ps1" support \
