@@ -35,10 +35,9 @@ exit `$LASTEXITCODE
 
 $created = $false
 try {
-    $createOutput = & net.exe user $userName $password /add /passwordchg:no 2>&1 | Out-String
-    if ($LASTEXITCODE -ne 0) { throw "FAIL: could not create non-administrator fixture account: $createOutput" }
-    $created = $true
     $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
+    $null = New-LocalUser -Name $userName -Password $securePassword -AccountNeverExpires -PasswordNeverExpires
+    $created = $true
     $credential = New-Object System.Management.Automation.PSCredential(".\$userName", $securePassword)
     $process = Start-Process -FilePath 'powershell.exe' -Credential $credential -LoadUserProfile `
         -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $helper) `
@@ -51,6 +50,6 @@ try {
     }
     Write-Host 'PASS: non-administrator managed-secret re-init requires no elevated security privilege'
 } finally {
-    if ($created) { & net.exe user $userName /delete 2>&1 | Out-Null }
+    if ($created) { Remove-LocalUser -Name $userName -ErrorAction SilentlyContinue }
     Remove-Item -LiteralPath $publicFixture -Recurse -Force -ErrorAction SilentlyContinue
 }
