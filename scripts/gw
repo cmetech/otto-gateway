@@ -425,12 +425,14 @@ set_managed_secrets() {
         chmod 600 "$file"
     fi
 
-    local tmp line probe key seen_auth=0 seen_hash=0 seen_encrypt=0 seen_alias=0 seen_triage=0
+    local tmp line probe key was_commented seen_auth=0 seen_hash=0 seen_encrypt=0 seen_alias=0 seen_triage=0
     tmp="$(mktemp "${file}.tmp.XXXXXX")"
     chmod 600 "$tmp"
     while IFS= read -r line || [[ -n "$line" ]]; do
         probe="${line#"${line%%[![:space:]]*}"}"
+        was_commented=0
         if [[ "$probe" == \#* ]]; then
+            was_commented=1
             probe="${probe#\#}"
             probe="${probe#"${probe%%[![:space:]]*}"}"
         fi
@@ -446,8 +448,20 @@ set_managed_secrets() {
                 ;;
             PII_HASH_KEY) [[ "$seen_hash" == "1" ]] || printf 'PII_HASH_KEY=%s\n' "$hash" >>"$tmp"; seen_hash=1 ;;
             PII_ENCRYPT_KEY) [[ "$seen_encrypt" == "1" ]] || printf 'PII_ENCRYPT_KEY=%s\n' "$encrypt" >>"$tmp"; seen_encrypt=1 ;;
-            PRIVACY_ALIAS_KEY) [[ "$seen_alias" == "1" ]] || printf 'PRIVACY_ALIAS_KEY=%s\n' "$alias_key" >>"$tmp"; seen_alias=1 ;;
-            PRIVACY_TRIAGE_TOKEN) [[ "$seen_triage" == "1" ]] || printf 'PRIVACY_TRIAGE_TOKEN=%s\n' "$triage" >>"$tmp"; seen_triage=1 ;;
+            PRIVACY_ALIAS_KEY)
+                if [[ "$seen_alias" == "0" ]]; then
+                    [[ "$was_commented" == "0" ]] || printf '# ' >>"$tmp"
+                    printf 'PRIVACY_ALIAS_KEY=%s\n' "$alias_key" >>"$tmp"
+                    seen_alias=1
+                fi
+                ;;
+            PRIVACY_TRIAGE_TOKEN)
+                if [[ "$seen_triage" == "0" ]]; then
+                    [[ "$was_commented" == "0" ]] || printf '# ' >>"$tmp"
+                    printf 'PRIVACY_TRIAGE_TOKEN=%s\n' "$triage" >>"$tmp"
+                    seen_triage=1
+                fi
+                ;;
             *) printf '%s\n' "$line" >>"$tmp" ;;
         esac
     done <"$file"

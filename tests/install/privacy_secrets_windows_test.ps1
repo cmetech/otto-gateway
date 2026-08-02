@@ -245,6 +245,22 @@ try {
     if ($preserveText.Contains('override-alias-value') -or $preserveText.Contains('override-triage-value')) { Fail-With 'preserved privacy secret appeared in output' }
     Write-Host 'ok: normal upgrade preserves effective overrides and unrelated content'
 
+    $commentedLines = @(Get-Content -LiteralPath $OverridesPath | ForEach-Object {
+        if ($_ -cmatch '^PRIVACY_(?:ALIAS_KEY|TRIAGE_TOKEN)=') { '# ' + $_ } else { $_ }
+    })
+    [System.IO.File]::WriteAllLines($OverridesPath, $commentedLines, (New-Object System.Text.UTF8Encoding($false)))
+    $commentedPreserveOutput = Join-Path $FixtureRoot 'commented-preserve.out'
+    Invoke-FixtureInit $commentedPreserveOutput -Force
+    $commentedContent = @(Get-Content -LiteralPath $OverridesPath)
+    if ($commentedContent -cnotcontains '# PRIVACY_ALIAS_KEY=override-alias-value') { Fail-With 're-init enabled a deliberately commented privacy alias key' }
+    if ($commentedContent -cnotcontains '# PRIVACY_TRIAGE_TOKEN=override-triage-value') { Fail-With 're-init enabled a deliberately commented privacy triage token' }
+    if (@($commentedContent | Where-Object { $_ -cmatch '^PRIVACY_(?:ALIAS_KEY|TRIAGE_TOKEN)=' }).Count -ne 0) {
+        Fail-With 're-init wrote an enabled duplicate of a deliberately commented privacy secret'
+    }
+    Write-Host 'ok: normal re-init preserves deliberately commented privacy secrets'
+    $uncommentedLines = @($commentedContent | ForEach-Object { $_ -replace '^#\s+(PRIVACY_(?:ALIAS_KEY|TRIAGE_TOKEN)=)', '$1' })
+    [System.IO.File]::WriteAllLines($OverridesPath, $uncommentedLines, (New-Object System.Text.UTF8Encoding($false)))
+
     $authBefore = Get-EnvValue $OverridesPath 'AUTH_TOKEN'
     $hashBefore = Get-EnvValue $OverridesPath 'PII_HASH_KEY'
     $encryptBefore = Get-EnvValue $OverridesPath 'PII_ENCRYPT_KEY'

@@ -34,6 +34,24 @@ replace_value() {
     mv "${file}.tmp" "$file"
 }
 
+set_key_commented() {
+    local file="$1" key="$2" commented="$3"
+    awk -v key="$key" -v commented="$commented" '
+        {
+            line=$0
+            probe=line
+            sub(/^[[:space:]]*#[[:space:]]*/, "", probe)
+            if (index(probe, key "=") == 1) {
+                if (commented == "1") print "# " probe
+                else print probe
+                next
+            }
+            print line
+        }
+    ' "$file" >"${file}.tmp"
+    mv "${file}.tmp" "$file"
+}
+
 run_init() {
     local output_file="$1"
     shift
@@ -144,6 +162,17 @@ grep -Fq 'UNRELATED_OPERATOR_SETTING=keep-me' "$overrides" || fail "re-init remo
 ! grep -Fq 'override-alias-value' "$FIXTURE_ROOT/preserve.out" || fail "preserved alias key appeared in output"
 ! grep -Fq 'override-triage-value' "$FIXTURE_ROOT/preserve.out" || fail "preserved triage token appeared in output"
 ok "normal upgrade preserves effective overrides and unrelated content"
+
+set_key_commented "$overrides" PRIVACY_ALIAS_KEY 1
+set_key_commented "$overrides" PRIVACY_TRIAGE_TOKEN 1
+run_init "$FIXTURE_ROOT/commented-preserve.out" --force
+grep -Fqx '# PRIVACY_ALIAS_KEY=override-alias-value' "$overrides" || fail "re-init enabled a deliberately commented privacy alias key"
+grep -Fqx '# PRIVACY_TRIAGE_TOKEN=override-triage-value' "$overrides" || fail "re-init enabled a deliberately commented privacy triage token"
+! grep -q '^PRIVACY_ALIAS_KEY=' "$overrides" || fail "re-init wrote a second enabled privacy alias key"
+! grep -q '^PRIVACY_TRIAGE_TOKEN=' "$overrides" || fail "re-init wrote a second enabled privacy triage token"
+ok "normal re-init preserves deliberately commented privacy secrets"
+set_key_commented "$overrides" PRIVACY_ALIAS_KEY 0
+set_key_commented "$overrides" PRIVACY_TRIAGE_TOKEN 0
 
 auth_before="$(value_of "$overrides" AUTH_TOKEN)"
 hash_before="$(value_of "$overrides" PII_HASH_KEY)"

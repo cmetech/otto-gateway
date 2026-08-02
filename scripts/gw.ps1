@@ -981,11 +981,13 @@ function Set-ManagedSecrets {
     $seen = @{}
     $updated = New-Object System.Collections.Generic.List[string]
     foreach ($line in $existingLines) {
+        $wasCommented = $line -cmatch '^\s*#'
         $match = [regex]::Match($line, '^\s*#?\s*([A-Za-z_][A-Za-z0-9_]*)=')
         $key = if ($match.Success) { $match.Groups[1].Value } else { '' }
         if ($key -and $Values.ContainsKey($key)) {
             if (-not $seen.ContainsKey($key)) {
-                $prefix = if ($commented.ContainsKey($key)) { '# ' } else { '' }
+                $preservePrivacyComment = $wasCommented -and $key -in @('PRIVACY_ALIAS_KEY','PRIVACY_TRIAGE_TOKEN')
+                $prefix = if ($commented.ContainsKey($key) -or $preservePrivacyComment) { '# ' } else { '' }
                 $updated.Add("${prefix}${key}=$($Values[$key])")
                 $seen[$key] = $true
             }
