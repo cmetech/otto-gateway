@@ -218,8 +218,9 @@ server.serve_forever()
 PY
 
 wait_port_file() {
-    local file="$1" server_pid="$2" attempt server_rc
-    for ((attempt = 0; attempt < 500; attempt++)); do
+    local file="$1" server_pid="$2" deadline server_rc
+    deadline=$((SECONDS + 60))
+    while ((SECONDS < deadline)); do
         [[ -s "$file" ]] && return 0
         if ! kill -0 "$server_pid" 2>/dev/null; then
             server_rc=0
@@ -240,10 +241,10 @@ printf 'redirect\n' >"$hostile_mode"
 python3 "$FIXTURE_ROOT/http-fixture.py" target "$target_port_file" "$hostile_log" "$hostile_mode" &
 target_server_pid=$!
 SERVER_PIDS+=("$target_server_pid")
+wait_port_file "$target_port_file" "$target_server_pid"
 python3 "$FIXTURE_ROOT/http-fixture.py" proxy "$proxy_port_file" "$hostile_log" "$hostile_mode" &
 proxy_server_pid=$!
 SERVER_PIDS+=("$proxy_server_pid")
-wait_port_file "$target_port_file" "$target_server_pid"
 wait_port_file "$proxy_port_file" "$proxy_server_pid"
 target_port="$(cat "$target_port_file")"
 proxy_port="$(cat "$proxy_port_file")"
