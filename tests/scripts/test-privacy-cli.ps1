@@ -185,6 +185,22 @@ http.server.ThreadingHTTPServer(('127.0.0.1', port), Handler).serve_forever()
         if ($unsafe.ExitCode -eq 0) { Fail-With 'unsafe scope identifier was accepted' }
         Assert-Contains $unsafe.Output 'invalid scope' 'unsafe scope rejection missing'
 
+        $canonicalAddress = $env:GW_ADDR
+        foreach ($addressCase in @(
+            @{ Name = 'short-ipv4'; Address = "http://127.1:$port" },
+            @{ Name = 'integer-ipv4'; Address = "http://2130706433:$port" },
+            @{ Name = 'mapped-ipv6'; Address = "http://[::ffff:127.0.0.1]:$port" },
+            @{ Name = 'uppercase-scheme'; Address = "HTTP://127.0.0.1:$port" }
+        )) {
+            $before = @(Get-Content -LiteralPath $RequestLog).Count
+            $env:GW_ADDR = $addressCase.Address
+            $addressResult = Invoke-Privacy $addressCase.Name @('scopes')
+            if ($addressResult.ExitCode -eq 0) { Fail-With "$($addressCase.Name) non-canonical loopback address was accepted" }
+            Assert-Contains $addressResult.Output 'must be loopback' "$($addressCase.Name) did not report the common loopback grammar"
+            if (@(Get-Content -LiteralPath $RequestLog).Count -ne $before) { Fail-With "$($addressCase.Name) contacted the API" }
+        }
+        $env:GW_ADDR = $canonicalAddress
+
         $server.Kill(); $server.WaitForExit()
         $unavailable = Invoke-Privacy 'unavailable' @('scopes')
         if ($unavailable.ExitCode -eq 0) { Fail-With 'unavailable request exited zero' }

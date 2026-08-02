@@ -1698,8 +1698,10 @@ function Show-Env {
 
 function Get-PrivacyBaseUrl {
     $candidate = $HealthUrl.Trim().TrimEnd('/')
+    $loopbackPattern = '^https?://(?:localhost|127\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}|\[::1\])(?::[0-9]{1,5})?$'
     $parsed = $null
-    if (-not [System.Uri]::TryCreate($candidate, [System.UriKind]::Absolute, [ref]$parsed) -or
+    if ($candidate -cnotmatch $loopbackPattern -or
+        -not [System.Uri]::TryCreate($candidate, [System.UriKind]::Absolute, [ref]$parsed) -or
         $parsed.Scheme -notin @('http','https') -or -not $parsed.IsLoopback -or
         $parsed.UserInfo -or $parsed.AbsolutePath -ne '/' -or $parsed.Query -or $parsed.Fragment) {
         throw 'privacy: unavailable (Gateway address must be loopback)'

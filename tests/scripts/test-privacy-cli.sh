@@ -165,6 +165,24 @@ after_count="$(wc -l <"$GW_TEST_CURL_LOG" | tr -d ' ')"
 [[ "$before_count" == "$after_count" ]] || fail 'non-loopback privacy target contacted curl'
 assert_contains "$FIXTURE_ROOT/remote_target.out" 'must be loopback' 'non-loopback privacy target was not rejected explicitly'
 
+for address_case in \
+    'short-ipv4|http://127.1:18080' \
+    'integer-ipv4|http://2130706433:18080' \
+    'mapped-ipv6|http://[::ffff:127.0.0.1]:18080' \
+    'uppercase-scheme|HTTP://127.0.0.1:18080'; do
+    address_name="${address_case%%|*}"
+    address_value="${address_case#*|}"
+    before_count="$(wc -l <"$GW_TEST_CURL_LOG" | tr -d ' ')"
+    export GW_ADDR="$address_value"
+    if GW_TEST_CURL_STATE=enabled run_privacy "$address_name" scopes; then
+        fail "$address_name non-canonical loopback address was accepted"
+    fi
+    after_count="$(wc -l <"$GW_TEST_CURL_LOG" | tr -d ' ')"
+    [[ "$before_count" == "$after_count" ]] || fail "$address_name contacted curl"
+    assert_contains "$FIXTURE_ROOT/$address_name.out" 'must be loopback' "$address_name did not report the common loopback grammar"
+done
+export GW_ADDR="$saved_gw_addr"
+
 for output in "$FIXTURE_ROOT"/*.out; do
     assert_not_contains "$output" "$GW_TEST_EXPECT_TOKEN" 'triage token appeared in command output'
 done
