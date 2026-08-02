@@ -293,7 +293,7 @@ func findingOverlaps(findings []privacy.Finding, candidate privacy.Finding) bool
 
 func categoryForEntity(entity string) privacy.Category {
 	switch entity {
-	case "IPv4", "IPv6", "USPhone", "SIP_URI", "IMEI", "IMSI", "MSISDN", "MAC_ADDRESS", "COORDINATES", "SITE":
+	case "IPv4", "IPv6", "SIP_URI", "IMEI", "IMSI", "MSISDN", "MAC_ADDRESS", "COORDINATES", "SITE":
 		return privacy.CategoryTechnical
 	default:
 		return privacy.CategoryPersonal

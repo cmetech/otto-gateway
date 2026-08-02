@@ -1385,7 +1385,7 @@ func TestStandardCompatibility_ClassifierInventory(t *testing.T) {
 		{entity: "IPv6", value: "2001:db8::1", category: privacy.CategoryTechnical},
 		{entity: "SSN", value: "123-45-6789", category: privacy.CategoryPersonal},
 		{entity: "CreditCard", value: "4111 1111 1111 1111", category: privacy.CategoryPersonal},
-		{entity: "USPhone", value: "(415) 555-2671", category: privacy.CategoryTechnical},
+		{entity: "USPhone", value: "(415) 555-2671", category: privacy.CategoryPersonal},
 		{entity: "SIP_URI", value: "sip:alice@invalid", category: privacy.CategoryTechnical},
 		{entity: "IMEI", value: "IMEI 490154203237518", category: privacy.CategoryTechnical},
 		{entity: "IMSI", value: "IMSI 310150123456789", category: privacy.CategoryTechnical},

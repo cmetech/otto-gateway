@@ -458,6 +458,18 @@ func TestLoad_PIIEntityActions_PseudonymizeTechnicalEntity(t *testing.T) {
 	}
 }
 
+func TestLoad_PIIEntityActions_PseudonymizeUSPhoneRejected(t *testing.T) {
+	t.Setenv("PII_REDACTION_MODE", "replace")
+	t.Setenv("PII_ENTITY_ACTIONS", "USPhone:pseudonymize")
+	_, err := config.Load()
+	if err == nil {
+		t.Fatal("Load accepted pseudonymize for personal USPhone entity")
+	}
+	if !strings.Contains(err.Error(), "pseudonymize is only permitted for technical entities") {
+		t.Fatalf("Load error=%q, want technical-entity rejection", err)
+	}
+}
+
 func TestLoad_PIIEntityActions_UnknownEntity(t *testing.T) {
 	t.Setenv("PII_REDACTION_ENABLED", "true")
 	t.Setenv("PII_ENTITY_ACTIONS", "Emial:encrypt") // typo
