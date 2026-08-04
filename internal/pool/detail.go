@@ -167,10 +167,6 @@ func (p *Pool) WorkerProcs() []WorkerProc {
 	}
 
 	p.mu.Lock()
-	checkedOut := make(map[*Slot]struct{}, len(p.sessionSlots))
-	for _, slot := range p.sessionSlots {
-		checkedOut[slot] = struct{}{}
-	}
 	now := p.cfg.Now()
 	pending := make([]labelled, 0, len(p.all))
 	for _, slot := range p.all {
@@ -178,8 +174,7 @@ func (p *Pool) WorkerProcs() []WorkerProc {
 			continue
 		}
 		var idleSeconds float64
-		_, busy := checkedOut[slot]
-		if !busy && !slot.lastUserReleaseAt.IsZero() {
+		if !slot.checkedOut && !slot.lastUserReleaseAt.IsZero() {
 			idleSeconds = now.Sub(slot.lastUserReleaseAt).Seconds()
 			if idleSeconds < 0 {
 				idleSeconds = 0

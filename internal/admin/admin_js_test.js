@@ -324,6 +324,7 @@ test('slot cards render idle-memory recycling policy across worker lifecycle sta
   await settleSnapshot();
   text = elementText(harness.selectors['[data-slot-grid]'].children[0]);
   assert.match(text, /perf n\/a/);
+  assert.match(text, /IDLE\s+n\/a/);
   assert.doesNotMatch(text, /500 MiB/);
 
   harness.poll();

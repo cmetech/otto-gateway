@@ -244,6 +244,7 @@
   }
 
   function formatIdleCell(slot, pool, generatedAt) {
+    if (pool.idle_recycle_ms > 0 && !pool.idle_recycle_supported) return 'n/a';
     if (!slot.user_requests_since_spawn) return '—';
     if (slot.busy) return 'active';
     var released = Date.parse(slot.last_user_release_at || '');

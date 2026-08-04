@@ -80,6 +80,7 @@ func (p *Pool) sweepIdleWorkers() {
 	for i := 0; i < free; i++ {
 		select {
 		case slot := <-p.slots:
+			p.markSlotCheckedOut(slot)
 			p.inspectIdleWorker(slot)
 		default:
 			return

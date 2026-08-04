@@ -164,6 +164,11 @@ type Slot struct {
 	// lastUserReleaseAt records the latest exact-once session release winner.
 	// Zero means the worker has not completed a user request. Guarded by p.mu.
 	lastUserReleaseAt time.Time
+	// checkedOut is true while the slot is exclusively owned outside the free
+	// channel: request acquisition, catalog probe, idle inspection, or worker
+	// replacement. It closes the successful-but-slow session/new window before
+	// sessionSlots can be populated. Guarded by p.mu.
+	checkedOut bool
 }
 
 // Pool is a fixed-size warm pool of kiro-cli slots that satisfies
@@ -210,8 +215,9 @@ type Pool struct {
 	// recycleWG tracks in-flight background recycle goroutines (Task 3) so
 	// Close waits them out (goleak-clean). recycleWG.Add(1) happens INSIDE
 	// the same p.mu critical section that checks p.closed (releaseOrRecycle),
-	// and closeAll sets p.closed under the same mutex — so an accepted Add
-	// can never be ordered after Close's recycleWG.Wait(). This is THE
+	// and Close sets p.closed under the same mutex before joining background
+	// work — so an accepted Add can never be ordered after recycleWG.Wait.
+	// This is THE
 	// load-bearing shutdown-ordering property (design §2 Part B / review
 	// finding H-1).
 	recycleWG sync.WaitGroup
@@ -361,6 +367,28 @@ func New(cfg Config) *Pool {
 	}
 }
 
+// markSlotCheckedOut records exclusive ownership immediately after a receive
+// from p.slots. Client methods remain outside p.mu.
+func (p *Pool) markSlotCheckedOut(slot *Slot) {
+	p.mu.Lock()
+	slot.checkedOut = true
+	p.mu.Unlock()
+}
+
+// tryReturnSlotLocked returns an exclusively owned slot to the free channel
+// and clears checkout state atomically from pool observers' perspective. The
+// caller must hold p.mu. A failed defensive send leaves checkedOut set because
+// the slot was dropped rather than made free.
+func (p *Pool) tryReturnSlotLocked(slot *Slot) bool {
+	select {
+	case p.slots <- slot:
+		slot.checkedOut = false
+		return true
+	default:
+		return false
+	}
+}
+
 // defaultCatalogRetry is the warmup catalog-capture backoff schedule (Track 1
 // resilient discovery): 3 retries at 250ms → 500ms → 1s absorb a transiently
 // cold kiro-cli at boot before the pool degrades to a self-healing empty
@@ -506,8 +534,8 @@ func (p *Pool) selfHealCatalog() {
 	if !p.catalogProbing.CompareAndSwap(false, true) {
 		return // a probe is already in flight
 	}
-	// Admit the probe under p.mu so probeWG.Add is ordered against closeAll's
-	// p.closed set — the same discipline releaseOrRecycle uses for
+	// Admit the probe under p.mu so probeWG.Add is ordered against the
+	// p.closed transition — the same discipline releaseOrRecycle uses for
 	// recycleWG.Add (review finding H-1). The prior check-p.closing-then-Add
 	// split had a window where Close could observe probeWG as already drained,
 	// Wait through, and this Add(1) would then leak a goroutine past shutdown.
@@ -531,6 +559,7 @@ func (p *Pool) selfHealCatalog() {
 		default:
 			return // no free slot right now; a later read retries
 		}
+		p.markSlotCheckedOut(slot)
 		// Return the slot via releaseOrRecycle so a probe-bloated worker is
 		// recycled rather than exempt (design §2 Part B). This defer runs
 		// before the catalogProbing.Store / probeWG.Done defers (LIFO), so any
@@ -1014,8 +1043,10 @@ func (p *Pool) recordSpawnErr(err error) {
 // after the first invocation finishes. Slots are closed in reverse
 // allocation order; the first error encountered is returned.
 //
-// Phase 5 D-01: close(p.closing) is the FIRST line of the shutdown body,
-// BEFORE closeAll. Per-slot exit-watcher goroutines (exit_watcher.go,
+// Phase 5 D-01: close(p.closing) is the FIRST line of the shutdown body.
+// Admission then closes under p.mu before background joins, while client
+// teardown remains in closeAll after the idle loop exits. Per-slot
+// exit-watcher goroutines (exit_watcher.go,
 // added in Task 2) select on <-p.closing as their clean-exit branch;
 // closing first means the watcher always wins the select against
 // <-slot.Client.Done() that would otherwise fire from closeAll's
@@ -1024,6 +1055,14 @@ func (p *Pool) Close() error {
 	var firstErr error
 	p.closeOnce.Do(func() {
 		close(p.closing)
+		// Close request admission before joining the idle sweep. A sweep may
+		// currently own a slot while blocked in the process-memory reader; when
+		// it resumes, returnOrRecycle must observe the closed state and drop that
+		// slot instead of making it available after shutdown began. Client
+		// teardown remains in closeAll, after the sweep has exited.
+		p.mu.Lock()
+		p.closed = true
+		p.mu.Unlock()
 		p.idleSweepLifecycleMu.Lock()
 		p.idleSweepClosing = true
 		p.idleSweepLifecycleMu.Unlock()
@@ -1031,7 +1070,7 @@ func (p *Pool) Close() error {
 		firstErr = p.closeAll()
 		// Track 1: wait out any in-flight self-heal probe goroutine so it
 		// cannot outlive Close (goleak-clean). closing is already closed, so
-		// no new probe will start (selfHealCatalog's closing-check).
+		// no new probe will start (selfHealCatalog's p.closed check).
 		p.probeWG.Wait()
 		// Task 3: wait out any in-flight background recycle goroutine so it
 		// cannot outlive Close (goleak-clean). Ordered AFTER probeWG because a
@@ -1240,8 +1279,6 @@ func (p *Pool) NewSession(ctx context.Context, cwd string) (string, error) {
 			return "", ErrPoolExhausted
 		}
 	}
-	p.debugLog("pool.acquire", "slot", slot.Label)
-
 	// Finding 1 (round-3 review): reject a slot acquired after Close. Two
 	// pre-existing gaps let a post-Close NewSession get here holding a CLOSED
 	// slot: (a) closeAll does not drain idle slots from p.slots and the
@@ -1257,11 +1294,13 @@ func (p *Pool) NewSession(ctx context.Context, cwd string) (string, error) {
 	// closeAll owns cleanup via the p.all snapshot, and a requeue would feed a
 	// closed client to a racing fast-path acquire.
 	p.mu.Lock()
+	slot.checkedOut = true
 	closed := p.closed
 	p.mu.Unlock()
 	if closed {
 		return "", errors.New("pool: closed")
 	}
+	p.debugLog("pool.acquire", "slot", slot.Label)
 
 	// Phase 5 D-01/D-02/D-03: dead-slot detection + lazy synchronous
 	// re-spawn. The per-slot exit-watcher (exit_watcher.go) flips
@@ -1313,16 +1352,11 @@ func (p *Pool) NewSession(ctx context.Context, cwd string) (string, error) {
 				// closes that window: the dequeuer's slotAlive sees
 				// dead==true and triggers a fresh respawn.
 				slot.dead = true
-				select {
-				case p.slots <- slot:
+				// A failed defensive return drops the slot rather than deadlocking
+				// under p.mu; cap(p.slots) == cfg.Size makes that unreachable in
+				// steady state unless ownership is already broken.
+				if p.tryReturnSlotLocked(slot) {
 					p.debugLog("pool.respawn.deferred", "slot", slot.Label, "err", err.Error())
-				default:
-					// p.slots is buffered with cap == cfg.Size and p.all
-					// length is bounded by the same cap, so this default
-					// arm is unreachable in steady state; keep it so a
-					// future change that makes the buffer asymmetric
-					// (or a duplicate-requeue bug) drops the slot rather
-					// than deadlocking under p.mu.
 				}
 				p.mu.Unlock()
 				return "", fmt.Errorf("pool: respawn slot %s deferred: %w", slot.Label, err)
@@ -1350,11 +1384,9 @@ func (p *Pool) NewSession(ctx context.Context, cwd string) (string, error) {
 			// already-closed Client. See the ctx-cancel arm for the
 			// full rationale.
 			slot.dead = true
-			select {
-			case p.slots <- slot:
+			// As above, a failed defensive return intentionally drops the slot.
+			if p.tryReturnSlotLocked(slot) {
 				p.debugLog("pool.respawn.transient_requeue", "slot", slot.Label, "err", err.Error())
-			default:
-				// Unreachable in steady state — see ctx-cancel arm above.
 			}
 			p.mu.Unlock()
 			return "", fmt.Errorf("pool: respawn slot %s: %w", slot.Label, err)
@@ -1374,12 +1406,8 @@ func (p *Pool) NewSession(ctx context.Context, cwd string) (string, error) {
 		// non-blocking send per the file's requeue convention.
 		p.mu.Lock()
 		if !p.closed {
-			select {
-			case p.slots <- slot:
-			default:
-				// Unreachable in steady state (cap == slot count); the default
-				// arm drops rather than deadlocking under p.mu.
-			}
+			// A failed defensive return intentionally drops rather than blocks.
+			p.tryReturnSlotLocked(slot)
 		}
 		p.mu.Unlock()
 		return "", fmt.Errorf("pool: new-session: %w", err)
@@ -1671,9 +1699,7 @@ func (p *Pool) returnOrRecycle(slot *Slot, requested *recycleTrigger) {
 		// than blocking. The drop is recorded under the lock and logged AFTER
 		// unlock (never log a slot method / hot line under p.mu).
 		var requeueDropped bool
-		select {
-		case p.slots <- slot:
-		default:
+		if !p.tryReturnSlotLocked(slot) {
 			requeueDropped = true
 		}
 		p.mu.Unlock()
@@ -1694,9 +1720,7 @@ func (p *Pool) returnOrRecycle(slot *Slot, requested *recycleTrigger) {
 	// both admit. Logged at Debug AFTER unlock (never a hot line under p.mu).
 	if p.recyclesInFlight > 0 {
 		var requeueDropped bool
-		select {
-		case p.slots <- slot:
-		default:
+		if !p.tryReturnSlotLocked(slot) {
 			requeueDropped = true
 		}
 		p.mu.Unlock()
@@ -1811,9 +1835,7 @@ func (p *Pool) recycleSlot(slot *Slot, trigger recycleTrigger) {
 	// is a defensive drop against any future duplicate-requeue bug. Capture
 	// the drop under the lock; emit the log AFTER unlock (never log under p.mu).
 	var requeueDropped bool
-	select {
-	case p.slots <- slot:
-	default:
+	if !p.tryReturnSlotLocked(slot) {
 		requeueDropped = true
 	}
 	p.mu.Unlock()

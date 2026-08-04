@@ -23,6 +23,7 @@ import "time"
 func (p *Pool) WaitForSlotRelease(timeout time.Duration) (*Slot, bool) {
 	select {
 	case s := <-p.slots:
+		p.markSlotCheckedOut(s)
 		return s, true
 	case <-time.After(timeout):
 		return nil, false
@@ -33,7 +34,12 @@ func (p *Pool) WaitForSlotRelease(timeout time.Duration) (*Slot, bool) {
 // observe a release via WaitForSlotRelease and want to leave the pool
 // in a usable state for follow-up acquires.
 func (p *Pool) PutSlotBack(slot *Slot) {
-	p.slots <- slot
+	p.mu.Lock()
+	returned := p.tryReturnSlotLocked(slot)
+	p.mu.Unlock()
+	if !returned {
+		panic("pool test: free queue full while returning slot")
+	}
 }
 
 // TakeSlotIfAvailable removes and returns a free slot without waiting. Tests
@@ -41,6 +47,7 @@ func (p *Pool) PutSlotBack(slot *Slot) {
 func (p *Pool) TakeSlotIfAvailable() (*Slot, bool) {
 	select {
 	case slot := <-p.slots:
+		p.markSlotCheckedOut(slot)
 		return slot, true
 	default:
 		return nil, false

@@ -1,8 +1,15 @@
 package pool_test
 
 import (
+	"context"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"otto-gateway/internal/canonical"
+	"otto-gateway/internal/pool"
+	"otto-gateway/internal/testutil"
 )
 
 // TestPool_WorkerProcs_HealthyPool: every live slot yields one (label, pid)
@@ -75,4 +82,66 @@ func TestPool_WorkerProcs_SkipsZeroPid(t *testing.T) {
 	if rows[0].Label != "slot-1" || rows[0].Pid != 2002 {
 		t.Errorf("row = %+v; want {slot-1 2002}", rows[0])
 	}
+}
+
+// TestPool_WorkerProcs_SlowNewSessionReportsZeroIdle protects the checkout
+// window between taking a free slot and registering the returned session id.
+// The worker is already busy in that window, so an earlier release must not be
+// projected as current idle time.
+func TestPool_WorkerProcs_SlowNewSessionReportsZeroIdle(t *testing.T) {
+	now := time.Date(2026, 8, 4, 16, 0, 0, 0, time.UTC)
+	newSessionEntered := make(chan struct{})
+	allowNewSession := make(chan struct{})
+	var releaseGate sync.Once
+	var calls atomic.Int32
+	client := &fakeClient{
+		models: []canonical.ModelInfo{{ID: "auto"}},
+		pid:    3001,
+		newSessionFn: func(_ context.Context, _ string) (string, error) {
+			call := calls.Add(1)
+			if call == 3 {
+				close(newSessionEntered)
+				<-allowNewSession
+			}
+			return "session-" + string(rune('0'+call)), nil
+		},
+	}
+	p := pool.New(pool.Config{
+		Logger:  testutil.Logger(t),
+		Size:    1,
+		Factory: &fakeClientFactory{clients: []pool.PoolClient{client}},
+		Now:     func() time.Time { return now },
+	})
+	t.Cleanup(func() {
+		releaseGate.Do(func() { close(allowNewSession) })
+		_ = p.Close()
+	})
+	if err := p.Warmup(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	runOneRequest(t, p)
+	now = now.Add(5 * time.Minute)
+
+	type sessionResult struct {
+		sid string
+		err error
+	}
+	sessionDone := make(chan sessionResult, 1)
+	go func() {
+		sid, err := p.NewSession(context.Background(), "")
+		sessionDone <- sessionResult{sid: sid, err: err}
+	}()
+	<-newSessionEntered
+
+	procs := p.WorkerProcs()
+	if len(procs) != 1 || procs[0].UserRequestsSinceSpawn != 1 || procs[0].IdleSeconds != 0 {
+		t.Fatalf("WorkerProcs during session/new = %+v, want count=1 idle=0", procs)
+	}
+
+	releaseGate.Do(func() { close(allowNewSession) })
+	result := <-sessionDone
+	if result.err != nil {
+		t.Fatalf("NewSession: %v", result.err)
+	}
+	p.Cancel(result.sid)
 }

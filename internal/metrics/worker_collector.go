@@ -53,7 +53,7 @@ func newWorkerCollector(procs func() []WorkerProc, read func(pid int) procstat.S
 		),
 		userRequests: prometheus.NewDesc(
 			"gw_worker_user_requests_since_spawn",
-			"Completed user requests served by each worker since spawn, by pool slot.",
+			"Successful user-path session/new calls served by each worker since spawn, by pool slot.",
 			[]string{"slot"}, nil,
 		),
 		idleSeconds: prometheus.NewDesc(

@@ -592,7 +592,7 @@ func TestPool_IdleMemoryRecycle_CloseWinsFinalWarmupStart(t *testing.T) {
 	}
 }
 
-func TestPool_IdleMemoryRecycle_CloseDuringSweepPreservesOwnership(t *testing.T) {
+func TestPool_IdleMemoryRecycle_CloseDuringSweepDropsClaimedSlot(t *testing.T) {
 	now := time.Date(2026, 8, 4, 22, 0, 0, 0, time.UTC)
 	ticks := make(chan time.Time, 1)
 	readerEntered := make(chan struct{})
@@ -623,19 +623,25 @@ func TestPool_IdleMemoryRecycle_CloseDuringSweepPreservesOwnership(t *testing.T)
 	closeDone := make(chan error, 1)
 	go func() { closeDone <- p.Close() }()
 	<-p.ClosingChan()
+	if got := client.closeCallCount(); got != 0 {
+		t.Fatalf("client close calls while sweep blocked = %d, want 0", got)
+	}
+	if _, err := p.NewSession(context.Background(), ""); err == nil || err.Error() != "pool: closed" {
+		t.Fatalf("NewSession during Close = %v, want pool: closed", err)
+	}
+	select {
+	case err := <-closeDone:
+		t.Fatalf("Close returned before idle sweep exited: %v", err)
+	default:
+	}
 	close(readerGate)
 	if err := <-closeDone; err != nil {
 		t.Fatal(err)
 	}
-	slot, ok := p.TakeSlotIfAvailable()
-	if !ok {
-		t.Fatal("unreadable slot was lost during close/sweep race")
+	if slot, available := p.TakeSlotIfAvailable(); available {
+		p.PutSlotBack(slot)
+		t.Fatal("claimed slot was requeued after shutdown admission closed")
 	}
-	if extra, duplicate := p.TakeSlotIfAvailable(); duplicate {
-		p.PutSlotBack(extra)
-		t.Fatal("slot was returned more than once during close/sweep race")
-	}
-	_ = slot
 }
 
 func TestPool_IdleMemoryRecycle_ConcurrentAcquireReleaseSweep(t *testing.T) {
