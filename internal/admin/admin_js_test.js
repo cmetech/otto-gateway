@@ -333,3 +333,15 @@ test('slot cards render idle-memory recycling policy across worker lifecycle sta
   assert.match(text, /USER REQS\s+0/);
   assert.match(text, /IDLE\s+—/);
 });
+
+test('slot cards reject a release timestamp later than the snapshot timestamp', async () => {
+  const harness = createHarness([slotSnapshot({
+    last_user_release_at: '2026-08-04T12:00:01Z',
+  })]);
+
+  harness.start();
+  await settleSnapshot();
+  const text = elementText(harness.selectors['[data-slot-grid]'].children[0]);
+  assert.match(text, /IDLE\s+—/);
+  assert.doesNotMatch(text, /IDLE\s+0s/);
+});

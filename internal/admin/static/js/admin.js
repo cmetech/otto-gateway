@@ -249,7 +249,8 @@
     var released = Date.parse(slot.last_user_release_at || '');
     var generated = Date.parse(generatedAt || '');
     if (!Number.isFinite(released) || !Number.isFinite(generated)) return '—';
-    var idleMs = Math.max(0, generated - released);
+    var idleMs = generated - released;
+    if (idleMs < 0) return '—';
     var current = formatUptime(idleMs);
     if (pool.idle_recycle_ms > 0) return current + ' / ' + formatUptime(pool.idle_recycle_ms);
     return current;
