@@ -1,7 +1,7 @@
 # Idle-memory Kiro worker recycling — design
 
-**Date:** 2026-08-04  
-**Status:** Approved design; implementation not started  
+**Date:** 2026-08-04
+**Status:** Approved design; implementation not started
 **Scope:** Stateless pooled Kiro workers governed by `KIRO_WORKER_MAX_TURNS`
 
 ## 1. Problem and outcome
