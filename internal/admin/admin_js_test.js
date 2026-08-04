@@ -114,6 +114,18 @@ function slotSnapshot(overrides = {}) {
   };
 }
 
+function slotSnapshotWithCount(count) {
+  const snap = slotSnapshot();
+  const prototype = snap.pool.slots[0];
+  snap.pool.size = count;
+  snap.pool.slots = Array.from({ length: count }, (_unused, index) => ({
+    ...prototype,
+    label: `slot-${index}`,
+    pid: 4101 + index,
+  }));
+  return snap;
+}
+
 function elementText(element) {
   return [element.textContent, ...element.children.map(elementText)].join(' ');
 }
@@ -363,4 +375,54 @@ test('slot cards reject a release timestamp later than the snapshot timestamp', 
   const text = elementText(harness.selectors['[data-slot-grid]'].children[0]);
   assert.match(text, /IDLE\s+—/);
   assert.doesNotMatch(text, /IDLE\s+0s/);
+});
+
+test('slot grid pads real workers to complete three-card rows through the six-worker cap', async () => {
+  const cases = [
+    { real: 0, cards: 0, vacant: 0 },
+    { real: 1, cards: 3, vacant: 2 },
+    { real: 2, cards: 3, vacant: 1 },
+    { real: 3, cards: 3, vacant: 0 },
+    { real: 4, cards: 6, vacant: 2 },
+    { real: 5, cards: 6, vacant: 1 },
+    { real: 6, cards: 6, vacant: 0 },
+  ];
+
+  for (const tc of cases) {
+    const harness = createHarness([slotSnapshotWithCount(tc.real)]);
+    harness.start();
+    await settleSnapshot();
+    const children = harness.selectors['[data-slot-grid]'].children;
+    assert.equal(children.length, tc.cards, `POOL_SIZE=${tc.real} card count`);
+    assert.equal(
+      children.filter((child) => child.className.includes('is-vacant')).length,
+      tc.vacant,
+      `POOL_SIZE=${tc.real} vacant count`,
+    );
+  }
+});
+
+test('slot grid clears vacant styling at the three- and six-worker boundaries', async () => {
+  const harness = createHarness([
+    slotSnapshotWithCount(2),
+    slotSnapshotWithCount(3),
+    slotSnapshotWithCount(5),
+    slotSnapshotWithCount(6),
+  ]);
+
+  harness.start();
+  await settleSnapshot();
+  assert.match(harness.selectors['[data-slot-grid]'].children[2].className, /is-vacant/);
+
+  harness.poll();
+  await settleSnapshot();
+  assert.doesNotMatch(harness.selectors['[data-slot-grid]'].children[2].className, /is-vacant/);
+
+  harness.poll();
+  await settleSnapshot();
+  assert.match(harness.selectors['[data-slot-grid]'].children[5].className, /is-vacant/);
+
+  harness.poll();
+  await settleSnapshot();
+  assert.doesNotMatch(harness.selectors['[data-slot-grid]'].children[5].className, /is-vacant/);
 });

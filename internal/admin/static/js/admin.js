@@ -459,12 +459,10 @@
     article.replaceChildren.apply(article, slotCardChildren(slot, poolFailed, pool, generatedAt));
   }
 
-  // renderSlots DOM-patches the pool-slot grid. It always renders at least 4
-  // cards: real slots first, then client-only vacant placeholders padded up
-  // to 4 so the grid stays visually balanced for small POOL_SIZE values. The
-  // padding is purely a display concern — the snapshot wire shape is
-  // untouched and ingestPerf (which drives sparklines) keeps reading the
-  // unpadded snapshot array, so vacant cards never produce perf samples.
+  // renderSlots DOM-patches the pool-slot grid. Real slots stay first. The
+  // browser adds only enough vacant positions to complete one or two
+  // three-card desktop rows; the server snapshot remains untouched, so
+  // placeholders never enter perf ingestion or metrics.
   function renderSlots(pool, poolFailed, generatedAt) {
     var grid = document.querySelector('[data-slot-grid]');
     var empty = document.querySelector('[data-slot-grid-empty]');
@@ -482,7 +480,8 @@
     if (empty) empty.hidden = true;
 
     var displaySlots = slots.slice();
-    for (var i = displaySlots.length; i < 4; i++) {
+    var displayCount = displaySlots.length <= 3 ? 3 : 6;
+    for (var i = displaySlots.length; i < displayCount; i++) {
       displaySlots.push({ vacant: true, label: 'slot-' + i, pool_size: pool.size || 0 });
     }
 
