@@ -108,6 +108,15 @@ type MetricsRecorder interface {
 	RecordPoolAcquire(duration time.Duration, result string)
 }
 
+// WorkerMemoryReader returns a worker process's resident-set size. ok is false
+// when the process cannot be sampled.
+type WorkerMemoryReader func(pid int) (rssBytes uint64, ok bool)
+
+// RecycleMetricsRecorder receives successful scheduled worker replacements.
+type RecycleMetricsRecorder interface {
+	RecordWorkerRecycle(reason string, rssBytes uint64, idle time.Duration)
+}
+
 // Config bundles all pool dependencies. Size defaults to 1 in Phase 2
 // (D-07). KiroCmd / KiroArgs / KiroCWD / PingInterval are forwarded
 // verbatim to acp.Config for each slot's subprocess.
@@ -159,6 +168,18 @@ type Config struct {
 	// Now supplies wall-clock time for per-worker lifecycle accounting.
 	// Defaults to time.Now.
 	Now func() time.Time
+	// IdleRecycleAfter is the minimum user-idle duration before a free worker
+	// may be considered for memory-based recycling. Zero disables the sweep.
+	IdleRecycleAfter time.Duration
+	// IdleRecycleMemoryBytes is the strict RSS threshold for idle recycling.
+	IdleRecycleMemoryBytes uint64
+	// WorkerMemorySupported reports whether this platform supports worker RSS
+	// sampling. Production wiring owns capability detection.
+	WorkerMemorySupported bool
+	// ReadWorkerMemory samples worker RSS. Nil disables idle-memory recycling.
+	ReadWorkerMemory WorkerMemoryReader
+	// RecycleMetrics receives successful scheduled replacement events.
+	RecycleMetrics RecycleMetricsRecorder
 }
 
 // applyDefaults fills in zero-value Config fields. Size floors to 1

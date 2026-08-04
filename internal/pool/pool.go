@@ -216,6 +216,13 @@ type Pool struct {
 	// finding H-1).
 	recycleWG sync.WaitGroup
 
+	// idleSweepOnce starts at most one idle-memory sweep loop after warmup.
+	idleSweepOnce sync.Once
+	// idleSweepWG joins that loop before Close begins tearing down clients.
+	idleSweepWG sync.WaitGroup
+	// idleSweepTicks replaces the production ticker in deterministic tests.
+	idleSweepTicks <-chan time.Time
+
 	// recyclesInFlight is the count of scheduled recycles currently admitted
 	// (from the recycleWG.Add commit in releaseOrRecycle until the recycleSlot
 	// goroutine exits). It is an int under p.mu — NOT a separate atomic —
@@ -423,6 +430,9 @@ func (p *Pool) Warmup(ctx context.Context) error {
 				_ = p.closeAll()
 				return fmt.Errorf("pool: warmup recycle slot %d: %w", i, err)
 			}
+			if p.cfg.RecycleMetrics != nil {
+				p.cfg.RecycleMetrics.RecordWorkerRecycle(string(recycleReasonMaxTurns), 0, 0)
+			}
 		}
 		// Send into the buffered slots channel. Cannot block — channel
 		// capacity equals cfg.Size and we have at most cfg.Size slots.
@@ -433,6 +443,7 @@ func (p *Pool) Warmup(ctx context.Context) error {
 	// epoch — without this, healthHandler would briefly classify the
 	// pool as degraded between Warmup and the first slot release.
 	p.advanceProgress()
+	p.startIdleRecycler()
 	return nil
 }
 
@@ -1003,6 +1014,7 @@ func (p *Pool) Close() error {
 	var firstErr error
 	p.closeOnce.Do(func() {
 		close(p.closing)
+		p.idleSweepWG.Wait()
 		firstErr = p.closeAll()
 		// Track 1: wait out any in-flight self-heal probe goroutine so it
 		// cannot outlive Close (goleak-clean). closing is already closed, so
@@ -1579,12 +1591,12 @@ func (p *Pool) releaseSlotForSession(sid string) {
 // out of scope.
 const recycleRespawnTimeout = 30 * time.Second
 
-// releaseOrRecycle is the Task 3 replacement for the bare `p.slots <- slot`
-// on the post-serving release paths (Prompt happy-path release,
-// releaseSlotForSession, and the self-heal probe return). It makes the
-// recycle-vs-release decision AND the recycleWG.Add commit in one p.mu
-// critical section so an accepted Add is always ordered before Close's
-// recycleWG.Wait (review finding H-1 — the load-bearing shutdown property).
+// releaseOrRecycle is the request/self-heal entry point replacing a bare
+// `p.slots <- slot`. It snapshots a max-turn request and delegates the actual
+// recycle-vs-release decision to returnOrRecycle, where the closed check and
+// recycleWG.Add commit share one p.mu critical section. An accepted Add is
+// therefore always ordered before Close's recycleWG.Wait (review finding H-1
+// — the load-bearing shutdown property).
 //
 // When the pool is closed the slot is DROPPED (Finding 3 hardening — closeAll
 // owns cleanup; requeueing a closed client races a fast-path acquire into a
@@ -1596,6 +1608,25 @@ const recycleRespawnTimeout = 30 * time.Second
 // path (the goroutine either pushes it back after respawn or drops it on
 // shutdown).
 func (p *Pool) releaseOrRecycle(slot *Slot) {
+	p.mu.Lock()
+	turns := slot.turns
+	userRequests := slot.userRequestsSinceSpawn
+	p.mu.Unlock()
+	var requested *recycleTrigger
+	if p.cfg.MaxWorkerTurns > 0 && turns >= p.cfg.MaxWorkerTurns {
+		requested = &recycleTrigger{
+			reason:       recycleReasonMaxTurns,
+			turns:        turns,
+			userRequests: userRequests,
+		}
+	}
+	p.returnOrRecycle(slot, requested)
+}
+
+// returnOrRecycle is the single admission point for every scheduled recycle
+// reason. It keeps the closed check, one-in-flight decision, WaitGroup Add,
+// and slot handoff in one critical section.
+func (p *Pool) returnOrRecycle(slot *Slot, requested *recycleTrigger) {
 	p.mu.Lock()
 	// Finding 3 (worker-recycling hardening): a post-shutdown release DROPS the
 	// slot without requeue — closeAll owns cleanup via the p.all snapshot, and a
@@ -1611,7 +1642,15 @@ func (p *Pool) releaseOrRecycle(slot *Slot) {
 		return
 	}
 	turns := slot.turns
-	if p.cfg.MaxWorkerTurns == 0 || turns < p.cfg.MaxWorkerTurns {
+	userRequests := slot.userRequestsSinceSpawn
+	if p.cfg.MaxWorkerTurns > 0 && turns >= p.cfg.MaxWorkerTurns {
+		requested = &recycleTrigger{
+			reason:       recycleReasonMaxTurns,
+			turns:        turns,
+			userRequests: userRequests,
+		}
+	}
+	if requested == nil {
 		// Guarded non-blocking send, matching the file's re-queue convention
 		// (pool.go respawn re-queue arms + recycleSlot): the buffered channel
 		// cannot block (cap == slot count), and the default arm keeps a future
@@ -1671,7 +1710,7 @@ func (p *Pool) releaseOrRecycle(slot *Slot) {
 	if hook != nil {
 		hook()
 	}
-	go p.recycleSlot(slot, turns)
+	go p.recycleSlot(slot, *requested)
 }
 
 // recycleSlot owns the slot exclusively for the duration of a background
@@ -1683,7 +1722,7 @@ func (p *Pool) releaseOrRecycle(slot *Slot) {
 // The 30s budget (recycleRespawnTimeout) bounds only the ctx-aware Initialize
 // step; it cannot interrupt a process exec start that blocks inside the
 // factory Spawn, which discards the ctx (Finding 4 — see recycleRespawnTimeout).
-func (p *Pool) recycleSlot(slot *Slot, turns int) {
+func (p *Pool) recycleSlot(slot *Slot, trigger recycleTrigger) {
 	defer p.recycleWG.Done()
 	// Release the single-recycle-in-flight slot on EVERY exit path (early
 	// <-p.closing drop, closed-branch drop, error requeue, success requeue) so
@@ -1700,6 +1739,9 @@ func (p *Pool) recycleSlot(slot *Slot, turns int) {
 		p.recyclesInFlight--
 		p.mu.Unlock()
 	}()
+	if trigger.pid == 0 && slot.Client != nil {
+		trigger.pid = slot.Client.Pid()
+	}
 	// Shutdown won the race after commit-to-recycle: drop the slot without
 	// respawning. closeAll finds the (old) client via p.all. (review H-1)
 	select {
@@ -1708,11 +1750,24 @@ func (p *Pool) recycleSlot(slot *Slot, turns int) {
 	default:
 	}
 	if p.cfg.Logger != nil {
-		p.cfg.Logger.Info("pool: slot recycling", "label", slot.Label, "turns", turns)
+		p.cfg.Logger.Info("pool: slot recycling",
+			"label", slot.Label,
+			"trigger", string(trigger.reason),
+			"pid", trigger.pid,
+			"turns", trigger.turns,
+			"user_requests", trigger.userRequests,
+			"idle_for", trigger.idle,
+			"rss_bytes", trigger.rssBytes,
+			"idle_threshold", p.cfg.IdleRecycleAfter,
+			"memory_threshold_bytes", p.cfg.IdleRecycleMemoryBytes,
+		)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), recycleRespawnTimeout)
 	defer cancel()
 	err := p.respawnSlot(ctx, slot, respawnCauseRecycle)
+	if err == nil && p.cfg.RecycleMetrics != nil {
+		p.cfg.RecycleMetrics.RecordWorkerRecycle(string(trigger.reason), trigger.rssBytes, trigger.idle)
+	}
 
 	p.mu.Lock()
 	if p.closed {

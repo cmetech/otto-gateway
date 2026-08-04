@@ -151,3 +151,19 @@ func (p *Pool) SetRecycleLaunchHookForTesting(hook func()) {
 	p.recycleLaunchHook = hook
 	p.mu.Unlock()
 }
+
+// SweepIdleWorkersForTesting runs one synchronous idle-memory sweep.
+func (p *Pool) SweepIdleWorkersForTesting() { p.sweepIdleWorkers() }
+
+// WaitForRecyclesForTesting joins all scheduled recycle goroutines.
+func (p *Pool) WaitForRecyclesForTesting() { p.recycleWG.Wait() }
+
+// SetIdleSweepTicksForTesting replaces the production ticker before Warmup.
+func (p *Pool) SetIdleSweepTicksForTesting(ticks <-chan time.Time) {
+	p.idleSweepTicks = ticks
+}
+
+// IdleSweepCadenceForTesting exposes the bounded cadence calculation.
+func IdleSweepCadenceForTesting(after time.Duration) time.Duration {
+	return idleSweepCadence(after)
+}

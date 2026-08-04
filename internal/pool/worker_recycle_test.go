@@ -811,6 +811,22 @@ func TestPool_ScheduledRecycle_SerializedAcrossSlots(t *testing.T) {
 	if n := strings.Count(logBuf.String(), "pool: slot recycling"); n != 1 {
 		t.Fatalf(`"pool: slot recycling" count with A parked = %d; want 1 (A only)`, n)
 	}
+	firstRecycleLog := logBuf.String()
+	for _, field := range []string{
+		`"label":"slot-0"`,
+		`"trigger":"max_turns"`,
+		`"pid":1000`,
+		`"turns":2`,
+		`"user_requests":1`,
+		`"idle_for":0`,
+		`"rss_bytes":0`,
+		`"idle_threshold":0`,
+		`"memory_threshold_bytes":0`,
+	} {
+		if !strings.Contains(firstRecycleLog, field) {
+			t.Fatalf("first max-turn recycle log missing %s: %s", field, firstRecycleLog)
+		}
+	}
 
 	// Step 2: drive slot B (slot-1) over threshold while A is parked. slot-1 takes
 	// two requests: turns 0→1 (below threshold → plain requeue), then 1→2
@@ -1077,11 +1093,13 @@ func TestPool_WorkerRecycle_RecyclingSlotReportsUnavailable(t *testing.T) {
 func TestPool_WarmupRecyclesSlotAtThreshold(t *testing.T) {
 	firstClient := &fakeClient{models: []canonical.ModelInfo{{ID: "auto"}}, pid: 1001}
 	secondClient := &fakeClient{models: []canonical.ModelInfo{{ID: "auto"}}, pid: 1002}
+	metrics := &fakeRecycleMetrics{}
 	p := pool.New(pool.Config{
 		Logger:         testutil.Logger(t),
 		Size:           1,
 		MaxWorkerTurns: 1,
 		Factory:        &fakeClientFactory{clients: []pool.PoolClient{firstClient, secondClient}},
+		RecycleMetrics: metrics,
 	})
 	t.Cleanup(func() { _ = p.Close() })
 	if err := p.Warmup(context.Background()); err != nil {
@@ -1093,6 +1111,9 @@ func TestPool_WarmupRecyclesSlotAtThreshold(t *testing.T) {
 	}
 	if turns, ok := p.SlotTurns("slot-0"); !ok || turns != 0 {
 		t.Fatalf("SlotTurns(slot-0) after Warmup = (%d, %v); want (0, true)", turns, ok)
+	}
+	if records := metrics.snapshot(); len(records) != 1 || records[0] != (recycleMetricRecord{reason: "max_turns"}) {
+		t.Fatalf("warmup recycle metrics = %+v, want one max_turns zero-value record", records)
 	}
 	if got := firstClient.closeCallCount(); got < 1 {
 		t.Errorf("first client closeCalls = %d; want >= 1 (torn down by the warmup recycle)", got)
