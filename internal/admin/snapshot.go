@@ -220,7 +220,9 @@ func (h *handler) snapshotHandler(w http.ResponseWriter, r *http.Request) {
 	// config-derived value the dashboard needs even if PoolDetail is nil.
 	snap.Pool.MaxTurns = h.deps.KiroWorkerMaxTurns
 	snap.Pool.IdleRecycleMS = h.deps.KiroWorkerIdleRecycleAfter.Milliseconds()
-	snap.Pool.IdleRecycleMemoryBytes = uint64(h.deps.KiroWorkerIdleRecycleMemoryMB) << 20
+	if h.deps.KiroWorkerIdleRecycleMemoryMB > 0 {
+		snap.Pool.IdleRecycleMemoryBytes = uint64(h.deps.KiroWorkerIdleRecycleMemoryMB) << 20
+	}
 	snap.Pool.IdleRecycleSupported = h.deps.KiroWorkerIdleRecycleSupported
 	if h.deps.PoolDetail != nil {
 		slots := h.deps.PoolDetail.Detail()

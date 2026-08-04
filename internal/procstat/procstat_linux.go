@@ -4,6 +4,7 @@ package procstat
 
 import "github.com/prometheus/procfs"
 
+// Supported reports whether this platform provides cgo-free process samples.
 func Supported() bool { return true }
 
 // Read returns the CPU + RSS usage for pid from /proc/<pid>/stat. It reuses the

@@ -259,6 +259,28 @@ func TestSnapshotIdleRecycleContract(t *testing.T) {
 	}
 }
 
+func TestSnapshotIdleRecycleContract_NegativeMemoryIsDisabled(t *testing.T) {
+	h := Handler(Deps{
+		Logger:                        testutil.Logger(t),
+		KiroWorkerIdleRecycleMemoryMB: -1,
+	})
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/snapshot", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/snapshot: got %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+
+	var snap Snapshot
+	if err := json.NewDecoder(rec.Body).Decode(&snap); err != nil {
+		t.Fatalf("decode snapshot: %v", err)
+	}
+	if snap.Pool.IdleRecycleMemoryBytes != 0 {
+		t.Fatalf("idle_recycle_memory_bytes = %d, want 0", snap.Pool.IdleRecycleMemoryBytes)
+	}
+}
+
 // TestAdmin_SnapshotNilSafe verifies that the handler constructed with nil
 // PoolDetail and nil Registry does not panic and returns sensible zero values.
 func TestAdmin_SnapshotNilSafe(t *testing.T) {

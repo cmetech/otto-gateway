@@ -103,6 +103,17 @@ func TestApplyIdleMemoryRecyclePoolConfig_IdleRecyclePolicy(t *testing.T) {
 	}
 }
 
+func TestApplyIdleMemoryRecyclePoolConfig_NegativeMemoryIsDisabled(t *testing.T) {
+	cfg := config.Config{KiroWorkerIdleRecycleMemoryMB: -1}
+	var got pool.Config
+
+	applyIdleMemoryRecyclePoolConfig(&got, cfg, nil)
+
+	if got.IdleRecycleMemoryBytes != 0 {
+		t.Fatalf("IdleRecycleMemoryBytes = %d, want 0", got.IdleRecycleMemoryBytes)
+	}
+}
+
 func TestIdleRecycleMetricsWorkerProcFromPoolCopiesActivity(t *testing.T) {
 	input := pool.WorkerProc{
 		Label:                  "slot-2",

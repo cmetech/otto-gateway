@@ -2,6 +2,7 @@
 
 package procstat
 
+// Supported reports whether this platform provides cgo-free process samples.
 func Supported() bool { return false }
 
 // Read is the fallback for platforms where a cgo-free per-process CPU/RSS read

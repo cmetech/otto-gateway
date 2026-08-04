@@ -1763,7 +1763,8 @@ func (p *Pool) recycleSlot(slot *Slot, trigger recycleTrigger) {
 	default:
 	}
 	if p.cfg.Logger != nil {
-		p.cfg.Logger.Info("pool: slot recycling",
+		p.cfg.Logger.Info(
+			"pool: slot recycling",
 			"label", slot.Label,
 			"trigger", string(trigger.reason),
 			"pid", trigger.pid,

@@ -9,6 +9,7 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+// Supported reports whether this platform provides cgo-free process samples.
 func Supported() bool { return true }
 
 // procGetProcessMemoryInfo is loaded from psapi.dll the same way the stock

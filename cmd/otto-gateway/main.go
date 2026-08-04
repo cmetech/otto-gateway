@@ -87,7 +87,10 @@ func readWorkerMemory(pid int) (uint64, bool) {
 
 func applyIdleMemoryRecyclePoolConfig(dst *pool.Config, cfg config.Config, recorder pool.RecycleMetricsRecorder) {
 	dst.IdleRecycleAfter = cfg.KiroWorkerIdleRecycleAfter
-	dst.IdleRecycleMemoryBytes = uint64(cfg.KiroWorkerIdleRecycleMemoryMB) << 20
+	dst.IdleRecycleMemoryBytes = 0
+	if cfg.KiroWorkerIdleRecycleMemoryMB > 0 {
+		dst.IdleRecycleMemoryBytes = uint64(cfg.KiroWorkerIdleRecycleMemoryMB) << 20
+	}
 	dst.WorkerMemorySupported = procstat.Supported()
 	dst.ReadWorkerMemory = readWorkerMemory
 	dst.RecycleMetrics = recorder
