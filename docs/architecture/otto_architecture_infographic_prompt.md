@@ -35,7 +35,7 @@ Bottom band "Engine + pool" (blue): three sub-components in a row — "Canonical
 Side callout: "Single process. Single port. Three API standards. One governance surface."
 
 RIGHT — KIRO-CLI ACP WORKER POOL (green):
-Panel labeled "kiro-cli ACP Workers" with one three-position row: two live worker tiles (each with a subprocess icon, label "kiro-cli acp", and green idle status dot) followed by one dashed position labeled "VACANT".
+Panel labeled "kiro-cli ACP Workers" with one three-position row: two live worker tiles (each with a subprocess icon and label "kiro-cli acp"): one with a green idle status dot and one with an amber busy status dot, followed by one dashed position labeled "VACANT".
 Channel label above grid: "JSON-RPC 2.0 over stdio."
 Active inbound arrow into the busy worker: "session/prompt."
 Outbound arrow back toward gateway: "session/update — streamed text, thoughts, tool_calls, plans."
