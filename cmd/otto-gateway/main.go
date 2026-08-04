@@ -4,9 +4,11 @@
 //
 //  1. Load config from env vars.
 //  2. Build structured logger.
-//  3. If KIRO_CMD is set: construct pool + Warmup (blocking) BEFORE the
-//     HTTP server starts accepting. Warmup failure aborts startup
-//     non-zero (POOL-02 + RESEARCH.md Pitfall 4 + threat T-02-36).
+//  3. If KIRO_CMD is set and POOL_SIZE > 0: construct pool + Warmup
+//     (blocking) BEFORE the HTTP server starts accepting. Warmup failure
+//     aborts startup non-zero (POOL-02 + RESEARCH.md Pitfall 4 + threat
+//     T-02-36). POOL_SIZE=0 skips the warm pool while retaining dedicated
+//     X-Session-Id workers.
 //  4. If pool is up: construct engine wired to the pool (the pool
 //     satisfies engine.ACPClient).
 //  5. Construct the Ollama adapter (always — handles /api/version + stubs
@@ -284,9 +286,9 @@ func main() {
 type app struct {
 	cfg             config.Config
 	logger          *slog.Logger
-	pool            *pool.Pool        // nil when KIRO_CMD unset
+	pool            *pool.Pool        // nil when KIRO_CMD unset or POOL_SIZE=0
 	engine          *engine.Engine    // nil when pool is nil
-	registry        *session.Registry // nil when KIRO_CMD unset; constructed alongside pool
+	registry        *session.Registry // nil when KIRO_CMD unset; independent of warm-pool size
 	srv             *server.Server
 	hooks           plugin.Chain
 	privacyService  *privacy.Service
@@ -353,7 +355,8 @@ func (a adminPrivacyStatusAdapter) PrivacySnapshot() admin.PrivacySnapshot {
 //   - the assembled *app
 //   - a cleanup func the caller MUST defer (closes pool + logs errors)
 //   - any startup error (wraps Warmup failures with context.WithTimeout
-//     so a hung kiro-cli does not stall the process forever)
+//     so a hung kiro-cli does not stall the process forever; POOL_SIZE=0
+//     skips warmup)
 //
 // Tests use newApp directly (not main) so they can drive the wiring with
 // t.Setenv-controlled config + assert on app.pool.Stats() etc.
@@ -745,46 +748,50 @@ func newAppWithRegistryLoader(ctx context.Context, cfg config.Config, logger *sl
 			return nil, func() {}, err
 		}
 		kiroEnv := kiroProcessEnv(cfg)
-		poolCfg := pool.Config{
-			Logger:         logger,
-			Size:           cfg.PoolSize,
-			KiroCmd:        cfg.KiroCmd,
-			KiroArgs:       cfg.KiroArgs,
-			KiroCWD:        cfg.KiroCWD,
-			KiroEnv:        kiroEnv,
-			PingInterval:   cfg.PingInterval,
-			Metrics:        gwMetrics,                        // kiro usage-metrics parity: forward slot usage events
-			Capture:        controllerRecordFunc(acpCapture), // Track 0 (nil controller → nil func → no capture)
-			MaxToolDenials: cfg.MaxToolDenials,               // Track 3a: circuit breaker threshold
-			MaxWorkerTurns: cfg.KiroWorkerMaxTurns,           // worker recycling: scheduled respawn threshold
-		}
-		applyIdleMemoryRecyclePoolConfig(&poolCfg, cfg, gwMetrics)
-		a.pool = pool.New(poolCfg)
+		if cfg.PoolSize > 0 {
+			poolCfg := pool.Config{
+				Logger:         logger,
+				Size:           cfg.PoolSize,
+				KiroCmd:        cfg.KiroCmd,
+				KiroArgs:       cfg.KiroArgs,
+				KiroCWD:        cfg.KiroCWD,
+				KiroEnv:        kiroEnv,
+				PingInterval:   cfg.PingInterval,
+				Metrics:        gwMetrics,                        // kiro usage-metrics parity: forward slot usage events
+				Capture:        controllerRecordFunc(acpCapture), // Track 0 (nil controller → nil func → no capture)
+				MaxToolDenials: cfg.MaxToolDenials,               // Track 3a: circuit breaker threshold
+				MaxWorkerTurns: cfg.KiroWorkerMaxTurns,           // worker recycling: scheduled respawn threshold
+			}
+			applyIdleMemoryRecyclePoolConfig(&poolCfg, cfg, gwMetrics)
+			a.pool = pool.New(poolCfg)
 
-		// POOL-02: warmup BEFORE the HTTP listener accepts traffic.
-		// Bound it with warmupDeadline so a hung Initialize cannot
-		// stall the process forever (threat T-02-36).
-		warmCtx, cancel := context.WithTimeout(ctx, warmupDeadline)
-		defer cancel()
-		if err := a.pool.Warmup(warmCtx); err != nil {
-			cleanup()
-			return nil, func() {}, fmt.Errorf("pool warmup: %w", err)
-		}
+			// POOL-02: warmup BEFORE the HTTP listener accepts traffic.
+			// Bound it with warmupDeadline so a hung Initialize cannot
+			// stall the process forever (threat T-02-36).
+			warmCtx, cancel := context.WithTimeout(ctx, warmupDeadline)
+			defer cancel()
+			if err := a.pool.Warmup(warmCtx); err != nil {
+				cleanup()
+				return nil, func() {}, fmt.Errorf("pool warmup: %w", err)
+			}
 
-		a.engine = engine.New(engine.Config{
-			Logger:            logger,
-			ACP:               a.pool,
-			DefaultCWD:        cfg.KiroCWD,
-			PreHooks:          chain.Pre,
-			PostHooks:         chain.Post,
-			StreamIdleTimeout: streamIdle,
-			ToolAliases:       cfg.ToolAliases,
-			HookErrorReporter: hookErrors.Record,
-			OnModelRequest:    gwMetrics.RecordModelRequest, // kiro usage-metrics parity: gw_model_requests_total
-		})
+			a.engine = engine.New(engine.Config{
+				Logger:            logger,
+				ACP:               a.pool,
+				DefaultCWD:        cfg.KiroCWD,
+				PreHooks:          chain.Pre,
+				PostHooks:         chain.Post,
+				StreamIdleTimeout: streamIdle,
+				ToolAliases:       cfg.ToolAliases,
+				HookErrorReporter: hookErrors.Record,
+				OnModelRequest:    gwMetrics.RecordModelRequest, // kiro usage-metrics parity: gw_model_requests_total
+			})
+		}
 
 		// Plan 05-03: construct the dedicated-session registry alongside
-		// the pool. The reaper is started here (rather than at Warmup)
+		// the optional warm pool. POOL_SIZE=0 disables only the pool; dedicated
+		// X-Session-Id workers remain available. The reaper is started here
+		// (rather than at Warmup)
 		// so the goroutine is spawned BEFORE any HTTP request can reach
 		// the X-Session-Id branch. Both lifecycles share KIRO_CMD /
 		// KIRO_ARGS / KIRO_CWD / PingInterval per the backward-compat

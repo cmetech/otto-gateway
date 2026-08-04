@@ -1241,6 +1241,68 @@ func TestApp_NoKiroCmd_StartsHealthOnly(t *testing.T) {
 	}
 }
 
+// TestApp_ZeroPoolSizeSkipsWarmPool proves the application preserves the
+// resolved zero value instead of forwarding it to pool.New, whose package-level
+// defensive default intentionally turns Config{Size: 0} into one slot.
+func TestApp_ZeroPoolSizeSkipsWarmPool(t *testing.T) {
+	tests := []struct {
+		name     string
+		envValue string
+		args     []string
+	}{
+		{name: "environment", envValue: "0"},
+		{name: "explicit CLI", envValue: "2", args: []string{"--pool-size", "0"}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			t.Setenv("HTTP_ADDR", "127.0.0.1:0")
+			t.Setenv("KIRO_CMD", "/usr/bin/true")
+			t.Setenv("KIRO_CWD", root)
+			t.Setenv("KIRO_CHAT_LOG_FILE", filepath.Join(root, "logs", "kiro-chat.log"))
+			t.Setenv("POOL_SIZE", tc.envValue)
+
+			cfg, err := config.LoadArgs(tc.args)
+			if err != nil {
+				t.Fatalf("config.LoadArgs: %v", err)
+			}
+			if cfg.PoolSize != 0 {
+				t.Fatalf("resolved PoolSize = %d, want 0", cfg.PoolSize)
+			}
+
+			a, cleanup, err := newApp(context.Background(), cfg, testutil.Logger(t))
+			if err != nil {
+				t.Fatalf("newApp: %v", err)
+			}
+			defer cleanup()
+			if a.pool != nil {
+				t.Fatal("a.pool is non-nil; zero must disable the warm pool")
+			}
+			if a.engine != nil {
+				t.Fatal("a.engine is non-nil; no warm pool means no pooled engine")
+			}
+			if a.registry == nil {
+				t.Fatal("a.registry is nil; zero disables only the warm pool")
+			}
+
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/admin/api/snapshot", nil)
+			rec := httptest.NewRecorder()
+			a.srv.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("GET /admin/api/snapshot: got %d, want 200; body=%s", rec.Code, rec.Body.String())
+			}
+			var snap admin.Snapshot
+			if err := json.NewDecoder(rec.Body).Decode(&snap); err != nil {
+				t.Fatalf("decode snapshot: %v", err)
+			}
+			if snap.Pool.Size != 0 || len(snap.Pool.Slots) != 0 {
+				t.Fatalf("snapshot pool = size %d, %d slots; want empty", snap.Pool.Size, len(snap.Pool.Slots))
+			}
+		})
+	}
+}
+
 // TestNewApp_SurfaceGating — Phase 3.1 Plan 04 Task 1 (B3 closure).
 //
 // Verifies that ENABLED_SURFACES controls which adapter routes the

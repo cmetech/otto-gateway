@@ -426,3 +426,26 @@ test('slot grid clears vacant styling at the three- and six-worker boundaries', 
   await settleSnapshot();
   assert.doesNotMatch(harness.selectors['[data-slot-grid]'].children[5].className, /is-vacant/);
 });
+
+test('slot grid preserves source snapshots and renders unexpected workers above the cap', async () => {
+  const paddedSnapshot = slotSnapshotWithCount(2);
+  const unexpectedSnapshot = slotSnapshotWithCount(7);
+  const paddedSlots = paddedSnapshot.pool.slots;
+  const unexpectedSlots = unexpectedSnapshot.pool.slots;
+  const harness = createHarness([paddedSnapshot, unexpectedSnapshot]);
+
+  harness.start();
+  await settleSnapshot();
+  assert.strictEqual(paddedSnapshot.pool.slots, paddedSlots);
+  assert.equal(paddedSlots.length, 2, 'padding must not add vacant cards to the server snapshot');
+
+  harness.poll();
+  await settleSnapshot();
+  assert.equal(harness.selectors['[data-slot-grid]'].children.length, 7);
+  assert.equal(
+    harness.selectors['[data-slot-grid]'].children.filter((child) => child.className.includes('is-vacant')).length,
+    0,
+  );
+  assert.strictEqual(unexpectedSnapshot.pool.slots, unexpectedSlots);
+  assert.equal(unexpectedSlots.length, 7, 'rendering must not truncate the server snapshot');
+});
