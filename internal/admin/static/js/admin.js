@@ -169,6 +169,11 @@
     return (i === 0 ? v : v.toFixed(1)) + ' ' + units[i];
   }
 
+  function formatMiB(n) {
+    var mib = n / (1024 * 1024);
+    return (Number.isInteger(mib) ? mib : mib.toFixed(1)) + ' MiB';
+  }
+
   // buildSparkline draws a normalized polyline into a fixed 80×20 viewBox. The
   // series is scaled to its own window max so a mostly-flat line still shows
   // shape. Fewer than two points → an empty (blank) SVG placeholder.
@@ -238,6 +243,18 @@
     return d + 'd ' + remH + 'h';
   }
 
+  function formatIdleCell(slot, pool, generatedAt) {
+    if (!slot.user_requests_since_spawn) return '—';
+    if (slot.busy) return 'active';
+    var released = Date.parse(slot.last_user_release_at || '');
+    var generated = Date.parse(generatedAt || '');
+    if (!Number.isFinite(released) || !Number.isFinite(generated)) return '—';
+    var idleMs = Math.max(0, generated - released);
+    var current = formatUptime(idleMs);
+    if (pool.idle_recycle_ms > 0) return current + ' / ' + formatUptime(pool.idle_recycle_ms);
+    return current;
+  }
+
   // formatUpCell renders the UP stat cell text from a slot's spawned_at ISO
   // timestamp (null/absent → no worker has been spawned yet, or the field
   // predates this feature — either way "n/a").
@@ -253,20 +270,23 @@
   // layout consistency with a null values array, which renders an empty,
   // invisible sparkline) and — unlike CPU/Mem — always render, even when
   // stat_ok is false, so the row is never empty for a live (non-vacant) card.
-  // buildSlotPerf renders the per-slot perf block as TWO rows so the card
-  // width stays stable: row 1 is CPU/Mem (or the "perf n/a" placeholder on
-  // platforms without procstat), row 2 is TURNS/UP. A single flex row of four
-  // cells widened the live cards and squeezed the vacant ones (the grid's 1fr
-  // tracks cannot shrink below content min-width).
-  function buildSlotPerf(slot, maxTurns) {
+  // buildSlotPerf renders the per-slot perf block as three two-cell rows so
+  // the card width stays stable: CPU/Mem, TURNS/UP, and USER REQS/IDLE. A
+  // single flex row widens live cards and squeezes vacant ones because the
+  // grid's 1fr tracks cannot shrink below content min-width.
+  function buildSlotPerf(slot, pool, generatedAt) {
     var el = document.createElement('div');
     el.className = 'gw-slot-perf';
     var row1 = document.createElement('div');
     row1.className = 'gw-slot-perf-row';
     if (slot.stat_ok) {
       var key = slotKey(slot.label);
+      var memoryText = formatBytes(slot.rss_bytes);
+      if (pool.idle_recycle_supported && pool.idle_recycle_ms > 0 && pool.idle_recycle_memory_bytes > 0) {
+        memoryText = formatMiB(slot.rss_bytes) + ' / ' + formatMiB(pool.idle_recycle_memory_bytes);
+      }
       row1.append(perfStat('CPU', fmtPct(latestCPUPct(key)), sparkValues(key, 'cpu'), 'is-cpu'));
-      row1.append(perfStat('Mem', formatBytes(slot.rss_bytes), sparkValues(key, 'rss'), 'is-mem'));
+      row1.append(perfStat('Mem', memoryText, sparkValues(key, 'rss'), 'is-mem'));
     } else {
       var na = document.createElement('span');
       na.className = 'gw-perf-na';
@@ -275,9 +295,13 @@
     }
     var row2 = document.createElement('div');
     row2.className = 'gw-slot-perf-row';
-    row2.append(perfStat('TURNS', formatTurnsCell(slot.turns, maxTurns), null, null));
+    row2.append(perfStat('TURNS', formatTurnsCell(slot.turns, pool.max_turns), null, null));
     row2.append(perfStat('UP', formatUpCell(slot.spawned_at), null, null));
-    el.append(row1, row2);
+    var row3 = document.createElement('div');
+    row3.className = 'gw-slot-perf-row';
+    row3.append(perfStat('USER REQS', String(slot.user_requests_since_spawn || 0), null, null));
+    row3.append(perfStat('IDLE', formatIdleCell(slot, pool, generatedAt), null, null));
+    el.append(row1, row2, row3);
     return el;
   }
 
@@ -405,29 +429,29 @@
   // slotCardChildren is the single builder for a card's child nodes, shared
   // by buildSlotCard (initial render) and updateSlotCard (in-place update)
   // so the two paths cannot drift. Vacant slots get no perf block — they
-  // have no worker to report CPU/RSS/TURNS/UP for. maxTurns is threaded down
-  // to buildSlotPerf for the TURNS cell's "N / MAX" rendering.
-  function slotCardChildren(slot, poolFailed, maxTurns) {
+  // have no worker to report CPU/RSS/TURNS/UP for. The full pool policy and
+  // snapshot timestamp are threaded down for threshold and idle rendering.
+  function slotCardChildren(slot, poolFailed, pool, generatedAt) {
     var children = [
       buildSlotLabel(slot),
       buildSlotBadges(slot, poolFailed),
       buildSlotMeta(slot, poolFailed)
     ];
-    if (!slot.vacant) children.push(buildSlotPerf(slot, maxTurns));
+    if (!slot.vacant) children.push(buildSlotPerf(slot, pool, generatedAt));
     return children;
   }
 
-  function buildSlotCard(slot, poolFailed, maxTurns) {
+  function buildSlotCard(slot, poolFailed, pool, generatedAt) {
     var article = document.createElement('article');
     article.className = slotCardClass(slot, poolFailed);
-    article.append.apply(article, slotCardChildren(slot, poolFailed, maxTurns));
+    article.append.apply(article, slotCardChildren(slot, poolFailed, pool, generatedAt));
     return article;
   }
 
-  function updateSlotCard(article, slot, poolFailed, maxTurns) {
+  function updateSlotCard(article, slot, poolFailed, pool, generatedAt) {
     article.className = slotCardClass(slot, poolFailed);
     // Replace children in place.
-    article.replaceChildren.apply(article, slotCardChildren(slot, poolFailed, maxTurns));
+    article.replaceChildren.apply(article, slotCardChildren(slot, poolFailed, pool, generatedAt));
   }
 
   // renderSlots DOM-patches the pool-slot grid. It always renders at least 4
@@ -436,12 +460,13 @@
   // padding is purely a display concern — the snapshot wire shape is
   // untouched and ingestPerf (which drives sparklines) keeps reading the
   // unpadded snapshot array, so vacant cards never produce perf samples.
-  // maxTurns is snap.pool.max_turns (KIRO_WORKER_MAX_TURNS), threaded down
-  // to every slot card's TURNS cell.
-  function renderSlots(slots, poolFailed, poolSize, maxTurns) {
+  function renderSlots(pool, poolFailed, generatedAt) {
     var grid = document.querySelector('[data-slot-grid]');
     var empty = document.querySelector('[data-slot-grid-empty]');
     if (!grid) return;
+
+    pool = pool || {};
+    var slots = pool.slots || [];
 
     if (!slots || slots.length === 0) {
       if (empty) empty.hidden = false;
@@ -453,18 +478,18 @@
 
     var displaySlots = slots.slice();
     for (var i = displaySlots.length; i < 4; i++) {
-      displaySlots.push({ vacant: true, label: 'slot-' + i, pool_size: poolSize });
+      displaySlots.push({ vacant: true, label: 'slot-' + i, pool_size: pool.size || 0 });
     }
 
     if (grid.children.length !== displaySlots.length) {
       // Array length changed — full rebuild.
       grid.replaceChildren.apply(grid, displaySlots.map(function (slot) {
-        return buildSlotCard(slot, poolFailed, maxTurns);
+        return buildSlotCard(slot, poolFailed, pool, generatedAt);
       }));
     } else {
       // Same count — update in place.
       for (var j = 0; j < displaySlots.length; j++) {
-        updateSlotCard(grid.children[j], displaySlots[j], poolFailed, maxTurns);
+        updateSlotCard(grid.children[j], displaySlots[j], poolFailed, pool, generatedAt);
       }
     }
   }
@@ -649,12 +674,7 @@
         // serve right now (status "down") or a current spawn failure is flagged;
         // otherwise it is a transient recycle rendered yellow "Recovering…".
         var poolFailed = snap.status === 'down' || !!(snap.pool && snap.pool.spawn_failing);
-        renderSlots(
-          snap.pool ? snap.pool.slots : [],
-          poolFailed,
-          snap.pool ? snap.pool.size : 0,
-          snap.pool ? snap.pool.max_turns : 0
-        );
+        renderSlots(snap.pool, poolFailed, snap.generated_at);
         renderSessions(snap.sessions || []);
         // Quick 260529-ll2 — populate the source dropdown from
         // snap.log_sources. populateLogSources no-ops when the sources and

@@ -481,8 +481,8 @@ body {
  * existing semantic tokens (CPU = accent, Mem = activity/violet).
  * ------------------------------------------------------------------------- */
 
-/* Per-slot perf block appended to each slot card. Two stacked rows
- * (CPU/Mem, then TURNS/UP) so four stat cells never widen the card —
+/* Per-slot perf block appended to each slot card. Three stacked rows
+ * (CPU/Mem, TURNS/UP, then USER REQS/IDLE) keep every pair compact —
  * a single flex row forced the grid's 1fr tracks apart and squeezed
  * the vacant cards. */
 .gw-slot-perf {
@@ -505,6 +505,7 @@ body {
 .gw-perf-stat {
   display: grid;
   grid-template-columns: auto 1fr;
+  flex: 1 1 0;
   align-items: baseline;
   gap: 2px var(--gw-space-xs);
   min-width: 0;
@@ -533,6 +534,7 @@ body {
 .gw-spark {
   grid-column: 1 / -1;
   width: 80px;
+  max-width: 100%;
   height: 20px;
   display: block;
 }

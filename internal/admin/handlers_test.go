@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"go.uber.org/goleak"
 
@@ -263,8 +264,8 @@ func TestAdmin_DocsEnvTable_CompressionRows(t *testing.T) {
 }
 
 // TestAdmin_DocsEnvTable_WorkerRecycle verifies the /docs environment
-// variable table includes KIRO_WORKER_MAX_TURNS with its live current
-// value from Deps (worker recycling: scheduled respawn threshold).
+// variable table includes all worker-recycle policy values wired live from
+// Deps rather than merely exposing static descriptions.
 func TestAdmin_DocsEnvTable_WorkerRecycle(t *testing.T) {
 	defer goleak.VerifyNone(t)
 
@@ -276,7 +277,9 @@ func TestAdmin_DocsEnvTable_WorkerRecycle(t *testing.T) {
 		// text (which hardcodes "20" for the laptop template), so this test
 		// actually exercises the live CurrentValue wiring rather than being
 		// satisfied by the static copy.
-		KiroWorkerMaxTurns: 37,
+		KiroWorkerMaxTurns:            37,
+		KiroWorkerIdleRecycleAfter:    23 * time.Minute,
+		KiroWorkerIdleRecycleMemoryMB: 641,
 	}
 	h := Handler(deps)
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/docs", nil)
@@ -289,6 +292,10 @@ func TestAdmin_DocsEnvTable_WorkerRecycle(t *testing.T) {
 	for _, want := range []string{
 		"KIRO_WORKER_MAX_TURNS",
 		"37",
+		"KIRO_WORKER_IDLE_RECYCLE_MS",
+		"1380000",
+		"KIRO_WORKER_IDLE_RECYCLE_MEMORY_MB",
+		"641",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("/docs missing %q", want)

@@ -26,6 +26,18 @@ class Element {
     return child;
   }
 
+  append(...children) {
+    this.children.push(...children);
+  }
+
+  replaceChildren(...children) {
+    this.children = children;
+  }
+
+  setAttribute(name, value) {
+    this[name] = value;
+  }
+
   removeChild(child) {
     const index = this.children.indexOf(child);
     if (index >= 0) this.children.splice(index, 1);
@@ -70,12 +82,46 @@ function snapshot(labels) {
   };
 }
 
+function slotSnapshot(overrides = {}) {
+  return {
+    ...snapshot({ main: 'Gateway', kiro: 'Kiro' }),
+    generated_at: '2026-08-04T12:00:00Z',
+    pool: {
+      size: 1,
+      max_turns: 20,
+      idle_recycle_ms: 900000,
+      idle_recycle_memory_bytes: 500 * 1024 * 1024,
+      idle_recycle_supported: true,
+      slots: [{
+        label: 'slot-0',
+        pid: 4101,
+        alive: true,
+        busy: false,
+        stat_ok: true,
+        rss_bytes: 800 * 1024 * 1024,
+        turns: 2,
+        user_requests_since_spawn: 1,
+        last_user_release_at: '2026-08-04T11:44:00Z',
+        ...overrides,
+      }],
+    },
+  };
+}
+
+function elementText(element) {
+  return [element.textContent, ...element.children.map(elementText)].join(' ');
+}
+
 function createHarness(responses) {
   const sourceSelect = new Element('select');
   const logStatus = new Element('span');
+  const slotGrid = new Element('div');
+  const slotGridEmpty = new Element('p');
   const selectors = {
     '[data-log-source]': sourceSelect,
     '[data-log-status]': logStatus,
+    '[data-slot-grid]': slotGrid,
+    '[data-slot-grid-empty]': slotGridEmpty,
   };
 	for (const name of [
 	  'default-profile', 'strict', 'protected', 'blocked', 'scopes', 'in-flight',
@@ -106,6 +152,9 @@ function createHarness(responses) {
       documentListeners[type] = listener;
     },
     createElement(tagName) {
+      return new Element(tagName);
+    },
+    createElementNS(_namespace, tagName) {
       return new Element(tagName);
     },
     querySelector(selector) {
@@ -220,4 +269,67 @@ test('privacy snapshot hydrates read-only dashboard status and current/max limit
   assert.equal(text('last-error'), 'privacy_output_blocked');
   assert.match(harness.selectors['[data-privacy-strict]'].className, /is-ok/);
   assert.match(harness.selectors['[data-privacy-triage]'].className, /is-muted/);
+});
+
+test('slot cards render idle-memory recycling policy across worker lifecycle states', async () => {
+  const unused = slotSnapshot({
+    pid: 4102,
+    user_requests_since_spawn: 0,
+    last_user_release_at: '',
+  });
+  const busy = slotSnapshot({
+    pid: 4103,
+    busy: true,
+    last_user_release_at: '2026-08-04T11:20:00Z',
+  });
+  const unsupported = slotSnapshot({
+    pid: 4104,
+    stat_ok: false,
+  });
+  unsupported.pool.idle_recycle_supported = false;
+  const replacement = slotSnapshot({
+    pid: 5101,
+    rss_bytes: 300 * 1024 * 1024,
+    turns: 0,
+    user_requests_since_spawn: 0,
+    last_user_release_at: '',
+  });
+  const harness = createHarness([
+    slotSnapshot(),
+    unused,
+    busy,
+    unsupported,
+    replacement,
+  ]);
+
+  harness.start();
+  await settleSnapshot();
+  let text = elementText(harness.selectors['[data-slot-grid]'].children[0]);
+  assert.match(text, /USER REQS\s+1/);
+  assert.match(text, /IDLE\s+16m 0s \/ 15m 0s/);
+  assert.match(text, /Mem\s+800 MiB \/ 500 MiB/);
+
+  harness.poll();
+  await settleSnapshot();
+  text = elementText(harness.selectors['[data-slot-grid]'].children[0]);
+  assert.match(text, /USER REQS\s+0/);
+  assert.match(text, /IDLE\s+—/);
+
+  harness.poll();
+  await settleSnapshot();
+  text = elementText(harness.selectors['[data-slot-grid]'].children[0]);
+  assert.match(text, /IDLE\s+active/);
+
+  harness.poll();
+  await settleSnapshot();
+  text = elementText(harness.selectors['[data-slot-grid]'].children[0]);
+  assert.match(text, /perf n\/a/);
+  assert.doesNotMatch(text, /500 MiB/);
+
+  harness.poll();
+  await settleSnapshot();
+  text = elementText(harness.selectors['[data-slot-grid]'].children[0]);
+  assert.match(text, /pid 5101/);
+  assert.match(text, /USER REQS\s+0/);
+  assert.match(text, /IDLE\s+—/);
 });

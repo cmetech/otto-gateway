@@ -838,6 +838,18 @@ func (h *handler) docsHandler(w http.ResponseWriter, r *http.Request) {
 			Description:  "Successful pool-worker session/new calls before scheduled process recycling. The gw laptop template sets 20; shared hosts override in overrides.env.",
 			CurrentValue: strconv.Itoa(h.deps.KiroWorkerMaxTurns),
 		},
+		{
+			Name:         "KIRO_WORKER_IDLE_RECYCLE_MS",
+			Default:      "0 (disabled; laptop template 900000)",
+			Description:  "Completed-user-request idle time before a free high-memory worker is eligible for eager replacement.",
+			CurrentValue: strconv.FormatInt(h.deps.KiroWorkerIdleRecycleAfter.Milliseconds(), 10),
+		},
+		{
+			Name:         "KIRO_WORKER_IDLE_RECYCLE_MEMORY_MB",
+			Default:      "500",
+			Description:  "Direct Kiro working-set threshold in MiB; recycling requires a strictly greater sample.",
+			CurrentValue: strconv.Itoa(h.deps.KiroWorkerIdleRecycleMemoryMB),
+		},
 		{Name: "POOL_SIZE", Default: "4", Description: "Number of warm kiro-cli subprocesses kept in the pool.", CurrentValue: strconv.Itoa(h.deps.PoolSize)},
 		{Name: "SESSION_TTL_MS", Default: "1800000 (30m)", Description: "Idle stateful-session reap threshold. Accepts ms-integer (Node parity) or Go duration string.", CurrentValue: h.deps.SessionTTL.String()},
 		{Name: "STREAM_IDLE_TIMEOUT_SEC", Default: "30", Description: "Server-side idle-stream watchdog (0 disables, negative = boot error).", CurrentValue: streamIdleCurrent},

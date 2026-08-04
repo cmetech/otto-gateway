@@ -380,6 +380,8 @@ run_support() {
         HTTP_ADDR="127.0.0.1:18080" \
         CHAT_TRACE=true \
         KIRO_WORKER_MAX_TURNS=20 \
+        KIRO_WORKER_IDLE_RECYCLE_MS=900000 \
+        KIRO_WORKER_IDLE_RECYCLE_MEMORY_MB=500 \
         PATH="$TEST_PATH" \
         TASK3_SWAP_SOURCE_ONE="$TEST_SWAP_SOURCE_ONE" \
         TASK3_SWAP_TARGET_ONE="$TEST_SWAP_TARGET_ONE" \
@@ -500,6 +502,8 @@ assert_contains "$MAIN_ROOT/env/effective.env" 'GW_METRICS_REMOTE_WRITE_URL=http
 assert_contains "$MAIN_ROOT/env/effective.env" 'GW_METRICS_REMOTE_WRITE_USER=fixture-user' "effective env includes remote-write user"
 assert_contains "$MAIN_ROOT/env/effective.env" 'GW_METRICS_REMOTE_WRITE_INTERVAL_SEC=45' "effective env includes remote-write interval"
 assert_contains "$MAIN_ROOT/env/effective.env" 'GW_METRICS_REMOTE_WRITE_TOKEN=remo…(20 chars)' "effective env masks remote-write token"
+assert_contains "$MAIN_ROOT/env/effective.env" 'KIRO_WORKER_IDLE_RECYCLE_MS=900000' "effective env includes idle recycle duration unredacted"
+assert_contains "$MAIN_ROOT/env/effective.env" 'KIRO_WORKER_IDLE_RECYCLE_MEMORY_MB=500' "effective env includes idle recycle memory unredacted"
 assert_contains "$MAIN_ROOT/MANIFEST.txt" 'metrics: captured' "manifest records captured metrics"
 assert_contains "$MAIN_ROOT/MANIFEST.txt" 'capture: captured' "manifest records captured capture"
 assert_contains "$MAIN_ROOT/MANIFEST.txt" 'sensitive user content' "manifest warns capture can retain sensitive user content"
