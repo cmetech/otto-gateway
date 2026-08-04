@@ -30,12 +30,12 @@ Two outcomes leave this band:
 - PASS (green arrow) continues down. Label: "Request approved."
 - REJECT (red arrow, thinner, semi-transparent) curves back LEFT with a "blocked" badge. Label: "Policy violation — 4xx returned. kiro-cli never invoked."
 
-Bottom band "Engine + pool" (blue): three sub-components in a row — "Canonical engine" (request lifecycle, streaming), "Session pool" (warm kiro-cli slots, default 4), "Embedding registry" (local ONNX, no kiro-cli). Right-edge arrow points to RIGHT zone. Embedding registry has a small arrow curving back LEFT: "Embeddings served locally."
+Bottom band "Engine + pool" (blue): three sub-components in a row — "Canonical engine" (request lifecycle, streaming), "Session pool" (warm kiro-cli slots, default 2), "Embedding registry" (local ONNX, no kiro-cli). Right-edge arrow points to RIGHT zone. Embedding registry has a small arrow curving back LEFT: "Embeddings served locally."
 
 Side callout: "Single process. Single port. Three API standards. One governance surface."
 
 RIGHT — KIRO-CLI ACP WORKER POOL (green):
-Panel labeled "kiro-cli ACP Workers" with a 2×2 grid of worker tiles. Each tile: subprocess icon, label "kiro-cli acp", status dot (3 green idle, 1 amber busy).
+Panel labeled "kiro-cli ACP Workers" with one three-position row: two live worker tiles (each with a subprocess icon, label "kiro-cli acp", and green idle status dot) followed by one dashed position labeled "VACANT".
 Channel label above grid: "JSON-RPC 2.0 over stdio."
 Active inbound arrow into the busy worker: "session/prompt."
 Outbound arrow back toward gateway: "session/update — streamed text, thoughts, tool_calls, plans."

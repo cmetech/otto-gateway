@@ -850,7 +850,12 @@ func (h *handler) docsHandler(w http.ResponseWriter, r *http.Request) {
 			Description:  "Direct Kiro working-set threshold in MiB; recycling requires a strictly greater sample.",
 			CurrentValue: strconv.Itoa(h.deps.KiroWorkerIdleRecycleMemoryMB),
 		},
-		{Name: "POOL_SIZE", Default: "4", Description: "Number of warm kiro-cli subprocesses kept in the pool.", CurrentValue: strconv.Itoa(h.deps.PoolSize)},
+		{
+			Name:         "POOL_SIZE",
+			Default:      "2",
+			Description:  "Number of warm kiro-cli subprocesses kept in the pool. Accepts 0–6.",
+			CurrentValue: strconv.Itoa(h.deps.PoolSize),
+		},
 		{Name: "SESSION_TTL_MS", Default: "1800000 (30m)", Description: "Idle stateful-session reap threshold. Accepts ms-integer (Node parity) or Go duration string.", CurrentValue: h.deps.SessionTTL.String()},
 		{Name: "STREAM_IDLE_TIMEOUT_SEC", Default: "30", Description: "Server-side idle-stream watchdog (0 disables, negative = boot error).", CurrentValue: streamIdleCurrent},
 		{Name: "AUTH_TOKEN", Default: "(unset)", Description: "Comma-split bearer-token allowlist. Empty = auth disabled (Node parity). Rendered as on/off — never the plaintext value.", CurrentValue: authCurrent},

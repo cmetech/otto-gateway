@@ -38,7 +38,7 @@ Reading left-to-right:
 1. **Client applications** (yellow) speak Anthropic-, OpenAI-, or Ollama-compatible APIs. OTTER, Langflow, and any drop-in client (Pi CLI, LangChain, Continue.dev, Open WebUI, llama-index) all land here without SDK changes.
 2. **API surfaces** (blue) — three thin adapter blocks translate inbound requests into a single canonical request shape. The OpenAI adapter mounts `/v1/chat/completions`, `/v1/embeddings`, `/v1/models`. The Ollama adapter mounts `/api/chat`, `/api/generate`, `/api/embed`, `/api/tags`. The Anthropic adapter mounts `/v1/messages`.
 3. **Guardrails / policy chain** (orange — visually elevated because this is the focal point) — a configurable hexagonal chain: Auth → Rate limit → Content moderation → Schema validation → Audit log. Enabled or disabled per deployment. Pass continues; reject returns a 4xx and `kiro-cli` is never invoked.
-4. **Engine + pool** (blue) — the canonical engine drives the request lifecycle and streaming. The session pool holds warm `kiro-cli` slots (default 4). The embedding registry serves local ONNX embeddings without invoking `kiro-cli`.
+4. **Engine + pool** (blue) — the canonical engine drives the request lifecycle and streaming. The session pool holds warm `kiro-cli` slots (default 2). The embedding registry serves local ONNX embeddings without invoking `kiro-cli`.
 5. **kiro-cli ACP worker pool** (green) — pooled subprocesses speaking JSON-RPC 2.0 over stdio. Stateless requests pull from the warm pool; stateful sessions (`X-Session-Id` header) get a dedicated worker until TTL expires.
 
 The response path streams back to the original surface using the surface-appropriate encoding — SSE for OpenAI/Anthropic, NDJSON for Ollama. Same canonical chunks, surface-specific framing.

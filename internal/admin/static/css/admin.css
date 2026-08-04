@@ -388,11 +388,11 @@ body {
 
 /* minmax(0, 1fr) (not bare 1fr): a bare 1fr track cannot shrink below its
  * content's min-width, so a card with wide content would steal width from
- * its siblings (observed: vacant cards squeezed). minmax(0, ...) keeps all
- * four columns exactly equal regardless of content. */
+ * its siblings. Three equal desktop columns give CPU/memory threshold values
+ * enough room while preserving balanced rows. */
 .gw-slot-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: var(--gw-space-base);
 }
 
@@ -426,9 +426,9 @@ body {
   padding: calc(var(--gw-space-base) - 1px);
 }
 
-/* Vacant: a client-only padding placeholder for POOL_SIZE < 4 so the grid
- * stays visually balanced. Dashed + dimmed distinguishes it at a glance
- * from a real (solid-border) slot in any state. */
+/* Vacant: a client-only padding placeholder completing an incomplete
+ * three-card row. Dashed + dimmed distinguishes it at a glance from a real
+ * (solid-border) slot in any state. */
 .gw-slot-card.is-vacant {
   border-style: dashed;
   opacity: 0.58;
