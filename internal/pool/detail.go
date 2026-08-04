@@ -27,6 +27,7 @@ type AgentSlot struct {
 	Label                  string     `json:"label"`
 	Alive                  bool       `json:"alive"`
 	Busy                   bool       `json:"busy"`
+	CheckedOut             bool       `json:"checked_out"`
 	CurrentSessionID       *string    `json:"current_session_id"`
 	Turns                  int        `json:"turns"`
 	SpawnedAt              *time.Time `json:"spawned_at"`
@@ -92,6 +93,7 @@ func (p *Pool) detailSnapshotLocked() ([]AgentSlot, []pidLookup) {
 		}
 		row := AgentSlot{
 			Label:                  slot.Label,
+			CheckedOut:             slot.checkedOut,
 			UserRequestsSinceSpawn: slot.userRequestsSinceSpawn,
 			// Finding 1 (worker-recycling review): a slot mid-recycle is
 			// respawning==true, dead==false — its OLD worker has been closed

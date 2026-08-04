@@ -503,6 +503,35 @@ func TestPool_IdleMemoryRecycle_UnsupportedDoesNotStartLoop(t *testing.T) {
 	}
 }
 
+func TestPool_IdleMemoryRecycle_ZeroMemoryThresholdDoesNotStartLoop(t *testing.T) {
+	client := &fakeClient{models: []canonical.ModelInfo{{ID: "auto"}}, pid: 3102}
+	p := pool.New(pool.Config{
+		Logger:                 testutil.Logger(t),
+		Size:                   1,
+		Factory:                &fakeClientFactory{clients: []pool.PoolClient{client}},
+		IdleRecycleAfter:       time.Minute,
+		IdleRecycleMemoryBytes: 0,
+		WorkerMemorySupported:  true,
+		ReadWorkerMemory: func(int) (uint64, bool) {
+			t.Fatal("memory reader called with zero memory threshold")
+			return 0, false
+		},
+	})
+	t.Cleanup(func() { _ = p.Close() })
+	var lifecycleCalls atomic.Int32
+	p.SetIdleSweepLifecycleHookForTesting(func(string) {
+		lifecycleCalls.Add(1)
+	})
+
+	if err := p.Warmup(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := lifecycleCalls.Load(); got != 0 {
+		t.Fatalf("idle sweep lifecycle calls = %d, want 0 when memory threshold is disabled", got)
+	}
+}
+
 func TestPool_IdleMemoryRecycle_CloseJoinsLoop(t *testing.T) {
 	now := time.Date(2026, 8, 4, 21, 0, 0, 0, time.UTC)
 	ticks := make(chan time.Time, 1)

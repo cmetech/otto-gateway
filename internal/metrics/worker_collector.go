@@ -58,7 +58,7 @@ func newWorkerCollector(procs func() []WorkerProc, read func(pid int) procstat.S
 		),
 		idleSeconds: prometheus.NewDesc(
 			"gw_worker_idle_seconds",
-			"Seconds since each worker completed its most recent user request, by pool slot.",
+			"Seconds since each worker completed its most recent user request; zero while busy or before first use, by pool slot.",
 			[]string{"slot"}, nil,
 		),
 	}

@@ -137,6 +137,10 @@ func TestPool_WorkerProcs_SlowNewSessionReportsZeroIdle(t *testing.T) {
 	if len(procs) != 1 || procs[0].UserRequestsSinceSpawn != 1 || procs[0].IdleSeconds != 0 {
 		t.Fatalf("WorkerProcs during session/new = %+v, want count=1 idle=0", procs)
 	}
+	detail := p.Detail()
+	if len(detail) != 1 || !detail[0].CheckedOut || detail[0].Busy {
+		t.Fatalf("Detail during session/new = %+v, want checked_out=true busy=false before registration", detail)
+	}
 
 	releaseGate.Do(func() { close(allowNewSession) })
 	result := <-sessionDone

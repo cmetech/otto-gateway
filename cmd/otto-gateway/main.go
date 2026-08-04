@@ -1479,6 +1479,7 @@ func snapshotSlotFromPool(r pool.AgentSlot) admin.SnapshotSlot {
 		Label:                  r.Label,
 		Alive:                  r.Alive,
 		Busy:                   r.Busy,
+		CheckedOut:             r.CheckedOut,
 		CurrentSessionID:       r.CurrentSessionID,
 		Turns:                  r.Turns,
 		SpawnedAt:              r.SpawnedAt,

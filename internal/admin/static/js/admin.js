@@ -246,7 +246,7 @@
   function formatIdleCell(slot, pool, generatedAt) {
     if (pool.idle_recycle_ms > 0 && !pool.idle_recycle_supported) return 'n/a';
     if (!slot.user_requests_since_spawn) return '—';
-    if (slot.busy) return 'active';
+    if (slot.busy || slot.checked_out) return 'active';
     var released = Date.parse(slot.last_user_release_at || '');
     var generated = Date.parse(generatedAt || '');
     if (!Number.isFinite(released) || !Number.isFinite(generated)) return '—';
@@ -408,6 +408,9 @@
       // (stateless or stateful), and is NOT the same as the "Stateful
       // sessions" counter (which only tracks X-Session-Id registry entries).
       el.textContent = 'Busy — ACP session ' + shortId(slot.current_session_id);
+    } else if (slot.checked_out) {
+      el.classList.add('is-busy');
+      el.textContent = 'Active';
     } else {
       el.textContent = 'Idle';
     }

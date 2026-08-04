@@ -112,6 +112,7 @@ type SnapshotSlot struct {
 	Label            string  `json:"label"`
 	Alive            bool    `json:"alive"`
 	Busy             bool    `json:"busy"`
+	CheckedOut       bool    `json:"checked_out"`
 	CurrentSessionID *string `json:"current_session_id"`
 
 	// Per-worker resource usage, merged in by snapshotHandler from the

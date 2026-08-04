@@ -15,6 +15,11 @@ class Element {
     this.value = '';
     this.hidden = false;
 	this.className = '';
+    this.classList = {
+      add: (...classes) => {
+        this.className = [this.className, ...classes].filter(Boolean).join(' ');
+      },
+    };
   }
 
   get firstChild() {
@@ -97,6 +102,7 @@ function slotSnapshot(overrides = {}) {
         pid: 4101,
         alive: true,
         busy: false,
+        checked_out: false,
         stat_ok: true,
         rss_bytes: 800 * 1024 * 1024,
         turns: 2,
@@ -282,6 +288,11 @@ test('slot cards render idle-memory recycling policy across worker lifecycle sta
     busy: true,
     last_user_release_at: '2026-08-04T11:20:00Z',
   });
+  const checkedOut = slotSnapshot({
+    pid: 4105,
+    checked_out: true,
+    last_user_release_at: '2026-08-04T11:20:00Z',
+  });
   const unsupported = slotSnapshot({
     pid: 4104,
     stat_ok: false,
@@ -298,6 +309,7 @@ test('slot cards render idle-memory recycling policy across worker lifecycle sta
     slotSnapshot(),
     unused,
     busy,
+    checkedOut,
     unsupported,
     replacement,
   ]);
@@ -318,6 +330,12 @@ test('slot cards render idle-memory recycling policy across worker lifecycle sta
   harness.poll();
   await settleSnapshot();
   text = elementText(harness.selectors['[data-slot-grid]'].children[0]);
+  assert.match(text, /IDLE\s+active/);
+
+  harness.poll();
+  await settleSnapshot();
+  text = elementText(harness.selectors['[data-slot-grid]'].children[0]);
+  assert.match(text, /Active/);
   assert.match(text, /IDLE\s+active/);
 
   harness.poll();

@@ -53,6 +53,7 @@ func TestWorkerCollector_EmitsPerSlotCPUAndRSS(t *testing.T) {
 
 	for _, want := range []string{
 		`# HELP gw_worker_user_requests_since_spawn Successful user-path session/new calls served by each worker since spawn, by pool slot.`,
+		`# HELP gw_worker_idle_seconds Seconds since each worker completed its most recent user request; zero while busy or before first use, by pool slot.`,
 		`gw_worker_cpu_seconds_total{slot="slot-0"} 12.5`,
 		`gw_worker_cpu_seconds_total{slot="slot-1"} 3`,
 		`gw_worker_resident_memory_bytes{slot="slot-0"} 1.048576e+08`,

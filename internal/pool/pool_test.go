@@ -1502,6 +1502,7 @@ func TestPool_Detail_FieldShape_MatchesD15(t *testing.T) {
 		"Label":                  "label",
 		"Alive":                  "alive",
 		"Busy":                   "busy",
+		"CheckedOut":             "checked_out",
 		"CurrentSessionID":       "current_session_id",
 		"Turns":                  "turns",
 		"SpawnedAt":              "spawned_at",

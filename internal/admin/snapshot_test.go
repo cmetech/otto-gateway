@@ -234,6 +234,7 @@ func TestSnapshotIdleRecycleContract(t *testing.T) {
 		PoolDetail: &stubPool{slots: []SnapshotSlot{{
 			Label:                  "slot-0",
 			Alive:                  true,
+			CheckedOut:             true,
 			UserRequestsSinceSpawn: 1,
 			LastUserReleaseAt:      &released,
 		}}},
@@ -254,7 +255,7 @@ func TestSnapshotIdleRecycleContract(t *testing.T) {
 	if snap.Pool.IdleRecycleMS != 900000 || snap.Pool.IdleRecycleMemoryBytes != 500<<20 || !snap.Pool.IdleRecycleSupported {
 		t.Fatalf("idle policy snapshot = %+v", snap.Pool)
 	}
-	if got := snap.Pool.Slots[0]; got.UserRequestsSinceSpawn != 1 || got.LastUserReleaseAt == nil || !got.LastUserReleaseAt.Equal(released) {
+	if got := snap.Pool.Slots[0]; !got.CheckedOut || got.UserRequestsSinceSpawn != 1 || got.LastUserReleaseAt == nil || !got.LastUserReleaseAt.Equal(released) {
 		t.Fatalf("slot activity snapshot = %+v", got)
 	}
 }

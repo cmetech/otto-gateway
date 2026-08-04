@@ -30,7 +30,7 @@ func idleSweepCadence(after time.Duration) time.Duration {
 }
 
 func (p *Pool) startIdleRecycler() {
-	if p.cfg.IdleRecycleAfter == 0 {
+	if p.cfg.IdleRecycleAfter == 0 || p.cfg.IdleRecycleMemoryBytes == 0 {
 		return
 	}
 	if !p.cfg.WorkerMemorySupported || p.cfg.ReadWorkerMemory == nil {
