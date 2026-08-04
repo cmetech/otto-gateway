@@ -39,7 +39,18 @@ func (p *Pool) startIdleRecycler() {
 		}
 		return
 	}
+	if p.idleSweepLifecycleHook != nil {
+		p.idleSweepLifecycleHook("before_admission")
+	}
+	p.idleSweepLifecycleMu.Lock()
+	defer p.idleSweepLifecycleMu.Unlock()
+	if p.idleSweepClosing {
+		return
+	}
 	p.idleSweepOnce.Do(func() {
+		if p.idleSweepLifecycleHook != nil {
+			p.idleSweepLifecycleHook("admitted")
+		}
 		p.idleSweepWG.Add(1)
 		go p.idleRecycleLoop()
 	})

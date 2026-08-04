@@ -218,10 +218,20 @@ type Pool struct {
 
 	// idleSweepOnce starts at most one idle-memory sweep loop after warmup.
 	idleSweepOnce sync.Once
+	// idleSweepLifecycleMu orders every positive idleSweepWG.Add against
+	// Close's transition to idleSweepClosing before it begins Wait.
+	idleSweepLifecycleMu sync.Mutex
+	// idleSweepClosing permanently rejects new idle-loop admission once Close
+	// has emitted the shutdown signal. Guarded by idleSweepLifecycleMu.
+	idleSweepClosing bool
 	// idleSweepWG joins that loop before Close begins tearing down clients.
 	idleSweepWG sync.WaitGroup
 	// idleSweepTicks replaces the production ticker in deterministic tests.
 	idleSweepTicks <-chan time.Time
+	// idleSweepLifecycleHook is a test-only seam fired immediately before
+	// start admission and again after admission. It is installed before Warmup
+	// and remains nil in production.
+	idleSweepLifecycleHook func(stage string)
 
 	// recyclesInFlight is the count of scheduled recycles currently admitted
 	// (from the recycleWG.Add commit in releaseOrRecycle until the recycleSlot
@@ -1014,6 +1024,9 @@ func (p *Pool) Close() error {
 	var firstErr error
 	p.closeOnce.Do(func() {
 		close(p.closing)
+		p.idleSweepLifecycleMu.Lock()
+		p.idleSweepClosing = true
+		p.idleSweepLifecycleMu.Unlock()
 		p.idleSweepWG.Wait()
 		firstErr = p.closeAll()
 		// Track 1: wait out any in-flight self-heal probe goroutine so it

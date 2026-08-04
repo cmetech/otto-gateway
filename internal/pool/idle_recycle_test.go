@@ -548,6 +548,50 @@ func TestPool_IdleMemoryRecycle_CloseJoinsLoop(t *testing.T) {
 	}
 }
 
+func TestPool_IdleMemoryRecycle_CloseWinsFinalWarmupStart(t *testing.T) {
+	client := &fakeClient{models: []canonical.ModelInfo{{ID: "auto"}}, pid: 3251}
+	p := pool.New(pool.Config{
+		Logger:                 testutil.Logger(t),
+		Size:                   1,
+		Factory:                &fakeClientFactory{clients: []pool.PoolClient{client}},
+		IdleRecycleAfter:       time.Minute,
+		IdleRecycleMemoryBytes: 1,
+		WorkerMemorySupported:  true,
+		ReadWorkerMemory:       func(int) (uint64, bool) { return 0, false },
+	})
+	boundaryEntered := make(chan struct{})
+	boundaryRelease := make(chan struct{})
+	var admitted atomic.Int32
+	p.SetIdleSweepLifecycleHookForTesting(func(stage string) {
+		switch stage {
+		case "before_admission":
+			close(boundaryEntered)
+			<-boundaryRelease
+		case "admitted":
+			admitted.Add(1)
+		default:
+			t.Errorf("unexpected idle sweep lifecycle stage %q", stage)
+		}
+	})
+
+	warmupDone := make(chan error, 1)
+	go func() { warmupDone <- p.Warmup(context.Background()) }()
+	<-boundaryEntered
+	if err := p.Close(); err != nil {
+		t.Fatal(err)
+	}
+	close(boundaryRelease)
+	if err := <-warmupDone; err != nil {
+		t.Fatal(err)
+	}
+	// The broken ordering admits here, after Close already observed an empty
+	// WaitGroup and returned. Join it explicitly so the RED test stays clean.
+	p.WaitForIdleSweepForTesting()
+	if got := admitted.Load(); got != 0 {
+		t.Fatalf("idle sweep admissions after Close = %d, want 0", got)
+	}
+}
+
 func TestPool_IdleMemoryRecycle_CloseDuringSweepPreservesOwnership(t *testing.T) {
 	now := time.Date(2026, 8, 4, 22, 0, 0, 0, time.UTC)
 	ticks := make(chan time.Time, 1)

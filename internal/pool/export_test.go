@@ -163,6 +163,14 @@ func (p *Pool) SetIdleSweepTicksForTesting(ticks <-chan time.Time) {
 	p.idleSweepTicks = ticks
 }
 
+// SetIdleSweepLifecycleHookForTesting installs the final Warmup-to-start seam.
+func (p *Pool) SetIdleSweepLifecycleHookForTesting(hook func(stage string)) {
+	p.idleSweepLifecycleHook = hook
+}
+
+// WaitForIdleSweepForTesting joins the idle sweep loop after lifecycle tests.
+func (p *Pool) WaitForIdleSweepForTesting() { p.idleSweepWG.Wait() }
+
 // IdleSweepCadenceForTesting exposes the bounded cadence calculation.
 func IdleSweepCadenceForTesting(after time.Duration) time.Duration {
 	return idleSweepCadence(after)
