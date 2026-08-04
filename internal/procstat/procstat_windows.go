@@ -9,6 +9,8 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+func Supported() bool { return true }
+
 // procGetProcessMemoryInfo is loaded from psapi.dll the same way the stock
 // Prometheus process collector does — x/sys/windows exposes GetProcessTimes but
 // not GetProcessMemoryInfo, so we bind it lazily ourselves.

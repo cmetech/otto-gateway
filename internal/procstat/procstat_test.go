@@ -49,3 +49,10 @@ func TestRead_SelfMatchesGetpid(t *testing.T) {
 		t.Error("Read(os.Getpid()).OK != Self().OK")
 	}
 }
+
+func TestSupported_PlatformContract(t *testing.T) {
+	want := runtime.GOOS == "linux" || runtime.GOOS == "windows"
+	if got := Supported(); got != want {
+		t.Fatalf("Supported() on %s = %v, want %v", runtime.GOOS, got, want)
+	}
+}

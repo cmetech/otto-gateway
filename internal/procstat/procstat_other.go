@@ -2,6 +2,8 @@
 
 package procstat
 
+func Supported() bool { return false }
+
 // Read is the fallback for platforms where a cgo-free per-process CPU/RSS read
 // is not available — most importantly darwin (the dev/build box), where the
 // working-set size lives behind mach task_info and cannot be obtained without

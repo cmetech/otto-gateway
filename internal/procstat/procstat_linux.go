@@ -4,6 +4,8 @@ package procstat
 
 import "github.com/prometheus/procfs"
 
+func Supported() bool { return true }
+
 // Read returns the CPU + RSS usage for pid from /proc/<pid>/stat. It reuses the
 // already-vendored prometheus/procfs so the userHZ→seconds and pages→bytes
 // conversions match what the stock Prometheus process collector reports for the

@@ -146,7 +146,9 @@ type Config struct {
 	PoolSize int
 	// KiroWorkerMaxTurns is the number of successful session/new calls a warm
 	// pool worker may serve before scheduled process recycling. Zero disables.
-	KiroWorkerMaxTurns int
+	KiroWorkerMaxTurns            int
+	KiroWorkerIdleRecycleAfter    time.Duration
+	KiroWorkerIdleRecycleMemoryMB int
 	// BodyReadTimeout is the per-request HTTP body-read deadline applied to
 	// chat-body POST handlers (REL-HTTP-04 / Plan 16-02). Plan 16-05 owns
 	// the config-side parsing of HTTP_BODY_READ_TIMEOUT_SEC; Plan 16-02
@@ -605,6 +607,25 @@ func Load() (Config, error) {
 		errs = append(errs, fmt.Errorf("KIRO_WORKER_MAX_TURNS: sanity cap exceeded (max 10000), got %d", maxWorkerTurns))
 	}
 
+	workerIdleRecycleAfter, err := getEnvDuration("KIRO_WORKER_IDLE_RECYCLE_MS", 0)
+	if err != nil {
+		errs = append(errs, err)
+	}
+	if workerIdleRecycleAfter < 0 {
+		errs = append(errs, fmt.Errorf("KIRO_WORKER_IDLE_RECYCLE_MS: must be >= 0, got %v", workerIdleRecycleAfter))
+	}
+
+	workerIdleRecycleMemoryMB, err := getEnvInt("KIRO_WORKER_IDLE_RECYCLE_MEMORY_MB", 500)
+	if err != nil {
+		errs = append(errs, err)
+	}
+	if workerIdleRecycleMemoryMB <= 0 {
+		errs = append(errs, fmt.Errorf("KIRO_WORKER_IDLE_RECYCLE_MEMORY_MB: must be > 0, got %d", workerIdleRecycleMemoryMB))
+	}
+	if workerIdleRecycleMemoryMB > 1_048_576 {
+		errs = append(errs, fmt.Errorf("KIRO_WORKER_IDLE_RECYCLE_MEMORY_MB: sanity cap exceeded (max 1048576), got %d", workerIdleRecycleMemoryMB))
+	}
+
 	ollamaPath := getEnvStr("OLLAMA_PATH_PREFIX", "/api")
 	openaiPath := getEnvStr("OPENAI_PATH_PREFIX", "/v1")
 	anthropicPath := getEnvStr("ANTHROPIC_PATH_PREFIX", "/v1")
@@ -1021,62 +1042,64 @@ func Load() (Config, error) {
 	}
 
 	return Config{
-		HTTPAddr:                  httpAddr,
-		KiroCmd:                   kiroCmd,
-		KiroArgs:                  kiroArgs,
-		KiroCWD:                   kiroCWD,
-		KiroChatLogFile:           kiroChatLogFile,
-		KiroChatLogPath:           kiroChatLogPath,
-		KiroCWDIsDefault:          kiroCWDIsDefault,
-		ToolAliases:               toolAliases,
-		Debug:                     debug,
-		PingInterval:              pingInterval,
-		AuthToken:                 authTokens,
-		AllowedIPs:                allowedIPs,
-		PoolSize:                  poolSize,
-		KiroWorkerMaxTurns:        maxWorkerTurns,
-		BodyReadTimeout:           time.Duration(bodyReadTimeoutSec) * time.Second,
-		StreamIdleTimeoutSec:      streamIdleTimeoutSec,
-		OllamaPathPrefix:          ollamaPath,
-		OpenAIPathPrefix:          openaiPath,
-		AuthTrustXFF:              trustXFF,
-		EnabledSurfaces:           enabledSurfaces,
-		AnthropicPathPrefix:       anthropicPath,
-		SessionTTL:                sessionTTL,
-		SessionMax:                sessionMax,
-		SessionTickInterval:       sessionTickInterval,
-		RecyclePct:                recyclePct,
-		AcpCapture:                acpCapture,
-		AcpCaptureSize:            acpCaptureSize,
-		AcpCaptureRuntime:         acpCaptureRuntime,
-		MaxToolDenials:            maxToolDenials,
-		EnabledHooks:              enabledHooks,
-		PIIRedactionEnabled:       piiEnabled,
-		PIIEnabledEntities:        piiEntities,
-		PIIRedactionMode:          piiMode,
-		PIIHashKey:                piiHashKey,
-		PIIEntityActions:          maps.Clone(piiEntityActions),
-		PIIEncryptKey:             piiEncryptKey,
-		PIINEREnabled:             piiNEREnabled,
-		PrivacyDefaultProfile:     privacyDefaultProfile,
-		PrivacyRequestProfiles:    slices.Clone(privacyRequestProfiles),
-		PrivacyAliasKey:           privacyAliasKey,
-		PrivacySecretAction:       privacySecretAction,
-		PrivacyTechnicalAction:    privacyTechnicalAction,
-		PrivacyScopeTTL:           privacyTTL,
-		PrivacyMaxScopes:          privacyMaxScopes,
-		PrivacyMaxEntriesPerScope: privacyMaxEntriesPerScope,
-		PrivacyMaxTotalEntries:    privacyMaxTotalEntries,
-		PrivacyTriageEnabled:      privacyTriageEnabled,
-		PrivacyTriageToken:        privacyTriageToken,
-		JSONFormatSteeringEnabled: jsonFormatSteeringEnabled,
-		CompressionEnabled:        compressionEnabled,
-		CompressTriggerTokens:     compressTrigger,
-		CompressBudgetTokens:      compressBudget,
-		CompressProtectTail:       compressProtectTail,
-		CompressToolKeep:          compressToolKeep,
-		ChatTrace:                 chatTrace,
-		ChatTraceFile:             chatTraceFile,
+		HTTPAddr:                      httpAddr,
+		KiroCmd:                       kiroCmd,
+		KiroArgs:                      kiroArgs,
+		KiroCWD:                       kiroCWD,
+		KiroChatLogFile:               kiroChatLogFile,
+		KiroChatLogPath:               kiroChatLogPath,
+		KiroCWDIsDefault:              kiroCWDIsDefault,
+		ToolAliases:                   toolAliases,
+		Debug:                         debug,
+		PingInterval:                  pingInterval,
+		AuthToken:                     authTokens,
+		AllowedIPs:                    allowedIPs,
+		PoolSize:                      poolSize,
+		KiroWorkerMaxTurns:            maxWorkerTurns,
+		KiroWorkerIdleRecycleAfter:    workerIdleRecycleAfter,
+		KiroWorkerIdleRecycleMemoryMB: workerIdleRecycleMemoryMB,
+		BodyReadTimeout:               time.Duration(bodyReadTimeoutSec) * time.Second,
+		StreamIdleTimeoutSec:          streamIdleTimeoutSec,
+		OllamaPathPrefix:              ollamaPath,
+		OpenAIPathPrefix:              openaiPath,
+		AuthTrustXFF:                  trustXFF,
+		EnabledSurfaces:               enabledSurfaces,
+		AnthropicPathPrefix:           anthropicPath,
+		SessionTTL:                    sessionTTL,
+		SessionMax:                    sessionMax,
+		SessionTickInterval:           sessionTickInterval,
+		RecyclePct:                    recyclePct,
+		AcpCapture:                    acpCapture,
+		AcpCaptureSize:                acpCaptureSize,
+		AcpCaptureRuntime:             acpCaptureRuntime,
+		MaxToolDenials:                maxToolDenials,
+		EnabledHooks:                  enabledHooks,
+		PIIRedactionEnabled:           piiEnabled,
+		PIIEnabledEntities:            piiEntities,
+		PIIRedactionMode:              piiMode,
+		PIIHashKey:                    piiHashKey,
+		PIIEntityActions:              maps.Clone(piiEntityActions),
+		PIIEncryptKey:                 piiEncryptKey,
+		PIINEREnabled:                 piiNEREnabled,
+		PrivacyDefaultProfile:         privacyDefaultProfile,
+		PrivacyRequestProfiles:        slices.Clone(privacyRequestProfiles),
+		PrivacyAliasKey:               privacyAliasKey,
+		PrivacySecretAction:           privacySecretAction,
+		PrivacyTechnicalAction:        privacyTechnicalAction,
+		PrivacyScopeTTL:               privacyTTL,
+		PrivacyMaxScopes:              privacyMaxScopes,
+		PrivacyMaxEntriesPerScope:     privacyMaxEntriesPerScope,
+		PrivacyMaxTotalEntries:        privacyMaxTotalEntries,
+		PrivacyTriageEnabled:          privacyTriageEnabled,
+		PrivacyTriageToken:            privacyTriageToken,
+		JSONFormatSteeringEnabled:     jsonFormatSteeringEnabled,
+		CompressionEnabled:            compressionEnabled,
+		CompressTriggerTokens:         compressTrigger,
+		CompressBudgetTokens:          compressBudget,
+		CompressProtectTail:           compressProtectTail,
+		CompressToolKeep:              compressToolKeep,
+		ChatTrace:                     chatTrace,
+		ChatTraceFile:                 chatTraceFile,
 		// D-18-08 REL-OBSV-04: AdminTailPath shares the same source as
 		// ChatTraceFile so the writer and tailer cannot diverge.
 		AdminTailPath:       chatTraceFile,
