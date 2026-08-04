@@ -24,13 +24,15 @@ import "time"
 // when unknown (dead, respawning, or nil-client slot) — same skip
 // condition WorkerProcs uses.
 type AgentSlot struct {
-	Label            string     `json:"label"`
-	Alive            bool       `json:"alive"`
-	Busy             bool       `json:"busy"`
-	CurrentSessionID *string    `json:"current_session_id"`
-	Turns            int        `json:"turns"`
-	SpawnedAt        *time.Time `json:"spawned_at"`
-	Pid              int        `json:"pid"`
+	Label                  string     `json:"label"`
+	Alive                  bool       `json:"alive"`
+	Busy                   bool       `json:"busy"`
+	CurrentSessionID       *string    `json:"current_session_id"`
+	Turns                  int        `json:"turns"`
+	SpawnedAt              *time.Time `json:"spawned_at"`
+	Pid                    int        `json:"pid"`
+	UserRequestsSinceSpawn uint64     `json:"user_requests_since_spawn"`
+	LastUserReleaseAt      *time.Time `json:"last_user_release_at"`
 }
 
 // Detail returns a point-in-time snapshot of per-slot state for
@@ -89,7 +91,8 @@ func (p *Pool) detailSnapshotLocked() ([]AgentSlot, []pidLookup) {
 			continue
 		}
 		row := AgentSlot{
-			Label: slot.Label,
+			Label:                  slot.Label,
+			UserRequestsSinceSpawn: slot.userRequestsSinceSpawn,
 			// Finding 1 (worker-recycling review): a slot mid-recycle is
 			// respawning==true, dead==false — its OLD worker has been closed
 			// and the replacement is still spawning, so it is not serving.
@@ -115,6 +118,10 @@ func (p *Pool) detailSnapshotLocked() ([]AgentSlot, []pidLookup) {
 			spawnedAtCopy := slot.spawnedAt
 			row.SpawnedAt = &spawnedAtCopy
 		}
+		if !slot.lastUserReleaseAt.IsZero() {
+			lastUserReleaseAtCopy := slot.lastUserReleaseAt
+			row.LastUserReleaseAt = &lastUserReleaseAtCopy
+		}
 		rows = append(rows, row)
 		// Same eligibility condition as WorkerProcs: a mid-recycle slot's
 		// Client is the terminated OLD process (stale-sample/pid-reuse
@@ -131,8 +138,10 @@ func (p *Pool) detailSnapshotLocked() ([]AgentSlot, []pidLookup) {
 // metrics (Prometheus gw_worker_* series and the admin dashboard perf tiles) —
 // the label is the bounded, respawn-stable series key, never the pid.
 type WorkerProc struct {
-	Label string
-	Pid   int
+	Label                  string
+	Pid                    int
+	UserRequestsSinceSpawn uint64
+	IdleSeconds            float64
 }
 
 // WorkerProcs returns the (label, pid) of every live slot for per-worker CPU/RSS
@@ -151,17 +160,37 @@ type WorkerProc struct {
 // keeps the discipline uniform with the exit-watcher and stats paths.
 func (p *Pool) WorkerProcs() []WorkerProc {
 	type labelled struct {
-		label  string
-		client PoolClient
+		label                  string
+		client                 PoolClient
+		userRequestsSinceSpawn uint64
+		idleSeconds            float64
 	}
 
 	p.mu.Lock()
+	checkedOut := make(map[*Slot]struct{}, len(p.sessionSlots))
+	for _, slot := range p.sessionSlots {
+		checkedOut[slot] = struct{}{}
+	}
+	now := p.cfg.Now()
 	pending := make([]labelled, 0, len(p.all))
 	for _, slot := range p.all {
 		if slot == nil || slot.dead || slot.respawning || slot.Client == nil {
 			continue
 		}
-		pending = append(pending, labelled{label: slot.Label, client: slot.Client})
+		var idleSeconds float64
+		_, busy := checkedOut[slot]
+		if !busy && !slot.lastUserReleaseAt.IsZero() {
+			idleSeconds = now.Sub(slot.lastUserReleaseAt).Seconds()
+			if idleSeconds < 0 {
+				idleSeconds = 0
+			}
+		}
+		pending = append(pending, labelled{
+			label:                  slot.Label,
+			client:                 slot.Client,
+			userRequestsSinceSpawn: slot.userRequestsSinceSpawn,
+			idleSeconds:            idleSeconds,
+		})
 	}
 	p.mu.Unlock()
 
@@ -171,7 +200,12 @@ func (p *Pool) WorkerProcs() []WorkerProc {
 		if pid <= 0 {
 			continue
 		}
-		out = append(out, WorkerProc{Label: e.label, Pid: pid})
+		out = append(out, WorkerProc{
+			Label:                  e.label,
+			Pid:                    pid,
+			UserRequestsSinceSpawn: e.userRequestsSinceSpawn,
+			IdleSeconds:            e.idleSeconds,
+		})
 	}
 	return out
 }

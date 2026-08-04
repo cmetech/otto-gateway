@@ -36,6 +36,17 @@ func (p *Pool) PutSlotBack(slot *Slot) {
 	p.slots <- slot
 }
 
+// TakeSlotIfAvailable removes and returns a free slot without waiting. Tests
+// use it after consuming the expected release to detect a duplicate return.
+func (p *Pool) TakeSlotIfAvailable() (*Slot, bool) {
+	select {
+	case slot := <-p.slots:
+		return slot, true
+	default:
+		return nil, false
+	}
+}
+
 // SessionSlotsLen returns the current size of the sessionSlots map
 // (held briefly under mu). Used by tests asserting that Cancel /
 // release cleans up the session-tracking entry.

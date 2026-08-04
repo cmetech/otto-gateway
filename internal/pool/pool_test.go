@@ -1492,19 +1492,22 @@ func TestPool_Detail_NilSafeOnEmptyPool(t *testing.T) {
 
 // TestPool_Detail_FieldShape_MatchesD15 — JSON tags lock the D-15 wire
 // contract. Build failure if downstream consumers depend on the old shape.
-// Turns/SpawnedAt/Pid were added additively (worker-recycling dashboard
-// stats, quick 260721-ovm and follow-up) — this lock test was updated
-// deliberately alongside those changes; it is not a stale assertion.
+// Turns/SpawnedAt/Pid and the user-activity fields were added additively
+// (worker-recycling dashboard stats, quick 260721-ovm and follow-up) — this
+// lock test was updated deliberately alongside those changes; it is not a
+// stale assertion.
 func TestPool_Detail_FieldShape_MatchesD15(t *testing.T) {
 	rt := reflect.TypeOf(pool.AgentSlot{})
 	wantTags := map[string]string{
-		"Label":            "label",
-		"Alive":            "alive",
-		"Busy":             "busy",
-		"CurrentSessionID": "current_session_id",
-		"Turns":            "turns",
-		"SpawnedAt":        "spawned_at",
-		"Pid":              "pid",
+		"Label":                  "label",
+		"Alive":                  "alive",
+		"Busy":                   "busy",
+		"CurrentSessionID":       "current_session_id",
+		"Turns":                  "turns",
+		"SpawnedAt":              "spawned_at",
+		"Pid":                    "pid",
+		"UserRequestsSinceSpawn": "user_requests_since_spawn",
+		"LastUserReleaseAt":      "last_user_release_at",
 	}
 	if rt.NumField() != len(wantTags) {
 		t.Fatalf("AgentSlot field count = %d; want %d (extra/missing fields break D-15 wire)",

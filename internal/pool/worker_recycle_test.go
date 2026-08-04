@@ -283,6 +283,12 @@ func TestPool_WorkerRecycleAtThreshold(t *testing.T) {
 		if r.Turns != 0 {
 			t.Errorf("post-recycle Detail(): slot-0 Turns = %d; want 0", r.Turns)
 		}
+		if r.UserRequestsSinceSpawn != 0 {
+			t.Errorf("post-recycle Detail(): slot-0 UserRequestsSinceSpawn = %d; want 0", r.UserRequestsSinceSpawn)
+		}
+		if r.LastUserReleaseAt != nil {
+			t.Errorf("post-recycle Detail(): slot-0 LastUserReleaseAt = %v; want nil", r.LastUserReleaseAt)
+		}
 		if r.SpawnedAt == nil {
 			t.Fatal("post-recycle Detail(): slot-0 SpawnedAt is nil")
 		}

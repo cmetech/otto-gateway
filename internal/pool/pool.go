@@ -158,6 +158,12 @@ type Slot struct {
 	// turns and uptime reset together exactly when a recycle completes.
 	// Guarded by p.mu, same discipline as dead/turns/respawning.
 	spawnedAt time.Time
+	// userRequestsSinceSpawn counts successful request-path NewSession calls.
+	// Catalog probes are intentionally excluded. Guarded by p.mu.
+	userRequestsSinceSpawn uint64
+	// lastUserReleaseAt records the latest exact-once session release winner.
+	// Zero means the worker has not completed a user request. Guarded by p.mu.
+	lastUserReleaseAt time.Time
 }
 
 // Pool is a fixed-size warm pool of kiro-cli slots that satisfies
@@ -540,7 +546,7 @@ func (p *Pool) initSlot(ctx context.Context, label string) (*Slot, error) {
 		_ = client.Close()
 		return nil, fmt.Errorf("pool: initialize %s: %w", label, err)
 	}
-	slot := &Slot{Label: label, Client: client, spawnedAt: time.Now()}
+	slot := &Slot{Label: label, Client: client, spawnedAt: p.cfg.Now()}
 	// WR-01: capture Done() at the spawn site so the watcher
 	// goroutine cannot lazily re-evaluate slot.Client.Done() against a
 	// later-swapped client. Safe here without p.mu — the slot has
@@ -736,10 +742,12 @@ func (p *Pool) respawnSlot(ctx context.Context, slot *Slot, cause respawnCause) 
 	// that swaps the client — covers both the lazy dead-slot path and the
 	// Task 3 scheduled recycle (design §2 Part B "Counter reset").
 	slot.turns = 0
+	slot.userRequestsSinceSpawn = 0
+	slot.lastUserReleaseAt = time.Time{}
 	// Fresh worker, fresh clock: reset spawnedAt in the SAME critical section
 	// as the turns reset so the dashboard's TURNS and UP cells always reset
 	// together for an operator watching a recycle complete.
-	slot.spawnedAt = time.Now()
+	slot.spawnedAt = p.cfg.Now()
 	newDone := newClient.Done()
 	// Step 5: spawn a fresh exit-watcher for the NEW client (under p.mu).
 	p.startExitWatcher(slot, newClient, newDone)
@@ -1372,6 +1380,7 @@ func (p *Pool) NewSession(ctx context.Context, cwd string) (string, error) {
 	// M-4): a failed NewSession returned above without reaching here, so it
 	// does not increment.
 	slot.turns++
+	slot.userRequestsSinceSpawn++
 	p.mu.Unlock()
 	return sid, nil
 }
@@ -1425,6 +1434,7 @@ func (p *Pool) Prompt(ctx context.Context, sid string, blocks []canonical.Block)
 		s, stillOwned := p.sessionSlots[sid]
 		if stillOwned {
 			delete(p.sessionSlots, sid)
+			s.lastUserReleaseAt = p.cfg.Now().UTC()
 		}
 		p.mu.Unlock()
 		if !stillOwned {
@@ -1542,6 +1552,7 @@ func (p *Pool) releaseSlotForSession(sid string) {
 	slot, ok := p.sessionSlots[sid]
 	if ok {
 		delete(p.sessionSlots, sid)
+		slot.lastUserReleaseAt = p.cfg.Now().UTC()
 	}
 	p.mu.Unlock()
 	if ok {

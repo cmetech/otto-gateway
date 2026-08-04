@@ -156,6 +156,9 @@ type Config struct {
 	// MaxWorkerTurns schedules a worker respawn after this many successful
 	// session/new calls. Zero disables scheduled recycling.
 	MaxWorkerTurns int
+	// Now supplies wall-clock time for per-worker lifecycle accounting.
+	// Defaults to time.Now.
+	Now func() time.Time
 }
 
 // applyDefaults fills in zero-value Config fields. Size floors to 1
@@ -169,6 +172,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Factory == nil {
 		c.Factory = acpClientFactory{}
+	}
+	if c.Now == nil {
+		c.Now = time.Now
 	}
 	if c.AcquireTimeout == 0 {
 		const defaultAcquireTimeoutMs = 30_000
