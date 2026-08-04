@@ -31,7 +31,10 @@ func scrapeReg(t *testing.T, reg *prometheus.Registry) string {
 // contributes both series, labelled by slot (not pid).
 func TestWorkerCollector_EmitsPerSlotCPUAndRSS(t *testing.T) {
 	procs := func() []WorkerProc {
-		return []WorkerProc{{Slot: "slot-0", Pid: 111}, {Slot: "slot-1", Pid: 222}}
+		return []WorkerProc{
+			{Slot: "slot-0", Pid: 111, UserRequestsSinceSpawn: 1, IdleSeconds: 901},
+			{Slot: "slot-1", Pid: 222, UserRequestsSinceSpawn: 3, IdleSeconds: 0},
+		}
 	}
 	read := func(pid int) procstat.Sample {
 		switch pid {
@@ -53,6 +56,10 @@ func TestWorkerCollector_EmitsPerSlotCPUAndRSS(t *testing.T) {
 		`gw_worker_cpu_seconds_total{slot="slot-1"} 3`,
 		`gw_worker_resident_memory_bytes{slot="slot-0"} 1.048576e+08`,
 		`gw_worker_resident_memory_bytes{slot="slot-1"} 5.24288e+07`,
+		`gw_worker_user_requests_since_spawn{slot="slot-0"} 1`,
+		`gw_worker_idle_seconds{slot="slot-0"} 901`,
+		`gw_worker_user_requests_since_spawn{slot="slot-1"} 3`,
+		`gw_worker_idle_seconds{slot="slot-1"} 0`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("scrape missing %q\n%s", want, body)
@@ -64,11 +71,15 @@ func TestWorkerCollector_EmitsPerSlotCPUAndRSS(t *testing.T) {
 	}
 }
 
-// TestWorkerCollector_SkipsUnreadable: a worker whose sample is !OK (dead,
-// permission denied, or an unsupported platform) contributes no series.
-func TestWorkerCollector_SkipsUnreadable(t *testing.T) {
+// TestWorkerCollector_ActivitySurvivesUnreadableProcess: CPU/RSS require an OS
+// sample, while pool-projected activity gauges remain available even when the
+// process reader cannot sample a worker.
+func TestWorkerCollector_ActivitySurvivesUnreadableProcess(t *testing.T) {
 	procs := func() []WorkerProc {
-		return []WorkerProc{{Slot: "slot-0", Pid: 111}, {Slot: "slot-dead", Pid: 999}}
+		return []WorkerProc{
+			{Slot: "slot-0", Pid: 111, UserRequestsSinceSpawn: 4, IdleSeconds: 60},
+			{Slot: "slot-dead", Pid: 999, UserRequestsSinceSpawn: 5, IdleSeconds: 120},
+		}
 	}
 	read := func(pid int) procstat.Sample {
 		if pid == 111 {
@@ -84,8 +95,21 @@ func TestWorkerCollector_SkipsUnreadable(t *testing.T) {
 	if !strings.Contains(body, `slot="slot-0"`) {
 		t.Errorf("readable worker missing\n%s", body)
 	}
-	if strings.Contains(body, `slot="slot-dead"`) {
-		t.Errorf("unreadable worker should be skipped\n%s", body)
+	for _, want := range []string{
+		`gw_worker_user_requests_since_spawn{slot="slot-dead"} 5`,
+		`gw_worker_idle_seconds{slot="slot-dead"} 120`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("unreadable worker activity missing %q\n%s", want, body)
+		}
+	}
+	for _, absent := range []string{
+		`gw_worker_cpu_seconds_total{slot="slot-dead"}`,
+		`gw_worker_resident_memory_bytes{slot="slot-dead"}`,
+	} {
+		if strings.Contains(body, absent) {
+			t.Errorf("unreadable worker OS sample unexpectedly emitted %q\n%s", absent, body)
+		}
 	}
 }
 

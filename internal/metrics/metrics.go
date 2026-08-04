@@ -66,7 +66,7 @@ type PoolStats struct {
 
 	// Track 4b monotonic event counters (pool-owned).
 	SlotRespawns     uint64
-	SlotRecycles     uint64 // worker recycling: scheduled respawns (KIRO_WORKER_MAX_TURNS)
+	SlotRecycles     uint64 // worker recycling: successful scheduled replacements
 	PingEscalations  uint64
 	PingSuspendSkips uint64
 }
@@ -92,6 +92,10 @@ type Metrics struct {
 	skills      *skillLimiter
 	clients     *skillLimiter
 	poolAcquire *prometheus.HistogramVec
+
+	workerRecyclesByReason *prometheus.CounterVec
+	idleRecycleRSS         prometheus.Histogram
+	idleRecycleIdle        prometheus.Histogram
 
 	// Kiro usage (fed by the acp OnTurnMeter/OnContextPct/OnMCPInit hooks via
 	// the RecordX methods — kiro usage-metrics parity build).
@@ -174,6 +178,20 @@ func (m *Metrics) RecordLLMOutcome(surface, outcome, stream, sessionMode string)
 // bounded terminal result: immediate, waited, timeout, cancelled, or closed.
 func (m *Metrics) RecordPoolAcquire(duration time.Duration, result string) {
 	m.poolAcquire.WithLabelValues(result).Observe(duration.Seconds())
+}
+
+// RecordWorkerRecycle records a successful scheduled worker replacement. Only
+// pool-owned bounded reasons are accepted so callers cannot create unbounded
+// Prometheus label cardinality.
+func (m *Metrics) RecordWorkerRecycle(reason string, rssBytes uint64, idle time.Duration) {
+	if reason != "max_turns" && reason != "idle_memory" {
+		return
+	}
+	m.workerRecyclesByReason.WithLabelValues(reason).Inc()
+	if reason == "idle_memory" {
+		m.idleRecycleRSS.Observe(float64(rssBytes))
+		m.idleRecycleIdle.Observe(idle.Seconds())
+	}
 }
 
 // modelBucket normalizes + cardinality-caps the model label. Empty or "auto"
@@ -320,6 +338,20 @@ func New(info BuildInfo, pool func() PoolStats, sessions func() SessionStats, wo
 			Help:    "Time spent acquiring a warm pool slot, by terminal result.",
 			Buckets: []float64{.001, .005, .01, .025, .05, .1, .25, .5, 1, 2, 5, 10, 30},
 		}, []string{"result"}),
+		workerRecyclesByReason: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "gw_pool_slot_recycles_by_reason_total",
+			Help: "Successful scheduled worker recycles by bounded trigger reason.",
+		}, []string{"reason"}),
+		idleRecycleRSS: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "gw_pool_idle_memory_recycle_trigger_rss_bytes",
+			Help:    "Direct worker working set observed at successful idle-memory recycle.",
+			Buckets: []float64{256 << 20, 384 << 20, 512 << 20, 768 << 20, 1024 << 20, 1536 << 20, 2048 << 20, 4096 << 20, 8192 << 20},
+		}),
+		idleRecycleIdle: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "gw_pool_idle_memory_recycle_trigger_idle_seconds",
+			Help:    "Completed-request idle duration observed at successful idle-memory recycle.",
+			Buckets: []float64{60, 300, 900, 1800, 3600, 14400, 43200, 86400},
+		}),
 
 		kiroCredits: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "gw_kiro_credits_total",
@@ -353,6 +385,7 @@ func New(info BuildInfo, pool func() PoolStats, sessions func() SessionStats, wo
 	}
 	reggw.MustRegister(
 		buildInfo, m.reqTotal, m.reqDur, m.inFlight, m.llmTotal, m.llmOutcome, m.poolAcquire,
+		m.workerRecyclesByReason, m.idleRecycleRSS, m.idleRecycleIdle,
 		m.kiroCredits, m.kiroTurns, m.kiroTurnDur, m.kiroCtxPct, m.mcpInit, m.modelReqs,
 		newPoolCollector(pool, sessions),
 	)

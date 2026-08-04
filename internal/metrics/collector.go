@@ -49,7 +49,7 @@ func newPoolCollector(pool func() PoolStats, sessions func() SessionStats) *pool
 			"Total lazy slot respawns since start.", nil, nil),
 		slotRecycles: prometheus.NewDesc(
 			"gw_pool_slot_recycles_total",
-			"Total scheduled worker recycles (KIRO_WORKER_MAX_TURNS).",
+			"Total successful scheduled worker recycles since start.",
 			nil,
 			nil,
 		),

@@ -91,6 +91,36 @@ func TestMetrics_EventCounters(t *testing.T) {
 	}
 }
 
+// TestRecordWorkerRecycle_ReasonAndIdleHistograms proves successful recycle
+// events retain only the two approved reason labels, and that the idle-memory
+// trigger measurements are not polluted by max-turn or invalid calls.
+func TestRecordWorkerRecycle_ReasonAndIdleHistograms(t *testing.T) {
+	m := metrics.New(
+		metrics.BuildInfo{GatewayID: "gw-test"},
+		func() metrics.PoolStats { return metrics.PoolStats{} },
+		func() metrics.SessionStats { return metrics.SessionStats{} },
+		nil,
+	)
+	m.RecordWorkerRecycle("max_turns", 0, 0)
+	m.RecordWorkerRecycle("idle_memory", 800<<20, 16*time.Minute)
+	m.RecordWorkerRecycle("unbounded-input", 1, time.Second)
+	body := scrape(t, m)
+
+	for _, want := range []string{
+		`gw_pool_slot_recycles_by_reason_total{gateway_id="gw-test",reason="max_turns"} 1`,
+		`gw_pool_slot_recycles_by_reason_total{gateway_id="gw-test",reason="idle_memory"} 1`,
+		`gw_pool_idle_memory_recycle_trigger_rss_bytes_count{gateway_id="gw-test"} 1`,
+		`gw_pool_idle_memory_recycle_trigger_idle_seconds_count{gateway_id="gw-test"} 1`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("scrape missing %q\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, `reason="unbounded-input"`) {
+		t.Fatalf("unbounded reason escaped validation\n%s", body)
+	}
+}
+
 // TestMetrics_FreeRuntimeMetrics: promhttp gives Go-runtime metrics for free.
 func TestMetrics_FreeRuntimeMetrics(t *testing.T) {
 	m := testMetrics(metrics.PoolStats{}, metrics.SessionStats{})
