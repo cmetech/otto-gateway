@@ -15,6 +15,7 @@ ROW_ORDER = [
     "User Activity and Adoption",
     "User Experience and Failures",
     "Gateway Capacity and Pool Health",
+    "Idle Memory Recycling",
     "Kiro Cost and Context",
     "Compression Effectiveness",
     "Runtime Resources",
@@ -59,7 +60,10 @@ CUSTOM_METRICS = {
     "gw_pool_healthy",
     "gw_pool_last_progress_timestamp_seconds",
     "gw_pool_last_spawn_error_timestamp_seconds",
+    "gw_pool_idle_memory_recycle_trigger_idle_seconds",
+    "gw_pool_idle_memory_recycle_trigger_rss_bytes",
     "gw_pool_size",
+    "gw_pool_slot_recycles_by_reason_total",
     "gw_pool_slot_recycles_total",
     "gw_pool_slot_respawns_total",
     "gw_pool_spawn_failing",
@@ -89,7 +93,9 @@ CUSTOM_METRICS = {
     "gw_sessions_reaped_total",
     "gw_sessions_recycled_total",
     "gw_worker_cpu_seconds_total",
+    "gw_worker_idle_seconds",
     "gw_worker_resident_memory_bytes",
+    "gw_worker_user_requests_since_spawn",
 }
 
 
@@ -163,6 +169,11 @@ class DashboardGeneratorTest(unittest.TestCase):
             "Pool Utilization by Gateway",
             "Seconds Since Pool Progress",
             "Gateway Health Matrix",
+            "Worker Recycles by Reason",
+            "Idle-memory Recycles per 100 LLM Requests",
+            "Worker Idle and Use Since Spawn",
+            "Idle-memory Trigger RSS",
+            "Idle-memory Trigger Idle Duration",
             "Credits per Turn",
             "Compression Success Ratio",
             "Compression Budget Unmet Ratio",
@@ -179,6 +190,20 @@ class DashboardGeneratorTest(unittest.TestCase):
             "Privacy Internal Errors",
         }
         self.assertTrue(required <= titles, sorted(required - titles))
+
+    def test_idle_memory_panels_use_bounded_reason_and_honest_quantiles(self):
+        panels = {panel["title"]: panel for panel in all_panels(self.dashboard)}
+        reason_expr = panels["Worker Recycles by Reason"]["targets"][0]["expr"]
+        self.assertIn("sum by(reason)", reason_expr)
+        self.assertIn("gw_pool_slot_recycles_by_reason_total", reason_expr)
+        ratio_expr = panels["Idle-memory Recycles per 100 LLM Requests"]["targets"][0]["expr"]
+        self.assertIn('reason="idle_memory"', ratio_expr)
+        self.assertIn("clamp_min", ratio_expr)
+        for title in ("Idle-memory Trigger RSS", "Idle-memory Trigger Idle Duration"):
+            for target in panels[title]["targets"]:
+                if "histogram_quantile" in target["expr"]:
+                    self.assertIn("_count", target["expr"])
+                    self.assertIn(" and ", target["expr"])
 
     def test_privacy_alerts(self):
         titles = {panel["title"] for panel in all_panels(self.dashboard)}

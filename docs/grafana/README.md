@@ -7,8 +7,8 @@
 exposed at `/metrics` and forwarded by the tray.
 
 The dashboard is ordered by operational relevance: current fleet impact first,
-then user adoption and failures, followed by capacity, cost, compression,
-runtime diagnostics, and inventory.
+then user adoption and failures, followed by capacity, idle-memory recycling,
+cost, compression, runtime diagnostics, and inventory.
 
 ## Import
 
@@ -50,6 +50,7 @@ into empty results.
 | User Activity and Adoption | Active usage, requests per active gateway, surface/skill/client/model adoption, streaming and session behavior, top users, and attribution completeness |
 | User Experience and Failures | Final outcomes first, then affected gateways and HTTP-level latency/status/route diagnostics |
 | Gateway Capacity and Pool Health | Utilization, acquisition pressure, progress age, session lifecycle, recovery events, and the per-gateway health matrix |
+| Idle Memory Recycling | Bounded recycle reasons, recycles per 100 LLM requests, per-slot idle/use state, and successful idle-memory recycle trigger distributions |
 | Kiro Cost and Context | Credits, turns, cost ratios, turn duration, context pressure, and MCP initialization health |
 | Compression Effectiveness | Eligibility, successful runs, estimated savings, budget misses, ratios, and recovered panics |
 | Runtime Resources | Gateway and worker CPU/RSS, file-descriptor utilization, uptime, restarts, and optional goroutines |
@@ -65,6 +66,11 @@ into empty results.
 - Pool-acquisition latency ends when a worker slot is acquired or the acquire
   terminates. It excludes worker respawn and `session/new`, keeping it focused
   on queue pressure.
+- `gw_worker_user_requests_since_spawn` resets when its worker is replaced.
+  `gw_worker_idle_seconds` is zero while a worker is busy and before it has
+  completed its first user request.
+- Idle-memory trigger RSS and idle-duration histograms describe successful
+  recycle events. The RSS values are trigger measurements, not bytes reclaimed.
 - Compression token values use the gateway's UTF-8-bytes/4 estimate. They are
   not model-tokenizer output or billing tokens.
 - Worker process CPU and RSS sampling is unavailable on macOS.

@@ -1106,6 +1106,126 @@ def add_capacity(builder):
     builder.next_line(9)
 
 
+def add_idle_memory_recycling(builder):
+    builder.row("Idle Memory Recycling")
+    builder.panel(
+        "timeseries",
+        "Worker Recycles by Reason",
+        0,
+        8,
+        8,
+        [
+            (
+                f"sum by(reason)(rate(gw_pool_slot_recycles_by_reason_total{SEL}[$__rate_interval]))",
+                "{{reason}}",
+            )
+        ],
+        unit="reqps",
+        description="Successful scheduled worker recycles by bounded trigger reason.",
+        options=timeseries_options(),
+        config=timeseries_field("reqps"),
+    )
+    builder.panel(
+        "stat",
+        "Idle-memory Recycles per 100 LLM Requests",
+        8,
+        8,
+        8,
+        [
+            (
+                f"100 * sum(increase(gw_pool_slot_recycles_by_reason_total{{{BASE}, reason=\"idle_memory\"}}[$__range])) "
+                f"/ clamp_min(sum(increase(gw_llm_requests_total{LLM}[$__range])), 1)",
+                "",
+            )
+        ],
+        unit="short",
+        description="Successful idle-memory recycles per 100 recognized LLM requests in the selected range.",
+        options=stat_options(),
+        config=field_config("short"),
+    )
+    builder.panel(
+        "timeseries",
+        "Worker Idle and Use Since Spawn",
+        16,
+        8,
+        8,
+        [
+            (f"gw_worker_idle_seconds{SEL}", "idle / {{instance}} / {{slot}}"),
+            (
+                f"gw_worker_user_requests_since_spawn{SEL}",
+                "requests / {{instance}} / {{slot}}",
+            ),
+        ],
+        unit="short",
+        description="Idle is zero while a worker is busy or before its first completed request; request counts reset when a worker is replaced.",
+        options=timeseries_options(),
+        config=timeseries_field(
+            "short",
+            overrides=[
+                {
+                    "matcher": {"id": "byRegexp", "options": "^idle /"},
+                    "properties": [{"id": "unit", "value": "s"}],
+                },
+                {
+                    "matcher": {"id": "byRegexp", "options": "^requests /"},
+                    "properties": [{"id": "unit", "value": "short"}],
+                },
+            ],
+        ),
+    )
+    builder.next_line(8)
+
+    histogram_panels = [
+        (
+            "Idle-memory Trigger RSS",
+            "gw_pool_idle_memory_recycle_trigger_rss_bytes",
+            "bytes",
+            "RSS observed at successful idle-memory recycle events; this is a trigger distribution, not bytes reclaimed.",
+        ),
+        (
+            "Idle-memory Trigger Idle Duration",
+            "gw_pool_idle_memory_recycle_trigger_idle_seconds",
+            "s",
+            "Idle duration observed at successful idle-memory recycle events; this is a trigger distribution, not reclaimed time.",
+        ),
+    ]
+    for index, (title, metric, unit, description) in enumerate(histogram_panels):
+        count = f"sum(rate({metric}_count{SEL}[$__rate_interval]))"
+        builder.panel(
+            "timeseries",
+            title,
+            index * 12,
+            12,
+            8,
+            [
+                (
+                    f"histogram_quantile(0.50, sum by(le)(rate({metric}_bucket{SEL}[$__rate_interval]))) "
+                    f"and on() ({count} > 0)",
+                    "p50",
+                ),
+                (
+                    f"histogram_quantile(0.95, sum by(le)(rate({metric}_bucket{SEL}[$__rate_interval]))) "
+                    f"and on() ({count} > 0)",
+                    "p95",
+                ),
+                (count, "events/s"),
+            ],
+            unit=unit,
+            description=description,
+            options=timeseries_options(),
+            config=timeseries_field(
+                unit,
+                overrides=[
+                    {
+                        "matcher": {"id": "byName", "options": "events/s"},
+                        "properties": [{"id": "unit", "value": "reqps"}],
+                    }
+                ],
+            ),
+        )
+    builder.next_line(8)
+
+
 def add_kiro(builder):
     builder.row("Kiro Cost and Context")
     builder.panel(
@@ -1592,6 +1712,7 @@ def build_dashboard():
     add_user_activity(builder)
     add_user_failures(builder)
     add_capacity(builder)
+    add_idle_memory_recycling(builder)
     add_kiro(builder)
     add_compression(builder)
     add_runtime(builder)

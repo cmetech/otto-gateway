@@ -4242,7 +4242,7 @@
     {
       "id": 57,
       "type": "row",
-      "title": "Kiro Cost and Context",
+      "title": "Idle Memory Recycling",
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -4255,7 +4255,7 @@
     {
       "id": 58,
       "type": "timeseries",
-      "title": "Credits and Turns Rate",
+      "title": "Worker Recycles by Reason",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROM}"
@@ -4265,6 +4265,512 @@
         "w": 8,
         "x": 0,
         "y": 139
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "sum by(reason)(rate(gw_pool_slot_recycles_by_reason_total{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval]))",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": "{{reason}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "gradientMode": "opacity",
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean",
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Successful scheduled worker recycles by bounded trigger reason."
+    },
+    {
+      "id": 59,
+      "type": "stat",
+      "title": "Idle-memory Recycles per 100 LLM Requests",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 139
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "100 * sum(increase(gw_pool_slot_recycles_by_reason_total{job=\"otto-gateway\", instance=~\"$gateway_id\", reason=\"idle_memory\"}[$__range])) / clamp_min(sum(increase(gw_llm_requests_total{job=\"otto-gateway\", instance=~\"$gateway_id\", surface=~\"$surface\", skill=~\"$skill\", client=~\"$client\"}[$__range])), 1)",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "description": "Successful idle-memory recycles per 100 recognized LLM requests in the selected range."
+    },
+    {
+      "id": 60,
+      "type": "timeseries",
+      "title": "Worker Idle and Use Since Spawn",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 139
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "gw_worker_idle_seconds{job=\"otto-gateway\", instance=~\"$gateway_id\"}",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": "idle / {{instance}} / {{slot}}"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "gw_worker_user_requests_since_spawn{job=\"otto-gateway\", instance=~\"$gateway_id\"}",
+          "range": true,
+          "instant": false,
+          "refId": "B",
+          "legendFormat": "requests / {{instance}} / {{slot}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "gradientMode": "opacity",
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "spanNulls": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^idle /"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^requests /"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean",
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Idle is zero while a worker is busy or before its first completed request; request counts reset when a worker is replaced."
+    },
+    {
+      "id": 61,
+      "type": "timeseries",
+      "title": "Idle-memory Trigger RSS",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 147
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.50, sum by(le)(rate(gw_pool_idle_memory_recycle_trigger_rss_bytes_bucket{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval]))) and on() (sum(rate(gw_pool_idle_memory_recycle_trigger_rss_bytes_count{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval])) > 0)",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": "p50"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by(le)(rate(gw_pool_idle_memory_recycle_trigger_rss_bytes_bucket{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval]))) and on() (sum(rate(gw_pool_idle_memory_recycle_trigger_rss_bytes_count{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval])) > 0)",
+          "range": true,
+          "instant": false,
+          "refId": "B",
+          "legendFormat": "p95"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(gw_pool_idle_memory_recycle_trigger_rss_bytes_count{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval]))",
+          "range": true,
+          "instant": false,
+          "refId": "C",
+          "legendFormat": "events/s"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "bytes",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "gradientMode": "opacity",
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "spanNulls": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "events/s"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "reqps"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean",
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "RSS observed at successful idle-memory recycle events; this is a trigger distribution, not bytes reclaimed."
+    },
+    {
+      "id": 62,
+      "type": "timeseries",
+      "title": "Idle-memory Trigger Idle Duration",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 147
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.50, sum by(le)(rate(gw_pool_idle_memory_recycle_trigger_idle_seconds_bucket{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval]))) and on() (sum(rate(gw_pool_idle_memory_recycle_trigger_idle_seconds_count{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval])) > 0)",
+          "range": true,
+          "instant": false,
+          "refId": "A",
+          "legendFormat": "p50"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by(le)(rate(gw_pool_idle_memory_recycle_trigger_idle_seconds_bucket{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval]))) and on() (sum(rate(gw_pool_idle_memory_recycle_trigger_idle_seconds_count{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval])) > 0)",
+          "range": true,
+          "instant": false,
+          "refId": "B",
+          "legendFormat": "p95"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROM}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(gw_pool_idle_memory_recycle_trigger_idle_seconds_count{job=\"otto-gateway\", instance=~\"$gateway_id\"}[$__rate_interval]))",
+          "range": true,
+          "instant": false,
+          "refId": "C",
+          "legendFormat": "events/s"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "gradientMode": "opacity",
+            "showPoints": "never",
+            "pointSize": 5,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "spanNulls": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "events/s"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "reqps"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "mean",
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Idle duration observed at successful idle-memory recycle events; this is a trigger distribution, not reclaimed time."
+    },
+    {
+      "id": 63,
+      "type": "row",
+      "title": "Kiro Cost and Context",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 155
+      },
+      "panels": []
+    },
+    {
+      "id": 64,
+      "type": "timeseries",
+      "title": "Credits and Turns Rate",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROM}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 156
       },
       "targets": [
         {
@@ -4344,7 +4850,7 @@
       }
     },
     {
-      "id": 59,
+      "id": 65,
       "type": "stat",
       "title": "Credits per Turn",
       "datasource": {
@@ -4355,7 +4861,7 @@
         "h": 8,
         "w": 4,
         "x": 8,
-        "y": 139
+        "y": 156
       },
       "targets": [
         {
@@ -4405,7 +4911,7 @@
       }
     },
     {
-      "id": 60,
+      "id": 66,
       "type": "stat",
       "title": "Credits per LLM Request",
       "datasource": {
@@ -4416,7 +4922,7 @@
         "h": 8,
         "w": 4,
         "x": 12,
-        "y": 139
+        "y": 156
       },
       "targets": [
         {
@@ -4466,7 +4972,7 @@
       }
     },
     {
-      "id": 61,
+      "id": 67,
       "type": "timeseries",
       "title": "Turn Duration p50 / p95",
       "datasource": {
@@ -4477,7 +4983,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 139
+        "y": 156
       },
       "targets": [
         {
@@ -4557,7 +5063,7 @@
       }
     },
     {
-      "id": 62,
+      "id": 68,
       "type": "gauge",
       "title": "Context Usage p95",
       "datasource": {
@@ -4568,7 +5074,7 @@
         "h": 8,
         "w": 6,
         "x": 0,
-        "y": 147
+        "y": 164
       },
       "targets": [
         {
@@ -4625,7 +5131,7 @@
       }
     },
     {
-      "id": 63,
+      "id": 69,
       "type": "timeseries",
       "title": "Context Usage p50 / p95",
       "datasource": {
@@ -4636,7 +5142,7 @@
         "h": 8,
         "w": 10,
         "x": 6,
-        "y": 147
+        "y": 164
       },
       "targets": [
         {
@@ -4726,7 +5232,7 @@
       }
     },
     {
-      "id": 64,
+      "id": 70,
       "type": "table",
       "title": "MCP Initialization Outcomes",
       "datasource": {
@@ -4737,7 +5243,7 @@
         "h": 8,
         "w": 5,
         "x": 16,
-        "y": 147
+        "y": 164
       },
       "targets": [
         {
@@ -4782,7 +5288,7 @@
       }
     },
     {
-      "id": 65,
+      "id": 71,
       "type": "stat",
       "title": "MCP Failure Rate",
       "datasource": {
@@ -4793,7 +5299,7 @@
         "h": 8,
         "w": 3,
         "x": 21,
-        "y": 147
+        "y": 164
       },
       "targets": [
         {
@@ -4851,7 +5357,7 @@
       }
     },
     {
-      "id": 66,
+      "id": 72,
       "type": "row",
       "title": "Compression Effectiveness",
       "collapsed": false,
@@ -4859,12 +5365,12 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 155
+        "y": 172
       },
       "panels": []
     },
     {
-      "id": 67,
+      "id": 73,
       "type": "stat",
       "title": "Compression Eligible",
       "datasource": {
@@ -4875,7 +5381,7 @@
         "h": 5,
         "w": 3,
         "x": 0,
-        "y": 156
+        "y": 173
       },
       "targets": [
         {
@@ -4926,7 +5432,7 @@
       "description": "Compression token values use an estimated UTF-8-bytes/4 heuristic; they are not model tokenizer output or billing tokens."
     },
     {
-      "id": 68,
+      "id": 74,
       "type": "stat",
       "title": "Successful Compression Runs",
       "datasource": {
@@ -4937,7 +5443,7 @@
         "h": 5,
         "w": 3,
         "x": 3,
-        "y": 156
+        "y": 173
       },
       "targets": [
         {
@@ -4988,7 +5494,7 @@
       "description": "Compression token values use an estimated UTF-8-bytes/4 heuristic; they are not model tokenizer output or billing tokens."
     },
     {
-      "id": 69,
+      "id": 75,
       "type": "stat",
       "title": "Estimated Tokens Saved",
       "datasource": {
@@ -4999,7 +5505,7 @@
         "h": 5,
         "w": 3,
         "x": 6,
-        "y": 156
+        "y": 173
       },
       "targets": [
         {
@@ -5050,7 +5556,7 @@
       "description": "Compression token values use an estimated UTF-8-bytes/4 heuristic; they are not model tokenizer output or billing tokens."
     },
     {
-      "id": 70,
+      "id": 76,
       "type": "stat",
       "title": "Estimated Tokens Saved per Run",
       "datasource": {
@@ -5061,7 +5567,7 @@
         "h": 5,
         "w": 3,
         "x": 9,
-        "y": 156
+        "y": 173
       },
       "targets": [
         {
@@ -5112,7 +5618,7 @@
       "description": "Compression token values use an estimated UTF-8-bytes/4 heuristic; they are not model tokenizer output or billing tokens."
     },
     {
-      "id": 71,
+      "id": 77,
       "type": "stat",
       "title": "Compression Success Ratio",
       "datasource": {
@@ -5123,7 +5629,7 @@
         "h": 5,
         "w": 3,
         "x": 12,
-        "y": 156
+        "y": 173
       },
       "targets": [
         {
@@ -5175,7 +5681,7 @@
       "description": "Compression token values use an estimated UTF-8-bytes/4 heuristic; they are not model tokenizer output or billing tokens."
     },
     {
-      "id": 72,
+      "id": 78,
       "type": "stat",
       "title": "Budget Unmet",
       "datasource": {
@@ -5186,7 +5692,7 @@
         "h": 5,
         "w": 3,
         "x": 15,
-        "y": 156
+        "y": 173
       },
       "targets": [
         {
@@ -5245,7 +5751,7 @@
       "description": "Compression token values use an estimated UTF-8-bytes/4 heuristic; they are not model tokenizer output or billing tokens."
     },
     {
-      "id": 73,
+      "id": 79,
       "type": "stat",
       "title": "Compression Budget Unmet Ratio",
       "datasource": {
@@ -5256,7 +5762,7 @@
         "h": 5,
         "w": 3,
         "x": 18,
-        "y": 156
+        "y": 173
       },
       "targets": [
         {
@@ -5316,7 +5822,7 @@
       "description": "Compression token values use an estimated UTF-8-bytes/4 heuristic; they are not model tokenizer output or billing tokens."
     },
     {
-      "id": 74,
+      "id": 80,
       "type": "stat",
       "title": "Compression Panic Recoveries",
       "datasource": {
@@ -5327,7 +5833,7 @@
         "h": 5,
         "w": 3,
         "x": 21,
-        "y": 156
+        "y": 173
       },
       "targets": [
         {
@@ -5386,7 +5892,7 @@
       "description": "Compression token values use an estimated UTF-8-bytes/4 heuristic; they are not model tokenizer output or billing tokens."
     },
     {
-      "id": 75,
+      "id": 81,
       "type": "timeseries",
       "title": "Compression Activity Over Time",
       "datasource": {
@@ -5397,7 +5903,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 161
+        "y": 178
       },
       "targets": [
         {
@@ -5502,7 +6008,7 @@
       "description": "Compression token values use an estimated UTF-8-bytes/4 heuristic; they are not model tokenizer output or billing tokens."
     },
     {
-      "id": 76,
+      "id": 82,
       "type": "row",
       "title": "Runtime Resources",
       "collapsed": false,
@@ -5510,12 +6016,12 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 169
+        "y": 186
       },
       "panels": []
     },
     {
-      "id": 77,
+      "id": 83,
       "type": "timeseries",
       "title": "Gateway CPU",
       "datasource": {
@@ -5526,7 +6032,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 170
+        "y": 187
       },
       "targets": [
         {
@@ -5594,7 +6100,7 @@
       }
     },
     {
-      "id": 78,
+      "id": 84,
       "type": "timeseries",
       "title": "Gateway RSS",
       "datasource": {
@@ -5605,7 +6111,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 170
+        "y": 187
       },
       "targets": [
         {
@@ -5673,7 +6179,7 @@
       }
     },
     {
-      "id": 79,
+      "id": 85,
       "type": "timeseries",
       "title": "Worker CPU",
       "datasource": {
@@ -5684,7 +6190,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 178
+        "y": 195
       },
       "targets": [
         {
@@ -5753,7 +6259,7 @@
       "description": "Worker subprocess sampling is unavailable on macOS."
     },
     {
-      "id": 80,
+      "id": 86,
       "type": "timeseries",
       "title": "Worker RSS",
       "datasource": {
@@ -5764,7 +6270,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 178
+        "y": 195
       },
       "targets": [
         {
@@ -5833,7 +6339,7 @@
       "description": "Worker subprocess sampling is unavailable on macOS."
     },
     {
-      "id": 81,
+      "id": 87,
       "type": "timeseries",
       "title": "Open FD Utilization",
       "datasource": {
@@ -5844,7 +6350,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 186
+        "y": 203
       },
       "targets": [
         {
@@ -5914,7 +6420,7 @@
       }
     },
     {
-      "id": 82,
+      "id": 88,
       "type": "timeseries",
       "title": "Gateway Uptime",
       "datasource": {
@@ -5925,7 +6431,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 186
+        "y": 203
       },
       "targets": [
         {
@@ -5993,7 +6499,7 @@
       }
     },
     {
-      "id": 83,
+      "id": 89,
       "type": "stat",
       "title": "Gateway Restarts (range)",
       "datasource": {
@@ -6004,7 +6510,7 @@
         "h": 8,
         "w": 4,
         "x": 16,
-        "y": 186
+        "y": 203
       },
       "targets": [
         {
@@ -6062,7 +6568,7 @@
       }
     },
     {
-      "id": 84,
+      "id": 90,
       "type": "timeseries",
       "title": "Goroutines (if go_* shipped)",
       "datasource": {
@@ -6073,7 +6579,7 @@
         "h": 8,
         "w": 4,
         "x": 20,
-        "y": 186
+        "y": 203
       },
       "targets": [
         {
@@ -6142,7 +6648,7 @@
       "description": "Requires GW_METRICS_SERIES_PREFIXES to include go_; the default excludes it."
     },
     {
-      "id": 85,
+      "id": 91,
       "type": "row",
       "title": "Fleet Inventory",
       "collapsed": false,
@@ -6150,12 +6656,12 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 194
+        "y": 211
       },
       "panels": []
     },
     {
-      "id": 86,
+      "id": 92,
       "type": "stat",
       "title": "Gateways Reporting Now",
       "datasource": {
@@ -6166,7 +6672,7 @@
         "h": 6,
         "w": 6,
         "x": 0,
-        "y": 195
+        "y": 212
       },
       "targets": [
         {
@@ -6217,7 +6723,7 @@
       "description": "Reporting installations are inventory, not the same as active gateways serving users."
     },
     {
-      "id": 87,
+      "id": 93,
       "type": "table",
       "title": "Gateways \u2014 Version and Build",
       "datasource": {
@@ -6228,7 +6734,7 @@
         "h": 8,
         "w": 18,
         "x": 6,
-        "y": 195
+        "y": 212
       },
       "targets": [
         {
