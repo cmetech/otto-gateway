@@ -99,6 +99,10 @@ type SnapshotPool struct {
 	// dashboard's per-slot TURNS cell renders "N / MAX" when MaxTurns > 0,
 	// else just "N" (quick 260721-ovm).
 	MaxTurns int `json:"max_turns"`
+
+	IdleRecycleMS          int64  `json:"idle_recycle_ms"`
+	IdleRecycleMemoryBytes uint64 `json:"idle_recycle_memory_bytes"`
+	IdleRecycleSupported   bool   `json:"idle_recycle_supported"`
 }
 
 // SnapshotSlot is the per-slot detail row in the admin snapshot.
@@ -126,6 +130,9 @@ type SnapshotSlot struct {
 	// recycle completes (quick 260721-ovm).
 	Turns     int        `json:"turns"`
 	SpawnedAt *time.Time `json:"spawned_at"`
+
+	UserRequestsSinceSpawn uint64     `json:"user_requests_since_spawn"`
+	LastUserReleaseAt      *time.Time `json:"last_user_release_at"`
 
 	// Pid is the current worker's OS process id — mirrors pool.AgentSlot.Pid.
 	// 0 when unknown (dead, respawning, or nil-client slot). The label is
@@ -212,6 +219,9 @@ func (h *handler) snapshotHandler(w http.ResponseWriter, r *http.Request) {
 	// MaxTurns is independent of PoolDetail — Deps.KiroWorkerMaxTurns is a
 	// config-derived value the dashboard needs even if PoolDetail is nil.
 	snap.Pool.MaxTurns = h.deps.KiroWorkerMaxTurns
+	snap.Pool.IdleRecycleMS = h.deps.KiroWorkerIdleRecycleAfter.Milliseconds()
+	snap.Pool.IdleRecycleMemoryBytes = uint64(h.deps.KiroWorkerIdleRecycleMemoryMB) << 20
+	snap.Pool.IdleRecycleSupported = h.deps.KiroWorkerIdleRecycleSupported
 	if h.deps.PoolDetail != nil {
 		slots := h.deps.PoolDetail.Detail()
 		snap.Pool.Slots = slots

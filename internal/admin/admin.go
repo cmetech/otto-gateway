@@ -196,6 +196,12 @@ type Deps struct {
 	// recycling. Surfaced on /admin/docs so an operator can confirm the
 	// wrapper-template value took effect without grepping env.
 	KiroWorkerMaxTurns int
+	// KiroWorkerIdleRecycle* are read-only snapshots of the configured
+	// idle-memory recycle policy and the compiled platform capability. They are
+	// surfaced in /admin/api/snapshot even when no Kiro pool is running.
+	KiroWorkerIdleRecycleAfter     time.Duration
+	KiroWorkerIdleRecycleMemoryMB  int
+	KiroWorkerIdleRecycleSupported bool
 	// KiroToolAliases is a read-only snapshot of the KIRO_TOOL_ALIASES map
 	// (kiro native tool name → caller-offered tool name, e.g. execute →
 	// run_shell). Surfaced on /admin/docs so an operator can confirm the

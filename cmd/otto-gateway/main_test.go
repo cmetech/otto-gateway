@@ -20,16 +20,140 @@ import (
 	"github.com/google/go-cmp/cmp"
 
 	"otto-gateway/internal/acp"
+	"otto-gateway/internal/admin"
 	"otto-gateway/internal/canonical"
 	"otto-gateway/internal/config"
 	gatewayembed "otto-gateway/internal/embed"
 	"otto-gateway/internal/engine"
+	"otto-gateway/internal/metrics"
 	"otto-gateway/internal/plugin"
 	"otto-gateway/internal/plugin/pii"
+	"otto-gateway/internal/pool"
 	"otto-gateway/internal/privacy"
+	"otto-gateway/internal/procstat"
 	"otto-gateway/internal/registry"
 	"otto-gateway/internal/testutil"
 )
+
+type fakeRecycleMetricsRecorder struct{}
+
+func (*fakeRecycleMetricsRecorder) RecordWorkerRecycle(string, uint64, time.Duration) {}
+
+func TestPoolDetailAdapter_SnapshotSlotFromPoolCopiesIdleRecycleActivity(t *testing.T) {
+	sid := "session-17"
+	spawned := time.Date(2026, 8, 4, 10, 0, 0, 0, time.UTC)
+	released := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	input := pool.AgentSlot{
+		Label:                  "slot-3",
+		Alive:                  true,
+		Busy:                   true,
+		CurrentSessionID:       &sid,
+		Turns:                  9,
+		SpawnedAt:              &spawned,
+		Pid:                    43210,
+		UserRequestsSinceSpawn: 7,
+		LastUserReleaseAt:      &released,
+	}
+	want := admin.SnapshotSlot{
+		Label:                  "slot-3",
+		Alive:                  true,
+		Busy:                   true,
+		CurrentSessionID:       &sid,
+		Turns:                  9,
+		SpawnedAt:              &spawned,
+		Pid:                    43210,
+		UserRequestsSinceSpawn: 7,
+		LastUserReleaseAt:      &released,
+	}
+
+	if diff := cmp.Diff(want, snapshotSlotFromPool(input)); diff != "" {
+		t.Fatalf("pool-to-admin slot projection mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestApplyIdleMemoryRecyclePoolConfig_IdleRecyclePolicy(t *testing.T) {
+	recorder := &fakeRecycleMetricsRecorder{}
+	cfg := config.Config{
+		KiroWorkerIdleRecycleAfter:    37 * time.Minute,
+		KiroWorkerIdleRecycleMemoryMB: 613,
+	}
+	var got pool.Config
+
+	applyIdleMemoryRecyclePoolConfig(&got, cfg, recorder)
+
+	if got.IdleRecycleAfter != 37*time.Minute {
+		t.Fatalf("IdleRecycleAfter = %v, want 37m", got.IdleRecycleAfter)
+	}
+	if got.IdleRecycleMemoryBytes != 613<<20 {
+		t.Fatalf("IdleRecycleMemoryBytes = %d, want %d", got.IdleRecycleMemoryBytes, uint64(613<<20))
+	}
+	if got.WorkerMemorySupported != procstat.Supported() {
+		t.Fatalf("WorkerMemorySupported = %t, want %t", got.WorkerMemorySupported, procstat.Supported())
+	}
+	if got.ReadWorkerMemory == nil {
+		t.Fatal("ReadWorkerMemory = nil")
+	}
+	wantSample := procstat.Read(os.Getpid())
+	rssBytes, ok := got.ReadWorkerMemory(os.Getpid())
+	if rssBytes != wantSample.RSSBytes || ok != wantSample.OK {
+		t.Fatalf("ReadWorkerMemory(self) = (%d, %t), want (%d, %t)", rssBytes, ok, wantSample.RSSBytes, wantSample.OK)
+	}
+	if got.RecycleMetrics != recorder {
+		t.Fatalf("RecycleMetrics identity = %T %p, want %T %p", got.RecycleMetrics, got.RecycleMetrics, recorder, recorder)
+	}
+}
+
+func TestIdleRecycleMetricsWorkerProcFromPoolCopiesActivity(t *testing.T) {
+	input := pool.WorkerProc{
+		Label:                  "slot-2",
+		Pid:                    24680,
+		UserRequestsSinceSpawn: 11,
+		IdleSeconds:            905.25,
+	}
+	want := metrics.WorkerProc{
+		Slot:                   "slot-2",
+		Pid:                    24680,
+		UserRequestsSinceSpawn: 11,
+		IdleSeconds:            905.25,
+	}
+
+	if diff := cmp.Diff(want, metricsWorkerProcFromPool(input)); diff != "" {
+		t.Fatalf("pool-to-metrics worker projection mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestApp_IdleMemoryRecycleAdminPolicyFromConfig_IdleRecycleSnapshot(t *testing.T) {
+	cfg := strictPrivacyConfig()
+	cfg.KiroCmd = ""
+	cfg.KiroWorkerIdleRecycleAfter = 23*time.Minute + 17*time.Second
+	cfg.KiroWorkerIdleRecycleMemoryMB = 731
+
+	a, cleanup, err := newApp(context.Background(), cfg, testutil.Logger(t))
+	if err != nil {
+		t.Fatalf("newApp: %v", err)
+	}
+	defer cleanup()
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/admin/api/snapshot", nil)
+	rec := httptest.NewRecorder()
+	a.srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /admin/api/snapshot: got %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var snap admin.Snapshot
+	if err := json.NewDecoder(rec.Body).Decode(&snap); err != nil {
+		t.Fatalf("decode snapshot: %v", err)
+	}
+	if snap.Pool.IdleRecycleMS != 1_397_000 {
+		t.Fatalf("idle_recycle_ms = %d, want 1397000", snap.Pool.IdleRecycleMS)
+	}
+	if snap.Pool.IdleRecycleMemoryBytes != 731<<20 {
+		t.Fatalf("idle_recycle_memory_bytes = %d, want %d", snap.Pool.IdleRecycleMemoryBytes, uint64(731<<20))
+	}
+	if snap.Pool.IdleRecycleSupported != procstat.Supported() {
+		t.Fatalf("idle_recycle_supported = %t, want %t", snap.Pool.IdleRecycleSupported, procstat.Supported())
+	}
+}
 
 func TestRedactSupportUsesSharedSecretClassifierBeforeStartup(t *testing.T) {
 	const input = "Authorization: Bearer bearer-secret-7788\nclient_secret=client-secret-8899\npostgres://dbuser:dbpass@db.internal/app\nghp_abcdefghijklmnopqrstuvwxyzABCDE12345\nmonkey=value\n"

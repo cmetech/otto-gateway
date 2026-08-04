@@ -221,6 +221,44 @@ func TestAdmin_SnapshotHandler(t *testing.T) {
 	}
 }
 
+// TestSnapshotIdleRecycleContract catches missing or incorrectly converted
+// idle-memory policy fields and dropped per-slot activity in the admin JSON
+// boundary. The policy remains visible even when no live pool exists.
+func TestSnapshotIdleRecycleContract(t *testing.T) {
+	released := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	deps := Deps{
+		Logger:                         testutil.Logger(t),
+		KiroWorkerIdleRecycleAfter:     15 * time.Minute,
+		KiroWorkerIdleRecycleMemoryMB:  500,
+		KiroWorkerIdleRecycleSupported: true,
+		PoolDetail: &stubPool{slots: []SnapshotSlot{{
+			Label:                  "slot-0",
+			Alive:                  true,
+			UserRequestsSinceSpawn: 1,
+			LastUserReleaseAt:      &released,
+		}}},
+	}
+	h := Handler(deps)
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/snapshot", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/snapshot: got %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+
+	var snap Snapshot
+	if err := json.NewDecoder(rec.Body).Decode(&snap); err != nil {
+		t.Fatalf("decode snapshot: %v", err)
+	}
+	if snap.Pool.IdleRecycleMS != 900000 || snap.Pool.IdleRecycleMemoryBytes != 500<<20 || !snap.Pool.IdleRecycleSupported {
+		t.Fatalf("idle policy snapshot = %+v", snap.Pool)
+	}
+	if got := snap.Pool.Slots[0]; got.UserRequestsSinceSpawn != 1 || got.LastUserReleaseAt == nil || !got.LastUserReleaseAt.Equal(released) {
+		t.Fatalf("slot activity snapshot = %+v", got)
+	}
+}
+
 // TestAdmin_SnapshotNilSafe verifies that the handler constructed with nil
 // PoolDetail and nil Registry does not panic and returns sensible zero values.
 func TestAdmin_SnapshotNilSafe(t *testing.T) {

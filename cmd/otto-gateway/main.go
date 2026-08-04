@@ -80,6 +80,28 @@ const (
 	redactSupportMaxInput  = 16 << 20
 )
 
+func readWorkerMemory(pid int) (uint64, bool) {
+	s := procstat.Read(pid)
+	return s.RSSBytes, s.OK
+}
+
+func applyIdleMemoryRecyclePoolConfig(dst *pool.Config, cfg config.Config, recorder pool.RecycleMetricsRecorder) {
+	dst.IdleRecycleAfter = cfg.KiroWorkerIdleRecycleAfter
+	dst.IdleRecycleMemoryBytes = uint64(cfg.KiroWorkerIdleRecycleMemoryMB) << 20
+	dst.WorkerMemorySupported = procstat.Supported()
+	dst.ReadWorkerMemory = readWorkerMemory
+	dst.RecycleMetrics = recorder
+}
+
+func metricsWorkerProcFromPool(w pool.WorkerProc) metrics.WorkerProc {
+	return metrics.WorkerProc{
+		Slot:                   w.Label,
+		Pid:                    w.Pid,
+		UserRequestsSinceSpawn: w.UserRequestsSinceSpawn,
+		IdleSeconds:            w.IdleSeconds,
+	}
+}
+
 func runUtility(args []string, in io.Reader, out io.Writer) (bool, error) {
 	if len(args) == 0 || args[0] != "redact-support" {
 		return false, nil
@@ -667,7 +689,7 @@ func newAppWithRegistryLoader(ctx context.Context, cfg config.Config, logger *sl
 			wps := a.pool.WorkerProcs()
 			out := make([]metrics.WorkerProc, 0, len(wps))
 			for _, w := range wps {
-				out = append(out, metrics.WorkerProc{Slot: w.Label, Pid: w.Pid})
+				out = append(out, metricsWorkerProcFromPool(w))
 			}
 			return out
 		},
@@ -720,7 +742,7 @@ func newAppWithRegistryLoader(ctx context.Context, cfg config.Config, logger *sl
 			return nil, func() {}, err
 		}
 		kiroEnv := kiroProcessEnv(cfg)
-		a.pool = pool.New(pool.Config{
+		poolCfg := pool.Config{
 			Logger:         logger,
 			Size:           cfg.PoolSize,
 			KiroCmd:        cfg.KiroCmd,
@@ -732,7 +754,9 @@ func newAppWithRegistryLoader(ctx context.Context, cfg config.Config, logger *sl
 			Capture:        controllerRecordFunc(acpCapture), // Track 0 (nil controller → nil func → no capture)
 			MaxToolDenials: cfg.MaxToolDenials,               // Track 3a: circuit breaker threshold
 			MaxWorkerTurns: cfg.KiroWorkerMaxTurns,           // worker recycling: scheduled respawn threshold
-		})
+		}
+		applyIdleMemoryRecyclePoolConfig(&poolCfg, cfg, gwMetrics)
+		a.pool = pool.New(poolCfg)
 
 		// POOL-02: warmup BEFORE the HTTP listener accepts traffic.
 		// Bound it with warmupDeadline so a hung Initialize cannot
@@ -1125,20 +1149,23 @@ func newAppWithRegistryLoader(ctx context.Context, cfg config.Config, logger *sl
 		// Booleans for Auth/IPAllowlist are derived from len() the same
 		// way the "auth mode" startup log line does it (single source of
 		// truth for "is this knob on?").
-		HTTPAddr:             cfg.HTTPAddr,
-		PoolSize:             cfg.PoolSize,
-		SessionTTL:           cfg.SessionTTL,
-		StreamIdleTimeoutSec: cfg.StreamIdleTimeoutSec,
-		AuthEnabled:          len(cfg.AuthToken) > 0,
-		IPAllowlistEnabled:   len(cfg.AllowedIPs) > 0,
-		KiroCmd:              cfg.KiroCmd,
-		KiroArgs:             cfg.KiroArgs,
-		KiroCwd:              cfg.KiroCWD,
-		KiroWorkerMaxTurns:   cfg.KiroWorkerMaxTurns,
-		KiroToolAliases:      cfg.ToolAliases,
-		OllamaPathPrefix:     cfg.OllamaPathPrefix,
-		OpenAIPathPrefix:     cfg.OpenAIPathPrefix,
-		AnthropicPathPrefix:  cfg.AnthropicPathPrefix,
+		HTTPAddr:                       cfg.HTTPAddr,
+		PoolSize:                       cfg.PoolSize,
+		SessionTTL:                     cfg.SessionTTL,
+		StreamIdleTimeoutSec:           cfg.StreamIdleTimeoutSec,
+		AuthEnabled:                    len(cfg.AuthToken) > 0,
+		IPAllowlistEnabled:             len(cfg.AllowedIPs) > 0,
+		KiroCmd:                        cfg.KiroCmd,
+		KiroArgs:                       cfg.KiroArgs,
+		KiroCwd:                        cfg.KiroCWD,
+		KiroWorkerMaxTurns:             cfg.KiroWorkerMaxTurns,
+		KiroWorkerIdleRecycleAfter:     cfg.KiroWorkerIdleRecycleAfter,
+		KiroWorkerIdleRecycleMemoryMB:  cfg.KiroWorkerIdleRecycleMemoryMB,
+		KiroWorkerIdleRecycleSupported: procstat.Supported(),
+		KiroToolAliases:                cfg.ToolAliases,
+		OllamaPathPrefix:               cfg.OllamaPathPrefix,
+		OpenAIPathPrefix:               cfg.OpenAIPathPrefix,
+		AnthropicPathPrefix:            cfg.AnthropicPathPrefix,
 
 		// PII posture surfaced on /admin/about (read-only). Boot
 		// validation has already enforced the encrypt-active-requires-key
@@ -1444,6 +1471,20 @@ type adminPoolDetailAdapter struct {
 	pool *pool.Pool
 }
 
+func snapshotSlotFromPool(r pool.AgentSlot) admin.SnapshotSlot {
+	return admin.SnapshotSlot{
+		Label:                  r.Label,
+		Alive:                  r.Alive,
+		Busy:                   r.Busy,
+		CurrentSessionID:       r.CurrentSessionID,
+		Turns:                  r.Turns,
+		SpawnedAt:              r.SpawnedAt,
+		Pid:                    r.Pid,
+		UserRequestsSinceSpawn: r.UserRequestsSinceSpawn,
+		LastUserReleaseAt:      r.LastUserReleaseAt,
+	}
+}
+
 func (a adminPoolDetailAdapter) Detail() []admin.SnapshotSlot {
 	if a.pool == nil {
 		return nil
@@ -1451,15 +1492,7 @@ func (a adminPoolDetailAdapter) Detail() []admin.SnapshotSlot {
 	rows := a.pool.Detail()
 	out := make([]admin.SnapshotSlot, len(rows))
 	for i, r := range rows {
-		out[i] = admin.SnapshotSlot{
-			Label:            r.Label,
-			Alive:            r.Alive,
-			Busy:             r.Busy,
-			CurrentSessionID: r.CurrentSessionID,
-			Turns:            r.Turns,
-			SpawnedAt:        r.SpawnedAt,
-			Pid:              r.Pid,
-		}
+		out[i] = snapshotSlotFromPool(r)
 	}
 	return out
 }
