@@ -954,33 +954,15 @@ func snapshotSlotFromPool(r pool.AgentSlot) admin.SnapshotSlot
 
 Add `TestSnapshotSlotFromPool_CopiesIdleRecycleActivity` with a non-zero user count and release timestamp and compare the complete result with `cmp.Diff`. Have `adminPoolDetailAdapter.Detail` call this helper for every row.
 
-Add this exact source-contract test in `main_test.go`; it complements compilation by ensuring future literal refactors do not silently omit production wiring:
+Extract the pool-policy assignment into this cmd-owned helper:
 
 ```go
-func TestMain_WiresIdleMemoryWorkerRecyclePolicy(t *testing.T) {
-	body, err := os.ReadFile("main.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	source := string(body)
-	for _, want := range []string{
-		"IdleRecycleAfter:       cfg.KiroWorkerIdleRecycleAfter",
-		"IdleRecycleMemoryBytes: uint64(cfg.KiroWorkerIdleRecycleMemoryMB) << 20",
-		"WorkerMemorySupported:  procstat.Supported()",
-		"ReadWorkerMemory:       readWorkerMemory",
-		"RecycleMetrics:         gwMetrics",
-		"UserRequestsSinceSpawn: w.UserRequestsSinceSpawn",
-		"IdleSeconds:            w.IdleSeconds",
-		"KiroWorkerIdleRecycleAfter:     cfg.KiroWorkerIdleRecycleAfter",
-		"KiroWorkerIdleRecycleMemoryMB:  cfg.KiroWorkerIdleRecycleMemoryMB",
-		"KiroWorkerIdleRecycleSupported: procstat.Supported()",
-	} {
-		if !strings.Contains(source, want) {
-			t.Errorf("main.go missing idle-memory wiring %q", want)
-		}
-	}
-}
+func applyIdleMemoryRecyclePoolConfig(dst *pool.Config, cfg config.Config, recorder pool.RecycleMetricsRecorder)
 ```
+
+Add `TestApplyIdleMemoryRecyclePoolConfig` using a pointer fake recorder. Assert the duration, MiB-to-bytes conversion, compiled-platform support, non-nil memory reader, and exact recorder identity on the resulting `pool.Config`. Call the memory reader with the current process PID and compare its result to `procstat.Read(os.Getpid())`, which is a supported sample on Windows/Linux and an unavailable sample on macOS.
+
+Add `TestApp_IdleMemoryRecycleAdminPolicyFromConfig` in degraded `KiroCmd=""` mode. Construct `newApp` with distinctive idle and memory values, request `/admin/api/snapshot`, and assert the decoded pool policy contains those values and `procstat.Supported()`. This behavior-level integration test proves the command layer forwards all three admin dependencies without inspecting source text.
 
 - [ ] **Step 5: Wire process sampling, recycle metrics, and activity projections**
 
@@ -993,7 +975,7 @@ func readWorkerMemory(pid int) (uint64, bool) {
 }
 ```
 
-Populate `pool.Config`:
+Create the ordinary `pool.Config` literal, call `applyIdleMemoryRecyclePoolConfig` on it, and then pass it to `pool.New`. The helper populates:
 
 ```go
 IdleRecycleAfter:       cfg.KiroWorkerIdleRecycleAfter,
