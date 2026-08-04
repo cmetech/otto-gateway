@@ -4,7 +4,7 @@ milestone: v1.10.4
 milestone_name: Privacy Boundary Service
 status: phase-complete
 stopped_at: Phase 21 implementation complete; milestone not published
-last_updated: "2026-08-04T11:14:25Z"
+last_updated: "2026-08-04T16:28:38Z"
 last_activity: 2026-08-04 -- Approved idle-memory Kiro worker recycling implementation plan completed
 progress:
   total_phases: 27
@@ -199,6 +199,7 @@ None yet.
 | 260731-ghu | Create the reviewed, 17-task strict-TDD Gateway privacy-boundary implementation plan; documentation only, no runtime changes | 2026-07-31 | (inline) | [260731-ghu-create-the-strict-tdd-implementation-pla](./quick/260731-ghu-create-the-strict-tdd-implementation-pla/) |
 | 260804-9j1 | Write the approved idle-memory Kiro worker recycling design spec; documentation only, implementation held for written review | 2026-08-04 | ee3ad07 | [260804-9j1-write-the-approved-idle-memory-kiro-work](./quick/260804-9j1-write-the-approved-idle-memory-kiro-work/) |
 | 260804-9ok | Create the approved idle-memory Kiro worker recycling implementation plan; documentation only, no runtime changes | 2026-08-04 | fa8e27b | [260804-9ok-create-the-approved-idle-memory-kiro-wor](./quick/260804-9ok-create-the-approved-idle-memory-kiro-wor/) |
+| 260804-ae3 | Implement idle-memory Kiro worker recycling with metrics, admin UI, and Grafana visibility | 2026-08-04 | 344c3d4 | [260804-ae3-implement-the-approved-idle-memory-kiro-](./quick/260804-ae3-implement-the-approved-idle-memory-kiro-/) |
 
 ## Deferred Items
 
