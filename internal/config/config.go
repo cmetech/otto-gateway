@@ -607,6 +607,14 @@ func Load() (Config, error) {
 		errs = append(errs, fmt.Errorf("KIRO_WORKER_MAX_TURNS: sanity cap exceeded (max 10000), got %d", maxWorkerTurns))
 	}
 
+	const (
+		maxDurationMilliseconds = int64(1<<63-1) / int64(time.Millisecond)
+		minDurationMilliseconds = int64(-1<<63) / int64(time.Millisecond)
+	)
+	if ms, parseErr := strconv.ParseInt(strings.TrimSpace(os.Getenv("KIRO_WORKER_IDLE_RECYCLE_MS")), 10, 64); parseErr == nil && (ms > maxDurationMilliseconds || ms < minDurationMilliseconds) {
+		errs = append(errs, fmt.Errorf("KIRO_WORKER_IDLE_RECYCLE_MS: millisecond value overflows time.Duration, got %d", ms))
+	}
+
 	workerIdleRecycleAfter, err := getEnvDuration("KIRO_WORKER_IDLE_RECYCLE_MS", 0)
 	if err != nil {
 		errs = append(errs, err)

@@ -46,6 +46,16 @@ func TestLoad_WorkerIdleRecycleMilliseconds(t *testing.T) {
 	}
 }
 
+func TestLoad_WorkerIdleRecycleRejectsMillisecondOverflow(t *testing.T) {
+	t.Setenv("HTTP_ADDR", "127.0.0.1:0")
+	t.Setenv("KIRO_WORKER_IDLE_RECYCLE_MS", "288230376151711744")
+
+	_, err := config.Load()
+	if err == nil || !strings.Contains(err.Error(), "KIRO_WORKER_IDLE_RECYCLE_MS") {
+		t.Fatalf("Load error = %v, want named overflow error", err)
+	}
+}
+
 func TestLoad_WorkerIdleRecycleRejectsInvalidValues(t *testing.T) {
 	tests := []struct{ key, value string }{
 		{"KIRO_WORKER_IDLE_RECYCLE_MS", "-1"},
