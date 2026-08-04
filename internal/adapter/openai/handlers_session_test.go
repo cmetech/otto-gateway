@@ -99,15 +99,18 @@ func (s *sessionEngine) CollectFromRun(ctx context.Context, run RunHandle, req *
 // newSessionTestAdapter wraps newFakeAdapter with the session wiring.
 func newSessionTestAdapter(poolEng *fakeEngine, reg SessionRegistry, sessionEng *sessionEngine) *Adapter {
 	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{}))
-	return New(Config{
+	cfg := Config{
 		Logger:   logger,
-		Engine:   poolEng,
 		Registry: reg,
 		EngineForSession: func(_ *session.Entry) Engine {
 			sessionEng.callCount.Add(1)
 			return sessionEng
 		},
-	})
+	}
+	if poolEng != nil {
+		cfg.Engine = poolEng
+	}
+	return New(cfg)
 }
 
 func mountedSessionAdapter(a *Adapter) *httptest.Server {
@@ -188,7 +191,7 @@ func TestOpenAIHandleChatCompletions_WithXSessionId_RoutesToRegistry(t *testing.
 	entry := session.NewEntryForTest(fakeACPClient{}, "sid-O")
 	reg := &fakeSessionRegistry{entry: entry}
 	sessionEng := &sessionEngine{inner: poolEng}
-	a := newSessionTestAdapter(poolEng, reg, sessionEng)
+	a := newSessionTestAdapter(nil, reg, sessionEng)
 	srv := mountedSessionAdapter(a)
 	defer srv.Close()
 
@@ -308,7 +311,7 @@ func TestOpenAIHandleCompletions_WithXSessionId_RoutesToRegistry(t *testing.T) {
 	entry := session.NewEntryForTest(fakeACPClient{}, "sid-cmpl")
 	reg := &fakeSessionRegistry{entry: entry}
 	sessionEng := &sessionEngine{inner: poolEng}
-	a := newSessionTestAdapter(poolEng, reg, sessionEng)
+	a := newSessionTestAdapter(nil, reg, sessionEng)
 	srv := mountedSessionAdapter(a)
 	defer srv.Close()
 

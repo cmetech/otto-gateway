@@ -109,31 +109,28 @@ const messagesBodyCap int64 = 4 << 20
 // normalization via wireToChatRequest), ANTH-07 (inbound thinking
 // preservation + non-streaming outbound thinking).
 //
+// Engine availability is checked after request validation and resolveEngine,
+// so a dedicated X-Session-Id engine can serve a request without a warm pool.
+// A nil request-selected engine returns 503 errAPI.
+//
 // Flow:
-//  1. Nil-engine guard → 503 errAPI ("kiro-cli not configured").
-//  2. D-07: anthropic-version header check → 400 errInvalidRequest.
-//  3. D-10: anthropic-beta header debug-log + ignore.
-//  4. decodeJSONBody with 4 MiB cap. 413 errRequestTooLarge on cap;
+//  1. D-07: anthropic-version header check → 400 errInvalidRequest.
+//  2. D-10: anthropic-beta header debug-log + ignore.
+//  3. decodeJSONBody with 4 MiB cap. 413 errRequestTooLarge on cap;
 //     400 errInvalidRequest on syntactic error (sanitized — never
 //     echo the raw body content per T-02-33).
-//  5. Field validation: model / max_tokens / messages non-empty.
-//  6. wireToChatRequest builds canonical request.
-//  7. Branch on wire.Stream:
+//  4. Field validation: model / max_tokens / messages non-empty.
+//  5. wireToChatRequest builds canonical request.
+//  6. Branch on wire.Stream:
 //     - false (or absent): Engine.Collect → chatResponseToMessage → JSON.
 //     - true: Engine.Run → runSSEEmitter (real Plan 03.1-03 emitter
 //     in sse.go — Plan 02 stub deleted).
-//  8. T-02-33: engine errors are LOGGED via slog.Error and rendered
+//  7. T-02-33: engine errors are LOGGED via slog.Error and rendered
 //     as 500 errAPI with the generic message "internal error" —
 //     never echo err.Error() which may contain request fragments.
 func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 	observation := newRequestObservation()
 	defer func() { a.observeRequest(observation) }()
-
-	if a.cfg.Engine == nil {
-		observation.Outcome = "upstream_error"
-		writeError(w, http.StatusServiceUnavailable, errAPI, "kiro-cli not configured (set KIRO_CMD)")
-		return
-	}
 
 	// D-07: anthropic-version required.
 	if r.Header.Get("anthropic-version") == "" {
@@ -219,6 +216,11 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 			observation.Outcome = "pool_exhausted"
 		}
 		a.writeSessionError(w, sErr)
+		return
+	}
+	if eng == nil {
+		observation.Outcome = "upstream_error"
+		writeError(w, http.StatusServiceUnavailable, errAPI, "kiro-cli not configured (set KIRO_CMD)")
 		return
 	}
 	observation.SessionMode = "stateless"

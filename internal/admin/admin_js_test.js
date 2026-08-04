@@ -432,12 +432,15 @@ test('slot grid preserves source snapshots and renders unexpected workers above 
   const unexpectedSnapshot = slotSnapshotWithCount(7);
   const paddedSlots = paddedSnapshot.pool.slots;
   const unexpectedSlots = unexpectedSnapshot.pool.slots;
+  const paddedSlotsBefore = structuredClone(paddedSlots);
+  const unexpectedSlotsBefore = structuredClone(unexpectedSlots);
   const harness = createHarness([paddedSnapshot, unexpectedSnapshot]);
 
   harness.start();
   await settleSnapshot();
   assert.strictEqual(paddedSnapshot.pool.slots, paddedSlots);
   assert.equal(paddedSlots.length, 2, 'padding must not add vacant cards to the server snapshot');
+  assert.deepEqual(paddedSlots, paddedSlotsBefore, 'padding must preserve real-slot order and content');
 
   harness.poll();
   await settleSnapshot();
@@ -448,4 +451,5 @@ test('slot grid preserves source snapshots and renders unexpected workers above 
   );
   assert.strictEqual(unexpectedSnapshot.pool.slots, unexpectedSlots);
   assert.equal(unexpectedSlots.length, 7, 'rendering must not truncate the server snapshot');
+  assert.deepEqual(unexpectedSlots, unexpectedSlotsBefore, 'rendering must preserve real-slot order and content');
 });

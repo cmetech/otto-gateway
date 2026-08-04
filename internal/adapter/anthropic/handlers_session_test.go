@@ -92,14 +92,17 @@ func (s *sessionEngine) CollectFromRun(ctx context.Context, run RunHandle, req *
 }
 
 func newSessionTestAdapter(poolEng *fakeEngine, reg SessionRegistry, sessionEng *sessionEngine) *Adapter {
-	return New(Config{
-		Engine:   poolEng,
+	cfg := Config{
 		Registry: reg,
 		EngineForSession: func(_ *session.Entry) Engine {
 			sessionEng.callCount.Add(1)
 			return sessionEng
 		},
-	})
+	}
+	if poolEng != nil {
+		cfg.Engine = poolEng
+	}
+	return New(cfg)
 }
 
 // doPostWithSid is doPost with a configurable X-Session-Id header (and
@@ -161,7 +164,7 @@ func TestAnthropicHandleMessages_WithXSessionId_RoutesToRegistry(t *testing.T) {
 	entry := session.NewEntryForTest(fakeACPClient{}, "sid-A")
 	reg := &fakeSessionRegistry{entry: entry}
 	sessionEng := &sessionEngine{inner: poolEng}
-	a := newSessionTestAdapter(poolEng, reg, sessionEng)
+	a := newSessionTestAdapter(nil, reg, sessionEng)
 
 	body := `{"model":"claude-3-opus","max_tokens":100,"messages":[{"role":"user","content":"hi"}]}`
 	w := doPostWithSid(t, a, "sid-A", body)

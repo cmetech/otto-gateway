@@ -94,28 +94,25 @@ func stampPrivacyContext(ctx context.Context, w http.ResponseWriter, r *http.Req
 
 // handleChatCompletions handles POST /chat/completions.
 //
+// Engine availability is checked after request validation and resolveEngine,
+// so a dedicated X-Session-Id engine can serve a request without a warm pool.
+// A nil request-selected engine returns 503 errAPI.
+//
 // Flow:
-//  1. Nil-engine guard → 503 errAPI ("kiro-cli not configured").
-//  2. decodeJSONBody with 4 MiB cap. 413 errRequestTooLarge on cap;
+//  1. decodeJSONBody with 4 MiB cap. 413 errRequestTooLarge on cap;
 //     400 errInvalidRequest on syntactic error (sanitized — include
 //     decoder's syntactic message, NOT raw body content per T-02-33).
-//  3. Empty messages → 400 errInvalidRequest.
-//  4. wireToChatRequest builds the canonical request.
-//  5. Branch on wire.Stream:
+//  2. Empty messages → 400 errInvalidRequest.
+//  3. wireToChatRequest builds the canonical request.
+//  4. Branch on wire.Stream:
 //     - true: engine.Run → runSSEEmitter (Pi/SC2 path).
 //     - false: engine.Collect → chatResponseToCompletion → JSON.
-//  6. T-02-33: engine errors are logged raw via slog.Error then rendered
+//  5. T-02-33: engine errors are logged raw via slog.Error then rendered
 //     as 500 errAPI with the generic message "internal error" — NEVER
 //     echo err.Error() which may contain request fragments.
 func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	observation := newRequestObservation()
 	defer func() { a.observeRequest(observation) }()
-
-	if a.cfg.Engine == nil {
-		observation.Outcome = "upstream_error"
-		writeError(w, http.StatusServiceUnavailable, errAPI, "kiro-cli not configured (set KIRO_CMD)")
-		return
-	}
 
 	var wire chatCompletionRequest
 	if err := decodeJSONBody(w, r, chatBodyCap, &wire); err != nil {
@@ -177,6 +174,11 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 			observation.Outcome = "pool_exhausted"
 		}
 		a.writeSessionError(w, sErr)
+		return
+	}
+	if eng == nil {
+		observation.Outcome = "upstream_error"
+		writeError(w, http.StatusServiceUnavailable, errAPI, "kiro-cli not configured (set KIRO_CMD)")
 		return
 	}
 	observation.SessionMode = "stateless"
@@ -427,29 +429,26 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 
 // handleCompletions handles POST /completions (legacy text completion shim — D-03).
 //
+// Engine availability is checked after request validation and resolveEngine,
+// so a dedicated X-Session-Id engine can serve a request without a warm pool.
+// A nil request-selected engine returns 503 errAPI.
+//
 // Flow:
-//  1. Nil-engine guard → 503 errAPI ("kiro-cli not configured").
-//  2. decodeJSONBody with 4 MiB cap. 413 errRequestTooLarge on cap;
+//  1. decodeJSONBody with 4 MiB cap. 413 errRequestTooLarge on cap;
 //     400 errInvalidRequest on syntactic error.
-//  3. Silently downgrade stream:true to false (JSON-only shim; D-03 /
+//  2. Silently downgrade stream:true to false (JSON-only shim; D-03 /
 //     Open Question 2 resolved — no Phase 3 client drives completions streaming).
 //     Mirror ollama/handlers.go:42-45.
-//  4. promptToMessages: decode Prompt (string or []string); empty → 400.
-//  5. engine.Collect → chatResponseToTextCompletion → writeJSON.
-//  6. T-02-33: engine errors logged raw via slog.Error, generic 500 — NEVER echo.
-//  7. Accept-and-ignore: logprobs/echo/suffix/best_of/n/max_tokens in wire struct.
+//  3. promptToMessages: decode Prompt (string or []string); empty → 400.
+//  4. engine.Collect → chatResponseToTextCompletion → writeJSON.
+//  5. T-02-33: engine errors logged raw via slog.Error, generic 500 — NEVER echo.
+//  6. Accept-and-ignore: logprobs/echo/suffix/best_of/n/max_tokens in wire struct.
 //
 // T-03-20: decodeJSONBody + MaxBytesReader(4 MiB) → 413.
 // T-03-21: engine.Collect errors slog'd raw + generic 500 message (T-02-33 carry-forward).
 func (a *Adapter) handleCompletions(w http.ResponseWriter, r *http.Request) {
 	observation := newRequestObservation()
 	defer func() { a.observeRequest(observation) }()
-
-	if a.cfg.Engine == nil {
-		observation.Outcome = "upstream_error"
-		writeError(w, http.StatusServiceUnavailable, errAPI, "kiro-cli not configured (set KIRO_CMD)")
-		return
-	}
 
 	var wire completionWireRequest
 	if err := decodeJSONBody(w, r, chatBodyCap, &wire); err != nil {
@@ -509,6 +508,11 @@ func (a *Adapter) handleCompletions(w http.ResponseWriter, r *http.Request) {
 			observation.Outcome = "pool_exhausted"
 		}
 		a.writeSessionError(w, sErr)
+		return
+	}
+	if eng == nil {
+		observation.Outcome = "upstream_error"
+		writeError(w, http.StatusServiceUnavailable, errAPI, "kiro-cli not configured (set KIRO_CMD)")
 		return
 	}
 	observation.SessionMode = "stateless"

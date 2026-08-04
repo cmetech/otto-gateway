@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -1298,6 +1299,92 @@ func TestApp_ZeroPoolSizeSkipsWarmPool(t *testing.T) {
 			}
 			if snap.Pool.Size != 0 || len(snap.Pool.Slots) != 0 {
 				t.Fatalf("snapshot pool = size %d, %d slots; want empty", snap.Pool.Size, len(snap.Pool.Slots))
+			}
+		})
+	}
+}
+
+func TestApp_ZeroPoolSizeRoutesDedicatedRequestsAcrossSurfaces(t *testing.T) {
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatalf("resolve repository root: %v", err)
+	}
+	fakeKiro := filepath.Join(t.TempDir(), "fake-kiro-cli")
+	buildCtx, cancelBuild := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancelBuild()
+	build := exec.CommandContext(buildCtx, "go", "build", "-o", fakeKiro, "./tests/e2e/cmd/fake-kiro-cli") //nolint:gosec // fixed in-repository test package; only output path varies
+	build.Dir = repoRoot
+	if output, buildErr := build.CombinedOutput(); buildErr != nil {
+		t.Fatalf("build fake Kiro CLI: %v\n%s", buildErr, output)
+	}
+
+	root := t.TempDir()
+	t.Setenv("HTTP_ADDR", "127.0.0.1:0")
+	t.Setenv("KIRO_CMD", fakeKiro)
+	t.Setenv("KIRO_CWD", root)
+	t.Setenv("KIRO_CHAT_LOG_FILE", filepath.Join(root, "logs", "kiro-chat.log"))
+	t.Setenv("POOL_SIZE", "0")
+	t.Setenv("ENABLED_SURFACES", "ollama,openai,anthropic")
+
+	cfg, err := config.LoadArgs(nil)
+	if err != nil {
+		t.Fatalf("config.LoadArgs: %v", err)
+	}
+	a, cleanup, err := newApp(context.Background(), cfg, testutil.Logger(t))
+	if err != nil {
+		t.Fatalf("newApp: %v", err)
+	}
+	defer cleanup()
+
+	tests := []struct {
+		name    string
+		path    string
+		body    string
+		headers map[string]string
+	}{
+		{
+			name: "Ollama",
+			path: "/api/chat",
+			body: `{"model":"auto","messages":[{"role":"user","content":"hi"}],"stream":false}`,
+		},
+		{
+			name: "OpenAI",
+			path: "/v1/chat/completions",
+			body: `{"model":"auto","messages":[{"role":"user","content":"hi"}],"stream":false}`,
+		},
+		{
+			name:    "Anthropic",
+			path:    "/v1/messages",
+			body:    `{"model":"auto","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}`,
+			headers: map[string]string{"anthropic-version": "2023-06-01"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			request := func(sessionID string) *httptest.ResponseRecorder {
+				t.Helper()
+				req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, tc.path, strings.NewReader(tc.body))
+				req.Header.Set("Content-Type", "application/json")
+				for name, value := range tc.headers {
+					req.Header.Set(name, value)
+				}
+				if sessionID != "" {
+					req.Header.Set("X-Session-Id", sessionID)
+				}
+				rec := httptest.NewRecorder()
+				a.srv.ServeHTTP(rec, req)
+				return rec
+			}
+
+			withoutSession := request("")
+			if withoutSession.Code != http.StatusServiceUnavailable {
+				t.Fatalf("without X-Session-Id: got %d, want 503; body=%s", withoutSession.Code, withoutSession.Body.String())
+			}
+
+			withSession := request("zero-pool-" + strings.ToLower(tc.name))
+			if withSession.Code != http.StatusOK {
+				t.Fatalf("with X-Session-Id: got %d, want 200; body=%s", withSession.Code, withSession.Body.String())
 			}
 		})
 	}

@@ -182,7 +182,7 @@ func TestOllamaHandleChat_WithXSessionId_RoutesToRegistry(t *testing.T) {
 	entry := session.NewEntryForTest(fakeACPClient{}, "sid-X")
 	reg := &fakeSessionRegistry{entry: entry}
 	sessionEng := &sessionEngine{inner: poolEng}
-	a := newTestAdapterWithSession(poolEng, reg, sessionEng)
+	a := newTestAdapterWithSession(nil, reg, sessionEng)
 
 	body := `{"model":"auto","messages":[{"role":"user","content":"hi"}],"stream":false}`
 	w := doPostWithSid(t, a, "/chat", "sid-X", body)
@@ -290,7 +290,7 @@ func TestOllamaHandleGenerate_WithXSessionId_RoutesToRegistry(t *testing.T) {
 	entry := session.NewEntryForTest(fakeACPClient{}, "sid-gen")
 	reg := &fakeSessionRegistry{entry: entry}
 	sessionEng := &sessionEngine{inner: poolEng}
-	a := newTestAdapterWithSession(poolEng, reg, sessionEng)
+	a := newTestAdapterWithSession(nil, reg, sessionEng)
 
 	body := `{"model":"auto","prompt":"hi","stream":false}`
 	w := doPostWithSid(t, a, "/generate", "sid-gen", body)

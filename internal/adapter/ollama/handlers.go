@@ -146,12 +146,6 @@ func (a *Adapter) handleChat(w http.ResponseWriter, r *http.Request) {
 	observation := newRequestObservation()
 	defer func() { a.observeRequest(observation) }()
 
-	if a.cfg.Engine == nil {
-		observation.Outcome = "upstream_error"
-		writeError(w, http.StatusServiceUnavailable, "kiro-cli not configured (set KIRO_CMD)")
-		return
-	}
-
 	var wire ollamaChatRequest
 	if err := decodeJSONBody(w, r, chatBodyCap, &wire); err != nil {
 		observation.Outcome = "invalid_request"
@@ -205,6 +199,11 @@ func (a *Adapter) handleChat(w http.ResponseWriter, r *http.Request) {
 			observation.Outcome = "pool_exhausted"
 		}
 		a.writeSessionError(w, sErr)
+		return
+	}
+	if eng == nil {
+		observation.Outcome = "upstream_error"
+		writeError(w, http.StatusServiceUnavailable, "kiro-cli not configured (set KIRO_CMD)")
 		return
 	}
 	observation.SessionMode = "stateless"
@@ -531,12 +530,6 @@ func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 	observation := newRequestObservation()
 	defer func() { a.observeRequest(observation) }()
 
-	if a.cfg.Engine == nil {
-		observation.Outcome = "upstream_error"
-		writeError(w, http.StatusServiceUnavailable, "kiro-cli not configured (set KIRO_CMD)")
-		return
-	}
-
 	var wire ollamaGenerateRequest
 	if err := decodeJSONBody(w, r, generateBodyCap, &wire); err != nil {
 		observation.Outcome = "invalid_request"
@@ -580,6 +573,11 @@ func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 			observation.Outcome = "pool_exhausted"
 		}
 		a.writeSessionError(w, sErr)
+		return
+	}
+	if eng == nil {
+		observation.Outcome = "upstream_error"
+		writeError(w, http.StatusServiceUnavailable, "kiro-cli not configured (set KIRO_CMD)")
 		return
 	}
 	observation.SessionMode = "stateless"
