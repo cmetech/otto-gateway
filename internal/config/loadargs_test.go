@@ -55,6 +55,37 @@ func TestLoadArgs_FlagWins_Int(t *testing.T) {
 	}
 }
 
+func TestLoadArgs_PoolSizeBoundaries(t *testing.T) {
+	t.Setenv("POOL_SIZE", "2")
+	cases := []struct {
+		name    string
+		value   string
+		want    int
+		wantErr string
+	}{
+		{name: "maximum", value: "6", want: 6},
+		{name: "above maximum", value: "7", wantErr: "--pool-size: sanity cap exceeded (max 6), got 7"},
+		{name: "negative", value: "-1", wantErr: "--pool-size: must be >= 0, got -1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := config.LoadArgs([]string{"--pool-size", tc.value})
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("LoadArgs() error = %v; want substring %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("LoadArgs() returned unexpected error: %v", err)
+			}
+			if cfg.PoolSize != tc.want {
+				t.Fatalf("PoolSize = %d; want %d", cfg.PoolSize, tc.want)
+			}
+		})
+	}
+}
+
 func TestLoadArgs_FlagWins_Duration(t *testing.T) {
 	// t.Setenv: cannot use t.Parallel().
 	t.Setenv("PING_INTERVAL", "60s")

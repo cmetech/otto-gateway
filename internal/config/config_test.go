@@ -341,14 +341,44 @@ func TestLoad_AllowedIPs_Malformed(t *testing.T) {
 
 func TestLoad_PoolSize_Default(t *testing.T) {
 	// t.Setenv: cannot use t.Parallel().
-	// Phase 5 POOL-01: env default flipped from 1 to 4 for Node parity.
 	t.Setenv("POOL_SIZE", "")
 	cfg, err := config.Load()
 	if err != nil {
 		t.Fatalf("Load() returned unexpected error: %v", err)
 	}
-	if cfg.PoolSize != 4 {
-		t.Errorf("PoolSize: got %d, want 4 (Phase 5 POOL-01 Node-parity default)", cfg.PoolSize)
+	if cfg.PoolSize != 2 {
+		t.Errorf("PoolSize: got %d, want 2", cfg.PoolSize)
+	}
+}
+
+func TestLoad_PoolSize_Boundaries(t *testing.T) {
+	cases := []struct {
+		name    string
+		value   string
+		want    int
+		wantErr string
+	}{
+		{name: "disabled", value: "0", want: 0},
+		{name: "maximum", value: "6", want: 6},
+		{name: "above maximum", value: "7", wantErr: "POOL_SIZE: sanity cap exceeded (max 6), got 7"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("POOL_SIZE", tc.value)
+			cfg, err := config.Load()
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("Load() error = %v; want substring %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load() returned unexpected error: %v", err)
+			}
+			if cfg.PoolSize != tc.want {
+				t.Fatalf("PoolSize = %d; want %d", cfg.PoolSize, tc.want)
+			}
+		})
 	}
 }
 

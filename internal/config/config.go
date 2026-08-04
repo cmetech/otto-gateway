@@ -140,9 +140,9 @@ type Config struct {
 	// which is promoted to a /32 or /128 prefix). Empty (nil) means allow-all
 	// (Node parity).
 	AllowedIPs []netip.Prefix
-	// PoolSize is the number of warm kiro-cli subprocesses (Phase 5
-	// POOL-01: default 4 for Node parity; Phase 2 shipped a default of 1).
-	// Set-but-unparseable yields a Load() error.
+	// PoolSize is the number of warm kiro-cli subprocesses. The application
+	// default is 2 and the supported range is 0–6. Set-but-unparseable yields
+	// a Load() error.
 	PoolSize int
 	// KiroWorkerMaxTurns is the number of successful session/new calls a warm
 	// pool worker may serve before scheduled process recycling. Zero disables.
@@ -575,25 +575,16 @@ func Load() (Config, error) {
 		)
 	}
 
-	// Phase 5 POOL-01: env default flips from 1 to 4 for Node parity (see
-	// 05-CONTEXT.md <domain> Phase Boundary). Note: the package-level
+	// Pool-size validation occurs at this env-load boundary. Note: the package-level
 	// default in internal/pool/config.go applyDefaults stays at 1 because
 	// the pool's tests construct pool.Config{} directly and expect Size=1
-	// when unset. Only this env-load layer flips.
-	poolSize, err := getEnvInt("POOL_SIZE", 4)
+	// when unset. Only this env-load layer uses the application default of 2.
+	poolSize, err := getEnvInt("POOL_SIZE", 2)
 	if err != nil {
 		errs = append(errs, err)
 	}
-	// C-1 (REL-CFG-01) fail-fast: POOL_SIZE silently coerced to 1 by
-	// pool.Config.applyDefaults when <= 0. Match STREAM_IDLE_TIMEOUT_SEC posture
-	// (config.go:366-368) — emit a named boot error so misconfigured deployments
-	// fail loudly. Upper bound 256 (D-discretion sanity ceiling: any system that
-	// genuinely needs > 256 concurrent kiro-cli workers is unsupported).
-	if poolSize < 0 {
-		errs = append(errs, fmt.Errorf("POOL_SIZE: must be >= 0, got %d", poolSize))
-	}
-	if poolSize > 256 {
-		errs = append(errs, fmt.Errorf("POOL_SIZE: sanity cap exceeded (max 256), got %d", poolSize))
+	if verr := validatePoolSize("POOL_SIZE", poolSize); verr != nil {
+		errs = append(errs, verr)
 	}
 
 	maxWorkerTurns, err := getEnvInt("KIRO_WORKER_MAX_TURNS", 0)
@@ -1265,6 +1256,9 @@ func LoadArgs(args []string) (Config, error) {
 			cfg.AuthTrustXFF = *authTrustXFF
 		case "pool-size":
 			cfg.PoolSize = *poolSize
+			if verr := validatePoolSize("--pool-size", cfg.PoolSize); verr != nil {
+				errs = append(errs, verr)
+			}
 		case "session-ttl":
 			cfg.SessionTTL = *sessionTTL
 		case "session-max":
@@ -1692,6 +1686,18 @@ func getEnvStrSliceComma(key string, def []string) []string {
 		return def
 	}
 	return out
+}
+
+const maxPoolSize = 6
+
+func validatePoolSize(source string, value int) error {
+	if value < 0 {
+		return fmt.Errorf("%s: must be >= 0, got %d", source, value)
+	}
+	if value > maxPoolSize {
+		return fmt.Errorf("%s: sanity cap exceeded (max %d), got %d", source, maxPoolSize, value)
+	}
+	return nil
 }
 
 // getEnvInt reads an integer env var. Returns an error if the var is set but
