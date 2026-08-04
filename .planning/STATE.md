@@ -4,8 +4,8 @@ milestone: v1.10.4
 milestone_name: Privacy Boundary Service
 status: phase-complete
 stopped_at: Phase 21 implementation complete; milestone not published
-last_updated: "2026-08-01T13:38:00Z"
-last_activity: 2026-08-01 -- Phase 21 exact package-parallel release gates completed
+last_updated: "2026-08-04T10:55:44Z"
+last_activity: 2026-08-04 -- Approved idle-memory Kiro worker recycling design committed for review
 progress:
   total_phases: 27
   completed_phases: 26
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-07-31)
 Phase: 21 (Privacy Boundary Service) — COMPLETE
 Plan: 1 of 1
 Status: Phase complete; no tag, release, or publication performed
-Last activity: 2026-08-01 -- Phase 21 exact package-parallel release gates completed
+Last activity: 2026-08-04 -- Approved idle-memory Kiro worker recycling design committed for review
 
 ## Performance Metrics
 
@@ -197,6 +197,7 @@ None yet.
 | 260725-h4g | New `lint-darwin` job in `.github/workflows/ci.yml` closes the blind spot that let 260725-gp6's two findings survive: `cmd/otto-tray` has 7 darwin-only files that `ubuntu-latest` drops by build tag, so they were linted nowhere. Runs on `macos-latest`, NOT ubuntu with a `GOOS=darwin` override — proven necessary, since `golangci-lint` type-checks before linting and `energye/systray`'s darwin implementation is cgo (verified: `CGO_ENABLED=0 GOOS=darwin go vet ./cmd/otto-tray/` dies with 11 undefined symbols; `systray_darwin.go` is the only file importing `"C"`). Scope is `./...` not `./cmd/otto-tray/...` because `internal/procstat/procstat_other.go` is `!linux && !windows` — darwin-only code outside the tray — and `./...` keeps the job byte-identical to `make lint`. Reuses the existing `env.GOLANGCI_LINT_VERSION` pin (v2.12.2), no `needs:` so a darwin regression reads as its own red X, inherits workflow-level `contents: read`. macos-latest is arm64 and no GOARCH-conditional source exists, so one arch is full coverage. Local proxy verified (PyYAML parse, `golangci-lint run ./...` → 0 issues on this darwin box); the GitHub run itself was unverifiable pre-push. Still open: no `GOOS=windows` lint job — `desktop_windows.go:67,75` return unwrapped `windows.OpenProcess`/`QueryFullProcessImageName` errors, and wrapping needs `%w` because `windowsProcessGone` does `errors.Is(err, windows.ERROR_INVALID_PARAMETER)` and fails closed otherwise | 2026-07-25 | be74593 | [260725-h4g-add-a-goos-darwin-golangci-lint-job-to-c](./quick/260725-h4g-add-a-goos-darwin-golangci-lint-job-to-c/) |
 | 260731-g8f | Write the approved Gateway privacy-boundary design specification; documentation only, implementation plan intentionally held for written review | 2026-07-31 | (inline) | [260731-g8f-write-the-approved-gateway-privacy-bound](./quick/260731-g8f-write-the-approved-gateway-privacy-bound/) |
 | 260731-ghu | Create the reviewed, 17-task strict-TDD Gateway privacy-boundary implementation plan; documentation only, no runtime changes | 2026-07-31 | (inline) | [260731-ghu-create-the-strict-tdd-implementation-pla](./quick/260731-ghu-create-the-strict-tdd-implementation-pla/) |
+| 260804-9j1 | Write the approved idle-memory Kiro worker recycling design spec; documentation only, implementation held for written review | 2026-08-04 | ee3ad07 | [260804-9j1-write-the-approved-idle-memory-kiro-work](./quick/260804-9j1-write-the-approved-idle-memory-kiro-work/) |
 
 ## Deferred Items
 
