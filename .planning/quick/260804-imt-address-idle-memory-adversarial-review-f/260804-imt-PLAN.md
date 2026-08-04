@@ -1,6 +1,6 @@
 ---
 quick_id: 260804-imt
-status: in_progress
+status: complete
 description: Address idle-memory adversarial review follow-ups before v3.1.0 release
 ---
 

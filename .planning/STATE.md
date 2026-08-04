@@ -4,8 +4,8 @@ milestone: v1.10.4
 milestone_name: Privacy Boundary Service
 status: phase-complete
 stopped_at: Phase 21 implementation complete; milestone not published
-last_updated: "2026-08-04T16:28:38Z"
-last_activity: 2026-08-04 -- Approved idle-memory Kiro worker recycling implementation plan completed
+last_updated: "2026-08-04T17:35:58Z"
+last_activity: 2026-08-04 -- Idle-memory adversarial review follow-ups completed and release gates passed
 progress:
   total_phases: 27
   completed_phases: 26
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-07-31)
 Phase: 21 (Privacy Boundary Service) — COMPLETE
 Plan: 1 of 1
 Status: Phase complete; no tag, release, or publication performed
-Last activity: 2026-08-04 -- Approved idle-memory Kiro worker recycling implementation plan completed
+Last activity: 2026-08-04 -- Idle-memory adversarial review follow-ups completed and release gates passed
 
 ## Performance Metrics
 
@@ -200,6 +200,7 @@ None yet.
 | 260804-9j1 | Write the approved idle-memory Kiro worker recycling design spec; documentation only, implementation held for written review | 2026-08-04 | ee3ad07 | [260804-9j1-write-the-approved-idle-memory-kiro-work](./quick/260804-9j1-write-the-approved-idle-memory-kiro-work/) |
 | 260804-9ok | Create the approved idle-memory Kiro worker recycling implementation plan; documentation only, no runtime changes | 2026-08-04 | fa8e27b | [260804-9ok-create-the-approved-idle-memory-kiro-wor](./quick/260804-9ok-create-the-approved-idle-memory-kiro-wor/) |
 | 260804-ae3 | Implement idle-memory Kiro worker recycling with metrics, admin UI, and Grafana visibility | 2026-08-04 | 344c3d4 | [260804-ae3-implement-the-approved-idle-memory-kiro-](./quick/260804-ae3-implement-the-approved-idle-memory-kiro-/) |
+| 260804-imt | Address idle-memory adversarial review follow-ups before v3.1.0 release | 2026-08-04 | fde22ce | [260804-imt-address-idle-memory-adversarial-review-f](./quick/260804-imt-address-idle-memory-adversarial-review-f/) |
 
 ## Deferred Items
 
