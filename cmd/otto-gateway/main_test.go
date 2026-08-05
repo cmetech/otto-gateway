@@ -921,6 +921,7 @@ func TestPrepareKiroLaunchMaterializesAndLogsDefaultAgent(t *testing.T) {
 		KiroCWD:          root,
 		KiroChatLogFile:  filepath.Join(root, "logs", "kiro-chat.log"),
 		KiroChatLogPath:  filepath.Join(root, "logs", "kiro-chat.log"),
+		KiroLogLevel:     "INFO",
 		KiroCWDIsDefault: true,
 	}
 
@@ -937,6 +938,7 @@ func TestPrepareKiroLaunchMaterializesAndLogsDefaultAgent(t *testing.T) {
 		"acp_proxy",
 		root,
 		filepath.Join(root, "logs", "kiro-chat.log"),
+		`"chat_log_level":"INFO"`,
 		gatewayembed.ACPProxyPath(root),
 		"created",
 	} {
@@ -1114,11 +1116,16 @@ func TestKiroProcessEnvironmentComposition(t *testing.T) {
 	t.Setenv("KIRO_CHAT_LOG_FILE", "parent.log")
 	output := filepath.Join(t.TempDir(), "kiro-env.json")
 	const childLogFile = "  child.log  "
-	childEnv := kiroProcessEnv(config.Config{KiroChatLogFile: childLogFile})
-	for _, entry := range childEnv {
-		if strings.HasPrefix(entry, "KIRO_LOG_LEVEL=") {
-			t.Fatalf("gateway must not inject a Kiro log level: %q", entry)
-		}
+	childEnv := kiroProcessEnv(config.Config{
+		KiroChatLogFile: childLogFile,
+		KiroLogLevel:    "INFO",
+	})
+	wantChildEnv := []string{
+		"KIRO_CHAT_LOG_FILE=" + childLogFile,
+		"KIRO_LOG_LEVEL=INFO",
+	}
+	if diff := cmp.Diff(wantChildEnv, childEnv); diff != "" {
+		t.Fatalf("child environment mismatch (-want +got):\n%s", diff)
 	}
 	env := append(
 		childEnv,
@@ -1156,7 +1163,7 @@ func TestKiroProcessEnvironmentComposition(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := map[string]string{
-		"KIRO_LOG_LEVEL":     "debug",
+		"KIRO_LOG_LEVEL":     "INFO",
 		"KIRO_CHAT_LOG_FILE": childLogFile,
 	}
 	if diff := cmp.Diff(want, got); diff != "" {

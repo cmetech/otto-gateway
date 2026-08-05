@@ -115,6 +115,9 @@ type Config struct {
 	// Relative child values are resolved from KiroCWD because that is where
 	// Kiro interprets them. Gateway uses this path for preparation and tailing.
 	KiroChatLogPath string
+	// KiroLogLevel is the normalized native Kiro file-log level. It is always
+	// one of ERROR, WARN, INFO, DEBUG, or TRACE after Load succeeds.
+	KiroLogLevel string
 	// KiroCWDIsDefault reports that KiroCWD came from the gateway-owned
 	// default, not an explicit KIRO_CWD or --kiro-cwd override. Startup uses
 	// this ownership bit to avoid modifying operator-controlled workspaces.
@@ -416,6 +419,22 @@ func (c Config) LogLevel() slog.Level {
 	return slog.LevelInfo
 }
 
+const defaultKiroLogLevel = "INFO"
+
+func parseKiroLogLevel(raw string) (string, error) {
+	level := strings.ToUpper(strings.TrimSpace(raw))
+	if level == "" {
+		return defaultKiroLogLevel, nil
+	}
+	switch level {
+	case "ERROR", "WARN", "INFO", "DEBUG", "TRACE":
+		return level, nil
+	default:
+		return "", fmt.Errorf(
+			"unsupported value %q (supported: ERROR, WARN, INFO, DEBUG, TRACE)", raw)
+	}
+}
+
 // Load reads environment variables and returns a validated Config.
 // Returns a non-nil error if any env var is present but has an unparseable value.
 // Missing env vars (empty string) use the documented default — only set-but-invalid values are errors.
@@ -443,6 +462,10 @@ func Load() (Config, error) {
 		} else {
 			kiroChatLogFile = filepath.Join(gatewayHome, "logs", "kiro-chat.log")
 		}
+	}
+	kiroLogLevel, kiroLogLevelErr := parseKiroLogLevel(os.Getenv("KIRO_LOG_LEVEL"))
+	if kiroLogLevelErr != nil {
+		errs = append(errs, fmt.Errorf("KIRO_LOG_LEVEL: %w", kiroLogLevelErr))
 	}
 	// Use LookupEnv (not getEnvStr) so an explicitly-set empty value disables
 	// aliasing, while a truly-unset var falls back to the Hermes default.
@@ -1047,6 +1070,7 @@ func Load() (Config, error) {
 		KiroCWD:                       kiroCWD,
 		KiroChatLogFile:               kiroChatLogFile,
 		KiroChatLogPath:               kiroChatLogPath,
+		KiroLogLevel:                  kiroLogLevel,
 		KiroCWDIsDefault:              kiroCWDIsDefault,
 		ToolAliases:                   toolAliases,
 		Debug:                         debug,

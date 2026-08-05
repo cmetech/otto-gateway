@@ -184,14 +184,25 @@ func prepareKiroLaunch(cfg config.Config, logger *slog.Logger) error {
 		"cwd", cfg.KiroCWD,
 		"chat_log_file", cfg.KiroChatLogFile,
 		"chat_log_path", cfg.KiroChatLogPath,
+		"chat_log_level", effectiveKiroLogLevel(cfg),
 		"agent_config", agentPath,
 		"agent_config_status", status,
 	)
 	return nil
 }
 
+func effectiveKiroLogLevel(cfg config.Config) string {
+	if cfg.KiroLogLevel == "" {
+		return "INFO"
+	}
+	return cfg.KiroLogLevel
+}
+
 func kiroProcessEnv(cfg config.Config) []string {
-	return []string{"KIRO_CHAT_LOG_FILE=" + cfg.KiroChatLogFile}
+	return []string{
+		"KIRO_CHAT_LOG_FILE=" + cfg.KiroChatLogFile,
+		"KIRO_LOG_LEVEL=" + effectiveKiroLogLevel(cfg),
+	}
 }
 
 func main() {
@@ -1137,9 +1148,12 @@ func newAppWithRegistryLoader(ctx context.Context, cfg config.Config, logger *sl
 		LogPaths:      logPaths,
 		LogPathOrder:  logPathOrder,
 		LogPathLabels: logPathLabels,
-		Debug:         cfg.Debug,
-		ShutdownCh:    sharedShutdownCh,
-		ChatTrace:     cfg.ChatTrace,
+		LogSourceLevels: map[string]string{
+			"kiro": cfg.KiroLogLevel,
+		},
+		Debug:      cfg.Debug,
+		ShutdownCh: sharedShutdownCh,
+		ChatTrace:  cfg.ChatTrace,
 
 		// Effective posture ("on" / "per-request" / "off") — computed
 		// above, next to the ENABLED_HOOKS chain filter. Knob snapshots
@@ -1168,6 +1182,7 @@ func newAppWithRegistryLoader(ctx context.Context, cfg config.Config, logger *sl
 		KiroCmd:                        cfg.KiroCmd,
 		KiroArgs:                       cfg.KiroArgs,
 		KiroCwd:                        cfg.KiroCWD,
+		KiroLogLevel:                   cfg.KiroLogLevel,
 		KiroWorkerMaxTurns:             cfg.KiroWorkerMaxTurns,
 		KiroWorkerIdleRecycleAfter:     cfg.KiroWorkerIdleRecycleAfter,
 		KiroWorkerIdleRecycleMemoryMB:  cfg.KiroWorkerIdleRecycleMemoryMB,

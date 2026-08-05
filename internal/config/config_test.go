@@ -74,6 +74,42 @@ func TestLoad_KiroChatLogPathResolvesRelativeOverrideFromKiroCWD(t *testing.T) {
 	}
 }
 
+func TestLoadKiroLogLevel(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{name: "empty defaults to info", raw: "", want: "INFO"},
+		{name: "debug normalizes", raw: "debug", want: "DEBUG"},
+		{name: "mixed case trace normalizes", raw: "TrAcE", want: "TRACE"},
+		{name: "warn remains warn", raw: "WARN", want: "WARN"},
+		{name: "error normalizes", raw: "error", want: "ERROR"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("KIRO_LOG_LEVEL", tc.raw)
+			cfg, err := config.Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.KiroLogLevel != tc.want {
+				t.Fatalf("KiroLogLevel = %q, want %q", cfg.KiroLogLevel, tc.want)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsInvalidKiroLogLevel(t *testing.T) {
+	t.Setenv("KIRO_LOG_LEVEL", "verbose")
+	_, err := config.Load()
+	if err == nil || !strings.Contains(err.Error(), "KIRO_LOG_LEVEL") ||
+		!strings.Contains(err.Error(), "ERROR, WARN, INFO, DEBUG, TRACE") {
+		t.Fatalf("error = %v, want supported-level diagnostic", err)
+	}
+}
+
 func TestLoadDefaults(t *testing.T) {
 	// No t.Setenv, safe to run in parallel.
 	t.Parallel()
@@ -103,6 +139,9 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.KiroCWD != wantCWD || !cfg.KiroCWDIsDefault {
 		t.Errorf("KiroCWD: got %q default=%v, want %q default=true", cfg.KiroCWD, cfg.KiroCWDIsDefault, wantCWD)
+	}
+	if cfg.KiroLogLevel != "INFO" {
+		t.Errorf("KiroLogLevel: got %q, want INFO", cfg.KiroLogLevel)
 	}
 	if cfg.Debug != false {
 		t.Errorf("Debug: got %v, want false", cfg.Debug)
