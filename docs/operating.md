@@ -411,7 +411,7 @@ above — this table is the underlying contract every knob maps to.
 | `KIRO_ARGS` | `acp` | Arguments passed to kiro-cli (space-separated) |
 | `KIRO_CWD` | _(empty)_ | Default working directory for kiro-cli subprocesses |
 | `KIRO_CHAT_LOG_FILE` | `$GW_HOME/logs/kiro-chat.log` | Native Kiro log destination. The gateway creates its parent directory and passes this path to every pooled or dedicated Kiro child. |
-| `KIRO_LOG_LEVEL` | _(unset; Kiro normal logging)_ | Kiro's own log level, inherited by its child processes. To collect diagnostics, set `KIRO_LOG_LEVEL=debug` in `overrides.env` and restart; this is independent of the gateway's `DEBUG` setting. |
+| `KIRO_LOG_LEVEL` | `INFO` | Native Kiro file-log level passed to every pooled and dedicated child. Supported values are `ERROR`, `WARN`, `INFO`, `DEBUG`, and `TRACE` (case-insensitive); any other non-empty value fails startup. Override it in `overrides.env` and restart. This is independent of the gateway's `DEBUG` setting. |
 | `POOL_SIZE` | `2` (binary and laptop wrapper default) | Number of warm kiro-cli subprocesses kept in the pool. Accepts `0`–`6`. The laptop wrapper template (`scripts/.env.example`, copied to `.env` by `gw init`/`upgrade-env`) uses `2`, sized for single-user laptops; shared hosts may raise it only through `6` in `overrides.env`, which `gw upgrade-env` never touches. |
 | `KIRO_WORKER_MAX_TURNS` | `0` (binary default; disabled) | Successful pool-worker `session/new` calls before scheduled process recycling — bounds per-process memory/context growth independent of the context-usage-triggered session recycle. The laptop wrapper template sets `20`; shared hosts override in `overrides.env`. Accepts `0`–`10000`; negative or out-of-range values cause a boot error. Caveat: with `POOL_SIZE=1` a scheduled recycle takes the pool's only worker offline while its replacement respawns in the background, so pool status transiently reports `down`/unhealthy until the respawn completes; run `POOL_SIZE >= 2` when recycling is enabled so recycles stay invisible to callers. Concurrent scheduled recycles are serialized — at most one worker is down for maintenance at a time — so a `POOL_SIZE >= 2` pool never recycles all its workers at once (a worker crossing the threshold while a recycle is in flight defers and keeps serving). |
 | `KIRO_WORKER_IDLE_RECYCLE_MS` | `0` (binary default; disabled) | Completed-user-request idle duration before a free, user-used, high-memory pool worker becomes eligible for eager replacement. The laptop wrapper template sets `900000` (15 minutes); millisecond integers and Go duration strings are accepted. `0` is the sole disable switch, and negative durations cause a boot error. The idle and memory conditions are conjunctive: idle must be greater than or equal to this duration and direct process memory must be strictly above `KIRO_WORKER_IDLE_RECYCLE_MEMORY_MB`. |
@@ -421,10 +421,12 @@ above — this table is the underlying contract every knob maps to.
 
 ### Kiro native log operations
 
-Normal Kiro logs go to `KIRO_CHAT_LOG_FILE`; with the default wrapper
-configuration that is `$GW_HOME/logs/kiro-chat.log`. To enable Kiro debug
-logging, add the following operator override, then restart so replacement
-workers inherit it:
+Native Kiro logs go to `KIRO_CHAT_LOG_FILE`; with the default wrapper
+configuration that is `$GW_HOME/logs/kiro-chat.log`. Logging is always at
+least `INFO` by default. Operators can select `ERROR`, `WARN`, `INFO`, `DEBUG`,
+or `TRACE` (case-insensitive). To enable Kiro debug logging, add the following
+operator override, then restart so every pooled and dedicated replacement
+worker inherits it:
 
 ```text
 # $GW_HOME/overrides.env (or ./overrides.env)
@@ -439,9 +441,11 @@ KIRO_LOG_LEVEL=debug
 .\scripts\gw.ps1 restart
 ```
 
-Remove the `KIRO_LOG_LEVEL` override and restart again to return to normal
-Kiro logging. The Gateway dashboard's **Log tail** shows Gateway and Kiro
-logs only; Co-worker retains its own viewer.
+Remove the `KIRO_LOG_LEVEL` override and restart again to return to `INFO`.
+An empty value also resolves to `INFO`; unsupported non-empty values stop the
+Gateway at configuration validation instead of silently disabling native
+logging. The Gateway dashboard's **Log tail** shows Gateway and Kiro logs
+only; Co-worker retains its own viewer.
 
 ### Phase 8 — Plugin chain (hooks)
 
@@ -699,7 +703,7 @@ served from `embed.FS` (single static binary; no external runtime deps).
 |------|---------|
 | `GET /admin` | The HTML page (renders summary strip, pool slots grid, active sessions table, log tail panel) |
 | `GET /admin/api/snapshot` | Unified JSON snapshot composing pool + registry detail (polled client-side every 30s) |
-| `GET /admin/logs/stream` | SSE stream of new log lines from `GW_LOG` (backfill of last ≤500 lines on connect, then live forward) |
+| `GET /admin/logs/stream` | SSE stream for an allowlisted Gateway, boot, Kiro, or enabled chat-trace source. Emits browser-safe source status, up to 500 recent complete records on the tailer's first successful open, then live records and keepalives. |
 | `GET /admin/static/*` | Embedded CSS + JS assets |
 | `GET /admin/api/acp-capture` | Track 0 raw-frame capture ring (see [ACP raw-frame capture](#acp-raw-frame-capture-diagnostic) below) |
 
@@ -739,17 +743,28 @@ before, requiring a restart to change.
 
 ### GW_LOG dependency
 
-The log tail panel reads from the file pointed at by `GW_LOG`
-(defaults to `/tmp/gateway.log`). When the gateway is launched
-via `scripts/gw start`, the wrapper redirects stdout/stderr via
-shell `>>` to this file, and the admin page's tail panel renders
-incoming lines within ~1s.
+The log tail panel reads from allowlisted files including the file pointed at
+by `GW_LOG` (defaults to `/tmp/gateway.log`). When the gateway is launched via
+`scripts/gw start`, the wrapper redirects stdout/stderr via shell `>>` to this
+file. On the first successful open of each source, the panel shows up to 500
+recent complete records from a bounded 8 MiB read window, then renders new
+complete records within about one second.
 
-When the gateway is launched directly via `go run ./cmd/otto-gateway`
-or `./bin/gateway` without `GW_LOG` or without shell
-redirection, the log file is empty/absent and the tail panel shows
-"Waiting for log activity…" indefinitely — this is a graceful
-degraded mode, not a failure.
+The panel distinguishes transport health from file health. A source that has
+not been created reports `Log file has not been created yet. Watching for
+it…`; an unreadable path reports `Log file cannot be read. Check its
+permissions.`; and a readable zero-byte source reports `Log file is empty.
+Waiting for the first entry.` Kiro's empty message also displays its effective
+native level. A readable non-empty source with no complete record yet reports
+that it is connected and watching. If records exist but the current level or
+regex filter hides every row, the panel reports `Log entries were received,
+but none match the current filters.` A disconnected EventSource is reported
+separately while the browser reconnects.
+
+When the gateway is launched directly via `go run ./cmd/otto-gateway` or
+`./bin/gateway` without `GW_LOG` or shell redirection, the configured file may
+therefore appear as missing or empty; the displayed state says which condition
+the tailer actually observed and continues watching for recovery.
 
 The admin log-source list always includes the Gateway main and boot logs, and
 includes chat trace only when enabled. Kiro is offered only when the effective
