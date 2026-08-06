@@ -254,7 +254,7 @@ func TestAdmin_SSEBackfillBeforeLive(t *testing.T) {
 	first := strings.Index(body, "data: history-one")
 	second := strings.Index(body, "data: history-two")
 	live := strings.Index(body, "data: live")
-	if first < 0 || second < 0 || live < 0 || !(first < second && second < live) {
+	if first < 0 || second < 0 || live < 0 || first >= second || second >= live {
 		t.Fatalf("backfill/live order incorrect: %q", body)
 	}
 	if !strings.Contains(body, `"state":"watching"`) {

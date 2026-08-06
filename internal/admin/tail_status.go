@@ -9,6 +9,7 @@ import (
 // TailState is the browser-safe health state for a configured log source.
 type TailState string
 
+// TailState values describe each browser-visible file-health condition.
 const (
 	TailStateOpening    TailState = "opening"
 	TailStateMissing    TailState = "missing"
