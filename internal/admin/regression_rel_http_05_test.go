@@ -44,13 +44,8 @@ func TestRegression_REL_HTTP_05_AdminTailerLineCapBypass(t *testing.T) {
 	dir := t.TempDir()
 	logPath := dir + "/test.log"
 
-	// Pre-create the file so the tailer's reopen() can seek-to-EOF on
-	// an EMPTY file. The Tailer's D-10 invariant ("never backfill
-	// historical content") means a file created AFTER the first poll
-	// would have its initial contents skipped — reopen() seeks to EOF
-	// of the existing file. Touching it empty first lets the tailer
-	// position itself at byte 0, and the append below is then read on
-	// the next poll tick.
+	// Pre-create the file empty so this test exercises the live-read line cap,
+	// not the separate bounded first-open backfill parser.
 	if err := os.WriteFile(logPath, nil, 0o644); err != nil {
 		t.Fatalf("create empty log: %v", err)
 	}

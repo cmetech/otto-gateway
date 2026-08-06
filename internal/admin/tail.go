@@ -188,6 +188,9 @@ type Tailer struct {
 	running     bool
 	cancelRun   context.CancelFunc
 	status      TailStatus
+	// initialLoaded is scoped to the Tailer instance rather than one run
+	// goroutine, so a last-subscriber stop/start does not replay file history.
+	initialLoaded bool
 }
 
 // NewTailer constructs a Tailer rooted at path. It does NOT start the
@@ -318,6 +321,41 @@ func (t *Tailer) publishFileError(err error) {
 	t.publishStatus(TailStatus{State: state})
 }
 
+func (t *Tailer) needsInitialBackfill() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return !t.initialLoaded
+}
+
+// publishInitialBackfill atomically chooses the history delivery path.
+// Subscribers already attached receive one batch; later subscribers see the
+// same records in Attach's ring snapshot. The size-one batch mailbox avoids
+// truncating 500 records through the 16-record live channel.
+func (t *Tailer) publishInitialBackfill(lines []string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.initialLoaded {
+		return
+	}
+	for _, line := range lines {
+		t.ring.Push(line)
+	}
+	t.initialLoaded = true
+	if len(lines) == 0 {
+		return
+	}
+	for _, sub := range t.subscribers {
+		if sub.closed {
+			continue
+		}
+		batch := append([]string(nil), lines...)
+		select {
+		case sub.BackfillC <- batch:
+		default:
+		}
+	}
+}
+
 // Snapshot returns a copy of the ring buffer in FIFO order (oldest first).
 // Use this to backfill a new SSE client before entering the live-stream loop.
 func (t *Tailer) Snapshot() []string {
@@ -369,11 +407,10 @@ func SetAdminTailerPanicProbeForTest(v func()) func() {
 // run — the single tailer goroutine
 // ---------------------------------------------------------------------------
 
-// run is the single goroutine that polls the log file for new lines.
-// It opens the file at EOF (D-10 — never backfills historical content),
-// polls for size growth on a TailPollInterval ticker, reads new bytes
-// through bufio.Reader, and broadcasts each completed line to all
-// subscribers and into the ring buffer.
+// run is the single goroutine that polls the log file for new lines. Its first
+// successful open loads bounded recent history; later run restarts, rotations,
+// and truncations open at EOF. It then polls for growth and broadcasts each
+// completed live line to all subscribers and into the ring buffer.
 //
 // Partial-line handling (WR-02): bufio.Reader.ReadString('\n') returns
 // io.EOF with the partial trailing bytes that have no newline yet. We
@@ -433,7 +470,8 @@ func (t *Tailer) run(ctx context.Context) {
 		partialLine string // carry-over bytes with no terminator yet (WR-02)
 	)
 
-	// reopen closes any existing file handle and opens t.path at EOF.
+	// reopen closes any existing file handle and opens t.path. The first
+	// successful open reads bounded recent history; every later open seeks EOF.
 	// On error, f is set to nil and the tailer retries on the next tick.
 	// Any in-flight partialLine is discarded — it belongs to the prior
 	// file inode and cannot be meaningfully concatenated to the new one.
@@ -463,7 +501,44 @@ func (t *Tailer) run(ctx context.Context) {
 			t.publishStatus(TailStatus{State: TailStateUnreadable})
 			return
 		}
-		// Seek to EOF: D-10 invariant — NEVER backfill historical content.
+		if t.needsInitialBackfill() {
+			lines, carry, size, backfillErr := readInitialBackfill(
+				nf, RingBufferLines, TailerInitialBackfillMaxBytes,
+			)
+			if backfillErr != nil {
+				_ = nf.Close()
+				if t.logger != nil {
+					t.logger.Warn(
+						"admin: tailer cannot read initial log history",
+						"path", t.path,
+						"err", backfillErr,
+					)
+				}
+				t.publishStatus(TailStatus{State: TailStateUnreadable})
+				return
+			}
+			if _, seekErr := nf.Seek(size, io.SeekStart); seekErr != nil {
+				_ = nf.Close()
+				if t.logger != nil {
+					t.logger.Warn(
+						"admin: tailer cannot seek after initial log history",
+						"path", t.path,
+						"err", seekErr,
+					)
+				}
+				t.publishStatus(TailStatus{State: TailStateUnreadable})
+				return
+			}
+			f = nf
+			lastSize = size
+			partialLine = carry
+			reader = bufio.NewReaderSize(f, 64*1024)
+			t.publishInitialBackfill(lines)
+			t.publishFileStatus(info)
+			return
+		}
+
+		// Run restarts, rotations, and truncations never replay history.
 		sz, err := nf.Seek(0, io.SeekEnd)
 		if err != nil {
 			_ = nf.Close()

@@ -8,6 +8,7 @@ package admin
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -322,6 +323,71 @@ func TestTailerPublishStatusCoalescesRepeatedObservations(t *testing.T) {
 	}
 }
 
+func TestReadInitialBackfillKeepsLatestCompleteLines(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tail.log")
+	appendToFile(t, path, "one", "two", "three", "four")
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	lines, partial, _, err := readInitialBackfill(f, 2, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lines) != 2 || lines[0] != "three" || lines[1] != "four" {
+		t.Fatalf("lines = %v, want [three four]", lines)
+	}
+	if partial != "" {
+		t.Fatalf("partial = %q, want empty", partial)
+	}
+}
+
+func TestReadInitialBackfillDropsLeadingFragmentAndCarriesTrailingPartial(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tail.log")
+	if err := os.WriteFile(path, []byte("discard-me\nkeep\nunfinished"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	lines, partial, _, err := readInitialBackfill(
+		f, 10, int64(len("ard-me\nkeep\nunfinished")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lines) != 1 || lines[0] != "keep" {
+		t.Fatalf("lines = %v, want [keep]", lines)
+	}
+	if partial != "unfinished" {
+		t.Fatalf("partial = %q, want unfinished", partial)
+	}
+}
+
+func TestReadInitialBackfillKeepsRecordAtExactWindowBoundary(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tail.log")
+	if err := os.WriteFile(path, []byte("one\ntwo\nthree\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	lines, partial, _, err := readInitialBackfill(f, 10, int64(len("two\nthree\n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lines) != 2 || lines[0] != "two" || lines[1] != "three" {
+		t.Fatalf("lines = %v, want [two three]", lines)
+	}
+	if partial != "" {
+		t.Fatalf("partial = %q, want empty", partial)
+	}
+}
+
 func TestAdmin_TailerLazyStartStop(t *testing.T) {
 	defer goleak.VerifyNone(t)
 
@@ -403,8 +469,8 @@ func TestAdmin_TailerBroadcast_NewLines(t *testing.T) {
 
 	dir := t.TempDir()
 	logPath := dir + "/test.log"
-	// Pre-populate with one line (will NOT be received by subscriber since
-	// tailer opens at EOF per D-10).
+	// Pre-populate with one line. Initial history uses BackfillC rather than the
+	// live C channel, so the assertions below still isolate live delivery.
 	appendToFile(t, logPath, "existing")
 
 	tailer := NewTailer(logPath, discardLogger())
@@ -445,53 +511,140 @@ func TestAdmin_TailerBroadcast_NewLines(t *testing.T) {
 	}
 }
 
-func TestAdmin_TailerBackfillSnapshot(t *testing.T) {
+func TestTailerFirstOpenBackfillsLatest500ThenStreamsLive(t *testing.T) {
 	defer goleak.VerifyNone(t)
 
-	dir := t.TempDir()
-	logPath := dir + "/test.log"
-
-	// Pre-populate with 600 lines BEFORE starting tailer — these should NOT
-	// be backfilled (D-10: tailer opens at EOF).
-	for i := 0; i < 600; i++ {
-		appendToFile(t, logPath, "pre")
+	logPath := filepath.Join(t.TempDir(), "test.log")
+	var contents strings.Builder
+	for i := 0; i < RingBufferLines+25; i++ {
+		_, _ = fmt.Fprintf(&contents, "pre-%03d\n", i)
+	}
+	if err := os.WriteFile(logPath, []byte(contents.String()), 0o600); err != nil {
+		t.Fatal(err)
 	}
 
 	tailer := NewTailer(logPath, discardLogger())
-	sub := tailer.Subscribe(t.Context())
+	sub, _, _ := tailer.Attach(t.Context())
 	defer tailer.Unsubscribe(sub)
-
-	// Wait for tailer to open file at EOF.
-	time.Sleep(400 * time.Millisecond)
-
-	// Append new lines AFTER subscribe.
-	for i := 0; i < 10; i++ {
-		appendToFile(t, logPath, "post")
+	var got []string
+	select {
+	case got = <-sub.BackfillC:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for initial backfill batch")
+	}
+	if len(got) != RingBufferLines || got[0] != "pre-025" || got[len(got)-1] != "pre-524" {
+		t.Fatalf("boundary mismatch: len=%d first=%q last=%q", len(got), got[0], got[len(got)-1])
+	}
+	appendToFile(t, logPath, "live")
+	if line := waitLine(sub.C, 2*time.Second); line != "live" {
+		t.Fatalf("live line = %q, want live", line)
 	}
 
-	// Wait for lines to arrive.
-	time.Sleep(1 * time.Second)
-
-	snap := tailer.Snapshot()
-	// Snapshot should be ≤ RingBufferLines.
-	if len(snap) > RingBufferLines {
-		t.Errorf("Snapshot exceeds RingBufferLines: len=%d", len(snap))
+	snapshot := tailer.Snapshot()
+	if len(snapshot) != RingBufferLines || snapshot[len(snapshot)-1] != "live" {
+		t.Fatalf("snapshot after live append = len:%d last:%q", len(snapshot), snapshot[len(snapshot)-1])
 	}
-	// No pre-existing content should be in the snapshot (D-10).
-	for _, l := range snap {
-		if l == "pre" {
-			t.Errorf("Snapshot contains pre-existing content 'pre' — D-10 violation")
+}
+
+func TestTailerInitialPartialCompletesExactlyOnce(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	path := filepath.Join(t.TempDir(), "partial.log")
+	if err := os.WriteFile(path, []byte("complete\npartial"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tailer := NewTailer(path, discardLogger())
+	sub, _, _ := tailer.Attach(t.Context())
+	defer tailer.Unsubscribe(sub)
+	select {
+	case got := <-sub.BackfillC:
+		if len(got) != 1 || got[0] != "complete" {
+			t.Fatalf("backfill = %v, want [complete]", got)
 		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for partial-file backfill")
 	}
-	// All post lines should appear.
-	postCount := 0
-	for _, l := range snap {
-		if l == "post" {
-			postCount++
+
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString("-done\n"); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := waitLine(sub.C, 2*time.Second); got != "partial-done" {
+		t.Fatalf("completed partial = %q, want partial-done", got)
+	}
+	select {
+	case extra := <-sub.C:
+		t.Fatalf("completed partial arrived more than once: %q", extra)
+	case <-time.After(2 * TailPollInterval):
+	}
+}
+
+func TestTailerBackfillsOnlyOnceAcrossLazyRunRestart(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	path := filepath.Join(t.TempDir(), "restart.log")
+	appendToFile(t, path, "historical")
+	tailer := NewTailer(path, discardLogger())
+	first, _, _ := tailer.Attach(t.Context())
+	select {
+	case got := <-first.BackfillC:
+		if len(got) != 1 || got[0] != "historical" {
+			t.Fatalf("first backfill = %v", got)
 		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first backfill")
 	}
-	if postCount != 10 {
-		t.Errorf("expected 10 'post' lines in snapshot, got %d", postCount)
+	tailer.Unsubscribe(first)
+	time.Sleep(2 * TailPollInterval)
+
+	second, snapshot, _ := tailer.Attach(t.Context())
+	defer tailer.Unsubscribe(second)
+	if len(snapshot) != 1 || snapshot[0] != "historical" {
+		t.Fatalf("restart snapshot = %v, want [historical]", snapshot)
+	}
+	select {
+	case replay := <-second.BackfillC:
+		t.Fatalf("history replayed after lazy restart: %v", replay)
+	case <-time.After(2 * TailPollInterval):
+	}
+	appendToFile(t, path, "live")
+	if got := waitLine(second.C, 2*time.Second); got != "live" {
+		t.Fatalf("restart live line = %q, want live", got)
+	}
+}
+
+func TestTailerInitialBackfillAttachmentHandoff(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	tailer := NewTailer(filepath.Join(t.TempDir(), "missing.log"), discardLogger())
+	first, firstSnapshot, _ := tailer.Attach(t.Context())
+	defer tailer.Unsubscribe(first)
+	if len(firstSnapshot) != 0 {
+		t.Fatalf("first snapshot = %v, want empty", firstSnapshot)
+	}
+	tailer.publishInitialBackfill([]string{"one", "two"})
+	select {
+	case got := <-first.BackfillC:
+		if len(got) != 2 || got[0] != "one" || got[1] != "two" {
+			t.Fatalf("first batch = %v, want [one two]", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first attachment did not receive backfill batch")
+	}
+
+	second, secondSnapshot, _ := tailer.Attach(t.Context())
+	defer tailer.Unsubscribe(second)
+	if len(secondSnapshot) != 2 || secondSnapshot[0] != "one" || secondSnapshot[1] != "two" {
+		t.Fatalf("second snapshot = %v, want [one two]", secondSnapshot)
+	}
+	select {
+	case duplicate := <-second.BackfillC:
+		t.Fatalf("second attachment received duplicate backfill: %v", duplicate)
+	default:
 	}
 }
 
@@ -532,6 +685,10 @@ func TestAdmin_TailerRotation(t *testing.T) {
 	nf, err := os.Create(logPath)
 	if err != nil {
 		t.Fatalf("create new log: %v", err)
+	}
+	if _, err := nf.WriteString("replacement-history\n"); err != nil {
+		_ = nf.Close()
+		t.Fatal(err)
 	}
 	nf.Close()
 

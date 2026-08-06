@@ -72,6 +72,11 @@ func TestAdmin_TailerSurvivesTimberjackRotate(t *testing.T) {
 	if err := rotator.Rotate(); err != nil {
 		t.Fatalf("timberjack.Rotate: %v", err)
 	}
+	// Content written before the tailer notices the replacement inode is
+	// replacement-file history and must be skipped when it reopens at EOF.
+	if _, err := rotator.Write([]byte("replacement-history\n")); err != nil {
+		t.Fatalf("replacement-history write: %v", err)
+	}
 
 	// Give the Tailer enough ticks (250ms TailPollInterval) to detect
 	// the inode change and reopen at the new file's EOF.
