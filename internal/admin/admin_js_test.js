@@ -347,6 +347,14 @@ test('log source labels cache and selection drive the real EventSource flow', as
   assert.equal(harness.eventSources.length, 2, 'label-only rerender does not reconnect');
 });
 
+test('a friendly label arriving after SSE open refreshes transport text', async () => {
+  const harness = createHarness([snapshot({ main: 'Gateway', kiro: 'Kiro' })]);
+  harness.start();
+  harness.eventSources[0].emit('open');
+  await settleSnapshot();
+  assert.equal(harness.selectors['[data-log-status]'].textContent, 'Connected — Gateway');
+});
+
 test('log source status events render precise file-health messages', async () => {
   const harness = createHarness([snapshot({ main: 'Gateway', kiro: 'Kiro' })]);
   harness.start();

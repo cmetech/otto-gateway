@@ -737,6 +737,7 @@
   var currentLogSource = 'main';
   var logSourceLabels = {};
   var currentLogFileStatus = { state: 'opening' };
+  var logTransportState = 'connecting';
   var logSourceLastJSON = '';
   var logEventSource = null;
 
@@ -1080,6 +1081,18 @@
     return logSourceLabels[source] || source;
   }
 
+  function refreshLogTransportStatus() {
+    var statusEl = document.querySelector('[data-log-status]');
+    if (!statusEl) return;
+    if (logTransportState === 'connected') {
+      statusEl.textContent = 'Connected — ' + logSourceLabel(currentLogSource);
+    } else if (logTransportState === 'disconnected') {
+      statusEl.textContent = 'Log stream disconnected — reconnecting…';
+    } else {
+      statusEl.textContent = 'Connecting to ' + logSourceLabel(currentLogSource) + '…';
+    }
+  }
+
   function refreshLogEmptyState() {
     var vp = document.querySelector('[data-log-viewport]');
     var empty = document.querySelector('[data-log-empty]');
@@ -1136,8 +1149,8 @@
   // closes after LOG_BACKFILL_WINDOW_MS so steady-state duplicates pass
   // through unfiltered.
   function onSSEOpen() {
-    var statusEl = document.querySelector('[data-log-status]');
-    if (statusEl) statusEl.textContent = 'Connected — ' + logSourceLabel(currentLogSource);
+    logTransportState = 'connected';
+    refreshLogTransportStatus();
     var dotEl = document.querySelector('[data-log-activity]');
     if (dotEl) dotEl.classList.remove('is-disconnected');
     logConsecutiveReconnects = 0;
@@ -1146,8 +1159,8 @@
 
   // onSSEError handles EventSource error (browser auto-reconnects every ~3s).
   function onSSEError() {
-    var statusEl = document.querySelector('[data-log-status]');
-    if (statusEl) statusEl.textContent = 'Log stream disconnected — reconnecting…';
+    logTransportState = 'disconnected';
+    refreshLogTransportStatus();
     var dotEl = document.querySelector('[data-log-activity]');
     if (dotEl) dotEl.classList.add('is-disconnected');
     logConsecutiveReconnects++;
@@ -1254,6 +1267,7 @@
     sources = sources || [];
     labels = labels || {};
     logSourceLabels = labels;
+    refreshLogTransportStatus();
     var renderedLabels = sources.map(function (source) {
       return labels[source] || source;
     });
@@ -1333,13 +1347,12 @@
     sel.addEventListener('change', function () {
       currentLogSource = sel.value;
       currentLogFileStatus = { state: 'opening' };
+      logTransportState = 'connecting';
       clearLogViewport();
       logBackfillEnd();
       logNewestBuffer = [];
       updateNewestBadge();
-      var statusEl = document.querySelector('[data-log-status]');
-      if (statusEl) statusEl.textContent = 'Connecting to ' +
-        logSourceLabel(currentLogSource) + '…';
+      refreshLogTransportStatus();
       openLogStream();
     });
   }
