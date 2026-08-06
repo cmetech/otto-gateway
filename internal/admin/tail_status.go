@@ -1,5 +1,11 @@
 package admin
 
+import (
+	"errors"
+	"fmt"
+	"io/fs"
+)
+
 // TailState is the browser-safe health state for a configured log source.
 type TailState string
 
@@ -28,4 +34,27 @@ func tailStatusesEqual(left, right TailStatus) bool {
 		return left.SizeBytes == nil && right.SizeBytes == nil
 	}
 	return *left.SizeBytes == *right.SizeBytes
+}
+
+func tailStateForError(err error) TailState {
+	if errors.Is(err, fs.ErrNotExist) {
+		return TailStateMissing
+	}
+	return TailStateUnreadable
+}
+
+func tailFailureClass(err error) string {
+	switch {
+	case err == nil:
+		return "none"
+	case errors.Is(err, fs.ErrNotExist):
+		return "not-exist"
+	case errors.Is(err, fs.ErrPermission):
+		return "permission"
+	}
+	var pathErr *fs.PathError
+	if errors.As(err, &pathErr) {
+		return fmt.Sprintf("%T:%v", pathErr.Err, pathErr.Err)
+	}
+	return fmt.Sprintf("%T", err)
 }

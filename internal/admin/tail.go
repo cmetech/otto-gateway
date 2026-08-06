@@ -57,6 +57,10 @@ const (
 	// TailerMaxLineBytes is the maximum size of a single log line in bytes.
 	// bufio.Scanner.Buffer is set to this limit per RESEARCH Pitfall 2.
 	TailerMaxLineBytes = 1024 * 1024 // 1 MB
+
+	// TailerFailureWarnInterval bounds repeated warnings for an unchanged
+	// missing or unreadable source while the tailer continues retrying.
+	TailerFailureWarnInterval = time.Minute
 )
 
 // ---------------------------------------------------------------------------
@@ -191,6 +195,11 @@ type Tailer struct {
 	// initialLoaded is scoped to the Tailer instance rather than one run
 	// goroutine, so a last-subscriber stop/start does not replay file history.
 	initialLoaded bool
+	now           func() time.Time
+	failureActive bool
+	failureState  TailState
+	failureClass  string
+	failureWarned time.Time
 }
 
 // NewTailer constructs a Tailer rooted at path. It does NOT start the
@@ -206,6 +215,7 @@ func newTailer(path, level string, logger *slog.Logger) *Tailer {
 		logger: logger,
 		ring:   NewRingBuffer(RingBufferLines),
 		status: TailStatus{State: TailStateOpening, Level: level},
+		now:    time.Now,
 	}
 }
 
@@ -314,11 +324,43 @@ func (t *Tailer) publishFileStatus(info fs.FileInfo) {
 }
 
 func (t *Tailer) publishFileError(err error) {
-	state := TailStateUnreadable
-	if errors.Is(err, fs.ErrNotExist) {
-		state = TailStateMissing
+	t.publishStatus(TailStatus{State: tailStateForError(err)})
+}
+
+func (t *Tailer) recordFileFailure(state TailState, err error) {
+	now := t.now()
+	class := tailFailureClass(err)
+	t.mu.Lock()
+	shouldWarn := !t.failureActive || t.failureState != state ||
+		t.failureClass != class || now.Sub(t.failureWarned) >= TailerFailureWarnInterval
+	t.failureActive = true
+	t.failureState = state
+	t.failureClass = class
+	if shouldWarn {
+		t.failureWarned = now
 	}
-	t.publishStatus(TailStatus{State: state})
+	t.mu.Unlock()
+	if shouldWarn && t.logger != nil {
+		t.logger.Warn(
+			"admin: tailer cannot open log",
+			"path", t.path,
+			"state", state,
+			"err", err,
+		)
+	}
+}
+
+func (t *Tailer) recordFileRecovery() {
+	t.mu.Lock()
+	wasFailed := t.failureActive
+	t.failureActive = false
+	t.failureState = ""
+	t.failureClass = ""
+	t.failureWarned = time.Time{}
+	t.mu.Unlock()
+	if wasFailed && t.logger != nil {
+		t.logger.Info("admin: tailer log source recovered", "path", t.path)
+	}
 }
 
 func (t *Tailer) needsInitialBackfill() bool {
@@ -484,20 +526,14 @@ func (t *Tailer) run(ctx context.Context) {
 		partialLine = ""
 		nf, err := os.Open(t.path)
 		if err != nil {
-			// D-18-08 REL-OBSV-04: promote from DEBUG to WARN so an
-			// operator who sees an empty Log Tail panel gets a visible
-			// diagnostic at the default INFO+ logger level. The retry
-			// loop runs on every tick; production noise is bounded by
-			// the early-return below (the tailer reopens once per tick,
-			// not per-line). Path is included so the operator sees
-			// exactly which path missed.
-			t.logger.Warn("admin: tailer cannot open log", "path", t.path, "err", err)
+			t.recordFileFailure(tailStateForError(err), err)
 			t.publishFileError(err)
 			return
 		}
 		info, err := nf.Stat()
 		if err != nil {
 			_ = nf.Close()
+			t.recordFileFailure(TailStateUnreadable, err)
 			t.publishStatus(TailStatus{State: TailStateUnreadable})
 			return
 		}
@@ -507,25 +543,13 @@ func (t *Tailer) run(ctx context.Context) {
 			)
 			if backfillErr != nil {
 				_ = nf.Close()
-				if t.logger != nil {
-					t.logger.Warn(
-						"admin: tailer cannot read initial log history",
-						"path", t.path,
-						"err", backfillErr,
-					)
-				}
+				t.recordFileFailure(TailStateUnreadable, backfillErr)
 				t.publishStatus(TailStatus{State: TailStateUnreadable})
 				return
 			}
 			if _, seekErr := nf.Seek(size, io.SeekStart); seekErr != nil {
 				_ = nf.Close()
-				if t.logger != nil {
-					t.logger.Warn(
-						"admin: tailer cannot seek after initial log history",
-						"path", t.path,
-						"err", seekErr,
-					)
-				}
+				t.recordFileFailure(TailStateUnreadable, seekErr)
 				t.publishStatus(TailStatus{State: TailStateUnreadable})
 				return
 			}
@@ -534,6 +558,7 @@ func (t *Tailer) run(ctx context.Context) {
 			partialLine = carry
 			reader = bufio.NewReaderSize(f, 64*1024)
 			t.publishInitialBackfill(lines)
+			t.recordFileRecovery()
 			t.publishFileStatus(info)
 			return
 		}
@@ -542,6 +567,7 @@ func (t *Tailer) run(ctx context.Context) {
 		sz, err := nf.Seek(0, io.SeekEnd)
 		if err != nil {
 			_ = nf.Close()
+			t.recordFileFailure(TailStateUnreadable, err)
 			t.publishStatus(TailStatus{State: TailStateUnreadable})
 			return
 		}
@@ -550,6 +576,7 @@ func (t *Tailer) run(ctx context.Context) {
 		// 64KB read buffer matches the prior scanner sizing. The
 		// TailerMaxLineBytes cap is enforced separately in readLines.
 		reader = bufio.NewReaderSize(f, 64*1024)
+		t.recordFileRecovery()
 		t.publishFileStatus(info)
 	}
 
@@ -579,13 +606,14 @@ func (t *Tailer) run(ctx context.Context) {
 			// close and re-open at the new file's EOF.
 			st, err := os.Stat(t.path)
 			if err != nil {
-				t.logger.Debug("admin: tailer stat failed", "path", t.path, "err", err)
+				t.recordFileFailure(tailStateForError(err), err)
 				t.publishFileError(err)
 				reopen()
 				continue
 			}
 			fst, ferr := f.Stat()
 			if ferr != nil {
+				t.recordFileFailure(TailStateUnreadable, ferr)
 				t.publishStatus(TailStatus{State: TailStateUnreadable})
 				reopen()
 				continue
@@ -609,7 +637,7 @@ func (t *Tailer) run(ctx context.Context) {
 			if readErr != nil {
 				// Read error (other than EOF, which readLines swallows).
 				// Reopen to recover; partialLine has been reset above.
-				t.logger.Debug("admin: tailer read error", "err", readErr)
+				t.recordFileFailure(TailStateUnreadable, readErr)
 				t.publishStatus(TailStatus{State: TailStateUnreadable})
 				_ = f.Close()
 				f = nil

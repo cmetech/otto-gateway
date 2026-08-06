@@ -7,9 +7,12 @@
 package admin
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -645,6 +648,47 @@ func TestTailerInitialBackfillAttachmentHandoff(t *testing.T) {
 	case duplicate := <-second.BackfillC:
 		t.Fatalf("second attachment received duplicate backfill: %v", duplicate)
 	default:
+	}
+}
+
+func TestTailerFileFailureWarningsAreRateLimitedAndRecoveryLogged(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	now := time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)
+	tailer := newTailer("/private/source.log", "INFO", logger)
+	tailer.now = func() time.Time { return now }
+
+	tailer.recordFileFailure(TailStateMissing, fs.ErrNotExist)
+	tailer.recordFileFailure(TailStateMissing, fs.ErrNotExist)
+	if got := strings.Count(logs.String(), "tailer cannot open log"); got != 1 {
+		t.Fatalf("warning count = %d, want 1: %s", got, logs.String())
+	}
+
+	now = now.Add(TailerFailureWarnInterval)
+	tailer.recordFileFailure(TailStateMissing, fs.ErrNotExist)
+	if got := strings.Count(logs.String(), "tailer cannot open log"); got != 2 {
+		t.Fatalf("warning count after interval = %d, want 2: %s", got, logs.String())
+	}
+
+	tailer.recordFileRecovery()
+	tailer.recordFileRecovery()
+	if got := strings.Count(logs.String(), "tailer log source recovered"); got != 1 {
+		t.Fatalf("recovery count = %d, want 1: %s", got, logs.String())
+	}
+}
+
+func TestTailerFileFailureStateOrClassChangeWarnsImmediately(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	now := time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)
+	tailer := newTailer("/private/source.log", "INFO", logger)
+	tailer.now = func() time.Time { return now }
+
+	tailer.recordFileFailure(TailStateMissing, fs.ErrNotExist)
+	tailer.recordFileFailure(TailStateUnreadable, fs.ErrPermission)
+	tailer.recordFileFailure(TailStateUnreadable, errors.New("device fault"))
+	if got := strings.Count(logs.String(), "tailer cannot open log"); got != 3 {
+		t.Fatalf("warning count = %d, want 3 for state and class changes: %s", got, logs.String())
 	}
 }
 

@@ -17,6 +17,7 @@ package admin
 import (
 	"context"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -39,6 +40,7 @@ func TestRegression_REL_OBSV_04_TailerOpenFailureWarn(t *testing.T) {
 	// Poll up to 2s for a Warn-level record with msg matching the
 	// open-failure pattern and a path field equal to `missing`.
 	deadline := time.Now().Add(2 * time.Second)
+	found := false
 	for time.Now().Before(deadline) {
 		for _, line := range strings.Split(buf.String(), "\n") {
 			if strings.TrimSpace(line) == "" {
@@ -55,9 +57,34 @@ func TestRegression_REL_OBSV_04_TailerOpenFailureWarn(t *testing.T) {
 			if !strings.Contains(line, `"path":"`+missing+`"`) {
 				continue
 			}
+			found = true
+			break
+		}
+		if found {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !found {
+		t.Fatalf("no WARN-level 'admin: tailer cannot open log' record with path=%q within 2s; buf=%s", missing, buf.String())
+	}
+
+	// Several identical 250ms retries remain within the limiter interval and
+	// must not generate one warning per poll.
+	time.Sleep(3 * TailPollInterval)
+	if got := strings.Count(buf.String(), "tailer cannot open log"); got != 1 {
+		t.Fatalf("open warning count = %d, want 1 after repeated polls; buf=%s", got, buf.String())
+	}
+
+	if err := os.WriteFile(missing, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	recoveryDeadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(recoveryDeadline) {
+		if strings.Count(buf.String(), "tailer log source recovered") == 1 {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatalf("no WARN-level 'admin: tailer cannot open log' record with path=%q within 2s; buf=%s", missing, buf.String())
+	t.Fatalf("tailer did not log one recovery after file creation; buf=%s", buf.String())
 }
