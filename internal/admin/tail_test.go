@@ -7,9 +7,12 @@
 package admin
 
 import (
+	"encoding/json"
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -51,6 +54,23 @@ func waitLines(ch <-chan string, n int, timeout time.Duration) []string {
 		}
 	}
 	return result
+}
+
+func waitStatus(ch <-chan TailStatus, want TailState, timeout time.Duration) TailStatus {
+	deadline := time.After(timeout)
+	for {
+		select {
+		case status, ok := <-ch:
+			if !ok {
+				return TailStatus{}
+			}
+			if status.State == want {
+				return status
+			}
+		case <-deadline:
+			return TailStatus{}
+		}
+	}
 }
 
 // appendToFile appends lines to a file using O_APPEND semantics.
@@ -142,6 +162,165 @@ func TestAdmin_RingBuffer_DoubleFull(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Tailer lifecycle tests
 // ---------------------------------------------------------------------------
+
+func TestTailStatusJSONExcludesPathAndRawError(t *testing.T) {
+	size := int64(0)
+	status := TailStatus{State: TailStateEmpty, SizeBytes: &size, Level: "INFO"}
+	body, err := json.Marshal(status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"path", "error", t.TempDir()} {
+		if strings.Contains(string(body), forbidden) {
+			t.Fatalf("status leaked %q: %s", forbidden, body)
+		}
+	}
+}
+
+func TestTailerAttachReturnsCoherentSnapshotAndOpeningStatus(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tail.log")
+	appendToFile(t, path, "existing")
+	tailer := newTailer(path, "INFO", discardLogger())
+	tailer.ring.Push("existing")
+	sub, snapshot, status := tailer.Attach(t.Context())
+	defer tailer.Unsubscribe(sub)
+	if len(snapshot) != 1 || snapshot[0] != "existing" {
+		t.Fatalf("snapshot = %v, want [existing]", snapshot)
+	}
+	if status.State != TailStateOpening || status.Level != "INFO" {
+		t.Fatalf("status = %+v, want opening INFO", status)
+	}
+	if cap(sub.BackfillC) != 1 || cap(sub.StatusC) != 1 {
+		t.Fatalf("control channel capacities = backfill:%d status:%d, want 1 and 1", cap(sub.BackfillC), cap(sub.StatusC))
+	}
+}
+
+func TestTailerFileStates(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(*testing.T) string
+		want  TailState
+	}{
+		{
+			name: "empty",
+			setup: func(t *testing.T) string {
+				path := filepath.Join(t.TempDir(), "empty.log")
+				if err := os.WriteFile(path, nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				return path
+			},
+			want: TailStateEmpty,
+		},
+		{
+			name: "missing",
+			setup: func(t *testing.T) string {
+				return filepath.Join(t.TempDir(), "missing.log")
+			},
+			want: TailStateMissing,
+		},
+		{
+			name: "unreadable",
+			setup: func(t *testing.T) string {
+				parent := filepath.Join(t.TempDir(), "regular-file")
+				if err := os.WriteFile(parent, []byte("not a directory"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				return filepath.Join(parent, "tail.log")
+			},
+			want: TailStateUnreadable,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			defer goleak.VerifyNone(t)
+			tailer := newTailer(tc.setup(t), "INFO", discardLogger())
+			sub, _, _ := tailer.Attach(t.Context())
+			defer tailer.Unsubscribe(sub)
+			status := waitStatus(sub.StatusC, tc.want, 2*time.Second)
+			if status.State != tc.want || status.Level != "INFO" {
+				t.Fatalf("status = %+v, want state %q level INFO", status, tc.want)
+			}
+			if tc.want == TailStateEmpty && (status.SizeBytes == nil || *status.SizeBytes != 0) {
+				t.Fatalf("empty status size = %v, want pointer to zero", status.SizeBytes)
+			}
+		})
+	}
+}
+
+func TestTailerFileStateRecovery(t *testing.T) {
+	t.Run("missing file becomes empty then watching", func(t *testing.T) {
+		defer goleak.VerifyNone(t)
+		path := filepath.Join(t.TempDir(), "late.log")
+		tailer := newTailer(path, "INFO", discardLogger())
+		sub, _, _ := tailer.Attach(t.Context())
+		defer tailer.Unsubscribe(sub)
+		if got := waitStatus(sub.StatusC, TailStateMissing, 2*time.Second); got.State != TailStateMissing {
+			t.Fatalf("initial status = %+v, want missing", got)
+		}
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if got := waitStatus(sub.StatusC, TailStateEmpty, 2*time.Second); got.State != TailStateEmpty {
+			t.Fatalf("created-file status = %+v, want empty", got)
+		}
+		appendToFile(t, path, "live")
+		if got := waitStatus(sub.StatusC, TailStateWatching, 2*time.Second); got.State != TailStateWatching {
+			t.Fatalf("appended-file status = %+v, want watching", got)
+		}
+	})
+
+	t.Run("unreadable path becomes watching", func(t *testing.T) {
+		defer goleak.VerifyNone(t)
+		root := t.TempDir()
+		parent := filepath.Join(root, "blocked")
+		if err := os.WriteFile(parent, []byte("not a directory"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(parent, "tail.log")
+		tailer := newTailer(path, "INFO", discardLogger())
+		sub, _, _ := tailer.Attach(t.Context())
+		defer tailer.Unsubscribe(sub)
+		if got := waitStatus(sub.StatusC, TailStateUnreadable, 2*time.Second); got.State != TailStateUnreadable {
+			t.Fatalf("initial status = %+v, want unreadable", got)
+		}
+		if err := os.Remove(parent); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(parent, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		appendToFile(t, path, "existing")
+		if got := waitStatus(sub.StatusC, TailStateWatching, 2*time.Second); got.State != TailStateWatching {
+			t.Fatalf("recovered status = %+v, want watching", got)
+		}
+	})
+}
+
+func TestTailerPublishStatusCoalescesRepeatedObservations(t *testing.T) {
+	tailer := newTailer("unused.log", "INFO", discardLogger())
+	sub := &subscriber{
+		C:         make(chan string, TailerSubChanBuffer),
+		BackfillC: make(chan []string, 1),
+		StatusC:   make(chan TailStatus, 1),
+	}
+	tailer.subscribers = []*subscriber{sub}
+
+	firstSize := int64(7)
+	tailer.publishStatus(TailStatus{State: TailStateWatching, SizeBytes: &firstSize})
+	if got := waitStatus(sub.StatusC, TailStateWatching, time.Second); got.State != TailStateWatching {
+		t.Fatalf("first status = %+v, want watching", got)
+	}
+
+	secondSize := int64(7)
+	tailer.publishStatus(TailStatus{State: TailStateWatching, SizeBytes: &secondSize})
+	select {
+	case got := <-sub.StatusC:
+		t.Fatalf("duplicate status was delivered: %+v", got)
+	default:
+	}
+}
 
 func TestAdmin_TailerLazyStartStop(t *testing.T) {
 	defer goleak.VerifyNone(t)
@@ -557,25 +736,28 @@ func TestTailerRegistry_LazyCreation(t *testing.T) {
 
 	reg := NewTailerRegistry(discardLogger())
 
-	t1a := reg.Get("main", "/tmp/a.log")
-	t1b := reg.Get("main", "/tmp/a.log")
+	t1a := reg.Get("main", "/tmp/a.log", "")
+	t1b := reg.Get("main", "/tmp/a.log", "")
 	if t1a != t1b {
 		t.Errorf("Get(\"main\", _) must return the same pointer on subsequent calls; got %p vs %p", t1a, t1b)
 	}
 
-	t2 := reg.Get("boot-err", "/tmp/b.log")
+	t2 := reg.Get("boot-err", "/tmp/b.log", "")
 	if t2 == t1a {
 		t.Errorf("Get(\"boot-err\", _) must return a different pointer from \"main\"; both are %p", t1a)
 	}
 
 	// Path on the second call is ignored — the cached instance carries
 	// the original path. This is the read-only registry contract (D-10).
-	t1c := reg.Get("main", "/tmp/different-path.log")
+	t1c := reg.Get("main", "/tmp/different-path.log", "TRACE")
 	if t1c != t1a {
 		t.Errorf("Get(\"main\", _) must ignore path on cached lookup; got %p, want %p", t1c, t1a)
 	}
 	if t1c.path != "/tmp/a.log" {
 		t.Errorf("cached tailer path mutated; got %q, want /tmp/a.log", t1c.path)
+	}
+	if t1c.level != "" {
+		t.Errorf("cached tailer level mutated; got %q, want empty", t1c.level)
 	}
 }
 
@@ -594,7 +776,7 @@ func TestTailerRegistry_Concurrent(t *testing.T) {
 	for i := 0; i < N; i++ {
 		go func(idx int) {
 			defer wg.Done()
-			results[idx] = reg.Get("main", "/tmp/concurrent.log")
+			results[idx] = reg.Get("main", "/tmp/concurrent.log", "INFO")
 		}(i)
 	}
 	wg.Wait()

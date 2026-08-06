@@ -26,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"runtime/debug"
@@ -158,9 +159,11 @@ func (r *RingBuffer) Copy() []string {
 // is closed; broadcast reads this flag (also under mu) to avoid a
 // send-to-closed-channel panic under the -race detector.
 type subscriber struct {
-	C      chan string
-	ctx    context.Context // caller's context for lifetime correlation
-	closed bool            // true after Unsubscribe closes C; guarded by Tailer.mu
+	C         chan string
+	BackfillC chan []string
+	StatusC   chan TailStatus
+	ctx       context.Context // caller's context for lifetime correlation
+	closed    bool            // true after Unsubscribe closes channels; guarded by Tailer.mu
 }
 
 // ---------------------------------------------------------------------------
@@ -176,6 +179,7 @@ type subscriber struct {
 // read-only after construction.
 type Tailer struct {
 	path   string
+	level  string
 	logger *slog.Logger
 
 	mu          sync.Mutex
@@ -183,15 +187,22 @@ type Tailer struct {
 	subscribers []*subscriber
 	running     bool
 	cancelRun   context.CancelFunc
+	status      TailStatus
 }
 
 // NewTailer constructs a Tailer rooted at path. It does NOT start the
 // poll goroutine; call Subscribe to lazy-start it.
 func NewTailer(path string, logger *slog.Logger) *Tailer {
+	return newTailer(path, "", logger)
+}
+
+func newTailer(path, level string, logger *slog.Logger) *Tailer {
 	return &Tailer{
 		path:   path,
+		level:  level,
 		logger: logger,
 		ring:   NewRingBuffer(RingBufferLines),
+		status: TailStatus{State: TailStateOpening, Level: level},
 	}
 }
 
@@ -202,14 +213,26 @@ func NewTailer(path string, logger *slog.Logger) *Tailer {
 // The caller MUST call Unsubscribe when done or when the caller's context
 // is cancelled — failing to unsubscribe leaks the shared tailer goroutine.
 func (t *Tailer) Subscribe(ctx context.Context) *subscriber { //nolint:revive // *subscriber is package-private by design; returned opaquely as a handle for Unsubscribe, no callers outside internal/admin/
+	sub, _, _ := t.Attach(ctx)
+	return sub
+}
+
+// Attach atomically registers a subscriber and captures the current ring and
+// source status. The shared lock prevents a line from falling between the
+// snapshot and live-delivery paths.
+func (t *Tailer) Attach(ctx context.Context) (*subscriber, []string, TailStatus) { //nolint:revive // package-private subscriber is an opaque lifecycle handle
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	sub := &subscriber{
-		C:      make(chan string, TailerSubChanBuffer),
-		ctx:    ctx,
-		closed: false,
+		C:         make(chan string, TailerSubChanBuffer),
+		BackfillC: make(chan []string, 1),
+		StatusC:   make(chan TailStatus, 1),
+		ctx:       ctx,
+		closed:    false,
 	}
 	t.subscribers = append(t.subscribers, sub)
+	snapshot := t.ring.Copy()
+	status := t.status
 	if !t.running {
 		// Lazy start: first subscriber spins up the tailer goroutine.
 		runCtx, cancel := context.WithCancel(context.Background())
@@ -217,7 +240,7 @@ func (t *Tailer) Subscribe(ctx context.Context) *subscriber { //nolint:revive //
 		t.running = true
 		go t.run(runCtx)
 	}
-	return sub
+	return sub, snapshot, status
 }
 
 // Unsubscribe removes sub from the fan-out and closes sub.C.
@@ -237,6 +260,8 @@ func (t *Tailer) Unsubscribe(sub *subscriber) {
 			// skip sending after this point.
 			sub.closed = true
 			close(sub.C)
+			close(sub.BackfillC)
+			close(sub.StatusC)
 			break
 		}
 	}
@@ -244,6 +269,53 @@ func (t *Tailer) Unsubscribe(sub *subscriber) {
 		t.cancelRun()
 		t.running = false
 	}
+}
+
+// publishStatus stores and fans out only meaningful source-state changes.
+// Each subscriber keeps a size-one latest-value mailbox, so status delivery
+// never backpressures file polling while the newest state remains observable.
+func (t *Tailer) publishStatus(status TailStatus) {
+	status.Level = t.level
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if tailStatusesEqual(t.status, status) {
+		return
+	}
+	t.status = status
+	for _, sub := range t.subscribers {
+		if sub.closed {
+			continue
+		}
+		select {
+		case <-sub.StatusC:
+		default:
+		}
+		select {
+		case sub.StatusC <- status:
+		default:
+		}
+	}
+}
+
+func (t *Tailer) publishFileStatus(info fs.FileInfo) {
+	size := info.Size()
+	state := TailStateWatching
+	if size == 0 {
+		state = TailStateEmpty
+	}
+	t.publishStatus(TailStatus{
+		State:      state,
+		SizeBytes:  &size,
+		ModifiedAt: info.ModTime().UTC().Format(time.RFC3339Nano),
+	})
+}
+
+func (t *Tailer) publishFileError(err error) {
+	state := TailStateUnreadable
+	if errors.Is(err, fs.ErrNotExist) {
+		state = TailStateMissing
+	}
+	t.publishStatus(TailStatus{State: state})
 }
 
 // Snapshot returns a copy of the ring buffer in FIFO order (oldest first).
@@ -382,12 +454,20 @@ func (t *Tailer) run(ctx context.Context) {
 			// not per-line). Path is included so the operator sees
 			// exactly which path missed.
 			t.logger.Warn("admin: tailer cannot open log", "path", t.path, "err", err)
+			t.publishFileError(err)
+			return
+		}
+		info, err := nf.Stat()
+		if err != nil {
+			_ = nf.Close()
+			t.publishStatus(TailStatus{State: TailStateUnreadable})
 			return
 		}
 		// Seek to EOF: D-10 invariant — NEVER backfill historical content.
 		sz, err := nf.Seek(0, io.SeekEnd)
 		if err != nil {
 			_ = nf.Close()
+			t.publishStatus(TailStatus{State: TailStateUnreadable})
 			return
 		}
 		f = nf
@@ -395,6 +475,7 @@ func (t *Tailer) run(ctx context.Context) {
 		// 64KB read buffer matches the prior scanner sizing. The
 		// TailerMaxLineBytes cap is enforced separately in readLines.
 		reader = bufio.NewReaderSize(f, 64*1024)
+		t.publishFileStatus(info)
 	}
 
 	reopen()
@@ -424,11 +505,17 @@ func (t *Tailer) run(ctx context.Context) {
 			st, err := os.Stat(t.path)
 			if err != nil {
 				t.logger.Debug("admin: tailer stat failed", "path", t.path, "err", err)
+				t.publishFileError(err)
 				reopen()
 				continue
 			}
 			fst, ferr := f.Stat()
-			if ferr != nil || st.Size() < lastSize || !os.SameFile(fst, st) {
+			if ferr != nil {
+				t.publishStatus(TailStatus{State: TailStateUnreadable})
+				reopen()
+				continue
+			}
+			if st.Size() < lastSize || !os.SameFile(fst, st) {
 				// Rotation or truncation detected — reopen at new EOF.
 				reopen()
 				continue
@@ -436,6 +523,7 @@ func (t *Tailer) run(ctx context.Context) {
 
 			// Nothing to read yet.
 			if st.Size() == lastSize {
+				t.publishFileStatus(st)
 				continue
 			}
 
@@ -447,10 +535,15 @@ func (t *Tailer) run(ctx context.Context) {
 				// Read error (other than EOF, which readLines swallows).
 				// Reopen to recover; partialLine has been reset above.
 				t.logger.Debug("admin: tailer read error", "err", readErr)
-				reopen()
+				t.publishStatus(TailStatus{State: TailStateUnreadable})
+				_ = f.Close()
+				f = nil
+				reader = nil
+				partialLine = ""
 				continue
 			}
 			lastSize = st.Size()
+			t.publishFileStatus(st)
 		}
 	}
 }
@@ -580,13 +673,13 @@ func NewTailerRegistry(logger *slog.Logger) *TailerRegistry {
 // Empty name is permitted but discouraged — it creates a single
 // shared cached entry under the "" key, which is rarely what callers
 // want.
-func (r *TailerRegistry) Get(name, path string) *Tailer {
+func (r *TailerRegistry) Get(name, path, level string) *Tailer {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if t, ok := r.byName[name]; ok {
 		return t
 	}
-	t := NewTailer(path, r.logger)
+	t := newTailer(path, level, r.logger)
 	r.byName[name] = t
 	return t
 }

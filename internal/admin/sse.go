@@ -114,7 +114,7 @@ func (h *handler) sseHandler(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	tailer := h.tailers.Get(source, path)
+	tailer := h.tailers.Get(source, path, h.deps.LogSourceLevels[source])
 
 	// Set SSE headers BEFORE writing any body (Pitfall 3 — nginx buffering).
 	w.Header().Set("Content-Type", "text/event-stream")
