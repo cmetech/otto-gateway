@@ -735,6 +735,8 @@
   // logEventSource holds the active EventSource so the source switcher
   // can close it before opening a new one.
   var currentLogSource = 'main';
+  var logSourceLabels = {};
+  var currentLogFileStatus = { state: 'opening' };
   var logSourceLastJSON = '';
   var logEventSource = null;
 
@@ -1023,6 +1025,7 @@
       if (!victim) break;
       vp.removeChild(victim);
     }
+    refreshLogEmptyState();
   }
 
   // levelFromElement reads the persisted parsed level (WR-06) from an
@@ -1073,6 +1076,60 @@
     autoScroll();
   }
 
+  function logSourceLabel(source) {
+    return logSourceLabels[source] || source;
+  }
+
+  function refreshLogEmptyState() {
+    var vp = document.querySelector('[data-log-viewport]');
+    var empty = document.querySelector('[data-log-empty]');
+    if (!vp || !empty) return;
+    var rows = vp.querySelectorAll('.gw-log-row, .gw-log-row-fallback');
+    if (rows.length > 0) {
+      var visibleRows = 0;
+      for (var i = 0; i < rows.length; i++) {
+        if (rows[i].style.display !== 'none') visibleRows++;
+      }
+      if (visibleRows > 0) {
+        empty.hidden = true;
+        return;
+      }
+      empty.hidden = false;
+      empty.textContent = 'Log entries were received, but none match the current filters.';
+      return;
+    }
+
+    empty.hidden = false;
+    var state = currentLogFileStatus.state || 'opening';
+    if (state === 'missing') {
+      empty.textContent = 'Log file has not been created yet. Watching for it…';
+    } else if (state === 'unreadable') {
+      empty.textContent = 'Log file cannot be read. Check its permissions.';
+    } else if (state === 'empty' && currentLogSource === 'kiro') {
+      empty.textContent = 'Kiro log is empty. Logging is configured at ' +
+        (currentLogFileStatus.level || 'INFO') + '; waiting for the first entry.';
+    } else if (state === 'empty') {
+      empty.textContent = 'Log file is empty. Waiting for the first entry.';
+    } else if (state === 'watching') {
+      empty.textContent = 'Connected and watching for new complete log entries.';
+    } else {
+      empty.textContent = 'Checking log source…';
+    }
+  }
+
+  function onLogStatus(ev) {
+    var status;
+    try {
+      status = JSON.parse(ev.data);
+    } catch (e) {
+      return;
+    }
+    var states = ['opening', 'missing', 'unreadable', 'empty', 'watching'];
+    if (!status || states.indexOf(status.state) < 0) return;
+    currentLogFileStatus = status;
+    refreshLogEmptyState();
+  }
+
   // onSSEOpen handles EventSource open.
   // Activates the backfill-dedup window (WR-03 + WR-04) so duplicate
   // backfill lines from the upcoming replay are suppressed; the window
@@ -1080,7 +1137,7 @@
   // through unfiltered.
   function onSSEOpen() {
     var statusEl = document.querySelector('[data-log-status]');
-    if (statusEl) statusEl.textContent = 'Connected — ' + currentLogSource;
+    if (statusEl) statusEl.textContent = 'Connected — ' + logSourceLabel(currentLogSource);
     var dotEl = document.querySelector('[data-log-activity]');
     if (dotEl) dotEl.classList.remove('is-disconnected');
     logConsecutiveReconnects = 0;
@@ -1115,6 +1172,7 @@
         }
         logNewestBuffer = [];
         updateNewestBadge();
+        refreshLogEmptyState();
         autoScroll();
       }
     });
@@ -1141,6 +1199,7 @@
         var line = el.dataset.raw || '';
         el.style.display = matchesFilters(parsed, line) ? '' : 'none';
       }
+      refreshLogEmptyState();
     });
   }
 
@@ -1181,6 +1240,7 @@
           var line = el.dataset.raw || '';
           el.style.display = matchesFilters(parsed, line) ? '' : 'none';
         }
+        refreshLogEmptyState();
       }, 150);
     });
   }
@@ -1193,6 +1253,7 @@
   function populateLogSources(sources, labels) {
     sources = sources || [];
     labels = labels || {};
+    logSourceLabels = labels;
     var renderedLabels = sources.map(function (source) {
       return labels[source] || source;
     });
@@ -1238,8 +1299,7 @@
     for (var i = 0; i < rows.length; i++) {
       vp.removeChild(rows[i]);
     }
-    var empty = document.querySelector('[data-log-empty]');
-    if (empty) empty.hidden = false;
+    refreshLogEmptyState();
   }
 
   // Quick 260529-ll2 — open (or re-open) the SSE stream against the
@@ -1255,6 +1315,7 @@
     logEventSource = new EventSource(
       '/admin/logs/stream?source=' + encodeURIComponent(currentLogSource));
     logEventSource.addEventListener('log', onLogEvent);
+    logEventSource.addEventListener('status', onLogStatus);
     logEventSource.addEventListener('ping', function () { /* keepalive */ });
     logEventSource.onopen = onSSEOpen;
     logEventSource.onerror = onSSEError;
@@ -1271,12 +1332,14 @@
     if (!sel) return;
     sel.addEventListener('change', function () {
       currentLogSource = sel.value;
+      currentLogFileStatus = { state: 'opening' };
       clearLogViewport();
       logBackfillEnd();
       logNewestBuffer = [];
       updateNewestBadge();
       var statusEl = document.querySelector('[data-log-status]');
-      if (statusEl) statusEl.textContent = 'Connecting to ' + currentLogSource + '…';
+      if (statusEl) statusEl.textContent = 'Connecting to ' +
+        logSourceLabel(currentLogSource) + '…';
       openLogStream();
     });
   }

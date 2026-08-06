@@ -15,9 +15,22 @@ class Element {
     this.value = '';
     this.hidden = false;
 	this.className = '';
+    this.dataset = {};
+    this.style = { display: '' };
+    this.scrollHeight = 0;
+    this.scrollTop = 0;
     this.classList = {
       add: (...classes) => {
-        this.className = [this.className, ...classes].filter(Boolean).join(' ');
+        const names = new Set(this.className.split(/\s+/).filter(Boolean));
+        for (const name of classes) names.add(name);
+        this.className = [...names].join(' ');
+      },
+      remove: (...classes) => {
+        const removed = new Set(classes);
+        this.className = this.className
+          .split(/\s+/)
+          .filter((name) => name && !removed.has(name))
+          .join(' ');
       },
     };
   }
@@ -55,6 +68,26 @@ class Element {
 
   dispatchEvent(event) {
     this.listeners[event.type](event);
+  }
+
+  querySelectorAll(selector) {
+    const wantedClasses = selector
+      .split(',')
+      .map((part) => part.trim())
+      .filter((part) => part.startsWith('.'))
+      .map((part) => part.slice(1));
+    const matches = [];
+    const visit = (element) => {
+      const classes = new Set(element.className.split(/\s+/).filter(Boolean));
+      if (wantedClasses.some((name) => classes.has(name))) matches.push(element);
+      for (const child of element.children) visit(child);
+    };
+    for (const child of this.children) visit(child);
+    return matches;
+  }
+
+  querySelector(selector) {
+    return this.querySelectorAll(selector)[0] || null;
   }
 }
 
@@ -133,11 +166,32 @@ function elementText(element) {
 function createHarness(responses) {
   const sourceSelect = new Element('select');
   const logStatus = new Element('span');
+  const logViewport = new Element('div');
+  const logEmpty = new Element('div');
+  const logActivity = new Element('span');
+  const logLevel = new Element('select');
+  const logGrep = new Element('input');
+  const logGrepHint = new Element('span');
+  const logPause = new Element('button');
+  const logNewest = new Element('span');
   const slotGrid = new Element('div');
   const slotGridEmpty = new Element('p');
+  logEmpty.textContent = 'Waiting for log activity…';
+  logLevel.value = 'all';
+  logGrepHint.hidden = true;
+  logNewest.hidden = true;
+  logViewport.appendChild(logEmpty);
   const selectors = {
     '[data-log-source]': sourceSelect,
     '[data-log-status]': logStatus,
+    '[data-log-viewport]': logViewport,
+    '[data-log-empty]': logEmpty,
+    '[data-log-activity]': logActivity,
+    '[data-log-level]': logLevel,
+    '[data-log-grep]': logGrep,
+    '[data-log-grep-hint]': logGrepHint,
+    '[data-log-pause]': logPause,
+    '[data-log-newest]': logNewest,
     '[data-slot-grid]': slotGrid,
     '[data-slot-grid-empty]': slotGridEmpty,
   };
@@ -149,16 +203,26 @@ function createHarness(responses) {
 	}
   const documentListeners = {};
   const intervals = [];
+  const timeouts = [];
   const eventSources = [];
 
   class FakeEventSource {
     constructor(url) {
       this.url = url;
       this.closed = false;
+      this.listeners = {};
       eventSources.push(this);
     }
 
-    addEventListener() {}
+    addEventListener(type, listener) {
+      this.listeners[type] = listener;
+    }
+
+    emit(type, data = '') {
+      if (this.listeners[type]) this.listeners[type]({ data });
+      if (type === 'open' && this.onopen) this.onopen();
+      if (type === 'error' && this.onerror) this.onerror();
+    }
 
     close() {
       this.closed = true;
@@ -189,7 +253,10 @@ function createHarness(responses) {
     Promise,
     RegExp,
     Set,
-    clearTimeout() {},
+    clearTimeout(id) {
+      const timeout = timeouts.find((entry) => entry.id === id);
+      if (timeout) timeout.active = false;
+    },
     document,
     encodeURIComponent,
     fetch() {
@@ -201,8 +268,10 @@ function createHarness(responses) {
       intervals.push({ callback, delay });
       return intervals.length;
     },
-    setTimeout() {
-      return 1;
+    setTimeout(callback, delay) {
+      const timeout = { id: timeouts.length + 1, callback, delay, active: true };
+      timeouts.push(timeout);
+      return timeout.id;
     },
     window: { GW_ADMIN_CONFIG: { pollMs: 4321 } },
   };
@@ -212,13 +281,24 @@ function createHarness(responses) {
 
   return {
     eventSources,
+    logActivity,
+    logEmpty,
+    logGrep,
+    logLevel,
+    logViewport,
     sourceSelect,
-	selectors,
+    selectors,
     start() {
       documentListeners.DOMContentLoaded();
     },
     poll() {
       intervals.find((entry) => entry.delay === 4321).callback();
+    },
+    runTimeout(delay) {
+      const timeout = timeouts.find((entry) => entry.delay === delay && entry.active);
+      assert.ok(timeout, `no active timeout with delay ${delay}`);
+      timeout.active = false;
+      timeout.callback();
     },
   };
 }
@@ -265,6 +345,116 @@ test('log source labels cache and selection drive the real EventSource flow', as
   );
   assert.equal(harness.sourceSelect.value, 'kiro', 'label-only rerender preserves the selected ID');
   assert.equal(harness.eventSources.length, 2, 'label-only rerender does not reconnect');
+});
+
+test('log source status events render precise file-health messages', async () => {
+  const harness = createHarness([snapshot({ main: 'Gateway', kiro: 'Kiro' })]);
+  harness.start();
+  await settleSnapshot();
+  const source = harness.eventSources[0];
+  const cases = [
+    [{ state: 'opening' }, 'Checking log source…'],
+    [{ state: 'missing' }, 'Log file has not been created yet. Watching for it…'],
+    [{ state: 'unreadable' }, 'Log file cannot be read. Check its permissions.'],
+    [{ state: 'empty', size_bytes: 0 }, 'Log file is empty. Waiting for the first entry.'],
+    [{ state: 'watching', size_bytes: 18 }, 'Connected and watching for new complete log entries.'],
+  ];
+  for (const [status, want] of cases) {
+    source.emit('status', JSON.stringify(status));
+    assert.equal(harness.logEmpty.textContent, want, status.state);
+    assert.equal(harness.logEmpty.hidden, false, `${status.state} placeholder visibility`);
+  }
+
+  source.emit('status', '{malformed');
+  assert.equal(
+    harness.logEmpty.textContent,
+    'Connected and watching for new complete log entries.',
+    'malformed status must preserve the last valid state',
+  );
+});
+
+test('Kiro transport and empty states use its friendly label and effective level', async () => {
+  const harness = createHarness([snapshot({ main: 'Gateway', kiro: 'Kiro' })]);
+  harness.start();
+  await settleSnapshot();
+  harness.sourceSelect.value = 'kiro';
+  harness.sourceSelect.dispatchEvent({ type: 'change' });
+  assert.equal(harness.selectors['[data-log-status]'].textContent, 'Connecting to Kiro…');
+
+  const source = harness.eventSources[1];
+  source.emit('open');
+  assert.equal(harness.selectors['[data-log-status]'].textContent, 'Connected — Kiro');
+  source.emit('status', JSON.stringify({ state: 'empty', size_bytes: 0, level: 'DEBUG' }));
+  assert.equal(
+    harness.logEmpty.textContent,
+    'Kiro log is empty. Logging is configured at DEBUG; waiting for the first entry.',
+  );
+
+  source.emit('error');
+  assert.equal(
+    harness.selectors['[data-log-status]'].textContent,
+    'Log stream disconnected — reconnecting…',
+  );
+});
+
+test('level filters distinguish received-but-hidden rows from an empty file', async () => {
+  const harness = createHarness([snapshot({ main: 'Gateway', kiro: 'Kiro' })]);
+  harness.start();
+  await settleSnapshot();
+  const source = harness.eventSources[0];
+  source.emit('log', JSON.stringify({
+    level: 'INFO',
+    time: '2026-08-05T12:00:00Z',
+    msg: 'request complete',
+    logger: 'gateway',
+  }));
+  const row = harness.logViewport.querySelector('.gw-log-row');
+  assert.ok(row, 'real log event should render a row');
+  assert.equal(harness.logEmpty.hidden, true);
+
+  harness.logLevel.value = 'error';
+  harness.logLevel.dispatchEvent({ type: 'change' });
+  assert.equal(row.style.display, 'none');
+  assert.equal(harness.logEmpty.hidden, false);
+  assert.equal(
+    harness.logEmpty.textContent,
+    'Log entries were received, but none match the current filters.',
+  );
+
+  harness.logLevel.value = 'all';
+  harness.logLevel.dispatchEvent({ type: 'change' });
+  assert.equal(row.style.display, '');
+  assert.equal(harness.logEmpty.hidden, true);
+});
+
+test('regex filters recompute the received-but-hidden state after debounce', async () => {
+  const harness = createHarness([snapshot({ main: 'Gateway', kiro: 'Kiro' })]);
+  harness.start();
+  await settleSnapshot();
+  const source = harness.eventSources[0];
+  source.emit('log', JSON.stringify({
+    level: 'WARN',
+    time: '2026-08-05T12:00:00Z',
+    msg: 'retry scheduled',
+    logger: 'gateway',
+  }));
+  const row = harness.logViewport.querySelector('.gw-log-row');
+
+  harness.logGrep.value = 'does-not-match';
+  harness.logGrep.dispatchEvent({ type: 'input' });
+  harness.runTimeout(150);
+  assert.equal(row.style.display, 'none');
+  assert.equal(
+    harness.logEmpty.textContent,
+    'Log entries were received, but none match the current filters.',
+  );
+  assert.equal(harness.logEmpty.hidden, false);
+
+  harness.logGrep.value = 'retry';
+  harness.logGrep.dispatchEvent({ type: 'input' });
+  harness.runTimeout(150);
+  assert.equal(row.style.display, '');
+  assert.equal(harness.logEmpty.hidden, true);
 });
 
 test('privacy snapshot hydrates read-only dashboard status and current/max limits', async () => {
