@@ -123,15 +123,11 @@ func (h *handler) sseHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Accel-Buffering", "no") // disable nginx buffering
 	w.WriteHeader(http.StatusOK)
 
-	// Subscribe to the resolved tailer. defer Unsubscribe guarantees
+	// Atomically attach to the resolved tailer. defer Unsubscribe guarantees
 	// cleanup on any exit path (ctx cancel, write error, subscriber
 	// channel closed).
-	sub := tailer.Subscribe(r.Context())
+	sub, snapshot, initialStatus := tailer.Attach(r.Context())
 	defer tailer.Unsubscribe(sub)
-
-	// Snapshot the ring buffer for backfill AFTER subscribing so we don't
-	// miss any lines that arrive between subscribe and snapshot.
-	snapshot := tailer.Snapshot()
 
 	// Start the keepalive ticker.
 	ticker := time.NewTicker(SSEKeepaliveInterval)
@@ -140,7 +136,9 @@ func (h *handler) sseHandler(w http.ResponseWriter, r *http.Request) {
 	// Run the SSE loop (factored for ticker injection in tests).
 	// Pass h.deps.ShutdownCh so the loop exits promptly on gateway shutdown
 	// (REL-HTTP-01). A nil channel is safe — nil select arms are never selected.
-	if err := sseLoop(r.Context(), w, flusher, sub, ticker.C, snapshot, h.deps.ShutdownCh); err != nil {
+	if err := sseLoop(
+		r.Context(), w, flusher, sub, ticker.C, snapshot, initialStatus, h.deps.ShutdownCh,
+	); err != nil {
 		// ctx.Canceled is the expected normal exit — don't log it as an error.
 		if !errors.Is(err, context.Canceled) {
 			h.deps.Logger.Debug("admin: sse loop exit", "err", err)
@@ -163,6 +161,7 @@ func (h *handler) sseHandler(w http.ResponseWriter, r *http.Request) {
 //   - sub: the Tailer subscriber; sub.C receives live log lines.
 //   - tickerC: receives ticks for keepalive ping frames.
 //   - snapshot: backfill lines sent before entering the live loop.
+//   - initialStatus: source health captured atomically with snapshot.
 //   - shutdownCh: closed when the gateway initiates graceful shutdown (REL-HTTP-01).
 //     sseLoop exits within one poll interval instead of blocking the full 30s grace.
 //
@@ -176,14 +175,20 @@ func sseLoop(
 	sub *subscriber,
 	tickerC <-chan time.Time,
 	snapshot []string,
+	initialStatus TailStatus,
 	shutdownCh <-chan struct{},
 ) error {
-	// Send backfill: the current ring buffer contents (oldest first).
+	// Always flush source health immediately, including for an empty snapshot.
+	writeSSEStatus(w, initialStatus)
 	for _, line := range snapshot {
 		writeSSELine(w, "log", line)
 	}
-	if len(snapshot) > 0 {
-		flusher.Flush()
+	flusher.Flush()
+
+	writeBackfill := func(lines []string) {
+		for _, line := range lines {
+			writeSSELine(w, "log", line)
+		}
 	}
 
 	// Live-stream loop (D-05: only this goroutine writes to w).
@@ -202,15 +207,48 @@ func sseLoop(
 			writeSSELine(w, "ping", "")
 			flusher.Flush()
 
+		case batch, ok := <-sub.BackfillC:
+			if !ok {
+				return errors.New("admin: tailer closed backfill channel")
+			}
+			writeBackfill(batch)
+			flusher.Flush()
+
+		case status, ok := <-sub.StatusC:
+			if !ok {
+				return errors.New("admin: tailer closed status channel")
+			}
+			writeSSEStatus(w, status)
+			flusher.Flush()
+
 		case line, ok := <-sub.C:
 			if !ok {
 				// Channel closed by Unsubscribe — exit cleanly.
 				return errors.New("admin: tailer closed subscriber channel")
 			}
+			// The tailer publishes its sole first-open batch before any live
+			// record. If both mailboxes are ready, drain history first so Go's
+			// randomized select choice cannot reverse their wire order.
+			select {
+			case batch, batchOK := <-sub.BackfillC:
+				if !batchOK {
+					return errors.New("admin: tailer closed backfill channel")
+				}
+				writeBackfill(batch)
+			default:
+			}
 			writeSSELine(w, "log", line)
 			flusher.Flush()
 		}
 	}
+}
+
+func writeSSEStatus(w io.Writer, status TailStatus) {
+	payload, err := json.Marshal(status)
+	if err != nil {
+		return
+	}
+	writeSSELine(w, "status", string(payload))
 }
 
 // ---------------------------------------------------------------------------

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -114,6 +115,17 @@ func TestAdmin_WriteSSELine_MultilinePayload(t *testing.T) {
 	}
 }
 
+func TestWriteSSEStatusUsesBrowserSafeJSON(t *testing.T) {
+	size := int64(0)
+	status := TailStatus{State: TailStateEmpty, SizeBytes: &size, Level: "INFO"}
+	var body strings.Builder
+	writeSSEStatus(&body, status)
+	want := "event: status\ndata: {\"state\":\"empty\",\"size_bytes\":0,\"level\":\"INFO\"}\n\n"
+	if body.String() != want {
+		t.Fatalf("frame = %q, want %q", body.String(), want)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // flushRecorder: httptest.ResponseRecorder that also implements http.Flusher
 // ---------------------------------------------------------------------------
@@ -123,7 +135,7 @@ type flushRecorder struct {
 }
 
 func (f *flushRecorder) Flush() {
-	// No-op: data is already in the ResponseRecorder body buffer.
+	f.ResponseRecorder.Flush()
 }
 
 // noFlushResponseWriter wraps http.ResponseWriter but does NOT implement
@@ -141,6 +153,114 @@ func (n *noFlushResponseWriter) WriteHeader(code int)        { n.rec.WriteHeader
 // ---------------------------------------------------------------------------
 // sseLoop via ticker injection
 // ---------------------------------------------------------------------------
+
+func TestAdmin_SSEInitialStatusFlushesWithoutBackfillOrPing(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	rec := &flushRecorder{ResponseRecorder: httptest.NewRecorder()}
+	sub := &subscriber{
+		C:         make(chan string),
+		BackfillC: make(chan []string),
+		StatusC:   make(chan TailStatus),
+	}
+	err := sseLoop(
+		ctx,
+		rec,
+		rec,
+		sub,
+		make(chan time.Time),
+		nil,
+		TailStatus{State: TailStateOpening, Level: "INFO"},
+		nil,
+	)
+	if err == nil {
+		t.Fatal("sseLoop returned nil for canceled context")
+	}
+	if !rec.Flushed {
+		t.Fatal("initial status was not flushed")
+	}
+	if !strings.Contains(rec.Body.String(), "event: status\ndata: {\"state\":\"opening\",\"level\":\"INFO\"}") {
+		t.Fatalf("initial status frame missing: %q", rec.Body.String())
+	}
+}
+
+func TestAdmin_SSEEmptySourceStatusTransition(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "empty.log")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h := &handler{
+		deps: Deps{
+			Logger:       discardLogger(),
+			LogPaths:     map[string]string{"kiro": path},
+			LogPathOrder: []string{"kiro"},
+			LogSourceLevels: map[string]string{
+				"kiro": "INFO",
+			},
+		},
+		tailers: NewTailerRegistry(discardLogger()),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/logs/stream?source=kiro", nil)
+	rec := &flushRecorder{ResponseRecorder: httptest.NewRecorder()}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		h.sseHandler(rec, req)
+	}()
+	time.Sleep(2 * TailPollInterval)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("SSE handler did not exit")
+	}
+	body := rec.Body.String()
+	opening := strings.Index(body, `"state":"opening"`)
+	empty := strings.Index(body, `"state":"empty"`)
+	if opening < 0 || empty < 0 || opening > empty {
+		t.Fatalf("status transition opening -> empty missing or out of order: %q", body)
+	}
+}
+
+func TestAdmin_SSEBackfillBeforeLive(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	rec := &flushRecorder{ResponseRecorder: httptest.NewRecorder()}
+	sub := &subscriber{
+		C:         make(chan string, 1),
+		BackfillC: make(chan []string, 1),
+		StatusC:   make(chan TailStatus, 1),
+	}
+	sub.BackfillC <- []string{"history-one", "history-two"}
+	sub.C <- "live"
+	sub.StatusC <- TailStatus{State: TailStateWatching, Level: "INFO"}
+	done := make(chan error, 1)
+	go func() {
+		done <- sseLoop(
+			ctx,
+			rec,
+			rec,
+			sub,
+			make(chan time.Time),
+			nil,
+			TailStatus{State: TailStateOpening, Level: "INFO"},
+			nil,
+		)
+	}()
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	<-done
+	body := rec.Body.String()
+	first := strings.Index(body, "data: history-one")
+	second := strings.Index(body, "data: history-two")
+	live := strings.Index(body, "data: live")
+	if first < 0 || second < 0 || live < 0 || !(first < second && second < live) {
+		t.Fatalf("backfill/live order incorrect: %q", body)
+	}
+	if !strings.Contains(body, `"state":"watching"`) {
+		t.Fatalf("status transition missing from shared stream: %q", body)
+	}
+}
 
 func TestAdmin_SSEPingViaInjectedTicker(t *testing.T) {
 	defer goleak.VerifyNone(t)
@@ -166,7 +286,10 @@ func TestAdmin_SSEPingViaInjectedTicker(t *testing.T) {
 	// Run sseLoop in a goroutine so the test can inject a tick.
 	done := make(chan error, 1)
 	go func() {
-		done <- sseLoop(ctx, rec, rec, sub, tickerC, nil, nil)
+		done <- sseLoop(
+			ctx, rec, rec, sub, tickerC, nil,
+			TailStatus{State: TailStateOpening}, nil,
+		)
 	}()
 
 	// Inject one ticker tick.
@@ -234,18 +357,11 @@ func TestAdmin_SSEBackfillAndLive(t *testing.T) {
 	dir := t.TempDir()
 	logPath := dir + "/test.log"
 
-	// Pre-populate the log BEFORE creating the tailer (the tailer will open
-	// at EOF, so these lines are backfill via Snapshot only).
+	// Pre-populate the real file so the tailer's first successful open supplies
+	// these records through its bounded BackfillC handoff.
 	appendToFile(t, logPath, "pre-1", "pre-2")
 
 	tailer := NewTailer(logPath, discardLogger())
-	// Run the tailer briefly to populate the ring buffer.
-	// We manually push lines into the ring for the backfill test since
-	// the tailer opens at EOF.
-	// For backfill testing we use Snapshot directly in sseLoop.
-	// Push the pre-existing lines directly into the ring buffer.
-	tailer.ring.Push("pre-1")
-	tailer.ring.Push("pre-2")
 
 	h := &handler{
 		deps: Deps{
@@ -553,7 +669,10 @@ func TestAdmin_SSELoop_BackfillOrdering(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- sseLoop(ctx, rec, rec, sub, tickerC, snapshot, nil)
+		done <- sseLoop(
+			ctx, rec, rec, sub, tickerC, snapshot,
+			TailStatus{State: TailStateOpening}, nil,
+		)
 	}()
 
 	// Give the loop time to send backfill.
@@ -565,9 +684,13 @@ func TestAdmin_SSELoop_BackfillOrdering(t *testing.T) {
 	body := rec.Body.String()
 	scanner := bufio.NewScanner(strings.NewReader(body))
 	var dataLines []string
+	currentEvent := ""
 	for scanner.Scan() {
 		line := scanner.Text()
-		if strings.HasPrefix(line, "data: ") {
+		if strings.HasPrefix(line, "event: ") {
+			currentEvent = strings.TrimPrefix(line, "event: ")
+		}
+		if currentEvent == "log" && strings.HasPrefix(line, "data: ") {
 			dataLines = append(dataLines, strings.TrimPrefix(line, "data: "))
 		}
 	}
