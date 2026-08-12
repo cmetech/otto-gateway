@@ -6,6 +6,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"strings"
 )
 
 // SecretRedactor redacts a named secret value before it crosses an admin boundary.
@@ -60,7 +61,25 @@ func (h *handler) acpCaptureHandler(w http.ResponseWriter, req *http.Request) {
 			resp.Frames = redactCaptureFrames(resp.Frames)
 		}
 	}
-	writeJSONCapture(w, http.StatusOK, resp, h)
+	// ?pretty=1 indents the payload for the dashboard's "Show Messages" button,
+	// which opens this endpoint in a new tab for human reading. GET-only: the
+	// POST handler tail-calls this with a POST request and must keep emitting
+	// the compact form the dashboard JS parses.
+	q := req.URL.Query()
+	pretty := req.Method == http.MethodGet && q.Has("pretty") && isTruthyQuery(q.Get("pretty"))
+	writeJSONCapture(w, http.StatusOK, resp, h, pretty)
+}
+
+// isTruthyQuery reports whether a present query-string flag reads as "on". The
+// empty value covers the bare form (?pretty with no "="); callers must confirm
+// the key is present before calling.
+func isTruthyQuery(v string) bool {
+	switch strings.ToLower(v) {
+	case "", "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 // acpCapturePostHandler mutates capture state: enable | disable | clear. Guarded
@@ -101,10 +120,14 @@ func (h *handler) acpCapturePostHandler(w http.ResponseWriter, req *http.Request
 	h.acpCaptureHandler(w, req)
 }
 
-func writeJSONCapture(w http.ResponseWriter, status int, v any, h *handler) {
+func writeJSONCapture(w http.ResponseWriter, status int, v any, h *handler, pretty bool) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(v); err != nil {
+	enc := json.NewEncoder(w)
+	if pretty {
+		enc.SetIndent("", "  ")
+	}
+	if err := enc.Encode(v); err != nil {
 		h.deps.Logger.Warn("admin: acp-capture encode failed", "err", err)
 	}
 }

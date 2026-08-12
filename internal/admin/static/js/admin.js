@@ -1373,9 +1373,11 @@
   // unless the endpoint reports a capture source; controls stay hidden unless
   // allowRuntimeToggle is true (ACP_CAPTURE_RUNTIME opt-in).
   function acpCaptureUrl() {
-    // Same-origin, mount-agnostic: the dashboard is served at /admin, assets at
-    // /admin/static, so a relative "api/acp-capture" resolves under /admin.
-    return 'api/acp-capture';
+    // Absolute, matching every other endpoint in this file. The previous
+    // relative "api/acp-capture" only resolved correctly when the dashboard was
+    // loaded at /admin/ WITH the trailing slash; at /admin it resolved to
+    // /api/acp-capture, 404'd, and the whole capture panel stayed hidden.
+    return '/admin/api/acp-capture';
   }
 
   function renderAcpCapture(state) {
@@ -1399,8 +1401,16 @@
     if (controls) controls.hidden = !state.allowRuntimeToggle;
     if (note) note.hidden = !!state.allowRuntimeToggle;
 
+    // The toggle carries its state as an is-on/is-off class (CSS picks the
+    // matching icon and the red/green fill); only the label span is text, so
+    // the click handler never has to read button copy back out.
     var toggle = section.querySelector('[data-acp-capture-toggle]');
-    if (toggle) toggle.textContent = state.enabled ? 'Disable' : 'Enable';
+    if (toggle) {
+      toggle.classList.toggle('is-on', !!state.enabled);
+      toggle.classList.toggle('is-off', !state.enabled);
+      var toggleLabel = toggle.querySelector('[data-acp-capture-toggle-label]');
+      if (toggleLabel) toggleLabel.textContent = state.enabled ? 'Disable' : 'Enable';
+    }
   }
 
   function fetchAcpCapture() {
@@ -1434,7 +1444,7 @@
     var toggle = section.querySelector('[data-acp-capture-toggle]');
     var clear = section.querySelector('[data-acp-capture-clear]');
     if (toggle) toggle.addEventListener('click', function () {
-      var capturing = toggle.textContent === 'Disable';
+      var capturing = toggle.classList.contains('is-on');
       postAcpCapture(capturing ? 'disable' : 'enable');
     });
     if (clear) clear.addEventListener('click', function () { postAcpCapture('clear'); });

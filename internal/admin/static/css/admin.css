@@ -27,6 +27,14 @@
   --gw-warning: #FF8C0A;
   --gw-failed: #FF3232;
   --gw-activity: #AF78D2;
+  /* Filled-button semantics. Deliberately NOT --gw-healthy/--gw-failed:
+   * those are tuned as foreground colors against the card surface, and as
+   * button fills they drop under 4.5:1 against white label text in at least
+   * one theme. These two clear 5:1 with #FFFFFF and need no light-theme
+   * override — a filled button paints its own background. */
+  --gw-btn-success: #0B7A4A;
+  --gw-btn-danger: #C42B2B;
+  --gw-btn-filled-fg: #FFFFFF;
   --gw-privacy-eyebrow: var(--gw-accent);
   --gw-privacy-link: var(--gw-link);
   --gw-space-xs: 4px;
@@ -304,6 +312,57 @@ body {
   flex-basis: 100%;
   margin: 0;
   color: var(--gw-fg-muted);
+}
+
+/* Quick 260812-r25 — ACP Capture card controls.
+ *
+ * (a) .gw-btn--icon gives every control in the card a leading 16px inline
+ *     SVG next to its label. It also carries text-decoration:none so the
+ *     "Show Messages" anchor reads as a button, not a link.
+ * (b) The capture toggle ships BOTH icons in the markup and lets the
+ *     is-on/is-off class reveal one — same approach as the header theme
+ *     toggle's sun/moon pair, so admin.js only manages state, not icons.
+ * (c) Red means "clicking this stops capture", green means "clicking this
+ *     starts capture". */
+
+.gw-btn--icon {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--gw-space-sm);
+  text-decoration: none;
+}
+
+.gw-btn--icon svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+
+.gw-acp-capture-toggle .icon-enable,
+.gw-acp-capture-toggle .icon-disable {
+  display: none;
+}
+
+.gw-acp-capture-toggle.is-off .icon-enable {
+  display: block;
+}
+
+.gw-acp-capture-toggle.is-on .icon-disable {
+  display: block;
+}
+
+.gw-acp-capture-toggle.is-off {
+  background: var(--gw-btn-success);
+  border-color: var(--gw-btn-success);
+  color: var(--gw-btn-filled-fg);
+  font-weight: 600;
+}
+
+.gw-acp-capture-toggle.is-on {
+  background: var(--gw-btn-danger);
+  border-color: var(--gw-btn-danger);
+  color: var(--gw-btn-filled-fg);
+  font-weight: 600;
 }
 
 /* -----------------------------------------------------------------------
