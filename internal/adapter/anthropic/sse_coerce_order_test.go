@@ -1,8 +1,7 @@
 // Track 3b defect fixes — Anthropic SSE tool-call-wrapper coercion.
 //
-// H2: the one-shot buffering decision must be deferred past leading
-// whitespace-only text chunks (a kiro "\n" token before the wrapper must
-// not permanently disable coercion).
+// H2: leading whitespace before a wrapper remains part of the bounded
+// full-turn buffer and must not disable coercion.
 //
 // H3(b): a non-text chunk (thinking / native tool_use) that interleaves
 // while buffered wrapper text is pending must resolve the buffer FIRST so
@@ -143,10 +142,8 @@ func TestSSE_H2_LeadingWhitespaceThenWrapper_StillCoerces(t *testing.T) {
 	}
 }
 
-// TestSSE_H2_LeadingWhitespaceThenProse_ReplaysWhitespace — H2 no-buffer
-// path. Whitespace then prose (tools declared) streams the whitespace
-// then the prose as text_delta(s) exactly, byte-identical to the
-// tool-less baseline, with no tool_use and a non-tool_use stop_reason.
+// TestSSE_H2_LeadingWhitespaceThenProse_PreservesText — full-turn buffering
+// coalesces tool-enabled chunks but preserves their exact concatenated text.
 func TestSSE_H2_LeadingWhitespaceThenProse_ReplaysWhitespace(t *testing.T) {
 	defer goleak.VerifyNone(t)
 
@@ -163,20 +160,17 @@ func TestSSE_H2_LeadingWhitespaceThenProse_ReplaysWhitespace(t *testing.T) {
 	bodyBare := driveChunks(t, eBare, cfBare, canonical.StopEndTurn,
 		textChunk("\n "), textChunk("Hello world"))
 
-	if bodyTools != bodyBare {
-		t.Errorf("whitespace+prose diverged with tools declared (H2 replay regression)\nwith tools:\n%s\nbaseline:\n%s", bodyTools, bodyBare)
-	}
 	if eTools.buffering {
-		t.Error("buffering engaged on whitespace+prose (must not)")
+		t.Error("buffering remained active after completion")
 	}
-	// Two text_delta frames: the whitespace then the prose, in order.
-	if n := strings.Count(bodyTools, `"type":"text_delta"`); n != 2 {
-		t.Errorf("text_delta count: got %d, want 2 (whitespace + prose); body:\n%s", n, bodyTools)
+	if n := strings.Count(bodyTools, `"type":"text_delta"`); n != 1 {
+		t.Errorf("text_delta count: got %d, want 1 coalesced delta; body:\n%s", n, bodyTools)
 	}
-	wsIdx := firstIndexOf(bodyTools, `"text":"\n "`)
-	proseIdx := firstIndexOf(bodyTools, `Hello world`)
-	if wsIdx < 0 || proseIdx < 0 || wsIdx >= proseIdx {
-		t.Errorf("whitespace must stream as its own delta BEFORE the prose; wsIdx=%d proseIdx=%d body:\n%s", wsIdx, proseIdx, bodyTools)
+	if !strings.Contains(bodyTools, `"text":"\n Hello world"`) {
+		t.Errorf("whitespace+prose text not preserved; body:\n%s", bodyTools)
+	}
+	if !strings.Contains(bodyBare, `"text":"\n "`) || !strings.Contains(bodyBare, `"text":"Hello world"`) {
+		t.Errorf("tool-less baseline stopped streaming chunks; body:\n%s", bodyBare)
 	}
 	if strings.Contains(bodyTools, `"type":"tool_use"`) {
 		t.Errorf("whitespace+prose produced a tool_use block; body:\n%s", bodyTools)
@@ -186,10 +180,9 @@ func TestSSE_H2_LeadingWhitespaceThenProse_ReplaysWhitespace(t *testing.T) {
 	}
 }
 
-// TestSSE_H2_ProseFirst_Passthrough_ByteIdentical — passthrough
-// regression. A prose-first stream (no leading whitespace) with tools
-// declared is byte-identical to the tool-less baseline.
-func TestSSE_H2_ProseFirst_Passthrough_ByteIdentical(t *testing.T) {
+// TestSSE_H2_ProseFirst_FlushesConcatenatedText verifies the explicit latency
+// tradeoff of correctness-first buffering on tool-enabled turns.
+func TestSSE_H2_ProseFirst_FlushesConcatenatedText(t *testing.T) {
 	defer goleak.VerifyNone(t)
 
 	cfTools := newCountingFlusher()
@@ -203,11 +196,14 @@ func TestSSE_H2_ProseFirst_Passthrough_ByteIdentical(t *testing.T) {
 	bodyBare := driveChunks(t, eBare, cfBare, canonical.StopEndTurn,
 		textChunk("The answer "), textChunk("is 42."))
 
-	if bodyTools != bodyBare {
-		t.Errorf("prose-first stream diverged with tools declared (passthrough regression)\nwith tools:\n%s\nbaseline:\n%s", bodyTools, bodyBare)
-	}
 	if eTools.buffering {
-		t.Error("buffering engaged on prose-first stream (must not)")
+		t.Error("buffering remained active after completion")
+	}
+	if strings.Count(bodyTools, `"type":"text_delta"`) != 1 || !strings.Contains(bodyTools, `"text":"The answer is 42."`) {
+		t.Errorf("tool-enabled prose was not preserved as one completion delta; body:\n%s", bodyTools)
+	}
+	if strings.Count(bodyBare, `"type":"text_delta"`) != 2 {
+		t.Errorf("tool-less baseline stopped streaming immediately; body:\n%s", bodyBare)
 	}
 }
 
@@ -255,6 +251,61 @@ func TestSSE_H3b_ThoughtInterleave_PreservesOrder(t *testing.T) {
 	}
 }
 
+func TestSSE_ProseThoughtThenWrapper_StillCoerces(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	cf := newCountingFlusher()
+	e := newEmitter(cf)
+	e.tools = []canonical.ToolSpec{{Name: "get_weather"}}
+	body := driveChunks(t, e, cf, canonical.StopEndTurn,
+		textChunk("I will think first. "),
+		canonical.Chunk{Kind: canonical.ChunkKindThought, Thought: &canonical.ThoughtChunk{Content: "checking"}},
+		textChunk(`{"tool_call":{"name":"get_weather","arguments":{"location":"NYC"}}}`),
+	)
+	if !strings.Contains(body, `"type":"tool_use"`) || !strings.Contains(body, `"name":"get_weather"`) {
+		t.Fatalf("wrapper after thinking did not surface; body:\n%s", body)
+	}
+	if strings.Contains(body, `\"tool_call\"`) {
+		t.Fatalf("wrapper after thinking leaked as text; body:\n%s", body)
+	}
+	if firstIndexOf(body, `I will think first.`) >= firstIndexOf(body, `"type":"thinking_delta"`) {
+		t.Fatalf("pre-thought prose order changed; body:\n%s", body)
+	}
+}
+
+func TestSSE_NativeToolNameResolution_EnforcesOfferedCatalog(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	tests := []struct {
+		name       string
+		nativeName string
+		aliases    map[string]string
+		wantName   string
+	}{
+		{name: "exact offered", nativeName: "run_shell", wantName: "run_shell"},
+		{name: "safe alias", nativeName: "execute", aliases: map[string]string{"execute": "run_shell"}, wantName: "run_shell"},
+		{name: "undeclared dropped", nativeName: "delete_everything"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cf := newCountingFlusher()
+			e := newEmitter(cf)
+			e.tools = []canonical.ToolSpec{{Name: "run_shell"}}
+			e.aliases = tc.aliases
+			body := driveChunks(t, e, cf, canonical.StopEndTurn,
+				canonical.Chunk{Kind: canonical.ChunkKindToolCall, ToolCall: &canonical.ToolCallChunk{ID: "native_1", Name: tc.nativeName, Args: map[string]any{"command": "pwd"}}},
+			)
+			if tc.wantName == "" {
+				if strings.Contains(body, `"type":"tool_use"`) {
+					t.Fatalf("undeclared native call surfaced; body:\n%s", body)
+				}
+				return
+			}
+			if !strings.Contains(body, `"type":"tool_use"`) || !strings.Contains(body, `"name":"`+tc.wantName+`"`) {
+				t.Fatalf("resolved native call missing; body:\n%s", body)
+			}
+		})
+	}
+}
+
 // TestSSE_H3b_NativeToolCallInterleave_NoDoubleToolUse — H3(b) fix,
 // native-tool_call variant. Buffering active (incomplete fence), then a
 // NATIVE tool_use chunk arrives. The buffered text must flush as a text
@@ -299,5 +350,43 @@ func TestSSE_H3b_NativeToolCallInterleave_NoDoubleToolUse(t *testing.T) {
 	}
 	if sr := messageDeltaStopReason(t, body); sr != "tool_use" {
 		t.Errorf("stop_reason: got %q, want tool_use (native tool_use emitted)", sr)
+	}
+}
+
+func TestSSE_NativeToolCallPlusDuplicateWrapper_DoesNotDoubleFire(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	cf := newCountingFlusher()
+	e := newEmitter(cf)
+	e.tools = []canonical.ToolSpec{{Name: "search", Parameters: map[string]any{
+		"type": "object", "properties": map[string]any{"q": map[string]any{"type": "string"}},
+	}}}
+	body := driveChunks(t, e, cf, canonical.StopEndTurn,
+		textChunk(`Narration {"tool_call":{"name":"search","arguments":{"q":"hi"}}}`),
+		canonical.Chunk{Kind: canonical.ChunkKindToolCall, ToolCall: &canonical.ToolCallChunk{ID: "native_1", Name: "search", Args: map[string]any{"q": "hi"}}},
+	)
+	if got := strings.Count(body, `"type":"tool_use"`); got != 1 {
+		t.Fatalf("tool_use block count: got %d, want 1; body:\n%s", got, body)
+	}
+	if strings.Contains(body, `\"tool_call\"`) {
+		t.Fatalf("duplicate wrapper leaked as text; body:\n%s", body)
+	}
+}
+
+func TestSSE_NativeToolCallThenDuplicateWrapper_DoesNotDoubleFire(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	cf := newCountingFlusher()
+	e := newEmitter(cf)
+	e.tools = []canonical.ToolSpec{{Name: "search", Parameters: map[string]any{
+		"type": "object", "properties": map[string]any{"q": map[string]any{"type": "string"}},
+	}}}
+	body := driveChunks(t, e, cf, canonical.StopEndTurn,
+		canonical.Chunk{Kind: canonical.ChunkKindToolCall, ToolCall: &canonical.ToolCallChunk{ID: "native_1", Name: "search", Args: map[string]any{"q": "hi"}}},
+		textChunk(`Duplicate narration {"tool_call":{"name":"search","arguments":{"q":"hi"}}}`),
+	)
+	if got := strings.Count(body, `"type":"tool_use"`); got != 1 {
+		t.Fatalf("tool_use block count: got %d, want 1; body:\n%s", got, body)
+	}
+	if strings.Contains(body, `\"tool_call\"`) {
+		t.Fatalf("duplicate wrapper leaked as text; body:\n%s", body)
 	}
 }

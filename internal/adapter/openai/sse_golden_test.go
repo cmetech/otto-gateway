@@ -1,8 +1,10 @@
 package openai
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http/httptest"
@@ -328,12 +330,10 @@ func TestSSE_Golden_KiroNative_StructuredToolCall(t *testing.T) {
 	if strings.Contains(out, "[tool:") {
 		t.Errorf("kiro-native path must NOT emit a [tool: marker; body=%q", out)
 	}
-	// Surrounding text streamed as plain content deltas.
-	if !strings.Contains(out, `"delta":{"content":"I'll check. "}`) {
-		t.Errorf("expected 'I'll check. ' text delta; body=%q", out)
-	}
-	if !strings.Contains(out, `"delta":{"content":" Done."}`) {
-		t.Errorf("expected ' Done.' text delta; body=%q", out)
+	// Correctness-first buffering preserves the concatenated surrounding text
+	// but intentionally does not preserve upstream chunk boundaries.
+	if !strings.Contains(out, `"delta":{"content":"I'll check.  Done."}`) {
+		t.Errorf("expected concatenated surrounding text delta; body=%q", out)
 	}
 	// Structured tool-call frames: id+name, then arguments JSON-string.
 	if !strings.Contains(out, `"id":"tc_1","type":"function","function":{"name":"get_weather","arguments":""}`) {
@@ -417,11 +417,10 @@ func TestStream_NativeToolCall_ThenJSONText_SkipsCoerce(t *testing.T) {
 	if !strings.Contains(out, `"function":{"arguments":"{\"location\":\"NYC\"}"}`) {
 		t.Errorf("expected native tool_call NYC args; body=%q", out)
 	}
-	// Alias-primary: once a native call surfaces in the deny regime, the
-	// trailing buffered JSON text is DISCARDED (it's wrapper/apologetic noise),
-	// so neither the raw Tokyo text nor a Tokyo coerce dup appears.
-	if strings.Contains(out, "Tokyo") {
-		t.Errorf("trailing JSON noise must be discarded once native tool call surfaced; body=%q", out)
+	// Unrelated JSON remains observable text even after a native call; it is
+	// not executable and must not be silently discarded.
+	if !strings.Contains(out, "Tokyo") {
+		t.Errorf("unrelated trailing JSON text was silently discarded; body=%q", out)
 	}
 	if strings.Contains(out, `"arguments":"{\"location\":\"Tokyo\"}"`) {
 		t.Errorf("coerce must NOT re-fire on trailing JSON text; body=%q", out)
@@ -471,17 +470,10 @@ func TestStream_NativeToolCall_Only_Structured(t *testing.T) {
 	}
 }
 
-// TestStream_ProseThenJSON_NoCoerce_NoLeak (WR-01 regression): when a
-// non-JSON-shaped text chunk has already flushed as a plain text-delta
-// frame, a subsequent JSON-shaped chunk MUST NOT retroactively engage
-// the streaming-coerce buffer. The output must NOT carry delta.tool_calls
-// or finish_reason:"tool_calls" — coerce did not (and cannot safely)
-// fire once prose has reached the wire.
-//
-// This locks the Pitfall 3 "entire text" invariant in the SSE streaming
-// path: a split stream (prose first, JSON second) is not a valid coerce
-// candidate.
-func TestStream_ProseThenJSON_NoCoerce_NoLeak(t *testing.T) {
+// TestStream_ProseThenUnrelatedJSON_RemainsText splits the former WR-01
+// contract: full-turn buffering may recognize an explicit tool_call wrapper
+// after prose, but unrelated or ambiguous JSON must remain ordinary text.
+func TestStream_ProseThenUnrelatedJSON_RemainsText(t *testing.T) {
 	defer goleak.VerifyNone(t)
 	chunks := []canonical.Chunk{
 		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "Here's the answer: "}},
@@ -491,25 +483,241 @@ func TestStream_ProseThenJSON_NoCoerce_NoLeak(t *testing.T) {
 	body := driveGoldenWithReq(t, chunks, final, makeReqWithTools())
 	out := string(body)
 
-	// Prose preamble must reach the wire as a plain text-delta frame.
-	if !strings.Contains(out, `"delta":{"content":"Here's the answer: "}`) {
-		t.Errorf("WR-01: prose preamble must flush as text-delta; body=%q", out)
-	}
-	// The JSON fragment must ALSO reach the wire as a plain text-delta
-	// (released, NOT silently swallowed by the buffer).
-	if !strings.Contains(out, `"delta":{"content":"{\"location\":\"NYC\"}"}`) {
-		t.Errorf("WR-01: JSON fragment must flush as text-delta; body=%q", out)
+	// The complete response must reach the wire as ordinary content. Buffering
+	// intentionally coalesces chunk boundaries on a coerce miss.
+	if !strings.Contains(out, `"delta":{"content":"Here's the answer: {\"location\":\"NYC\"}"}`) {
+		t.Errorf("prose plus unrelated JSON must flush as text; body=%q", out)
 	}
 	// Coerce MUST NOT fire — no delta.tool_calls anywhere.
 	if strings.Contains(out, `"tool_calls"`) {
-		t.Errorf("WR-01: prose-then-JSON must not fire streaming coerce; body=%q", out)
+		t.Errorf("prose-then-unrelated-JSON must not fire streaming coerce; body=%q", out)
 	}
 	// finish_reason is "stop", NOT "tool_calls".
 	if strings.Contains(out, `"finish_reason":"tool_calls"`) {
-		t.Errorf("WR-01: must NOT emit finish_reason:tool_calls on prose-then-JSON; body=%q", out)
+		t.Errorf("must NOT emit finish_reason:tool_calls on prose-then-unrelated-JSON; body=%q", out)
 	}
 	if !strings.Contains(out, `"finish_reason":"stop"`) {
-		t.Errorf("WR-01: expected terminal finish_reason:stop; body=%q", out)
+		t.Errorf("expected terminal finish_reason:stop; body=%q", out)
+	}
+}
+
+// TestStream_ProseThenFencedWriteFile_SurfacesToolCall reproduces the LOOP24
+// incident where kiro narrated its intent before emitting an explicit
+// write_file wrapper. The wrapper is split into rune-sized ACP text chunks to
+// exercise arbitrary chunk boundaries without corrupting UTF-8. A regression
+// in late-wrapper recognition leaks the wrapper as content and emits no
+// delta.tool_calls frames.
+func TestStream_ProseThenFencedWriteFile_SurfacesToolCall(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	const preamble = "The file wasn’t written in the previous turn. Let me write it now and then complete the task.\n\n"
+	const path = `C:\Users\splunk\AppData\Local\loop24\kanban\workspaces\t_055b581b\integrals.md`
+	content := strings.Repeat(
+		"Integrals describe accumulation and anti-differentiation. The notation "+
+			`\int_a^b f(x)\,dx`+" measures signed area, while "+
+			`F(x)=\int_a^x f(t)\,dt`+" connects rates to totals. "+
+			"For example, \"area under the curve\" includes Unicode symbols ∫, π, and Δ.\n\n",
+		24,
+	) + "A final worked identity is " + `\int x^2\,dx=\frac{x^3}{3}+C.` + "\n"
+
+	arguments := map[string]any{"path": path, "content": content}
+	argumentsJSON, err := json.Marshal(arguments)
+	if err != nil {
+		t.Fatalf("marshal arguments fixture: %v", err)
+	}
+	wrapper := "```json\n" + `{"tool_call":{"name":"write_file","arguments":` + string(argumentsJSON) + "}}\n```"
+
+	chunks := []canonical.Chunk{{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: preamble}}}
+	for _, fragment := range wrapper {
+		chunks = append(chunks, canonical.Chunk{
+			Kind: canonical.ChunkKindText,
+			Text: &canonical.TextChunk{Content: string(fragment)},
+		})
+	}
+	req := &canonical.ChatRequest{Tools: []canonical.ToolSpec{{
+		Name: "write_file",
+		Parameters: map[string]any{"type": "object", "properties": map[string]any{
+			"path":    map[string]any{"type": "string"},
+			"content": map[string]any{"type": "string"},
+		}},
+	}}}
+
+	body := driveGoldenWithReq(t, chunks, &canonical.FinalResult{StopReason: canonical.StopEndTurn}, req)
+	var (
+		visibleContent strings.Builder
+		toolName       string
+		toolArgsJSON   strings.Builder
+		toolCallStarts int
+		finishReason   string
+	)
+	scanner := bufio.NewScanner(bytes.NewReader(body))
+	scanner.Buffer(make([]byte, 4096), len(body)+1)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") || line == "data: [DONE]" {
+			continue
+		}
+		var frame chatCompletionChunk
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &frame); err != nil {
+			t.Fatalf("decode SSE frame: %v; line=%q", err, line)
+		}
+		for _, choice := range frame.Choices {
+			visibleContent.WriteString(choice.Delta.Content)
+			if choice.FinishReason != nil {
+				finishReason = *choice.FinishReason
+			}
+			for _, call := range choice.Delta.ToolCalls {
+				if call.ID != "" {
+					toolCallStarts++
+				}
+				if call.Function.Name != "" {
+					toolName = call.Function.Name
+				}
+				toolArgsJSON.WriteString(call.Function.Arguments)
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scan SSE body: %v", err)
+	}
+
+	if toolCallStarts != 1 {
+		t.Fatalf("structured tool call starts: got %d, want 1", toolCallStarts)
+	}
+	if toolName != "write_file" {
+		t.Fatalf("tool name: got %q, want write_file", toolName)
+	}
+	var gotArgs struct {
+		Path    string `json:"path"`
+		Content string `json:"content"`
+	}
+	if err := json.Unmarshal([]byte(toolArgsJSON.String()), &gotArgs); err != nil {
+		t.Fatalf("decode streamed tool arguments: %v; arguments=%q", err, toolArgsJSON.String())
+	}
+	if gotArgs.Path != path {
+		t.Errorf("path mismatch:\n got: %q\nwant: %q", gotArgs.Path, path)
+	}
+	if gotArgs.Content != content {
+		t.Errorf("content mismatch: got %d bytes, want %d", len(gotArgs.Content), len(content))
+	}
+	if finishReason != "tool_calls" {
+		t.Errorf("finish_reason: got %q, want tool_calls", finishReason)
+	}
+	visible := visibleContent.String()
+	if strings.Contains(visible, `"tool_call"`) || strings.Contains(visible, "```json") {
+		t.Errorf("raw wrapper leaked as assistant content: %q", visible)
+	}
+}
+
+func TestStream_MultipleExplicitWrappers_SurfaceInOrder(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	req := &canonical.ChatRequest{Tools: []canonical.ToolSpec{
+		{Name: "read_file", Parameters: map[string]any{"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}}}},
+		{Name: "write_file", Parameters: map[string]any{"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}, "content": map[string]any{"type": "string"}}}},
+	}}
+	text := `First inspect, then update. {"tool_call":{"name":"read_file","arguments":{"path":"a.md"}}} ` +
+		`{"tool_call":{"name":"write_file","arguments":{"path":"b.md","content":"done"}}}`
+	body := driveGoldenWithReq(t,
+		[]canonical.Chunk{{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: text}}},
+		&canonical.FinalResult{StopReason: canonical.StopEndTurn}, req)
+	out := string(body)
+
+	if got := strings.Count(out, `"type":"function"`); got != 2 {
+		t.Fatalf("structured tool call count: got %d, want 2; body=%q", got, out)
+	}
+	readAt, writeAt := strings.Index(out, `"name":"read_file"`), strings.Index(out, `"name":"write_file"`)
+	if readAt < 0 || writeAt <= readAt {
+		t.Fatalf("tool call order not preserved; body=%q", out)
+	}
+	if strings.Contains(out, `\"tool_call\"`) || strings.Contains(out, `"tool_call"`) {
+		t.Fatalf("raw wrappers leaked as assistant content; body=%q", out)
+	}
+	if !strings.Contains(out, `"finish_reason":"tool_calls"`) {
+		t.Fatalf("missing tool_calls finish reason; body=%q", out)
+	}
+}
+
+func TestStream_InvalidExplicitWrappers_FailSafeAsText(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	tests := []struct {
+		name string
+		text string
+	}{
+		{name: "malformed", text: `Before {"tool_call":{"name":"get_weather","arguments":{"location":]}} after`},
+		{name: "incomplete string", text: `Before {"tool_call":{"name":"get_weather","arguments":{"location":"NY`},
+		{name: "undeclared no overlap", text: `Before {"tool_call":{"name":"delete_everything","arguments":{"force":true}}} after`},
+		{name: "json example", text: "Example only: ```json\n{\"location\":\"NYC\"}\n```"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			body := driveGoldenWithReq(t,
+				[]canonical.Chunk{{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: tc.text}}},
+				&canonical.FinalResult{StopReason: canonical.StopEndTurn}, makeReqWithTools())
+			out := string(body)
+			if strings.Contains(out, `"type":"function"`) || strings.Contains(out, `"finish_reason":"tool_calls"`) {
+				t.Fatalf("invalid wrapper became executable; body=%q", out)
+			}
+			if !strings.Contains(out, `"finish_reason":"stop"`) {
+				t.Fatalf("missing stop finish reason; body=%q", out)
+			}
+			encoded, err := json.Marshal(tc.text)
+			if err != nil {
+				t.Fatalf("marshal expected text: %v", err)
+			}
+			if !strings.Contains(out, string(encoded[1:len(encoded)-1])) {
+				t.Fatalf("fail-safe text was not preserved; body=%q", out)
+			}
+		})
+	}
+}
+
+func TestStream_ExplicitWrapper_UsesSafeNameRemap(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	text := `Narration {"tool_call":{"name":"getWeather","arguments":{"location":"Paris"}}}`
+	body := driveGoldenWithReq(t,
+		[]canonical.Chunk{{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: text}}},
+		&canonical.FinalResult{StopReason: canonical.StopEndTurn}, makeReqWithTools())
+	out := string(body)
+	if !strings.Contains(out, `"name":"get_weather"`) || !strings.Contains(out, `"arguments":"{\"location\":\"Paris\"}"`) {
+		t.Fatalf("safe remap did not surface declared tool; body=%q", out)
+	}
+}
+
+func TestStream_NativeToolCallPlusDuplicateWrapper_DoesNotDoubleFire(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	chunks := []canonical.Chunk{
+		{Kind: canonical.ChunkKindToolCall, ToolCall: &canonical.ToolCallChunk{ID: "native_1", Name: "get_weather", Args: map[string]any{"location": "NYC"}}},
+		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "I already requested it. ```json\n"}},
+		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: `{"tool_call":{"name":"get_weather","arguments":{"location":"NYC"}}}` + "\n```"}},
+	}
+	body := driveGoldenWithReq(t, chunks, &canonical.FinalResult{StopReason: canonical.StopEndTurn}, makeReqWithTools())
+	out := string(body)
+	if got := strings.Count(out, `"type":"function"`); got != 1 {
+		t.Fatalf("structured tool call count: got %d, want 1; body=%q", got, out)
+	}
+	if strings.Contains(out, `\"tool_call\"`) || strings.Contains(out, "```json") {
+		t.Fatalf("duplicate wrapper leaked as content; body=%q", out)
+	}
+}
+
+func TestStream_ToolEnabledBufferIsBounded(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	rec := httptest.NewRecorder()
+	e := &sseEmitter{
+		w: rec, flusher: rec, id: "bounded", created: 1, model: "auto",
+		req: makeReqWithTools(), logger: nullLogger(),
+	}
+	if err := e.applyTextChunk(canonical.Chunk{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: strings.Repeat("x", maxStreamingCoerceBytes)}}); err != nil {
+		t.Fatalf("fill buffer: %v", err)
+	}
+	if err := e.applyTextChunk(canonical.Chunk{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "y"}}); err != nil {
+		t.Fatalf("overflow buffer: %v", err)
+	}
+	if e.textBuffer.Len() != 0 || !e.textFlushed || e.buffering {
+		t.Fatalf("overflow state: len=%d textFlushed=%v buffering=%v", e.textBuffer.Len(), e.textFlushed, e.buffering)
+	}
+	if !strings.Contains(rec.Body.String(), strings.Repeat("x", 128)) {
+		t.Error("bounded prefix was not failed open as ordinary text")
 	}
 }
 

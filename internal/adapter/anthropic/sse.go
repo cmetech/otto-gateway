@@ -188,21 +188,23 @@ type sseEmitter struct {
 	// D-05 single-goroutine invariant: read only inside the select-loop
 	// goroutine (applyChunk decision + finalizeStream). No mutex needed.
 	tools []canonical.ToolSpec
+	// aliases maps kiro-native names to caller-offered names. Native calls are
+	// resolved through the same trusted contract as the non-streaming path.
+	aliases map[string]string
 
 	// Track 3b tool-call-wrapper buffering state. kiro can emit an
 	// explicit {"tool_call":{name,arguments}} wrapper as assistant TEXT
 	// (the JS gateway's coercion apparatus). If that text streamed as
 	// text_delta frames, the client would see BOTH the raw JSON AND a
-	// tool_use block. So a tool-call-SHAPED first text chunk (starts with
-	// `{` or a code fence) flips buffering=true: subsequent text is
-	// withheld from the wire and accumulated in bufferedText, then
+	// tool_use block. All text on a tool-enabled turn is therefore withheld
+	// from the wire and accumulated in bufferedText, then
 	// resolved at end-of-stream (finalizeBufferedText) into either
 	// native tool_use frames (wrapper found) or a verbatim text block
 	// (no wrapper). Mirrors the Ollama NDJSON + OpenAI SSE buffering.
 	//
-	//   - bufferDecided: one-shot guard so eligibility is decided on the
-	//     FIRST text chunk only (matches the "entire text" invariant —
-	//     a split prose-then-JSON stream never buffers).
+	//   - bufferDecided: permanent pass-through guard after a bounded-buffer
+	//     overflow. Non-text boundaries resolve the current buffer but allow a
+	//     later wrapper candidate to enter quarantine again.
 	//   - bufferConsumed: set once finalizeBufferedText resolves the
 	//     buffer (coerced or flushed). Guards aggregatedResponse from
 	//     double-counting bufferedText on terminal error/disconnect
@@ -214,24 +216,6 @@ type sseEmitter struct {
 	bufferConsumed bool
 	bufferedText   strings.Builder
 
-	// pendingWhitespace holds leading whitespace-only text chunks that
-	// arrive BEFORE the one-shot buffering decision (H2 fix). kiro can
-	// emit a leading "\n" token before the fenced/JSON tool-call wrapper;
-	// deciding eligibility on that whitespace chunk (TrimSpace == "")
-	// would permanently disable coercion. Instead the whitespace is held
-	// here WITHOUT deciding, and the first chunk carrying non-whitespace
-	// content makes the call:
-	//   - buffering=true  → the held whitespace is prepended into
-	//     bufferedText so a no-wrapper flush replays it EXACTLY.
-	//   - buffering=false → the held whitespace is replayed as normal
-	//     text_delta(s) via flushPendingWhitespace before this chunk
-	//     streams, preserving the byte-for-byte passthrough invariant.
-	// Drained to a text block at end-of-stream if the whole stream was
-	// whitespace-only (finalizeStream). Folded into aggregatedResponse on
-	// terminal paths so forensics never lose the leading whitespace.
-	//
-	// D-05 single-goroutine invariant applies.
-	pendingWhitespace strings.Builder
 	// toolUseEmitted is set true once a tool_use content_block_start
 	// has been written (regardless of whether a populated delta
 	// followed). finalizeStream consults this flag and overrides the
@@ -290,6 +274,10 @@ type sseEmitter struct {
 	aggToolCalls []canonical.ToolCall
 }
 
+// maxStreamingCoerceBytes matches engine.ExtractToolCallWrappers' bounded
+// scan budget. Text beyond the cap fails open to ordinary text streaming.
+const maxStreamingCoerceBytes = 1 << 20
+
 // writeEvent emits one named SSE frame using the canonical
 // `event: <name>\ndata: <json>\n\n` framing + Flush. This is the ONLY
 // method that touches e.w / e.flusher (D-05 single-goroutine
@@ -342,11 +330,19 @@ func (e *sseEmitter) writeEvent(eventName string, payload any) error {
 // closing before checking kind support would bump the index on
 // dropped chunks and force the next supported chunk into a new block.
 func (e *sseEmitter) applyChunk(c canonical.Chunk) error {
-	// Track 3b: tool-call-wrapper buffering. On the FIRST text chunk
-	// (one-shot via bufferDecided) decide eligibility: with tools
-	// declared AND a tool-call-SHAPED opener (`{` or a code fence),
-	// buffer this and every subsequent text fragment instead of
-	// streaming text_delta frames. finalizeBufferedText resolves the
+	if c.Kind == canonical.ChunkKindToolCall && c.ToolCall != nil {
+		resolved, surface := engine.ResolveNativeToolName(c.ToolCall.Name, e.tools, e.aliases)
+		if !surface {
+			return nil
+		}
+		resolvedCall := *c.ToolCall
+		resolvedCall.Name = resolved
+		c.ToolCall = &resolvedCall
+	}
+
+	// Track 3b: tool-call-wrapper buffering. With tools declared, buffer
+	// every text fragment instead of streaming text_delta frames so a wrapper
+	// after arbitrary narration remains recognizable. finalizeBufferedText resolves the
 	// accumulated buffer at end-of-stream into native tool_use frames
 	// (wrapper found) or a verbatim text block (no wrapper).
 	//
@@ -354,49 +350,16 @@ func (e *sseEmitter) applyChunk(c canonical.Chunk) error {
 	// the defensive nil-guard path (open-empty-block behavior) is
 	// preserved — the decision only considers real text content.
 	if c.Kind == canonical.ChunkKindText && c.Text != nil {
-		if !e.bufferDecided {
-			trimmed := strings.TrimSpace(c.Text.Content)
-			if trimmed == "" {
-				// H2 fix: leading whitespace-only text arriving BEFORE the
-				// one-shot decision. Hold it WITHOUT deciding — a leading
-				// "\n" token must not permanently disable coercion. The
-				// first chunk carrying non-whitespace content makes the
-				// call below.
-				e.pendingWhitespace.WriteString(c.Text.Content)
-				return nil
-			}
-			// First NON-WHITESPACE text content — decide eligibility now
-			// based on this content's leading non-whitespace prefix.
-			e.bufferDecided = true
-			if len(e.tools) > 0 &&
-				(strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "```")) {
-				e.buffering = true
-			}
-			if e.buffering {
-				// Prepend any held leading whitespace so a no-wrapper flush
-				// replays it EXACTLY, then buffer this chunk too.
-				if e.pendingWhitespace.Len() > 0 {
-					e.bufferedText.WriteString(e.pendingWhitespace.String())
-					e.pendingWhitespace.Reset()
-				}
-				e.bufferedText.WriteString(c.Text.Content)
-				return nil
-			}
-			// Not buffering — replay held leading whitespace as normal
-			// text_delta(s) IN ORDER before this chunk streams below. The
-			// passthrough invariant requires the whitespace on the wire
-			// verbatim, as its own delta(s), byte-identical to no-buffering.
-			if err := e.flushPendingWhitespace(); err != nil {
-				return err
-			}
-		}
-		if e.buffering {
-			// Withhold from the wire; keep separate from aggText so a
-			// coerced tool-only turn carries NO leading text part (note
-			// 6). aggregatedResponse folds this in only on the
-			// non-coerced/terminal paths (via bufferConsumed).
+		if len(e.tools) > 0 && !e.bufferDecided && e.bufferedText.Len()+len(c.Text.Content) <= maxStreamingCoerceBytes {
+			e.buffering = true
 			e.bufferedText.WriteString(c.Text.Content)
 			return nil
+		}
+		if e.buffering {
+			if err := e.flushBufferedTextAsText(); err != nil {
+				return err
+			}
+			e.bufferDecided = true
 		}
 	}
 
@@ -404,20 +367,22 @@ func (e *sseEmitter) applyChunk(c canonical.Chunk) error {
 	// delta or a native tool_use block) arrived while Track 3b state is
 	// pending. Resolve that state FIRST so wire order is preserved rather
 	// than reordered to [non-text, buffered-text]:
-	//   - held leading whitespace (pre-decision) → replay it as text.
 	//   - active buffering with pending wrapper text → coerce-or-flush it
-	//     (same logic as finalizeBufferedText), then turn buffering OFF so
-	//     this chunk and all subsequent text stream normally. The EOF
-	//     finalizeBufferedText call then no-ops.
+	//     (same logic as finalizeBufferedText), then turn buffering OFF for this
+	//     boundary. Later text can start a fresh bounded quarantine, allowing a
+	//     wrapper after thinking/native content to surface without leaking.
 	// Gated to chunks that actually write (Thought/ToolCall with non-nil
 	// payload) so dormant/dropped kinds never prematurely flush the buffer.
 	if (c.Kind == canonical.ChunkKindThought && c.Thought != nil) ||
 		(c.Kind == canonical.ChunkKindToolCall && c.ToolCall != nil) {
-		if err := e.flushPendingWhitespace(); err != nil {
-			return err
-		}
 		if e.buffering && e.bufferedText.Len() > 0 {
-			if err := e.finalizeBufferedText(); err != nil {
+			if c.Kind == canonical.ChunkKindToolCall && len(engine.ExtractToolCallWrappers(e.bufferedText.String(), e.tools)) > 0 {
+				// A native call is authoritative. Suppress a duplicate text
+				// wrapper rather than emitting a second executable call.
+				e.bufferedText.Reset()
+				e.bufferConsumed = true
+				e.buffering = false
+			} else if err := e.finalizeBufferedText(); err != nil {
 				return err
 			}
 			e.buffering = false
@@ -655,14 +620,6 @@ func (e *sseEmitter) aggregatedResponse(stop canonical.StopReason) *canonical.Ch
 	if e.buffering && !e.bufferConsumed {
 		text += e.bufferedText.String()
 	}
-	// H2: leading whitespace held pre-decision but never emitted (a
-	// terminal error/disconnect struck before finalizeStream flushed it).
-	// Prepend it so forensics never lose the leading whitespace. When the
-	// decision resolved, pendingWhitespace is already drained (empty) so
-	// this is a no-op on every non-terminal path.
-	if e.pendingWhitespace.Len() > 0 {
-		text = e.pendingWhitespace.String() + text
-	}
 	var content []canonical.ContentPart
 	if text != "" || len(e.aggToolParts) == 0 {
 		content = append(content, canonical.ContentPart{
@@ -690,11 +647,7 @@ func (e *sseEmitter) aggregatedResponse(stop canonical.StopReason) *canonical.Ch
 
 // emitTextRaw emits `text` as a text content_block_delta through the
 // standard block-transition machinery (Steps 2-4 of applyChunk for a
-// text chunk), BYPASSING the Track 3b buffering pre-check. It is the
-// shared primitive for replaying held leading whitespace
-// (flushPendingWhitespace) without re-entering the buffering decision,
-// and it mirrors the switch text path byte-for-byte so a replayed
-// whitespace delta is indistinguishable from an un-buffered one.
+// text chunk), bypassing the Track 3b buffering pre-check.
 func (e *sseEmitter) emitTextRaw(text string) error {
 	// Step 2: close + bump on kind transition (matches applyChunk step 2,
 	// including the tool_use zero-arg flush before closing).
@@ -735,18 +688,19 @@ func (e *sseEmitter) emitTextRaw(text string) error {
 	return nil
 }
 
-// flushPendingWhitespace replays any held leading whitespace (H2) as a
-// normal text_delta through emitTextRaw, then clears the buffer. No-op
-// when nothing is held. Called on the not-buffering decision branch,
-// before emitting an interleaving non-text chunk, and at end-of-stream
-// for a whitespace-only stream.
-func (e *sseEmitter) flushPendingWhitespace() error {
-	if e.pendingWhitespace.Len() == 0 {
+func (e *sseEmitter) flushBufferedTextAsText() error {
+	if e.bufferedText.Len() == 0 {
+		e.buffering = false
 		return nil
 	}
-	ws := e.pendingWhitespace.String()
-	e.pendingWhitespace.Reset()
-	return e.emitTextRaw(ws)
+	text := e.bufferedText.String()
+	if err := e.emitTextRaw(text); err != nil {
+		return err
+	}
+	e.bufferedText.Reset()
+	e.bufferConsumed = true
+	e.buffering = false
+	return nil
 }
 
 // flushPendingToolUseIfNeeded emits a single `partial_json:"{}"`
@@ -786,25 +740,20 @@ func (e *sseEmitter) flushPendingToolUseIfNeeded() error {
 }
 
 // finalizeBufferedText resolves the Track 3b buffered assistant text at
-// end-of-stream. No-op unless a tool-call-shaped opener flipped
-// buffering=true and text actually accumulated.
+// end-of-stream. No-op unless a tool-enabled turn accumulated text.
 //
 // Decision:
-//   - With tools declared AND no native tool_use already on the wire
-//     (!toolUseEmitted), run engine.ExtractToolCallWrappers — the
+//   - With tools declared, run engine.ExtractToolCallWrappers — the
 //     UNAMBIGUOUS {"tool_call":{name,arguments}} extractor. Anthropic
 //     MUST NOT call engine.CoerceToolCall (the ambiguous bare-{args}
 //     heuristic — anti-forgery invariant; TestAnthropic_DoesNotCall-
 //     CoerceToolCall scans this file).
-//   - Wrapper(s) found → emit one native tool_use frame trio per call
-//     (content_block_start / input_json_delta / content_block_stop),
-//     set toolUseEmitted so finalizeStream overrides stop_reason to
-//     "tool_use". The buffered wrapper JSON is NOT flushed as text and
-//     is NOT folded into aggText — a coerced tool-only turn carries no
-//     leading text part (note 6).
-//   - No wrapper (or native tool_use already emitted) → flush the
-//     buffered text verbatim as a normal text block so the client still
-//     sees the assistant text; fold it into aggText for forensics.
+//   - Wrapper(s) found with no native tool_use → emit one native tool_use
+//     frame trio per call. If a native tool_use already surfaced, suppress
+//     the wrapper as duplicate narration. In either case raw protocol text
+//     is not flushed or folded into aggText.
+//   - No wrapper → flush the buffered text verbatim as a normal text block
+//     and fold it into aggText for forensics.
 //
 // Any block still open (a thinking/tool_use block that interleaved with
 // the buffered text) is closed first so the resolved block(s) start
@@ -815,7 +764,7 @@ func (e *sseEmitter) finalizeBufferedText() error {
 	}
 
 	var calls []canonical.ToolCall
-	if len(e.tools) > 0 && !e.toolUseEmitted {
+	if len(e.tools) > 0 {
 		calls = engine.ExtractToolCallWrappers(e.bufferedText.String(), e.tools)
 	}
 
@@ -835,38 +784,27 @@ func (e *sseEmitter) finalizeBufferedText() error {
 	}
 
 	if len(calls) > 0 {
-		for _, call := range calls {
-			if err := e.emitCoercedToolUse(call); err != nil {
-				return err
+		if !e.toolUseEmitted {
+			for _, call := range calls {
+				if err := e.emitCoercedToolUse(call); err != nil {
+					return err
+				}
 			}
+			e.toolUseEmitted = true
 		}
-		e.toolUseEmitted = true
+		// A native tool_use is authoritative. If it already surfaced, this
+		// explicit wrapper is duplicate narration: suppress it without emitting
+		// another executable call or leaking the protocol bytes as text.
 		e.bufferConsumed = true
+		e.bufferedText.Reset()
+		e.buffering = false
 		return nil
 	}
 
 	// No wrapper — flush the buffered text verbatim as a text block.
 	// Leave the block OPEN so finalizeStream's existing close emits the
 	// matching content_block_stop.
-	if err := e.writeEvent("content_block_start", contentBlockStart{
-		Type:         "content_block_start",
-		Index:        e.blockIndex,
-		ContentBlock: textBlockHeader{Type: "text", Text: ""},
-	}); err != nil {
-		return err
-	}
-	if err := e.writeEvent("content_block_delta", contentBlockDelta{
-		Type:  "content_block_delta",
-		Index: e.blockIndex,
-		Delta: textDelta{Type: "text_delta", Text: e.bufferedText.String()},
-	}); err != nil {
-		return err
-	}
-	e.currentKind = canonical.ChunkKindText
-	e.blockOpen = true
-	e.aggText.WriteString(e.bufferedText.String())
-	e.bufferConsumed = true
-	return nil
+	return e.flushBufferedTextAsText()
 }
 
 // emitCoercedToolUse writes one full tool_use content-block frame trio
@@ -959,7 +897,7 @@ var errNoFlusher = errors.New("anthropic: response writer is not flusher")
 // Result() failure, or any wrapped writeEvent error. The Flusher-
 // assertion failure short-circuits BEFORE any aggregation work, so
 // the response is nil in that single case.
-func runSSEEmitter(ctx context.Context, w http.ResponseWriter, run RunHandle, tools []canonical.ToolSpec, model string, streamIdle time.Duration, logger *slog.Logger) (*canonical.ChatResponse, error) {
+func runSSEEmitter(ctx context.Context, w http.ResponseWriter, run RunHandle, tools []canonical.ToolSpec, aliases map[string]string, model string, streamIdle time.Duration, logger *slog.Logger) (*canonical.ChatResponse, error) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		// Caller (handlers.go) is responsible for translating this into
@@ -985,6 +923,7 @@ func runSSEEmitter(ctx context.Context, w http.ResponseWriter, run RunHandle, to
 		messageID: genMessageID(),
 		model:     model,
 		tools:     tools,
+		aliases:   aliases,
 	}
 
 	// message_start: empty content, null stop_reason/stop_sequence,
@@ -1139,14 +1078,21 @@ func runSSEEmitterLoop(ctx context.Context, e *sseEmitter, run RunHandle, ticker
 //   - Result() success → emit message_delta (with mapped stop_reason)
 //   - message_stop + return nil.
 func finalizeStream(e *sseEmitter, run RunHandle) (*canonical.ChatResponse, error) {
-	// Track 3b (H2): a stream whose entire text was leading whitespace
-	// held pre-decision must still emit that whitespace as a text block —
-	// otherwise it is silently dropped. Runs before finalizeBufferedText
-	// (which no-ops here, buffering never engaged) and before the
-	// block-close so the emitted text block gets its content_block_stop.
-	if err := e.flushPendingWhitespace(); err != nil {
-		return e.aggregatedResponse(canonical.StopUnknown), err
+	final, rerr := run.Stream().Result()
+	if rerr != nil {
+		// Never convert buffered model text into an executable tool_use after
+		// the upstream turn failed. Close only blocks already written; retain
+		// buffered text in the canonical response for PostHook forensics.
+		if e.blockOpen {
+			_ = e.flushPendingToolUseIfNeeded()
+			_ = e.writeEvent("content_block_stop", contentBlockStop{
+				Type: "content_block_stop", Index: e.blockIndex,
+			})
+		}
+		writeSSEError(e.w, e.flusher, errAPI, "stream terminated")
+		return e.aggregatedResponse(canonical.StopUnknown), fmt.Errorf("anthropic: sse stream result: %w", rerr)
 	}
+
 	// Track 3b: resolve buffered tool-call-wrapper text BEFORE the
 	// existing block-close + message_delta. Emits native tool_use frames
 	// (wrapper found) or a verbatim text block (no wrapper). On a write
@@ -1166,21 +1112,6 @@ func finalizeStream(e *sseEmitter, run RunHandle) (*canonical.ChatResponse, erro
 			Type:  "content_block_stop",
 			Index: e.blockIndex,
 		})
-	}
-
-	final, rerr := run.Stream().Result()
-	if rerr != nil {
-		// Mid-stream / terminal engine error: emit error frame and
-		// return WITHOUT message_delta or message_stop. The Anthropic
-		// SDK treats `event: error` as the terminal frame; emitting
-		// message_stop after it would race with the SDK's error
-		// dispatch and produce a confusing user-visible state.
-		//
-		// Quick 260530-df2: still return the partial aggregated
-		// response so handlers can fire PostHooks on the terminal-
-		// error path. Operators want forensics on partial completion.
-		writeSSEError(e.w, e.flusher, errAPI, "stream terminated")
-		return e.aggregatedResponse(canonical.StopUnknown), fmt.Errorf("anthropic: sse stream result: %w", rerr)
 	}
 
 	// D-06 teardown: prevent watchdog from firing spurious Cancel after natural

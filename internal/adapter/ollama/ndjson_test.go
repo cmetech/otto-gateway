@@ -437,11 +437,9 @@ func TestNDJSON_StreamingCoerce_BareJSON(t *testing.T) {
 	}
 }
 
-// TestNDJSON_StreamingCoerce_NotJSON_PassThrough: when the text deltas
-// do NOT look like JSON (no `{` or fence prefix), the buffering heuristic
-// must NOT engage. Each text chunk streams as a normal NDJSON line and
-// the done:true line carries NO tool_calls. Behavior is identical to
-// Phase 4 pre-Phase-6.
+// TestNDJSON_StreamingCoerce_NotJSON_PassThrough: ordinary text on a
+// tool-enabled turn is held until completion, then released unchanged as one
+// content line when full-turn coercion misses.
 func TestNDJSON_StreamingCoerce_NotJSON_PassThrough(t *testing.T) {
 	chunks := []canonical.Chunk{
 		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "Hello "}},
@@ -460,20 +458,16 @@ func TestNDJSON_StreamingCoerce_NotJSON_PassThrough(t *testing.T) {
 
 	body := w.Body.String()
 	lines := scanNDJSON(t, w.Body.Bytes())
-	// 2 text deltas + 1 done line = 3 lines.
-	if len(lines) != 3 {
-		t.Fatalf("NDJSON lines: got %d, want 3 (2 text deltas + done line, no buffering); body=%s", len(lines), body)
+	// One coalesced text line + one done line.
+	if len(lines) != 2 {
+		t.Fatalf("NDJSON lines: got %d, want 2 (coalesced text + done); body=%s", len(lines), body)
 	}
 	// No tool_calls on any line.
 	if strings.Contains(body, `"tool_calls"`) {
 		t.Errorf("non-JSON text path must NOT produce tool_calls; body=%s", body)
 	}
-	// Both text fragments appear.
-	if !strings.Contains(body, "Hello ") {
-		t.Errorf("missing first text fragment; body=%s", body)
-	}
-	if !strings.Contains(body, "world!") {
-		t.Errorf("missing second text fragment; body=%s", body)
+	if !strings.Contains(body, `"content":"Hello world!"`) {
+		t.Errorf("coalesced text missing; body=%s", body)
 	}
 }
 
@@ -506,9 +500,9 @@ func TestNDJSON_KiroNative_StructuredToolCall(t *testing.T) {
 	body := w.Body.String()
 	lines := scanNDJSON(t, w.Body.Bytes())
 
-	// Expect 3 lines: "starting ", " done", done:true (no narration line).
-	if len(lines) != 3 {
-		t.Fatalf("NDJSON lines: got %d, want 3 (2 text + 1 done, no narration); body=%s", len(lines), body)
+	// Expect one coalesced surrounding-text line and one done:true line.
+	if len(lines) != 2 {
+		t.Fatalf("NDJSON lines: got %d, want 2 (coalesced text + done); body=%s", len(lines), body)
 	}
 	if strings.Contains(body, "[tool:") {
 		t.Errorf("kiro-native must NOT emit a [tool: marker; body=%s", body)
@@ -517,9 +511,8 @@ func TestNDJSON_KiroNative_StructuredToolCall(t *testing.T) {
 	if !strings.Contains(body, `"tool_calls":[{"function":{"name":"get_weather","arguments":{"location":"NYC"}}}]`) {
 		t.Errorf("done line missing structured tool_calls with object args; body=%s", body)
 	}
-	// Surrounding text streamed as done:false content frames.
-	if !strings.Contains(body, `"content":"starting "`) || !strings.Contains(body, `"content":" done"`) {
-		t.Errorf("surrounding text not streamed as content frames; body=%s", body)
+	if !strings.Contains(body, `"content":"starting  done"`) {
+		t.Errorf("surrounding text not preserved; body=%s", body)
 	}
 }
 
@@ -631,17 +624,10 @@ func TestNDJSON_KiroNative_NilToolCall_Dropped(t *testing.T) {
 	}
 }
 
-// TestStream_ProseThenJSON_NoCoerce_NoLeak (WR-01 regression): when a
-// non-JSON-shaped text chunk has already flushed to the wire, a
-// subsequent JSON-shaped chunk MUST NOT retroactively engage the
-// streaming-coerce buffer. The done line must NOT carry tool_calls
-// (coerce did not fire), and the prose preamble must NOT precede a
-// tool_call envelope on the wire.
-//
-// This locks the Pitfall 3 "entire text" invariant in the streaming
-// path: once prose has leaked, coerce cannot safely fire (it would
-// produce a split-shape response: prose + synthesized tool_calls).
-func TestStream_ProseThenJSON_NoCoerce_NoLeak(t *testing.T) {
+// TestStream_ProseThenUnrelatedJSON_RemainsText splits the old WR-01
+// contract: explicit wrappers after prose may coerce, but unrelated JSON
+// remains ordinary text.
+func TestStream_ProseThenUnrelatedJSON_RemainsText(t *testing.T) {
 	chunks := []canonical.Chunk{
 		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "Here's the answer: "}},
 		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: `{"location":"NYC"}`}},
@@ -658,18 +644,106 @@ func TestStream_ProseThenJSON_NoCoerce_NoLeak(t *testing.T) {
 	}
 
 	body := w.Body.String()
-	// Coerce must NOT fire — done line cannot carry tool_calls when prose
-	// has already leaked to the wire.
 	if strings.Contains(body, `"tool_calls"`) {
-		t.Errorf("WR-01: prose-then-JSON must not fire streaming coerce; body=%s", body)
+		t.Errorf("prose-then-unrelated-JSON must not fire streaming coerce; body=%s", body)
 	}
 	// Both text fragments must reach the wire (preserve all observable
 	// content; do not discard the JSON fragment as if it had been coerced).
 	if !strings.Contains(body, "Here's the answer:") {
-		t.Errorf("WR-01: prose preamble missing from wire; body=%s", body)
+		t.Errorf("prose preamble missing from wire; body=%s", body)
 	}
 	if !strings.Contains(body, `{\"location\":\"NYC\"}`) && !strings.Contains(body, `{"location":"NYC"}`) {
-		t.Errorf("WR-01: JSON fragment missing from wire; body=%s", body)
+		t.Errorf("JSON fragment missing from wire; body=%s", body)
+	}
+}
+
+func TestStream_ProseThenFencedWrapper_SurfacesToolCall(t *testing.T) {
+	const path = `C:\Users\splunk\AppData\Local\loop24\kanban\workspaces\t_055b581b\integrals.md`
+	argsJSON, err := json.Marshal(map[string]any{
+		"path":    path,
+		"content": "Integral notation \\int_a^b f(x)\\,dx with Unicode ∫ and a newline.\nSecond line.",
+	})
+	if err != nil {
+		t.Fatalf("marshal fixture: %v", err)
+	}
+	wrapper := "```json\n" + `{"tool_call":{"name":"write_file","arguments":` + string(argsJSON) + "}}\n```"
+	chunks := []canonical.Chunk{{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "The file wasn’t written in the previous turn. Let me write it now.\n"}}}
+	for _, fragment := range wrapper {
+		chunks = append(chunks, canonical.Chunk{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: string(fragment)}})
+	}
+	req := &canonical.ChatRequest{Tools: []canonical.ToolSpec{{
+		Name: "write_file", Parameters: map[string]any{"type": "object", "properties": map[string]any{
+			"path": map[string]any{"type": "string"}, "content": map[string]any{"type": "string"},
+		}},
+	}}}
+	w := httptest.NewRecorder()
+	run := newFakeRunHandle(chunks, &canonical.FinalResult{StopReason: canonical.StopEndTurn}, nil)
+	if _, err := runNDJSONEmitter(context.Background(), noopCancelFn, w, run, "auto", true, time.Now(), nilLogger(), req, nil, 0); err != nil {
+		t.Fatalf("runNDJSONEmitter: %v", err)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `"tool_calls":[{"function":{"name":"write_file"`) {
+		t.Fatalf("structured write_file call missing; body length=%d", len(body))
+	}
+	if !strings.Contains(body, `"path":"C:\\Users\\splunk\\AppData\\Local\\loop24\\kanban\\workspaces\\t_055b581b\\integrals.md"`) {
+		t.Errorf("Windows path was not preserved; body=%s", body)
+	}
+	if strings.Contains(body, `\"tool_call\"`) || strings.Contains(body, "```json") {
+		t.Errorf("raw wrapper leaked as assistant content; body=%s", body)
+	}
+}
+
+func TestStream_NativeToolCallPlusDuplicateWrapper_DoesNotDoubleFire(t *testing.T) {
+	chunks := []canonical.Chunk{
+		{Kind: canonical.ChunkKindToolCall, ToolCall: &canonical.ToolCallChunk{ID: "native_1", Name: "get_weather", Args: map[string]any{"location": "NYC"}}},
+		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: `Already requested. {"tool_call":{"name":"get_weather","arguments":{"location":"NYC"}}}`}},
+	}
+	w := httptest.NewRecorder()
+	run := newFakeRunHandle(chunks, &canonical.FinalResult{StopReason: canonical.StopEndTurn}, nil)
+	if _, err := runNDJSONEmitter(context.Background(), noopCancelFn, w, run, "auto", true, time.Now(), nilLogger(), makeToolsCatalog(), nil, 0); err != nil {
+		t.Fatalf("runNDJSONEmitter: %v", err)
+	}
+	body := w.Body.String()
+	if got := strings.Count(body, `"function":{"name":"get_weather"`); got != 1 {
+		t.Fatalf("structured tool call count: got %d, want 1; body=%s", got, body)
+	}
+	if strings.Contains(body, `\"tool_call\"`) {
+		t.Fatalf("duplicate wrapper leaked as content; body=%s", body)
+	}
+}
+
+func TestStream_ToolEnabledBufferIsBounded(t *testing.T) {
+	w := httptest.NewRecorder()
+	state := &emitterState{}
+	if err := emitTextChunk(w, w, strings.Repeat("x", maxStreamingCoerceBytes), "auto", true, time.Now().UTC().Format(time.RFC3339Nano), noopCancelFn, state, makeToolsCatalog()); err != nil {
+		t.Fatalf("fill buffer: %v", err)
+	}
+	if err := emitTextChunk(w, w, "y", "auto", true, time.Now().UTC().Format(time.RFC3339Nano), noopCancelFn, state, makeToolsCatalog()); err != nil {
+		t.Fatalf("overflow buffer: %v", err)
+	}
+	if state.textBuffer.Len() != 0 || !state.textFlushed || state.buffering {
+		t.Fatalf("overflow state: len=%d textFlushed=%v buffering=%v", state.textBuffer.Len(), state.textFlushed, state.buffering)
+	}
+}
+
+func TestStream_MultipleExplicitWrappers_SurfaceInOrder(t *testing.T) {
+	text := `[{"tool_call":{"name":"get_weather","arguments":{"location":"NYC"}}},` +
+		`{"tool_call":{"name":"get_weather","arguments":{"location":"LA"}}}]`
+	w := httptest.NewRecorder()
+	run := newFakeRunHandle(
+		[]canonical.Chunk{{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: text}}},
+		&canonical.FinalResult{StopReason: canonical.StopEndTurn}, nil,
+	)
+	if _, err := runNDJSONEmitter(context.Background(), noopCancelFn, w, run, "auto", true, time.Now(), nilLogger(), makeToolsCatalog(), nil, 0); err != nil {
+		t.Fatalf("runNDJSONEmitter: %v", err)
+	}
+	body := w.Body.String()
+	if got := strings.Count(body, `"function":{"name":"get_weather"`); got != 2 {
+		t.Fatalf("structured tool call count: got %d, want 2; body=%s", got, body)
+	}
+	nycAt, laAt := strings.Index(body, `"location":"NYC"`), strings.Index(body, `"location":"LA"`)
+	if nycAt < 0 || laAt <= nycAt {
+		t.Fatalf("wrapper order was not preserved; body=%s", body)
 	}
 }
 

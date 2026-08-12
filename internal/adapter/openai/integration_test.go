@@ -320,7 +320,7 @@ func TestIntegration_FakeEngine_NonStream(t *testing.T) {
 func TestIntegration_FakeEngine_NonStream_ToolCallWrapperCoerce(t *testing.T) {
 	defer goleak.VerifyNone(t)
 
-	wrapperText := "```json\n{\"tool_call\":{\"name\":\"get_weather\",\"arguments\":{\"city\":\"Paris\"}}}\n```"
+	wrapperText := "I will check the weather now.\n```json\n{\"tool_call\":{\"name\":\"get_weather\",\"arguments\":{\"city\":\"Paris\"}}}\n```"
 	eng := &fakeEngine{
 		collectResp: &canonical.ChatResponse{
 			StopReason: canonical.StopEndTurn,

@@ -32,13 +32,12 @@ import (
 //   - Single select-loop with exactly two cases: ctx.Done + chunks
 //
 // Phase 6 (REVIEW HIGH #1 + sawKiroNativeToolCall): the emitter state —
-// `textBuffer`, `buffering`, `deferredTextFrames`, `sawKiroNativeToolCall`,
-// `nativeToolCallCount` — is touched ONLY inside the select-loop goroutine.
-// A kiro-native ChunkKindToolCall is surfaced structurally per-chunk as
-// delta.tool_calls frames (Defect 1a) and sets sawKiroNativeToolCall so the
-// end-of-stream coerce path is SKIPPED (the call is already surfaced; any
-// buffered text is flushed as plain deltas). The coerce path runs only when
-// buffering accumulated JSON-shaped text AND sawKiroNativeToolCall is false.
+// `textBuffer`, `buffering`, `sawKiroNativeToolCall`, `nativeToolCalls` —
+// is touched ONLY inside the select-loop goroutine.
+// A kiro-native ChunkKindToolCall is accumulated for structured emission at
+// stream end and sets sawKiroNativeToolCall so the text-coercion path is
+// skipped. A duplicate explicit wrapper is suppressed; ordinary surrounding
+// prose is flushed.
 // ----------------------------------------------------------------------------
 
 // chatCompletionChunk is the per-chunk envelope emitted as "data: <json>\n\n"
@@ -104,13 +103,12 @@ type chunkDeltaToolCallFunction struct {
 // invariant is enforced by construction.
 //
 // Phase 6 streaming-coerce state (REVIEW HIGH #1 + iteration-3):
-//   - textBuffer: accumulates text deltas when buffering=true.
-//   - buffering: true once we see JSON-shaped text deltas AND req.Tools
-//     is non-empty. Once set, all subsequent text-deltas are buffered
-//     (not flushed) until end-of-stream.
-//   - deferredTextFrames: the would-be plain text-delta SSE frames,
-//     stored so we can release them in order if coerce misses OR if
-//     sawKiroNativeToolCall is true at stream end.
+//   - textBuffer: accumulates every text delta on a tool-enabled turn, up to
+//     maxStreamingCoerceBytes. Full-turn buffering lets the shared extractor
+//     recognize an explicit wrapper after arbitrary prose.
+//   - buffering: true while text remains eligible for end-of-stream coercion.
+//     A turn that exceeds maxStreamingCoerceBytes flushes the bounded prefix
+//     and switches permanently to ordinary streaming.
 //   - sawKiroNativeToolCall: set true on the first ChunkKindToolCall.
 //     At stream end this is the SKIP-COERCE flag (iteration-3 HIGH #2
 //     fix — prevents the iteration-2 double-fire regression where a
@@ -131,13 +129,9 @@ type sseEmitter struct {
 	req                   *canonical.ChatRequest
 	textBuffer            strings.Builder
 	buffering             bool
-	deferredTextFrames    [][]byte
 	sawKiroNativeToolCall bool
-	// WR-01 (Phase 6 review): textFlushed locks the Pitfall 3 "entire
-	// text" invariant in the streaming path. Once any non-buffered text
-	// has been written to the wire, we MUST NOT start buffering for
-	// coerce — coerce requires the JSON to be the entire response, and
-	// a split stream (prose first, JSON second) violates that.
+	// textFlushed is the permanent pass-through flag. It is set only on
+	// tool-less turns or after the bounded coercion buffer overflows.
 	textFlushed bool
 
 	// Quick 260530-df2 — post-stream aggregator. Captures EVERY text
@@ -179,17 +173,6 @@ func (e *sseEmitter) writeData(payload any) error {
 	return nil
 }
 
-// writeRaw writes a pre-marshaled SSE frame (already formatted as
-// "data: <json>\n\n") and flushes. Used to release buffered text frames
-// in deferred-flush paths.
-func (e *sseEmitter) writeRaw(frame []byte) error {
-	if _, err := e.w.Write(frame); err != nil {
-		return fmt.Errorf("openai: write deferred frame: %w", err)
-	}
-	e.flusher.Flush()
-	return nil
-}
-
 // buildChunk constructs the chatCompletionChunk envelope with fixed id and
 // created, wrapping the supplied chunkChoice.
 func (e *sseEmitter) buildChunk(choice chunkChoice) chatCompletionChunk {
@@ -200,21 +183,6 @@ func (e *sseEmitter) buildChunk(choice chunkChoice) chatCompletionChunk {
 		Model:   e.model,
 		Choices: []chunkChoice{choice},
 	}
-}
-
-// marshalChunk marshals a chunk into the full "data: <json>\n\n" SSE frame
-// byte sequence WITHOUT writing it. Used to build deferred text frames
-// for the streaming-coerce buffering path.
-func (e *sseEmitter) marshalChunk(choice chunkChoice) ([]byte, error) {
-	body, err := json.Marshal(e.buildChunk(choice))
-	if err != nil {
-		return nil, fmt.Errorf("openai: marshal deferred chunk: %w", err)
-	}
-	out := make([]byte, 0, len(body)+8)
-	out = append(out, []byte("data: ")...)
-	out = append(out, body...)
-	out = append(out, []byte("\n\n")...)
-	return out, nil
 }
 
 // ensureRoleSent emits the role:assistant delta if it has not yet been
@@ -234,26 +202,18 @@ func (e *sseEmitter) ensureRoleSent() error {
 	return nil
 }
 
-// looksLikeJSONStart returns true if s (after TrimSpace) starts with `{`
-// or a triple-backtick fence — the heuristic for "this text might parse
-// as a tool_call argument JSON". Mirrors the heuristic used by the
-// ollama adapter's streaming-coerce buffering decision.
-func looksLikeJSONStart(s string) bool {
-	t := strings.TrimSpace(s)
-	if t == "" {
-		return false
-	}
-	return strings.HasPrefix(t, "{") || strings.HasPrefix(t, "```")
-}
+// maxStreamingCoerceBytes matches engine.ExtractToolCallWrappers' bounded
+// scan budget. Text beyond this cap cannot be recognized by that extractor,
+// so the safe fail-open behavior is to flush the bounded prefix and stream the
+// rest as ordinary assistant content.
+const maxStreamingCoerceBytes = 1 << 20
 
 // applyChunk processes one canonical.Chunk and emits the appropriate
 // data: frame.
 //
 // Phase 6 dispatch (REVIEW HIGH #2 + iteration-3 HIGH #2 fix):
-//   - ChunkKindText: if streaming-coerce buffering applies (req.Tools
-//     non-empty AND text looks JSON-shaped), build the would-be text
-//     frame and STASH it on e.deferredTextFrames instead of flushing.
-//     Otherwise, flush per Phase 4.
+//   - ChunkKindText: buffer tool-enabled turns up to the coercion cap;
+//     otherwise flush immediately.
 //   - ChunkKindToolCall: emit a structured delta.tool_calls sequence
 //     (Defect 1a). Set sawKiroNativeToolCall = true so end-of-stream coerce
 //     is skipped and the terminal finish_reason becomes "tool_calls".
@@ -271,12 +231,10 @@ func (e *sseEmitter) applyChunk(c canonical.Chunk) error {
 }
 
 // applyTextChunk handles a ChunkKindText. Implements the streaming-coerce
-// buffering decision: if req.Tools is non-empty AND the accumulated text
-// (existing buffer + this fragment) starts with `{` or a triple-backtick
-// fence, the would-be SSE frame is appended to deferredTextFrames instead
-// of being flushed. Once buffering is true, ALL subsequent text fragments
-// (regardless of shape) are buffered too — they belong to the same
-// candidate-JSON sequence.
+// buffering decision: every tool-enabled turn is buffered until stream end so
+// an explicit wrapper can be recognized after arbitrary narration. Buffering
+// is bounded; overflow flushes the prefix and permanently switches the turn to
+// ordinary streaming.
 func (e *sseEmitter) applyTextChunk(c canonical.Chunk) error {
 	if c.Text == nil {
 		return nil
@@ -286,40 +244,19 @@ func (e *sseEmitter) applyTextChunk(c canonical.Chunk) error {
 	}
 	frag := c.Text.Content
 
-	// Decide whether to buffer. Once buffering has started, keep buffering.
-	// Otherwise, start buffering when req.Tools is non-empty AND the
-	// accumulated text starts JSON-shaped — BUT only if no non-buffered
-	// text has already been flushed (WR-01: split-stream coerce is unsafe
-	// per Pitfall 3 "entire text").
-	if !e.buffering && e.req != nil && len(e.req.Tools) > 0 && !e.textFlushed {
-		probe := e.textBuffer.String() + frag
-		if looksLikeJSONStart(probe) {
-			e.buffering = true
-		}
-	}
-
-	if e.buffering {
+	toolEnabled := e.req != nil && len(e.req.Tools) > 0
+	if toolEnabled && !e.textFlushed && e.textBuffer.Len()+len(frag) <= maxStreamingCoerceBytes {
+		e.buffering = true
 		e.textBuffer.WriteString(frag)
-		frame, err := e.marshalChunk(chunkChoice{
-			Index:        0,
-			Delta:        chunkDelta{Content: frag},
-			FinishReason: nil,
-		})
-		if err != nil {
-			return err
-		}
-		e.deferredTextFrames = append(e.deferredTextFrames, frame)
-		// Quick 260530-df2 — even buffered text aggregates so the
-		// post-stream PostHook sees populated Content on the
-		// coerce-miss flush path. On coerce-hit, finalize uses the
-		// synthetic resp instead and this aggregation is moot.
 		e.aggregatedText.WriteString(frag)
 		return nil
 	}
 
-	// WR-01: record that non-buffered text reached the wire so any
-	// future JSON-shaped chunk in this stream cannot retroactively
-	// start buffering.
+	if e.buffering {
+		if err := e.flushBufferedText(); err != nil {
+			return err
+		}
+	}
 	e.textFlushed = true
 	if err := e.writeData(e.buildChunk(chunkChoice{
 		Index:        0,
@@ -415,8 +352,7 @@ func (e *sseEmitter) emitToolCallFrames(calls []canonical.ToolCall) error {
 //  3. Emits the flat OpenAI chunk sequence:
 //     a. First chunk: delta={"role":"assistant"}, finish_reason=null
 //     b. Per canonical.ChunkKindText: delta={"content":"…"}, finish_reason=null
-//     — OR — buffered for streaming-coerce when req.Tools non-empty AND
-//     text looks JSON-shaped.
+//     — OR — bounded full-turn buffering when req.Tools is non-empty.
 //     c. Per canonical.ChunkKindToolCall: structured delta.tool_calls
 //     frames (Defect 1a) AND sawKiroNativeToolCall = true (skips
 //     end-of-stream coerce; terminal finish_reason:"tool_calls").
@@ -437,9 +373,9 @@ func (e *sseEmitter) emitToolCallFrames(calls []canonical.ToolCall) error {
 // `req *canonical.ChatRequest` so end-of-stream coerce can read req.Tools
 // and call engine.CoerceToolCall on the buffered assistant text. Streaming
 // coerce fires ONLY when sawKiroNativeToolCall is false at stream close —
-// a kiro-native ChunkKindToolCall is surfaced structurally per-chunk
-// (Defect 1a) and trips the sawKiroNativeToolCall flag so end-of-stream
-// coerce is skipped.
+// a kiro-native ChunkKindToolCall is accumulated for structural emission
+// (Defect 1a) and trips the sawKiroNativeToolCall flag so end-of-stream text
+// coercion is skipped.
 func runSSEEmitter(ctx context.Context, w http.ResponseWriter, run RunHandle, req *canonical.ChatRequest, aliases map[string]string, model string, streamIdle time.Duration, logger *slog.Logger) (*canonical.ChatResponse, error) {
 	// Assert Flusher BEFORE any write so the caller can fall back to JSON 500
 	// if the ResponseWriter does not support streaming (Pitfall 2 + anthropic analog).
@@ -596,16 +532,16 @@ func (e *sseEmitter) aggregatedResponse(stop canonical.StopReason, syntheticTool
 //
 // Phase 6 iteration-3 skip-or-coerce-or-flush triage:
 //   - If sawKiroNativeToolCall == true (iteration-3 HIGH #2 fix): SKIP
-//     coerce. RELEASE any deferredTextFrames in order. Emit terminal
-//     finish_reason from canonical StopReason (NOT "tool_calls").
+//     coerce. Suppress a duplicate wrapper or release ordinary text, then
+//     emit terminal finish_reason "tool_calls" for the native call.
 //   - Else if buffering == false: emit terminal finish_reason normally.
 //     (No buffered text → no coerce candidate.)
 //   - Else (buffering == true AND sawKiroNativeToolCall == false): build
 //     synthetic *canonical.ChatResponse from textBuffer, call
-//     engine.CoerceToolCall. On HIT: discard deferredTextFrames, emit
+//     engine.CoerceToolCall. On HIT: discard buffered text, emit
 //     the multi-frame native delta.tool_calls sequence + terminal
-//     finish_reason:"tool_calls". On MISS: release deferredTextFrames
-//     in order, emit terminal finish_reason from canonical StopReason.
+//     finish_reason:"tool_calls". On MISS: release buffered text and emit
+//     terminal finish_reason from canonical StopReason.
 //
 // On run.Stream().Result() error: log at debug, stop WITHOUT emitting
 // finish_reason or [DONE] (truncated stream — Pitfall 3 / A5).
@@ -688,7 +624,20 @@ func finalizeSSE(e *sseEmitter, run RunHandle) (*canonical.ChatResponse, error) 
 		// the raw wrapper JSON), dedup the accumulated calls, emit them as
 		// structured delta.tool_calls frames, then terminal finish_reason:
 		// "tool_calls". SKIP coerce (already surfaced natively).
-		e.deferredTextFrames = nil
+		var reqTools []canonical.ToolSpec
+		if e.req != nil {
+			reqTools = e.req.Tools
+		}
+		buffered := e.textBuffer.String()
+		wrappers := engine.ExtractToolCallWrappers(buffered, reqTools)
+		if len(wrappers) == 0 {
+			if err := e.flushBufferedText(); err != nil {
+				return e.aggregatedResponse(stopReason, nil), err
+			}
+		} else {
+			e.textBuffer.Reset()
+			e.buffering = false
+		}
 		calls := engine.DedupToolCalls(e.nativeToolCalls)
 		if err := e.emitToolCallFrames(calls); err != nil {
 			return e.aggregatedResponse(stopReason, calls), err
@@ -729,16 +678,22 @@ func finalizeSSE(e *sseEmitter, run RunHandle) (*canonical.ChatResponse, error) 
 	return e.aggregatedResponse(stopReason, syntheticToolCalls), nil
 }
 
-// flushDeferred releases any buffered text frames in order. Used on the
-// sawKiroNativeToolCall=true and coerce-miss paths. The frames were
-// marshaled in applyTextChunk and have the full "data: ...\n\n" envelope.
-func (e *sseEmitter) flushDeferred() error {
-	for _, frame := range e.deferredTextFrames {
-		if err := e.writeRaw(frame); err != nil {
+// flushBufferedText emits the bounded buffer as one content delta. Preserving
+// the concatenated assistant bytes is the compatibility contract; buffering
+// deliberately does not preserve upstream chunk boundaries.
+func (e *sseEmitter) flushBufferedText() error {
+	text := e.textBuffer.String()
+	if text != "" {
+		if err := e.writeData(e.buildChunk(chunkChoice{
+			Index:        0,
+			Delta:        chunkDelta{Content: text},
+			FinishReason: nil,
+		})); err != nil {
 			return err
 		}
 	}
-	e.deferredTextFrames = nil
+	e.textBuffer.Reset()
+	e.buffering = false
 	return nil
 }
 
@@ -781,7 +736,7 @@ func (e *sseEmitter) tryStreamingCoerce(stopReason canonical.StopReason) ([]cano
 	// mutates in place; pre-copying would discard the mutation.
 	if !engine.CoerceToolCall(e.req, syntheticResp) {
 		// Coerce miss — release buffered frames + emit terminal.
-		if err := e.flushDeferred(); err != nil {
+		if err := e.flushBufferedText(); err != nil {
 			return nil, err
 		}
 		return nil, e.emitTerminalFrame(stopReason)
@@ -791,7 +746,8 @@ func (e *sseEmitter) tryStreamingCoerce(stopReason canonical.StopReason) ([]cano
 	// native delta.tool_calls SSE shape (per D-07 + Pitfall 2: do NOT
 	// split arguments across multiple deltas; frame C carries the
 	// complete args as one string atom).
-	e.deferredTextFrames = nil
+	e.textBuffer.Reset()
+	e.buffering = false
 
 	// Frame B: id + name, empty arguments.
 	if len(syntheticResp.Message.ToolCalls) == 0 {
@@ -799,43 +755,7 @@ func (e *sseEmitter) tryStreamingCoerce(stopReason canonical.StopReason) ([]cano
 		// at least one ToolCall, but guard the read anyway (REVIEW LOW #7).
 		return nil, e.emitTerminalFrame(stopReason)
 	}
-	tc := syntheticResp.Message.ToolCalls[0]
-
-	if err := e.writeData(e.buildChunk(chunkChoice{
-		Index: 0,
-		Delta: chunkDelta{
-			ToolCalls: []chunkDeltaToolCall{{
-				Index: 0,
-				ID:    tc.ID,
-				Type:  "function",
-				Function: chunkDeltaToolCallFunction{
-					Name:      tc.Name,
-					Arguments: "",
-				},
-			}},
-		},
-		FinishReason: nil,
-	})); err != nil {
-		return nil, err
-	}
-
-	// Frame C: arguments JSON-string (single atom, no splits — Pitfall 2).
-	argsJSON, err := json.Marshal(tc.Arguments)
-	if err != nil {
-		argsJSON = []byte("{}")
-	}
-	if err := e.writeData(e.buildChunk(chunkChoice{
-		Index: 0,
-		Delta: chunkDelta{
-			ToolCalls: []chunkDeltaToolCall{{
-				Index: 0,
-				Function: chunkDeltaToolCallFunction{
-					Arguments: string(argsJSON),
-				},
-			}},
-		},
-		FinishReason: nil,
-	})); err != nil {
+	if err := e.emitToolCallFrames(syntheticResp.Message.ToolCalls); err != nil {
 		return nil, err
 	}
 

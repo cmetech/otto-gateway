@@ -371,7 +371,7 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
-		resp, err := runSSEEmitter(streamCtx, w, runHandle, req.Tools, wire.Model, a.cfg.StreamIdleTimeout, a.cfg.Logger)
+		resp, err := runSSEEmitter(streamCtx, w, runHandle, req.Tools, a.cfg.ToolAliases, wire.Model, a.cfg.StreamIdleTimeout, a.cfg.Logger)
 		observation.Outcome = classifyStreamingError(err)
 		if err != nil {
 			// Audit anthropic-flusher-assertion-fail-swallowed: the

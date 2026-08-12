@@ -14,6 +14,7 @@ package anthropic
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -147,6 +148,93 @@ func TestSSE_CoercesToolCallWrapper_EmitsToolUseFrames(t *testing.T) {
 	}
 }
 
+func TestSSE_ProseThenToolCallWrapper_EmitsToolUseFrames(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	cf := newCountingFlusher()
+	e := newEmitter(cf)
+	e.tools = []canonical.ToolSpec{{Name: "write_file", Parameters: map[string]any{
+		"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}, "content": map[string]any{"type": "string"}},
+	}}}
+	args, err := json.Marshal(map[string]any{
+		"path":    `C:\Users\splunk\AppData\Local\loop24\kanban\workspaces\t_055b581b\integrals.md`,
+		"content": "Unicode ∫ and LaTeX \\int_a^b f(x)\\,dx.\nSecond line.",
+	})
+	if err != nil {
+		t.Fatalf("marshal fixture: %v", err)
+	}
+	wrapper := "```json\n" + `{"tool_call":{"name":"write_file","arguments":` + string(args) + "}}\n```"
+	fragments := []string{"The file wasn’t written in the previous turn. Let me write it now.\n"}
+	for _, fragment := range wrapper {
+		fragments = append(fragments, string(fragment))
+	}
+	body := driveTextChunks(t, e, cf, canonical.StopEndTurn, fragments...)
+
+	if !strings.Contains(body, `"type":"tool_use"`) || !strings.Contains(body, `"name":"write_file"`) {
+		t.Fatalf("prose-prefixed wrapper did not surface as tool_use; body length=%d", len(body))
+	}
+	if strings.Contains(body, `\"tool_call\"`) || strings.Contains(body, "```json") {
+		t.Errorf("raw wrapper leaked as text; body=%s", body)
+	}
+	if sr := messageDeltaStopReason(t, body); sr != "tool_use" {
+		t.Errorf("stop_reason: got %q, want tool_use", sr)
+	}
+}
+
+func TestSSE_ToolEnabledBufferIsBounded(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	cf := newCountingFlusher()
+	e := newEmitter(cf)
+	e.tools = []canonical.ToolSpec{{Name: "get_weather"}}
+	if err := e.applyChunk(canonical.Chunk{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: strings.Repeat("x", maxStreamingCoerceBytes)}}); err != nil {
+		t.Fatalf("fill buffer: %v", err)
+	}
+	if err := e.applyChunk(canonical.Chunk{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "y"}}); err != nil {
+		t.Fatalf("overflow buffer: %v", err)
+	}
+	if e.bufferedText.Len() != 0 || e.buffering || !e.bufferDecided {
+		t.Fatalf("overflow state: len=%d buffering=%v passThrough=%v", e.bufferedText.Len(), e.buffering, e.bufferDecided)
+	}
+}
+
+func TestSSE_MultipleExplicitWrappers_SurfaceInOrder(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	cf := newCountingFlusher()
+	e := newEmitter(cf)
+	e.tools = []canonical.ToolSpec{{Name: "get_weather"}}
+	body := driveTextChunks(t, e, cf, canonical.StopEndTurn,
+		`[{"tool_call":{"name":"get_weather","arguments":{"location":"NYC"}}},`,
+		`{"tool_call":{"name":"get_weather","arguments":{"location":"LA"}}}]`,
+	)
+	if got := strings.Count(body, `"type":"tool_use"`); got != 2 {
+		t.Fatalf("tool_use block count: got %d, want 2; body:\n%s", got, body)
+	}
+	payloads := inputJSONDeltaPayloads(t, body)
+	if len(payloads) != 2 || !strings.Contains(payloads[0], "NYC") || !strings.Contains(payloads[1], "LA") {
+		t.Fatalf("wrapper order/arguments not preserved: payloads=%q", payloads)
+	}
+}
+
+func TestSSE_ResultError_DoesNotSurfaceBufferedWrapper(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	cf := newCountingFlusher()
+	e := newEmitter(cf)
+	e.tools = []canonical.ToolSpec{{Name: "get_weather"}}
+	chunks := make(chan canonical.Chunk, 1)
+	chunks <- canonical.Chunk{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: `Narration {"tool_call":{"name":"get_weather","arguments":{"location":"NYC"}}}`}}
+	close(chunks)
+	run := &fakeRunHandle{stream: &fakeStream{chunks: chunks, err: errors.New("upstream failed")}, sessionID: "coerce-error"}
+	if _, err := runSSEEmitterLoop(context.Background(), e, run, make(chan time.Time), 0); err == nil {
+		t.Fatal("expected upstream error")
+	}
+	body := cf.Body()
+	if strings.Contains(body, `"type":"tool_use"`) {
+		t.Fatalf("failed upstream turn surfaced executable tool_use; body:\n%s", body)
+	}
+	if !strings.Contains(body, `event: error`) {
+		t.Fatalf("missing terminal error event; body:\n%s", body)
+	}
+}
+
 // TestSSE_BareJSON_NotCoerced_FlushedAsText — NEGATIVE (anti-forgery).
 // Bare {"location":"NYC"} text (no tool_call key) with tools declared must
 // NOT produce tool_use frames; the text is flushed verbatim as a normal
@@ -188,11 +276,9 @@ func TestSSE_BareJSON_NotCoerced_FlushedAsText(t *testing.T) {
 	}
 }
 
-// TestSSE_NormalProse_NotBuffered_StreamsImmediately — PASSTHROUGH. A
-// normal prose stream, even with tools declared, must NOT be buffered: it
-// streams as text_delta frames exactly as it arrives, byte-for-byte
-// identical to the tool-less path.
-func TestSSE_NormalProse_NotBuffered_StreamsImmediately(t *testing.T) {
+// TestSSE_NormalProse_WithTools_FlushesAtCompletion — a tool-enabled prose
+// response is buffered for late-wrapper detection, then released unchanged.
+func TestSSE_NormalProse_WithTools_FlushesAtCompletion(t *testing.T) {
 	defer goleak.VerifyNone(t)
 
 	// With tools declared.
@@ -206,16 +292,15 @@ func TestSSE_NormalProse_NotBuffered_StreamsImmediately(t *testing.T) {
 	eBare := newEmitter(cfBare)
 	bodyBare := driveTextChunks(t, eBare, cfBare, canonical.StopEndTurn, "Hello ", "world")
 
-	if bodyTools != bodyBare {
-		t.Errorf("prose stream diverged with tools declared (regression)\nwith tools:\n%s\nbaseline:\n%s", bodyTools, bodyBare)
-	}
 	if eTools.buffering {
-		t.Error("buffering engaged on normal prose (must not)")
+		t.Error("buffering remained active after completion")
 	}
-	// Two text_delta frames streamed as they arrived.
-	if strings.Count(bodyTools, `"type":"text_delta"`) != 2 {
-		t.Errorf("text_delta count: got %d, want 2 (streamed immediately); body:\n%s",
+	if strings.Count(bodyTools, `"type":"text_delta"`) != 1 || !strings.Contains(bodyTools, `"text":"Hello world"`) {
+		t.Errorf("text_delta count/content: got %d, want one coalesced response; body:\n%s",
 			strings.Count(bodyTools, `"type":"text_delta"`), bodyTools)
+	}
+	if !strings.Contains(bodyBare, `"text":"Hello "`) || !strings.Contains(bodyBare, `"text":"world"`) {
+		t.Errorf("tool-less baseline stopped streaming chunks; body:\n%s", bodyBare)
 	}
 	if strings.Contains(bodyTools, `"type":"tool_use"`) {
 		t.Errorf("prose produced a tool_use block; body:\n%s", bodyTools)

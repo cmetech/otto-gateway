@@ -189,10 +189,10 @@ func TestOpenAISSE_PostHookSeesToolCallsAfterStreamingCoerce(t *testing.T) {
 	defer goleak.VerifyNone(t)
 	eng := &fakeEngine{}
 
-	// JSON-shaped assistant text payload that CoerceToolCall recognizes:
-	// matches one of the req.Tools entries by Name.
+	// Explicit wrapper after narration exercises the incident path while
+	// proving the post-stream canonical response matches the wire result.
 	chunks := []canonical.Chunk{
-		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: `{"tool":"read","args":{"filePath":"a.md"}}`}},
+		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: `I will read it. {"tool_call":{"name":"read","arguments":{"filePath":"a.md"}}}`}},
 	}
 	req := &canonical.ChatRequest{
 		Model: "auto",
@@ -211,26 +211,14 @@ func TestOpenAISSE_PostHookSeesToolCallsAfterStreamingCoerce(t *testing.T) {
 	if resp == nil {
 		t.Fatal("lastPostResp: got nil")
 	}
-	// The exact CoerceToolCall behavior is governed by engine package;
-	// the contract this test pins is: WHEN coerce fired (the wire emits
-	// finish_reason:"tool_calls"), the PostHook canonical resp must
-	// reflect Message.ToolCalls. If CoerceToolCall doesn't recognize
-	// this exact payload shape (which depends on the test catalog),
-	// the test verifies the negative — text aggregation is still
-	// present.
-	//
-	// The two acceptable behaviors below are both correct per the
-	// post-stream aggregator design: if coerce fires, ToolCalls is
-	// populated; if it doesn't, the text falls through to Content[0].
-	if len(resp.Message.ToolCalls) > 0 {
-		if resp.Message.ToolCalls[0].Name != "read" {
-			t.Errorf("ToolCalls[0].Name: got %q, want %q", resp.Message.ToolCalls[0].Name, "read")
-		}
-	} else {
-		// Coerce miss → JSON text should be in Content[0].
-		if len(resp.Message.Content) < 1 || !strings.Contains(resp.Message.Content[0].Text, "filePath") {
-			t.Errorf("Content[0].Text: missing JSON payload (coerce miss path); got %+v", resp.Message.Content)
-		}
+	if len(resp.Message.ToolCalls) != 1 {
+		t.Fatalf("ToolCalls length: got %d, want 1", len(resp.Message.ToolCalls))
+	}
+	if resp.Message.ToolCalls[0].Name != "read" {
+		t.Errorf("ToolCalls[0].Name: got %q, want %q", resp.Message.ToolCalls[0].Name, "read")
+	}
+	if len(resp.Message.Content) > 0 && strings.Contains(resp.Message.Content[0].Text, `"tool_call"`) {
+		t.Errorf("PostHook content leaked raw wrapper: %+v", resp.Message.Content)
 	}
 }
 
