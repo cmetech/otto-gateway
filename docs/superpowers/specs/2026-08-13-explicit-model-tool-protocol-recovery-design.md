@@ -1,7 +1,9 @@
 # Explicit-model tool-protocol recovery — design
 
-**Date:** 2026-08-13  
-**Status:** Proposed — awaiting design approval.  
+**Date:** 2026-08-13
+
+**Status:** Approved with denial-signal and comparison-document amendments.
+
 **Scope:** Preserve client-selected models, make one corrective attempt with the
 same model when it fails the Gateway's external tool-call protocol, and then
 return a protocol-native error that recommends `model: "auto"`. The Gateway
@@ -100,6 +102,10 @@ The guard recognizes the following successful tool-protocol outputs:
 
 The first attempt needs correction only in these cases:
 
+- ACP reports one or more denied Kiro built-in-tool attempts and no valid
+  caller tool call was produced (`built_in_tool_denied`). This is the strongest
+  signal inherited from the legacy Gateway: it records what Kiro actually
+  attempted rather than inferring intent from prose.
 - `tool_choice` is `required`, Anthropic `any`, or a named tool and no valid
   matching tool call was produced.
 - The output contains an explicit tool-wrapper marker but the existing parser
@@ -117,6 +123,12 @@ refusals, policy/safety refusals, GitLab permission errors, and a tool's own
 error result are not protocol failures. The detector operates only on model
 output and uses a short table of anchored phrases; it does not inspect or echo
 tool arguments.
+
+Expose the denial count as structured terminal stream metadata rather than
+parsing logs or error strings. Add `ToolDenials int` to the ACP and canonical
+`FinalResult` values and copy the per-stream counter through the existing
+`acpStreamShim`. A zero value preserves every existing fake and caller. The
+recovery classifier consumes this field only after the attempted stream closes.
 
 ### D4 — One same-model corrective prompt
 
@@ -228,7 +240,7 @@ Log one structured recovery record with:
 
 - normalized requested model;
 - failure class (`required_missing`, `named_mismatch`, `malformed_wrapper`,
-  `capability_refusal`, or `activation_failed`);
+  `capability_refusal`, `built_in_tool_denied`, or `activation_failed`);
 - corrective attempt count (`0` or `1`);
 - outcome (`first_attempt`, `corrected`, `failed`, or `buffer_bypass`);
 - `recommend_auto` boolean;
@@ -238,6 +250,34 @@ Add bounded-cardinality counters for protocol failures and corrective outcomes.
 Unknown/custom model identifiers must be normalized to an `other` label rather
 than used as arbitrary metric labels. Do not log model output or tool
 arguments.
+
+### D9 — Publish an evidence-backed Gateway comparison
+
+The implementation includes a standalone, shareable Markdown document at
+`docs/architecture/otto-gateway-architecture-and-reliability.md`. Its purpose
+is to explain why the Go Gateway is the preferred architecture without
+disparaging the legacy implementation or making unmeasured performance claims.
+
+The document covers:
+
+- canonical engine and adapter architecture;
+- OpenAI, Anthropic, and Ollama client compatibility;
+- native, wrapper-coerced, deferred-dispatcher, and multi-turn tool calls;
+- structured model selection and graceful selected-model failure behavior;
+- ACP session pooling, cancellation, backpressure, circuit breakers, bounded
+  parsing, and streaming correctness;
+- privacy, PII redaction/encryption, compression, logging, and trace behavior
+  as ordered PreHook/PostHook chains;
+- configuration, observability, testing, and cross-platform/release posture;
+- a capability matrix comparing legacy and new behavior;
+- migration guidance and cases where `model: "auto"` is recommended.
+
+Every factual statement links to a repository file, test, design decision, or
+reproducible command. Performance language must distinguish architectural
+advantages (bounded allocation, streaming backpressure, pooled workers) from
+measured results. If no benchmark proves a throughput or latency number, the
+document must not invent one. A Mermaid component diagram and request-flow
+diagram make the architecture understandable to non-maintainers.
 
 ## Request flow
 
@@ -279,6 +319,8 @@ replay response   same-session corrective prompt (once)
   wrapper, malformed wrapper.
 - Capability-refusal positives for the observed connector-unavailable wording
   and close variants.
+- Structured denial metadata triggers correction even when the assistant text
+  contains no recognizable refusal phrase.
 - Negative cases for normal answers, safety refusals, GitLab permission errors,
   and tool-result failures.
 
@@ -287,6 +329,8 @@ replay response   same-session corrective prompt (once)
 - Successful first attempt performs one ACP prompt and no correction.
 - Correctable first failure performs exactly two prompts on one session and
   never calls `SetModel` again.
+- ACP denial counts survive `acp.Stream` -> `acpStreamShim` -> canonical
+  `FinalResult` and reset for the corrective prompt.
 - Corrected second attempt exposes only second-attempt chunks.
 - Failed second attempt returns the typed protocol error.
 - `SetModel` failure returns the typed activation error and performs no prompt.
@@ -333,6 +377,8 @@ For OpenAI, Anthropic, and Ollama, in streaming and non-streaming modes:
   wiring.
 - Existing privacy/compression hooks — regression tests only; no production
   behavior change is expected.
+- `docs/architecture/otto-gateway-architecture-and-reliability.md` — the
+  shareable, source-linked comparison required by D9.
 
 ## Acceptance criteria
 
@@ -346,3 +392,6 @@ For OpenAI, Anthropic, and Ollama, in streaming and non-streaming modes:
 5. No failed first-attempt bytes reach a streaming client.
 6. Privacy, compression, logging, PostHooks, and request accounting run once.
 7. Memory use for preflight classification is bounded.
+8. A source-linked architecture comparison explains the new Gateway's client,
+   reliability, tool-call, privacy, PII, compression, and operational
+   advantages without unsupported benchmark claims.
