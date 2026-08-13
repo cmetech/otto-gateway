@@ -333,7 +333,7 @@ func (e *Engine) Run(ctx context.Context, req *canonical.ChatRequest) (*Run, err
 				CorrectiveAttempts: 0, RecommendAuto: false,
 			})
 			if ctxErr := ctx.Err(); ctxErr != nil {
-				return nil, ctxErr
+				return nil, fmt.Errorf("engine: prompt context: %w", ctxErr)
 			}
 		}
 		return nil, fmt.Errorf("engine: prompt: %w", err)
@@ -420,7 +420,7 @@ func (e *Engine) recoverToolProtocol(
 			CorrectiveAttempts: attempts, RecommendAuto: ctxErr == nil,
 		})
 		if ctxErr != nil {
-			return nil, ctxErr
+			return nil, fmt.Errorf("engine: selected-model tool protocol context: %w", ctxErr)
 		}
 		return nil, &canonical.SelectedModelError{
 			Code:  canonical.CodeSelectedModelToolProtocolFailed,

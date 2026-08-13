@@ -238,7 +238,8 @@ func TestToolProtocolRecoveryObserver_LogsOneBoundedPayloadFreeRecordPerEvent(t 
 	}
 
 	metricsRecorder := httptest.NewRecorder()
-	gwMetrics.Handler().ServeHTTP(metricsRecorder, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	metricsRequest := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/metrics", nil)
+	gwMetrics.Handler().ServeHTTP(metricsRecorder, metricsRequest)
 	metricsBody := metricsRecorder.Body.String()
 	if strings.Contains(metricsBody, "gw_model_requests_total{") {
 		t.Fatalf("recovery observer incremented model-request metrics:\n%s", metricsBody)

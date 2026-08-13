@@ -11,11 +11,17 @@ import (
 type ToolProtocolReason string
 
 const (
-	ReasonActivationFailed  ToolProtocolReason = "activation_failed"
-	ReasonRequiredMissing   ToolProtocolReason = "required_missing"
-	ReasonNamedMismatch     ToolProtocolReason = "named_mismatch"
-	ReasonMalformedWrapper  ToolProtocolReason = "malformed_wrapper"
+	// ReasonActivationFailed indicates that the selected model could not be activated.
+	ReasonActivationFailed ToolProtocolReason = "activation_failed"
+	// ReasonRequiredMissing indicates that a required tool call was absent.
+	ReasonRequiredMissing ToolProtocolReason = "required_missing"
+	// ReasonNamedMismatch indicates that the call did not target the required named tool.
+	ReasonNamedMismatch ToolProtocolReason = "named_mismatch"
+	// ReasonMalformedWrapper indicates that a textual tool-call wrapper was malformed.
+	ReasonMalformedWrapper ToolProtocolReason = "malformed_wrapper"
+	// ReasonCapabilityRefusal indicates that the model refused the caller-tool protocol.
 	ReasonCapabilityRefusal ToolProtocolReason = "capability_refusal"
+	// ReasonBuiltInToolDenied indicates that the model attempted a denied built-in tool.
 	ReasonBuiltInToolDenied ToolProtocolReason = "built_in_tool_denied"
 )
 
@@ -23,9 +29,13 @@ const (
 type ToolProtocolOutcome string
 
 const (
+	// OutcomeFirstAttempt indicates that the first model response satisfied the protocol.
 	OutcomeFirstAttempt ToolProtocolOutcome = "first_attempt"
-	OutcomeCorrected    ToolProtocolOutcome = "corrected"
-	OutcomeFailed       ToolProtocolOutcome = "failed"
+	// OutcomeCorrected indicates that the single corrective prompt satisfied the protocol.
+	OutcomeCorrected ToolProtocolOutcome = "corrected"
+	// OutcomeFailed indicates that protocol recovery did not succeed.
+	OutcomeFailed ToolProtocolOutcome = "failed"
+	// OutcomeBufferBypass indicates that bounded preflight failed open without retry.
 	OutcomeBufferBypass ToolProtocolOutcome = "buffer_bypass"
 )
 

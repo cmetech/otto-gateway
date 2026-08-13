@@ -317,7 +317,13 @@ type stableChunkStream struct {
 
 func (s *stableChunkStream) Chunks() <-chan canonical.Chunk { return s.chunks }
 
-func (s *stableChunkStream) Result() (*canonical.FinalResult, error) { return s.source.Result() }
+func (s *stableChunkStream) Result() (*canonical.FinalResult, error) {
+	result, err := s.source.Result()
+	if err != nil {
+		return result, fmt.Errorf("engine: stable stream result: %w", err)
+	}
+	return result, nil
+}
 
 func cloneChunks(chunks []canonical.Chunk) []canonical.Chunk {
 	if chunks == nil {

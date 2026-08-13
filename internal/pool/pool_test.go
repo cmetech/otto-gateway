@@ -933,8 +933,7 @@ func TestPool_PromptSequence_ReleaseClockRunsOutsidePoolMutex(t *testing.T) {
 	now := time.Date(2026, time.August, 13, 10, 0, 0, 0, time.UTC)
 	fc := promptSequenceFakeClient()
 	ff := &fakeClientFactory{clients: []pool.PoolClient{fc}}
-	var p *pool.Pool
-	p = pool.New(pool.Config{
+	p := pool.New(pool.Config{
 		Logger:  testutil.Logger(t),
 		Size:    1,
 		Factory: ff,

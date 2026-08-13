@@ -1,13 +1,14 @@
 package acp
 
 import (
+	"context"
 	"testing"
 
 	"otto-gateway/internal/canonical"
 )
 
 func TestStreamResultIncludesToolDenials(t *testing.T) {
-	s := newStream(nil, "session-denial")
+	s := newStream(context.Background(), "session-denial")
 	s.recordDenial()
 	s.recordDenial()
 	s.close(&FinalResult{StopReason: canonical.StopEndTurn}, nil)
@@ -30,7 +31,7 @@ func TestStreamResultIncludesToolDenials(t *testing.T) {
 }
 
 func TestStreamResultDefaultsToolDenialsToZero(t *testing.T) {
-	s := newStream(nil, "session-no-denial")
+	s := newStream(context.Background(), "session-no-denial")
 	s.close(&FinalResult{StopReason: canonical.StopEndTurn}, nil)
 
 	result, err := s.Result()

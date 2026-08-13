@@ -63,7 +63,7 @@ func TestSelectedModelError_UnwrapsOnlyForServerSideClassification(t *testing.T)
 		Code:  CodeSelectedModelActivationFailed,
 		Cause: cause,
 	}
-	if got := errors.Unwrap(err); got != cause {
+	if got := errors.Unwrap(err); !errors.Is(got, cause) {
 		t.Errorf("errors.Unwrap() = %v, want original cause", got)
 	}
 	if strings.Contains(err.Error(), "secret-upstream-detail") {

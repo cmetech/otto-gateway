@@ -3,7 +3,9 @@ package canonical
 import "errors"
 
 const (
-	CodeSelectedModelActivationFailed   = "selected_model_activation_failed"
+	// CodeSelectedModelActivationFailed identifies an explicit model that could not be activated.
+	CodeSelectedModelActivationFailed = "selected_model_activation_failed"
+	// CodeSelectedModelToolProtocolFailed identifies an explicit model that failed caller-tool recovery.
 	CodeSelectedModelToolProtocolFailed = "selected_model_tool_protocol_failed"
 )
 
