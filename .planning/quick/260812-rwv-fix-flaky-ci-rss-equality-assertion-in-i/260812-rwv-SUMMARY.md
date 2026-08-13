@@ -14,8 +14,8 @@ last 12 runs green**.
 
 | Job | Failures | Root cause | Status |
 |-----|----------|-----------|--------|
-| `lint + test-race + arch-lint + govulncheck` | 3 | RSS byte-equality assertion | **fixed here** |
-| `privacy + support parity (Windows)` | 3 | transient Win32 file errors during managed-secret rotation | **diagnosed, not fixed** |
+| `lint + test-race + arch-lint + govulncheck` | 3 | RSS byte-equality assertion | **fixed** (`1528f7b`) — confirmed green on run 31653410481 |
+| `privacy + support parity (Windows)` | 3 | ERROR_SHARING_VIOLATION during managed-secret rotation | **fixed** (`b679a70`) — CI-verified only |
 | `privacy parity (macos-latest)` | 1 | old broken commit (2026-08-02), since fixed | not live |
 
 ## Fixed — RSS byte-equality assertion
@@ -63,17 +63,39 @@ This is a **product** gap, not only a test gap: on a real Windows box with a
 scanner touching the gateway config directory, `gw.ps1 init` can fail outright
 for a reason that resolves in milliseconds.
 
-**Landed here (diagnosability only, no behavior change):**
-`PublishAtomicWindows` now names the Win32 code in its message. Previously
-`Win32Exception(int, string)` retained `NativeErrorCode` but printed only the
-custom message, so CI logs carried no code to triage. The next Windows failure
-will identify the exact error.
+**Step 1 (commit `1528f7b`) — diagnosability.** `PublishAtomicWindows` now names
+the Win32 code in its message. Previously `Win32Exception(int, string)` retained
+`NativeErrorCode` but printed only the custom message, so CI logs carried no
+code to triage.
 
-**Not landed (needs your call):** bounded retry on the writer side, mirroring
-the policy already accepted on the reader side. Held back because it changes a
-security-sensitive privacy-secret path that cannot be executed on this macOS
-box — the Windows-only APIs (`ReplaceFile`, DACL checks) mean verification
-would be by CI runs alone.
+**Step 2 — the code, confirmed.** The very next CI run (31653410481) failed on
+the reader side with `READ-ERROR:System.IO.IOException:-2147024864` =
+`0x80070020` = **ERROR_SHARING_VIOLATION**. Decisive detail: that code was
+*already on the reader's retryable list*. The codes were right; the 100 ms
+window was not.
+
+**Step 3 (commit `b679a70`) — both sides fixed, on your call.**
+
+- Writer (`PublishAtomicWindows`): bounded 5 s retry with escalating backoff
+  over `ERROR_SHARING_VIOLATION` (32), `ERROR_LOCK_VIOLATION` (33) and
+  `ERROR_USER_MAPPED_FILE` (1224). Retrying preserves every guarantee the method
+  makes — each attempt is a single atomic primitive, and a failed attempt leaves
+  both the destination and the sibling temporary untouched.
+  **`ERROR_ACCESS_DENIED` is deliberately excluded**: a permission failure on a
+  managed-secret file is a security signal and must fail closed rather than spin.
+- Reader (test): retry deadline widened 100 ms → 5 s to match the writer budget.
+
+The forced-failure test is unaffected: `GW_TEST_MANAGED_SECRET_REPLACE_FAILURE`
+throws in `gw.ps1:1041`, *before* `Publish-SupportFileAtomically` is reached, so
+it still fails fast rather than burning the retry budget.
+
+**Verification limits, stated plainly:** the retry path itself cannot be
+executed on this macOS box — `PublishAtomicWindows` throws
+`PlatformNotSupportedException` off Windows. What was verified locally: the
+inline C# still compiles under `pwsh`, both files pass the CI PowerShell parse
+gate, and the portable publish path (first publication, replacement, temp
+cleanup, sibling guard) passes end to end. The Windows-only retry behaviour is
+verified by CI runs alone.
 
 ## Verification
 
@@ -87,5 +109,7 @@ would be by CI runs alone.
 
 ## Expected effect
 
-Removes the most frequent failure (3/12). Windows remains flaky at roughly
-3/12 until the writer-side retry decision is made.
+Both live failure classes addressed. The RSS fix is confirmed (run 31653410481
+had `lint + test-race` green). The Windows fix needs a few clean runs to call
+settled, since it targets a probabilistic condition — a single green run proves
+less here than it would for a deterministic bug.
