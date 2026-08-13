@@ -436,11 +436,16 @@ go test -race ./internal/engine ./internal/acp ./internal/pool ./internal/sessio
 go vet ./...
 ```
 
-The following sanitized Hermes-compatible OpenAI request exercises an explicit
-selected model with a synthetic tool. Substitute an identifier returned by the
-Gateway's `/v1/models`; add your normal local authorization header if your
-Gateway enables authentication. The example contains no credential or private
-connector payload.
+The following is the exact sanitized Hermes deferred-dispatcher request shape:
+Hermes offers one outer function named `tool_call`; that function carries the
+deferred inner tool's `name` and `arguments`. The inner name
+`synthetic_list_group_projects`, group `example-engineering`, and limit values
+below replace the private connector, group, and arguments from the original
+reproduction. The outer schema and request structure match the proven
+[OpenAI nested-dispatcher integration](../../internal/adapter/openai/integration_test.go).
+Substitute an explicit identifier returned by the Gateway's `/v1/models`; add
+your normal local authorization header only if your Gateway enables
+authentication. No credential or private connector data appears here.
 
 ```bash
 GATEWAY_URL=http://127.0.0.1:18080
@@ -449,24 +454,32 @@ SELECTED_MODEL=replace-with-id-from-v1-models
 curl --fail-with-body --silent --show-error \
   -H 'Content-Type: application/json' \
   --data @- "$GATEWAY_URL/v1/chat/completions" <<JSON
-{"model":"$SELECTED_MODEL","messages":[{"role":"user","content":"Return synthetic weather for Paris by using the supplied tool."}],"tools":[{"type":"function","function":{"name":"get_weather","description":"Return synthetic weather for a city.","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}],"tool_choice":"required","stream":false}
+{"model":"$SELECTED_MODEL","messages":[{"role":"user","content":"Use the deferred tool named synthetic_list_group_projects with arguments group example-engineering, recursive true, max_groups 2, and max_projects 3."}],"stream":false,"tools":[{"type":"function","function":{"name":"tool_call","parameters":{"type":"object","properties":{"name":{"type":"string"},"arguments":{"type":"object"}},"required":["name","arguments"]}}}]}
 JSON
 ```
 
-A successful response contains an OpenAI `tool_calls` entry for `get_weather`.
+A successful response contains an OpenAI `tool_calls` entry whose function name
+is `tool_call`. Its JSON-string `function.arguments` decodes to this synthetic
+deferred call:
+
+```json
+{"name":"synthetic_list_group_projects","arguments":{"group":"example-engineering","recursive":true,"max_groups":2,"max_projects":3}}
+```
+
 If exact activation fails, expect HTTP 502 and
 `error.code=selected_model_activation_failed`. If both tool-protocol attempts
 fail, expect HTTP 502 and
 `error.code=selected_model_tool_protocol_failed`; the safe message recommends
 `model: auto` and excludes raw model output/internal causes.
 
-Use this control to prove the unchanged auto path with the same public payload:
+Use this control to exercise the unchanged auto path with the same sanitized
+Hermes message, outer dispatcher schema, and synthetic inner values:
 
 ```bash
 curl --fail-with-body --silent --show-error \
   -H 'Content-Type: application/json' \
   --data @- "$GATEWAY_URL/v1/chat/completions" <<'JSON'
-{"model":"auto","messages":[{"role":"user","content":"Return synthetic weather for Paris by using the supplied tool."}],"tools":[{"type":"function","function":{"name":"get_weather","description":"Return synthetic weather for a city.","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}],"tool_choice":"required","stream":false}
+{"model":"auto","messages":[{"role":"user","content":"Use the deferred tool named synthetic_list_group_projects with arguments group example-engineering, recursive true, max_groups 2, and max_projects 3."}],"stream":false,"tools":[{"type":"function","function":{"name":"tool_call","parameters":{"type":"object","properties":{"name":{"type":"string"},"arguments":{"type":"object"}},"required":["name","arguments"]}}}]}
 JSON
 ```
 
