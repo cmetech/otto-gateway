@@ -96,10 +96,24 @@ func TestApplyIdleMemoryRecyclePoolConfig_IdleRecyclePolicy(t *testing.T) {
 	if got.ReadWorkerMemory == nil {
 		t.Fatal("ReadWorkerMemory = nil")
 	}
-	wantSample := procstat.Read(os.Getpid())
+	// Assert the WIRING (ReadWorkerMemory delegates to procstat.Read), not byte
+	// equality of two samples. RSS is live process state: on linux procstat.Read
+	// returns the real /proc RSS, which grows between the two calls below, so an
+	// exact comparison failed intermittently in CI. It never failed locally
+	// because darwin's procstat stub returns Sample{} and the check degenerated
+	// to 0 == 0.
 	rssBytes, ok := got.ReadWorkerMemory(os.Getpid())
-	if rssBytes != wantSample.RSSBytes || ok != wantSample.OK {
-		t.Fatalf("ReadWorkerMemory(self) = (%d, %t), want (%d, %t)", rssBytes, ok, wantSample.RSSBytes, wantSample.OK)
+	// ok tracks procstat.Supported(), a per-platform constant — deterministic,
+	// unlike the byte count. Reading /proc/self on linux does not fail in
+	// practice, so a mismatch here is a genuine wiring or environment break.
+	if ok != procstat.Supported() {
+		t.Fatalf("ReadWorkerMemory(self) ok = %t, want %t (procstat.Supported)", ok, procstat.Supported())
+	}
+	if ok && rssBytes == 0 {
+		t.Fatal("ReadWorkerMemory(self) reported ok with 0 bytes, want a live RSS reading")
+	}
+	if !ok && rssBytes != 0 {
+		t.Fatalf("ReadWorkerMemory(self) = (%d, false), want 0 bytes when the read fails", rssBytes)
 	}
 	if got.RecycleMetrics != recorder {
 		t.Fatalf("RecycleMetrics identity = %T %p, want %T %p", got.RecycleMetrics, got.RecycleMetrics, recorder, recorder)

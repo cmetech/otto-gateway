@@ -436,8 +436,14 @@ namespace GatewaySupport {
                     IntPtr.Zero, IntPtr.Zero)
                 : MoveFileEx(temporaryPath, destinationPath, MOVEFILE_WRITE_THROUGH);
             if (!published) {
-                throw new Win32Exception(Marshal.GetLastWin32Error(),
-                    "atomic support publication failed");
+                // Capture the code before anything else can clobber the thread's
+                // last-error, and name it in the message: Win32Exception(int,
+                // string) keeps NativeErrorCode but prints only the message, so
+                // CI logs previously showed the failure with no code to triage
+                // (e.g. 32 = ERROR_SHARING_VIOLATION from a scanner's handle).
+                int lastError = Marshal.GetLastWin32Error();
+                throw new Win32Exception(lastError, string.Format(
+                    "atomic support publication failed (win32 error {0})", lastError));
             }
         }
 
