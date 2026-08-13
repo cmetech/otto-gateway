@@ -63,6 +63,21 @@ func fileTool() canonical.ToolSpec {
 	}
 }
 
+func toolCallDispatcher() canonical.ToolSpec {
+	return canonical.ToolSpec{
+		Name:        "tool_call",
+		Description: "Invoke a deferred tool by name",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"name":      map[string]any{"type": "string"},
+				"arguments": map[string]any{"type": "object"},
+			},
+			"required": []any{"name", "arguments"},
+		},
+	}
+}
+
 // TestCoerceToolCall_NeverPanics (TRST-06 + D-12) — CoerceToolCall MUST
 // NOT panic for any input shape, including nil pointers, malformed JSON,
 // and pathological tool specs. testing/quick generates 1000 random
@@ -552,6 +567,106 @@ func TestExtractToolCallWrappers(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestExtractToolCallWrappers_DeferredDispatcher(t *testing.T) {
+	hidden := `{"tool_call":{"name":"gitlab_list_group_projects","arguments":{"group":"sd-macs-att-rnam-hosting","recursive":true,"max_groups":50,"max_projects":100}}}`
+	fenced := "```json\n" + hidden + "\n```"
+	prose := "Example only: " + hidden
+	alreadyNested := `{"tool_call":{"name":"tool_call","arguments":{"name":"gitlab_list_group_projects","arguments":{"group":"sd-macs-att-rnam-hosting"}}}}`
+
+	tests := []struct {
+		name      string
+		text      string
+		tools     []canonical.ToolSpec
+		wantCount int
+		wantName  string
+	}{
+		{name: "whole object nests under dispatcher", text: hidden, tools: []canonical.ToolSpec{toolCallDispatcher()}, wantCount: 1, wantName: "tool_call"},
+		{name: "whole fence nests under dispatcher", text: fenced, tools: []canonical.ToolSpec{toolCallDispatcher()}, wantCount: 1, wantName: "tool_call"},
+		{name: "unknown without dispatcher fails open", text: hidden, tools: []canonical.ToolSpec{weatherTool()}, wantCount: 0},
+		{name: "prose hidden wrapper does not dispatch", text: prose, tools: []canonical.ToolSpec{toolCallDispatcher()}, wantCount: 0},
+		{name: "already nested is not double wrapped", text: alreadyNested, tools: []canonical.ToolSpec{toolCallDispatcher()}, wantCount: 1, wantName: "tool_call"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ExtractToolCallWrappers(tc.text, tc.tools)
+			if len(got) != tc.wantCount {
+				t.Fatalf("call count: got %d, want %d; calls=%+v", len(got), tc.wantCount, got)
+			}
+			if tc.wantCount > 0 && got[0].Name != tc.wantName {
+				t.Fatalf("call name: got %q, want %q", got[0].Name, tc.wantName)
+			}
+		})
+	}
+
+	got := ExtractToolCallWrappers(hidden, []canonical.ToolSpec{toolCallDispatcher()})
+	if len(got) != 1 {
+		t.Fatalf("exact dispatcher call count: got %d; calls=%+v", len(got), got)
+	}
+	if got[0].Arguments["name"] != "gitlab_list_group_projects" {
+		t.Fatalf("nested name: got %v", got[0].Arguments["name"])
+	}
+	inner, ok := got[0].Arguments["arguments"].(map[string]any)
+	if !ok {
+		t.Fatalf("nested arguments type: %T", got[0].Arguments["arguments"])
+	}
+	if inner["group"] != "sd-macs-att-rnam-hosting" || inner["recursive"] != true || inner["max_groups"] != float64(50) || inner["max_projects"] != float64(100) {
+		t.Fatalf("nested arguments changed: %+v", inner)
+	}
+
+	t.Run("direct declaration wins over dispatcher", func(t *testing.T) {
+		text := `{"tool_call":{"name":"get_weather","arguments":{"location":"Paris"}}}`
+		got := ExtractToolCallWrappers(text, []canonical.ToolSpec{toolCallDispatcher(), weatherTool()})
+		if len(got) != 1 || got[0].Name != "get_weather" {
+			t.Fatalf("direct call was nested or lost: %+v", got)
+		}
+	})
+
+	t.Run("dispatcher wins over unrelated overlap remap", func(t *testing.T) {
+		overlap := canonical.ToolSpec{Name: "group_lookup", Parameters: map[string]any{
+			"type": "object", "properties": map[string]any{"group": map[string]any{"type": "string"}},
+		}}
+		text := `{"tool_call":{"name":"gitlab_list_group_projects","arguments":{"group":"sd-macs-att-rnam-hosting"}}}`
+		got := ExtractToolCallWrappers(text, []canonical.ToolSpec{overlap, toolCallDispatcher()})
+		if len(got) != 1 || got[0].Name != "tool_call" || got[0].Arguments["name"] != "gitlab_list_group_projects" {
+			t.Fatalf("explicit deferred intent was overlap-remapped: %+v", got)
+		}
+	})
+
+	t.Run("whole array preserves hidden call order", func(t *testing.T) {
+		text := `[{"tool_call":{"name":"first_hidden","arguments":{"value":1}}},{"tool_call":{"name":"second_hidden","arguments":{"value":2}}}]`
+		got := ExtractToolCallWrappers(text, []canonical.ToolSpec{toolCallDispatcher()})
+		if len(got) != 2 || got[0].Name != "tool_call" || got[1].Name != "tool_call" {
+			t.Fatalf("dispatcher calls: %+v", got)
+		}
+		if got[0].Arguments["name"] != "first_hidden" || got[1].Arguments["name"] != "second_hidden" {
+			t.Fatalf("hidden call order changed: %+v", got)
+		}
+	})
+
+	lookalikes := []canonical.ToolSpec{
+		{Name: "dispatch_tool", Parameters: toolCallDispatcher().Parameters},
+		{Name: "tool_call", Parameters: map[string]any{"type": "object"}},
+		{Name: "tool_call", Parameters: map[string]any{"type": "object", "properties": map[string]any{"name": map[string]any{"type": "string"}, "arguments": map[string]any{"type": "object"}}, "required": []any{"name"}}},
+		{Name: "tool_call", Parameters: map[string]any{"type": "object", "properties": map[string]any{"name": map[string]any{"type": "object"}, "arguments": map[string]any{"type": "object"}}, "required": []any{"name", "arguments"}}},
+		{Name: "tool_call", Parameters: map[string]any{"type": "object", "properties": map[string]any{"name": map[string]any{"type": "string"}, "arguments": map[string]any{"type": "string"}}, "required": []any{"name", "arguments"}}},
+	}
+	for i, tool := range lookalikes {
+		if got := ExtractToolCallWrappers(hidden, []canonical.ToolSpec{tool}); len(got) != 0 {
+			t.Fatalf("lookalike %d became executable: %+v", i, got)
+		}
+	}
+
+	t.Run("string required representation is accepted", func(t *testing.T) {
+		dispatcher := toolCallDispatcher()
+		dispatcher.Parameters["required"] = []string{"name", "arguments"}
+		got := ExtractToolCallWrappers(hidden, []canonical.ToolSpec{dispatcher})
+		if len(got) != 1 || got[0].Name != "tool_call" {
+			t.Fatalf("dispatcher with []string required was rejected: %+v", got)
+		}
+	})
 }
 
 // ExampleCoerceToolCall is a runnable godoc example (TRST-07). The

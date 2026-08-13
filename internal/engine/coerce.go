@@ -68,7 +68,13 @@ import (
 //     or more calls, clear Content[textIdx].Text, set
 //     resp.Message.ToolCalls to the extracted calls, and return true
 //     immediately — steps 3-9 below do NOT run. If it returns zero
-//     calls, fall through to Step 3.
+//     calls, fall through to Step 3. Directly declared wrappers retain
+//     raw/fenced/prose extraction. An unknown inner name is nested under
+//     a declared `tool_call` dispatcher only when the wrapper is the exact
+//     whole response (raw JSON or a whole-response fence) and the dispatcher
+//     declares the exact compatibility schema. Hidden-tool validation and
+//     authorization remain Hermes's responsibility after the Gateway returns
+//     the outer structured call.
 //  3. Try json.Unmarshal on the raw text.
 //  4. If fail, run stripFences to strip ```json or bare ``` fences (the
 //     fence MUST wrap the ENTIRE text — Pitfall 3 "entire text"
@@ -243,6 +249,69 @@ func extractProperties(spec *canonical.ToolSpec) map[string]any {
 	return props
 }
 
+const toolCallDispatcherName = "tool_call"
+
+func findToolCallDispatcher(tools []canonical.ToolSpec) *canonical.ToolSpec {
+	for i := range tools {
+		if tools[i].Name == toolCallDispatcherName && isToolCallDispatcherSchema(tools[i].Parameters) {
+			return &tools[i]
+		}
+	}
+	return nil
+}
+
+func isToolCallDispatcherSchema(parameters map[string]any) bool {
+	if parameters == nil {
+		return false
+	}
+	schemaType, ok := parameters["type"].(string)
+	if !ok || schemaType != "object" {
+		return false
+	}
+	properties, ok := parameters["properties"].(map[string]any)
+	if !ok {
+		return false
+	}
+	nameSchema, nameOK := properties["name"].(map[string]any)
+	argumentsSchema, argumentsOK := properties["arguments"].(map[string]any)
+	if !nameOK || !argumentsOK {
+		return false
+	}
+	nameType, nameTypeOK := nameSchema["type"].(string)
+	argumentsType, argumentsTypeOK := argumentsSchema["type"].(string)
+	if !nameTypeOK || !argumentsTypeOK || nameType != "string" || argumentsType != "object" {
+		return false
+	}
+	return schemaRequires(parameters["required"], "name") && schemaRequires(parameters["required"], "arguments")
+}
+
+func schemaRequires(raw any, field string) bool {
+	switch required := raw.(type) {
+	case []any:
+		for _, value := range required {
+			if stringValue, ok := value.(string); ok && stringValue == field {
+				return true
+			}
+		}
+	case []string:
+		for _, value := range required {
+			if value == field {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isExactToolCallEnvelope(outer, inner map[string]any) bool {
+	if len(outer) != 1 || len(inner) != 2 {
+		return false
+	}
+	_, hasName := inner["name"]
+	_, hasArguments := inner["arguments"]
+	return hasName && hasArguments
+}
+
 // StripFences removes a single ```json ... ``` (or bare ``` ... ```) wrap
 // when it brackets the ENTIRE trimmed input. Returns (stripped, true) on
 // strip, (input, false) otherwise. Conservative: inline fences inside
@@ -280,10 +349,15 @@ func StripFences(text string) (string, bool) {
 	return t, false
 }
 
-// ExtractToolCallWrappers finds every explicit {"tool_call":{"name","arguments"}}
-// object in text and returns canonical.ToolCalls, with invented-name remap
-// against tools. Unambiguous (wrapper shape only) — safe on every surface incl.
-// Anthropic. Returns nil when none found. Ports acp-server-ollama.js:1139-1200.
+// ExtractToolCallWrappers finds explicit {"tool_call":{"name","arguments"}}
+// objects in text and returns canonical.ToolCalls. Directly declared wrappers
+// preserve the existing raw, fenced, and prose extraction behavior, including
+// invented-name overlap remapping. Unknown whole-response wrappers may instead
+// be nested under the exact declared `tool_call` dispatcher schema. Unknown
+// wrappers embedded in prose do not use dispatcher recovery. The Gateway does
+// not validate or authorize hidden tools; Hermes does so after receiving the
+// outer structured call. Returns nil when no wrapper can be surfaced. Ports
+// acp-server-ollama.js:1139-1200.
 func ExtractToolCallWrappers(text string, tools []canonical.ToolSpec) []canonical.ToolCall {
 	// seq is a per-invocation counter appended to each minted ID so that
 	// two (or more) wrappers extracted within the SAME call get distinct
@@ -302,10 +376,30 @@ func ExtractToolCallWrappers(text string, tools []canonical.ToolSpec) []canonica
 		return false
 	}
 
+	parseWrapperArguments := func(tc map[string]any) (map[string]any, bool) {
+		raw, present := tc["arguments"]
+		if !present {
+			return map[string]any{}, false
+		}
+		switch value := raw.(type) {
+		case map[string]any:
+			return value, true
+		case string:
+			var parsed map[string]any
+			if value == "" || json.Unmarshal([]byte(value), &parsed) != nil || parsed == nil {
+				return map[string]any{}, false
+			}
+			return parsed, true
+		default:
+			return map[string]any{}, false
+		}
+	}
+
 	// pushWrapper tries to extract and validate a {"tool_call":{...}} wrapper
-	// from a map. If successful, remaps invented names via pickBestTool and
-	// returns (canonical.ToolCall, true). On any failure, returns (_, false).
-	pushWrapper := func(m map[string]any) (canonical.ToolCall, bool) {
+	// from a map. If successful, it preserves directly declared names, optionally
+	// dispatches an exact whole-response envelope, then falls back to the existing
+	// invented-name overlap remap. On any failure, returns (_, false).
+	pushWrapper := func(m map[string]any, allowDispatcher bool) (canonical.ToolCall, bool) {
 		// Extract the "tool_call" key as a map.
 		tc, ok := m["tool_call"].(map[string]any)
 		if !ok {
@@ -318,31 +412,23 @@ func ExtractToolCallWrappers(text string, tools []canonical.ToolSpec) []canonica
 			return canonical.ToolCall{}, false
 		}
 
-		// Extract arguments, handling three cases:
-		// 1. arguments is a map[string]any → use directly.
-		// 2. arguments is a string → json.Unmarshal it.
-		// 3. arguments is missing/nil → use empty map.
-		var args map[string]any
-		switch a := tc["arguments"].(type) {
-		case map[string]any:
-			args = a
-		case string:
-			if a != "" {
-				if err := json.Unmarshal([]byte(a), &args); err != nil {
-					args = map[string]any{}
-				}
-			} else {
-				args = map[string]any{}
-			}
-		default:
-			args = map[string]any{}
-		}
-		if args == nil {
-			args = map[string]any{}
-		}
+		// Existing direct/remapped wrappers normalize invalid or missing
+		// arguments to an empty map. Dispatcher recovery additionally requires
+		// that arguments were present and decoded as an object.
+		args, argsValid := parseWrapperArguments(tc)
 
-		// Invented-name remap: if the name is not in tools, try pickBestTool.
-		if !toolDeclared(name, tools) {
+		declared := toolDeclared(name, tools)
+		if !declared && allowDispatcher && argsValid && isExactToolCallEnvelope(m, tc) {
+			if dispatcher := findToolCallDispatcher(tools); dispatcher != nil {
+				args = map[string]any{
+					"name":      name,
+					"arguments": args,
+				}
+				name = dispatcher.Name
+				declared = true
+			}
+		}
+		if !declared {
 			best, score := pickBestTool(args, tools)
 			if best == nil || score == 0 {
 				return canonical.ToolCall{}, false
@@ -391,7 +477,7 @@ func ExtractToolCallWrappers(text string, tools []canonical.ToolSpec) []canonica
 	if len(candidates) > 0 {
 		var out []canonical.ToolCall
 		for _, m := range candidates {
-			if tc, ok := pushWrapper(m); ok {
+			if tc, ok := pushWrapper(m, true); ok {
 				out = append(out, tc)
 			}
 		}
@@ -403,7 +489,7 @@ func ExtractToolCallWrappers(text string, tools []canonical.ToolSpec) []canonica
 	// Strategy 2: use extractToolCallObjects if Strategy 1 yielded zero.
 	var out []canonical.ToolCall
 	for _, m := range extractToolCallObjects(text) {
-		if tc, ok := pushWrapper(m); ok {
+		if tc, ok := pushWrapper(m, false); ok {
 			out = append(out, tc)
 		}
 	}
