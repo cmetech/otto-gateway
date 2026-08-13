@@ -662,3 +662,22 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta"
 event: content_block_s…
 ```
 
+## Resolution (2026-08-13)
+
+The selected-model/tool-protocol follow-up is specified in the
+[approved design](../superpowers/specs/2026-08-13-explicit-model-tool-protocol-recovery-design.md),
+sequenced in the [implementation plan](../superpowers/plans/2026-08-13-explicit-model-tool-protocol-recovery.md),
+and evaluated in the standalone
+[legacy/new Gateway comparison](../architecture/otto-gateway-architecture-and-reliability.md).
+It was implemented by commits
+[`1f577ec`](https://github.com/cmetech/otto-gateway/commit/1f577ece9a33283eb007d2050ecdc01b87ce3f1f),
+[`8ee9d5a`](https://github.com/cmetech/otto-gateway/commit/8ee9d5a09b187ae5653291131ba35fda3e5051ac),
+[`b591e7e`](https://github.com/cmetech/otto-gateway/commit/b591e7ee14c9e78683208e05e39346ebc2f54d8c),
+[`6660317`](https://github.com/cmetech/otto-gateway/commit/66603171b948de7c657ae073eb006d8e6912e7f1),
+[`8e34868`](https://github.com/cmetech/otto-gateway/commit/8e348683abbccb9c875bbcdddd5e574f7b164d1e),
+[`cf47423`](https://github.com/cmetech/otto-gateway/commit/cf474235f7e1a69ca892cd47ce410001ed31e7c6),
+[`a5d9c7e`](https://github.com/cmetech/otto-gateway/commit/a5d9c7e9aae11dd0fb713ce420f01c809e3d60ec),
+[`9ca3c86`](https://github.com/cmetech/otto-gateway/commit/9ca3c86774d51f4bac8fb2753cbf7a2055a82b5a),
+[`cee412a`](https://github.com/cmetech/otto-gateway/commit/cee412a761d5db681214ce6d3e292d5c097fad12),
+and [`ab63248`](https://github.com/cmetech/otto-gateway/commit/ab63248ab1d7a9304fc8cf8862eb978ace7f7535).
+The historical observations above are preserved unchanged.
