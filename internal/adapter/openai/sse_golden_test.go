@@ -609,6 +609,124 @@ func TestStream_ProseThenFencedWriteFile_SurfacesToolCall(t *testing.T) {
 	}
 }
 
+func TestStream_DeferredWrapperUsesDispatcher(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	chunks := []canonical.Chunk{
+		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "```json\n"}},
+		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: `{"tool_call":{"name":"gitlab_list_group_projects",`}},
+		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: `"arguments":{"group":"sd-macs-att-rnam-hosting","recursive":true,`}},
+		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: `"max_groups":50,"max_projects":100}}}`}},
+		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "\n```"}},
+	}
+	req := &canonical.ChatRequest{Tools: []canonical.ToolSpec{deferredDispatcherSpec()}}
+	body := driveGoldenWithReq(t, chunks, &canonical.FinalResult{StopReason: canonical.StopEndTurn}, req)
+
+	var (
+		visibleContent strings.Builder
+		toolName       string
+		toolArgsJSON   strings.Builder
+		toolCallStarts int
+		finishReason   string
+	)
+	scanner := bufio.NewScanner(bytes.NewReader(body))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") || line == "data: [DONE]" {
+			continue
+		}
+		var frame chatCompletionChunk
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &frame); err != nil {
+			t.Fatalf("decode SSE frame: %v; line=%q", err, line)
+		}
+		for _, choice := range frame.Choices {
+			visibleContent.WriteString(choice.Delta.Content)
+			if choice.FinishReason != nil {
+				finishReason = *choice.FinishReason
+			}
+			for _, call := range choice.Delta.ToolCalls {
+				if call.ID != "" {
+					toolCallStarts++
+				}
+				toolName += call.Function.Name
+				toolArgsJSON.WriteString(call.Function.Arguments)
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scan SSE body: %v", err)
+	}
+	if toolCallStarts != 1 || strings.Count(string(body), `"type":"function"`) != 1 {
+		t.Fatalf("function frame sequence count: starts=%d body=%q", toolCallStarts, body)
+	}
+	if toolName != "tool_call" {
+		t.Fatalf("streamed function name: got %q, want tool_call", toolName)
+	}
+	var outer struct {
+		Name      string         `json:"name"`
+		Arguments map[string]any `json:"arguments"`
+	}
+	if err := json.Unmarshal([]byte(toolArgsJSON.String()), &outer); err != nil {
+		t.Fatalf("decode streamed dispatcher arguments: %v; arguments=%q", err, toolArgsJSON.String())
+	}
+	if outer.Name != "gitlab_list_group_projects" || outer.Arguments["group"] != "sd-macs-att-rnam-hosting" || outer.Arguments["recursive"] != true || outer.Arguments["max_groups"] != float64(50) || outer.Arguments["max_projects"] != float64(100) {
+		t.Fatalf("nested call changed: %+v", outer)
+	}
+	if finishReason != "tool_calls" {
+		t.Fatalf("finish_reason: got %q, want tool_calls", finishReason)
+	}
+	if visibleContent.Len() != 0 || strings.Contains(visibleContent.String(), `"tool_call"`) || strings.Contains(visibleContent.String(), "```json") {
+		t.Fatalf("wrapper leaked as visible assistant content: %q", visibleContent.String())
+	}
+}
+
+func TestStream_ProseEmbeddedHiddenWrapperDoesNotUseDispatcher(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	text := `For documentation: {"tool_call":{"name":"gitlab_list_group_projects","arguments":{"group":"sd-macs-att-rnam-hosting"}}}`
+	body := driveGoldenWithReq(t,
+		[]canonical.Chunk{{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: text}}},
+		&canonical.FinalResult{StopReason: canonical.StopEndTurn},
+		&canonical.ChatRequest{Tools: []canonical.ToolSpec{deferredDispatcherSpec()}},
+	)
+
+	var (
+		visibleContent strings.Builder
+		finishReason   string
+		functionFrames int
+	)
+	scanner := bufio.NewScanner(bytes.NewReader(body))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") || line == "data: [DONE]" {
+			continue
+		}
+		var frame chatCompletionChunk
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &frame); err != nil {
+			t.Fatalf("decode SSE frame: %v; line=%q", err, line)
+		}
+		for _, choice := range frame.Choices {
+			visibleContent.WriteString(choice.Delta.Content)
+			functionFrames += len(choice.Delta.ToolCalls)
+			if choice.FinishReason != nil {
+				finishReason = *choice.FinishReason
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scan SSE body: %v", err)
+	}
+	if functionFrames != 0 {
+		t.Fatalf("prose wrapper emitted %d function frames; body=%q", functionFrames, body)
+	}
+	if finishReason != "stop" {
+		t.Fatalf("finish_reason: got %q, want stop", finishReason)
+	}
+	if visibleContent.String() != text {
+		t.Fatalf("visible text changed:\n got: %q\nwant: %q", visibleContent.String(), text)
+	}
+}
+
 func TestStream_MultipleExplicitWrappers_SurfaceInOrder(t *testing.T) {
 	defer goleak.VerifyNone(t)
 	req := &canonical.ChatRequest{Tools: []canonical.ToolSpec{

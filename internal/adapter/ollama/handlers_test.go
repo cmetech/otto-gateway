@@ -125,6 +125,17 @@ func newTestAdapter(eng Engine, cat ModelCatalog) *Adapter {
 	})
 }
 
+func deferredDispatcherSpec() canonical.ToolSpec {
+	return canonical.ToolSpec{Name: "tool_call", Parameters: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"name":      map[string]any{"type": "string"},
+			"arguments": map[string]any{"type": "object"},
+		},
+		"required": []any{"name", "arguments"},
+	}}
+}
+
 // helper: POST JSON body to the protected router.
 func doPost(t *testing.T, a *Adapter, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
@@ -939,6 +950,50 @@ func TestHandleChat_NonStreaming_ToolCallWrapperCoerce(t *testing.T) {
 	// Step 8: text content is cleared after coerce.
 	if resp.Message.Content != "" {
 		t.Errorf("Message.Content: got %q, want empty (coerce clears the matched text)", resp.Message.Content)
+	}
+}
+
+func TestHandleChat_NonStreaming_DeferredWrapperUsesDispatcher(t *testing.T) {
+	wrapperText := `{"tool_call":{"name":"gitlab_list_group_projects","arguments":{"group":"sd-macs-att-rnam-hosting","recursive":true,"max_groups":50,"max_projects":100}}}`
+	eng := &fakeEngine{
+		resp: &canonical.ChatResponse{
+			Model: "auto",
+			Message: canonical.Message{
+				Role: canonical.RoleAssistant,
+				Content: []canonical.ContentPart{
+					{Kind: canonical.ContentKindText, Text: wrapperText},
+				},
+			},
+			StopReason: canonical.StopEndTurn,
+		},
+	}
+	a := newTestAdapter(eng, nil)
+	body := `{"model":"auto","messages":[{"role":"user","content":"list group projects"}],"stream":false,"tools":[{"type":"function","function":{"name":"tool_call","parameters":{"type":"object","properties":{"name":{"type":"string"},"arguments":{"type":"object"}},"required":["name","arguments"]}}}]}`
+	w := doPost(t, a, "/chat", body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+
+	var resp ollamaChatResponse
+	if err := json.NewDecoder(strings.NewReader(w.Body.String())).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Message.ToolCalls) != 1 {
+		t.Fatalf("Message.ToolCalls len: got %d, want 1; body=%s", len(resp.Message.ToolCalls), w.Body.String())
+	}
+	call := resp.Message.ToolCalls[0]
+	if call.Function.Name != "tool_call" {
+		t.Fatalf("outer name: got %q", call.Function.Name)
+	}
+	if call.Function.Arguments["name"] != "gitlab_list_group_projects" {
+		t.Fatalf("inner name: got %v", call.Function.Arguments["name"])
+	}
+	inner, ok := call.Function.Arguments["arguments"].(map[string]any)
+	if !ok || inner["group"] != "sd-macs-att-rnam-hosting" {
+		t.Fatalf("inner arguments: %#v", call.Function.Arguments["arguments"])
+	}
+	if resp.Message.Content != "" {
+		t.Fatalf("coerced wrapper remained visible: %q", resp.Message.Content)
 	}
 }
 

@@ -148,6 +148,84 @@ func TestSSE_CoercesToolCallWrapper_EmitsToolUseFrames(t *testing.T) {
 	}
 }
 
+func TestSSE_DeferredWrapperUsesDispatcher(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	cf := newCountingFlusher()
+	e := newEmitter(cf)
+	e.tools = []canonical.ToolSpec{deferredDispatcherSpec()}
+
+	body := driveTextChunks(
+		t, e, cf, canonical.StopEndTurn,
+		"```json\n",
+		`{"tool_call":{"name":"gitlab_list_group_projects",`,
+		`"arguments":{"group":"sd-macs-att-rnam-hosting","recursive":true,`,
+		`"max_groups":50,"max_projects":100}}}`,
+		"\n```",
+	)
+
+	if got := strings.Count(body, `"type":"tool_use"`); got != 1 {
+		t.Fatalf("tool_use block count: got %d, want 1; body:\n%s", got, body)
+	}
+	if !strings.Contains(body, `"name":"tool_call"`) {
+		t.Fatalf("outer tool_use name missing; body:\n%s", body)
+	}
+	payloads := inputJSONDeltaPayloads(t, body)
+	if len(payloads) == 0 {
+		t.Fatalf("missing input_json_delta payload; body:\n%s", body)
+	}
+	var outer struct {
+		Name      string         `json:"name"`
+		Arguments map[string]any `json:"arguments"`
+	}
+	if err := json.Unmarshal([]byte(strings.Join(payloads, "")), &outer); err != nil {
+		t.Fatalf("decode outer dispatcher arguments: %v; payloads=%q", err, payloads)
+	}
+	if outer.Name != "gitlab_list_group_projects" || outer.Arguments["group"] != "sd-macs-att-rnam-hosting" || outer.Arguments["recursive"] != true || outer.Arguments["max_groups"] != float64(50) || outer.Arguments["max_projects"] != float64(100) {
+		t.Fatalf("nested call changed: %+v", outer)
+	}
+	wantSeq := []string{"content_block_start", "content_block_delta", "content_block_stop", "message_delta", "message_stop"}
+	if events := sseEventLines(body); !equalSlice(events, wantSeq) {
+		t.Fatalf("event sequence: got %v, want %v", events, wantSeq)
+	}
+	if sr := messageDeltaStopReason(t, body); sr != "tool_use" {
+		t.Fatalf("stop_reason: got %q, want tool_use", sr)
+	}
+	if strings.Contains(body, "```json") || strings.Contains(body, `\"tool_call\"`) {
+		t.Fatalf("raw wrapper leaked as text; body:\n%s", body)
+	}
+}
+
+func TestSSE_ProseEmbeddedHiddenWrapperDoesNotUseDispatcher(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	cf := newCountingFlusher()
+	e := newEmitter(cf)
+	e.tools = []canonical.ToolSpec{deferredDispatcherSpec()}
+	text := `For documentation: {"tool_call":{"name":"gitlab_list_group_projects","arguments":{"group":"sd-macs-att-rnam-hosting"}}}`
+
+	body := driveTextChunks(t, e, cf, canonical.StopEndTurn, text)
+	if strings.Contains(body, `"type":"tool_use"`) {
+		t.Fatalf("prose wrapper became executable; body:\n%s", body)
+	}
+	var visible strings.Builder
+	for _, data := range sseDataLines(body) {
+		var frame struct {
+			Delta struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"delta"`
+		}
+		if err := json.Unmarshal([]byte(data), &frame); err == nil && frame.Delta.Type == "text_delta" {
+			visible.WriteString(frame.Delta.Text)
+		}
+	}
+	if visible.String() != text {
+		t.Fatalf("visible text changed:\n got: %q\nwant: %q", visible.String(), text)
+	}
+	if sr := messageDeltaStopReason(t, body); sr != "end_turn" {
+		t.Fatalf("stop_reason: got %q, want end_turn", sr)
+	}
+}
+
 func TestSSE_ProseThenToolCallWrapper_EmitsToolUseFrames(t *testing.T) {
 	defer goleak.VerifyNone(t)
 	cf := newCountingFlusher()

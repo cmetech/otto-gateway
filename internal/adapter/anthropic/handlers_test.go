@@ -225,6 +225,17 @@ func newTestAdapter(eng Engine) *Adapter {
 	return New(Config{Engine: eng})
 }
 
+func deferredDispatcherSpec() canonical.ToolSpec {
+	return canonical.ToolSpec{Name: "tool_call", Parameters: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"name":      map[string]any{"type": "string"},
+			"arguments": map[string]any{"type": "object"},
+		},
+		"required": []any{"name", "arguments"},
+	}}
+}
+
 // doPost posts a JSON body to the protected router at the given path
 // (always "/messages" today — left parameterized for callers that may
 // hit other adapter routes in future plans).
@@ -1124,6 +1135,107 @@ func TestAnthropic_CoercesToolCallWrapper(t *testing.T) {
 			got = *resp.StopReason
 		}
 		t.Errorf("stop_reason: got %q, want \"tool_use\"", got)
+	}
+}
+
+func TestAnthropic_DeferredWrapperUsesDispatcher(t *testing.T) {
+	wrapperText := `{"tool_call":{"name":"gitlab_list_group_projects","arguments":{"group":"sd-macs-att-rnam-hosting","recursive":true,"max_groups":50,"max_projects":100}}}`
+	eng := &fakeEngine{
+		collectResp: &canonical.ChatResponse{
+			Model: "auto",
+			Message: canonical.Message{
+				Role: canonical.RoleAssistant,
+				Content: []canonical.ContentPart{
+					{Kind: canonical.ContentKindText, Text: wrapperText},
+				},
+			},
+			StopReason: canonical.StopEndTurn,
+		},
+	}
+	body := `{
+		"model": "auto",
+		"max_tokens": 256,
+		"messages": [{"role":"user","content":"list group projects"}],
+		"tools": [{
+			"name": "tool_call",
+			"input_schema": {
+				"type": "object",
+				"properties": {
+					"name": {"type": "string"},
+					"arguments": {"type": "object"}
+				},
+				"required": ["name", "arguments"]
+			}
+		}]
+	}`
+	w := doPost(t, newTestAdapter(eng), "/messages", body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	var resp anthropicMessage
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v; body=%s", err, w.Body.String())
+	}
+	if len(resp.Content) != 1 || resp.Content[0].Type != "tool_use" {
+		t.Fatalf("expected exactly one tool_use block: %+v", resp.Content)
+	}
+	toolUse := resp.Content[0]
+	if toolUse.Name != "tool_call" {
+		t.Fatalf("outer tool_use name: got %q", toolUse.Name)
+	}
+	if toolUse.Input == nil || (*toolUse.Input)["name"] != "gitlab_list_group_projects" {
+		t.Fatalf("inner name: got input=%v", toolUse.Input)
+	}
+	inner, ok := (*toolUse.Input)["arguments"].(map[string]any)
+	if !ok || inner["group"] != "sd-macs-att-rnam-hosting" {
+		t.Fatalf("inner arguments: %#v", (*toolUse.Input)["arguments"])
+	}
+	if resp.StopReason == nil || *resp.StopReason != "tool_use" {
+		t.Fatalf("stop_reason: got %v, want tool_use", resp.StopReason)
+	}
+}
+
+func TestAnthropic_ProseEmbeddedHiddenWrapperDoesNotUseDispatcher(t *testing.T) {
+	text := `For documentation: {"tool_call":{"name":"gitlab_list_group_projects","arguments":{"group":"sd-macs-att-rnam-hosting"}}}`
+	eng := &fakeEngine{
+		collectResp: &canonical.ChatResponse{
+			Model: "auto",
+			Message: canonical.Message{
+				Role:    canonical.RoleAssistant,
+				Content: []canonical.ContentPart{{Kind: canonical.ContentKindText, Text: text}},
+			},
+			StopReason: canonical.StopEndTurn,
+		},
+	}
+	body := `{
+		"model": "auto",
+		"max_tokens": 256,
+		"messages": [{"role":"user","content":"show an example"}],
+		"tools": [{
+			"name": "tool_call",
+			"input_schema": {
+				"type": "object",
+				"properties": {
+					"name": {"type": "string"},
+					"arguments": {"type": "object"}
+				},
+				"required": ["name", "arguments"]
+			}
+		}]
+	}`
+	w := doPost(t, newTestAdapter(eng), "/messages", body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	var resp anthropicMessage
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v; body=%s", err, w.Body.String())
+	}
+	if len(resp.Content) != 1 || resp.Content[0].Type != "text" || resp.Content[0].Text != text {
+		t.Fatalf("prose wrapper text changed or became executable: %+v", resp.Content)
+	}
+	if resp.StopReason == nil || *resp.StopReason != "end_turn" {
+		t.Fatalf("stop_reason: got %v, want end_turn", resp.StopReason)
 	}
 }
 

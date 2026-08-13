@@ -693,6 +693,94 @@ func TestStream_ProseThenFencedWrapper_SurfacesToolCall(t *testing.T) {
 	}
 }
 
+func TestStream_DeferredWrapperUsesDispatcher(t *testing.T) {
+	chunks := []canonical.Chunk{
+		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "```json\n"}},
+		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: `{"tool_call":{"name":"gitlab_list_group_projects",`}},
+		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: `"arguments":{"group":"sd-macs-att-rnam-hosting","recursive":true,`}},
+		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: `"max_groups":50,"max_projects":100}}}`}},
+		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "\n```"}},
+	}
+	w := httptest.NewRecorder()
+	run := newFakeRunHandle(chunks, &canonical.FinalResult{StopReason: canonical.StopEndTurn}, nil)
+	req := &canonical.ChatRequest{Tools: []canonical.ToolSpec{deferredDispatcherSpec()}}
+	if _, err := runNDJSONEmitter(context.Background(), noopCancelFn, w, run, "auto", true, time.Now(), nilLogger(), req, nil, 0); err != nil {
+		t.Fatalf("runNDJSONEmitter: %v", err)
+	}
+	lines := scanNDJSON(t, w.Body.Bytes())
+	if len(lines) != 1 {
+		t.Fatalf("NDJSON lines: got %d, want one terminal tool-call line; body=%s", len(lines), w.Body.String())
+	}
+	var done struct {
+		Done       bool   `json:"done"`
+		DoneReason string `json:"done_reason"`
+		Message    struct {
+			Content   string `json:"content"`
+			ToolCalls []struct {
+				Function struct {
+					Name      string         `json:"name"`
+					Arguments map[string]any `json:"arguments"`
+				} `json:"function"`
+			} `json:"tool_calls"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal(lines[0], &done); err != nil {
+		t.Fatalf("decode terminal line: %v", err)
+	}
+	if !done.Done || done.DoneReason != "stop" || len(done.Message.ToolCalls) != 1 {
+		t.Fatalf("terminal dispatcher shape: %+v", done)
+	}
+	call := done.Message.ToolCalls[0]
+	if call.Function.Name != "tool_call" || call.Function.Arguments["name"] != "gitlab_list_group_projects" {
+		t.Fatalf("dispatcher call changed: %+v", call)
+	}
+	inner, ok := call.Function.Arguments["arguments"].(map[string]any)
+	if !ok || inner["group"] != "sd-macs-att-rnam-hosting" || inner["recursive"] != true || inner["max_groups"] != float64(50) || inner["max_projects"] != float64(100) {
+		t.Fatalf("inner arguments changed: %#v", call.Function.Arguments["arguments"])
+	}
+	if done.Message.Content != "" || strings.Contains(w.Body.String(), `\"tool_call\"`) || strings.Contains(w.Body.String(), "```json") {
+		t.Fatalf("raw wrapper leaked as assistant content: %s", w.Body.String())
+	}
+}
+
+func TestStream_ProseEmbeddedHiddenWrapperDoesNotUseDispatcher(t *testing.T) {
+	text := `For documentation: {"tool_call":{"name":"gitlab_list_group_projects","arguments":{"group":"sd-macs-att-rnam-hosting"}}}`
+	w := httptest.NewRecorder()
+	run := newFakeRunHandle(
+		[]canonical.Chunk{{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: text}}},
+		&canonical.FinalResult{StopReason: canonical.StopEndTurn}, nil,
+	)
+	req := &canonical.ChatRequest{Tools: []canonical.ToolSpec{deferredDispatcherSpec()}}
+	if _, err := runNDJSONEmitter(context.Background(), noopCancelFn, w, run, "auto", true, time.Now(), nilLogger(), req, nil, 0); err != nil {
+		t.Fatalf("runNDJSONEmitter: %v", err)
+	}
+
+	var visible strings.Builder
+	for _, line := range scanNDJSON(t, w.Body.Bytes()) {
+		var frame struct {
+			Done       bool   `json:"done"`
+			DoneReason string `json:"done_reason"`
+			Message    struct {
+				Content   string `json:"content"`
+				ToolCalls []any  `json:"tool_calls"`
+			} `json:"message"`
+		}
+		if err := json.Unmarshal(line, &frame); err != nil {
+			t.Fatalf("decode NDJSON line: %v", err)
+		}
+		if len(frame.Message.ToolCalls) != 0 {
+			t.Fatalf("prose wrapper became executable: %+v", frame.Message.ToolCalls)
+		}
+		visible.WriteString(frame.Message.Content)
+		if frame.Done && frame.DoneReason != "stop" {
+			t.Fatalf("terminal done_reason: got %q, want stop", frame.DoneReason)
+		}
+	}
+	if visible.String() != text {
+		t.Fatalf("visible text changed:\n got: %q\nwant: %q", visible.String(), text)
+	}
+}
+
 func TestStream_NativeToolCallPlusDuplicateWrapper_DoesNotDoubleFire(t *testing.T) {
 	chunks := []canonical.Chunk{
 		{Kind: canonical.ChunkKindToolCall, ToolCall: &canonical.ToolCallChunk{ID: "native_1", Name: "get_weather", Args: map[string]any{"location": "NYC"}}},

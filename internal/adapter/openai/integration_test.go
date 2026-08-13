@@ -230,6 +230,17 @@ func newFakeAdapter(eng *fakeEngine) *Adapter {
 	return New(Config{Logger: logger, Engine: eng})
 }
 
+func deferredDispatcherSpec() canonical.ToolSpec {
+	return canonical.ToolSpec{Name: "tool_call", Parameters: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"name":      map[string]any{"type": "string"},
+			"arguments": map[string]any{"type": "object"},
+		},
+		"required": []any{"name", "arguments"},
+	}}
+}
+
 // mountedAdapter returns an httptest.Server with the adapter mounted under /v1.
 func mountedAdapter(a *Adapter) *httptest.Server {
 	r := chi.NewRouter()
@@ -392,6 +403,71 @@ func TestIntegration_FakeEngine_NonStream_ToolCallWrapperCoerce(t *testing.T) {
 	}
 	if completion.Choices[0].FinishReason != "tool_calls" {
 		t.Errorf("finish_reason: got %q, want tool_calls", completion.Choices[0].FinishReason)
+	}
+}
+
+func TestIntegration_FakeEngine_NonStream_DeferredWrapperUsesDispatcher(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	wrapperText := `{"tool_call":{"name":"gitlab_list_group_projects","arguments":{"group":"sd-macs-att-rnam-hosting","recursive":true,"max_groups":50,"max_projects":100}}}`
+	eng := &fakeEngine{
+		collectResp: &canonical.ChatResponse{
+			StopReason: canonical.StopEndTurn,
+			Message: canonical.Message{
+				Role: canonical.RoleAssistant,
+				Content: []canonical.ContentPart{
+					{Kind: canonical.ContentKindText, Text: wrapperText},
+				},
+			},
+		},
+	}
+	srv := mountedAdapter(newFakeAdapter(eng))
+	defer srv.Close()
+
+	body := []byte(`{"model":"auto","messages":[{"role":"user","content":"list group projects"}],"stream":false,"tools":[{"type":"function","function":{"name":"tool_call","parameters":{"type":"object","properties":{"name":{"type":"string"},"arguments":{"type":"object"}},"required":["name","arguments"]}}}]}`)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, srv.URL+"/v1/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: got %d, want 200; body=%s", resp.StatusCode, raw)
+	}
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+
+	var completion chatCompletion
+	if err := json.Unmarshal(raw, &completion); err != nil {
+		t.Fatalf("decode chat.completion: %v", err)
+	}
+	if len(completion.Choices) != 1 || len(completion.Choices[0].Message.ToolCalls) != 1 {
+		t.Fatalf("expected one choice with one tool call; completion=%+v", completion)
+	}
+	tc := completion.Choices[0].Message.ToolCalls[0]
+	if tc.Function.Name != "tool_call" {
+		t.Fatalf("outer function name: got %q, want tool_call", tc.Function.Name)
+	}
+	var outer struct {
+		Name      string         `json:"name"`
+		Arguments map[string]any `json:"arguments"`
+	}
+	if err := json.Unmarshal([]byte(tc.Function.Arguments), &outer); err != nil {
+		t.Fatalf("decode outer dispatcher arguments: %v", err)
+	}
+	if outer.Name != "gitlab_list_group_projects" || outer.Arguments["group"] != "sd-macs-att-rnam-hosting" {
+		t.Fatalf("nested call changed: %+v", outer)
+	}
+	if completion.Choices[0].FinishReason != "tool_calls" || completion.Choices[0].Message.Content != "" {
+		t.Fatalf("wire completion did not become a pure tool call: %+v", completion.Choices[0])
 	}
 }
 
