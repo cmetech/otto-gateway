@@ -182,13 +182,15 @@ func hasWholeResponseToolCallMarker(text string) bool {
 
 func isHighConfidenceToolCapabilityRefusal(text string) bool {
 	n := strings.ToLower(strings.TrimSpace(text))
+	structuredUnavailable := strings.HasPrefix(n, "toolunavailable:") &&
+		strings.Contains(n, "not available in this environment")
 	mentionsSuppliedTools := strings.Contains(n, "supplied connector tools") ||
 		strings.Contains(n, "requested connector tools") ||
 		strings.Contains(n, "tools you supplied")
 	claimsUnavailable := strings.Contains(n, "not actually available") ||
 		strings.Contains(n, "not available to me") ||
 		strings.Contains(n, "can't execute") || strings.Contains(n, "cannot execute")
-	return mentionsSuppliedTools && claimsUnavailable
+	return structuredUnavailable || mentionsSuppliedTools && claimsUnavailable
 }
 
 // correctiveBlocks produces a static, auditable corrective prompt. The only

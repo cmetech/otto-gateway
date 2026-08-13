@@ -330,6 +330,12 @@ func TestToolProtocolRecovery_CorrectsHighConfidenceFailuresOnce(t *testing.T) {
 			failedBytes: "not available to me",
 		},
 		{
+			name:        "structured_tool_unavailable_refusal",
+			first:       recoveryTextStream("ToolUnavailable: `synthetic_list_projects` is not available in this environment.", nil),
+			wantReason:  ReasonCapabilityRefusal,
+			failedBytes: "ToolUnavailable",
+		},
+		{
 			name:        "malformed_wrapper",
 			first:       recoveryTextStream(`{"tool_call":{"name":"not_offered","arguments":{}}}`, nil),
 			wantReason:  ReasonMalformedWrapper,
