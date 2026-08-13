@@ -153,7 +153,65 @@ func TestTechnicalConformance_SITEProvenanceControlsRestoration(t *testing.T) {
 	})
 }
 
+func TestTechnicalConformance_ToolRecoveryReusesEncryptedPlaceholderAndRestoresOnce(t *testing.T) {
+	const sensitiveMarker = "corey@example.com"
+	restorations := 0
+	service := newTechnicalConformanceServiceWithObservers(t, privacy.Observers{
+		Restoration: func(_ privacy.Profile, entity, result string) {
+			if entity == "Email" && result == "pass" {
+				restorations++
+			}
+		},
+	})
+	state := privacy.NewRequestState(privacy.RequestMetadata{
+		RequestedProfile: "standard",
+		ScopeID:          "technical-conformance-recovery",
+	})
+	ctx := privacy.WithRequestState(context.Background(), state)
+	req := &canonical.ChatRequest{Messages: []canonical.Message{{
+		Role: canonical.RoleUser,
+		Content: []canonical.ContentPart{{
+			Kind: canonical.ContentKindText,
+			Text: "Send status to " + sensitiveMarker,
+		}},
+	}}}
+
+	if _, err := service.Before(ctx, req); err != nil {
+		t.Fatalf("standard encrypted input: %v", err)
+	}
+	firstAttemptPrompt := req.Messages[0].Content[0].Text
+	if strings.Contains(firstAttemptPrompt, sensitiveMarker) || !strings.Contains(firstAttemptPrompt, "[PII:Email:") {
+		t.Fatalf("first transformed prompt = %q, want encrypted email placeholder", firstAttemptPrompt)
+	}
+	// Recovery reuses the same transformed canonical request. Capturing it for
+	// both ACP attempts must therefore preserve the exact randomized token;
+	// calling Before a second time would generate a different ciphertext.
+	secondAttemptEcho := req.Messages[0].Content[0].Text
+	if secondAttemptEcho != firstAttemptPrompt {
+		t.Fatalf("recovery placeholder changed: first=%q second=%q", firstAttemptPrompt, secondAttemptEcho)
+	}
+
+	resp := &canonical.ChatResponse{Message: canonical.Message{ToolCalls: []canonical.ToolCall{{
+		ID:        "recovery-call",
+		Name:      "send_status",
+		Arguments: map[string]any{"email": strings.TrimPrefix(secondAttemptEcho, "Send status to ")},
+	}}}}
+	if err := service.After(ctx, req, resp); err != nil {
+		t.Fatalf("restore corrected response: %v", err)
+	}
+	if got := resp.Message.ToolCalls[0].Arguments["email"]; got != sensitiveMarker {
+		t.Fatalf("corrected response email = %q, want %q", got, sensitiveMarker)
+	}
+	if restorations != 1 {
+		t.Fatalf("successful Email restorations = %d, want 1", restorations)
+	}
+}
+
 func newTechnicalConformanceService(t *testing.T) *privacy.Service {
+	return newTechnicalConformanceServiceWithObservers(t, privacy.Observers{})
+}
+
+func newTechnicalConformanceServiceWithObservers(t *testing.T, observers privacy.Observers) *privacy.Service {
 	t.Helper()
 	service, err := privacy.NewService(privacy.Config{
 		DefaultProfile:     privacy.ProfileStandard,
@@ -171,6 +229,7 @@ func newTechnicalConformanceService(t *testing.T) *privacy.Service {
 		Recognizers:        SourceAuditNames(),
 		Classifier:         NewPIIClassifier(Recognizers, nil, false),
 		SecretClassifier:   privacy.NewSecretClassifier(),
+		Observers:          observers,
 	})
 	if err != nil {
 		t.Fatalf("privacy.NewService: %v", err)

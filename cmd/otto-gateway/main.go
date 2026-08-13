@@ -796,6 +796,13 @@ func newAppWithRegistryLoader(ctx context.Context, cfg config.Config, logger *sl
 				ToolAliases:       cfg.ToolAliases,
 				HookErrorReporter: hookErrors.Record,
 				OnModelRequest:    gwMetrics.RecordModelRequest, // kiro usage-metrics parity: gw_model_requests_total
+				OnToolProtocolEvent: func(event engine.ToolProtocolEvent) {
+					gwMetrics.RecordToolProtocolEvent(
+						event.Model,
+						string(event.Reason),
+						string(event.Outcome),
+					)
+				},
 			})
 		}
 
@@ -868,6 +875,13 @@ func newAppWithRegistryLoader(ctx context.Context, cfg config.Config, logger *sl
 				ToolAliases:       cfg.ToolAliases,
 				HookErrorReporter: hookErrors.Record,            // /health/hooks LastError surface
 				OnModelRequest:    gwMetrics.RecordModelRequest, // kiro usage-metrics parity: gw_model_requests_total
+				OnToolProtocolEvent: func(event engine.ToolProtocolEvent) {
+					gwMetrics.RecordToolProtocolEvent(
+						event.Model,
+						string(event.Reason),
+						string(event.Outcome),
+					)
+				},
 			})}
 		}
 		openaiEngineForSession = func(entry *session.Entry) openai.Engine {
@@ -881,6 +895,13 @@ func newAppWithRegistryLoader(ctx context.Context, cfg config.Config, logger *sl
 				ToolAliases:       cfg.ToolAliases,
 				HookErrorReporter: hookErrors.Record,            // /health/hooks LastError surface
 				OnModelRequest:    gwMetrics.RecordModelRequest, // kiro usage-metrics parity: gw_model_requests_total
+				OnToolProtocolEvent: func(event engine.ToolProtocolEvent) {
+					gwMetrics.RecordToolProtocolEvent(
+						event.Model,
+						string(event.Reason),
+						string(event.Outcome),
+					)
+				},
 			})}
 		}
 		anthropicEngineForSession = func(entry *session.Entry) anthropic.Engine {
@@ -894,6 +915,13 @@ func newAppWithRegistryLoader(ctx context.Context, cfg config.Config, logger *sl
 				ToolAliases:       cfg.ToolAliases,
 				HookErrorReporter: hookErrors.Record,            // /health/hooks LastError surface
 				OnModelRequest:    gwMetrics.RecordModelRequest, // kiro usage-metrics parity: gw_model_requests_total
+				OnToolProtocolEvent: func(event engine.ToolProtocolEvent) {
+					gwMetrics.RecordToolProtocolEvent(
+						event.Model,
+						string(event.Reason),
+						string(event.Outcome),
+					)
+				},
 			})}
 		}
 	}

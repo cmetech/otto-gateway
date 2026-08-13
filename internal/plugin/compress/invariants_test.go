@@ -12,7 +12,107 @@ import (
 	"pgregory.net/rapid"
 
 	"otto-gateway/internal/canonical"
+	"otto-gateway/internal/engine"
 )
+
+type invariantRecoveryStream struct {
+	chunks <-chan canonical.Chunk
+	final  *canonical.FinalResult
+}
+
+func newInvariantRecoveryStream(chunks ...canonical.Chunk) *invariantRecoveryStream {
+	ch := make(chan canonical.Chunk, len(chunks))
+	for _, chunk := range chunks {
+		ch <- chunk
+	}
+	close(ch)
+	return &invariantRecoveryStream{
+		chunks: ch,
+		final: &canonical.FinalResult{
+			SessionID:  "compress-recovery-session",
+			ChunkCount: len(chunks),
+			StopReason: canonical.StopEndTurn,
+		},
+	}
+}
+
+func (s *invariantRecoveryStream) Chunks() <-chan canonical.Chunk { return s.chunks }
+
+func (s *invariantRecoveryStream) Result() (*canonical.FinalResult, error) { return s.final, nil }
+
+type invariantRecoveryACP struct {
+	prompts [][]canonical.Block
+}
+
+func (*invariantRecoveryACP) NewSession(context.Context, string) (string, error) {
+	return "compress-recovery-session", nil
+}
+
+func (*invariantRecoveryACP) SetModel(context.Context, string, string) error { return nil }
+
+func (*invariantRecoveryACP) BeginPromptSequence(string) (func(), error) {
+	return func() {}, nil
+}
+
+func (a *invariantRecoveryACP) Prompt(_ context.Context, _ string, blocks []canonical.Block) (engine.Stream, error) {
+	a.prompts = append(a.prompts, append([]canonical.Block(nil), blocks...))
+	if len(a.prompts) == 1 {
+		return newInvariantRecoveryStream(canonical.Chunk{
+			Kind: canonical.ChunkKindText,
+			Text: &canonical.TextChunk{Content: "no required external tool call"},
+		}), nil
+	}
+	return newInvariantRecoveryStream(canonical.Chunk{
+		Kind: canonical.ChunkKindToolCall,
+		ToolCall: &canonical.ToolCallChunk{
+			ID: "compress-recovery-call", Name: "lookup", Args: map[string]any{"query": "safe"},
+		},
+	}), nil
+}
+
+func (*invariantRecoveryACP) Cancel(string) {}
+
+func TestInvariants_ToolProtocolRecoveryCompressionRunsOnce(t *testing.T) {
+	hook := &Hook{
+		Enabled:       true,
+		TriggerTokens: 1,
+		BudgetTokens:  1,
+		ProtectTail:   1,
+		ToolKeep:      8,
+		Logger:        slog.Default(),
+	}
+	client := &invariantRecoveryACP{}
+	eng := engine.New(engine.Config{
+		Logger:   slog.Default(),
+		ACP:      client,
+		PreHooks: []engine.PreHook{hook},
+	})
+	req := &canonical.ChatRequest{
+		Model: "selected-model",
+		Messages: []canonical.Message{
+			textMsg(canonical.RoleUser, strings.Repeat("old compressible context\n\n\n\n", 80)),
+			textMsg(canonical.RoleAssistant, strings.Repeat("stale answer ", 200)),
+			textMsg(canonical.RoleUser, "lookup the current status"),
+		},
+		Tools:      []canonical.ToolSpec{{Name: "lookup", Parameters: map[string]any{"type": "object"}}},
+		ToolChoice: &canonical.ToolChoice{Type: "required"},
+	}
+
+	resp, err := eng.Collect(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if len(resp.Message.ToolCalls) != 1 || resp.Message.ToolCalls[0].Name != "lookup" {
+		t.Fatalf("corrected response = %+v, want lookup tool call", resp.Message.ToolCalls)
+	}
+	if len(client.prompts) != 2 {
+		t.Fatalf("ACP prompts = %d, want first plus corrective", len(client.prompts))
+	}
+	stats := hook.Stats()
+	if stats.Eligible != 1 || stats.Runs != 1 || stats.SavedTokens <= 0 {
+		t.Fatalf("compression stats after two ACP prompts = %+v, want exactly one canonical compression", stats)
+	}
+}
 
 // mustJSON serializes a value for snapshot comparison. canonical types
 // are plain exported-field structs, so JSON is a faithful deep-equality

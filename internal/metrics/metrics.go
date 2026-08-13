@@ -108,8 +108,10 @@ type Metrics struct {
 
 	// Attribution: model requested per canonical request (fed by the engine
 	// OnModelRequest hook).
-	modelReqs *prometheus.CounterVec
-	models    *skillLimiter
+	modelReqs            *prometheus.CounterVec
+	toolProtocolFailures *prometheus.CounterVec
+	toolProtocolRecovery *prometheus.CounterVec
+	models               *skillLimiter
 
 	// hookReg is the gateway_id-wrapped registerer retained so optional
 	// feature series (RegisterCompression) can attach after New.
@@ -165,6 +167,37 @@ func (m *Metrics) RecordMCPInit(server string, ok bool) {
 // model label is cardinality-capped.
 func (m *Metrics) RecordModelRequest(model string) {
 	m.modelReqs.WithLabelValues(modelBucket(m.models, model)).Inc()
+}
+
+// RecordToolProtocolEvent records one bounded selected-model protocol outcome.
+// Empty/unknown reasons do not create failure series; empty/unknown outcomes do
+// not create recovery series. The model shares RecordModelRequest's limiter so
+// both attribution surfaces have one cardinality budget.
+func (m *Metrics) RecordToolProtocolEvent(model, reason, outcome string) {
+	if validToolProtocolReason(reason) {
+		m.toolProtocolFailures.WithLabelValues(modelBucket(m.models, model), reason).Inc()
+	}
+	if validToolProtocolOutcome(outcome) {
+		m.toolProtocolRecovery.WithLabelValues(modelBucket(m.models, model), outcome).Inc()
+	}
+}
+
+func validToolProtocolReason(reason string) bool {
+	switch reason {
+	case "activation_failed", "required_missing", "named_mismatch", "malformed_wrapper", "capability_refusal", "built_in_tool_denied":
+		return true
+	default:
+		return false
+	}
+}
+
+func validToolProtocolOutcome(outcome string) bool {
+	switch outcome {
+	case "first_attempt", "corrected", "failed", "buffer_bypass":
+		return true
+	default:
+		return false
+	}
 }
 
 // RecordLLMOutcome records the adapter-classified final application outcome
@@ -381,12 +414,21 @@ func New(info BuildInfo, pool func() PoolStats, sessions func() SessionStats, wo
 			Name: "gw_model_requests_total",
 			Help: "Total LLM requests by requested model (canonical request Model; empty/auto → auto).",
 		}, []string{"model"}),
+		toolProtocolFailures: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "gw_selected_model_tool_protocol_failures_total",
+			Help: "Selected-model tool-protocol failures by bounded model and reason.",
+		}, []string{"model", "reason"}),
+		toolProtocolRecovery: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "gw_selected_model_tool_protocol_recovery_total",
+			Help: "Selected-model tool-protocol outcomes by bounded model and outcome.",
+		}, []string{"model", "outcome"}),
 		models: newSkillLimiter(),
 	}
 	reggw.MustRegister(
 		buildInfo, m.reqTotal, m.reqDur, m.inFlight, m.llmTotal, m.llmOutcome, m.poolAcquire,
 		m.workerRecyclesByReason, m.idleRecycleRSS, m.idleRecycleIdle,
 		m.kiroCredits, m.kiroTurns, m.kiroTurnDur, m.kiroCtxPct, m.mcpInit, m.modelReqs,
+		m.toolProtocolFailures, m.toolProtocolRecovery,
 		newPoolCollector(pool, sessions),
 	)
 	// Per-worker CPU/RSS. Registered through reggw (like every other collector)
