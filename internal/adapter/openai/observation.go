@@ -32,6 +32,14 @@ func (a *Adapter) observeRequest(observation *RequestObservation) {
 }
 
 func classifyRequestError(err error) string {
+	switch {
+	case errors.Is(err, canonical.ErrPoolExhausted):
+		return "pool_exhausted"
+	case errors.Is(err, canonical.ErrStreamIdleTimeout):
+		return "stream_idle_timeout"
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return "client_cancelled"
+	}
 	if code, _, ok := canonical.SelectedModelErrorInfo(err); ok {
 		switch code {
 		case canonical.CodeSelectedModelActivationFailed:
@@ -40,16 +48,7 @@ func classifyRequestError(err error) string {
 			return canonical.CodeSelectedModelToolProtocolFailed
 		}
 	}
-	switch {
-	case errors.Is(err, canonical.ErrPoolExhausted):
-		return "pool_exhausted"
-	case errors.Is(err, canonical.ErrStreamIdleTimeout):
-		return "stream_idle_timeout"
-	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
-		return "client_cancelled"
-	default:
-		return "upstream_error"
-	}
+	return "upstream_error"
 }
 
 func classifyStreamingError(err error) string {

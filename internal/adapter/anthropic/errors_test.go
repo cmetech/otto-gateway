@@ -2,6 +2,7 @@ package anthropic
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -76,6 +77,29 @@ func TestSelectedModelError_ObservationUsesClosedCode(t *testing.T) {
 			err := &canonical.SelectedModelError{Code: code, Cause: errors.New("raw-cause-canary")}
 			if got := classifyRequestError(err); got != code {
 				t.Fatalf("classifyRequestError()=%q, want closed code %q", got, code)
+			}
+		})
+	}
+}
+
+func TestSelectedModelError_ObservationPreservesBoundedCausePrecedence(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "pool_exhausted", err: canonical.ErrPoolExhausted, want: "pool_exhausted"},
+		{name: "stream_idle_timeout", err: canonical.ErrStreamIdleTimeout, want: "stream_idle_timeout"},
+		{name: "client_cancelled", err: context.Canceled, want: "client_cancelled"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := &canonical.SelectedModelError{
+				Code:  canonical.CodeSelectedModelActivationFailed,
+				Cause: tc.err,
+			}
+			if got := classifyRequestError(err); got != tc.want {
+				t.Fatalf("classifyRequestError()=%q, want existing bounded outcome %q", got, tc.want)
 			}
 		})
 	}
