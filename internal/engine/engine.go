@@ -54,6 +54,15 @@ type ACPClient interface {
 	Cancel(sessionID string)
 }
 
+// PromptSequenceClient is an optional extension implemented by clients that
+// release session ownership when each Prompt reaches a terminal path. A
+// sequence hold lets the engine issue a bounded follow-up Prompt on the same
+// session before that ownership is released. Clients whose sessions already
+// remain live across prompts do not need to implement this interface.
+type PromptSequenceClient interface {
+	BeginPromptSequence(sessionID string) (finish func(), err error)
+}
+
 // Stream is the consumer-defined chunk-delivery interface returned by
 // ACPClient.Prompt. Mirrors *acp.Stream but exposes Chunks as a METHOD
 // (not a field) so an interface can carry it. acp_adapter.acpStreamShim

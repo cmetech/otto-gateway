@@ -171,6 +171,11 @@ type Slot struct {
 	checkedOut bool
 }
 
+type promptSequenceState struct {
+	holds        int
+	promptActive bool
+}
+
 // Pool is a fixed-size warm pool of kiro-cli slots that satisfies
 // engine.ACPClient (assertion in Task 2). POOL-01/POOL-02/POOL-03 +
 // OBSV-01 + the D-13 model-catalog capture path (Codex H-6 fix:
@@ -179,11 +184,10 @@ type Slot struct {
 // Acquire is a channel receive (<-p.slots); Release is a channel send
 // (p.slots <- slot). No sync.Cond, no hand-rolled WaitGroup pool.
 //
-// Slot release happens on every terminal path (Codex M-3): Result()
-// drained, ctx cancelled via the Prompt-spawned watch goroutine, or
-// Pool.Cancel called explicitly. sync.Once + map-delete-first pattern
-// coordinate the race between Cancel-driven release and Result-driven
-// release so the slot returns to p.slots exactly once.
+// Slot release happens on every terminal path (Codex M-3) unless an explicit
+// prompt-sequence hold retains the session for a bounded follow-up Prompt.
+// sync.Once + map-delete-first pattern coordinate Cancel, Result, and sequence
+// finish races so the slot returns to p.slots exactly once.
 type Pool struct {
 	cfg Config
 
@@ -264,8 +268,13 @@ type Pool struct {
 	// Guarded by mu.
 	sessionSlots map[string]*Slot
 
-	// mu guards all, models, sessionSlots, and the closed flag. Held
-	// only for short critical sections — never across slot.Client
+	// sessionSequences retains session ownership across prompt terminal paths.
+	// An entry remains present with holds == 0 while a prompt is active so that
+	// prompt's terminal wrapper owns the deferred release. Guarded by mu.
+	sessionSequences map[string]*promptSequenceState
+
+	// mu guards all, models, sessionSlots, sessionSequences, and the closed
+	// flag. Held only for short critical sections — never across slot.Client
 	// method calls.
 	mu sync.Mutex
 
@@ -359,11 +368,12 @@ func (p *Pool) debugLog(msg string, attrs ...any) {
 func New(cfg Config) *Pool {
 	cfg.applyDefaults()
 	return &Pool{
-		cfg:          cfg,
-		slots:        make(chan *Slot, cfg.Size),
-		sessionSlots: make(map[string]*Slot),
-		closing:      make(chan struct{}),
-		catalogRetry: defaultCatalogRetry,
+		cfg:              cfg,
+		slots:            make(chan *Slot, cfg.Size),
+		sessionSlots:     make(map[string]*Slot),
+		sessionSequences: make(map[string]*promptSequenceState),
+		closing:          make(chan struct{}),
+		catalogRetry:     defaultCatalogRetry,
 	}
 }
 
@@ -1145,6 +1155,9 @@ func (p *Pool) closeAll() error {
 			inflight = append(inflight, inflightEntry{sid: sid, client: slot.Client})
 		}
 	}
+	// Sequence finish closures may outlive Close. Clear their state while the
+	// pool is locked so every later finish call is an idempotent no-op.
+	p.sessionSequences = make(map[string]*promptSequenceState)
 	p.mu.Unlock()
 
 	// Cancel in-flight sessions BEFORE hard-closing clients so kiro-cli
@@ -1182,7 +1195,7 @@ func (p *Pool) closeAll() error {
 }
 
 // ----------------------------------------------------------------------------
-// engine.ACPClient surface (Task 2)
+// engine.ACPClient surface (Task 2) + optional prompt sequences
 // ----------------------------------------------------------------------------
 //
 // NewSession / SetModel / Prompt / Cancel route through an acquired slot
@@ -1196,8 +1209,8 @@ func (p *Pool) closeAll() error {
 //  3. engine-initiated Cancel(sid) — releases via Pool.Cancel
 //
 // The wrapper's sync.Once-guarded releaseOnce plus the map-delete-first
-// pattern (lookup, delete, then send-to-channel-only-if-found) together
-// guarantee exactly-one-release across all three races.
+// pattern (lookup, delete, then release-only-if-found) together guarantee
+// exactly-one-release across all terminal and sequence-finish races.
 
 // NewSession acquires a slot and creates a kiro-cli session on it. The
 // caller's ctx is observed on the acquire path so an aborted request
@@ -1438,6 +1451,57 @@ func (p *Pool) NewSession(ctx context.Context, cwd string) (string, error) {
 	return sid, nil
 }
 
+// BeginPromptSequence retains the slot that owns sid across prompt terminal
+// paths. The returned finish closure is idempotent. The final hold releases
+// immediately when no prompt is active; otherwise the active prompt's
+// terminal wrapper performs the deferred release.
+func (p *Pool) BeginPromptSequence(sid string) (func(), error) {
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return nil, errors.New("pool: closed")
+	}
+	if _, ok := p.sessionSlots[sid]; !ok {
+		p.mu.Unlock()
+		return nil, fmt.Errorf("pool: unknown session %q", sid)
+	}
+	state := p.sessionSequences[sid]
+	if state == nil {
+		state = &promptSequenceState{}
+		p.sessionSequences[sid] = state
+	}
+	state.holds++
+	p.mu.Unlock()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			p.finishPromptSequence(sid)
+		})
+	}, nil
+}
+
+// finishPromptSequence drops one hold and, when no prompt is active, takes
+// ownership of the session slot for release. All non-state work happens after
+// p.mu is released.
+func (p *Pool) finishPromptSequence(sid string) {
+	p.mu.Lock()
+	state, ok := p.sessionSequences[sid]
+	if !ok {
+		p.mu.Unlock()
+		return
+	}
+	state.holds--
+	if state.holds > 0 || state.promptActive {
+		p.mu.Unlock()
+		return
+	}
+	delete(p.sessionSequences, sid)
+	slot, release := p.takeSessionSlotLocked(sid)
+	p.mu.Unlock()
+	p.completeSessionRelease(sid, slot, release)
+}
+
 // SetModel looks up the slot for sid and forwards to slot.Client.SetModel.
 // On unknown session it returns a typed error. p.mu is released BEFORE
 // the slot.Client call so a slow SetModel never blocks other pool ops.
@@ -1472,40 +1536,20 @@ func (p *Pool) Prompt(ctx context.Context, sid string, blocks []canonical.Block)
 
 	raw, err := slot.Client.Prompt(ctx, sid, blocks)
 	if err != nil {
-		// Codex M-3: release the slot on Prompt error so a size-1 pool
-		// is not leaked by a kiro-cli protocol failure.
-		p.releaseSlotForSession(sid)
+		// Prompt errors are terminal for this attempt. A sequence hold retains
+		// the session; without one this preserves the existing synchronous
+		// error-path release.
+		p.finishPromptForSession(sid)
 		return nil, fmt.Errorf("pool: prompt: %w", err)
 	}
 
-	// release closure — used by all three terminal paths. The
-	// map-delete-first pattern means whichever terminal path fires
-	// SECOND finds the sessionSlots entry already gone and skips the
-	// channel send, so the slot returns to p.slots exactly once.
-	release := func() {
-		p.mu.Lock()
-		s, stillOwned := p.sessionSlots[sid]
-		if stillOwned {
-			delete(p.sessionSlots, sid)
-			s.lastUserReleaseAt = p.cfg.Now().UTC()
-		}
-		p.mu.Unlock()
-		if !stillOwned {
-			// Another terminal path (Cancel) won the race and already
-			// deleted the entry — that path will (or already did) send
-			// to p.slots. Skip the send to avoid double-release.
-			return
-		}
-		// Task 3: releaseOrRecycle decides atomically (under p.mu) whether to
-		// return the slot to the free queue or hand it to a background recycle
-		// goroutine once slot.turns has reached cfg.MaxWorkerTurns.
-		p.releaseOrRecycle(s)
-		p.debugLog("pool.release", "slot", s.Label, "session_id", sid)
-		// D-05a (REL-CFG-04): slot release is one of the
-		// forward-progress signals consumed by Plan 16-02's
-		// healthHandler degraded-status rule.
-		p.advanceProgress()
+	// Mark a held sequence active only after the underlying Prompt succeeds.
+	// With no sequence entry, terminal behavior remains one-prompt-per-slot.
+	p.mu.Lock()
+	if state := p.sessionSequences[sid]; state != nil {
+		state.promptActive = true
 	}
+	p.mu.Unlock()
 
 	// ctx-watcher goroutine — Codex M-3. If ctx cancels BEFORE Result()
 	// is called, this goroutine releases the slot. If Result() runs
@@ -1514,7 +1558,7 @@ func (p *Pool) Prompt(ctx context.Context, sid string, blocks []canonical.Block)
 	watchCtx, cancelWatch := context.WithCancel(ctx)
 	w := &poolStreamWrapper{
 		underlying:  raw,
-		release:     release,
+		release:     func() { p.finishPromptForSession(sid) },
 		doneCh:      make(chan struct{}),
 		cancelWatch: cancelWatch,
 	}
@@ -1579,43 +1623,61 @@ func (p *Pool) Prompt(ctx context.Context, sid string, blocks []canonical.Block)
 // invariant breaking.
 func (p *Pool) Cancel(sid string) {
 	p.mu.Lock()
-	slot, ok := p.sessionSlots[sid]
+	delete(p.sessionSequences, sid)
+	slot, ok := p.takeSessionSlotLocked(sid)
 	var client PoolClient
-	if ok {
+	if slot != nil {
 		client = slot.Client
 	}
 	p.mu.Unlock()
-	if !ok || client == nil {
+	if !ok {
 		return
 	}
-	client.Cancel(sid)
-	// Codex M-3: also release the slot. The wrapper's sync.Once
-	// coordinates so a subsequent Result() / ctx-cancel does not
-	// double-release — see release closure in Prompt for the
-	// map-delete-first race resolution.
-	p.releaseSlotForSession(sid)
+	if client != nil {
+		client.Cancel(sid)
+	}
+	p.completeSessionRelease(sid, slot, true)
 }
 
-// releaseSlotForSession is the shared release helper used by the
-// Prompt-error path and by Cancel. It performs the lookup-delete-then-
-// send pattern under mu so it interleaves safely with the wrapper's
-// release closure.
-func (p *Pool) releaseSlotForSession(sid string) {
-	p.mu.Lock()
+// takeSessionSlotLocked deletes sid before any release work can occur, making
+// the caller the unique release winner. The caller must hold p.mu.
+func (p *Pool) takeSessionSlotLocked(sid string) (*Slot, bool) {
 	slot, ok := p.sessionSlots[sid]
 	if ok {
 		delete(p.sessionSlots, sid)
 		slot.lastUserReleaseAt = p.cfg.Now().UTC()
 	}
-	p.mu.Unlock()
-	if ok {
-		// Task 3: same recycle-vs-release decision as the Prompt happy-path
-		// release closure.
-		p.releaseOrRecycle(slot)
-		p.debugLog("pool.release", "slot", slot.Label, "session_id", sid)
-		// D-05a (REL-CFG-04): forward-progress signal.
-		p.advanceProgress()
+	return slot, ok
+}
+
+// finishPromptForSession marks a sequence prompt inactive. A remaining hold
+// retains ownership; otherwise this terminal path takes the session slot for
+// release. It performs no client, logging, recycle, progress, or channel work
+// while p.mu is held.
+func (p *Pool) finishPromptForSession(sid string) {
+	p.mu.Lock()
+	if state := p.sessionSequences[sid]; state != nil {
+		state.promptActive = false
+		if state.holds > 0 {
+			p.mu.Unlock()
+			return
+		}
+		delete(p.sessionSequences, sid)
 	}
+	slot, release := p.takeSessionSlotLocked(sid)
+	p.mu.Unlock()
+	p.completeSessionRelease(sid, slot, release)
+}
+
+// completeSessionRelease preserves the existing recycle, release log, and
+// forward-progress path after a caller wins the map-delete-first race.
+func (p *Pool) completeSessionRelease(sid string, slot *Slot, release bool) {
+	if !release || slot == nil {
+		return
+	}
+	p.releaseOrRecycle(slot)
+	p.debugLog("pool.release", "slot", slot.Label, "session_id", sid)
+	p.advanceProgress()
 }
 
 // recycleRespawnTimeout bounds a single background recycle respawn. Unlike the
@@ -1905,6 +1967,7 @@ func (w *poolStreamWrapper) releaseOnce() {
 // failure here means Pool no longer implements engine.ACPClient —
 // surface the missing method to the executor.
 var (
-	_ engine.ACPClient = (*Pool)(nil)
-	_ engine.Stream    = (*poolStreamWrapper)(nil)
+	_ engine.ACPClient            = (*Pool)(nil)
+	_ engine.PromptSequenceClient = (*Pool)(nil)
+	_ engine.Stream               = (*poolStreamWrapper)(nil)
 )

@@ -21,12 +21,17 @@ import (
 	"otto-gateway/internal/engine"
 	"otto-gateway/internal/pool"
 	"otto-gateway/internal/testutil"
+
+	"go.uber.org/goleak"
 )
 
 // Compile-time interface satisfaction assertion (defense-in-depth
 // versus the production-side assertion in pool.go). Build failure here
 // means *pool.Pool no longer satisfies engine.ACPClient.
-var _ engine.ACPClient = (*pool.Pool)(nil)
+var (
+	_ engine.ACPClient            = (*pool.Pool)(nil)
+	_ engine.PromptSequenceClient = (*pool.Pool)(nil)
+)
 
 // drainChunks consumes a chunk channel to completion. Used by tests
 // that need the stream's underlying readLoop to reach EOF so Result()
@@ -414,6 +419,359 @@ func warmedPoolWithFakes(t *testing.T, clients []*fakeClient) *pool.Pool {
 		t.Fatalf("Warmup: %v", err)
 	}
 	return p
+}
+
+func promptSequenceFakeClient() *fakeClient {
+	fc := &fakeClient{}
+	var newSessionCalls atomic.Int32
+	fc.newSessionFn = func(_ context.Context, _ string) (string, error) {
+		if newSessionCalls.Add(1) == 1 {
+			return "warmup", nil
+		}
+		return "sequence-session", nil
+	}
+	return fc
+}
+
+func TestPool_PromptSequence_SizeOneRetainsSessionUntilFinish(t *testing.T) {
+	fc := promptSequenceFakeClient()
+	p := warmedPoolWithFakes(t, []*fakeClient{fc})
+	defer func() { _ = p.Close() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	sid, err := p.NewSession(ctx, "")
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	finish, err := p.BeginPromptSequence(sid)
+	if err != nil {
+		t.Fatalf("BeginPromptSequence: %v", err)
+	}
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		stream, promptErr := p.Prompt(ctx, sid, nil)
+		if promptErr != nil {
+			t.Fatalf("Prompt attempt %d: %v", attempt, promptErr)
+		}
+		drainChunks(stream.Chunks())
+		if _, resultErr := stream.Result(); resultErr != nil {
+			t.Fatalf("Result attempt %d: %v", attempt, resultErr)
+		}
+	}
+
+	if got := p.SessionSlotsLen(); got != 1 {
+		t.Fatalf("SessionSlotsLen before finish = %d; want 1", got)
+	}
+	if got := p.SessionHoldsLen(); got != 1 {
+		t.Fatalf("SessionHoldsLen before finish = %d; want 1", got)
+	}
+	if unexpected, ok := p.WaitForSlotRelease(25 * time.Millisecond); ok {
+		p.PutSlotBack(unexpected)
+		t.Fatal("slot released before prompt sequence finished")
+	}
+
+	finish()
+	slot, ok := p.WaitForSlotRelease(100 * time.Millisecond)
+	if !ok {
+		t.Fatal("slot not released after prompt sequence finished")
+	}
+	if got := p.SessionSlotsLen(); got != 0 {
+		t.Fatalf("SessionSlotsLen after finish = %d; want 0", got)
+	}
+	if got := p.SessionHoldsLen(); got != 0 {
+		t.Fatalf("SessionHoldsLen after finish = %d; want 0", got)
+	}
+
+	finish()
+	if extra, extraOK := p.WaitForSlotRelease(25 * time.Millisecond); extraOK {
+		p.PutSlotBack(extra)
+		t.Fatal("repeated finish released the slot twice")
+	}
+	p.PutSlotBack(slot)
+}
+
+func TestPool_PromptSequence_FinishWhilePromptLiveDefersRelease(t *testing.T) {
+	handleCh := make(chan *streamHandle, 1)
+	fc := promptSequenceFakeClient()
+	fc.promptFn = func(_ context.Context, sid string, _ []canonical.Block) (*acp.Stream, error) {
+		s := acp.NewStreamForTest(sid)
+		handleCh <- &streamHandle{stream: s}
+		return s, nil
+	}
+	p := warmedPoolWithFakes(t, []*fakeClient{fc})
+	defer func() { _ = p.Close() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	sid, err := p.NewSession(ctx, "")
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	finish, err := p.BeginPromptSequence(sid)
+	if err != nil {
+		t.Fatalf("BeginPromptSequence: %v", err)
+	}
+	stream, err := p.Prompt(ctx, sid, nil)
+	if err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	h := <-handleCh
+
+	finish()
+	if got := p.SessionHoldsLen(); got != 1 {
+		t.Fatalf("SessionHoldsLen with live prompt = %d; want 1 deferred state", got)
+	}
+	if unexpected, ok := p.WaitForSlotRelease(25 * time.Millisecond); ok {
+		p.PutSlotBack(unexpected)
+		t.Fatal("finish released slot while prompt was live")
+	}
+
+	h.stream.CloseForTest(&acp.FinalResult{StopReason: canonical.StopEndTurn}, nil)
+	drainChunks(stream.Chunks())
+	if _, err := stream.Result(); err != nil {
+		t.Fatalf("Result: %v", err)
+	}
+	slot, ok := p.WaitForSlotRelease(100 * time.Millisecond)
+	if !ok {
+		t.Fatal("terminal Result did not perform deferred sequence release")
+	}
+	if got := p.SessionHoldsLen(); got != 0 {
+		t.Fatalf("SessionHoldsLen after Result = %d; want 0", got)
+	}
+	p.PutSlotBack(slot)
+}
+
+func TestPool_PromptSequence_CancelOverridesHoldExactlyOnce(t *testing.T) {
+	handleCh := make(chan *streamHandle, 1)
+	fc := promptSequenceFakeClient()
+	fc.promptFn = func(_ context.Context, sid string, _ []canonical.Block) (*acp.Stream, error) {
+		s := acp.NewStreamForTest(sid)
+		handleCh <- &streamHandle{stream: s}
+		return s, nil
+	}
+	p := warmedPoolWithFakes(t, []*fakeClient{fc})
+	defer func() { _ = p.Close() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	sid, err := p.NewSession(ctx, "")
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	finish, err := p.BeginPromptSequence(sid)
+	if err != nil {
+		t.Fatalf("BeginPromptSequence: %v", err)
+	}
+	stream, err := p.Prompt(ctx, sid, nil)
+	if err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	h := <-handleCh
+	beforeCancel := len(fc.cancelCallList())
+
+	p.Cancel(sid)
+	p.Cancel(sid)
+	finish()
+	finish()
+
+	slot, ok := p.WaitForSlotRelease(100 * time.Millisecond)
+	if !ok {
+		t.Fatal("Cancel did not release held sequence slot")
+	}
+	if got := p.SessionSlotsLen(); got != 0 {
+		t.Fatalf("SessionSlotsLen after Cancel = %d; want 0", got)
+	}
+	if got := p.SessionHoldsLen(); got != 0 {
+		t.Fatalf("SessionHoldsLen after Cancel = %d; want 0", got)
+	}
+	afterCancel := fc.cancelCallList()[beforeCancel:]
+	if len(afterCancel) != 1 || afterCancel[0] != sid {
+		t.Fatalf("Cancel calls after held-session cancel = %v; want [%q]", afterCancel, sid)
+	}
+
+	h.stream.CloseForTest(&acp.FinalResult{StopReason: canonical.StopCancelled}, nil)
+	_, _ = stream.Result()
+	if extra, extraOK := p.WaitForSlotRelease(25 * time.Millisecond); extraOK {
+		p.PutSlotBack(extra)
+		t.Fatal("Cancel plus Result released held sequence slot twice")
+	}
+	p.PutSlotBack(slot)
+}
+
+func TestPool_PromptSequence_PromptErrorThenFinishReleases(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		failAt int32
+	}{
+		{name: "first prompt", failAt: 1},
+		{name: "second prompt", failAt: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fc := promptSequenceFakeClient()
+			var promptCalls atomic.Int32
+			fc.promptFn = func(_ context.Context, sid string, _ []canonical.Block) (*acp.Stream, error) {
+				if promptCalls.Add(1) == tc.failAt {
+					return nil, errors.New("scripted prompt failure")
+				}
+				s := acp.NewStreamForTest(sid)
+				s.CloseForTest(&acp.FinalResult{StopReason: canonical.StopEndTurn}, nil)
+				return s, nil
+			}
+			p := warmedPoolWithFakes(t, []*fakeClient{fc})
+			defer func() { _ = p.Close() }()
+
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			sid, err := p.NewSession(ctx, "")
+			if err != nil {
+				t.Fatalf("NewSession: %v", err)
+			}
+			finish, err := p.BeginPromptSequence(sid)
+			if err != nil {
+				t.Fatalf("BeginPromptSequence: %v", err)
+			}
+
+			for attempt := int32(1); attempt < tc.failAt; attempt++ {
+				stream, promptErr := p.Prompt(ctx, sid, nil)
+				if promptErr != nil {
+					t.Fatalf("Prompt attempt %d: %v", attempt, promptErr)
+				}
+				drainChunks(stream.Chunks())
+				if _, resultErr := stream.Result(); resultErr != nil {
+					t.Fatalf("Result attempt %d: %v", attempt, resultErr)
+				}
+			}
+			if _, err := p.Prompt(ctx, sid, nil); err == nil {
+				t.Fatal("Prompt: want scripted error, got nil")
+			}
+			if got := p.SessionSlotsLen(); got != 1 {
+				t.Fatalf("SessionSlotsLen after Prompt error = %d; want 1 while held", got)
+			}
+			if got := p.SessionHoldsLen(); got != 1 {
+				t.Fatalf("SessionHoldsLen after Prompt error = %d; want 1", got)
+			}
+			if unexpected, ok := p.WaitForSlotRelease(25 * time.Millisecond); ok {
+				p.PutSlotBack(unexpected)
+				t.Fatal("Prompt error released slot before finish")
+			}
+
+			finish()
+			slot, ok := p.WaitForSlotRelease(100 * time.Millisecond)
+			if !ok {
+				t.Fatal("finish did not release slot after Prompt error")
+			}
+			p.PutSlotBack(slot)
+		})
+	}
+}
+
+func TestPool_PromptSequence_RepeatedFinishResultCancelRaceReleasesOnce(t *testing.T) {
+	handleCh := make(chan *streamHandle, 1)
+	fc := promptSequenceFakeClient()
+	fc.promptFn = func(_ context.Context, sid string, _ []canonical.Block) (*acp.Stream, error) {
+		s := acp.NewStreamForTest(sid)
+		handleCh <- &streamHandle{stream: s}
+		return s, nil
+	}
+	p := warmedPoolWithFakes(t, []*fakeClient{fc})
+	defer func() { _ = p.Close() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	sid, err := p.NewSession(ctx, "")
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	finish, err := p.BeginPromptSequence(sid)
+	if err != nil {
+		t.Fatalf("BeginPromptSequence: %v", err)
+	}
+	stream, err := p.Prompt(ctx, sid, nil)
+	if err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	h := <-handleCh
+	h.stream.CloseForTest(&acp.FinalResult{StopReason: canonical.StopEndTurn}, nil)
+	beforeCancel := len(fc.cancelCallList())
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for range 16 {
+		wg.Add(3)
+		go func() {
+			defer wg.Done()
+			<-start
+			finish()
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			_, _ = stream.Result()
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			p.Cancel(sid)
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	slot, ok := p.WaitForSlotRelease(100 * time.Millisecond)
+	if !ok {
+		t.Fatal("finish/Result/Cancel race did not release slot")
+	}
+	if extra, extraOK := p.WaitForSlotRelease(25 * time.Millisecond); extraOK {
+		p.PutSlotBack(extra)
+		t.Fatal("finish/Result/Cancel race released slot more than once")
+	}
+	if got := len(fc.cancelCallList()) - beforeCancel; got > 1 {
+		t.Fatalf("concurrent Cancel calls reached client %d times; want at most 1", got)
+	}
+	if got := p.SessionSlotsLen(); got != 0 {
+		t.Fatalf("SessionSlotsLen after race = %d; want 0", got)
+	}
+	if got := p.SessionHoldsLen(); got != 0 {
+		t.Fatalf("SessionHoldsLen after race = %d; want 0", got)
+	}
+	p.PutSlotBack(slot)
+}
+
+func TestPool_HeldSession_CloseClearsSequenceWithoutWatcherLeak(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	fc := promptSequenceFakeClient()
+	p := warmedPoolWithFakes(t, []*fakeClient{fc})
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	sid, err := p.NewSession(ctx, "")
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	finish, err := p.BeginPromptSequence(sid)
+	if err != nil {
+		t.Fatalf("BeginPromptSequence: %v", err)
+	}
+	stream, err := p.Prompt(ctx, sid, nil)
+	if err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	drainChunks(stream.Chunks())
+	if _, err := stream.Result(); err != nil {
+		t.Fatalf("Result: %v", err)
+	}
+	if got := p.SessionHoldsLen(); got != 1 {
+		t.Fatalf("SessionHoldsLen before Close = %d; want 1", got)
+	}
+
+	if err := p.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	finish()
+	if got := p.SessionHoldsLen(); got != 0 {
+		t.Fatalf("SessionHoldsLen after Close = %d; want 0", got)
+	}
 }
 
 func TestPool_Prompt_SessionRoutesToSlot(t *testing.T) {

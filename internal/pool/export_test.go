@@ -63,6 +63,15 @@ func (p *Pool) SessionSlotsLen() int {
 	return len(p.sessionSlots)
 }
 
+// SessionHoldsLen returns the number of sessions with prompt-sequence state.
+// The state remains present with zero holds while a prompt is active so its
+// terminal wrapper can perform the deferred release.
+func (p *Pool) SessionHoldsLen() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.sessionSequences)
+}
+
 // SlotAlive returns whether the slot with the given Label is alive
 // (slot.dead == false). Returns (false, false) when no slot matches.
 // Phase 5 D-01: test accessor for the dead-slot detection path; lets
