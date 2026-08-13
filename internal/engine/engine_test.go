@@ -23,6 +23,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -159,10 +160,12 @@ type fakePreHook struct {
 	resp   *canonical.ChatResponse
 	err    error
 	called bool
+	calls  int
 }
 
 func (h *fakePreHook) Before(_ context.Context, _ *canonical.ChatRequest) (*canonical.ChatResponse, error) {
 	h.called = true
+	h.calls++
 	return h.resp, h.err
 }
 
@@ -170,10 +173,12 @@ type fakePostHook struct {
 	mutate func(*canonical.ChatResponse)
 	err    error
 	called bool
+	calls  int
 }
 
 func (h *fakePostHook) After(_ context.Context, _ *canonical.ChatRequest, resp *canonical.ChatResponse) error {
 	h.called = true
+	h.calls++
 	if h.mutate != nil {
 		h.mutate(resp)
 	}
@@ -273,21 +278,56 @@ func TestEngineRun_PromptError_CancelsSession(t *testing.T) {
 	}
 }
 
-func TestEngineRun_SetModelError_CancelsSession(t *testing.T) {
+func TestEngineRun_SelectedModelActivationError_IsTypedSafeAndCleansUp(t *testing.T) {
+	const sensitiveCause = "upstream token=super-secret"
 	ack := &fakeACP{
 		newSessionID: "sid-cancel-on-setmodel",
-		setModelErr:  errors.New("simulated set-model failure"),
+		setModelErr:  errors.New(sensitiveCause),
 	}
-	e := newTestEngine(t, ack)
+	pre := &fakePreHook{}
+	post := &fakePostHook{}
+	var modelRequests []string
+	var protocolEvents []ToolProtocolEvent
+	e := newTestEngine(t, ack,
+		withPreHooks(pre),
+		withPostHooks(post),
+		func(cfg *Config) {
+			cfg.OnModelRequest = func(model string) { modelRequests = append(modelRequests, model) }
+			cfg.OnToolProtocolEvent = func(event ToolProtocolEvent) { protocolEvents = append(protocolEvents, event) }
+		},
+	)
 	_, err := e.Run(context.Background(), simpleUserReq("hi", "model-x"))
 	if err == nil {
 		t.Fatal("Run: expected error, got nil")
 	}
-	if !strings.Contains(err.Error(), "set model") {
-		t.Errorf("error message: got %q, want substring 'set model'", err.Error())
+	var selected *canonical.SelectedModelError
+	if !errors.As(err, &selected) {
+		t.Fatalf("Run error type = %T, want *canonical.SelectedModelError", err)
+	}
+	if selected.Code != canonical.CodeSelectedModelActivationFailed {
+		t.Errorf("selected-model error code = %q, want %q", selected.Code, canonical.CodeSelectedModelActivationFailed)
+	}
+	if strings.Contains(err.Error(), sensitiveCause) {
+		t.Errorf("safe error exposed sensitive cause: %q", err.Error())
 	}
 	if len(ack.cancelCalls) != 1 || ack.cancelCalls[0] != "sid-cancel-on-setmodel" {
 		t.Errorf("Cancel calls: got %v, want [sid-cancel-on-setmodel] (D-05 + Pitfall 6)", ack.cancelCalls)
+	}
+	if len(ack.promptCalls) != 0 {
+		t.Errorf("Prompt calls after failed activation = %v, want none", ack.promptCalls)
+	}
+	if pre.calls != 1 || post.calls != 1 {
+		t.Errorf("hook calls = (pre:%d post:%d), want (1,1)", pre.calls, post.calls)
+	}
+	if len(modelRequests) != 1 || modelRequests[0] != "model-x" {
+		t.Errorf("OnModelRequest calls = %v, want [model-x]", modelRequests)
+	}
+	wantEvent := ToolProtocolEvent{
+		Model: "model-x", Reason: ReasonActivationFailed, Outcome: OutcomeFailed,
+		CorrectiveAttempts: 0, RecommendAuto: true,
+	}
+	if !reflect.DeepEqual(protocolEvents, []ToolProtocolEvent{wantEvent}) {
+		t.Errorf("OnToolProtocolEvent calls = %#v, want %#v", protocolEvents, []ToolProtocolEvent{wantEvent})
 	}
 }
 

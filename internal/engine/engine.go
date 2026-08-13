@@ -123,6 +123,11 @@ type Config struct {
 	// one place the requested model is known uniformly. A nil hook is a no-op.
 	// Wired in cmd/otto-gateway/main.go to the shared recorder.
 	OnModelRequest func(model string)
+	// OnToolProtocolEvent observes one bounded recovery outcome for guarded
+	// explicit-model tool turns, or an explicit-model activation failure. The
+	// event carries no response, argument, schema, or session data. Nil is a
+	// no-op.
+	OnToolProtocolEvent func(ToolProtocolEvent)
 }
 
 // Engine is the concrete orchestrator. Construct via New.
@@ -267,7 +272,43 @@ func (e *Engine) Run(ctx context.Context, req *canonical.ChatRequest) (*Run, err
 		if err := e.cfg.ACP.SetModel(ctx, sid, req.Model); err != nil {
 			e.cfg.ACP.Cancel(sid)
 			runErrCleanup()
-			return nil, fmt.Errorf("engine: set model: %w", err)
+			e.observeToolProtocol(ToolProtocolEvent{
+				Model: req.Model, Reason: ReasonActivationFailed,
+				Outcome: OutcomeFailed, CorrectiveAttempts: 0, RecommendAuto: true,
+			})
+			return nil, &canonical.SelectedModelError{
+				Code:  canonical.CodeSelectedModelActivationFailed,
+				Cause: err,
+			}
+		}
+	}
+
+	policy, guarded := toolProtocolPolicyFor(req)
+	var rawFinishSequence func()
+	var finishSequenceOnce sync.Once
+	finishSequence := func() {
+		finishSequenceOnce.Do(func() {
+			if rawFinishSequence != nil {
+				rawFinishSequence()
+			}
+		})
+	}
+	if guarded {
+		if sequenceClient, ok := e.cfg.ACP.(PromptSequenceClient); ok {
+			var beginErr error
+			rawFinishSequence, beginErr = sequenceClient.BeginPromptSequence(sid)
+			if beginErr != nil {
+				e.cfg.ACP.Cancel(sid)
+				runErrCleanup()
+				e.observeToolProtocol(ToolProtocolEvent{
+					Model: req.Model, Outcome: OutcomeFailed,
+					CorrectiveAttempts: 0, RecommendAuto: true,
+				})
+				return nil, &canonical.SelectedModelError{
+					Code:  canonical.CodeSelectedModelToolProtocolFailed,
+					Cause: beginErr,
+				}
+			}
 		}
 	}
 
@@ -279,8 +320,18 @@ func (e *Engine) Run(ctx context.Context, req *canonical.ChatRequest) (*Run, err
 	// (6) Prompt.
 	stream, err := e.cfg.ACP.Prompt(ctx, sid, blocks)
 	if err != nil {
+		finishSequence()
 		e.cfg.ACP.Cancel(sid)
 		runErrCleanup()
+		if guarded {
+			e.observeToolProtocol(ToolProtocolEvent{
+				Model: req.Model, Outcome: OutcomeFailed,
+				CorrectiveAttempts: 0, RecommendAuto: false,
+			})
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, ctxErr
+			}
+		}
 		return nil, fmt.Errorf("engine: prompt: %w", err)
 	}
 	e.cfg.Logger.Debug("engine.prompt.sent", "session_id", sid, "blocks", len(blocks))
@@ -324,6 +375,15 @@ func (e *Engine) Run(ctx context.Context, req *canonical.ChatRequest) (*Run, err
 		e.cfg.ACP.Cancel(sid)
 	})
 
+	if guarded {
+		stream, err = e.recoverToolProtocol(
+			ctx, req, sid, stream, policy, finishSequence, stopWatchdog, runErrCleanup,
+		)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	return &Run{
 		engine:       e,
 		sessionID:    sid,
@@ -331,6 +391,110 @@ func (e *Engine) Run(ctx context.Context, req *canonical.ChatRequest) (*Run, err
 		req:          req,
 		stopWatchdog: stopWatchdog,
 	}, nil
+}
+
+func (e *Engine) recoverToolProtocol(
+	ctx context.Context,
+	req *canonical.ChatRequest,
+	sid string,
+	firstStream Stream,
+	policy toolProtocolPolicy,
+	finishSequence func(),
+	stopWatchdog func() bool,
+	runErrCleanup func(),
+) (Stream, error) {
+	fail := func(reason ToolProtocolReason, attempts int, cause error) (Stream, error) {
+		ctxErr := ctx.Err()
+		if stopWatchdog != nil {
+			stopWatchdog()
+		}
+		finishSequence()
+		e.cfg.ACP.Cancel(sid)
+		runErrCleanup()
+		e.observeToolProtocol(ToolProtocolEvent{
+			Model: req.Model, Reason: reason, Outcome: OutcomeFailed,
+			CorrectiveAttempts: attempts, RecommendAuto: ctxErr == nil,
+		})
+		if ctxErr != nil {
+			return nil, ctxErr
+		}
+		return nil, &canonical.SelectedModelError{
+			Code:  canonical.CodeSelectedModelToolProtocolFailed,
+			Cause: cause,
+		}
+	}
+
+	finishFullyCaptured := func(stream Stream) {
+		if _, live := stream.(*prefixLiveStream); !live {
+			finishSequence()
+		}
+	}
+
+	first, err := captureToolProtocolAttempt(
+		ctx, firstStream, e.cfg.StreamIdleTimeout, policy, e.cfg.ToolAliases, finishSequence,
+	)
+	if err != nil {
+		return fail("", 0, err)
+	}
+	if first.observation.BufferBypass {
+		e.observeToolProtocol(ToolProtocolEvent{
+			Model: req.Model, Outcome: OutcomeBufferBypass,
+			CorrectiveAttempts: 0,
+		})
+		return first.stream, nil
+	}
+
+	reason := classifyToolProtocolAttempt(policy, first.observation, e.cfg.ToolAliases)
+	if reason == "" {
+		finishFullyCaptured(first.stream)
+		e.observeToolProtocol(ToolProtocolEvent{
+			Model: req.Model, Outcome: OutcomeFirstAttempt,
+			CorrectiveAttempts: 0,
+		})
+		return first.stream, nil
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return fail(reason, 0, ctxErr)
+	}
+
+	secondStream, err := e.cfg.ACP.Prompt(ctx, sid, correctiveBlocks(policy))
+	if err != nil {
+		return fail(reason, 1, err)
+	}
+	e.cfg.Logger.Debug("engine.prompt.corrective.sent", "session_id", sid)
+	second, err := captureToolProtocolAttempt(
+		ctx, secondStream, e.cfg.StreamIdleTimeout, policy, e.cfg.ToolAliases, finishSequence,
+	)
+	if err != nil {
+		return fail(reason, 1, err)
+	}
+	if second.observation.BufferBypass {
+		e.observeToolProtocol(ToolProtocolEvent{
+			Model: req.Model, Reason: reason, Outcome: OutcomeBufferBypass,
+			CorrectiveAttempts: 0,
+		})
+		return second.stream, nil
+	}
+
+	secondReason := classifyToolProtocolAttempt(policy, second.observation, e.cfg.ToolAliases)
+	if secondReason == "" {
+		finishFullyCaptured(second.stream)
+		e.observeToolProtocol(ToolProtocolEvent{
+			Model: req.Model, Reason: reason, Outcome: OutcomeCorrected,
+			CorrectiveAttempts: 1,
+		})
+		return second.stream, nil
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return fail(reason, 1, ctxErr)
+	}
+	return fail(reason, 1, fmt.Errorf("engine: selected-model tool protocol: %s", secondReason))
+}
+
+func (e *Engine) observeToolProtocol(event ToolProtocolEvent) {
+	if e.cfg.OnToolProtocolEvent != nil {
+		e.cfg.OnToolProtocolEvent(event)
+	}
 }
 
 // RunPostHooks invokes the PostHook chain against an externally-aggregated
