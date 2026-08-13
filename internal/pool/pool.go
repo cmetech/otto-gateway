@@ -1874,9 +1874,10 @@ func (w *poolStreamWrapper) Result() (*canonical.FinalResult, error) {
 		return nil, err //nolint:wrapcheck // pure delegation
 	}
 	return &canonical.FinalResult{
-		SessionID:  fr.SessionID,
-		ChunkCount: fr.ChunkCount,
-		StopReason: fr.StopReason,
+		SessionID:   fr.SessionID,
+		ChunkCount:  fr.ChunkCount,
+		StopReason:  fr.StopReason,
+		ToolDenials: fr.ToolDenials,
 	}, err //nolint:wrapcheck // pure delegation
 }
 

@@ -793,6 +793,39 @@ func TestPool_StreamCloseWithoutResult_ReleasesSlot(t *testing.T) {
 	p.PutSlotBack(slot)
 }
 
+func TestPoolStreamWrapper_MapsToolDenials(t *testing.T) {
+	fc := &fakeClient{
+		promptFn: func(_ context.Context, sid string, _ []canonical.Block) (*acp.Stream, error) {
+			s := acp.NewStreamForTest(sid)
+			s.RecordDenialForTest()
+			s.RecordDenialForTest()
+			s.RecordDenialForTest()
+			s.CloseForTest(&acp.FinalResult{StopReason: canonical.StopEndTurn}, nil)
+			return s, nil
+		},
+	}
+	p := warmedPoolWithFakes(t, []*fakeClient{fc})
+	defer func() { _ = p.Close() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	sid, err := p.NewSession(ctx, "")
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	stream, err := p.Prompt(ctx, sid, nil)
+	if err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	got, err := stream.Result()
+	if err != nil {
+		t.Fatalf("stream.Result: %v", err)
+	}
+	if got.ToolDenials != 3 {
+		t.Fatalf("stream FinalResult.ToolDenials = %d, want 3", got.ToolDenials)
+	}
+}
+
 func TestPool_Cancel_ReleasesSlot(t *testing.T) {
 	handleCh := make(chan *streamHandle, 1)
 	fc := &fakeClient{}

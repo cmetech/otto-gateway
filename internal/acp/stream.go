@@ -28,6 +28,9 @@ type FinalResult struct {
 	// (readLoop teardown), an unknown wire value (D-02 forward-compat), or
 	// that the response was never read.
 	StopReason canonical.StopReason
+	// ToolDenials is the number of built-in permission requests denied during
+	// this prompt.
+	ToolDenials int
 }
 
 // Stream is the handle returned by Client.Prompt.
@@ -190,6 +193,7 @@ func (s *Stream) close(result *FinalResult, err error) {
 		if result != nil && result.StopReason != canonical.StopUnknown {
 			s.result.StopReason = result.StopReason
 		}
+		s.result.ToolDenials = s.denialCount
 		s.err = err
 		s.mu.Unlock()
 		close(s.chunks)

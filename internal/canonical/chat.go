@@ -279,4 +279,7 @@ type FinalResult struct {
 	ChunkCount int
 	// StopReason classifies why the turn ended.
 	StopReason StopReason
+	// ToolDenials is the number of built-in permission requests denied during
+	// this prompt.
+	ToolDenials int
 }

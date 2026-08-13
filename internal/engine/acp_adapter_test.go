@@ -351,3 +351,19 @@ func TestACPStreamShim_ResultReturnsCanonicalFinalResult(t *testing.T) {
 		t.Errorf("expected StopEndTurn from peer's stopReason=end_turn; got %v", got.StopReason)
 	}
 }
+
+func TestACPStreamShim_MapsToolDenials(t *testing.T) {
+	stream := acp.NewStreamForTest("session-denial")
+	stream.RecordDenialForTest()
+	stream.RecordDenialForTest()
+	stream.RecordDenialForTest()
+	stream.CloseForTest(&acp.FinalResult{StopReason: canonical.StopEndTurn}, nil)
+
+	got, err := (&acpStreamShim{s: stream}).Result()
+	if err != nil {
+		t.Fatalf("shim.Result error: %v", err)
+	}
+	if got.ToolDenials != 3 {
+		t.Fatalf("shim FinalResult.ToolDenials = %d, want 3", got.ToolDenials)
+	}
+}

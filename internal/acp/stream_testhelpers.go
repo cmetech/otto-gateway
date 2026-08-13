@@ -54,3 +54,10 @@ func (s *Stream) PushForTest(ch canonical.Chunk) bool {
 func (s *Stream) CloseForTest(result *FinalResult, err error) {
 	s.close(result, err)
 }
+
+// RecordDenialForTest records a built-in tool permission denial on a
+// test-constructed stream. It exercises the production denial counter so
+// cross-package stream shims can verify their terminal metadata mapping.
+func (s *Stream) RecordDenialForTest() int {
+	return s.recordDenial()
+}

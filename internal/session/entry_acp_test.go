@@ -47,6 +47,7 @@ import (
 // own their own scripting without coupling.
 type recordingClient struct {
 	newSessionFn func(ctx context.Context, cwd string) (string, error)
+	promptFn     func(ctx context.Context, sid string, blocks []canonical.Block) (*acp.Stream, error)
 
 	mu               sync.Mutex
 	newSessionCalls  []string // recorded cwd args
@@ -84,10 +85,14 @@ func (rc *recordingClient) SetModel(_ context.Context, _ string, _ string) error
 	return nil
 }
 
-func (rc *recordingClient) Prompt(_ context.Context, sid string, _ []canonical.Block) (*acp.Stream, error) {
+func (rc *recordingClient) Prompt(ctx context.Context, sid string, blocks []canonical.Block) (*acp.Stream, error) {
 	rc.mu.Lock()
 	rc.promptCalls = append(rc.promptCalls, sid)
+	fn := rc.promptFn
 	rc.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, sid, blocks)
+	}
 	s := acp.NewStreamForTest(sid)
 	s.CloseForTest(&acp.FinalResult{StopReason: canonical.StopEndTurn}, nil)
 	return s, nil
@@ -312,5 +317,41 @@ func TestEntry_Prompt_PassesCachedSessionID(t *testing.T) {
 	}
 	if rc.promptCalls[0] != "kiro-sess-prompt" {
 		t.Errorf("Client.Prompt sid = %q; want %q (must forward cached SessionID verbatim)", rc.promptCalls[0], "kiro-sess-prompt")
+	}
+}
+
+func TestEntryACPStreamShim_MapsToolDenials(t *testing.T) {
+	rc := &recordingClient{
+		newSessionFn: func(_ context.Context, _ string) (string, error) {
+			return "kiro-sess-denial", nil
+		},
+		promptFn: func(_ context.Context, sid string, _ []canonical.Block) (*acp.Stream, error) {
+			s := acp.NewStreamForTest(sid)
+			s.RecordDenialForTest()
+			s.RecordDenialForTest()
+			s.RecordDenialForTest()
+			s.CloseForTest(&acp.FinalResult{StopReason: canonical.StopEndTurn}, nil)
+			return s, nil
+		},
+	}
+	r := session.New(session.Config{Logger: testutil.Logger(t), Factory: &recordingFactory{clients: []*recordingClient{rc}}})
+	defer func() { _ = r.Close() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	e, err := r.Get(ctx, "sid-denial", "/tmp")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	stream, err := e.Prompt(ctx, e.SessionID, nil)
+	if err != nil {
+		t.Fatalf("Entry.Prompt: %v", err)
+	}
+	got, err := stream.Result()
+	if err != nil {
+		t.Fatalf("stream.Result: %v", err)
+	}
+	if got.ToolDenials != 3 {
+		t.Fatalf("stream FinalResult.ToolDenials = %d, want 3", got.ToolDenials)
 	}
 }
