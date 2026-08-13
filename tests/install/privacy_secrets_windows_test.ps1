@@ -204,7 +204,14 @@ try {
             $observed = New-Object 'System.Collections.Generic.HashSet[string]'
             [System.IO.File]::WriteAllText($ReadyPath, 'ready')
             while (-not [System.IO.File]::Exists($StopPath)) {
-                $readDeadline = [DateTime]::UtcNow.AddMilliseconds(100)
+                # 5s, not 100ms. A rotation republishes five managed secrets,
+                # each its own ReplaceFile, and an on-access scanner can hold a
+                # handle across several of them. CI run 31653410481 exhausted the
+                # 100ms budget against a real ERROR_SHARING_VIOLATION
+                # (IOException HResult -2147024864) that was already on the
+                # retryable list below — the codes were right, the window was not.
+                # Matches the writer's PublishRetryBudgetMs in support-safe-open.ps1.
+                $readDeadline = [DateTime]::UtcNow.AddMilliseconds(5000)
                 while ($true) {
                     try {
                         $bytes = [System.Text.Encoding]::UTF8.GetBytes([System.IO.File]::ReadAllText($Path))

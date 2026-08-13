@@ -9,6 +9,7 @@ using System;
 using System.ComponentModel;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Threading;
 using Microsoft.Win32.SafeHandles;
 
 namespace GatewaySupport {
@@ -427,23 +428,56 @@ namespace GatewaySupport {
         // the destination identity and metadata while swapping its contents.
         // A first publication has no destination to replace, so MoveFileEx with
         // WRITE_THROUGH publishes that sibling temporary directly.
+        // Transient publication errors: an on-access scanner, indexer, or backup
+        // agent holding a brief handle on the destination. They clear on their
+        // own, so a bounded retry is the correct response.
+        //
+        // ERROR_ACCESS_DENIED is deliberately absent. A permission failure is a
+        // security signal on a managed-secret file and must fail closed rather
+        // than spin against it.
+        const int ErrorSharingViolation = 32;
+        const int ErrorLockViolation = 33;
+        const int ErrorUserMappedFile = 1224;
+        const int PublishRetryBudgetMs = 5000;
+
+        static bool IsTransientPublishError(int code) {
+            return code == ErrorSharingViolation
+                || code == ErrorLockViolation
+                || code == ErrorUserMappedFile;
+        }
+
         public static void PublishAtomicWindows(string temporaryPath, string destinationPath) {
             if (Environment.OSVersion.Platform != PlatformID.Win32NT)
                 throw new PlatformNotSupportedException(
                     "native atomic publication is available only on Windows");
-            bool published = File.Exists(destinationPath)
-                ? ReplaceFile(destinationPath, temporaryPath, null, 0,
-                    IntPtr.Zero, IntPtr.Zero)
-                : MoveFileEx(temporaryPath, destinationPath, MOVEFILE_WRITE_THROUGH);
-            if (!published) {
+            // Retrying preserves every guarantee this method makes: each attempt
+            // is a single atomic primitive, and an attempt that fails leaves both
+            // the destination and the sibling temporary exactly as they were. The
+            // budget covers a five-secret rotation on a runner whose scanner
+            // touches each freshly written file; observed CI sharing violations
+            // outlast the 100ms the reader side originally allowed.
+            DateTime deadline = DateTime.UtcNow.AddMilliseconds(PublishRetryBudgetMs);
+            int delayMs = 5;
+            int attempts = 0;
+            while (true) {
+                attempts++;
+                bool published = File.Exists(destinationPath)
+                    ? ReplaceFile(destinationPath, temporaryPath, null, 0,
+                        IntPtr.Zero, IntPtr.Zero)
+                    : MoveFileEx(temporaryPath, destinationPath, MOVEFILE_WRITE_THROUGH);
+                if (published) return;
                 // Capture the code before anything else can clobber the thread's
                 // last-error, and name it in the message: Win32Exception(int,
                 // string) keeps NativeErrorCode but prints only the message, so
-                // CI logs previously showed the failure with no code to triage
-                // (e.g. 32 = ERROR_SHARING_VIOLATION from a scanner's handle).
+                // CI logs previously showed the failure with no code to triage.
                 int lastError = Marshal.GetLastWin32Error();
-                throw new Win32Exception(lastError, string.Format(
-                    "atomic support publication failed (win32 error {0})", lastError));
+                if (!IsTransientPublishError(lastError) || DateTime.UtcNow >= deadline) {
+                    throw new Win32Exception(lastError, string.Format(
+                        "atomic support publication failed (win32 error {0}, {1} attempt(s))",
+                        lastError, attempts));
+                }
+                Thread.Sleep(delayMs);
+                if (delayMs < 50) delayMs *= 2;
             }
         }
 
