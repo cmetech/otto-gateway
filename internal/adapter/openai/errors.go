@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"otto-gateway/internal/canonical"
 	"otto-gateway/internal/privacy"
 )
 
@@ -89,6 +90,15 @@ func writePrivacyError(w http.ResponseWriter, err error) bool {
 		errorType = errAPI
 	}
 	writeErrorWithCode(w, status, errorType, code, &code)
+	return true
+}
+
+func writeSelectedModelError(w http.ResponseWriter, err error) bool {
+	code, message, ok := canonical.SelectedModelErrorInfo(err)
+	if !ok {
+		return false
+	}
+	writeErrorWithCode(w, http.StatusBadGateway, errAPI, message, &code)
 	return true
 }
 

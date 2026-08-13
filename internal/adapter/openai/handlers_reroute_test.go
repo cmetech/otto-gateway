@@ -153,6 +153,48 @@ func TestHandleChatCompletions_StreamReroute_OnPreHookStreamDisable(t *testing.T
 	}
 }
 
+func TestSelectedModelError_StreamRerouteCollectFromRunPrecedesSSEHeaders(t *testing.T) {
+	tests := []struct {
+		code    string
+		message string
+	}{
+		{
+			code:    canonical.CodeSelectedModelActivationFailed,
+			message: "The selected model could not be activated. Retry the request with model `auto`.",
+		},
+		{
+			code:    canonical.CodeSelectedModelToolProtocolFailed,
+			message: "The selected model did not produce a valid external tool call after one corrective attempt. Retry the request with model `auto`.",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.code, func(t *testing.T) {
+			eng := &rerouteFakeEngine{collectFromRunErr: &canonical.SelectedModelError{
+				Code:  tc.code,
+				Cause: errors.New("raw-cause-canary partial-assistant refusal tool-args schema-secret"),
+			}}
+			rec := doOpenAIPost(t, eng, "/chat/completions",
+				`{"model":"chosen-model","messages":[{"role":"user","content":"hi"}],"stream":true}`, nil)
+
+			if rec.Code != http.StatusBadGateway {
+				t.Fatalf("status=%d, want 502; body=%s", rec.Code, rec.Body.String())
+			}
+			if got := rec.Header().Get("Content-Type"); got != "application/json" {
+				t.Fatalf("Content-Type=%q, want application/json before SSE", got)
+			}
+			want := `{"error":{"message":` + mustJSONQuote(t, tc.message) + `,"type":"api_error","param":null,"code":` + mustJSONQuote(t, tc.code) + `}}` + "\n"
+			if got := rec.Body.String(); got != want {
+				t.Fatalf("body=%q, want %q", got, want)
+			}
+			for _, forbidden := range []string{"data:", "partial-assistant", "refusal", "raw-cause-canary", "tool-args", "schema-secret"} {
+				if strings.Contains(rec.Body.String(), forbidden) {
+					t.Fatalf("body contains forbidden %q: %s", forbidden, rec.Body.String())
+				}
+			}
+		})
+	}
+}
+
 func doOpenAIPost(t *testing.T, eng Engine, path, body string, headers http.Header) *httptest.ResponseRecorder {
 	t.Helper()
 	a := New(Config{

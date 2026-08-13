@@ -3,6 +3,7 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +12,103 @@ import (
 	"otto-gateway/internal/canonical"
 	"otto-gateway/internal/plugin/compress"
 )
+
+func TestSelectedModelError_NativeEnvelope(t *testing.T) {
+	tests := []struct {
+		code    string
+		message string
+	}{
+		{
+			code:    canonical.CodeSelectedModelActivationFailed,
+			message: "The selected model could not be activated. Retry the request with model `auto`.",
+		},
+		{
+			code:    canonical.CodeSelectedModelToolProtocolFailed,
+			message: "The selected model did not produce a valid external tool call after one corrective attempt. Retry the request with model `auto`.",
+		},
+	}
+	endpoints := []struct {
+		name string
+		path string
+		body string
+	}{
+		{
+			name: "chat_collect",
+			path: "/chat/completions",
+			body: `{"model":"chosen-model","messages":[{"role":"user","content":"hi"}],"stream":false}`,
+		},
+		{
+			name: "completions_collect",
+			path: "/completions",
+			body: `{"model":"chosen-model","prompt":"hi","stream":false}`,
+		},
+	}
+	for _, endpoint := range endpoints {
+		for _, tc := range tests {
+			t.Run(endpoint.name+"/"+tc.code, func(t *testing.T) {
+				eng := &fakeEngine{collectErr: &canonical.SelectedModelError{
+					Code:  tc.code,
+					Cause: errors.New("raw-cause-canary assistant-fragment tool-args schema-secret"),
+				}}
+				rec := doOpenAIPost(t, eng, endpoint.path, endpoint.body, nil)
+
+				if rec.Code != http.StatusBadGateway {
+					t.Fatalf("status=%d, want 502; body=%s", rec.Code, rec.Body.String())
+				}
+				if got := rec.Header().Get("Content-Type"); got != "application/json" {
+					t.Fatalf("Content-Type=%q, want application/json", got)
+				}
+				want := `{"error":{"message":` + mustJSONQuote(t, tc.message) + `,"type":"api_error","param":null,"code":` + mustJSONQuote(t, tc.code) + `}}` + "\n"
+				if got := rec.Body.String(); got != want {
+					t.Fatalf("body=%q, want exact native envelope %q", got, want)
+				}
+				for _, secret := range []string{"raw-cause-canary", "assistant-fragment", "tool-args", "schema-secret"} {
+					if strings.Contains(rec.Body.String(), secret) {
+						t.Fatalf("body leaked %q: %s", secret, rec.Body.String())
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestSelectedModelError_ObservationUsesClosedCode(t *testing.T) {
+	for _, code := range []string{
+		canonical.CodeSelectedModelActivationFailed,
+		canonical.CodeSelectedModelToolProtocolFailed,
+	} {
+		t.Run(code, func(t *testing.T) {
+			err := &canonical.SelectedModelError{Code: code, Cause: errors.New("raw-cause-canary")}
+			if got := classifyRequestError(err); got != code {
+				t.Fatalf("classifyRequestError()=%q, want closed code %q", got, code)
+			}
+		})
+	}
+}
+
+func TestSelectedModelError_OpenAIWriterPreservesExistingRequestID(t *testing.T) {
+	rec := httptest.NewRecorder()
+	rec.Header().Set("X-Request-Id", "request-id-canary")
+	rec.Header().Set("X-GW-Privacy-Receipt", "privacy-receipt-canary")
+	code := canonical.CodeSelectedModelActivationFailed
+	writeErrorWithCode(rec, http.StatusBadGateway, errAPI,
+		"The selected model could not be activated. Retry the request with model `auto`.", &code)
+	if got := rec.Header().Get("X-Request-Id"); got != "request-id-canary" {
+		t.Fatalf("X-Request-Id=%q, want preserved request-id-canary", got)
+	}
+	if got := rec.Header().Get("X-GW-Privacy-Receipt"); got != "privacy-receipt-canary" {
+		t.Fatalf("X-GW-Privacy-Receipt=%q, want preserved privacy-receipt-canary", got)
+	}
+}
+
+func mustJSONQuote(t *testing.T, value string) string {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("marshal JSON string: %v", err)
+	}
+	return string(encoded)
+}
 
 // TestWire covers wireToChatRequest: content polymorphism, role mapping,
 // system/developer hoist, accept-and-ignore extras.

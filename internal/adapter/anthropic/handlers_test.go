@@ -274,6 +274,50 @@ func doPostWithHeader(t *testing.T, a *Adapter, path, body string, headers map[s
 	return w
 }
 
+func TestSelectedModelError_HandlerUsesJSONBeforeSSEHeaders(t *testing.T) {
+	for _, tc := range []struct {
+		code    string
+		message string
+	}{
+		{
+			code:    canonical.CodeSelectedModelActivationFailed,
+			message: "The selected model could not be activated. Retry the request with model `auto`.",
+		},
+		{
+			code:    canonical.CodeSelectedModelToolProtocolFailed,
+			message: "The selected model did not produce a valid external tool call after one corrective attempt. Retry the request with model `auto`.",
+		},
+	} {
+		t.Run(tc.code, func(t *testing.T) {
+			eng := &fakeEngine{runErr: &canonical.SelectedModelError{
+				Code:  tc.code,
+				Cause: errors.New("raw-cause-canary partial-assistant refusal tool-args schema-secret"),
+			}}
+			rec := doPost(t, newTestAdapter(eng), "/messages",
+				`{"model":"chosen-model","max_tokens":64,"messages":[{"role":"user","content":"hi"}],"stream":true}`)
+
+			if rec.Code != http.StatusBadGateway {
+				t.Fatalf("status=%d, want 502; body=%s", rec.Code, rec.Body.String())
+			}
+			if got := rec.Header().Get("Content-Type"); got != "application/json" {
+				t.Fatalf("Content-Type=%q, want application/json", got)
+			}
+			if got := rec.Header().Get("X-Otto-Error-Code"); got != tc.code {
+				t.Fatalf("X-Otto-Error-Code=%q, want %q", got, tc.code)
+			}
+			want := `{"type":"error","error":{"type":"api_error","message":` + quoteJSONString(t, tc.message) + `}}` + "\n"
+			if got := rec.Body.String(); got != want {
+				t.Fatalf("body=%q, want %q", got, want)
+			}
+			for _, forbidden := range []string{"event:", "partial-assistant", "refusal", "raw-cause-canary", "tool-args", "schema-secret"} {
+				if strings.Contains(rec.Body.String(), forbidden) {
+					t.Fatalf("body contains forbidden %q: %s", forbidden, rec.Body.String())
+				}
+			}
+		})
+	}
+}
+
 // decodeEnvelope decodes the response body into an errorEnvelope and
 // asserts the expected type+message fields.
 func assertErrorEnvelope(t *testing.T, w *httptest.ResponseRecorder, wantStatus int, wantType, wantMessageContains string) {

@@ -225,6 +225,9 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 				writePoolExhaustedOpenAI(w)
 				return
 			}
+			if writeSelectedModelError(w, err) {
+				return
+			}
 			a.cfg.Logger.Error("openai: engine.Run error", "err", err)
 			writeError(w, http.StatusInternalServerError, errAPI, "internal error")
 			return
@@ -271,6 +274,9 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 			if cErr != nil {
 				observation.Outcome = classifyRequestError(cErr)
 				if writePrivacyError(w, cErr) {
+					return
+				}
+				if writeSelectedModelError(w, cErr) {
 					return
 				}
 				if errors.Is(cErr, canonical.ErrStreamIdleTimeout) {
@@ -375,6 +381,9 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 		// D-07 REL-POOL-01: pool exhaustion maps to 503 + Retry-After:5.
 		if errors.Is(err, canonical.ErrPoolExhausted) {
 			writePoolExhaustedOpenAI(w)
+			return
+		}
+		if writeSelectedModelError(w, err) {
 			return
 		}
 		// Quick 260531-ruv — idle-timeout maps to 504.
@@ -531,6 +540,9 @@ func (a *Adapter) handleCompletions(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		observation.Outcome = classifyRequestError(err)
 		if writePrivacyError(w, err) {
+			return
+		}
+		if writeSelectedModelError(w, err) {
 			return
 		}
 		// Quick 260531-ruv — idle-timeout maps to 504.

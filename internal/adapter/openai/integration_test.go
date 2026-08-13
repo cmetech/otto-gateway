@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -809,4 +810,113 @@ func TestIntegration_RealKiroCLI_Streaming(t *testing.T) {
 		t.Error("no text content delta observed")
 	}
 	t.Logf("integration streaming: %d data frames", dataFrames)
+}
+
+func TestIntegration_SelectedModelEngineRunError_PrecedesSSEHeaders(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	tests := []struct {
+		code    string
+		message string
+	}{
+		{
+			code:    canonical.CodeSelectedModelActivationFailed,
+			message: "The selected model could not be activated. Retry the request with model `auto`.",
+		},
+		{
+			code:    canonical.CodeSelectedModelToolProtocolFailed,
+			message: "The selected model did not produce a valid external tool call after one corrective attempt. Retry the request with model `auto`.",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.code, func(t *testing.T) {
+			eng := &fakeEngine{runErr: &canonical.SelectedModelError{
+				Code:  tc.code,
+				Cause: errors.New("raw-cause-canary partial-assistant refusal tool-args schema-secret"),
+			}}
+			srv := mountedAdapter(newFakeAdapter(eng))
+			defer srv.Close()
+
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
+				srv.URL+"/v1/chat/completions",
+				strings.NewReader(`{"model":"chosen-model","messages":[{"role":"user","content":"hi"}],"stream":true}`))
+			if err != nil {
+				t.Fatalf("NewRequest: %v", err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			resp, err := srv.Client().Do(req)
+			if err != nil {
+				t.Fatalf("Do: %v", err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			raw, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("read body: %v", err)
+			}
+
+			if resp.StatusCode != http.StatusBadGateway {
+				t.Fatalf("status=%d, want 502; body=%s", resp.StatusCode, raw)
+			}
+			if got := resp.Header.Get("Content-Type"); got != "application/json" {
+				t.Fatalf("Content-Type=%q, want application/json before SSE", got)
+			}
+			want := `{"error":{"message":` + mustJSONQuote(t, tc.message) + `,"type":"api_error","param":null,"code":` + mustJSONQuote(t, tc.code) + `}}` + "\n"
+			if string(raw) != want {
+				t.Fatalf("body=%q, want %q", raw, want)
+			}
+			for _, forbidden := range []string{"data:", "partial-assistant", "refusal", "raw-cause-canary", "tool-args", "schema-secret"} {
+				if strings.Contains(string(raw), forbidden) {
+					t.Fatalf("body contains forbidden %q: %s", forbidden, raw)
+				}
+			}
+		})
+	}
+}
+
+func TestIntegration_SelectedModelRecovery_UsesNormalOpenAIStreamingToolCall(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	eng := &fakeEngine{
+		runChunks: []canonical.Chunk{{
+			Kind: canonical.ChunkKindToolCall,
+			ToolCall: &canonical.ToolCallChunk{
+				ID: "call_recovered", Name: "get_weather", Args: map[string]any{"city": "Paris"},
+			},
+		}},
+		runFinal: &canonical.FinalResult{StopReason: canonical.StopEndTurn},
+	}
+	srv := mountedAdapter(newFakeAdapter(eng))
+	defer srv.Close()
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		srv.URL+"/v1/chat/completions", strings.NewReader(
+			`{"model":"chosen-model","messages":[{"role":"user","content":"weather"}],"stream":true,"tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object","properties":{"city":{"type":"string"}}}}}]}`))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d, want 200; body=%s", resp.StatusCode, raw)
+	}
+	if got := resp.Header.Get("Content-Type"); !strings.HasPrefix(got, "text/event-stream") {
+		t.Fatalf("Content-Type=%q, want text/event-stream", got)
+	}
+	for _, want := range []string{`"tool_calls"`, `"id":"call_recovered"`, `"name":"get_weather"`, `"arguments":"{\"city\":\"Paris\"}"`, `"finish_reason":"tool_calls"`, "data: [DONE]"} {
+		if !strings.Contains(string(raw), want) {
+			t.Fatalf("stream missing %q: %s", want, raw)
+		}
+	}
+	if strings.Contains(string(raw), canonical.CodeSelectedModelToolProtocolFailed) {
+		t.Fatalf("successful recovered stream contains error code: %s", raw)
+	}
 }

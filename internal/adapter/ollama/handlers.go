@@ -106,6 +106,16 @@ func writePrivacyError(w http.ResponseWriter, err error) bool {
 	return true
 }
 
+func writeSelectedModelError(w http.ResponseWriter, err error) bool {
+	code, message, ok := canonical.SelectedModelErrorInfo(err)
+	if !ok {
+		return false
+	}
+	w.Header().Set("X-Otto-Error-Code", code)
+	writeError(w, http.StatusBadGateway, message)
+	return true
+}
+
 func writePrivacyReceipt(w http.ResponseWriter, ctx context.Context) {
 	privacy.SetReceiptHeader(w, ctx)
 }
@@ -238,6 +248,9 @@ func (a *Adapter) handleChat(w http.ResponseWriter, r *http.Request) {
 				writePoolExhaustedOllama(w)
 				return
 			}
+			if writeSelectedModelError(w, err) {
+				return
+			}
 			// Quick 260531-ruv — idle-timeout maps to 504 (engine.Collect
 			// wraps canonical.ErrStreamIdleTimeout via the engine helper).
 			if errors.Is(err, canonical.ErrStreamIdleTimeout) {
@@ -331,6 +344,9 @@ func (a *Adapter) handleChat(w http.ResponseWriter, r *http.Request) {
 				"pool_exhausted: all workers busy; retry in 5s")
 			return
 		}
+		if writeSelectedModelError(w, err) {
+			return
+		}
 		// D-18-06 REL-HTTP-06: emit a WARN that mirrors the REL-HTTP-03
 		// field set (ndjson.go finalizeNDJSON's mid-stream worker-death
 		// log). worker_pid:0 and bytes_streamed:0 are placeholders — the
@@ -402,6 +418,9 @@ func (a *Adapter) handleChat(w http.ResponseWriter, r *http.Request) {
 		if cErr != nil {
 			observation.Outcome = classifyRequestError(cErr)
 			if writePrivacyError(w, cErr) {
+				return
+			}
+			if writeSelectedModelError(w, cErr) {
 				return
 			}
 			if errors.Is(cErr, canonical.ErrStreamIdleTimeout) {
@@ -607,6 +626,9 @@ func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 				writePoolExhaustedOllama(w)
 				return
 			}
+			if writeSelectedModelError(w, err) {
+				return
+			}
 			// Quick 260531-ruv — idle-timeout maps to 504 (engine.Collect
 			// wraps canonical.ErrStreamIdleTimeout via the engine helper).
 			if errors.Is(err, canonical.ErrStreamIdleTimeout) {
@@ -662,6 +684,9 @@ func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Retry-After", "5")
 			writeError(w, http.StatusServiceUnavailable,
 				"pool_exhausted: all workers busy; retry in 5s")
+			return
+		}
+		if writeSelectedModelError(w, err) {
 			return
 		}
 		// D-18-06 REL-HTTP-06: emit a WARN that mirrors the REL-HTTP-03
@@ -728,6 +753,9 @@ func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 		if cErr != nil {
 			observation.Outcome = classifyRequestError(cErr)
 			if writePrivacyError(w, cErr) {
+				return
+			}
+			if writeSelectedModelError(w, cErr) {
 				return
 			}
 			if errors.Is(cErr, canonical.ErrStreamIdleTimeout) {

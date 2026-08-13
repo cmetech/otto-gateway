@@ -3,11 +3,106 @@ package anthropic
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"otto-gateway/internal/canonical"
 )
+
+func TestSelectedModelError_NativeEnvelope(t *testing.T) {
+	tests := []struct {
+		code    string
+		message string
+	}{
+		{
+			code:    canonical.CodeSelectedModelActivationFailed,
+			message: "The selected model could not be activated. Retry the request with model `auto`.",
+		},
+		{
+			code:    canonical.CodeSelectedModelToolProtocolFailed,
+			message: "The selected model did not produce a valid external tool call after one corrective attempt. Retry the request with model `auto`.",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.code, func(t *testing.T) {
+			err := &canonical.SelectedModelError{
+				Code:  tc.code,
+				Cause: errors.New("raw-cause-canary assistant-fragment tool-args schema-secret"),
+			}
+			rec := httptest.NewRecorder()
+			rec.Header().Set("X-Request-Id", "request-id-canary")
+			rec.Header().Set("X-GW-Privacy-Receipt", "privacy-receipt-canary")
+			if !writeSelectedModelError(rec, err) {
+				t.Fatal("writeSelectedModelError()=false, want true")
+			}
+
+			if rec.Code != http.StatusBadGateway {
+				t.Fatalf("status=%d, want 502; body=%s", rec.Code, rec.Body.String())
+			}
+			if got := rec.Header().Get("Content-Type"); got != "application/json" {
+				t.Fatalf("Content-Type=%q, want application/json", got)
+			}
+			if got := rec.Header().Get("X-Otto-Error-Code"); got != tc.code {
+				t.Fatalf("X-Otto-Error-Code=%q, want %q", got, tc.code)
+			}
+			if got := rec.Header().Get("X-Request-Id"); got != "request-id-canary" {
+				t.Fatalf("X-Request-Id=%q, want preserved request-id-canary", got)
+			}
+			if got := rec.Header().Get("X-GW-Privacy-Receipt"); got != "privacy-receipt-canary" {
+				t.Fatalf("X-GW-Privacy-Receipt=%q, want preserved privacy-receipt-canary", got)
+			}
+			want := `{"type":"error","error":{"type":"api_error","message":` + quoteJSONString(t, tc.message) + `}}` + "\n"
+			if got := rec.Body.String(); got != want {
+				t.Fatalf("body=%q, want exact native envelope %q", got, want)
+			}
+			for _, secret := range []string{"raw-cause-canary", "assistant-fragment", "tool-args", "schema-secret"} {
+				if strings.Contains(rec.Body.String(), secret) {
+					t.Fatalf("body leaked %q: %s", secret, rec.Body.String())
+				}
+			}
+		})
+	}
+}
+
+func TestSelectedModelError_ObservationUsesClosedCode(t *testing.T) {
+	for _, code := range []string{
+		canonical.CodeSelectedModelActivationFailed,
+		canonical.CodeSelectedModelToolProtocolFailed,
+	} {
+		t.Run(code, func(t *testing.T) {
+			err := &canonical.SelectedModelError{Code: code, Cause: errors.New("raw-cause-canary")}
+			if got := classifyRequestError(err); got != code {
+				t.Fatalf("classifyRequestError()=%q, want closed code %q", got, code)
+			}
+		})
+	}
+}
+
+func TestSelectedModelError_AnthropicWriterPreservesExistingRequestID(t *testing.T) {
+	rec := httptest.NewRecorder()
+	rec.Header().Set("X-Request-Id", "request-id-canary")
+	rec.Header().Set("X-GW-Privacy-Receipt", "privacy-receipt-canary")
+	writeError(rec, http.StatusBadGateway, errAPI,
+		"The selected model could not be activated. Retry the request with model `auto`.")
+	if got := rec.Header().Get("X-Request-Id"); got != "request-id-canary" {
+		t.Fatalf("X-Request-Id=%q, want preserved request-id-canary", got)
+	}
+	if got := rec.Header().Get("X-GW-Privacy-Receipt"); got != "privacy-receipt-canary" {
+		t.Fatalf("X-GW-Privacy-Receipt=%q, want preserved privacy-receipt-canary", got)
+	}
+}
+
+func quoteJSONString(t *testing.T, value string) string {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("marshal JSON string: %v", err)
+	}
+	return string(encoded)
+}
 
 // TestErrorTypeConstants pins the 8 error_type literal strings against
 // D-20. Drift here breaks @anthropic-ai/sdk's error-class mapping.

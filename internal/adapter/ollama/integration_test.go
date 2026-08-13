@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"strings"
 	"testing"
 	"time"
 
@@ -250,5 +253,127 @@ func TestIntegration_TagsEndpoint(t *testing.T) {
 	}
 	if out.Models[0].Name != "auto" {
 		t.Errorf("models[0]: got %q, want auto (must be prepended)", out.Models[0].Name)
+	}
+}
+
+func TestIntegration_SelectedModelEngineRunError_PrecedesNDJSONHeaders(t *testing.T) {
+	tests := []struct {
+		code    string
+		message string
+	}{
+		{
+			code:    canonical.CodeSelectedModelActivationFailed,
+			message: "The selected model could not be activated. Retry the request with model `auto`.",
+		},
+		{
+			code:    canonical.CodeSelectedModelToolProtocolFailed,
+			message: "The selected model did not produce a valid external tool call after one corrective attempt. Retry the request with model `auto`.",
+		},
+	}
+	endpoints := []struct {
+		name string
+		path string
+		body string
+	}{
+		{
+			name: "chat",
+			path: "/chat",
+			body: `{"model":"chosen-model","messages":[{"role":"user","content":"hi"}],"stream":true}`,
+		},
+		{
+			name: "generate",
+			path: "/generate",
+			body: `{"model":"chosen-model","prompt":"hi","stream":true}`,
+		},
+	}
+	for _, endpoint := range endpoints {
+		for _, tc := range tests {
+			t.Run(endpoint.name+"/"+tc.code, func(t *testing.T) {
+				eng := &fakeEngine{runErr: &canonical.SelectedModelError{
+					Code:  tc.code,
+					Cause: errors.New("raw-cause-canary partial-assistant refusal tool-args schema-secret"),
+				}}
+				srv := httptest.NewServer(newTestAdapter(eng, nil).ProtectedRouter())
+				defer srv.Close()
+
+				req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
+					srv.URL+endpoint.path, strings.NewReader(endpoint.body))
+				if err != nil {
+					t.Fatalf("NewRequest: %v", err)
+				}
+				req.Header.Set("Content-Type", "application/json")
+				resp, err := srv.Client().Do(req)
+				if err != nil {
+					t.Fatalf("Do: %v", err)
+				}
+				defer func() { _ = resp.Body.Close() }()
+				raw, err := io.ReadAll(resp.Body)
+				if err != nil {
+					t.Fatalf("read body: %v", err)
+				}
+
+				if resp.StatusCode != http.StatusBadGateway {
+					t.Fatalf("status=%d, want 502; body=%s", resp.StatusCode, raw)
+				}
+				if got := resp.Header.Get("Content-Type"); got != "application/json" {
+					t.Fatalf("Content-Type=%q, want application/json before NDJSON", got)
+				}
+				if got := resp.Header.Get("X-Otto-Error-Code"); got != tc.code {
+					t.Fatalf("X-Otto-Error-Code=%q, want %q", got, tc.code)
+				}
+				want := `{"error":` + quoteJSONString(t, tc.message) + `}` + "\n"
+				if string(raw) != want {
+					t.Fatalf("body=%q, want %q", raw, want)
+				}
+				for _, forbidden := range []string{`"done":`, "partial-assistant", "refusal", "raw-cause-canary", "tool-args", "schema-secret"} {
+					if strings.Contains(string(raw), forbidden) {
+						t.Fatalf("body contains forbidden %q: %s", forbidden, raw)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestIntegration_SelectedModelRecovery_UsesNormalOllamaStreamingToolCall(t *testing.T) {
+	eng := &fakeEngine{runChunks: []canonical.Chunk{{
+		Kind: canonical.ChunkKindToolCall,
+		ToolCall: &canonical.ToolCallChunk{
+			ID: "call_recovered", Name: "get_weather", Args: map[string]any{"city": "Paris"},
+		},
+	}}}
+	srv := httptest.NewServer(newTestAdapter(eng, nil).ProtectedRouter())
+	defer srv.Close()
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		srv.URL+"/chat", strings.NewReader(
+			`{"model":"chosen-model","messages":[{"role":"user","content":"weather"}],"stream":true,"tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object","properties":{"city":{"type":"string"}}}}}]}`))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d, want 200; body=%s", resp.StatusCode, raw)
+	}
+	if got := resp.Header.Get("Content-Type"); !strings.HasPrefix(got, "application/x-ndjson") {
+		t.Fatalf("Content-Type=%q, want application/x-ndjson", got)
+	}
+	for _, want := range []string{`"tool_calls"`, `"name":"get_weather"`, `"arguments":{"city":"Paris"}`, `"done":true`} {
+		if !strings.Contains(string(raw), want) {
+			t.Fatalf("stream missing %q: %s", want, raw)
+		}
+	}
+	if strings.Contains(string(raw), canonical.CodeSelectedModelToolProtocolFailed) {
+		t.Fatalf("successful recovered stream contains error code: %s", raw)
 	}
 }

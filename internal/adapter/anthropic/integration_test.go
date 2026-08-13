@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -515,4 +516,120 @@ func deref(s *string) string {
 		return "<nil>"
 	}
 	return *s
+}
+
+func TestIntegration_SelectedModelEngineRunError_PrecedesSSEHeaders(t *testing.T) {
+	tests := []struct {
+		code    string
+		message string
+	}{
+		{
+			code:    canonical.CodeSelectedModelActivationFailed,
+			message: "The selected model could not be activated. Retry the request with model `auto`.",
+		},
+		{
+			code:    canonical.CodeSelectedModelToolProtocolFailed,
+			message: "The selected model did not produce a valid external tool call after one corrective attempt. Retry the request with model `auto`.",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.code, func(t *testing.T) {
+			eng := &fakeEngine{runErr: &canonical.SelectedModelError{
+				Code:  tc.code,
+				Cause: errors.New("raw-cause-canary partial-assistant refusal tool-args schema-secret"),
+			}}
+			srv := httptest.NewServer(newTestAdapter(eng).ProtectedRouter())
+			defer srv.Close()
+
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
+				srv.URL+"/messages", strings.NewReader(
+					`{"model":"chosen-model","max_tokens":64,"messages":[{"role":"user","content":"hi"}],"stream":true}`))
+			if err != nil {
+				t.Fatalf("NewRequest: %v", err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("anthropic-version", "2023-06-01")
+			resp, err := srv.Client().Do(req)
+			if err != nil {
+				t.Fatalf("Do: %v", err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			raw, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("read body: %v", err)
+			}
+
+			if resp.StatusCode != http.StatusBadGateway {
+				t.Fatalf("status=%d, want 502; body=%s", resp.StatusCode, raw)
+			}
+			if got := resp.Header.Get("Content-Type"); got != "application/json" {
+				t.Fatalf("Content-Type=%q, want application/json before SSE", got)
+			}
+			if got := resp.Header.Get("X-Otto-Error-Code"); got != tc.code {
+				t.Fatalf("X-Otto-Error-Code=%q, want %q", got, tc.code)
+			}
+			want := `{"type":"error","error":{"type":"api_error","message":` + quoteJSONString(t, tc.message) + `}}` + "\n"
+			if string(raw) != want {
+				t.Fatalf("body=%q, want %q", raw, want)
+			}
+			for _, forbidden := range []string{"event:", "partial-assistant", "refusal", "raw-cause-canary", "tool-args", "schema-secret"} {
+				if strings.Contains(string(raw), forbidden) {
+					t.Fatalf("body contains forbidden %q: %s", forbidden, raw)
+				}
+			}
+		})
+	}
+}
+
+func TestIntegration_SelectedModelRecovery_UsesNormalAnthropicStreamingToolUse(t *testing.T) {
+	chunks := make(chan canonical.Chunk, 1)
+	chunks <- canonical.Chunk{
+		Kind: canonical.ChunkKindToolCall,
+		ToolCall: &canonical.ToolCallChunk{
+			ID: "toolu_recovered", Name: "get_weather", Args: map[string]any{"city": "Paris"},
+		},
+	}
+	close(chunks)
+	eng := &fakeEngine{runHandle: &fakeRunHandle{
+		stream: &fakeStream{
+			chunks: chunks,
+			final:  &canonical.FinalResult{StopReason: canonical.StopEndTurn},
+		},
+		sessionID: "selected-model-recovered",
+	}}
+	srv := httptest.NewServer(newTestAdapter(eng).ProtectedRouter())
+	defer srv.Close()
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		srv.URL+"/messages", strings.NewReader(
+			`{"model":"chosen-model","max_tokens":64,"messages":[{"role":"user","content":"weather"}],"stream":true,"tools":[{"name":"get_weather","input_schema":{"type":"object","properties":{"city":{"type":"string"}}}}]}`))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("anthropic-version", "2023-06-01")
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d, want 200; body=%s", resp.StatusCode, raw)
+	}
+	if got := resp.Header.Get("Content-Type"); !strings.HasPrefix(got, "text/event-stream") {
+		t.Fatalf("Content-Type=%q, want text/event-stream", got)
+	}
+	for _, want := range []string{"event: content_block_start", `"type":"tool_use"`, `"id":"toolu_recovered"`, `"name":"get_weather"`, `"partial_json":"{\"city\":\"Paris\"}"`, `"stop_reason":"tool_use"`, "event: message_stop"} {
+		if !strings.Contains(string(raw), want) {
+			t.Fatalf("stream missing %q: %s", want, raw)
+		}
+	}
+	if strings.Contains(string(raw), canonical.CodeSelectedModelToolProtocolFailed) {
+		t.Fatalf("successful recovered stream contains error code: %s", raw)
+	}
 }

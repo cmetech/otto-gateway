@@ -258,6 +258,9 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 				writePoolExhaustedAnthropic(w)
 				return
 			}
+			if writeSelectedModelError(w, err) {
+				return
+			}
 			a.cfg.Logger.Error("anthropic: engine.Run error", "err", err)
 			writeError(w, http.StatusInternalServerError, errAPI, "internal error")
 			return
@@ -307,6 +310,9 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 			if cErr != nil {
 				observation.Outcome = classifyRequestError(cErr)
 				if writePrivacyError(w, cErr) {
+					return
+				}
+				if writeSelectedModelError(w, cErr) {
 					return
 				}
 				if errors.Is(cErr, canonical.ErrStreamIdleTimeout) {
@@ -447,6 +453,9 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Retry-After", "5")
 			writeError(w, http.StatusServiceUnavailable, errOverloaded,
 				"all workers busy; retry in 5s")
+			return
+		}
+		if writeSelectedModelError(w, err) {
 			return
 		}
 		// Quick 260531-ruv — idle-timeout maps to 504 Gateway Timeout

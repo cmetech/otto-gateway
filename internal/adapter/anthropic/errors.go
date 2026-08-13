@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"otto-gateway/internal/canonical"
 	"otto-gateway/internal/privacy"
 )
 
@@ -103,6 +104,16 @@ func writePrivacyError(w http.ResponseWriter, err error) bool {
 		errorType = errAPI
 	}
 	writeError(w, status, errorType, code)
+	return true
+}
+
+func writeSelectedModelError(w http.ResponseWriter, err error) bool {
+	code, message, ok := canonical.SelectedModelErrorInfo(err)
+	if !ok {
+		return false
+	}
+	w.Header().Set("X-Otto-Error-Code", code)
+	writeError(w, http.StatusBadGateway, errAPI, message)
 	return true
 }
 

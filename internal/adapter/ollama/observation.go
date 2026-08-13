@@ -31,6 +31,14 @@ func (a *Adapter) observeRequest(observation *RequestObservation) {
 }
 
 func classifyRequestError(err error) string {
+	if code, _, ok := canonical.SelectedModelErrorInfo(err); ok {
+		switch code {
+		case canonical.CodeSelectedModelActivationFailed:
+			return canonical.CodeSelectedModelActivationFailed
+		case canonical.CodeSelectedModelToolProtocolFailed:
+			return canonical.CodeSelectedModelToolProtocolFailed
+		}
+	}
 	switch {
 	case errors.Is(err, canonical.ErrPoolExhausted):
 		return "pool_exhausted"
