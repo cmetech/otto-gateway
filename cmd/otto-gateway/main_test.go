@@ -14,13 +14,17 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/google/go-cmp/cmp"
+	"go.uber.org/goleak"
 
 	"otto-gateway/internal/acp"
+	"otto-gateway/internal/adapter/openai"
 	"otto-gateway/internal/admin"
 	"otto-gateway/internal/canonical"
 	"otto-gateway/internal/config"
@@ -39,6 +43,210 @@ import (
 type fakeRecycleMetricsRecorder struct{}
 
 func (*fakeRecycleMetricsRecorder) RecordWorkerRecycle(string, uint64, time.Duration) {}
+
+type largeReplayACP struct {
+	chunks []canonical.Chunk
+}
+
+func (f *largeReplayACP) NewSession(context.Context, string) (string, error) {
+	return "large-replay-session", nil
+}
+
+func (f *largeReplayACP) SetModel(context.Context, string, string) error { return nil }
+
+func (f *largeReplayACP) Prompt(context.Context, string, []canonical.Block) (engine.Stream, error) {
+	chunks := make(chan canonical.Chunk, len(f.chunks))
+	for _, chunk := range f.chunks {
+		chunks <- chunk
+	}
+	close(chunks)
+	return &largeReplaySource{
+		chunks: chunks,
+		final: &canonical.FinalResult{
+			SessionID: "large-replay-session", ChunkCount: len(f.chunks), StopReason: canonical.StopEndTurn,
+		},
+	}, nil
+}
+
+func (f *largeReplayACP) Cancel(string) {}
+
+type largeReplaySource struct {
+	chunks <-chan canonical.Chunk
+	final  *canonical.FinalResult
+}
+
+func (s *largeReplaySource) Chunks() <-chan canonical.Chunk { return s.chunks }
+
+func (s *largeReplaySource) Result() (*canonical.FinalResult, error) { return s.final, nil }
+
+type capturingOpenAIEngine struct {
+	openaiEngineAdapter
+	runs chan openai.RunHandle
+}
+
+func (e *capturingOpenAIEngine) Run(ctx context.Context, req *canonical.ChatRequest) (openai.RunHandle, error) {
+	run, err := e.openaiEngineAdapter.Run(ctx, req)
+	if err == nil {
+		e.runs <- run
+	}
+	return run, err
+}
+
+type cancelOnFirstWriteRecorder struct {
+	*httptest.ResponseRecorder
+	cancel context.CancelFunc
+	once   sync.Once
+}
+
+func (w *cancelOnFirstWriteRecorder) Write(p []byte) (int, error) {
+	n, err := w.ResponseRecorder.Write(p)
+	w.once.Do(w.cancel)
+	return n, err
+}
+
+func (w *cancelOnFirstWriteRecorder) Flush() { w.ResponseRecorder.Flush() }
+
+func TestOpenAIStreamingEmitter_CancellationStopsLargeEngineReplay(t *testing.T) {
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+
+	const chunkCount = 81
+	chunks := make([]canonical.Chunk, chunkCount)
+	for i := range chunks {
+		chunks[i] = canonical.Chunk{
+			Kind: canonical.ChunkKindText,
+			Text: &canonical.TextChunk{Content: "replay"},
+		}
+	}
+	eng := engine.New(engine.Config{
+		Logger: testutil.Logger(t),
+		ACP:    &largeReplayACP{chunks: chunks},
+	})
+	capturing := &capturingOpenAIEngine{
+		openaiEngineAdapter: openaiEngineAdapter{engine: eng},
+		runs:                make(chan openai.RunHandle, 1),
+	}
+	adapter := openai.New(openai.Config{Logger: testutil.Logger(t), Engine: capturing})
+	router := chi.NewRouter()
+	router.Route("/v1", func(r chi.Router) { adapter.RegisterRoutes(r) })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	body := `{"model":"selected-model","messages":[{"role":"user","content":"weather"}],"stream":true,"tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object"}}}]}`
+	req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	w := &cancelOnFirstWriteRecorder{ResponseRecorder: httptest.NewRecorder(), cancel: cancel}
+	router.ServeHTTP(w, req)
+
+	var run openai.RunHandle
+	select {
+	case run = <-capturing.runs:
+	case <-time.After(time.Second):
+		t.Fatal("OpenAI handler did not receive the engine run handle")
+	}
+	resultDone := make(chan error, 1)
+	go func() {
+		_, resultErr := run.Stream().Result()
+		resultDone <- resultErr
+	}()
+	select {
+	case resultErr := <-resultDone:
+		if !errors.Is(resultErr, context.Canceled) {
+			t.Fatalf("replay Result error = %v, want context.Canceled", resultErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("OpenAI SSE cancellation left the engine replay Result blocked")
+	}
+}
+
+func TestToolProtocolRecoveryObserver_LogsOneBoundedPayloadFreeRecordPerEvent(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+	gwMetrics := metrics.New(
+		metrics.BuildInfo{GatewayID: "recovery-log-test"},
+		func() metrics.PoolStats { return metrics.PoolStats{} },
+		func() metrics.SessionStats { return metrics.SessionStats{} },
+		nil,
+	)
+	observer := newToolProtocolObserver(logger, gwMetrics)
+
+	const rawCustomModel = "Custom Model/Private"
+	events := []engine.ToolProtocolEvent{
+		{
+			Model: rawCustomModel, RequestID: "request-activation",
+			Reason: engine.ReasonActivationFailed, Outcome: engine.OutcomeFailed,
+			RecommendAuto: true,
+		},
+		{Model: "selected-model", RequestID: "request-first", Outcome: engine.OutcomeFirstAttempt},
+		{
+			Model: "selected-model", RequestID: "request-corrected",
+			Reason: engine.ReasonCapabilityRefusal, Outcome: engine.OutcomeCorrected,
+			CorrectiveAttempts: 1,
+		},
+		{
+			Model: "selected-model", RequestID: "request-failed",
+			Reason: engine.ReasonRequiredMissing, Outcome: engine.OutcomeFailed,
+			CorrectiveAttempts: 1, RecommendAuto: true,
+		},
+		{
+			Model:  "selected-model",
+			Reason: engine.ReasonMalformedWrapper, Outcome: engine.OutcomeBufferBypass,
+			CorrectiveAttempts: 1,
+		},
+	}
+	for _, event := range events {
+		observer(event)
+	}
+
+	lines := strings.Split(strings.TrimSpace(logs.String()), "\n")
+	if len(lines) != len(events) {
+		t.Fatalf("recovery log records = %d, want %d:\n%s", len(lines), len(events), logs.String())
+	}
+	wantModels := []string{"custom-model-private", "selected-model", "selected-model", "selected-model", "selected-model"}
+	for i, line := range lines {
+		var record map[string]any
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("log %d is not JSON: %v\n%s", i, err, line)
+		}
+		if record["msg"] != "selected_model_tool_protocol_recovery" {
+			t.Errorf("log %d msg = %v", i, record["msg"])
+		}
+		if record["model"] != wantModels[i] {
+			t.Errorf("log %d model = %v, want %q", i, record["model"], wantModels[i])
+		}
+		if record["reason"] != string(events[i].Reason) || record["outcome"] != string(events[i].Outcome) {
+			t.Errorf("log %d classification = (%v,%v), want (%q,%q)", i, record["reason"], record["outcome"], events[i].Reason, events[i].Outcome)
+		}
+		if record["corrective_attempts"] != float64(events[i].CorrectiveAttempts) {
+			t.Errorf("log %d corrective_attempts = %v, want %d", i, record["corrective_attempts"], events[i].CorrectiveAttempts)
+		}
+		if record["recommend_auto"] != events[i].RecommendAuto || record["request_id"] != events[i].RequestID {
+			t.Errorf("log %d recommendation/request = (%v,%v), want (%v,%q)", i, record["recommend_auto"], record["request_id"], events[i].RecommendAuto, events[i].RequestID)
+		}
+		for _, forbiddenKey := range []string{"response", "prompt", "arguments", "schemas", "session_id", "credentials", "cause"} {
+			if _, exists := record[forbiddenKey]; exists {
+				t.Errorf("log %d contains forbidden field %q", i, forbiddenKey)
+			}
+		}
+	}
+	for _, forbidden := range []string{
+		rawCustomModel,
+		"response-text-canary", "prompt-canary", "arguments-canary", "schema-canary",
+		"session-canary", "credential-canary", "cause-canary",
+	} {
+		if strings.Contains(logs.String(), forbidden) {
+			t.Errorf("recovery logs exposed sensitive canary %q", forbidden)
+		}
+	}
+
+	metricsRecorder := httptest.NewRecorder()
+	gwMetrics.Handler().ServeHTTP(metricsRecorder, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	metricsBody := metricsRecorder.Body.String()
+	if strings.Contains(metricsBody, "gw_model_requests_total{") {
+		t.Fatalf("recovery observer incremented model-request metrics:\n%s", metricsBody)
+	}
+	if !strings.Contains(metricsBody, `model="custom-model-private",reason="activation_failed"} 1`) {
+		t.Fatalf("recovery metrics did not reuse the logged normalized model:\n%s", metricsBody)
+	}
+}
 
 func TestPoolDetailAdapter_SnapshotSlotFromPoolCopiesIdleRecycleActivity(t *testing.T) {
 	sid := "session-17"

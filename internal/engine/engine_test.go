@@ -293,6 +293,7 @@ func TestEngineRun_SelectedModelActivationError_IsTypedSafeAndCleansUp(t *testin
 		withPostHooks(post),
 		func(cfg *Config) {
 			cfg.OnModelRequest = func(model string) { modelRequests = append(modelRequests, model) }
+			cfg.RequestIDFromContext = func(context.Context) string { return "request-activation-1" }
 			cfg.OnToolProtocolEvent = func(event ToolProtocolEvent) { protocolEvents = append(protocolEvents, event) }
 		},
 	)
@@ -323,7 +324,8 @@ func TestEngineRun_SelectedModelActivationError_IsTypedSafeAndCleansUp(t *testin
 		t.Errorf("OnModelRequest calls = %v, want [model-x]", modelRequests)
 	}
 	wantEvent := ToolProtocolEvent{
-		Model: "model-x", Reason: ReasonActivationFailed, Outcome: OutcomeFailed,
+		Model: "model-x", RequestID: "request-activation-1",
+		Reason: ReasonActivationFailed, Outcome: OutcomeFailed,
 		CorrectiveAttempts: 0, RecommendAuto: true,
 	}
 	if !reflect.DeepEqual(protocolEvents, []ToolProtocolEvent{wantEvent}) {

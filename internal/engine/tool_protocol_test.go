@@ -75,6 +75,28 @@ func TestClassifyToolProtocolAttempt_ConservativeRecoveryMatrix(t *testing.T) {
 		{"aliased native call", base, attemptObservation{NativeCall: true, ToolCalls: []canonical.ToolCall{{Name: "execute"}}}, map[string]string{"execute": "get_weather"}, ""},
 		{"direct wrapper", base, attemptObservation{Text: `{"tool_call":{"name":"get_weather","arguments":{"location":"Boston"}}}`}, nil, ""},
 		{"deferred dispatcher wrapper", &dispatcher, attemptObservation{Text: `{"tool_call":{"name":"unregistered","arguments":{"location":"Boston"}}}`}, nil, ""},
+		{
+			"required unoffered native plus correct wrapper",
+			&required,
+			attemptObservation{
+				NativeCall: true,
+				ToolCalls:  []canonical.ToolCall{{Name: "execute"}},
+				Text:       `{"tool_call":{"name":"get_weather","arguments":{"location":"Boston"}}}`,
+			},
+			nil,
+			"",
+		},
+		{
+			"named wrong native plus correct wrapper",
+			&named,
+			attemptObservation{
+				NativeCall: true,
+				ToolCalls:  []canonical.ToolCall{{Name: "read_file"}},
+				Text:       `{"tool_call":{"name":"get_weather","arguments":{"location":"Boston"}}}`,
+			},
+			nil,
+			"",
+		},
 		{"built in tool denied", base, attemptObservation{Final: &canonical.FinalResult{ToolDenials: 1}}, nil, ReasonBuiltInToolDenied},
 		{"required missing", &required, attemptObservation{Text: "I will answer directly."}, nil, ReasonRequiredMissing},
 		{"named mismatch", &named, attemptObservation{ToolCalls: []canonical.ToolCall{{Name: "read_file"}}}, nil, ReasonNamedMismatch},

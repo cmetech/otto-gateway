@@ -169,17 +169,21 @@ func (m *Metrics) RecordModelRequest(model string) {
 	m.modelReqs.WithLabelValues(modelBucket(m.models, model)).Inc()
 }
 
-// RecordToolProtocolEvent records one bounded selected-model protocol outcome.
+// RecordToolProtocolEvent records one bounded selected-model protocol outcome
+// and returns the exact normalized model label used for its metric series so
+// structured logging can reuse it without a second normalization path.
 // Empty/unknown reasons do not create failure series; empty/unknown outcomes do
 // not create recovery series. The model shares RecordModelRequest's limiter so
 // both attribution surfaces have one cardinality budget.
-func (m *Metrics) RecordToolProtocolEvent(model, reason, outcome string) {
+func (m *Metrics) RecordToolProtocolEvent(model, reason, outcome string) string {
+	model = modelBucket(m.models, model)
 	if validToolProtocolReason(reason) {
-		m.toolProtocolFailures.WithLabelValues(modelBucket(m.models, model), reason).Inc()
+		m.toolProtocolFailures.WithLabelValues(model, reason).Inc()
 	}
 	if validToolProtocolOutcome(outcome) {
-		m.toolProtocolRecovery.WithLabelValues(modelBucket(m.models, model), outcome).Inc()
+		m.toolProtocolRecovery.WithLabelValues(model, outcome).Inc()
 	}
+	return model
 }
 
 func validToolProtocolReason(reason string) bool {

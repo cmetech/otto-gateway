@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"otto-gateway/internal/canonical"
+
+	"go.uber.org/goleak"
 )
 
 type recoveryPromptScript struct {
@@ -524,7 +526,7 @@ func TestToolProtocolRecovery_CorrectiveBufferBypassKeepsFailedBytesHidden(t *te
 	}
 	wantEvent := ToolProtocolEvent{
 		Model: "selected-model", Reason: ReasonMalformedWrapper,
-		Outcome: OutcomeBufferBypass, CorrectiveAttempts: 0,
+		Outcome: OutcomeBufferBypass, CorrectiveAttempts: 1,
 	}
 	if got := events.snapshot(); !reflect.DeepEqual(got, []ToolProtocolEvent{wantEvent}) {
 		t.Fatalf("events = %#v, want %#v", got, []ToolProtocolEvent{wantEvent})
@@ -677,6 +679,46 @@ func TestToolProtocolRecovery_NilObserverDoesNotPanic(t *testing.T) {
 	eng := newRecoveryEngine(t, acpClient, nil)
 	if _, err := eng.Collect(context.Background(), recoveryRequest("selected-model", nil)); err != nil {
 		t.Fatalf("Collect with nil OnToolProtocolEvent: %v", err)
+	}
+}
+
+func TestToolProtocolRecovery_CollectCancellationStopsLargeReplay(t *testing.T) {
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+
+	const chunkCount = replayStreamBufferSize + 17
+	chunks := make([]canonical.Chunk, chunkCount)
+	for i := range chunks {
+		chunks[i] = textPreflightChunk("replay")
+	}
+	acpClient := &recordingRecoveryACP{prompts: []recoveryPromptScript{{
+		stream: closedPreflightStream(chunks, &canonical.FinalResult{
+			SessionID: "recovery-sid", ChunkCount: chunkCount, StopReason: canonical.StopEndTurn,
+		}, nil),
+	}}}
+	eng := newRecoveryEngine(t, acpClient, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	run, err := eng.Run(ctx, recoveryRequest("selected-model", nil))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	cancel()
+	if _, err := eng.CollectFromRun(ctx, run, recoveryRequest("selected-model", nil)); !errors.Is(err, context.Canceled) {
+		t.Fatalf("CollectFromRun error = %v, want context.Canceled", err)
+	}
+
+	resultDone := make(chan error, 1)
+	go func() {
+		_, resultErr := run.Stream().Result()
+		resultDone <- resultErr
+	}()
+	select {
+	case resultErr := <-resultDone:
+		if !errors.Is(resultErr, context.Canceled) {
+			t.Fatalf("replay Result error = %v, want context.Canceled", resultErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("replay Result deadlocked after Collect cancellation")
 	}
 }
 

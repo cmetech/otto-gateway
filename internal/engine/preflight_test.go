@@ -111,7 +111,7 @@ func TestReplayStream_ReplaysExactOrderAndImmutableTerminalState(t *testing.T) {
 		toolPreflightChunk("call-1", "weather", map[string]any{"city": "Boston"}),
 	}
 	final := &canonical.FinalResult{SessionID: "session-1", ChunkCount: 3, StopReason: canonical.StopEndTurn, ToolDenials: 2}
-	stream := newReplayStream(chunks, final, terminalErr)
+	stream := newReplayStream(context.Background(), chunks, final, terminalErr)
 
 	// Mutating the source after construction must not alter replay-owned data.
 	chunks[0].Text.Content = "mutated"
@@ -146,7 +146,7 @@ func TestReplayStream_ReplaysExactOrderAndImmutableTerminalState(t *testing.T) {
 
 func TestReplayStream_ZeroChunksClosesAndReturnsNilFinal(t *testing.T) {
 	terminalErr := errors.New("empty terminal")
-	stream := newReplayStream(nil, nil, terminalErr)
+	stream := newReplayStream(context.Background(), nil, nil, terminalErr)
 	select {
 	case _, ok := <-stream.Chunks():
 		if ok {

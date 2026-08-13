@@ -128,6 +128,10 @@ type Config struct {
 	// event carries no response, argument, schema, or session data. Nil is a
 	// no-op.
 	OnToolProtocolEvent func(ToolProtocolEvent)
+	// RequestIDFromContext is the command-wired correlation seam used to add
+	// the existing adapter-stamped request ID to ToolProtocolEvent without an
+	// engine-to-plugin dependency. Nil leaves RequestID empty.
+	RequestIDFromContext func(context.Context) string
 }
 
 // Engine is the concrete orchestrator. Construct via New.
@@ -272,7 +276,7 @@ func (e *Engine) Run(ctx context.Context, req *canonical.ChatRequest) (*Run, err
 		if err := e.cfg.ACP.SetModel(ctx, sid, req.Model); err != nil {
 			e.cfg.ACP.Cancel(sid)
 			runErrCleanup()
-			e.observeToolProtocol(ToolProtocolEvent{
+			e.observeToolProtocol(ctx, ToolProtocolEvent{
 				Model: req.Model, Reason: ReasonActivationFailed,
 				Outcome: OutcomeFailed, CorrectiveAttempts: 0, RecommendAuto: true,
 			})
@@ -300,7 +304,7 @@ func (e *Engine) Run(ctx context.Context, req *canonical.ChatRequest) (*Run, err
 			if beginErr != nil {
 				e.cfg.ACP.Cancel(sid)
 				runErrCleanup()
-				e.observeToolProtocol(ToolProtocolEvent{
+				e.observeToolProtocol(ctx, ToolProtocolEvent{
 					Model: req.Model, Outcome: OutcomeFailed,
 					CorrectiveAttempts: 0, RecommendAuto: true,
 				})
@@ -324,7 +328,7 @@ func (e *Engine) Run(ctx context.Context, req *canonical.ChatRequest) (*Run, err
 		e.cfg.ACP.Cancel(sid)
 		runErrCleanup()
 		if guarded {
-			e.observeToolProtocol(ToolProtocolEvent{
+			e.observeToolProtocol(ctx, ToolProtocolEvent{
 				Model: req.Model, Outcome: OutcomeFailed,
 				CorrectiveAttempts: 0, RecommendAuto: false,
 			})
@@ -411,7 +415,7 @@ func (e *Engine) recoverToolProtocol(
 		finishSequence()
 		e.cfg.ACP.Cancel(sid)
 		runErrCleanup()
-		e.observeToolProtocol(ToolProtocolEvent{
+		e.observeToolProtocol(ctx, ToolProtocolEvent{
 			Model: req.Model, Reason: reason, Outcome: OutcomeFailed,
 			CorrectiveAttempts: attempts, RecommendAuto: ctxErr == nil,
 		})
@@ -437,7 +441,7 @@ func (e *Engine) recoverToolProtocol(
 		return fail("", 0, err)
 	}
 	if first.observation.BufferBypass {
-		e.observeToolProtocol(ToolProtocolEvent{
+		e.observeToolProtocol(ctx, ToolProtocolEvent{
 			Model: req.Model, Outcome: OutcomeBufferBypass,
 			CorrectiveAttempts: 0,
 		})
@@ -447,7 +451,7 @@ func (e *Engine) recoverToolProtocol(
 	reason := classifyToolProtocolAttempt(policy, first.observation, e.cfg.ToolAliases)
 	if reason == "" {
 		finishFullyCaptured(first.stream)
-		e.observeToolProtocol(ToolProtocolEvent{
+		e.observeToolProtocol(ctx, ToolProtocolEvent{
 			Model: req.Model, Outcome: OutcomeFirstAttempt,
 			CorrectiveAttempts: 0,
 		})
@@ -469,9 +473,9 @@ func (e *Engine) recoverToolProtocol(
 		return fail(reason, 1, err)
 	}
 	if second.observation.BufferBypass {
-		e.observeToolProtocol(ToolProtocolEvent{
+		e.observeToolProtocol(ctx, ToolProtocolEvent{
 			Model: req.Model, Reason: reason, Outcome: OutcomeBufferBypass,
-			CorrectiveAttempts: 0,
+			CorrectiveAttempts: 1,
 		})
 		return second.stream, nil
 	}
@@ -479,7 +483,7 @@ func (e *Engine) recoverToolProtocol(
 	secondReason := classifyToolProtocolAttempt(policy, second.observation, e.cfg.ToolAliases)
 	if secondReason == "" {
 		finishFullyCaptured(second.stream)
-		e.observeToolProtocol(ToolProtocolEvent{
+		e.observeToolProtocol(ctx, ToolProtocolEvent{
 			Model: req.Model, Reason: reason, Outcome: OutcomeCorrected,
 			CorrectiveAttempts: 1,
 		})
@@ -491,7 +495,10 @@ func (e *Engine) recoverToolProtocol(
 	return fail(reason, 1, fmt.Errorf("engine: selected-model tool protocol: %s", secondReason))
 }
 
-func (e *Engine) observeToolProtocol(event ToolProtocolEvent) {
+func (e *Engine) observeToolProtocol(ctx context.Context, event ToolProtocolEvent) {
+	if e.cfg.RequestIDFromContext != nil {
+		event.RequestID = e.cfg.RequestIDFromContext(ctx)
+	}
 	if e.cfg.OnToolProtocolEvent != nil {
 		e.cfg.OnToolProtocolEvent(event)
 	}

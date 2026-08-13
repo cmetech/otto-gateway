@@ -103,12 +103,14 @@ surface-specific [OpenAI](../../internal/adapter/openai/sse_posthook_test.go),
 
 ```mermaid
 flowchart TD
-    R[Canonical request after PreHooks] --> G{Explicit model + tools + eligible decision?}
-    G -- No: auto, tool-less, or ineligible --> U[Existing path: one prompt; no protocol guard]
-    G -- Yes --> S[Set exact selected model]
+    R[Canonical request after PreHooks] --> M{Explicit model?}
+    M -- No: auto or empty --> U[Existing path: one prompt; no model activation or protocol guard]
+    M -- Yes --> S[Set exact selected model]
     S --> SA{Activation succeeded?}
     SA -- No --> E1[Typed 502: selected_model_activation_failed]
-    SA -- Yes --> P1[Prompt once and preflight output]
+    SA -- Yes --> G{Tools + eligible decision + tool_choice not none?}
+    G -- No: tool-less, none, or post-tool --> U2[One prompt with exact model; no protocol guard]
+    G -- Yes --> P1[Prompt once and preflight output]
     P1 --> V1{Valid external tool call or normal text?}
     V1 -- Yes --> O[Continue normal stream / render]
     V1 -- Guarded protocol failure --> P2[One corrective prompt on same session and model]
@@ -116,6 +118,7 @@ flowchart TD
     V2 -- Yes --> O
     V2 -- No --> E2[Typed 502: selected_model_tool_protocol_failed; recommend auto]
     U --> O
+    U2 --> O
     O --> H[Run ordered PostHooks once]
     E1 --> H
     E2 --> H
@@ -125,9 +128,11 @@ flowchart TD
 Eligibility and closed failure reasons live in
 [tool_protocol.go](../../internal/engine/tool_protocol.go). The implementation
 does not switch models during recovery: [engine.go](../../internal/engine/engine.go)
-retains the same session and selected model for exactly one correction. Auto,
+retains the same session and selected model for exactly one correction. Auto
+and empty model requests skip activation and the guard. Every explicit request
+first activates its exact model; after successful activation, explicit
 tool-less, tool-result continuation, and `tool_choice: none` requests keep their
-existing path.
+existing unguarded prompt path.
 
 ## Client compatibility: OpenAI, Anthropic, and Ollama
 
@@ -484,5 +489,8 @@ JSON
 ```
 
 For Anthropic or Ollama clients, the same two error codes are returned in
-`X-Otto-Error-Code` with a surface-native JSON error body. These commands verify
-contract shape and policy; they are not performance benchmarks.
+`X-Otto-Error-Code` with a surface-native JSON error body. These commands
+exercise safe request and response examples; the policy proof comes from the
+[policy matrix](../../internal/engine/tool_protocol_test.go) and
+[ineligible-path recovery tests](../../internal/engine/tool_protocol_recovery_test.go).
+They are not performance benchmarks.

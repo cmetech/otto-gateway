@@ -21,6 +21,7 @@ const replayStreamBufferSize = 64
 
 // replayStream owns an immutable snapshot of a fully drained source stream.
 type replayStream struct {
+	ctx    context.Context
 	chunks []canonical.Chunk
 	final  *canonical.FinalResult
 	err    error
@@ -30,13 +31,17 @@ type replayStream struct {
 	done  chan struct{}
 }
 
-func newReplayStream(chunks []canonical.Chunk, final *canonical.FinalResult, err error) *replayStream {
+func newReplayStream(ctx context.Context, chunks []canonical.Chunk, final *canonical.FinalResult, err error) *replayStream {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	owned := cloneChunks(chunks)
 	capacity := len(owned)
 	if capacity > replayStreamBufferSize {
 		capacity = replayStreamBufferSize
 	}
 	return &replayStream{
+		ctx:    ctx,
 		chunks: owned,
 		final:  cloneFinalResult(final),
 		err:    err,
@@ -50,8 +55,20 @@ func (s *replayStream) Chunks() <-chan canonical.Chunk {
 		go func() {
 			defer close(s.done)
 			defer close(s.out)
+			if err := s.ctx.Err(); err != nil {
+				s.err = err
+				return
+			}
 			for _, chunk := range s.chunks {
-				s.out <- chunk
+				select {
+				case <-s.ctx.Done():
+					s.err = s.ctx.Err()
+					return
+				case s.out <- chunk:
+				}
+			}
+			if err := s.ctx.Err(); err != nil {
+				s.err = err
 			}
 		}()
 	})
@@ -278,7 +295,7 @@ func captureToolProtocolAttempt(
 	}
 	return toolProtocolAttemptCapture{
 		observation: observation,
-		stream:      newReplayStream(prefix, final, nil),
+		stream:      newReplayStream(ctx, prefix, final, nil),
 	}, nil
 }
 

@@ -107,6 +107,56 @@ func metricsWorkerProcFromPool(w pool.WorkerProc) metrics.WorkerProc {
 	}
 }
 
+func newToolProtocolObserver(logger *slog.Logger, gwMetrics *metrics.Metrics) func(engine.ToolProtocolEvent) {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return func(event engine.ToolProtocolEvent) {
+		model := "other"
+		if gwMetrics != nil {
+			model = gwMetrics.RecordToolProtocolEvent(
+				event.Model,
+				boundedToolProtocolReason(event.Reason),
+				boundedToolProtocolOutcome(event.Outcome),
+			)
+		}
+		attempts := 0
+		if event.CorrectiveAttempts == 1 {
+			attempts = 1
+		}
+		logger.Info(
+			"selected_model_tool_protocol_recovery",
+			"model", model,
+			"reason", boundedToolProtocolReason(event.Reason),
+			"corrective_attempts", attempts,
+			"outcome", boundedToolProtocolOutcome(event.Outcome),
+			"recommend_auto", event.RecommendAuto,
+			"request_id", event.RequestID,
+		)
+	}
+}
+
+func boundedToolProtocolReason(reason engine.ToolProtocolReason) string {
+	switch reason {
+	case "", engine.ReasonActivationFailed, engine.ReasonRequiredMissing,
+		engine.ReasonNamedMismatch, engine.ReasonMalformedWrapper,
+		engine.ReasonCapabilityRefusal, engine.ReasonBuiltInToolDenied:
+		return string(reason)
+	default:
+		return "unknown"
+	}
+}
+
+func boundedToolProtocolOutcome(outcome engine.ToolProtocolOutcome) string {
+	switch outcome {
+	case engine.OutcomeFirstAttempt, engine.OutcomeCorrected,
+		engine.OutcomeFailed, engine.OutcomeBufferBypass:
+		return string(outcome)
+	default:
+		return "unknown"
+	}
+}
+
 func runUtility(args []string, in io.Reader, out io.Writer) (bool, error) {
 	if len(args) == 0 || args[0] != "redact-support" {
 		return false, nil
@@ -711,6 +761,7 @@ func newAppWithRegistryLoader(ctx context.Context, cfg config.Config, logger *sl
 			return out
 		},
 	)
+	toolProtocolObserver := newToolProtocolObserver(logger, gwMetrics)
 	privacyMetrics.Store(gwMetrics)
 	gwMetrics.RegisterCompression(func() metrics.CompressionStats {
 		stats := compressHook.Stats()
@@ -787,22 +838,17 @@ func newAppWithRegistryLoader(ctx context.Context, cfg config.Config, logger *sl
 			}
 
 			a.engine = engine.New(engine.Config{
-				Logger:            logger,
-				ACP:               a.pool,
-				DefaultCWD:        cfg.KiroCWD,
-				PreHooks:          chain.Pre,
-				PostHooks:         chain.Post,
-				StreamIdleTimeout: streamIdle,
-				ToolAliases:       cfg.ToolAliases,
-				HookErrorReporter: hookErrors.Record,
-				OnModelRequest:    gwMetrics.RecordModelRequest, // kiro usage-metrics parity: gw_model_requests_total
-				OnToolProtocolEvent: func(event engine.ToolProtocolEvent) {
-					gwMetrics.RecordToolProtocolEvent(
-						event.Model,
-						string(event.Reason),
-						string(event.Outcome),
-					)
-				},
+				Logger:               logger,
+				ACP:                  a.pool,
+				DefaultCWD:           cfg.KiroCWD,
+				PreHooks:             chain.Pre,
+				PostHooks:            chain.Post,
+				StreamIdleTimeout:    streamIdle,
+				ToolAliases:          cfg.ToolAliases,
+				HookErrorReporter:    hookErrors.Record,
+				OnModelRequest:       gwMetrics.RecordModelRequest, // kiro usage-metrics parity: gw_model_requests_total
+				RequestIDFromContext: plugin.RequestIDFromContext,
+				OnToolProtocolEvent:  toolProtocolObserver,
 			})
 		}
 
@@ -866,62 +912,47 @@ func newAppWithRegistryLoader(ctx context.Context, cfg config.Config, logger *sl
 		registryForAdapters = a.registry
 		ollamaEngineForSession = func(entry *session.Entry) ollama.Engine {
 			return ollamaEngineAdapter{engine: engine.New(engine.Config{
-				Logger:            logger,
-				ACP:               entry,
-				DefaultCWD:        cfg.KiroCWD,
-				PreHooks:          chain.Pre,  // Phase 8 — per-session chain
-				PostHooks:         chain.Post, // Phase 8 — per-session chain
-				StreamIdleTimeout: streamIdle, // quick 260531-ruv
-				ToolAliases:       cfg.ToolAliases,
-				HookErrorReporter: hookErrors.Record,            // /health/hooks LastError surface
-				OnModelRequest:    gwMetrics.RecordModelRequest, // kiro usage-metrics parity: gw_model_requests_total
-				OnToolProtocolEvent: func(event engine.ToolProtocolEvent) {
-					gwMetrics.RecordToolProtocolEvent(
-						event.Model,
-						string(event.Reason),
-						string(event.Outcome),
-					)
-				},
+				Logger:               logger,
+				ACP:                  entry,
+				DefaultCWD:           cfg.KiroCWD,
+				PreHooks:             chain.Pre,  // Phase 8 — per-session chain
+				PostHooks:            chain.Post, // Phase 8 — per-session chain
+				StreamIdleTimeout:    streamIdle, // quick 260531-ruv
+				ToolAliases:          cfg.ToolAliases,
+				HookErrorReporter:    hookErrors.Record,            // /health/hooks LastError surface
+				OnModelRequest:       gwMetrics.RecordModelRequest, // kiro usage-metrics parity: gw_model_requests_total
+				RequestIDFromContext: plugin.RequestIDFromContext,
+				OnToolProtocolEvent:  toolProtocolObserver,
 			})}
 		}
 		openaiEngineForSession = func(entry *session.Entry) openai.Engine {
 			return openaiEngineAdapter{engine: engine.New(engine.Config{
-				Logger:            logger,
-				ACP:               entry,
-				DefaultCWD:        cfg.KiroCWD,
-				PreHooks:          chain.Pre,  // Phase 8
-				PostHooks:         chain.Post, // Phase 8
-				StreamIdleTimeout: streamIdle, // quick 260531-ruv
-				ToolAliases:       cfg.ToolAliases,
-				HookErrorReporter: hookErrors.Record,            // /health/hooks LastError surface
-				OnModelRequest:    gwMetrics.RecordModelRequest, // kiro usage-metrics parity: gw_model_requests_total
-				OnToolProtocolEvent: func(event engine.ToolProtocolEvent) {
-					gwMetrics.RecordToolProtocolEvent(
-						event.Model,
-						string(event.Reason),
-						string(event.Outcome),
-					)
-				},
+				Logger:               logger,
+				ACP:                  entry,
+				DefaultCWD:           cfg.KiroCWD,
+				PreHooks:             chain.Pre,  // Phase 8
+				PostHooks:            chain.Post, // Phase 8
+				StreamIdleTimeout:    streamIdle, // quick 260531-ruv
+				ToolAliases:          cfg.ToolAliases,
+				HookErrorReporter:    hookErrors.Record,            // /health/hooks LastError surface
+				OnModelRequest:       gwMetrics.RecordModelRequest, // kiro usage-metrics parity: gw_model_requests_total
+				RequestIDFromContext: plugin.RequestIDFromContext,
+				OnToolProtocolEvent:  toolProtocolObserver,
 			})}
 		}
 		anthropicEngineForSession = func(entry *session.Entry) anthropic.Engine {
 			return anthropicEngineAdapter{engine: engine.New(engine.Config{
-				Logger:            logger,
-				ACP:               entry,
-				DefaultCWD:        cfg.KiroCWD,
-				PreHooks:          chain.Pre,  // Phase 8
-				PostHooks:         chain.Post, // Phase 8
-				StreamIdleTimeout: streamIdle, // quick 260531-ruv
-				ToolAliases:       cfg.ToolAliases,
-				HookErrorReporter: hookErrors.Record,            // /health/hooks LastError surface
-				OnModelRequest:    gwMetrics.RecordModelRequest, // kiro usage-metrics parity: gw_model_requests_total
-				OnToolProtocolEvent: func(event engine.ToolProtocolEvent) {
-					gwMetrics.RecordToolProtocolEvent(
-						event.Model,
-						string(event.Reason),
-						string(event.Outcome),
-					)
-				},
+				Logger:               logger,
+				ACP:                  entry,
+				DefaultCWD:           cfg.KiroCWD,
+				PreHooks:             chain.Pre,  // Phase 8
+				PostHooks:            chain.Post, // Phase 8
+				StreamIdleTimeout:    streamIdle, // quick 260531-ruv
+				ToolAliases:          cfg.ToolAliases,
+				HookErrorReporter:    hookErrors.Record,            // /health/hooks LastError surface
+				OnModelRequest:       gwMetrics.RecordModelRequest, // kiro usage-metrics parity: gw_model_requests_total
+				RequestIDFromContext: plugin.RequestIDFromContext,
+				OnToolProtocolEvent:  toolProtocolObserver,
 			})}
 		}
 	}

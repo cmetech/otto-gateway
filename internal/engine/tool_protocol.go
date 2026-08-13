@@ -34,6 +34,7 @@ const (
 // data.
 type ToolProtocolEvent struct {
 	Model              string
+	RequestID          string
 	Reason             ToolProtocolReason
 	Outcome            ToolProtocolOutcome
 	CorrectiveAttempts int
@@ -114,12 +115,19 @@ func classifyToolProtocolAttempt(policy toolProtocolPolicy, observation attemptO
 		return ""
 	}
 
-	calls := observation.ToolCalls
-	if len(calls) == 0 && !observation.NativeCall {
-		calls = ExtractToolCallWrappers(observation.Text, policy.tools)
-	}
 	hasOfferedCall := false
-	for _, call := range calls {
+	matchesPolicy := func(name string) bool {
+		if !toolOffered(name, policy.tools) {
+			return false
+		}
+		hasOfferedCall = true
+		return policy.requirement != toolProtocolNamed || name == policy.namedTool
+	}
+
+	// Native chunks and text wrappers are independent candidates. A model can
+	// emit an unusable native built-in before a valid caller wrapper; the
+	// unusable candidate must not suppress wrapper validation.
+	for _, call := range observation.ToolCalls {
 		name := call.Name
 		if observation.NativeCall {
 			var surfaced bool
@@ -128,11 +136,13 @@ func classifyToolProtocolAttempt(policy toolProtocolPolicy, observation attemptO
 				continue
 			}
 		}
-		if !toolOffered(name, policy.tools) {
-			continue
+		if matchesPolicy(name) {
+			return ""
 		}
-		hasOfferedCall = true
-		if policy.requirement != toolProtocolNamed || name == policy.namedTool {
+	}
+	wrapperCalls := ExtractToolCallWrappers(observation.Text, policy.tools)
+	for _, call := range wrapperCalls {
+		if matchesPolicy(call.Name) {
 			return ""
 		}
 	}
@@ -143,7 +153,7 @@ func classifyToolProtocolAttempt(policy toolProtocolPolicy, observation attemptO
 	if policy.requirement == toolProtocolNamed && hasOfferedCall {
 		return ReasonNamedMismatch
 	}
-	if len(observation.ToolCalls) == 0 && !observation.NativeCall && hasWholeResponseToolCallMarker(observation.Text) {
+	if len(wrapperCalls) == 0 && hasWholeResponseToolCallMarker(observation.Text) {
 		return ReasonMalformedWrapper
 	}
 	if isHighConfidenceToolCapabilityRefusal(observation.Text) {
