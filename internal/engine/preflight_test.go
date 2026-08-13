@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"math"
 	"reflect"
 	"strings"
 	"sync"
@@ -19,6 +20,47 @@ type preflightTestStream struct {
 	err         error
 	resultCalls atomic.Int32
 	onResult    func()
+}
+
+type drainDependentPreflightStream struct {
+	chunks       chan canonical.Chunk
+	sourceClosed chan struct{}
+	releaseClose chan struct{}
+	abort        chan struct{}
+	resultCalls  atomic.Int32
+}
+
+func newDrainDependentPreflightStream(chunkCount int) *drainDependentPreflightStream {
+	s := &drainDependentPreflightStream{
+		chunks:       make(chan canonical.Chunk),
+		sourceClosed: make(chan struct{}),
+		releaseClose: make(chan struct{}),
+		abort:        make(chan struct{}),
+	}
+	go func() {
+		defer close(s.sourceClosed)
+		defer close(s.chunks)
+		for i := 0; i < chunkCount; i++ {
+			select {
+			case s.chunks <- textPreflightChunk("live"):
+			case <-s.abort:
+				return
+			}
+		}
+		select {
+		case <-s.releaseClose:
+		case <-s.abort:
+		}
+	}()
+	return s
+}
+
+func (s *drainDependentPreflightStream) Chunks() <-chan canonical.Chunk { return s.chunks }
+
+func (s *drainDependentPreflightStream) Result() (*canonical.FinalResult, error) {
+	s.resultCalls.Add(1)
+	<-s.sourceClosed
+	return &canonical.FinalResult{ChunkCount: 3}, nil
 }
 
 func (s *preflightTestStream) Chunks() <-chan canonical.Chunk { return s.chunks }
@@ -218,9 +260,12 @@ func TestPrefixLiveStream_ResultAndFinishExactlyOnceInOrder(t *testing.T) {
 
 func TestPrefixLiveStream_ContextCancellationStopsPump(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	live := make(chan canonical.Chunk)
-	underlying := &preflightTestStream{chunks: live, final: &canonical.FinalResult{}}
-	stream := newPrefixLiveStream(ctx, []canonical.Chunk{textPreflightChunk("blocked")}, underlying, nil)
+	underlying := newDrainDependentPreflightStream(3)
+	t.Cleanup(func() { close(underlying.abort) })
+	var finishCalls atomic.Int32
+	stream := newPrefixLiveStream(ctx, []canonical.Chunk{textPreflightChunk("prefix")}, underlying, func() {
+		finishCalls.Add(1)
+	})
 	out := stream.Chunks()
 	cancel()
 	closed := make(chan struct{})
@@ -236,8 +281,25 @@ func TestPrefixLiveStream_ContextCancellationStopsPump(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("composite pump did not close after cancellation")
 	}
+	select {
+	case <-underlying.sourceClosed:
+		t.Fatal("source closed before the test released it; output responsiveness was not isolated")
+	default:
+	}
+	close(underlying.releaseClose)
+	select {
+	case <-underlying.sourceClosed:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("source was not drained to closure after cancellation")
+	}
 	if _, err := stream.Result(); err != nil {
 		t.Fatalf("Result error = %v", err)
+	}
+	if calls := underlying.resultCalls.Load(); calls != 1 {
+		t.Fatalf("underlying Result calls = %d, want 1", calls)
+	}
+	if calls := finishCalls.Load(); calls != 1 {
+		t.Fatalf("finish calls = %d, want 1", calls)
 	}
 }
 
@@ -334,6 +396,13 @@ func TestCaptureToolProtocolAttempt_NamedMismatchIsNotDecisive(t *testing.T) {
 	}
 }
 
+func TestNativeCallSatisfiesPolicy_RequiresOfferedTool(t *testing.T) {
+	policy := toolProtocolPolicy{requirement: toolProtocolOptional}
+	if nativeCallSatisfiesPolicy("execute", policy, nil) {
+		t.Fatal("native call with zero offered tools was incorrectly decisive")
+	}
+}
+
 func TestCaptureToolProtocolAttempt_ByteCapBypassesWithoutReadingNextChunk(t *testing.T) {
 	first := textPreflightChunk(strings.Repeat("x", maxToolProtocolPreflightBytes))
 	boundary := textPreflightChunk("overflow")
@@ -403,6 +472,63 @@ func TestCaptureToolProtocolAttempt_AllChunkKindsCountTowardByteCap(t *testing.T
 				t.Fatalf("composite chunk count = %d, want 2", got)
 			}
 		})
+	}
+}
+
+func TestRetainedChunkBytesWithinBudget_LargeEmptyContainerExceeds(t *testing.T) {
+	items := make([]any, maxToolProtocolPreflightBytes/16+1)
+	chunk := toolPreflightChunk("id", "not_offered", map[string]any{"items": items})
+	if _, exceeded := retainedChunkBytesWithinBudget(chunk, maxToolProtocolPreflightBytes); !exceeded {
+		t.Fatal("large []any of nil values did not exceed retained-byte budget")
+	}
+}
+
+func TestRetainedChunkBytesWithinBudget_DeepAndCyclicGraphsExceed(t *testing.T) {
+	t.Run("deep", func(t *testing.T) {
+		root := map[string]any{}
+		cursor := root
+		for i := 0; i < 128; i++ {
+			next := map[string]any{}
+			cursor["next"] = next
+			cursor = next
+		}
+		chunk := toolPreflightChunk("id", "not_offered", root)
+		if _, exceeded := retainedChunkBytesWithinBudget(chunk, maxToolProtocolPreflightBytes); !exceeded {
+			t.Fatal("excessively deep argument graph did not exceed safe traversal budget")
+		}
+	})
+
+	t.Run("cycle", func(t *testing.T) {
+		cycle := map[string]any{}
+		cycle["self"] = cycle
+		chunk := toolPreflightChunk("id", "not_offered", cycle)
+		if _, exceeded := retainedChunkBytesWithinBudget(chunk, maxToolProtocolPreflightBytes); !exceeded {
+			t.Fatal("cyclic argument graph did not exceed safe traversal budget")
+		}
+	})
+}
+
+func TestSaturatingRetainedBytes_DoesNotOverflow(t *testing.T) {
+	got, exceeded := saturatingRetainedBytes(math.MaxInt, math.MaxInt, maxToolProtocolPreflightBytes)
+	if !exceeded || got != maxToolProtocolPreflightBytes+1 {
+		t.Fatalf("saturatingRetainedBytes = (%d, %v), want (%d, true)", got, exceeded, maxToolProtocolPreflightBytes+1)
+	}
+}
+
+func TestCaptureToolProtocolAttempt_LargeEmptyContainerBypassesBeforeClone(t *testing.T) {
+	items := make([]any, maxToolProtocolPreflightBytes/16+1)
+	chunk := toolPreflightChunk("id", "not_offered", map[string]any{"items": items})
+	policy := toolProtocolPolicy{tools: []canonical.ToolSpec{{Name: "offered"}}}
+	source := closedPreflightStream([]canonical.Chunk{chunk}, &canonical.FinalResult{ChunkCount: 1}, nil)
+	capture, err := captureToolProtocolAttempt(context.Background(), source, time.Second, policy, nil, nil)
+	if err != nil {
+		t.Fatalf("capture error = %v", err)
+	}
+	if !capture.observation.BufferBypass {
+		t.Fatal("large empty container was cloned into replay instead of bypassed")
+	}
+	if got := collectPreflightChunks(t, capture.stream); !reflect.DeepEqual(got, []canonical.Chunk{chunk}) {
+		t.Fatalf("boundary passthrough = %#v, want original chunk", got)
 	}
 }
 

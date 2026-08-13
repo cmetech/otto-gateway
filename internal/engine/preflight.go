@@ -113,22 +113,22 @@ func (s *prefixLiveStream) Chunks() <-chan canonical.Chunk {
 }
 
 func (s *prefixLiveStream) pump() {
+	live := s.source.Chunks()
 	for _, chunk := range s.prefix {
 		if !s.send(chunk) {
-			s.closeAndFinish()
+			s.cancelAndFinish(live)
 			return
 		}
 	}
 	if s.boundary != nil && !s.send(*s.boundary) {
-		s.closeAndFinish()
+		s.cancelAndFinish(live)
 		return
 	}
 
-	live := s.source.Chunks()
 	for {
 		select {
 		case <-s.ctx.Done():
-			s.closeAndFinish()
+			s.cancelAndFinish(live)
 			return
 		case chunk, ok := <-live:
 			if !ok {
@@ -136,7 +136,7 @@ func (s *prefixLiveStream) pump() {
 				return
 			}
 			if !s.send(chunk) {
-				s.closeAndFinish()
+				s.cancelAndFinish(live)
 				return
 			}
 		}
@@ -154,6 +154,16 @@ func (s *prefixLiveStream) send(chunk canonical.Chunk) bool {
 
 func (s *prefixLiveStream) closeAndFinish() {
 	close(s.out)
+	s.finishTerminal()
+}
+
+func (s *prefixLiveStream) cancelAndFinish(live <-chan canonical.Chunk) {
+	// Stop the downstream stream immediately, but keep consuming upstream.
+	// Some Stream implementations cannot close or make Result available until
+	// a backpressured producer has delivered every pending chunk.
+	close(s.out)
+	for range live {
+	}
 	s.finishTerminal()
 }
 
@@ -213,14 +223,12 @@ func captureToolProtocolAttempt(
 
 	rangeErr := RangeChunksWithIdleTimeout(ctx, stable, idle, func(chunk canonical.Chunk) error {
 		chunkCount++
-		chunkSize := retainedChunkBytes(chunk)
-		if retainedSize > maxToolProtocolPreflightBytes-chunkSize {
-			retainedSize = maxToolProtocolPreflightBytes + 1
-		} else {
-			retainedSize += chunkSize
-		}
+		remaining := maxToolProtocolPreflightBytes - retainedSize
+		chunkSize, unsafeToRetain := retainedChunkBytesWithinBudget(chunk, remaining)
+		var overflow bool
+		retainedSize, overflow = saturatingRetainedBytes(retainedSize, chunkSize, maxToolProtocolPreflightBytes)
 
-		if chunkCount > maxToolProtocolPreflightChunks || retainedSize > maxToolProtocolPreflightBytes {
+		if chunkCount > maxToolProtocolPreflightChunks || unsafeToRetain || overflow {
 			observation.BufferBypass = true
 			// The already-consumed boundary cannot be put back on source. Keep
 			// its immutable ACP value separately so the retained copied prefix
@@ -275,8 +283,11 @@ func captureToolProtocolAttempt(
 }
 
 func nativeCallSatisfiesPolicy(name string, policy toolProtocolPolicy, aliases map[string]string) bool {
+	if len(policy.tools) == 0 {
+		return false
+	}
 	resolved, surface := ResolveNativeToolName(name, policy.tools, aliases)
-	if !surface {
+	if !surface || !toolOffered(resolved, policy.tools) {
 		return false
 	}
 	return policy.requirement != toolProtocolNamed || resolved == policy.namedTool
@@ -360,55 +371,183 @@ func cloneRetainedValue(value any) any {
 	}
 }
 
-func retainedChunkBytes(chunk canonical.Chunk) int {
+const (
+	maxRetainedValueDepth    = 64
+	retainedMapBaseBytes     = 64
+	retainedMapEntryBytes    = 64
+	retainedSliceHeaderBytes = 24
+	retainedInterfaceBytes   = 16
+)
+
+type retainedVisit struct {
+	kind reflect.Kind
+	ptr  uintptr
+}
+
+type retainedByteWalker struct {
+	limit    int
+	used     int
+	exceeded bool
+	visiting map[retainedVisit]struct{}
+}
+
+// retainedChunkBytesWithinBudget conservatively accounts for payload and
+// JSON-container storage that cloneChunk would retain. It saturates as soon as
+// budget is exceeded and rejects cyclic/excessively deep graphs before clone.
+func retainedChunkBytesWithinBudget(chunk canonical.Chunk, budget int) (int, bool) {
+	walker := retainedByteWalker{
+		limit:    budget,
+		visiting: make(map[retainedVisit]struct{}),
+	}
+	if budget < 0 {
+		walker.markExceeded()
+		return walker.used, true
+	}
 	switch chunk.Kind {
 	case canonical.ChunkKindText:
 		if chunk.Text != nil {
-			return len(chunk.Text.Content)
+			walker.add(len(chunk.Text.Content))
 		}
 	case canonical.ChunkKindThought:
 		if chunk.Thought != nil {
-			return len(chunk.Thought.Content)
+			walker.add(len(chunk.Thought.Content))
 		}
 	case canonical.ChunkKindToolCall:
 		if chunk.ToolCall != nil {
-			return len(chunk.ToolCall.ID) + len(chunk.ToolCall.Name) + retainedValueBytes(chunk.ToolCall.Args)
+			walker.add(len(chunk.ToolCall.ID))
+			walker.add(len(chunk.ToolCall.Name))
+			walker.walkValue(chunk.ToolCall.Args, 0)
 		}
 	case canonical.ChunkKindPlan:
 		if chunk.Plan != nil {
-			return len(chunk.Plan.Content)
+			walker.add(len(chunk.Plan.Content))
 		}
 	}
-	return 0
+	return walker.used, walker.exceeded
 }
 
-func retainedValueBytes(value any) int {
+func (w *retainedByteWalker) walkValue(value any, depth int) {
+	if w.exceeded {
+		return
+	}
+	if depth > maxRetainedValueDepth {
+		w.markExceeded()
+		return
+	}
+
 	switch value := value.(type) {
 	case nil:
-		return 0
+		return
 	case string:
-		return len(value)
+		w.add(len(value))
 	case []byte:
-		return len(value)
+		w.add(retainedSliceHeaderBytes)
+		w.add(len(value))
 	case map[string]any:
-		total := 0
+		visit := retainedVisit{kind: reflect.Map, ptr: reflect.ValueOf(value).Pointer()}
+		if !w.enter(visit) {
+			return
+		}
+		defer w.leave(visit)
+		w.add(retainedMapBaseBytes)
+		w.addProduct(len(value), retainedMapEntryBytes)
+		if w.exceeded {
+			return
+		}
 		for key, item := range value {
-			total += len(key) + retainedValueBytes(item)
+			w.add(len(key))
+			w.walkValue(item, depth+1)
+			if w.exceeded {
+				return
+			}
 		}
-		return total
 	case []any:
-		total := 0
-		for _, item := range value {
-			total += retainedValueBytes(item)
+		visit := retainedVisit{kind: reflect.Slice, ptr: reflect.ValueOf(value).Pointer()}
+		if !w.enter(visit) {
+			return
 		}
-		return total
+		defer w.leave(visit)
+		w.add(retainedSliceHeaderBytes)
+		w.addProduct(len(value), retainedInterfaceBytes)
+		if w.exceeded {
+			return
+		}
+		for _, item := range value {
+			w.walkValue(item, depth+1)
+			if w.exceeded {
+				return
+			}
+		}
 	default:
 		typeOf := reflect.TypeOf(value)
-		if typeOf == nil {
-			return 0
+		if typeOf != nil {
+			size := typeOf.Size()
+			if size > uintptr(^uint(0)>>1) {
+				w.markExceeded()
+				return
+			}
+			w.add(int(size))
 		}
-		return int(typeOf.Size())
 	}
+}
+
+func (w *retainedByteWalker) enter(visit retainedVisit) bool {
+	if visit.ptr == 0 {
+		return true
+	}
+	if _, exists := w.visiting[visit]; exists {
+		w.markExceeded()
+		return false
+	}
+	w.visiting[visit] = struct{}{}
+	return true
+}
+
+func (w *retainedByteWalker) leave(visit retainedVisit) {
+	if visit.ptr != 0 {
+		delete(w.visiting, visit)
+	}
+}
+
+func (w *retainedByteWalker) add(value int) {
+	if w.exceeded {
+		return
+	}
+	if value < 0 || value > w.limit || w.used > w.limit-value {
+		w.markExceeded()
+		return
+	}
+	w.used += value
+}
+
+func (w *retainedByteWalker) addProduct(count, size int) {
+	if w.exceeded {
+		return
+	}
+	if count < 0 || size < 0 || (size != 0 && count > (w.limit-w.used)/size) {
+		w.markExceeded()
+		return
+	}
+	w.add(count * size)
+}
+
+func (w *retainedByteWalker) markExceeded() {
+	w.exceeded = true
+	if w.limit < int(^uint(0)>>1) {
+		w.used = w.limit + 1
+	} else {
+		w.used = w.limit
+	}
+}
+
+func saturatingRetainedBytes(total, addition, limit int) (int, bool) {
+	if limit < 0 || total < 0 || addition < 0 || total > limit || addition > limit || total > limit-addition {
+		if limit >= 0 && limit < int(^uint(0)>>1) {
+			return limit + 1, true
+		}
+		return limit, true
+	}
+	return total + addition, false
 }
 
 var (
