@@ -172,8 +172,11 @@ type Slot struct {
 }
 
 type promptSequenceState struct {
-	holds        int
-	promptActive bool
+	holds           int
+	promptPending   bool
+	promptActive    bool
+	cancelRequested bool
+	cancelComplete  bool
 }
 
 // Pool is a fixed-size warm pool of kiro-cli slots that satisfies
@@ -1491,8 +1494,10 @@ func (p *Pool) finishPromptSequence(sid string) {
 		p.mu.Unlock()
 		return
 	}
-	state.holds--
-	if state.holds > 0 || state.promptActive {
+	if state.holds > 0 {
+		state.holds--
+	}
+	if state.holds > 0 || state.promptPending || state.promptActive {
 		p.mu.Unlock()
 		return
 	}
@@ -1529,6 +1534,14 @@ func (p *Pool) SetModel(ctx context.Context, sid, modelID string) error {
 func (p *Pool) Prompt(ctx context.Context, sid string, blocks []canonical.Block) (engine.Stream, error) {
 	p.mu.Lock()
 	slot, ok := p.sessionSlots[sid]
+	if ok {
+		state := p.sessionSequences[sid]
+		if state == nil {
+			state = &promptSequenceState{}
+			p.sessionSequences[sid] = state
+		}
+		state.promptPending = true
+	}
 	p.mu.Unlock()
 	if !ok {
 		return nil, fmt.Errorf("pool: unknown session %q", sid)
@@ -1539,17 +1552,15 @@ func (p *Pool) Prompt(ctx context.Context, sid string, blocks []canonical.Block)
 		// Prompt errors are terminal for this attempt. A sequence hold retains
 		// the session; without one this preserves the existing synchronous
 		// error-path release.
-		p.finishPromptForSession(sid)
+		p.resolvePromptStart(sid, false)
 		return nil, fmt.Errorf("pool: prompt: %w", err)
 	}
 
-	// Mark a held sequence active only after the underlying Prompt succeeds.
-	// With no sequence entry, terminal behavior remains one-prompt-per-slot.
-	p.mu.Lock()
-	if state := p.sessionSequences[sid]; state != nil {
-		state.promptActive = true
-	}
-	p.mu.Unlock()
+	// Transition the mutex-guarded startup marker to active only after the
+	// underlying Prompt succeeds. A concurrent final finish retains the session
+	// until this transition; a concurrent Cancel defers physical release until
+	// startup has resolved.
+	p.resolvePromptStart(sid, true)
 
 	// ctx-watcher goroutine — Codex M-3. If ctx cancels BEFORE Result()
 	// is called, this goroutine releases the slot. If Result() runs
@@ -1600,6 +1611,9 @@ func (p *Pool) Prompt(ctx context.Context, sid string, blocks []canonical.Block)
 			w.releaseOnce()
 		case <-w.doneCh:
 			// Result() / Release() already fired — exit cleanly.
+		case <-p.closing:
+			// Pool.Close owns client/session teardown. Exit without invoking
+			// releaseOnce: requeueing during Close could expose a closing client.
 		}
 	}()
 	return w, nil
@@ -1623,6 +1637,25 @@ func (p *Pool) Prompt(ctx context.Context, sid string, blocks []canonical.Block)
 // invariant breaking.
 func (p *Pool) Cancel(sid string) {
 	p.mu.Lock()
+	state := p.sessionSequences[sid]
+	if state != nil && state.promptPending {
+		state.holds = 0
+		shouldCancel := !state.cancelRequested
+		state.cancelRequested = true
+		slot := p.sessionSlots[sid]
+		var client PoolClient
+		if slot != nil {
+			client = slot.Client
+		}
+		p.mu.Unlock()
+		if shouldCancel && client != nil {
+			client.Cancel(sid)
+		}
+		if shouldCancel {
+			p.completePendingCancel(sid)
+		}
+		return
+	}
 	delete(p.sessionSequences, sid)
 	slot, ok := p.takeSessionSlotLocked(sid)
 	var client PoolClient
@@ -1645,9 +1678,60 @@ func (p *Pool) takeSessionSlotLocked(sid string) (*Slot, bool) {
 	slot, ok := p.sessionSlots[sid]
 	if ok {
 		delete(p.sessionSlots, sid)
-		slot.lastUserReleaseAt = p.cfg.Now().UTC()
 	}
 	return slot, ok
+}
+
+// resolvePromptStart completes the pending startup transition. Success makes
+// the prompt active unless Cancel won during startup. Error or cancellation
+// releases only when no sequence hold remains. The unique ownership decision
+// happens under p.mu; all release work happens after unlocking.
+func (p *Pool) resolvePromptStart(sid string, succeeded bool) {
+	p.mu.Lock()
+	state := p.sessionSequences[sid]
+	if state == nil {
+		p.mu.Unlock()
+		return
+	}
+	state.promptPending = false
+	if state.cancelRequested && !state.cancelComplete {
+		p.mu.Unlock()
+		return
+	}
+	if succeeded && !state.cancelRequested {
+		state.promptActive = true
+		p.mu.Unlock()
+		return
+	}
+	if state.holds > 0 && !state.cancelRequested {
+		p.mu.Unlock()
+		return
+	}
+	delete(p.sessionSequences, sid)
+	slot, release := p.takeSessionSlotLocked(sid)
+	p.mu.Unlock()
+	p.completeSessionRelease(sid, slot, release)
+}
+
+// completePendingCancel records that the client cancel call has returned. If
+// prompt startup is still pending it retains ownership until startup resolves;
+// otherwise it becomes the unique map-delete-first release winner.
+func (p *Pool) completePendingCancel(sid string) {
+	p.mu.Lock()
+	state := p.sessionSequences[sid]
+	if state == nil || !state.cancelRequested {
+		p.mu.Unlock()
+		return
+	}
+	state.cancelComplete = true
+	if state.promptPending {
+		p.mu.Unlock()
+		return
+	}
+	delete(p.sessionSequences, sid)
+	slot, release := p.takeSessionSlotLocked(sid)
+	p.mu.Unlock()
+	p.completeSessionRelease(sid, slot, release)
 }
 
 // finishPromptForSession marks a sequence prompt inactive. A remaining hold
@@ -1658,7 +1742,7 @@ func (p *Pool) finishPromptForSession(sid string) {
 	p.mu.Lock()
 	if state := p.sessionSequences[sid]; state != nil {
 		state.promptActive = false
-		if state.holds > 0 {
+		if state.holds > 0 || state.promptPending || (state.cancelRequested && !state.cancelComplete) {
 			p.mu.Unlock()
 			return
 		}
@@ -1675,6 +1759,10 @@ func (p *Pool) completeSessionRelease(sid string, slot *Slot, release bool) {
 	if !release || slot == nil {
 		return
 	}
+	releasedAt := p.cfg.Now().UTC()
+	p.mu.Lock()
+	slot.lastUserReleaseAt = releasedAt
+	p.mu.Unlock()
 	p.releaseOrRecycle(slot)
 	p.debugLog("pool.release", "slot", slot.Label, "session_id", sid)
 	p.advanceProgress()

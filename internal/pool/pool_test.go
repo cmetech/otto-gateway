@@ -56,6 +56,7 @@ type fakeClient struct {
 	newSessionFn func(ctx context.Context, cwd string) (string, error)
 	setModelFn   func(ctx context.Context, sid, m string) error
 	promptFn     func(ctx context.Context, sid string, blocks []canonical.Block) (*acp.Stream, error)
+	cancelFn     func(sid string)
 
 	// scripted model catalog returned by AvailableModels. When
 	// availableModelsFn is set it takes precedence (lets a test flip the
@@ -155,6 +156,9 @@ func (f *fakeClient) Cancel(sid string) {
 	f.mu.Lock()
 	f.cancelCalls = append(f.cancelCalls, sid)
 	f.mu.Unlock()
+	if f.cancelFn != nil {
+		f.cancelFn(sid)
+	}
 }
 
 func (f *fakeClient) Close() error {
@@ -738,14 +742,115 @@ func TestPool_PromptSequence_RepeatedFinishResultCancelRaceReleasesOnce(t *testi
 	p.PutSlotBack(slot)
 }
 
-func TestPool_HeldSession_CloseClearsSequenceWithoutWatcherLeak(t *testing.T) {
-	defer goleak.VerifyNone(t)
+func TestPool_PromptSequence_PromptStartupCannotReleaseOrReuseSlot(t *testing.T) {
+	for _, terminal := range []string{"finish", "cancel"} {
+		t.Run(terminal, func(t *testing.T) {
+			promptStarted := make(chan struct{})
+			allowPrompt := make(chan struct{})
+			var allowOnce sync.Once
+			unblockPrompt := func() { allowOnce.Do(func() { close(allowPrompt) }) }
+			defer unblockPrompt()
+
+			streamCh := make(chan *acp.Stream, 1)
+			fc := &fakeClient{}
+			var newSessionCalls atomic.Int32
+			fc.newSessionFn = func(_ context.Context, _ string) (string, error) {
+				switch newSessionCalls.Add(1) {
+				case 1:
+					return "warmup", nil
+				case 2:
+					return "startup-session", nil
+				default:
+					return "reused-session", nil
+				}
+			}
+			fc.promptFn = func(_ context.Context, sid string, _ []canonical.Block) (*acp.Stream, error) {
+				close(promptStarted)
+				<-allowPrompt
+				s := acp.NewStreamForTest(sid)
+				streamCh <- s
+				return s, nil
+			}
+			p := warmedPoolWithFakes(t, []*fakeClient{fc})
+			defer func() { _ = p.Close() }()
+
+			sid, err := p.NewSession(context.Background(), "")
+			if err != nil {
+				t.Fatalf("NewSession: %v", err)
+			}
+			finish, err := p.BeginPromptSequence(sid)
+			if err != nil {
+				t.Fatalf("BeginPromptSequence: %v", err)
+			}
+
+			type promptOutcome struct {
+				stream engine.Stream
+				err    error
+			}
+			promptResultCh := make(chan promptOutcome, 1)
+			go func() {
+				stream, promptErr := p.Prompt(context.Background(), sid, nil)
+				promptResultCh <- promptOutcome{stream: stream, err: promptErr}
+			}()
+			<-promptStarted
+
+			switch terminal {
+			case "finish":
+				finish()
+			case "cancel":
+				p.Cancel(sid)
+			}
+
+			reuseCtx, cancelReuse := context.WithTimeout(context.Background(), 50*time.Millisecond)
+			_, reuseErr := p.NewSession(reuseCtx, "")
+			cancelReuse()
+
+			unblockPrompt()
+			promptResult := <-promptResultCh
+			if promptResult.err != nil {
+				t.Fatalf("Prompt after startup unblock: %v", promptResult.err)
+			}
+			raw := <-streamCh
+			raw.CloseForTest(&acp.FinalResult{StopReason: canonical.StopCancelled}, nil)
+			drainChunks(promptResult.stream.Chunks())
+			if _, err := promptResult.stream.Result(); err != nil {
+				t.Fatalf("Result: %v", err)
+			}
+
+			if reuseErr == nil {
+				t.Fatal("second NewSession reused slot while first Prompt startup was pending")
+			}
+			slot, ok := p.WaitForSlotRelease(100 * time.Millisecond)
+			if !ok {
+				t.Fatal("slot not released after pending Prompt startup resolved")
+			}
+			if extra, extraOK := p.WaitForSlotRelease(25 * time.Millisecond); extraOK {
+				p.PutSlotBack(extra)
+				t.Fatal("pending Prompt terminal paths released slot more than once")
+			}
+			p.PutSlotBack(slot)
+		})
+	}
+}
+
+func TestPool_PromptSequence_PendingCancelCompletesBeforeRelease(t *testing.T) {
+	promptStarted := make(chan struct{})
+	allowPrompt := make(chan struct{})
+	cancelStarted := make(chan struct{})
+	allowCancel := make(chan struct{})
+	streamCh := make(chan *acp.Stream, 1)
 
 	fc := promptSequenceFakeClient()
+	fc.promptFn = func(_ context.Context, sid string, _ []canonical.Block) (*acp.Stream, error) {
+		close(promptStarted)
+		<-allowPrompt
+		s := acp.NewStreamForTest(sid)
+		streamCh <- s
+		return s, nil
+	}
 	p := warmedPoolWithFakes(t, []*fakeClient{fc})
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	sid, err := p.NewSession(ctx, "")
+	defer func() { _ = p.Close() }()
+	sid, err := p.NewSession(context.Background(), "")
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -753,13 +858,168 @@ func TestPool_HeldSession_CloseClearsSequenceWithoutWatcherLeak(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BeginPromptSequence: %v", err)
 	}
-	stream, err := p.Prompt(ctx, sid, nil)
+	defer finish()
+	fc.cancelFn = func(cancelSID string) {
+		if cancelSID != sid {
+			return
+		}
+		close(cancelStarted)
+		<-allowCancel
+	}
+
+	type promptOutcome struct {
+		stream engine.Stream
+		err    error
+	}
+	promptResultCh := make(chan promptOutcome, 1)
+	go func() {
+		stream, promptErr := p.Prompt(context.Background(), sid, nil)
+		promptResultCh <- promptOutcome{stream: stream, err: promptErr}
+	}()
+	<-promptStarted
+	cancelDone := make(chan struct{})
+	go func() {
+		p.Cancel(sid)
+		close(cancelDone)
+	}()
+	<-cancelStarted
+
+	close(allowPrompt)
+	promptResult := <-promptResultCh
+	if promptResult.err != nil {
+		t.Fatalf("Prompt after startup unblock: %v", promptResult.err)
+	}
+	earlySlot, releasedBeforeCancel := p.WaitForSlotRelease(25 * time.Millisecond)
+
+	close(allowCancel)
+	select {
+	case <-cancelDone:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("Cancel did not return after client cancel unblocked")
+	}
+
+	slot := earlySlot
+	if !releasedBeforeCancel {
+		var ok bool
+		slot, ok = p.WaitForSlotRelease(100 * time.Millisecond)
+		if !ok {
+			t.Fatal("slot not released after pending client Cancel completed")
+		}
+	}
+	raw := <-streamCh
+	raw.CloseForTest(&acp.FinalResult{StopReason: canonical.StopCancelled}, nil)
+	drainChunks(promptResult.stream.Chunks())
+	if _, err := promptResult.stream.Result(); err != nil {
+		t.Fatalf("Result: %v", err)
+	}
+	if releasedBeforeCancel {
+		t.Error("slot released before pending client Cancel completed")
+	}
+	if extra, ok := p.WaitForSlotRelease(25 * time.Millisecond); ok {
+		p.PutSlotBack(extra)
+		t.Fatal("pending Cancel and Result released slot more than once")
+	}
+	p.PutSlotBack(slot)
+}
+
+func TestPool_PromptSequence_ReleaseClockRunsOutsidePoolMutex(t *testing.T) {
+	clockEntered := make(chan struct{}, 1)
+	unblockClock := make(chan struct{})
+	var unblockOnce sync.Once
+	unblock := func() { unblockOnce.Do(func() { close(unblockClock) }) }
+	defer unblock()
+
+	var blockClock atomic.Bool
+	now := time.Date(2026, time.August, 13, 10, 0, 0, 0, time.UTC)
+	fc := promptSequenceFakeClient()
+	ff := &fakeClientFactory{clients: []pool.PoolClient{fc}}
+	var p *pool.Pool
+	p = pool.New(pool.Config{
+		Logger:  testutil.Logger(t),
+		Size:    1,
+		Factory: ff,
+		Now: func() time.Time {
+			if blockClock.Load() {
+				clockEntered <- struct{}{}
+				<-unblockClock
+			}
+			return now
+		},
+	})
+	defer func() { _ = p.Close() }()
+	warmupCtx, cancelWarmup := context.WithTimeout(context.Background(), time.Second)
+	defer cancelWarmup()
+	if err := p.Warmup(warmupCtx); err != nil {
+		t.Fatalf("Warmup: %v", err)
+	}
+	sid, err := p.NewSession(context.Background(), "")
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	finish, err := p.BeginPromptSequence(sid)
+	if err != nil {
+		t.Fatalf("BeginPromptSequence: %v", err)
+	}
+
+	blockClock.Store(true)
+	finishDone := make(chan struct{})
+	go func() {
+		finish()
+		close(finishDone)
+	}()
+	select {
+	case <-clockEntered:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("release clock was not called")
+	}
+
+	lenResult := make(chan int, 1)
+	go func() { lenResult <- p.SessionSlotsLen() }()
+	mutexAvailable := false
+	select {
+	case got := <-lenResult:
+		mutexAvailable = true
+		if got != 0 {
+			t.Errorf("SessionSlotsLen while release clock blocked = %d; want 0", got)
+		}
+	case <-time.After(50 * time.Millisecond):
+	}
+	unblock()
+	select {
+	case <-finishDone:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("finish did not return after release clock unblocked")
+	}
+	if !mutexAvailable {
+		t.Fatal("pool mutex remained locked while configurable release clock blocked")
+	}
+
+	slot, ok := p.WaitForSlotRelease(100 * time.Millisecond)
+	if !ok {
+		t.Fatal("slot not released after clock returned")
+	}
+	p.PutSlotBack(slot)
+}
+
+func TestPool_HeldSession_CloseStopsUndrainedWatcher(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	fc := promptSequenceFakeClient()
+	fc.promptFn = func(_ context.Context, sid string, _ []canonical.Block) (*acp.Stream, error) {
+		return acp.NewStreamForTest(sid), nil
+	}
+	p := warmedPoolWithFakes(t, []*fakeClient{fc})
+	sid, err := p.NewSession(context.Background(), "")
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	finish, err := p.BeginPromptSequence(sid)
+	if err != nil {
+		t.Fatalf("BeginPromptSequence: %v", err)
+	}
+	stream, err := p.Prompt(context.Background(), sid, nil)
 	if err != nil {
 		t.Fatalf("Prompt: %v", err)
-	}
-	drainChunks(stream.Chunks())
-	if _, err := stream.Result(); err != nil {
-		t.Fatalf("Result: %v", err)
 	}
 	if got := p.SessionHoldsLen(); got != 1 {
 		t.Fatalf("SessionHoldsLen before Close = %d; want 1", got)
@@ -772,6 +1032,10 @@ func TestPool_HeldSession_CloseClearsSequenceWithoutWatcherLeak(t *testing.T) {
 	if got := p.SessionHoldsLen(); got != 0 {
 		t.Fatalf("SessionHoldsLen after Close = %d; want 0", got)
 	}
+	// Keep the wrapper reachable through the goleak assertion. Its stream is
+	// deliberately never closed or drained, and its context is never cancelled:
+	// Pool.Close itself must stop the wrapper watcher.
+	_ = stream
 }
 
 func TestPool_Prompt_SessionRoutesToSlot(t *testing.T) {
