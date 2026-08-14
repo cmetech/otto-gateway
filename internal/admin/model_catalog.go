@@ -302,6 +302,11 @@ func requestModelCatalogOrigin(r *http.Request) (modelCatalogOrigin, bool) {
 // it rejects a bare trailing slash because serialized Origin header values have
 // no path, along with userinfo, query, fragment, and opaque URL forms.
 func parseModelCatalogOrigin(value string) (modelCatalogOrigin, bool) {
+	// url.Parse records an empty Fragment for a trailing '#', so inspect the
+	// original serialized Origin to reject the delimiter itself.
+	if strings.Contains(value, "#") {
+		return modelCatalogOrigin{}, false
+	}
 	parsed, err := url.Parse(value)
 	if err != nil || parsed.Opaque != "" || parsed.User != nil || parsed.Path != "" || parsed.RawPath != "" || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" {
 		return modelCatalogOrigin{}, false

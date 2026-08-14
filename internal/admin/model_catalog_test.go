@@ -206,6 +206,10 @@ func TestModelCatalogAPI_POSTStrictlyValidatesOriginBeforeRefresh(t *testing.T) 
 		{name: "query", origin: "http://example.com?not-an-origin", host: "example.com", want: http.StatusForbidden},
 		{name: "userinfo", origin: "http://operator@example.com", host: "example.com", want: http.StatusForbidden},
 		{name: "fragment", origin: "http://example.com#not-an-origin", host: "example.com", want: http.StatusForbidden},
+		{name: "bare fragment delimiter", origin: "http://example.com#", host: "example.com", want: http.StatusForbidden},
+		{name: "bare query delimiter", origin: "http://example.com?", host: "example.com", want: http.StatusForbidden},
+		{name: "encoded fragment delimiter", origin: "http://example.com%23", host: "example.com", want: http.StatusForbidden},
+		{name: "encoded query delimiter", origin: "http://example.com%3F", host: "example.com", want: http.StatusForbidden},
 		{name: "opaque", origin: "http:example.com", host: "example.com", want: http.StatusForbidden},
 	}
 	for _, tc := range cases {
