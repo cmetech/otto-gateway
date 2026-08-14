@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-13
 
-**Status:** Approved in discussion; awaiting document review.
+**Status:** Approved.
 
 **Scope:** Make the Kiro model catalog visible on the main Gateway dashboard
 and keep that catalog current without restarting the Gateway. The pool owns
