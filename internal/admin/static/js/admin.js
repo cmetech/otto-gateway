@@ -711,6 +711,7 @@
   var modelCatalogCooldownActive = false;
   var modelCatalogCooldownSeconds = 0;
   var modelCatalogCooldownTimer = null;
+  var modelCatalogRequestGeneration = 0;
 
   function modelCatalogURL() { return '/admin/api/model-catalog'; }
   function modelCatalogRefreshURL() { return '/admin/api/model-catalog/refresh'; }
@@ -897,6 +898,7 @@
   }
 
   function fetchModelCatalog(preserveMessage) {
+    var requestGeneration = ++modelCatalogRequestGeneration;
     return fetch(modelCatalogURL(), {
       cache: 'no-store',
       headers: { 'Accept': 'application/json' }
@@ -906,14 +908,17 @@
         return response.json();
       })
       .then(function (view) {
+        if (requestGeneration !== modelCatalogRequestGeneration) return false;
         renderModelCatalog(view);
         if (!preserveMessage) setModelCatalogMessage('', '');
         return true;
       })
       .catch(function () {
+        if (requestGeneration !== modelCatalogRequestGeneration) return false;
         var errorMessage = 'Model catalog status could not be updated. Showing the last known catalog.';
         setModelCatalogMessage(errorMessage, 'is-error');
         announceModelCatalog(errorMessage);
+        updateModelCatalogRefreshControl();
         return false;
       });
   }
@@ -962,7 +967,7 @@
   }
 
   function refreshModelCatalog() {
-    if (modelCatalogRefreshPending || modelCatalogCooldownActive || !modelCatalogLastView) {
+    if (modelCatalogRefreshPending || modelCatalogCooldownActive) {
       return Promise.resolve(false);
     }
 

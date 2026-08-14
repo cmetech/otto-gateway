@@ -459,6 +459,102 @@ func TestAdmin_StaticServes(t *testing.T) {
 	}
 }
 
+func TestAdmin_StaticCSS_ModelCatalogContrastContract(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	h := Handler(Deps{Logger: testutil.Logger(t)})
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/static/css/admin.css", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /static/css/admin.css: want 200, got %d", rec.Code)
+	}
+	css := rec.Body.String()
+	rule := func(selector string) string {
+		t.Helper()
+		start := strings.Index(css, selector)
+		if start < 0 {
+			t.Fatalf("CSS missing selector %q", selector)
+		}
+		open := strings.Index(css[start:], "{")
+		if open < 0 {
+			t.Fatalf("CSS selector %q missing declaration block", selector)
+		}
+		open += start
+		close := strings.Index(css[open:], "}")
+		if close < 0 {
+			t.Fatalf("CSS selector %q has unterminated declaration block", selector)
+		}
+		return css[open+1 : open+close]
+	}
+	assertDeclarations := func(selector string, declarations ...string) {
+		t.Helper()
+		block := rule(selector)
+		for _, declaration := range declarations {
+			if !strings.Contains(block, declaration) {
+				t.Errorf("CSS rule %q missing %q", selector, declaration)
+			}
+		}
+	}
+
+	assertDeclarations(":root",
+		"--gw-catalog-meta-label: #B8C0CC;",
+		"--gw-catalog-disabled-fg: #D1D5DB;",
+		"--gw-catalog-supported-fg: #72E6AE;",
+		"--gw-catalog-supported-bg: #163A2D;",
+		"--gw-catalog-warning-fg: #FFD08A;",
+		"--gw-catalog-warning-bg: #493018;",
+		"--gw-catalog-muted-fg: #D1D5DB;",
+		"--gw-catalog-muted-bg: #303640;",
+		"--gw-catalog-busy-fg: #D6B4F0;",
+		"--gw-catalog-busy-bg: #3B2B48;",
+		"--gw-catalog-focus: var(--gw-accent);",
+	)
+	assertDeclarations(`[data-theme="light"]`,
+		"--gw-catalog-meta-label: #4B5563;",
+		"--gw-catalog-disabled-fg: #4B5563;",
+		"--gw-catalog-supported-fg: #00623F;",
+		"--gw-catalog-supported-bg: #E4F7EF;",
+		"--gw-catalog-warning-fg: #7A3600;",
+		"--gw-catalog-warning-bg: #FFF0DF;",
+		"--gw-catalog-muted-fg: #4B5563;",
+		"--gw-catalog-muted-bg: #EEF0F3;",
+		"--gw-catalog-busy-fg: #5B21B6;",
+		"--gw-catalog-busy-bg: #EDE9FE;",
+		"--gw-catalog-focus: var(--gw-activity);",
+	)
+	assertDeclarations(".gw-model-catalog-meta dt", "color: var(--gw-catalog-meta-label);")
+	assertDeclarations(".gw-model-catalog-refresh:disabled", "color: var(--gw-catalog-disabled-fg);")
+	assertDeclarations(
+		".gw-model-catalog-scroll:focus-visible",
+		"outline: 3px solid var(--gw-catalog-focus);",
+	)
+	assertDeclarations(
+		`[data-theme="light"] .gw-model-catalog-scroll:focus-visible,`,
+		"outline-color: var(--gw-catalog-focus);",
+	)
+	assertDeclarations(
+		".gw-model-catalog .gw-badge.is-ok,",
+		"color: var(--gw-catalog-supported-fg);",
+		"background: var(--gw-catalog-supported-bg);",
+	)
+	assertDeclarations(
+		".gw-model-catalog .gw-badge.is-warning,",
+		"color: var(--gw-catalog-warning-fg);",
+		"background: var(--gw-catalog-warning-bg);",
+	)
+	assertDeclarations(
+		".gw-model-catalog .gw-badge.is-muted,",
+		"color: var(--gw-catalog-muted-fg);",
+		"background: var(--gw-catalog-muted-bg);",
+	)
+	assertDeclarations(
+		".gw-model-catalog .gw-badge.is-busy",
+		"color: var(--gw-catalog-busy-fg);",
+		"background: var(--gw-catalog-busy-bg);",
+	)
+}
+
 // TestAdmin_StaticServes_JS verifies GET /static/js/admin.js returns 200
 // with JavaScript content type and expected GW_ADMIN_CONFIG reference.
 func TestAdmin_StaticServes_JS(t *testing.T) {

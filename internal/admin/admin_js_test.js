@@ -174,6 +174,24 @@ function elementText(element) {
   return [element.textContent, ...element.children.map(elementText)].join(' ');
 }
 
+function fakeHTTPResponse(body, httpStatus = 200) {
+  return {
+	ok: httpStatus >= 200 && httpStatus < 300,
+	status: httpStatus,
+	json: () => Promise.resolve(body),
+  };
+}
+
+function deferredFetch() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+	resolve = resolvePromise;
+	reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 function createHarness(responses, options = {}) {
   const sourceSelect = new Element('select');
   const logStatus = new Element('span');
@@ -304,6 +322,8 @@ function createHarness(responses, options = {}) {
 	  }
 	  const entry = queue.shift();
 	  assert.ok(entry, `unexpected ${label} fetch`);
+	  if (entry.fetchPromise) return entry.fetchPromise;
+	  if (entry.fetchError) return Promise.reject(new Error(entry.fetchError));
 	  const status = entry.httpStatus || 200;
 	  return Promise.resolve({
 		ok: status >= 200 && status < 300,
@@ -1013,6 +1033,149 @@ test('model catalog disabled scheduling leaves manual refresh available', async 
 	'Model catalog refresh is unavailable.',
 	'endpoint availability remains a server-owned decision',
   );
+});
+
+test('model catalog ignores stale overlapping GET resolution and failure after refresh', async () => {
+  for (const staleOutcome of ['resolve', 'reject']) {
+	const stalePoll = deferredFetch();
+	const initial = modelCatalog([
+	  catalogModel('auto', 'Automatic'),
+	  catalogModel('gpt-old', 'GPT Old'),
+	]);
+	const refreshed = modelCatalog([
+	  catalogModel('auto', 'Automatic'),
+	  catalogModel('gpt-new', 'GPT New'),
+	], { generation: 9 });
+	const stale = modelCatalog([
+	  catalogModel('auto', 'Automatic'),
+	  catalogModel('gpt-stale', 'GPT Stale'),
+	], {
+	  state: 'refreshing',
+	  generation: 4,
+	  refresh: {
+		enabled: true,
+		interval_seconds: 900,
+		in_progress: true,
+		last_success_at: '2026-08-13T13:00:00Z',
+		next_attempt_at: '2026-08-13T13:15:00Z',
+		last_outcome: 'unchanged',
+		pending_removals: 0,
+	  },
+	});
+	const harness = createHarness(
+	  [snapshot({ main: 'Gateway', kiro: 'Kiro' })],
+	  {
+		modelCatalog: true,
+		catalogResponses: [initial, { fetchPromise: stalePoll.promise }, refreshed],
+		refreshResponses: [{
+		  body: { outcome: 'expanded', message: 'Model catalog refresh completed.' },
+		}],
+	  },
+	);
+
+	harness.start();
+	await settleAsyncWork();
+	harness.pollCatalog();
+	harness.selectors['[data-model-catalog-refresh]'].dispatchEvent({ type: 'click' });
+	await settleAsyncWork();
+
+	const body = harness.selectors['[data-model-catalog-body]'];
+	const button = harness.selectors['[data-model-catalog-refresh]'];
+	assert.match(elementText(body), /gpt-new/, `${staleOutcome}: immediate GET should render fresh view`);
+	assert.doesNotMatch(elementText(body), /gpt-old|gpt-stale/);
+	assert.equal(
+	  harness.selectors['[data-model-catalog-message]'].textContent,
+	  'Model catalog refresh completed.',
+	);
+	assert.equal(button.disabled, false);
+	assert.equal(button['aria-busy'], 'false');
+	assert.equal(button.textContent, 'Refresh now');
+
+	if (staleOutcome === 'resolve') {
+	  stalePoll.resolve(fakeHTTPResponse(stale));
+	} else {
+	  stalePoll.reject(new Error('late stale poll failure'));
+	}
+	await settleAsyncWork();
+
+	assert.match(elementText(body), /gpt-new/, `${staleOutcome}: stale completion must not replace fresh view`);
+	assert.doesNotMatch(elementText(body), /gpt-stale/);
+	assert.equal(
+	  harness.selectors['[data-model-catalog-message]'].textContent,
+	  'Model catalog refresh completed.',
+	  `${staleOutcome}: stale completion must not replace the fresh action message`,
+	);
+	assert.equal(
+	  harness.selectors['[data-model-catalog-live]'].textContent,
+	  'Model catalog refresh completed.',
+	  `${staleOutcome}: stale completion must not replace the fresh live announcement`,
+	);
+	assert.equal(button.disabled, false, `${staleOutcome}: stale completion must not disable the control`);
+	assert.equal(button['aria-busy'], 'false');
+	assert.equal(button.textContent, 'Refresh now');
+  }
+});
+
+test('model catalog initial GET failure preserves manual POST recovery', async () => {
+  const cases = [
+	{
+	  name: 'success',
+	  catalogResponses: [
+		{ fetchError: 'initial GET offline' },
+		modelCatalog([
+		  catalogModel('auto', 'Automatic'),
+		  catalogModel('claude-sonnet-5', 'Claude Sonnet 5'),
+		]),
+	  ],
+	  refreshResponse: {
+		body: { outcome: 'expanded', message: 'Model catalog refresh completed.' },
+	  },
+	  wantMessage: 'Model catalog refresh completed.',
+	},
+	{
+	  name: 'error',
+	  catalogResponses: [{ fetchError: 'initial GET offline' }],
+	  refreshResponse: {
+		httpStatus: 502,
+		body: { code: 'catalog_refresh_failed', message: 'private upstream detail' },
+	  },
+	  wantMessage: 'Model catalog refresh failed.',
+	},
+  ];
+
+  for (const tc of cases) {
+	const harness = createHarness(
+	  [snapshot({ main: 'Gateway', kiro: 'Kiro' })],
+	  {
+		modelCatalog: true,
+		catalogResponses: tc.catalogResponses,
+		refreshResponses: [tc.refreshResponse],
+	  },
+	);
+	const button = harness.selectors['[data-model-catalog-refresh]'];
+	harness.start();
+	await settleAsyncWork();
+
+	assert.equal(button.disabled, false, `${tc.name}: initial GET failure must restore manual action`);
+	assert.equal(button['aria-busy'], 'false');
+	assert.equal(button.textContent, 'Refresh now');
+	button.dispatchEvent({ type: 'click' });
+	assert.equal(button.disabled, true, `${tc.name}: POST pending state`);
+	assert.equal(button['aria-busy'], 'true');
+	assert.equal(button.textContent, 'Refreshing…');
+
+	await settleAsyncWork();
+	const refreshCalls = harness.fetchCalls.filter(
+	  (call) => call.url === '/admin/api/model-catalog/refresh',
+	);
+	assert.equal(refreshCalls.length, 1, `${tc.name}: manual click must reach POST`);
+	assert.equal(refreshCalls[0].options.method, 'POST');
+	assert.equal(Object.hasOwn(refreshCalls[0].options, 'body'), false, 'recovery POST must remain empty');
+	assert.equal(button.disabled, false, `${tc.name}: completion must restore manual action`);
+	assert.equal(button['aria-busy'], 'false');
+	assert.equal(button.textContent, 'Refresh now');
+	assert.equal(harness.selectors['[data-model-catalog-message]'].textContent, tc.wantMessage);
+  }
 });
 
 test('model catalog GET failure retains the last good grouped table', async () => {
