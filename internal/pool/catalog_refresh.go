@@ -178,7 +178,8 @@ func (p *Pool) runCatalogRefresh(ctx context.Context, admission catalogRefreshAd
 			return result, nil
 		}
 		if admission.source == catalogRefreshManual {
-			return CatalogRefreshResult{}, &CatalogRefreshError{Kind: ErrCatalogRefreshBusy, RetryAfter: p.catalogAdmissionRetryAfter(admission)}
+			result.RetryAfter = p.catalogAdmissionRetryAfter(admission)
+			return result, catalogRefreshTerminalError(admission, ErrCatalogRefreshBusy, result.RetryAfter)
 		}
 		return CatalogRefreshResult{}, nil
 	}
@@ -187,8 +188,9 @@ func (p *Pool) runCatalogRefresh(ctx context.Context, admission catalogRefreshAd
 
 	if !p.slotAlive(slot) {
 		result = p.catalog.recordRefreshOutcome(CatalogFailed, admission.attemptAt)
+		result.RetryAfter = p.catalogAdmissionRetryAfter(admission)
 		p.logCatalogRefresh(admission.source, result, time.Since(started))
-		return result, &CatalogRefreshError{Kind: ErrCatalogRefreshUnavailable, RetryAfter: p.catalogAdmissionRetryAfter(admission)}
+		return result, catalogRefreshTerminalError(admission, ErrCatalogRefreshUnavailable, result.RetryAfter)
 	}
 
 	probeCtx, cancel := context.WithTimeout(ctx, catalogProbeTimeout)
@@ -211,13 +213,30 @@ func (p *Pool) runCatalogRefresh(ctx context.Context, admission catalogRefreshAd
 			returnedErr = lifecycleErr
 		}
 		result = p.catalog.recordRefreshOutcome(outcome, admission.attemptAt)
+		if admission.source == catalogRefreshManual {
+			result.RetryAfter = p.catalogAdmissionRetryAfter(admission)
+		}
 		p.logCatalogRefresh(admission.source, result, time.Since(started))
-		return result, returnedErr
+		return result, catalogRefreshTerminalError(admission, returnedErr, result.RetryAfter)
 	}
 
 	result, err = p.reconcileCatalog(models, admission.attemptAt, p.catalogNow())
+	if admission.source == catalogRefreshManual {
+		result.RetryAfter = p.catalogAdmissionRetryAfter(admission)
+		err = catalogRefreshTerminalError(admission, err, result.RetryAfter)
+	}
 	p.logCatalogRefresh(admission.source, result, time.Since(started))
 	return result, err
+}
+
+// catalogRefreshTerminalError preserves the original terminal cause while
+// attaching the cooldown committed by a successfully admitted manual action.
+// Pre-admission failures never pass through this helper.
+func catalogRefreshTerminalError(admission catalogRefreshAdmission, cause error, retryAfter time.Duration) error {
+	if cause == nil || admission.source != catalogRefreshManual {
+		return cause
+	}
+	return &CatalogRefreshError{Kind: cause, RetryAfter: retryAfter}
 }
 
 // catalogAdmissionRetryAfter reports the authoritative remainder of the
@@ -227,14 +246,14 @@ func (p *Pool) catalogAdmissionRetryAfter(admission catalogRefreshAdmission) tim
 	if admission.source != catalogRefreshManual {
 		return catalogBusyRetryAfter
 	}
-	p.catalogManualMu.Lock()
-	err := p.manualCooldownErrorLocked(p.catalogNow())
-	p.catalogManualMu.Unlock()
-	var refreshErr *CatalogRefreshError
-	if errors.As(err, &refreshErr) && refreshErr.RetryAfter > 0 {
-		return refreshErr.RetryAfter
+	retryAfter := admission.attemptAt.Add(catalogManualCooldown).Sub(p.catalogNow())
+	if retryAfter <= 0 {
+		return 0
 	}
-	return catalogBusyRetryAfter
+	if retryAfter > catalogManualCooldown {
+		return catalogManualCooldown
+	}
+	return retryAfter
 }
 
 // reconcileCatalog prevents observation metadata from moving the independent

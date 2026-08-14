@@ -49,6 +49,7 @@ type ModelCatalogSnapshot struct {
 type CatalogRefreshResult struct {
 	Outcome                                                        CatalogOutcome
 	PreviousCount, CandidateCount, PublishedCount, PendingRemovals int
+	RetryAfter                                                     time.Duration
 }
 
 // catalogStore is the sole owner of the published catalog. A reduced catalog

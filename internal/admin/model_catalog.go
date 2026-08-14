@@ -205,8 +205,9 @@ func normalizeModelCatalogTime(value string) string {
 func sanitizeModelCatalogAction(result ModelCatalogActionResult) ModelCatalogActionResult {
 	if result.Code == "" {
 		return ModelCatalogActionResult{
-			Outcome: modelCatalogOutcome(result.Outcome),
-			Message: "Model catalog refresh completed.",
+			Outcome:           modelCatalogOutcome(result.Outcome),
+			Message:           "Model catalog refresh completed.",
+			RetryAfterSeconds: boundedModelCatalogRetryAfter(result.RetryAfterSeconds),
 		}
 	}
 

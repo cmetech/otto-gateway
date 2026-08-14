@@ -510,6 +510,133 @@ func TestPool_CatalogRefresh_CompletionTimestampsDoNotReuseAdmissionTime(t *test
 	}
 }
 
+func TestPool_CatalogRefresh_ManualProbeFailureCarriesCommittedCooldown(t *testing.T) {
+	now := time.Unix(1_950, 0)
+	probeErr := errors.New("catalog probe failed")
+	var runtimeProbe atomic.Bool
+	fc := &fakeClient{
+		models: twoCatalogModels(),
+		newSessionFn: func(context.Context, string) (string, error) {
+			if runtimeProbe.Load() {
+				return "", probeErr
+			}
+			return "warmup", nil
+		},
+	}
+	p := pool.New(pool.Config{
+		Logger:  testutil.Logger(t),
+		Size:    1,
+		Factory: &fakeClientFactory{clients: []pool.PoolClient{fc}},
+	})
+	p.SetCatalogRetryForTesting(nil)
+	p.SetCatalogNowForTesting(func() time.Time { return now })
+	if err := p.Warmup(context.Background()); err != nil {
+		t.Fatalf("Warmup: %v", err)
+	}
+	t.Cleanup(func() { _ = p.Close() })
+	runtimeProbe.Store(true)
+
+	result, err := p.RefreshModelCatalog(context.Background())
+	var refreshErr *pool.CatalogRefreshError
+	if result.Outcome != pool.CatalogFailed || result.RetryAfter != 30*time.Second || !errors.Is(err, probeErr) ||
+		!errors.As(err, &refreshErr) || refreshErr.RetryAfter != 30*time.Second {
+		t.Fatalf("probe failure = %+v, %#v; want wrapped cause with 30-second retry", result, err)
+	}
+
+	_, err = p.RefreshModelCatalog(context.Background())
+	if !errors.Is(err, pool.ErrCatalogRefreshCooldown) ||
+		!errors.As(err, &refreshErr) || refreshErr.RetryAfter != 30*time.Second {
+		t.Fatalf("immediate retry = %#v; want committed 30-second cooldown", err)
+	}
+
+	now = now.Add(30 * time.Second)
+	result, err = p.RefreshModelCatalog(context.Background())
+	if result.Outcome != pool.CatalogFailed || result.RetryAfter != 30*time.Second || !errors.Is(err, probeErr) ||
+		!errors.As(err, &refreshErr) || refreshErr.RetryAfter != 30*time.Second {
+		t.Fatalf("retry at advertised boundary = %+v, %#v; want admitted failure with renewed cooldown", result, err)
+	}
+}
+
+func TestPool_CatalogRefresh_InvalidManualCandidateCarriesCommittedCooldown(t *testing.T) {
+	tests := []struct {
+		name      string
+		candidate []canonical.ModelInfo
+	}{
+		{name: "empty", candidate: nil},
+		{name: "blank ID", candidate: []canonical.ModelInfo{{ID: "   ", Name: "invalid"}}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Unix(1_975, 0)
+			var runtimeProbe atomic.Bool
+			fc := &fakeClient{availableModelsFn: func() []canonical.ModelInfo {
+				if runtimeProbe.Load() {
+					return tc.candidate
+				}
+				return twoCatalogModels()
+			}}
+			p := pool.New(pool.Config{
+				Logger:  testutil.Logger(t),
+				Size:    1,
+				Factory: &fakeClientFactory{clients: []pool.PoolClient{fc}},
+			})
+			p.SetCatalogRetryForTesting(nil)
+			p.SetCatalogNowForTesting(func() time.Time { return now })
+			if err := p.Warmup(context.Background()); err != nil {
+				t.Fatalf("Warmup: %v", err)
+			}
+			t.Cleanup(func() { _ = p.Close() })
+			runtimeProbe.Store(true)
+
+			result, err := p.RefreshModelCatalog(context.Background())
+			var refreshErr *pool.CatalogRefreshError
+			if result.Outcome != pool.CatalogFailed || result.RetryAfter != 30*time.Second ||
+				!errors.As(err, &refreshErr) || refreshErr.RetryAfter != 30*time.Second {
+				t.Fatalf("invalid candidate = %+v, %#v; want failed result with 30-second retry", result, err)
+			}
+			if got := p.Models(); !reflect.DeepEqual(got, twoCatalogModels()) {
+				t.Fatalf("published catalog = %#v; want retained current catalog", got)
+			}
+
+			_, err = p.RefreshModelCatalog(context.Background())
+			if !errors.Is(err, pool.ErrCatalogRefreshCooldown) ||
+				!errors.As(err, &refreshErr) || refreshErr.RetryAfter != 30*time.Second {
+				t.Fatalf("immediate retry = %#v; want committed 30-second cooldown", err)
+			}
+
+			now = now.Add(30 * time.Second)
+			result, err = p.RefreshModelCatalog(context.Background())
+			if result.Outcome != pool.CatalogFailed || result.RetryAfter != 30*time.Second ||
+				!errors.As(err, &refreshErr) || refreshErr.RetryAfter != 30*time.Second {
+				t.Fatalf("retry at advertised boundary = %+v, %#v; want admitted failure with renewed cooldown", result, err)
+			}
+		})
+	}
+}
+
+func TestPool_CatalogRefresh_ManualSuccessReportsCommittedCooldown(t *testing.T) {
+	now := time.Unix(1_990, 0)
+	state := &mutableCatalog{models: twoCatalogModels()}
+	fc := &fakeClient{availableModelsFn: state.get}
+	p := pool.New(pool.Config{
+		Logger:  testutil.Logger(t),
+		Size:    1,
+		Factory: &fakeClientFactory{clients: []pool.PoolClient{fc}},
+	})
+	p.SetCatalogRetryForTesting(nil)
+	p.SetCatalogNowForTesting(func() time.Time { return now })
+	if err := p.Warmup(context.Background()); err != nil {
+		t.Fatalf("Warmup: %v", err)
+	}
+	t.Cleanup(func() { _ = p.Close() })
+	state.set(threeCatalogModels()...)
+
+	result, err := p.RefreshModelCatalog(context.Background())
+	if err != nil || result.Outcome != pool.CatalogExpanded || result.RetryAfter != 30*time.Second {
+		t.Fatalf("successful refresh = %+v, %v; want expansion with 30-second retry", result, err)
+	}
+}
+
 func TestPool_CatalogRefresh_CallerCancellationRetainsCatalogAndSlot(t *testing.T) {
 	probeEntered := make(chan struct{})
 	var runtimeProbe atomic.Bool
@@ -542,8 +669,13 @@ func TestPool_CatalogRefresh_CallerCancellationRetainsCatalogAndSlot(t *testing.
 	cancel()
 	result := <-resultCh
 	err := <-errCh
-	if !errors.Is(err, context.Canceled) || result.Outcome != pool.CatalogCancelled {
+	if !errors.Is(err, context.Canceled) || result.Outcome != pool.CatalogCancelled ||
+		result.RetryAfter <= 0 || result.RetryAfter > 30*time.Second {
 		t.Fatalf("refresh = %+v, %v; want cancelled", result, err)
+	}
+	var refreshErr *pool.CatalogRefreshError
+	if !errors.As(err, &refreshErr) || refreshErr.RetryAfter <= 0 || refreshErr.RetryAfter > 30*time.Second {
+		t.Fatalf("cancelled refresh error = %#v; want wrapped cancellation with bounded cooldown", err)
 	}
 	if snapshot := p.CatalogSnapshot(); len(snapshot.Models) != 2 || snapshot.LastOutcome != pool.CatalogCancelled {
 		t.Fatalf("snapshot = %+v; want retained two-model catalog", snapshot)
@@ -553,6 +685,43 @@ func TestPool_CatalogRefresh_CallerCancellationRetainsCatalogAndSlot(t *testing.
 		t.Fatal("cancelled refresh did not return its slot")
 	}
 	p.PutSlotBack(returned)
+}
+
+func TestPool_CatalogRefresh_ExpiredCallerDeadlineCarriesCommittedCooldown(t *testing.T) {
+	now := time.Unix(1_995, 0)
+	var runtimeProbe atomic.Bool
+	fc := &fakeClient{
+		models: twoCatalogModels(),
+		newSessionFn: func(ctx context.Context, _ string) (string, error) {
+			if runtimeProbe.Load() {
+				<-ctx.Done()
+				return "", ctx.Err()
+			}
+			return "warmup", nil
+		},
+	}
+	p := pool.New(pool.Config{
+		Logger:  testutil.Logger(t),
+		Size:    1,
+		Factory: &fakeClientFactory{clients: []pool.PoolClient{fc}},
+	})
+	p.SetCatalogRetryForTesting(nil)
+	p.SetCatalogNowForTesting(func() time.Time { return now })
+	if err := p.Warmup(context.Background()); err != nil {
+		t.Fatalf("Warmup: %v", err)
+	}
+	t.Cleanup(func() { _ = p.Close() })
+	runtimeProbe.Store(true)
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+
+	result, err := p.RefreshModelCatalog(ctx)
+	var refreshErr *pool.CatalogRefreshError
+	if result.Outcome != pool.CatalogCancelled || result.RetryAfter != 30*time.Second ||
+		!errors.Is(err, context.DeadlineExceeded) || !errors.As(err, &refreshErr) ||
+		refreshErr.RetryAfter != 30*time.Second {
+		t.Fatalf("expired caller deadline = %+v, %#v; want wrapped deadline with committed cooldown", result, err)
+	}
 }
 
 func TestPool_CatalogRefresh_SizeOneRemainsUsable(t *testing.T) {
@@ -618,6 +787,11 @@ func TestPool_CatalogRefresh_CloseCancelsAndJoinsBlockedProbe(t *testing.T) {
 	close(allowProbeReturn)
 	if err := <-refreshErr; !errors.Is(err, context.Canceled) {
 		t.Fatalf("refresh error = %v; want context.Canceled", err)
+	} else {
+		var catalogErr *pool.CatalogRefreshError
+		if !errors.As(err, &catalogErr) || catalogErr.RetryAfter <= 0 || catalogErr.RetryAfter > 30*time.Second {
+			t.Fatalf("close-cancelled refresh error = %#v; want wrapped cancellation with bounded cooldown", err)
+		}
 	}
 	if err := <-closeErr; err != nil {
 		t.Fatalf("Close: %v", err)
@@ -632,6 +806,10 @@ func TestPool_CatalogRefresh_AfterCloseIsUnavailable(t *testing.T) {
 	_, err := p.RefreshModelCatalog(context.Background())
 	if !errors.Is(err, pool.ErrCatalogRefreshUnavailable) {
 		t.Fatalf("refresh error = %v; want ErrCatalogRefreshUnavailable", err)
+	}
+	var refreshErr *pool.CatalogRefreshError
+	if !errors.As(err, &refreshErr) || refreshErr.RetryAfter != time.Second || errors.Is(err, pool.ErrCatalogRefreshCooldown) {
+		t.Fatalf("pre-admission closed error = %#v; want one-second unavailable retry without manual cooldown", err)
 	}
 }
 

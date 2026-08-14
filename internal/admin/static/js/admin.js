@@ -920,7 +920,10 @@
     }
   }
 
-  function fetchModelCatalog(preserveMessage) {
+  function fetchModelCatalog(preserveMessage, privilegedActionFetch) {
+    if (modelCatalogRefreshPending && !privilegedActionFetch) {
+      return Promise.resolve(false);
+    }
     var requestGeneration = ++modelCatalogRequestGeneration;
     var requestEpoch = modelCatalogViewActionEpoch;
     return fetch(modelCatalogURL(), {
@@ -955,6 +958,10 @@
         updateModelCatalogRefreshControl();
         return false;
       });
+  }
+
+  function fetchModelCatalogAfterRefresh() {
+    return fetchModelCatalog(true, true);
   }
 
   function modelCatalogActionMessage(code) {
@@ -1037,7 +1044,8 @@
           : 'Model catalog refresh completed.';
         setModelCatalogMessage(successMessage, 'is-success');
         announceModelCatalog(successMessage);
-        return fetchModelCatalog(true);
+        applyModelCatalogCooldown(result.body.retry_after_seconds);
+        return fetchModelCatalogAfterRefresh();
       })
       .catch(function () {
         modelCatalogViewActionEpoch++;

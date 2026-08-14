@@ -244,7 +244,11 @@ func TestAdminModelCatalogAdapter_RefreshMapsBoundedResults(t *testing.T) {
 		wantRetry   int
 		wantMessage string
 	}{
-		{name: "success", result: pool.CatalogRefreshResult{Outcome: pool.CatalogExpanded}, wantResult: "expanded"},
+		{
+			name: "success", result: pool.CatalogRefreshResult{
+				Outcome: pool.CatalogExpanded, RetryAfter: 29*time.Second + time.Nanosecond,
+			}, wantResult: "expanded", wantRetry: 30,
+		},
 		{
 			name: "in progress", err: fmt.Errorf("outer: %w", &pool.CatalogRefreshError{
 				Kind: pool.ErrCatalogRefreshInProgress, RetryAfter: 1501 * time.Millisecond,
@@ -267,7 +271,13 @@ func TestAdminModelCatalogAdapter_RefreshMapsBoundedResults(t *testing.T) {
 			}), wantCode: "catalog_refresh_unavailable", wantRetry: 30,
 		},
 		{
-			name: "unknown error", err: errors.New(rawSecret), wantCode: "catalog_refresh_failed",
+			name: "post-admission probe error", err: fmt.Errorf("outer: %w", &pool.CatalogRefreshError{
+				Kind: errors.New(rawSecret), RetryAfter: 29*time.Second + time.Nanosecond,
+			}), wantCode: "catalog_refresh_failed", wantRetry: 30,
+			wantMessage: "Model catalog refresh failed. The current catalog remains in use.",
+		},
+		{
+			name: "untyped pre-admission error", err: errors.New(rawSecret), wantCode: "catalog_refresh_failed",
 			wantMessage: "Model catalog refresh failed. The current catalog remains in use.",
 		},
 	}

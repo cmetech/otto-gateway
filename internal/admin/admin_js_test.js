@@ -965,6 +965,47 @@ test('model catalog refresh POST is empty, busy while pending, and immediately G
   assert.equal(harness.selectors['[data-model-catalog-count]'].textContent, '2');
 });
 
+test('model catalog refresh success applies the authoritative retry cooldown', async () => {
+  const harness = createHarness(
+	[snapshot({ main: 'Gateway', kiro: 'Kiro' })],
+	{
+	  modelCatalog: true,
+	  catalogResponses: [
+		modelCatalog([catalogModel('auto', 'Automatic')]),
+		modelCatalog([
+		  catalogModel('auto', 'Automatic'),
+		  catalogModel('gpt-5.6-sol', 'GPT 5.6 Sol'),
+		]),
+	  ],
+	  refreshResponses: [{
+		body: {
+		  outcome: 'expanded',
+		  message: 'Model catalog refresh completed.',
+		  retry_after_seconds: 30,
+		},
+	  }],
+	},
+  );
+  const button = harness.selectors['[data-model-catalog-refresh]'];
+  harness.start();
+  await settleAsyncWork();
+  button.dispatchEvent({ type: 'click' });
+  await settleAsyncWork();
+
+  assert.equal(button.disabled, true);
+  assert.equal(button['aria-busy'], 'false');
+  assert.equal(button.textContent, 'Retry in 30s');
+  assert.equal(
+	harness.selectors['[data-model-catalog-message]'].textContent,
+	'Model catalog refresh completed.',
+  );
+  assert.equal(harness.selectors['[data-model-catalog-count]'].textContent, '2');
+
+  harness.runTimeout(30000);
+  assert.equal(button.disabled, false);
+  assert.equal(button.textContent, 'Refresh now');
+});
+
 test('model catalog refresh errors use fixed local copy and retry cooldowns', async () => {
   const cases = [
 	{
@@ -994,7 +1035,7 @@ test('model catalog refresh errors use fixed local copy and retry cooldowns', as
 	{
 	  status: 502,
 	  code: 'catalog_refresh_failed',
-	  retry: 0,
+	  retry: 30,
 	  want: 'Model catalog refresh failed. The current catalog remains in use.',
 	},
 	{
@@ -1255,6 +1296,94 @@ test('model catalog ignores stale overlapping GET resolution and failure after r
 	assert.equal(button.disabled, false, `${staleOutcome}: stale completion must not disable the control`);
 	assert.equal(button['aria-busy'], 'false');
 	assert.equal(button.textContent, 'Refresh now');
+  }
+});
+
+test('model catalog privileged success GET wins while pending interval polls do not claim freshness', async () => {
+  for (const staleOutcome of ['resolve', 'reject']) {
+	for (const completionOrder of ['stale-first', 'fresh-first']) {
+	  const stalePoll = deferredFetch();
+	  const freshPoll = deferredFetch();
+	  const initial = modelCatalog([
+		catalogModel('auto', 'Automatic'),
+		catalogModel('gpt-old', 'GPT Old'),
+	  ]);
+	  const stale = modelCatalog([
+		catalogModel('auto', 'Automatic'),
+		catalogModel('gpt-stale', 'GPT Stale'),
+	  ], { generation: 4 });
+	  const refreshed = modelCatalog([
+		catalogModel('auto', 'Automatic'),
+		catalogModel('gpt-new', 'GPT New'),
+	  ], { generation: 9 });
+	  const harness = createHarness(
+		[snapshot({ main: 'Gateway', kiro: 'Kiro' })],
+		{
+		  modelCatalog: true,
+		  catalogResponses: [
+			initial,
+			{ fetchPromise: stalePoll.promise },
+			{ fetchPromise: freshPoll.promise },
+		  ],
+		  refreshResponses: [{
+			body: { outcome: 'expanded', message: 'Model catalog refresh completed.' },
+		  }],
+		},
+	  );
+
+	  harness.start();
+	  await settleAsyncWork();
+	  harness.pollCatalog();
+	  harness.selectors['[data-model-catalog-refresh]'].dispatchEvent({ type: 'click' });
+	  await settleAsyncWork();
+
+	  const button = harness.selectors['[data-model-catalog-refresh]'];
+	  assert.equal(button.disabled, true, `${staleOutcome}/${completionOrder}: POST remains pending through success GET`);
+	  assert.equal(button['aria-busy'], 'true');
+	  assert.equal(button.textContent, 'Refreshing…');
+	  assert.equal(
+		harness.fetchCalls.filter((call) => call.url === '/admin/api/model-catalog').length,
+		3,
+		`${staleOutcome}/${completionOrder}: initial, stale, and privileged GET should be started`,
+	  );
+
+	  harness.pollCatalog();
+	  assert.equal(
+		harness.fetchCalls.filter((call) => call.url === '/admin/api/model-catalog').length,
+		3,
+		`${staleOutcome}/${completionOrder}: pending interval must no-op before fetching or claiming freshness`,
+	  );
+
+	  const completeStale = () => {
+		if (staleOutcome === 'resolve') stalePoll.resolve(fakeHTTPResponse(stale));
+		else stalePoll.reject(new Error('late stale poll failure'));
+	  };
+	  if (completionOrder === 'stale-first') {
+		completeStale();
+		await settleAsyncWork();
+		freshPoll.resolve(fakeHTTPResponse(refreshed));
+	  } else {
+		freshPoll.resolve(fakeHTTPResponse(refreshed));
+		await settleAsyncWork();
+		completeStale();
+	  }
+	  await settleAsyncWork();
+
+	  const body = harness.selectors['[data-model-catalog-body]'];
+	  assert.match(elementText(body), /gpt-new/, `${staleOutcome}/${completionOrder}: privileged view must render`);
+	  assert.doesNotMatch(elementText(body), /gpt-old|gpt-stale/);
+	  assert.equal(
+		harness.selectors['[data-model-catalog-message]'].textContent,
+		'Model catalog refresh completed.',
+	  );
+	  assert.equal(
+		harness.selectors['[data-model-catalog-live]'].textContent,
+		'Model catalog refresh completed.',
+	  );
+	  assert.equal(button.disabled, false);
+	  assert.equal(button['aria-busy'], 'false');
+	  assert.equal(button.textContent, 'Refresh now');
+	}
   }
 });
 

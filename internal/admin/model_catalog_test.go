@@ -202,10 +202,11 @@ func TestModelCatalogAPI_POSTMapsRefreshResults(t *testing.T) {
 			if tc.wantMessage != "" && body["message"] != tc.wantMessage {
 				t.Fatalf("POST message = %q; want %q", body["message"], tc.wantMessage)
 			}
-			if retry := rec.Header().Get("Retry-After"); retry != "" {
-				if retry != "30" {
-					t.Fatalf("Retry-After = %q; want bounded 30 seconds", retry)
-				}
+			if retry := rec.Header().Get("Retry-After"); retry != "30" {
+				t.Fatalf("Retry-After = %q; want bounded 30 seconds", retry)
+			}
+			if retry := int(body["retry_after_seconds"].(float64)); retry != 30 {
+				t.Fatalf("retry_after_seconds = %d; want same bounded 30 seconds", retry)
 			}
 		})
 	}

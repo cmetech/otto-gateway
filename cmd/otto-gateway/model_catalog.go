@@ -78,8 +78,9 @@ func (a adminModelCatalogAdapter) Refresh(ctx context.Context) admin.ModelCatalo
 	result, err := a.source.RefreshModelCatalog(ctx)
 	if err == nil {
 		return admin.ModelCatalogActionResult{
-			Outcome: modelCatalogOutcome(result.Outcome),
-			Message: "Model catalog refresh completed.",
+			Outcome:           modelCatalogOutcome(result.Outcome),
+			Message:           "Model catalog refresh completed.",
+			RetryAfterSeconds: ceilModelCatalogSeconds(result.RetryAfter),
 		}
 	}
 
