@@ -99,24 +99,6 @@ func waitForCatalogOutcome(t *testing.T, p *pool.Pool, outcome pool.CatalogOutco
 	}
 }
 
-func waitForCatalogIdleWithNext(t *testing.T, p *pool.Pool, want time.Time) pool.ModelCatalogSnapshot {
-	t.Helper()
-	deadline := time.NewTimer(catalogTestTimeout)
-	defer deadline.Stop()
-	for {
-		snapshot := p.CatalogSnapshot()
-		if !snapshot.InProgress && snapshot.NextAttemptAt.Equal(want) {
-			return snapshot
-		}
-		select {
-		case <-deadline.C:
-			t.Fatalf("catalog snapshot = %+v; want idle with next attempt %v", snapshot, want)
-		default:
-			runtime.Gosched()
-		}
-	}
-}
-
 func waitForCatalogIdle(t *testing.T, p *pool.Pool) pool.ModelCatalogSnapshot {
 	t.Helper()
 	deadline := time.NewTimer(catalogTestTimeout)
@@ -335,6 +317,66 @@ func TestPool_CatalogRefresh_ConcurrentManualCallersRecheckCooldown(t *testing.T
 	}
 	if got := fc.newSessionCount(); got != baseline+1 {
 		t.Fatalf("concurrent manual probes = %d; want exactly 1", got-baseline)
+	}
+}
+
+func TestPool_CatalogRefresh_PausedManualCommitsAuthoritativeCooldownTime(t *testing.T) {
+	startedAt := time.Unix(1_750, 0)
+	advancedAt := startedAt.Add(45 * time.Second)
+	var nowNanos atomic.Int64
+	nowNanos.Store(startedAt.UnixNano())
+	fc := &fakeClient{models: twoCatalogModels()}
+	p := pool.New(pool.Config{
+		Logger:  testutil.Logger(t),
+		Size:    1,
+		Factory: &fakeClientFactory{clients: []pool.PoolClient{fc}},
+	})
+	p.SetCatalogRetryForTesting(nil)
+	p.SetCatalogNowForTesting(func() time.Time { return time.Unix(0, nowNanos.Load()) })
+	if err := p.Warmup(context.Background()); err != nil {
+		t.Fatalf("Warmup: %v", err)
+	}
+	t.Cleanup(func() { _ = p.Close() })
+
+	paused := make(chan struct{})
+	resumeFirst := make(chan struct{})
+	var resumeOnce sync.Once
+	resume := func() { resumeOnce.Do(func() { close(resumeFirst) }) }
+	defer resume()
+	var hookCalls atomic.Int32
+	p.SetCatalogManualCooldownHookForTesting(func() {
+		if hookCalls.Add(1) == 1 {
+			close(paused)
+			<-resumeFirst
+		}
+	})
+	baseline := fc.newSessionCount()
+	firstErr := make(chan error, 1)
+	go func() {
+		_, err := p.RefreshModelCatalog(context.Background())
+		firstErr <- err
+	}()
+	select {
+	case <-paused:
+	case <-time.After(catalogTestTimeout):
+		t.Fatal("manual refresh did not pause before its authoritative cooldown recheck")
+	}
+
+	nowNanos.Store(advancedAt.UnixNano())
+	resume()
+	if err := <-firstErr; err != nil {
+		t.Fatalf("paused manual refresh: %v", err)
+	}
+	if got := p.CatalogSnapshot().LastAttemptAt; !got.Equal(advancedAt) {
+		t.Fatalf("paused manual attempt time = %v; want authoritative time %v", got, advancedAt)
+	}
+	_, err := p.RefreshModelCatalog(context.Background())
+	var refreshErr *pool.CatalogRefreshError
+	if !errors.Is(err, pool.ErrCatalogRefreshCooldown) || !errors.As(err, &refreshErr) || refreshErr.RetryAfter != 30*time.Second {
+		t.Fatalf("later refresh error = %#v; want 30-second cooldown from advanced admission time", err)
+	}
+	if got := fc.newSessionCount(); got != baseline+1 {
+		t.Fatalf("manual probes = %d; want only the paused caller admitted", got-baseline)
 	}
 }
 
@@ -622,6 +664,48 @@ func TestPool_CatalogScheduler_NextAttemptStartsAfterAllSlotsWarm(t *testing.T) 
 	}
 }
 
+func TestPool_CatalogScheduler_ProductionTimingSourcePrecedesPublishedDeadline(t *testing.T) {
+	fc := &fakeClient{models: twoCatalogModels()}
+	p := pool.New(pool.Config{
+		Logger:                      testutil.Logger(t),
+		Size:                        1,
+		Factory:                     &fakeClientFactory{clients: []pool.PoolClient{fc}},
+		ModelCatalogRefreshInterval: time.Hour,
+	})
+	p.SetCatalogRetryForTesting(nil)
+	timingInitialized := make(chan time.Time, 1)
+	releaseTiming := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseTiming) }) }
+	t.Cleanup(func() {
+		release()
+		_ = p.Close()
+	})
+	p.SetCatalogSchedulerTimingInitializedHookForTesting(func(firstDeadline time.Time) {
+		timingInitialized <- firstDeadline
+		<-releaseTiming
+	})
+	warmErr := make(chan error, 1)
+	go func() { warmErr <- p.Warmup(context.Background()) }()
+
+	var firstDeadline time.Time
+	select {
+	case firstDeadline = <-timingInitialized:
+	case <-time.After(catalogTestTimeout):
+		t.Fatal("production catalog timing source was not initialized")
+	}
+	if got := p.CatalogSnapshot().NextAttemptAt; !got.IsZero() {
+		t.Fatalf("NextAttemptAt published before production timing initialization completed: %v", got)
+	}
+	release()
+	if err := <-warmErr; err != nil {
+		t.Fatalf("Warmup: %v", err)
+	}
+	if got := p.CatalogSnapshot().NextAttemptAt; !got.Equal(firstDeadline) {
+		t.Fatalf("NextAttemptAt = %v; want production timing deadline %v", got, firstDeadline)
+	}
+}
+
 func TestPool_CatalogScheduler_ManualAttemptDoesNotMoveNextTick(t *testing.T) {
 	startedAt := time.Unix(20_000, 0)
 	firstTick := startedAt.Add(time.Minute)
@@ -630,6 +714,7 @@ func TestPool_CatalogScheduler_ManualAttemptDoesNotMoveNextTick(t *testing.T) {
 	nowNanos.Store(startedAt.UnixNano())
 	fc := &fakeClient{models: twoCatalogModels()}
 	ticks := make(chan time.Time)
+	parked := make(chan struct{})
 	p := pool.New(pool.Config{
 		Logger:                      testutil.Logger(t),
 		Size:                        1,
@@ -639,14 +724,19 @@ func TestPool_CatalogScheduler_ManualAttemptDoesNotMoveNextTick(t *testing.T) {
 	p.SetCatalogRetryForTesting(nil)
 	p.SetCatalogNowForTesting(func() time.Time { return time.Unix(0, nowNanos.Load()) })
 	p.SetCatalogRefreshTicksForTesting(ticks)
+	p.SetCatalogSchedulerParkedForTesting(parked)
 	if err := p.Warmup(context.Background()); err != nil {
 		t.Fatalf("Warmup: %v", err)
 	}
 	t.Cleanup(func() { _ = p.Close() })
+	waitForCatalogSchedulerParked(t, parked)
 
 	nowNanos.Store(firstTick.UnixNano())
 	sendCatalogTickAt(t, ticks, firstTick)
-	waitForCatalogIdleWithNext(t, p, secondTick)
+	waitForCatalogSchedulerParked(t, parked)
+	if got := p.CatalogSnapshot().NextAttemptAt; !got.Equal(secondTick) {
+		t.Fatalf("NextAttemptAt after first tick = %v; want %v", got, secondTick)
+	}
 	nowNanos.Store(firstTick.Add(15 * time.Second).UnixNano())
 	if _, err := p.RefreshModelCatalog(context.Background()); err != nil {
 		t.Fatalf("manual refresh between ticks: %v", err)
@@ -657,7 +747,10 @@ func TestPool_CatalogScheduler_ManualAttemptDoesNotMoveNextTick(t *testing.T) {
 
 	nowNanos.Store(secondTick.UnixNano())
 	sendCatalogTickAt(t, ticks, secondTick)
-	waitForCatalogIdleWithNext(t, p, secondTick.Add(time.Minute))
+	waitForCatalogSchedulerParked(t, parked)
+	if got, want := p.CatalogSnapshot().NextAttemptAt, secondTick.Add(time.Minute); !got.Equal(want) {
+		t.Fatalf("NextAttemptAt after second tick = %v; want %v", got, want)
+	}
 }
 
 func TestPool_CatalogScheduler_LazyAttemptDoesNotMoveNextTick(t *testing.T) {

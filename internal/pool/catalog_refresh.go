@@ -71,11 +71,12 @@ func (p *Pool) refreshModelCatalog(ctx context.Context, source catalogRefreshSou
 // checked before the shared CAS, and probeWG.Add shares the same p.mu critical
 // section as the closed-state decision.
 func (p *Pool) admitCatalogRefresh(source catalogRefreshSource) (catalogRefreshAdmission, error) {
-	now := p.catalogNow()
+	var now time.Time
 	manualAdmissionLocked := false
 	if source == catalogRefreshManual {
 		p.catalogManualMu.Lock()
 		manualAdmissionLocked = true
+		now = p.catalogNow()
 		if err := p.manualCooldownErrorLocked(now); err != nil {
 			p.catalogManualMu.Unlock()
 			return catalogRefreshAdmission{}, err
@@ -88,11 +89,14 @@ func (p *Pool) admitCatalogRefresh(source catalogRefreshSource) (catalogRefreshA
 			p.catalogManualCooldownHook()
 			p.catalogManualMu.Lock()
 			manualAdmissionLocked = true
+			now = p.catalogNow()
 			if err := p.manualCooldownErrorLocked(now); err != nil {
 				p.catalogManualMu.Unlock()
 				return catalogRefreshAdmission{}, err
 			}
 		}
+	} else {
+		now = p.catalogNow()
 	}
 	if !p.catalogProbing.CompareAndSwap(false, true) {
 		if manualAdmissionLocked {
@@ -219,20 +223,29 @@ func (p *Pool) startCatalogScheduler() {
 		return
 	}
 	p.catalogSchedulerOnce.Do(func() {
-		p.setCatalogNextAttempt(p.catalogNow().Add(p.cfg.ModelCatalogRefreshInterval))
+		firstDeadline := p.catalogNow().Add(p.cfg.ModelCatalogRefreshInterval)
+		ticks := p.catalogRefreshTicks
+		var timer *time.Timer
+		if ticks == nil {
+			// A one-shot timer is created from the same absolute deadline that is
+			// published below. Creating it synchronously closes the historical gap
+			// where NextAttemptAt preceded the ticker's actual start time.
+			timer = time.NewTimer(time.Until(firstDeadline))
+			ticks = timer.C
+			if p.catalogSchedulerTimingInitializedHook != nil {
+				p.catalogSchedulerTimingInitializedHook(firstDeadline)
+			}
+		}
+		p.setCatalogNextAttempt(firstDeadline)
 		p.catalogSchedulerWG.Add(1)
-		go p.catalogRefreshLoop()
+		go p.catalogRefreshLoop(ticks, timer)
 	})
 }
 
-func (p *Pool) catalogRefreshLoop() {
+func (p *Pool) catalogRefreshLoop(ticks <-chan time.Time, timer *time.Timer) {
 	defer p.catalogSchedulerWG.Done()
-	ticks := p.catalogRefreshTicks
-	var ticker *time.Ticker
-	if ticks == nil {
-		ticker = time.NewTicker(p.cfg.ModelCatalogRefreshInterval)
-		ticks = ticker.C
-		defer ticker.Stop()
+	if timer != nil {
+		defer timer.Stop()
 	}
 	for {
 		if p.catalogSchedulerParked != nil {
@@ -247,7 +260,11 @@ func (p *Pool) catalogRefreshLoop() {
 			if !ok {
 				return
 			}
-			p.setCatalogNextAttempt(tickAt.Add(p.cfg.ModelCatalogRefreshInterval))
+			nextDeadline := tickAt.Add(p.cfg.ModelCatalogRefreshInterval)
+			p.setCatalogNextAttempt(nextDeadline)
+			if timer != nil {
+				timer.Reset(time.Until(nextDeadline))
+			}
 			_, _ = p.refreshModelCatalog(context.Background(), catalogRefreshScheduled)
 		case <-p.closing:
 			return

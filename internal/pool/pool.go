@@ -241,6 +241,10 @@ type Pool struct {
 	catalogNextAttempt time.Time
 	// catalogRefreshTicks replaces the production ticker in tests.
 	catalogRefreshTicks <-chan time.Time
+	// catalogSchedulerTimingInitializedHook is a test-only barrier fired after
+	// the production timing source exists and before its first deadline is
+	// published.
+	catalogSchedulerTimingInitializedHook func(time.Time)
 	// catalogSchedulerParked is a test-only handshake emitted immediately
 	// before each wait for a tick or shutdown.
 	catalogSchedulerParked chan<- struct{}

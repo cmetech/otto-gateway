@@ -124,6 +124,13 @@ func (p *Pool) SetCatalogRefreshTicksForTesting(ticks <-chan time.Time) {
 	p.catalogRefreshTicks = ticks
 }
 
+// SetCatalogSchedulerTimingInitializedHookForTesting installs a barrier after
+// the production timing source exists and before its first deadline is
+// published. It must be called before Warmup.
+func (p *Pool) SetCatalogSchedulerTimingInitializedHookForTesting(hook func(time.Time)) {
+	p.catalogSchedulerTimingInitializedHook = hook
+}
+
 // SetCatalogNowForTesting replaces the catalog lifecycle wall clock.
 func (p *Pool) SetCatalogNowForTesting(now func() time.Time) {
 	p.catalogNow = now
