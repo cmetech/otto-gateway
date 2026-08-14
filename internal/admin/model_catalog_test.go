@@ -251,7 +251,7 @@ func TestModelCatalogAPI_POSTRejectsRepeatedBrowserMetadata(t *testing.T) {
 		result:       ModelCatalogActionResult{Message: "refresh completed"},
 		refreshCalls: &calls,
 	}})
-	req := httptest.NewRequest(http.MethodPost, "/api/model-catalog/refresh", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/model-catalog/refresh", nil)
 	req.Header.Add("Sec-Fetch-Site", "same-origin")
 	req.Header.Add("Sec-Fetch-Site", "same-origin")
 	req.Header.Set("Origin", "http://example.com")
@@ -285,7 +285,12 @@ func TestModelCatalogAPI_POSTAllowsSameOriginBrowserThroughTLSHostRewritingProxy
 	frontend := httptest.NewTLSServer(proxy)
 	t.Cleanup(frontend.Close)
 
-	browserRequest, err := http.NewRequest(http.MethodPost, frontend.URL+"/api/model-catalog/refresh", nil)
+	browserRequest, err := http.NewRequestWithContext(
+		context.Background(),
+		http.MethodPost,
+		frontend.URL+"/api/model-catalog/refresh",
+		nil,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -302,7 +307,12 @@ func TestModelCatalogAPI_POSTAllowsSameOriginBrowserThroughTLSHostRewritingProxy
 		t.Fatalf("proxied same-origin POST status/calls = %d/%d; want 200/1", response.StatusCode, calls)
 	}
 
-	fallbackRequest, err := http.NewRequest(http.MethodPost, frontend.URL+"/api/model-catalog/refresh", nil)
+	fallbackRequest, err := http.NewRequestWithContext(
+		context.Background(),
+		http.MethodPost,
+		frontend.URL+"/api/model-catalog/refresh",
+		nil,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -353,7 +363,12 @@ func TestModelCatalogAPI_POSTStrictlyValidatesOriginBeforeRefresh(t *testing.T) 
 				refreshCalls: &calls,
 			}
 			h := Handler(Deps{ModelCatalog: src})
-			req := httptest.NewRequest(http.MethodPost, "/api/model-catalog/refresh", nil)
+			req := httptest.NewRequestWithContext(
+				context.Background(),
+				http.MethodPost,
+				"/api/model-catalog/refresh",
+				nil,
+			)
 			req.Host = tc.host
 			if tc.https {
 				req.TLS = &tls.ConnectionState{}
@@ -385,7 +400,7 @@ func TestModelCatalogAPI_POSTNilSourceIsUnavailable(t *testing.T) {
 func serveModelCatalog(t *testing.T, source ModelCatalogSource, method, path string, headers map[string]string) *httptest.ResponseRecorder {
 	t.Helper()
 	h := Handler(Deps{ModelCatalog: source})
-	req := httptest.NewRequest(method, path, nil)
+	req := httptest.NewRequestWithContext(context.Background(), method, path, nil)
 	for key, value := range headers {
 		req.Header.Set(key, value)
 	}

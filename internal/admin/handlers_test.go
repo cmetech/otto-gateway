@@ -204,7 +204,7 @@ func TestAdmin_PageHandler_ModelCatalogScaffold(t *testing.T) {
 	modelCatalog := strings.Index(body, "Model Catalog")
 	privacyBoundary := strings.Index(body, "Privacy Boundary")
 	if activeSessions < 0 || modelCatalog < 0 || privacyBoundary < 0 ||
-		!(activeSessions < modelCatalog && modelCatalog < privacyBoundary) {
+		activeSessions >= modelCatalog || modelCatalog >= privacyBoundary {
 		t.Errorf(
 			"section order = Active Sessions %d, Model Catalog %d, Privacy Boundary %d; want increasing",
 			activeSessions,
@@ -540,11 +540,11 @@ func TestAdmin_StaticCSS_ModelCatalogContrastContract(t *testing.T) {
 			t.Fatalf("CSS selector %q missing declaration block", selector)
 		}
 		open += start
-		close := strings.Index(css[open:], "}")
-		if close < 0 {
+		closeBrace := strings.Index(css[open:], "}")
+		if closeBrace < 0 {
 			t.Fatalf("CSS selector %q has unterminated declaration block", selector)
 		}
-		return css[open+1 : open+close]
+		return css[open+1 : open+closeBrace]
 	}
 	assertDeclarations := func(selector string, declarations ...string) {
 		t.Helper()

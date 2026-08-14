@@ -8,12 +8,18 @@ import (
 	"otto-gateway/internal/canonical"
 )
 
-var (
-	ErrCatalogRefreshInProgress  = errors.New("model catalog refresh already in progress")
-	ErrCatalogRefreshBusy        = errors.New("model catalog refresh requires an idle pool slot")
-	ErrCatalogRefreshCooldown    = errors.New("model catalog manual refresh cooldown")
-	ErrCatalogRefreshUnavailable = errors.New("model catalog refresh unavailable")
-)
+// ErrCatalogRefreshInProgress reports that another catalog probe owns the
+// shared single-flight slot.
+var ErrCatalogRefreshInProgress = errors.New("model catalog refresh already in progress")
+
+// ErrCatalogRefreshBusy reports that no pool worker is immediately idle.
+var ErrCatalogRefreshBusy = errors.New("model catalog refresh requires an idle pool slot")
+
+// ErrCatalogRefreshCooldown reports that a manual action is still cooling down.
+var ErrCatalogRefreshCooldown = errors.New("model catalog manual refresh cooldown")
+
+// ErrCatalogRefreshUnavailable reports that catalog refresh cannot currently run.
+var ErrCatalogRefreshUnavailable = errors.New("model catalog refresh unavailable")
 
 const (
 	catalogManualCooldown = 30 * time.Second
@@ -104,7 +110,6 @@ func (p *Pool) admitCatalogRefresh(source catalogRefreshSource) (catalogRefreshA
 			// The test barrier recreates the historical stale-read window. The
 			// second check after reacquiring the admission lock is load-bearing.
 			p.catalogManualMu.Unlock()
-			manualAdmissionLocked = false
 			p.catalogManualCooldownHook()
 			p.catalogManualMu.Lock()
 			manualAdmissionLocked = true

@@ -20,15 +20,24 @@ var (
 type CatalogOutcome string
 
 const (
-	CatalogStartup         CatalogOutcome = "startup"
-	CatalogUnchanged       CatalogOutcome = "unchanged"
-	CatalogExpanded        CatalogOutcome = "expanded"
+	// CatalogStartup records the initial catalog observation.
+	CatalogStartup CatalogOutcome = "startup"
+	// CatalogUnchanged records an observation identical to the published catalog.
+	CatalogUnchanged CatalogOutcome = "unchanged"
+	// CatalogExpanded records an observation that immediately adds models.
+	CatalogExpanded CatalogOutcome = "expanded"
+	// CatalogMetadataUpdated records changed metadata for the same model IDs.
 	CatalogMetadataUpdated CatalogOutcome = "metadata_updated"
-	CatalogPendingShrink   CatalogOutcome = "pending_shrink"
+	// CatalogPendingShrink records the first observation of missing models.
+	CatalogPendingShrink CatalogOutcome = "pending_shrink"
+	// CatalogShrinkConfirmed records the matching observation that confirms removal.
 	CatalogShrinkConfirmed CatalogOutcome = "shrink_confirmed"
-	CatalogSkippedBusy     CatalogOutcome = "skipped_busy"
-	CatalogFailed          CatalogOutcome = "failed"
-	CatalogCancelled       CatalogOutcome = "cancelled"
+	// CatalogSkippedBusy records a scheduled probe skipped for lack of an idle worker.
+	CatalogSkippedBusy CatalogOutcome = "skipped_busy"
+	// CatalogFailed records an invalid or failed catalog observation.
+	CatalogFailed CatalogOutcome = "failed"
+	// CatalogCancelled records an observation cancelled before completion.
+	CatalogCancelled CatalogOutcome = "cancelled"
 )
 
 // ModelCatalogSnapshot is a defensive copy of the catalog store's published
