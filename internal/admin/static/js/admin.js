@@ -700,6 +700,330 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Model catalog: isolated read/refresh state and grouped capability table.
+  // Catalog polling deliberately owns no snapshot failure state or promise.
+  // Every server value reaches the DOM through textContent-created nodes.
+  // ---------------------------------------------------------------------------
+
+  var modelCatalogInitialized = false;
+  var modelCatalogLastView = null;
+  var modelCatalogRefreshPending = false;
+  var modelCatalogCooldownActive = false;
+  var modelCatalogCooldownSeconds = 0;
+  var modelCatalogCooldownTimer = null;
+
+  function modelCatalogURL() { return '/admin/api/model-catalog'; }
+  function modelCatalogRefreshURL() { return '/admin/api/model-catalog/refresh'; }
+
+  var modelNameCollator = new Intl.Collator(undefined, {
+    numeric: true,
+    sensitivity: 'base'
+  });
+
+  function modelGroup(model) {
+    var id = String((model && model.id) || '');
+    if (id === 'auto') return { key: 'auto', label: 'Automatic', order: 0 };
+    if (id.indexOf('claude-') === 0) return { key: 'claude', label: 'Anthropic / Claude', order: 1 };
+    if (id.indexOf('gpt-') === 0) return { key: 'gpt', label: 'OpenAI / GPT', order: 2 };
+    if (id.indexOf('qwen') === 0) return { key: 'qwen', label: 'Qwen', order: 3 };
+    return { key: 'other', label: 'Other models', order: 4 };
+  }
+
+  function compareModelRows(a, b) {
+    var byName = modelNameCollator.compare(a.name || a.id, b.name || b.id);
+    return byName || String(a.id).localeCompare(String(b.id));
+  }
+
+  function modelCatalogState(state) {
+    switch (state) {
+    case 'ready': return { label: 'Ready', className: 'is-ok' };
+    case 'refreshing': return { label: 'Refreshing', className: 'is-busy' };
+    case 'pending_shrink': return { label: 'Pending review', className: 'is-warning' };
+    case 'degraded': return { label: 'Degraded', className: 'is-warning' };
+    case 'disabled': return { label: 'Disabled', className: 'is-muted' };
+    default: return { label: 'Unavailable', className: 'is-warning' };
+    }
+  }
+
+  function formatModelCatalogTime(value, fallback) {
+    if (!value) return fallback;
+    var timestamp = Date.parse(value);
+    if (!Number.isFinite(timestamp)) return fallback;
+    return new Date(timestamp).toISOString().replace('T', ' ').replace('.000Z', ' UTC');
+  }
+
+  function formatModelCatalogInterval(seconds) {
+    var value = Math.max(0, Math.floor(Number(seconds) || 0));
+    if (value === 0) return 'Manual only';
+    if (value % 3600 === 0) return (value / 3600) + ' hr';
+    if (value % 60 === 0) return (value / 60) + ' min';
+    return value + ' sec';
+  }
+
+  function setModelCatalogNext(refresh) {
+    refresh = refresh || {};
+    if (modelCatalogCooldownActive) {
+      setText('data-model-catalog-next', 'Retry available in ' + modelCatalogCooldownSeconds + 's');
+    } else if (!refresh.enabled) {
+      setText('data-model-catalog-next', 'Disabled');
+    } else {
+      setText(
+        'data-model-catalog-next',
+        formatModelCatalogTime(refresh.next_attempt_at, 'Not scheduled')
+      );
+    }
+  }
+
+  function setModelCatalogMessage(text, tone) {
+    var el = qs('data-model-catalog-message');
+    if (!el) return;
+    el.textContent = text || '';
+    el.hidden = !text;
+    el.className = 'gw-model-catalog-message';
+    if (tone) el.classList.add(tone);
+    el.classList.toggle('is-visible', !!text);
+  }
+
+  function announceModelCatalog(text) {
+    setText('data-model-catalog-live', text || '');
+  }
+
+  function modelCapabilityBadge(value) {
+    var badge = document.createElement('span');
+    badge.className = 'gw-model-capability';
+    if (value === 'supported') {
+      badge.classList.add('is-supported');
+      badge.textContent = 'Supported';
+    } else if (value === 'unsupported') {
+      badge.classList.add('is-unsupported');
+      badge.textContent = 'Unsupported';
+    } else {
+      badge.classList.add('is-unknown');
+      badge.textContent = 'Unknown';
+    }
+    return badge;
+  }
+
+  function buildModelCatalogRow(model) {
+    var row = document.createElement('tr');
+    row.className = 'gw-model-catalog-row';
+
+    var name = document.createElement('th');
+    name.scope = 'row';
+    name.className = 'gw-model-catalog-name';
+    name.textContent = String(model.name || model.id || 'Unnamed model');
+
+    var id = td('gw-model-catalog-id', String(model.id || '—'));
+    row.append(name, id);
+
+    var capabilities = model.capabilities || {};
+    ['completion', 'tools', 'vision', 'reasoning'].forEach(function (capability) {
+      var cell = td('gw-model-catalog-capability');
+      cell.append(modelCapabilityBadge(capabilities[capability]));
+      row.append(cell);
+    });
+    return row;
+  }
+
+  function renderModelCatalog(view) {
+    var tbody = qs('data-model-catalog-body');
+    if (!tbody || !view || typeof view !== 'object') return;
+
+    var models = Array.isArray(view.models)
+      ? view.models.slice().filter(function (model) { return model && typeof model === 'object'; })
+      : [];
+    var groupsByKey = {};
+    models.forEach(function (model) {
+      var group = modelGroup(model);
+      if (!groupsByKey[group.key]) groupsByKey[group.key] = { group: group, models: [] };
+      groupsByKey[group.key].models.push(model);
+    });
+
+    var groups = Object.keys(groupsByKey).map(function (key) { return groupsByKey[key]; });
+    groups.sort(function (a, b) { return a.group.order - b.group.order; });
+    var rows = [];
+    groups.forEach(function (entry) {
+      entry.models.sort(compareModelRows);
+      var groupRow = document.createElement('tr');
+      groupRow.className = 'gw-model-catalog-group';
+      var groupHeading = document.createElement('th');
+      groupHeading.scope = 'rowgroup';
+      groupHeading.colSpan = 6;
+      groupHeading.textContent = entry.group.label;
+      groupRow.append(groupHeading);
+      rows.push(groupRow);
+      entry.models.forEach(function (model) { rows.push(buildModelCatalogRow(model)); });
+    });
+
+    tbody.replaceChildren.apply(tbody, rows);
+
+    var presentation = modelCatalogState(view.state);
+    var state = qs('data-model-catalog-state');
+    if (state) {
+      state.textContent = presentation.label;
+      state.className = 'gw-badge ' + presentation.className;
+    }
+    setText('data-model-catalog-count', String(models.length));
+    var refresh = view.refresh || {};
+    setText(
+      'data-model-catalog-last-success',
+      formatModelCatalogTime(refresh.last_success_at, 'Not yet')
+    );
+    setModelCatalogNext(refresh);
+    setText('data-model-catalog-interval', formatModelCatalogInterval(refresh.interval_seconds));
+
+    modelCatalogLastView = view;
+    updateModelCatalogRefreshControl();
+  }
+
+  function updateModelCatalogRefreshControl() {
+    var button = qs('data-model-catalog-refresh');
+    if (!button) return;
+    var refresh = (modelCatalogLastView && modelCatalogLastView.refresh) || {};
+    if (modelCatalogRefreshPending || refresh.in_progress) {
+      button.disabled = true;
+      button.setAttribute('aria-busy', 'true');
+      button.textContent = 'Refreshing…';
+      return;
+    }
+    button.setAttribute('aria-busy', 'false');
+    if (modelCatalogCooldownActive) {
+      button.disabled = true;
+      button.textContent = 'Retry in ' + modelCatalogCooldownSeconds + 's';
+    } else {
+      button.disabled = false;
+      button.textContent = 'Refresh now';
+    }
+  }
+
+  function fetchModelCatalog(preserveMessage) {
+    return fetch(modelCatalogURL(), {
+      cache: 'no-store',
+      headers: { 'Accept': 'application/json' }
+    })
+      .then(function (response) {
+        if (!response.ok) throw new Error('model catalog unavailable');
+        return response.json();
+      })
+      .then(function (view) {
+        renderModelCatalog(view);
+        if (!preserveMessage) setModelCatalogMessage('', '');
+        return true;
+      })
+      .catch(function () {
+        var errorMessage = 'Model catalog status could not be updated. Showing the last known catalog.';
+        setModelCatalogMessage(errorMessage, 'is-error');
+        announceModelCatalog(errorMessage);
+        return false;
+      });
+  }
+
+  function modelCatalogActionMessage(code) {
+    switch (code) {
+    case 'catalog_refresh_in_progress':
+      return 'A model catalog refresh is already in progress.';
+    case 'catalog_refresh_cooldown':
+      return 'Model catalog refresh is temporarily rate limited.';
+    case 'catalog_refresh_busy':
+      return 'No idle gateway worker is available for a model catalog refresh.';
+    case 'catalog_refresh_unavailable':
+      return 'Model catalog refresh is unavailable.';
+    case 'catalog_refresh_failed':
+    default:
+      return 'Model catalog refresh failed.';
+    }
+  }
+
+  function modelCatalogActionTone(code) {
+    if (code === 'catalog_refresh_in_progress' ||
+        code === 'catalog_refresh_cooldown' ||
+        code === 'catalog_refresh_busy') {
+      return 'is-warning';
+    }
+    return 'is-error';
+  }
+
+  function applyModelCatalogCooldown(seconds) {
+    var retrySeconds = Math.ceil(Number(seconds) || 0);
+    retrySeconds = Math.max(0, Math.min(30, retrySeconds));
+    if (retrySeconds === 0) return;
+    if (modelCatalogCooldownTimer) clearTimeout(modelCatalogCooldownTimer);
+    modelCatalogCooldownActive = true;
+    modelCatalogCooldownSeconds = retrySeconds;
+    setModelCatalogNext((modelCatalogLastView && modelCatalogLastView.refresh) || {});
+    updateModelCatalogRefreshControl();
+    modelCatalogCooldownTimer = setTimeout(function () {
+      modelCatalogCooldownTimer = null;
+      modelCatalogCooldownActive = false;
+      modelCatalogCooldownSeconds = 0;
+      setModelCatalogNext((modelCatalogLastView && modelCatalogLastView.refresh) || {});
+      updateModelCatalogRefreshControl();
+    }, retrySeconds * 1000);
+  }
+
+  function refreshModelCatalog() {
+    if (modelCatalogRefreshPending || modelCatalogCooldownActive || !modelCatalogLastView) {
+      return Promise.resolve(false);
+    }
+
+    modelCatalogRefreshPending = true;
+    updateModelCatalogRefreshControl();
+    return fetch(modelCatalogRefreshURL(), {
+      method: 'POST',
+      headers: { 'Accept': 'application/json' }
+    })
+      .then(function (response) {
+        return response.json().then(
+          function (body) { return { ok: response.ok, body: body || {} }; },
+          function () { return { ok: response.ok, body: {} }; }
+        );
+      })
+      .then(function (result) {
+        if (!result.ok) {
+          var code = typeof result.body.code === 'string' ? result.body.code : '';
+          var errorMessage = modelCatalogActionMessage(code);
+          setModelCatalogMessage(errorMessage, modelCatalogActionTone(code));
+          announceModelCatalog(errorMessage);
+          applyModelCatalogCooldown(result.body.retry_after_seconds);
+          return false;
+        }
+
+        var successMessage = result.body.message === 'Model catalog refresh completed.'
+          ? result.body.message
+          : 'Model catalog refresh completed.';
+        setModelCatalogMessage(successMessage, 'is-success');
+        announceModelCatalog(successMessage);
+        return fetchModelCatalog(true);
+      })
+      .catch(function () {
+        var errorMessage = 'Model catalog refresh could not be requested.';
+        setModelCatalogMessage(errorMessage, 'is-error');
+        announceModelCatalog(errorMessage);
+        return false;
+      })
+      .then(function (result) {
+        modelCatalogRefreshPending = false;
+        updateModelCatalogRefreshControl();
+        return result;
+      });
+  }
+
+  function initModelCatalog() {
+    if (modelCatalogInitialized) return;
+    var body = qs('data-model-catalog-body');
+    var button = qs('data-model-catalog-refresh');
+    if (!body || !button) return;
+    modelCatalogInitialized = true;
+
+    button.disabled = true;
+    button.setAttribute('aria-busy', 'false');
+    button.textContent = 'Loading…';
+    button.addEventListener('click', refreshModelCatalog);
+    fetchModelCatalog();
+    setInterval(fetchModelCatalog, pollMs);
+  }
+
+  // ---------------------------------------------------------------------------
   // tick: update "Last updated Xs ago" every 1s independently of the poll
   // ---------------------------------------------------------------------------
 
@@ -1466,6 +1790,9 @@
 
     // Repeating poll at the configured interval (30s default).
     setInterval(fetchSnapshot, pollMs);
+
+    // Independent model-catalog poll + deliberate manual refresh control.
+    initModelCatalog();
 
     // Initialise SSE log tail (Plan 03).
     initLogTail();

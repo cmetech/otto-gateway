@@ -772,6 +772,298 @@ body {
 }
 
 /* -----------------------------------------------------------------------
+ * Live model catalog — dense operator inventory grouped by model family.
+ * The accent rail and fixed-width metadata echo the privacy console while
+ * the low-noise group bands keep a long capability matrix easy to scan.
+ * ----------------------------------------------------------------------- */
+
+.gw-model-catalog {
+  border-left: 4px solid var(--gw-accent);
+}
+
+.gw-model-catalog-header {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.7fr) minmax(0, 2fr);
+  align-items: end;
+  gap: var(--gw-space-lg);
+  margin-bottom: var(--gw-space-base);
+}
+
+.gw-model-catalog-title .gw-h2 {
+  margin-bottom: var(--gw-space-xs);
+}
+
+.gw-model-catalog-intro {
+  max-width: 42ch;
+  margin: 0;
+  color: var(--gw-fg-muted);
+  font-size: var(--gw-text-sm);
+}
+
+.gw-model-catalog-operator {
+  display: flex;
+  align-items: stretch;
+  justify-content: flex-end;
+  gap: var(--gw-space-md);
+  min-width: 0;
+}
+
+.gw-model-catalog-meta {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid var(--gw-border);
+  border-radius: var(--gw-radius-input);
+  background: var(--gw-border);
+  gap: 1px;
+}
+
+.gw-model-catalog-meta > div {
+  min-width: 0;
+  padding: var(--gw-space-sm) var(--gw-space-md);
+  background: var(--gw-bg);
+}
+
+.gw-model-catalog-meta dt {
+  margin: 0 0 var(--gw-space-xs);
+  color: var(--gw-fg-dim);
+  font: 600 var(--gw-text-xs)/1.25 var(--gw-font-ui);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.gw-model-catalog-meta dd {
+  margin: 0;
+  color: var(--gw-fg);
+  font: 600 var(--gw-text-sm)/1.35 var(--gw-font-mono);
+  overflow-wrap: anywhere;
+}
+
+.gw-model-catalog-refresh {
+  min-width: 122px;
+  min-height: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--gw-space-sm);
+  box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0.2);
+}
+
+.gw-model-catalog-refresh:hover:not(:disabled) {
+  opacity: 1;
+  filter: brightness(1.05);
+}
+
+.gw-model-catalog-refresh:focus-visible {
+  outline-width: 3px;
+  outline-offset: 3px;
+}
+
+.gw-model-catalog-refresh:disabled {
+  cursor: not-allowed;
+  opacity: 1;
+  background: var(--gw-card-hover);
+  border-color: var(--gw-border);
+  color: var(--gw-fg-dim);
+  box-shadow: none;
+}
+
+.gw-model-catalog-refresh:disabled:hover {
+  opacity: 1;
+  filter: none;
+}
+
+.gw-model-catalog-refresh[aria-busy="true"] {
+  cursor: wait;
+  color: var(--gw-fg);
+}
+
+.gw-model-catalog-refresh[aria-busy="true"]::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--gw-accent);
+  animation: gw-pulse 1.2s ease-in-out infinite;
+}
+
+.gw-model-catalog-message {
+  display: none;
+  margin: 0 0 var(--gw-space-base);
+  padding: var(--gw-space-sm) var(--gw-space-md);
+  border: 1px solid var(--gw-border);
+  border-left-width: 3px;
+  border-radius: var(--gw-radius-input);
+  color: var(--gw-fg);
+  background: var(--gw-bg);
+  font-size: var(--gw-text-sm);
+}
+
+.gw-model-catalog-message.is-visible {
+  display: block;
+}
+
+.gw-model-catalog-message.is-success {
+  border-left-color: var(--gw-healthy);
+}
+
+.gw-model-catalog-message.is-warning {
+  border-left-color: var(--gw-warning);
+}
+
+.gw-model-catalog-message.is-error {
+  border-left-color: var(--gw-failed);
+}
+
+.gw-model-catalog-scroll {
+  overflow-x: auto;
+  border: 1px solid var(--gw-border);
+  border-radius: var(--gw-radius-input);
+  background: var(--gw-bg);
+}
+
+.gw-model-catalog-scroll:focus-visible {
+  outline: 3px solid var(--gw-accent);
+  outline-offset: 3px;
+}
+
+.gw-model-catalog-table {
+  width: 100%;
+  min-width: 840px;
+  border-collapse: collapse;
+  color: var(--gw-fg);
+  font-size: var(--gw-text-sm);
+}
+
+.gw-model-catalog-table thead th {
+  padding: var(--gw-space-sm) var(--gw-space-md);
+  border-bottom: 1px solid var(--gw-border);
+  background: var(--gw-card-hover);
+  color: var(--gw-fg-muted);
+  font: 600 var(--gw-text-xs)/1.35 var(--gw-font-ui);
+  letter-spacing: 0.06em;
+  text-align: left;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.gw-model-catalog-table thead th:nth-child(1) {
+  width: 24%;
+}
+
+.gw-model-catalog-table thead th:nth-child(2) {
+  width: 28%;
+}
+
+.gw-model-catalog-table tbody th,
+.gw-model-catalog-table tbody td {
+  padding: var(--gw-space-sm) var(--gw-space-md);
+  border-bottom: 1px solid var(--gw-border);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.gw-model-catalog-table tbody tr:last-child th,
+.gw-model-catalog-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.gw-model-catalog-row {
+  transition: background-color 120ms ease;
+}
+
+.gw-model-catalog-row:hover {
+  background: var(--gw-card-hover);
+}
+
+.gw-model-catalog-name {
+  color: var(--gw-fg);
+  font-weight: 600;
+}
+
+.gw-model-catalog-id {
+  color: var(--gw-fg-muted);
+  font-family: var(--gw-font-mono);
+  font-size: var(--gw-text-sm);
+  overflow-wrap: anywhere;
+}
+
+.gw-model-catalog-group th {
+  padding-top: var(--gw-space-md);
+  padding-bottom: var(--gw-space-sm);
+  box-shadow: inset 3px 0 0 var(--gw-accent);
+  background: var(--gw-card-hover);
+  color: var(--gw-fg-muted);
+  font: 600 var(--gw-text-xs)/1.3 var(--gw-font-mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.gw-model-catalog-capability {
+  white-space: nowrap;
+}
+
+.gw-model-capability {
+  display: inline-flex;
+  align-items: center;
+  min-width: 76px;
+  justify-content: center;
+  padding: 3px 7px;
+  border-radius: var(--gw-radius-input);
+  font: 600 var(--gw-text-xs)/1.2 var(--gw-font-ui);
+}
+
+.gw-model-capability.is-supported {
+  color: var(--gw-healthy);
+  background: rgba(15, 195, 115, 0.12);
+}
+
+.gw-model-capability.is-unsupported {
+  color: var(--gw-fg-muted);
+  background: rgba(156, 163, 175, 0.12);
+}
+
+.gw-model-capability.is-unknown {
+  color: var(--gw-warning);
+  background: rgba(255, 140, 10, 0.12);
+}
+
+@media (max-width: 1100px) {
+  .gw-model-catalog-header {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 767px) {
+  .gw-model-catalog-operator {
+    flex-direction: column;
+  }
+
+  .gw-model-catalog-meta {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .gw-model-catalog-refresh {
+    min-height: 42px;
+    width: 100%;
+  }
+
+  .gw-model-catalog-table {
+    min-width: 780px;
+  }
+}
+
+@media (max-width: 420px) {
+  .gw-model-catalog-meta {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* -----------------------------------------------------------------------
  * Log tail panel (Plan 03 — SSE live tail)
  * ----------------------------------------------------------------------- */
 

@@ -166,6 +166,74 @@ func TestAdmin_PageHandler(t *testing.T) {
 	}
 }
 
+func TestAdmin_PageHandler_ModelCatalogScaffold(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	h := Handler(Deps{
+		Logger:  testutil.Logger(t),
+		Version: "1.2.3",
+		Commit:  "abc1234",
+	})
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /: want 200, got %d", rec.Code)
+	}
+
+	body := rec.Body.String()
+	for _, want := range []string{
+		`id="model-catalog"`,
+		`data-model-catalog-state`,
+		`data-model-catalog-count`,
+		`data-model-catalog-last-success`,
+		`data-model-catalog-next`,
+		`data-model-catalog-interval`,
+		`data-model-catalog-refresh`,
+		`data-model-catalog-body`,
+		`data-model-catalog-message`,
+		`aria-live="polite"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("dashboard missing %q", want)
+		}
+	}
+
+	activeSessions := strings.Index(body, "Active Sessions")
+	modelCatalog := strings.Index(body, "Model Catalog")
+	privacyBoundary := strings.Index(body, "Privacy Boundary")
+	if activeSessions < 0 || modelCatalog < 0 || privacyBoundary < 0 ||
+		!(activeSessions < modelCatalog && modelCatalog < privacyBoundary) {
+		t.Errorf(
+			"section order = Active Sessions %d, Model Catalog %d, Privacy Boundary %d; want increasing",
+			activeSessions,
+			modelCatalog,
+			privacyBoundary,
+		)
+	}
+
+	for _, heading := range []string{"Model", "Model ID", "Completion", "Tools", "Vision", "Reasoning"} {
+		want := `<th scope="col">` + heading + `</th>`
+		if !strings.Contains(body, want) {
+			t.Errorf("dashboard missing catalog column heading %q", want)
+		}
+	}
+	for _, want := range []string{
+		`<button type="button" class="gw-btn gw-btn--primary gw-model-catalog-refresh" data-model-catalog-refresh`,
+		`role="region" aria-labelledby="model-catalog-heading" tabindex="0"`,
+		`<table class="gw-model-catalog-table">`,
+		`<caption class="sr-only">Live selectable model catalog and capabilities</caption>`,
+		`data-model-catalog-live`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("dashboard missing accessible catalog markup %q", want)
+		}
+	}
+	if got := strings.Count(body, `data-model-catalog-body`); got != 1 {
+		t.Errorf("data-model-catalog-body count = %d; want 1", got)
+	}
+}
+
 // TestAdmin_CompressionFlagSurfacing verifies the three-state
 // CompressionState dep drives both the dashboard summary chip and the
 // /about Feature Flags row: "on" (green — hook in chain, env default on),

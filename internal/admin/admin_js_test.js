@@ -14,6 +14,9 @@ class Element {
     this.textContent = '';
     this.value = '';
     this.hidden = false;
+	this.disabled = false;
+	this.colSpan = 1;
+	this.scope = '';
 	this.className = '';
     this.dataset = {};
     this.style = { display: '' };
@@ -32,6 +35,14 @@ class Element {
           .filter((name) => name && !removed.has(name))
           .join(' ');
       },
+	  toggle: (name, force) => {
+		const names = new Set(this.className.split(/\s+/).filter(Boolean));
+		const enabled = force === undefined ? !names.has(name) : !!force;
+		if (enabled) names.add(name);
+		else names.delete(name);
+		this.className = [...names].join(' ');
+		return enabled;
+	  },
     };
   }
 
@@ -163,7 +174,7 @@ function elementText(element) {
   return [element.textContent, ...element.children.map(elementText)].join(' ');
 }
 
-function createHarness(responses) {
+function createHarness(responses, options = {}) {
   const sourceSelect = new Element('select');
   const logStatus = new Element('span');
   const logViewport = new Element('div');
@@ -195,6 +206,19 @@ function createHarness(responses) {
     '[data-slot-grid]': slotGrid,
     '[data-slot-grid-empty]': slotGridEmpty,
   };
+	if (options.modelCatalog) {
+	  selectors['[data-model-catalog-state]'] = new Element('span');
+	  selectors['[data-model-catalog-count]'] = new Element('span');
+	  selectors['[data-model-catalog-last-success]'] = new Element('span');
+	  selectors['[data-model-catalog-next]'] = new Element('span');
+	  selectors['[data-model-catalog-interval]'] = new Element('span');
+	  selectors['[data-model-catalog-refresh]'] = new Element('button');
+	  selectors['[data-model-catalog-body]'] = new Element('tbody');
+	  selectors['[data-model-catalog-message]'] = new Element('p');
+	  selectors['[data-model-catalog-live]'] = new Element('p');
+	  selectors['[data-model-catalog-refresh]'].textContent = 'Refresh now';
+	  selectors['[data-model-catalog-message]'].hidden = true;
+	}
 	for (const name of [
 	  'default-profile', 'strict', 'protected', 'blocked', 'scopes', 'in-flight',
 	  'entries', 'per-scope', 'ttl', 'oldest', 'triage', 'last-error',
@@ -205,6 +229,9 @@ function createHarness(responses) {
   const intervals = [];
   const timeouts = [];
   const eventSources = [];
+	const fetchCalls = [];
+	const catalogResponses = (options.catalogResponses || []).slice();
+	const refreshResponses = (options.refreshResponses || []).slice();
 
   class FakeEventSource {
     constructor(url) {
@@ -259,10 +286,32 @@ function createHarness(responses) {
     },
     document,
     encodeURIComponent,
-    fetch() {
-      const body = responses.shift();
-      assert.ok(body, 'unexpected snapshot fetch');
-      return Promise.resolve({ ok: true, json: () => Promise.resolve(body) });
+    fetch(url, requestOptions = {}) {
+	  fetchCalls.push({ url, options: requestOptions });
+	  let queue;
+	  let label;
+	  if (url === '/admin/api/snapshot') {
+		queue = responses;
+		label = 'snapshot';
+	  } else if (url === '/admin/api/model-catalog') {
+		queue = catalogResponses;
+		label = 'model catalog';
+	  } else if (url === '/admin/api/model-catalog/refresh') {
+		queue = refreshResponses;
+		label = 'model catalog refresh';
+	  } else {
+		throw new Error(`unexpected fetch URL ${url}`);
+	  }
+	  const entry = queue.shift();
+	  assert.ok(entry, `unexpected ${label} fetch`);
+	  const status = entry.httpStatus || 200;
+	  return Promise.resolve({
+		ok: status >= 200 && status < 300,
+		status,
+		json: () => entry.jsonError
+		  ? Promise.reject(new Error('invalid JSON'))
+		  : Promise.resolve(Object.hasOwn(entry, 'body') ? entry.body : entry),
+	  });
     },
     setInterval(callback, delay) {
       intervals.push({ callback, delay });
@@ -281,6 +330,8 @@ function createHarness(responses) {
 
   return {
     eventSources,
+	fetchCalls,
+	intervals,
     logActivity,
     logEmpty,
     logGrep,
@@ -294,6 +345,11 @@ function createHarness(responses) {
     poll() {
       intervals.find((entry) => entry.delay === 4321).callback();
     },
+	pollCatalog() {
+	  const interval = intervals.find((entry) => entry.callback.name === 'fetchModelCatalog');
+	  assert.ok(interval, 'no model catalog polling interval');
+	  interval.callback();
+	},
     runTimeout(delay) {
       const timeout = timeouts.find((entry) => entry.delay === delay && entry.active);
       assert.ok(timeout, `no active timeout with delay ${delay}`);
@@ -307,6 +363,44 @@ async function settleSnapshot() {
   await Promise.resolve();
   await Promise.resolve();
   await Promise.resolve();
+}
+
+async function settleAsyncWork() {
+  for (let i = 0; i < 24; i++) await Promise.resolve();
+}
+
+function catalogModel(id, name, capabilities = {}) {
+  return {
+	id,
+	name,
+	selection_mode: id === 'auto' ? 'automatic' : 'explicit',
+	capabilities: {
+	  completion: 'supported',
+	  tools: 'supported',
+	  vision: 'unsupported',
+	  reasoning: 'unknown',
+	  ...capabilities,
+	},
+  };
+}
+
+function modelCatalog(models, overrides = {}) {
+  return {
+	state: 'ready',
+	count: models.length,
+	generation: 4,
+	models,
+	refresh: {
+	  enabled: true,
+	  interval_seconds: 900,
+	  in_progress: false,
+	  last_success_at: '2026-08-13T14:05:06Z',
+	  next_attempt_at: '2026-08-13T14:20:06Z',
+	  last_outcome: 'unchanged',
+	  pending_removals: 0,
+	},
+	...overrides,
+  };
 }
 
 test('log source labels cache and selection drive the real EventSource flow', async () => {
@@ -650,4 +744,347 @@ test('slot grid preserves source snapshots and renders unexpected workers above 
   assert.strictEqual(unexpectedSnapshot.pool.slots, unexpectedSlots);
   assert.equal(unexpectedSlots.length, 7, 'rendering must not truncate the server snapshot');
   assert.deepEqual(unexpectedSlots, unexpectedSlotsBefore, 'rendering must preserve real-slot order and content');
+});
+
+test('model catalog groups shuffled rows and applies numeric-aware name and exact-ID sorting', async () => {
+  const models = [
+	catalogModel('mistral-large', 'Mistral Large'),
+	catalogModel('gpt-zeta', 'GPT Same'),
+	catalogModel('qwen3-coder-next', 'Qwen 3 Coder Next', {
+	  completion: 'unknown', tools: 'unknown', vision: 'unknown', reasoning: 'unknown',
+	}),
+	catalogModel('gpt-5.10-preview', 'GPT 5.10 Preview'),
+	catalogModel('auto', 'Automatic', {
+	  completion: 'unknown', tools: 'unknown', vision: 'unknown', reasoning: 'unknown',
+	}),
+	catalogModel('gpt-5.6-sol', 'GPT 5.6 Sol'),
+	catalogModel('claude-sonnet-5', 'Claude Sonnet 5'),
+	catalogModel('gpt-alpha', 'GPT Same'),
+	catalogModel('gpt-5.6-luna', 'GPT 5.6 Luna'),
+  ];
+  const originalOrder = models.map((model) => model.id);
+  const harness = createHarness(
+	[snapshot({ main: 'Gateway', kiro: 'Kiro' })],
+	{ modelCatalog: true, catalogResponses: [modelCatalog(models)] },
+  );
+
+  harness.start();
+  await settleAsyncWork();
+
+  const body = harness.selectors['[data-model-catalog-body]'];
+  const groupRows = body.children.filter((row) => row.className === 'gw-model-catalog-group');
+  assert.deepEqual(
+	groupRows.map((row) => row.children[0].textContent),
+	['Automatic', 'Anthropic / Claude', 'OpenAI / GPT', 'Qwen', 'Other models'],
+  );
+  for (const row of groupRows) {
+	assert.equal(row.children[0].scope, 'rowgroup');
+	assert.equal(row.children[0].colSpan, 6);
+  }
+
+  const dataRows = body.children.filter((row) => row.className === 'gw-model-catalog-row');
+  const gptIDs = dataRows
+	.filter((row) => row.children[1].textContent.startsWith('gpt-'))
+	.map((row) => row.children[1].textContent);
+  assert.deepEqual(gptIDs, [
+	'gpt-5.6-luna',
+	'gpt-5.6-sol',
+	'gpt-5.10-preview',
+	'gpt-alpha',
+	'gpt-zeta',
+  ]);
+  const qwenRow = dataRows.find((row) => row.children[1].textContent === 'qwen3-coder-next');
+  assert.ok(qwenRow, 'Qwen row should render');
+  assert.deepEqual(
+	qwenRow.children.slice(2).map((cell) => elementText(cell).trim()),
+	['Unknown', 'Unknown', 'Unknown', 'Unknown'],
+  );
+  assert.doesNotMatch(qwenRow.children.slice(2).map(elementText).join(' '), /Unsupported/);
+  assert.deepEqual(models.map((model) => model.id), originalOrder, 'rendering must not mutate the response');
+});
+
+test('model catalog performs an isolated initial GET and poll at the configured cadence', async () => {
+  const first = modelCatalog([catalogModel('auto', 'Automatic')]);
+  const second = modelCatalog([
+	catalogModel('auto', 'Automatic'),
+	catalogModel('claude-sonnet-5', 'Claude Sonnet 5'),
+  ]);
+  const harness = createHarness(
+	[
+	  snapshot({ main: 'Gateway', kiro: 'Kiro' }),
+	  snapshot({ main: 'Gateway', kiro: 'Kiro' }),
+	],
+	{ modelCatalog: true, catalogResponses: [first, second] },
+  );
+
+  harness.start();
+  await settleAsyncWork();
+  let snapshotCalls = harness.fetchCalls.filter((call) => call.url === '/admin/api/snapshot');
+  let catalogCalls = harness.fetchCalls.filter((call) => call.url === '/admin/api/model-catalog');
+  assert.equal(snapshotCalls.length, 1);
+  assert.equal(catalogCalls.length, 1);
+  assert.equal(catalogCalls[0].options.cache, 'no-store');
+  assert.equal(catalogCalls[0].options.headers.Accept, 'application/json');
+  assert.equal(
+	harness.intervals.filter((entry) => entry.delay === 4321 && entry.callback.name === 'fetchModelCatalog').length,
+	1,
+	'catalog must own one distinct polling interval',
+  );
+
+  harness.pollCatalog();
+  await settleAsyncWork();
+  snapshotCalls = harness.fetchCalls.filter((call) => call.url === '/admin/api/snapshot');
+  catalogCalls = harness.fetchCalls.filter((call) => call.url === '/admin/api/model-catalog');
+  assert.equal(snapshotCalls.length, 1, 'catalog poll must not invoke snapshot polling');
+  assert.equal(catalogCalls.length, 2);
+
+  harness.poll();
+  await settleAsyncWork();
+  assert.equal(
+	harness.fetchCalls.filter((call) => call.url === '/admin/api/model-catalog').length,
+	2,
+	'snapshot poll must not invoke catalog polling',
+  );
+});
+
+test('model catalog refresh POST is empty, busy while pending, and immediately GETs on success', async () => {
+  const harness = createHarness(
+	[snapshot({ main: 'Gateway', kiro: 'Kiro' })],
+	{
+	  modelCatalog: true,
+	  catalogResponses: [
+		modelCatalog([catalogModel('auto', 'Automatic')]),
+		modelCatalog([
+		  catalogModel('auto', 'Automatic'),
+		  catalogModel('gpt-5.6-sol', 'GPT 5.6 Sol'),
+		]),
+	  ],
+	  refreshResponses: [{ body: { outcome: 'expanded', message: 'Model catalog refresh completed.' } }],
+	},
+  );
+  harness.start();
+  await settleAsyncWork();
+
+  const button = harness.selectors['[data-model-catalog-refresh]'];
+  button.dispatchEvent({ type: 'click' });
+  assert.equal(button.disabled, true);
+  assert.equal(button['aria-busy'], 'true');
+  assert.equal(button.textContent, 'Refreshing…');
+
+  await settleAsyncWork();
+  const refreshCalls = harness.fetchCalls.filter((call) => call.url === '/admin/api/model-catalog/refresh');
+  assert.equal(refreshCalls.length, 1);
+  assert.equal(refreshCalls[0].options.method, 'POST');
+  assert.equal(refreshCalls[0].options.headers.Accept, 'application/json');
+  assert.equal(Object.hasOwn(refreshCalls[0].options, 'body'), false, 'refresh POST must have no body');
+  assert.equal(
+	harness.fetchCalls.filter((call) => call.url === '/admin/api/model-catalog').length,
+	2,
+	'success must immediately fetch the resulting catalog',
+  );
+  assert.equal(button.disabled, false);
+  assert.equal(button['aria-busy'], 'false');
+  assert.equal(button.textContent, 'Refresh now');
+  assert.equal(
+	harness.selectors['[data-model-catalog-live]'].textContent,
+	'Model catalog refresh completed.',
+  );
+  assert.equal(harness.selectors['[data-model-catalog-count]'].textContent, '2');
+});
+
+test('model catalog refresh errors use fixed local copy and retry cooldowns', async () => {
+  const cases = [
+	{
+	  status: 409,
+	  code: 'catalog_refresh_in_progress',
+	  retry: 2,
+	  want: 'A model catalog refresh is already in progress.',
+	},
+	{
+	  status: 429,
+	  code: 'catalog_refresh_cooldown',
+	  retry: 4,
+	  want: 'Model catalog refresh is temporarily rate limited.',
+	},
+	{
+	  status: 503,
+	  code: 'catalog_refresh_busy',
+	  retry: 3,
+	  want: 'No idle gateway worker is available for a model catalog refresh.',
+	},
+	{
+	  status: 503,
+	  code: 'catalog_refresh_unavailable',
+	  retry: 0,
+	  want: 'Model catalog refresh is unavailable.',
+	},
+	{
+	  status: 502,
+	  code: 'not-a-bounded-code',
+	  retry: 0,
+	  want: 'Model catalog refresh failed.',
+	},
+  ];
+
+  for (const tc of cases) {
+	const harness = createHarness(
+	  [snapshot({ main: 'Gateway', kiro: 'Kiro' })],
+	  {
+		modelCatalog: true,
+		catalogResponses: [modelCatalog([catalogModel('auto', 'Automatic')])],
+		refreshResponses: [{
+		  httpStatus: tc.status,
+		  body: {
+			code: tc.code,
+			message: 'UPSTREAM PRIVATE ERROR MUST NOT RENDER',
+			retry_after_seconds: tc.retry,
+		  },
+		}],
+	  },
+	);
+	const button = harness.selectors['[data-model-catalog-refresh]'];
+	harness.start();
+	await settleAsyncWork();
+	button.dispatchEvent({ type: 'click' });
+	await settleAsyncWork();
+
+	const message = harness.selectors['[data-model-catalog-message]'];
+	assert.equal(message.textContent, tc.want, `${tc.status} ${tc.code}`);
+	assert.doesNotMatch(message.textContent, /PRIVATE ERROR/);
+	assert.equal(button['aria-busy'], 'false');
+	if (tc.retry > 0) {
+	  assert.equal(button.disabled, true, `${tc.code} cooldown should disable refresh`);
+	  assert.equal(button.textContent, `Retry in ${tc.retry}s`);
+	  harness.runTimeout(tc.retry * 1000);
+	  assert.equal(button.disabled, false, `${tc.code} cooldown should expire`);
+	  assert.equal(button.textContent, 'Refresh now');
+	} else {
+	  assert.equal(button.disabled, false, `${tc.code} without retry should restore refresh`);
+	}
+  }
+});
+
+test('model catalog disabled scheduling leaves manual refresh available', async () => {
+  const disabled = modelCatalog(
+	[catalogModel('auto', 'Automatic')],
+	{
+	  state: 'disabled',
+	  refresh: {
+		enabled: false,
+		interval_seconds: 0,
+		in_progress: false,
+		last_success_at: '',
+		next_attempt_at: '',
+		last_outcome: 'startup',
+		pending_removals: 0,
+	  },
+	},
+  );
+  const harness = createHarness(
+	[snapshot({ main: 'Gateway', kiro: 'Kiro' })],
+	{
+	  modelCatalog: true,
+	  catalogResponses: [disabled],
+	  refreshResponses: [{
+		httpStatus: 503,
+		body: { code: 'catalog_refresh_unavailable', message: 'server message' },
+	  }],
+	},
+  );
+
+  harness.start();
+  await settleAsyncWork();
+  const button = harness.selectors['[data-model-catalog-refresh]'];
+  assert.equal(harness.selectors['[data-model-catalog-state]'].textContent, 'Disabled');
+  assert.equal(harness.selectors['[data-model-catalog-next]'].textContent, 'Disabled');
+  assert.equal(harness.selectors['[data-model-catalog-interval]'].textContent, 'Manual only');
+  assert.equal(button.disabled, false, 'disabled scheduling must not disable manual refresh');
+  assert.equal(button.textContent, 'Refresh now');
+
+  button.dispatchEvent({ type: 'click' });
+  await settleAsyncWork();
+  assert.equal(
+	harness.fetchCalls.filter((call) => call.url === '/admin/api/model-catalog/refresh').length,
+	1,
+	'manual refresh should still reach the endpoint',
+  );
+  assert.equal(
+	harness.selectors['[data-model-catalog-message]'].textContent,
+	'Model catalog refresh is unavailable.',
+	'endpoint availability remains a server-owned decision',
+  );
+});
+
+test('model catalog GET failure retains the last good grouped table', async () => {
+  const harness = createHarness(
+	[snapshot({ main: 'Gateway', kiro: 'Kiro' })],
+	{
+	  modelCatalog: true,
+	  catalogResponses: [
+		modelCatalog([
+		  catalogModel('auto', 'Automatic'),
+		  catalogModel('claude-sonnet-5', 'Claude Sonnet 5'),
+		]),
+		{ httpStatus: 500, body: { message: 'private server detail' } },
+	  ],
+	},
+  );
+  harness.start();
+  await settleAsyncWork();
+  const body = harness.selectors['[data-model-catalog-body]'];
+  const before = elementText(body);
+  const beforeChildren = body.children.slice();
+
+  harness.pollCatalog();
+  await settleAsyncWork();
+
+  assert.equal(elementText(body), before);
+  assert.deepEqual(body.children, beforeChildren, 'failed GET must not replace the last good rows');
+  assert.equal(
+	harness.selectors['[data-model-catalog-message]'].textContent,
+	'Model catalog status could not be updated. Showing the last known catalog.',
+  );
+  assert.equal(
+	harness.selectors['[data-model-catalog-live]'].textContent,
+	'Model catalog status could not be updated. Showing the last known catalog.',
+	'catalog polling failure should be announced through the polite live region',
+  );
+  assert.doesNotMatch(harness.selectors['[data-model-catalog-message]'].textContent, /private server detail/);
+});
+
+test('model catalog initialization does not duplicate its fetch, listener, or timer', async () => {
+  const harness = createHarness(
+	[
+	  snapshot({ main: 'Gateway', kiro: 'Kiro' }),
+	  snapshot({ main: 'Gateway', kiro: 'Kiro' }),
+	],
+	{
+	  modelCatalog: true,
+	  catalogResponses: [modelCatalog([catalogModel('auto', 'Automatic')])],
+	  refreshResponses: [{ body: { outcome: 'unchanged', message: 'Model catalog refresh completed.' } }],
+	},
+  );
+
+  harness.start();
+  await settleAsyncWork();
+  harness.start();
+  await settleAsyncWork();
+
+  assert.equal(
+	harness.fetchCalls.filter((call) => call.url === '/admin/api/model-catalog').length,
+	1,
+	'repeated initialization must not issue another initial catalog GET',
+  );
+  assert.equal(
+	harness.intervals.filter((entry) => entry.callback.name === 'fetchModelCatalog').length,
+	1,
+	'repeated initialization must not register another catalog interval',
+  );
+  harness.selectors['[data-model-catalog-refresh]'].dispatchEvent({ type: 'click' });
+  await settleAsyncWork();
+  assert.equal(
+	harness.fetchCalls.filter((call) => call.url === '/admin/api/model-catalog/refresh').length,
+	1,
+	'repeated initialization must retain one refresh listener',
+  );
 });

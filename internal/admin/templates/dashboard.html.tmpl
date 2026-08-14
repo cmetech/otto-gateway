@@ -112,6 +112,46 @@
     </div>
   </section>
 
+  <section id="model-catalog" class="gw-card gw-model-catalog" aria-labelledby="model-catalog-heading">
+    <header class="gw-model-catalog-header">
+      <div class="gw-model-catalog-title">
+        <p class="gw-eyebrow">Live capability inventory</p>
+        <h2 id="model-catalog-heading" class="gw-h2">Model Catalog</h2>
+        <p class="gw-model-catalog-intro">Selectable models published by the active gateway workers.</p>
+      </div>
+      <div class="gw-model-catalog-operator">
+        <dl class="gw-model-catalog-meta" aria-label="Model catalog status">
+          <div><dt>Status</dt><dd><span class="gw-badge is-muted" data-model-catalog-state>Loading</span></dd></div>
+          <div><dt>Models</dt><dd data-model-catalog-count>—</dd></div>
+          <div><dt>Last success</dt><dd data-model-catalog-last-success>—</dd></div>
+          <div><dt>Next attempt</dt><dd data-model-catalog-next>—</dd></div>
+          <div><dt>Interval</dt><dd data-model-catalog-interval>—</dd></div>
+        </dl>
+        <button type="button" class="gw-btn gw-btn--primary gw-model-catalog-refresh" data-model-catalog-refresh aria-busy="false">Refresh now</button>
+      </div>
+    </header>
+
+    <p class="gw-model-catalog-message" data-model-catalog-message hidden></p>
+    <p class="sr-only" data-model-catalog-live aria-live="polite" aria-atomic="true"></p>
+
+    <div class="gw-model-catalog-scroll" role="region" aria-labelledby="model-catalog-heading" tabindex="0">
+      <table class="gw-model-catalog-table">
+        <caption class="sr-only">Live selectable model catalog and capabilities</caption>
+        <thead>
+          <tr>
+            <th scope="col">Model</th>
+            <th scope="col">Model ID</th>
+            <th scope="col">Completion</th>
+            <th scope="col">Tools</th>
+            <th scope="col">Vision</th>
+            <th scope="col">Reasoning</th>
+          </tr>
+        </thead>
+        <tbody data-model-catalog-body></tbody>
+      </table>
+    </div>
+  </section>
+
   <section class="gw-card gw-privacy-console" aria-labelledby="privacy-boundary-heading">
     <div class="gw-section-heading-row">
       <div>
