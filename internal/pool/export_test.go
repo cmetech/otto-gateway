@@ -118,6 +118,17 @@ func (p *Pool) SetCatalogRetryForTesting(schedule []time.Duration) {
 	p.catalogRetry = schedule
 }
 
+// SetCatalogRefreshTicksForTesting replaces the production catalog ticker.
+// It must be called before Warmup starts the scheduler.
+func (p *Pool) SetCatalogRefreshTicksForTesting(ticks <-chan time.Time) {
+	p.catalogRefreshTicks = ticks
+}
+
+// SetCatalogNowForTesting replaces the catalog lifecycle wall clock.
+func (p *Pool) SetCatalogNowForTesting(now func() time.Time) {
+	p.catalogNow = now
+}
+
 // SetSpawnErrForTesting places the recorded spawn-error fields at a
 // controlled wall-clock instant so SpawnFailing recency tests can exercise
 // both the recent (red) and stale (not-red) branches without waiting real

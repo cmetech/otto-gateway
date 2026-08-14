@@ -180,6 +180,10 @@ type Config struct {
 	ReadWorkerMemory WorkerMemoryReader
 	// RecycleMetrics receives successful scheduled replacement events.
 	RecycleMetrics RecycleMetricsRecorder
+	// ModelCatalogRefreshInterval is the pool-owned rediscovery cadence.
+	// Zero disables scheduling while leaving warmup, lazy healing, and manual
+	// refresh available.
+	ModelCatalogRefreshInterval time.Duration
 }
 
 // applyDefaults fills in zero-value Config fields. Size floors to 1

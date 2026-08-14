@@ -202,22 +202,40 @@ type Pool struct {
 	// Guarded by mu.
 	all []*Slot
 
-	// models is the catalog captured from slot 0's NewSession during
-	// Warmup. Defensive copy returned by Models().
-	models []canonical.ModelInfo
+	// catalog is the sole owner of published models and refresh status.
+	catalog *catalogStore
 
 	// catalogRetry is the backoff schedule for the warmup catalog-capture
 	// retry (Track 1 resilient discovery). Defaulted in New; overridable in
 	// tests. len(schedule) retries → up to len+1 attempts.
 	catalogRetry []time.Duration
 
-	// catalogProbing is the singleflight guard for the lazy self-heal
-	// re-probe fired from Models() when the catalog is empty. CAS false→true
-	// launches at most one background probe at a time.
+	// catalogProbing is the shared single-flight guard for lazy, scheduled,
+	// and manual catalog probes.
 	catalogProbing atomic.Bool
-	// probeWG tracks in-flight self-heal probe goroutines so Close waits for
-	// them (goleak-clean; probes are otherwise untracked bare goroutines).
+	// probeWG tracks every admitted catalog probe. Admission is ordered against
+	// Close under p.mu, and a probe returns/recycles its slot before Done.
 	probeWG sync.WaitGroup
+	// catalogCtx is cancelled during Close so admitted probes cannot keep using
+	// a client while shutdown tears workers down.
+	catalogCtx    context.Context
+	catalogCancel context.CancelFunc
+	// catalogNow is the refresh lifecycle clock and is replaceable before
+	// Warmup by deterministic tests.
+	catalogNow func() time.Time
+	// catalogManualMu guards the last admitted manual probe timestamp used for
+	// the operator-action cooldown.
+	catalogManualMu   sync.Mutex
+	catalogLastManual time.Time
+
+	// catalogSchedulerOnce starts at most one refresh loop after warmup.
+	catalogSchedulerOnce sync.Once
+	// catalogSchedulerLifecycleMu orders schedulerWG.Add against Close's Wait.
+	catalogSchedulerLifecycleMu sync.Mutex
+	catalogSchedulerClosing     bool
+	catalogSchedulerWG          sync.WaitGroup
+	// catalogRefreshTicks replaces the production ticker in tests.
+	catalogRefreshTicks <-chan time.Time
 
 	// recycleWG tracks in-flight background recycle goroutines (Task 3) so
 	// Close waits them out (goleak-clean). recycleWG.Add(1) happens INSIDE
@@ -370,9 +388,14 @@ func (p *Pool) debugLog(msg string, attrs ...any) {
 // is spawned until Warmup runs.
 func New(cfg Config) *Pool {
 	cfg.applyDefaults()
+	catalogCtx, catalogCancel := context.WithCancel(context.Background())
 	return &Pool{
 		cfg:              cfg,
 		slots:            make(chan *Slot, cfg.Size),
+		catalog:          newCatalogStore(cfg.ModelCatalogRefreshInterval),
+		catalogCtx:       catalogCtx,
+		catalogCancel:    catalogCancel,
+		catalogNow:       time.Now,
 		sessionSlots:     make(map[string]*Slot),
 		sessionSequences: make(map[string]*promptSequenceState),
 		closing:          make(chan struct{}),
@@ -451,11 +474,9 @@ func (p *Pool) Warmup(ctx context.Context) error {
 			// demand (see selfHealCatalog) beats one that won't start. Slot
 			// spawn/Initialize failures (initSlot, above) keep their fail-fast
 			// semantics; only an empty/uncooperative catalog degrades here.
-			if models := p.captureCatalogWithRetry(ctx, slot); len(models) > 0 {
-				p.mu.Lock()
-				p.models = models
-				p.mu.Unlock()
-			} else if p.cfg.Logger != nil {
+			models := p.captureCatalogWithRetry(ctx, slot)
+			p.catalog.initialize(models, p.catalogNow())
+			if len(p.catalog.snapshot().Models) == 0 && p.cfg.Logger != nil {
 				p.cfg.Logger.Warn("pool: model catalog empty after warmup retries; serving degraded (auto-only), will self-heal on demand")
 			}
 		}
@@ -495,6 +516,7 @@ func (p *Pool) Warmup(ctx context.Context) error {
 	// pool as degraded between Warmup and the first slot release.
 	p.advanceProgress()
 	p.startIdleRecycler()
+	p.startCatalogScheduler()
 	return nil
 }
 
@@ -538,57 +560,17 @@ func (p *Pool) captureCatalogWithRetry(ctx context.Context, slot *Slot) []canoni
 	}
 }
 
-// selfHealCatalog fires at most one background re-probe (singleflight via
-// catalogProbing) to recover an empty model catalog once kiro is warm — the
-// lazy half of Track 1 resilient discovery. It is non-blocking: it takes a slot
-// only if one is immediately free (never contends with request traffic) and
-// never blocks the Models() caller. probeWG lets Close wait it out (goleak).
+// selfHealCatalog admits at most one lazy probe and then runs it in the
+// background. Admission itself is synchronous so probeWG.Add is ordered before
+// Close can begin waiting, while the Models caller never waits for a slot or
+// ACP work.
 func (p *Pool) selfHealCatalog() {
-	if !p.catalogProbing.CompareAndSwap(false, true) {
-		return // a probe is already in flight
-	}
-	// Admit the probe under p.mu so probeWG.Add is ordered against the
-	// p.closed transition — the same discipline releaseOrRecycle uses for
-	// recycleWG.Add (review finding H-1). The prior check-p.closing-then-Add
-	// split had a window where Close could observe probeWG as already drained,
-	// Wait through, and this Add(1) would then leak a goroutine past shutdown.
-	p.mu.Lock()
-	if p.closed {
-		p.mu.Unlock()
-		p.catalogProbing.Store(false)
+	admission, err := p.admitCatalogRefresh(catalogRefreshLazy)
+	if err != nil {
 		return
 	}
-	p.probeWG.Add(1)
-	p.mu.Unlock()
 	go func() {
-		defer p.probeWG.Done()
-		defer p.catalogProbing.Store(false)
-
-		var slot *Slot
-		select {
-		case slot = <-p.slots:
-		case <-p.closing:
-			return
-		default:
-			return // no free slot right now; a later read retries
-		}
-		p.markSlotCheckedOut(slot)
-		// Return the slot via releaseOrRecycle so a probe-bloated worker is
-		// recycled rather than exempt (design §2 Part B). This defer runs
-		// before the catalogProbing.Store / probeWG.Done defers (LIFO), so any
-		// recycleWG.Add it registers is visible before probeWG.Done — which is
-		// why Close waits probeWG before recycleWG.
-		defer func() { p.releaseOrRecycle(slot) }()
-		if !p.slotAlive(slot) {
-			return
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), catalogProbeTimeout)
-		defer cancel()
-		if models, err := p.probeCatalogOnce(ctx, slot); err == nil && len(models) > 0 {
-			p.mu.Lock()
-			p.models = models
-			p.mu.Unlock()
-		}
+		_, _ = p.runCatalogRefresh(context.Background(), admission)
 	}()
 }
 
@@ -887,21 +869,14 @@ func (p *Pool) acpSlotConfig() acp.Config {
 // Called by Plan 06's /api/tags handler. Returns nil if Warmup
 // failed before slot 0's NewSession captured the catalog.
 func (p *Pool) Models() []canonical.ModelInfo {
-	p.mu.Lock()
-	n := len(p.models)
-	var out []canonical.ModelInfo
-	if n > 0 {
-		out = make([]canonical.ModelInfo, n)
-		copy(out, p.models)
-	}
-	p.mu.Unlock()
+	snapshot := p.CatalogSnapshot()
 	// Track 1 lazy self-heal: an empty catalog (cold-boot degrade) triggers a
 	// background re-probe so the list recovers without a restart. The read
 	// returns the current (possibly still-empty) snapshot immediately.
-	if n == 0 {
+	if len(snapshot.Models) == 0 {
 		p.selfHealCatalog()
 	}
-	return out
+	return snapshot.Models
 }
 
 // LastProgressAt returns the wall-clock timestamp of the most recent
@@ -1076,22 +1051,23 @@ func (p *Pool) Close() error {
 		p.mu.Lock()
 		p.closed = true
 		p.mu.Unlock()
+		p.catalogCancel()
+		p.catalogSchedulerLifecycleMu.Lock()
+		p.catalogSchedulerClosing = true
+		p.catalogSchedulerLifecycleMu.Unlock()
 		p.idleSweepLifecycleMu.Lock()
 		p.idleSweepClosing = true
 		p.idleSweepLifecycleMu.Unlock()
+		p.catalogSchedulerWG.Wait()
 		p.idleSweepWG.Wait()
-		firstErr = p.closeAll()
-		// Track 1: wait out any in-flight self-heal probe goroutine so it
-		// cannot outlive Close (goleak-clean). closing is already closed, so
-		// no new probe will start (selfHealCatalog's p.closed check).
+		// Join every admitted catalog probe before recycle work: a probe's
+		// terminal releaseOrRecycle defer runs before probeWG.Done and may have
+		// registered one last recycleWG item while Close was acquiring p.mu.
 		p.probeWG.Wait()
-		// Task 3: wait out any in-flight background recycle goroutine so it
-		// cannot outlive Close (goleak-clean). Ordered AFTER probeWG because a
-		// finishing self-heal probe returns its slot via releaseOrRecycle and
-		// can therefore register recycle work (recycleWG.Add) as it completes;
-		// draining probes first guarantees all such late Adds are visible
-		// before we wait on recycleWG.
 		p.recycleWG.Wait()
+		// Client teardown is last so no scheduler, catalog ACP call, or terminal
+		// probe recycle can touch a client after closeAll snapshots it.
+		firstErr = p.closeAll()
 		// WR-01 (phase 16 review): the prior `p.warnOnce = sync.Once{}`
 		// reassignment was a data race against in-flight NewSession
 		// callers that had passed the non-blocking `<-p.slots` try and

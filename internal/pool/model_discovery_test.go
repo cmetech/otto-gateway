@@ -164,6 +164,14 @@ func TestPool_ModelDiscovery_LazySelfHealOnRead(t *testing.T) {
 	if !healed {
 		t.Fatal("catalog did not self-heal on read after kiro warmed up")
 	}
+	snapshot := p.CatalogSnapshot()
+	if len(snapshot.Models) != 2 || snapshot.LastOutcome != pool.CatalogExpanded {
+		t.Fatalf("CatalogSnapshot() = %+v; want healed two-model catalog", snapshot)
+	}
+	snapshot.Models[0].ID = "caller-mutation"
+	if got := p.CatalogSnapshot().Models[0].ID; got == "caller-mutation" {
+		t.Fatal("CatalogSnapshot leaked a caller mutation into the pool catalog")
+	}
 	if got := fc.newSessionCount() - baseline; got != 1 {
 		t.Fatalf("self-heal probes = %d; want exactly 1 (singleflight)", got)
 	}
