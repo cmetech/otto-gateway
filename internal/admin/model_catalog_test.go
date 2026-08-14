@@ -274,13 +274,13 @@ func TestModelCatalogAPI_POSTAllowsSameOriginBrowserThroughTLSHostRewritingProxy
 	if err != nil {
 		t.Fatal(err)
 	}
-	proxy := httputil.NewSingleHostReverseProxy(backendURL)
-	director := proxy.Director
-	proxy.Director = func(request *http.Request) {
-		director(request)
-		request.Host = backendURL.Host
-		request.Header.Del("X-Forwarded-Host")
-		request.Header.Del("X-Forwarded-Proto")
+	proxy := &httputil.ReverseProxy{
+		Rewrite: func(request *httputil.ProxyRequest) {
+			request.SetURL(backendURL)
+			request.Out.Host = backendURL.Host
+			request.Out.Header.Del("X-Forwarded-Host")
+			request.Out.Header.Del("X-Forwarded-Proto")
+		},
 	}
 	frontend := httptest.NewTLSServer(proxy)
 	t.Cleanup(frontend.Close)
