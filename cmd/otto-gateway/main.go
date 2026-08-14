@@ -430,6 +430,16 @@ func newApp(ctx context.Context, cfg config.Config, logger *slog.Logger) (*app, 
 }
 
 func newAppWithRegistryLoader(ctx context.Context, cfg config.Config, logger *slog.Logger, loadRegistry func(*privacy.Service) (*registry.Registry, error)) (*app, func(), error) {
+	return newAppWithRuntimeFactories(ctx, cfg, logger, loadRegistry, pool.New)
+}
+
+func newAppWithRuntimeFactories(
+	ctx context.Context,
+	cfg config.Config,
+	logger *slog.Logger,
+	loadRegistry func(*privacy.Service) (*registry.Registry, error),
+	newPool func(pool.Config) *pool.Pool,
+) (*app, func(), error) {
 	a := &app{cfg: cfg, logger: logger}
 
 	// Cleanup closure — invoked once via the returned func. Plan 05-03
@@ -566,6 +576,14 @@ func newAppWithRegistryLoader(ctx context.Context, cfg config.Config, logger *sl
 	}
 	a.privacyService = privacyService
 	a.privacySnapshot = privacyService
+	// Load and validate the embedded capability registry exactly once for the
+	// process. The dashboard consumes it even when the OpenAI surface is off,
+	// so a corrupt registry is a startup error for every surface combination.
+	capReg, err := loadRegistry(a.privacyService)
+	if err != nil {
+		cleanup()
+		return nil, func() {}, fmt.Errorf("model capability registry: %w", err)
+	}
 	piiHook := &pii.PIIRedactionHook{Service: privacyService}
 
 	// Phase 08.2 D-07: JSON-format steering hook construction. Enabled is
@@ -812,20 +830,21 @@ func newAppWithRegistryLoader(ctx context.Context, cfg config.Config, logger *sl
 		kiroEnv := kiroProcessEnv(cfg)
 		if cfg.PoolSize > 0 {
 			poolCfg := pool.Config{
-				Logger:         logger,
-				Size:           cfg.PoolSize,
-				KiroCmd:        cfg.KiroCmd,
-				KiroArgs:       cfg.KiroArgs,
-				KiroCWD:        cfg.KiroCWD,
-				KiroEnv:        kiroEnv,
-				PingInterval:   cfg.PingInterval,
-				Metrics:        gwMetrics,                        // kiro usage-metrics parity: forward slot usage events
-				Capture:        controllerRecordFunc(acpCapture), // Track 0 (nil controller → nil func → no capture)
-				MaxToolDenials: cfg.MaxToolDenials,               // Track 3a: circuit breaker threshold
-				MaxWorkerTurns: cfg.KiroWorkerMaxTurns,           // worker recycling: scheduled respawn threshold
+				Logger:                      logger,
+				Size:                        cfg.PoolSize,
+				KiroCmd:                     cfg.KiroCmd,
+				KiroArgs:                    cfg.KiroArgs,
+				KiroCWD:                     cfg.KiroCWD,
+				KiroEnv:                     kiroEnv,
+				PingInterval:                cfg.PingInterval,
+				Metrics:                     gwMetrics,                        // kiro usage-metrics parity: forward slot usage events
+				Capture:                     controllerRecordFunc(acpCapture), // Track 0 (nil controller → nil func → no capture)
+				MaxToolDenials:              cfg.MaxToolDenials,               // Track 3a: circuit breaker threshold
+				MaxWorkerTurns:              cfg.KiroWorkerMaxTurns,           // worker recycling: scheduled respawn threshold
+				ModelCatalogRefreshInterval: cfg.ModelCatalogRefreshInterval,
 			}
 			applyIdleMemoryRecyclePoolConfig(&poolCfg, cfg, gwMetrics)
-			a.pool = pool.New(poolCfg)
+			a.pool = newPool(poolCfg)
 
 			// POOL-02: warmup BEFORE the HTTP listener accepts traffic.
 			// Bound it with warmupDeadline so a hung Initialize cannot
@@ -1023,13 +1042,6 @@ func newAppWithRegistryLoader(ctx context.Context, cfg config.Config, logger *sl
 		if a.pool != nil {
 			cat = a.pool
 		}
-		// Load the embedded capability registry once. A load error is a
-		// build/ship error (invalid embedded JSON) — fail fast at startup.
-		capReg, err := loadRegistry(a.privacyService)
-		if err != nil {
-			cleanup()
-			return nil, func() {}, fmt.Errorf("model capability registry: %w", err)
-		}
 		openaiAdapter = openai.New(openai.Config{
 			Logger:            logger,
 			Engine:            eng,
@@ -1152,6 +1164,10 @@ func newAppWithRegistryLoader(ctx context.Context, cfg config.Config, logger *sl
 	if registryForServer != nil {
 		adminRegistry = adminRegistryAdapter{src: registryForServer}
 	}
+	var adminModelCatalog admin.ModelCatalogSource
+	if a.pool != nil {
+		adminModelCatalog = adminModelCatalogAdapter{source: a.pool, reg: capReg, now: time.Now}
+	}
 	// Quick 260529-ll2 — admin Log Tail multi-source paths.
 	//
 	// "main" is the canonical gateway log (LOG_FILE / GW_LOG / OTTO_LOG /
@@ -1193,6 +1209,7 @@ func newAppWithRegistryLoader(ctx context.Context, cfg config.Config, logger *sl
 		Start:                time.Now(),
 		PoolDetail:           adminPoolDetail,
 		Registry:             adminRegistry,
+		ModelCatalog:         adminModelCatalog,
 		AcpCapture:           adminAcpCapture(acpCapture),
 		PrivacyTriage:        adminPrivacyTriage(a.privacyService),
 		PrivacyTriageEnabled: cfg.PrivacyTriageEnabled,

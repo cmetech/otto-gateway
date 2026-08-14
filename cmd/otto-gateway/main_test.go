@@ -1912,3 +1912,194 @@ func TestApp_ExplicitAllowlist_OmitsCompressionHook(t *testing.T) {
 		}
 	}
 }
+
+type modelCatalogPoolClient struct {
+	models    []canonical.ModelInfo
+	done      chan struct{}
+	closeOnce sync.Once
+}
+
+func (c *modelCatalogPoolClient) Initialize(context.Context) error { return nil }
+
+func (c *modelCatalogPoolClient) NewSession(context.Context, string) (string, error) {
+	return "catalog-warmup", nil
+}
+
+func (c *modelCatalogPoolClient) SetModel(context.Context, string, string) error { return nil }
+
+func (c *modelCatalogPoolClient) Prompt(context.Context, string, []canonical.Block) (*acp.Stream, error) {
+	return nil, errors.New("unexpected prompt in model catalog wiring test")
+}
+
+func (c *modelCatalogPoolClient) Cancel(string) {}
+
+func (c *modelCatalogPoolClient) Close() error {
+	c.closeOnce.Do(func() { close(c.done) })
+	return nil
+}
+
+func (c *modelCatalogPoolClient) AvailableModels() []canonical.ModelInfo {
+	return append([]canonical.ModelInfo(nil), c.models...)
+}
+
+func (c *modelCatalogPoolClient) Done() <-chan struct{} { return c.done }
+
+func (c *modelCatalogPoolClient) Pid() int { return 4242 }
+
+type modelCatalogPoolFactory struct {
+	client pool.PoolClient
+}
+
+func (f modelCatalogPoolFactory) Spawn(context.Context, acp.Config) (pool.PoolClient, error) {
+	return f.client, nil
+}
+
+func TestNewApp_ModelCatalogRefreshIntervalReachesPool(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "logs", "kiro-chat.log")
+	cfg := strictPrivacyConfig()
+	cfg.KiroCmd = "/usr/bin/true"
+	cfg.KiroCWD = t.TempDir()
+	cfg.KiroChatLogFile = logPath
+	cfg.KiroChatLogPath = logPath
+	cfg.EnabledSurfaces = []string{"ollama", "anthropic", "openai"}
+	cfg.ModelCatalogRefreshInterval = 17 * time.Minute
+	client := &modelCatalogPoolClient{
+		models: []canonical.ModelInfo{{ID: "claude-sonnet-5", Name: "Claude Sonnet 5"}},
+		done:   make(chan struct{}),
+	}
+
+	a, cleanup, err := newAppWithRuntimeFactories(
+		context.Background(),
+		cfg,
+		testutil.Logger(t),
+		func(*privacy.Service) (*registry.Registry, error) { return registry.Load() },
+		func(poolCfg pool.Config) *pool.Pool {
+			poolCfg.Factory = modelCatalogPoolFactory{client: client}
+			return pool.New(poolCfg)
+		},
+	)
+	if err != nil {
+		t.Fatalf("newAppWithRuntimeFactories: %v", err)
+	}
+	defer cleanup()
+	if a.pool == nil {
+		t.Fatal("a.pool is nil")
+	}
+	if got := a.pool.CatalogSnapshot().RefreshInterval; got != 17*time.Minute {
+		t.Fatalf("pool catalog refresh interval = %v; want 17m", got)
+	}
+}
+
+func TestNewApp_ModelCatalogNoPoolIsNilSafe(t *testing.T) {
+	cfg := strictPrivacyConfig()
+	cfg.KiroCmd = ""
+	cfg.EnabledSurfaces = []string{"ollama", "anthropic", "openai"}
+
+	a, cleanup, err := newApp(context.Background(), cfg, testutil.Logger(t))
+	if err != nil {
+		t.Fatalf("newApp: %v", err)
+	}
+	defer cleanup()
+	if a.pool != nil {
+		t.Fatal("a.pool is non-nil in no-KIRO_CMD mode")
+	}
+
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/admin/api/model-catalog", nil)
+	recorder := httptest.NewRecorder()
+	a.srv.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("GET model catalog status = %d; want 200; body=%s", recorder.Code, recorder.Body.String())
+	}
+	var view admin.ModelCatalogView
+	if err := json.NewDecoder(recorder.Body).Decode(&view); err != nil {
+		t.Fatal(err)
+	}
+	if view.State != "disabled" || view.Count != 1 || len(view.Models) != 1 || view.Models[0].ID != "auto" {
+		t.Fatalf("no-pool catalog = %#v; want disabled auto-only view", view)
+	}
+
+	request = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/admin/api/model-catalog/refresh", nil)
+	recorder = httptest.NewRecorder()
+	a.srv.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("POST model catalog refresh status = %d; want 503; body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestNewApp_RegistryLoaderFailsFastForEveryEnabledSurfaceCombination(t *testing.T) {
+	tests := []struct {
+		name     string
+		surfaces []string
+	}{
+		{name: "ollama", surfaces: []string{"ollama"}},
+		{name: "anthropic", surfaces: []string{"anthropic"}},
+		{name: "openai", surfaces: []string{"openai"}},
+		{name: "ollama anthropic", surfaces: []string{"ollama", "anthropic"}},
+		{name: "ollama openai", surfaces: []string{"ollama", "openai"}},
+		{name: "anthropic openai", surfaces: []string{"anthropic", "openai"}},
+		{name: "all", surfaces: []string{"ollama", "anthropic", "openai"}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := strictPrivacyConfig()
+			cfg.KiroCmd = ""
+			cfg.EnabledSurfaces = tc.surfaces
+			wantErr := errors.New("catalog registry rejected")
+			loadCalls := 0
+
+			a, cleanup, err := newAppWithRegistryLoader(
+				context.Background(),
+				cfg,
+				testutil.Logger(t),
+				func(*privacy.Service) (*registry.Registry, error) {
+					loadCalls++
+					return nil, wantErr
+				},
+			)
+			cleanup()
+			if a != nil || !errors.Is(err, wantErr) {
+				t.Fatalf("newAppWithRegistryLoader = (%v, %v); want nil app and wrapped registry error", a, err)
+			}
+			if loadCalls != 1 {
+				t.Fatalf("registry load calls = %d; want 1", loadCalls)
+			}
+		})
+	}
+}
+
+func TestModelCatalogWiring_ExpandedSnapshotSharesAdminAndCapabilityIDs(t *testing.T) {
+	runtime := &mutableModelCatalogRuntime{
+		snapshot: pool.ModelCatalogSnapshot{
+			Models:          []canonical.ModelInfo{{ID: "claude-sonnet-5"}},
+			Generation:      1,
+			RefreshInterval: 15 * time.Minute,
+			LastOutcome:     pool.CatalogStartup,
+		},
+		refreshModels: []canonical.ModelInfo{{ID: "claude-sonnet-5"}, {ID: "gpt-5.6-sol"}},
+		refreshResult: pool.CatalogRefreshResult{
+			Outcome: pool.CatalogExpanded, PreviousCount: 1, CandidateCount: 2, PublishedCount: 2,
+		},
+	}
+	capReg := loadModelCapabilityRegistry(t)
+	adminCatalog := adminModelCatalogAdapter{source: runtime, reg: capReg, now: time.Now}
+	capabilityCatalog := modelCapabilityCatalog{catalog: runtime, reg: capReg}
+	if got := adminCatalog.Refresh(context.Background()); got.Code != "" || got.Outcome != "expanded" {
+		t.Fatalf("refresh result = %#v; want expanded success", got)
+	}
+
+	adminView := adminCatalog.Snapshot()
+	capabilityView := capabilityCatalog.ModelCapabilities()
+	adminIDs := make([]string, 0, len(adminView.Models))
+	for _, model := range adminView.Models {
+		adminIDs = append(adminIDs, model.ID)
+	}
+	capabilityIDs := make([]string, 0, len(capabilityView.Entries))
+	for _, model := range capabilityView.Entries {
+		capabilityIDs = append(capabilityIDs, model.ID)
+	}
+	want := []string{"auto", "claude-sonnet-5", "gpt-5.6-sol"}
+	if !reflect.DeepEqual(adminIDs, want) || !reflect.DeepEqual(capabilityIDs, want) {
+		t.Fatalf("admin/capability IDs = %v/%v; want %v/%v", adminIDs, capabilityIDs, want, want)
+	}
+}
