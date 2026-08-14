@@ -124,6 +124,18 @@ func (p *Pool) SetCatalogRefreshTicksForTesting(ticks <-chan time.Time) {
 	p.catalogRefreshTicks = ticks
 }
 
+// SetCatalogSchedulerTimerForTesting replaces the production one-shot timer
+// while preserving the production create/reset/stop control flow.
+func (p *Pool) SetCatalogSchedulerTimerForTesting(
+	ticks <-chan time.Time,
+	reset func(time.Duration),
+	stop func(),
+) {
+	p.catalogSchedulerTimerFactory = func(time.Duration) *catalogSchedulerTimer {
+		return &catalogSchedulerTimer{ticks: ticks, reset: reset, stop: stop}
+	}
+}
+
 // SetCatalogSchedulerTimingInitializedHookForTesting installs a barrier after
 // the production timing source exists and before its first deadline is
 // published. It must be called before Warmup.

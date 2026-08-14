@@ -191,6 +191,7 @@ func TestAdmin_PageHandler_ModelCatalogScaffold(t *testing.T) {
 		`data-model-catalog-interval`,
 		`data-model-catalog-refresh`,
 		`data-model-catalog-body`,
+		`data-model-catalog-pending`,
 		`data-model-catalog-message`,
 		`aria-live="polite"`,
 	} {
@@ -231,6 +232,9 @@ func TestAdmin_PageHandler_ModelCatalogScaffold(t *testing.T) {
 	}
 	if got := strings.Count(body, `data-model-catalog-body`); got != 1 {
 		t.Errorf("data-model-catalog-body count = %d; want 1", got)
+	}
+	if got := strings.Count(body, `data-model-catalog-pending`); got != 1 {
+		t.Errorf("data-model-catalog-pending count = %d; want one distinct persistent warning", got)
 	}
 }
 
@@ -580,6 +584,11 @@ func TestAdmin_StaticCSS_ModelCatalogContrastContract(t *testing.T) {
 	)
 	assertDeclarations(".gw-model-catalog-meta dt", "color: var(--gw-catalog-meta-label);")
 	assertDeclarations(".gw-model-catalog-refresh:disabled", "color: var(--gw-catalog-disabled-fg);")
+	assertDeclarations(
+		".gw-model-catalog-pending",
+		"color: var(--gw-catalog-warning-fg);",
+		"background: var(--gw-catalog-warning-bg);",
+	)
 	assertDeclarations(
 		".gw-model-catalog-scroll:focus-visible",
 		"outline: 3px solid var(--gw-catalog-focus);",

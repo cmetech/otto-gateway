@@ -295,6 +295,7 @@ function Set-SupportEnvironment {
     $env:KIRO_WORKER_MAX_TURNS = '20'
     $env:KIRO_WORKER_IDLE_RECYCLE_MS = '900000'
     $env:KIRO_WORKER_IDLE_RECYCLE_MEMORY_MB = '500'
+    $env:MODEL_CATALOG_REFRESH_INTERVAL_SEC = '777'
     $env:GW_ENV_FILE = Join-Path $script:FixtureRoot 'missing.env'
     $env:GW_OVERRIDES_FILE = Join-Path $script:FixtureRoot 'missing-overrides.env'
     $env:GW_SUPPORT_TEST_DISABLE_SAFE_OPEN = ''
@@ -1763,6 +1764,12 @@ server.serve_forever()
     Set-SupportEnvironment $GatewayLog $GatewayBoot $KiroCwdFixture 'native/kiro-current.log' $CoworkerHome $GatewayBootError
     $env:GW_SUPPORT_TEST_PLAIN_ERROR_IDENTITY = 'true'
 
+    Write-Host '== environment inventory parity =='
+    $envCapture = Invoke-CapturedNativeCommand -FilePath $PowerShellExecutable -ArgumentList @(
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $Wrapper, 'env')
+    Assert-True ($envCapture.ExitCode -eq 0) "env exits zero: stdout=$($envCapture.Stdout) stderr=$($envCapture.Stderr)"
+    Assert-True (@($envCapture.Stdout -split '\r?\n') -ccontains 'MODEL_CATALOG_REFRESH_INTERVAL_SEC=777') 'env includes model catalog refresh interval'
+
     Write-Host '== enabled support bundle =='
     $mainStagingBefore = New-SupportStagingSnapshot $SupportGlobalTemp
     $main = Invoke-SupportRun (Join-Path $ExtractRoot 'main-out')
@@ -1830,6 +1837,7 @@ server.serve_forever()
     Assert-Contains $envFile "GW_METRICS_REMOTE_WRITE_TOKEN=remo$([char]0x2026)(20 chars)" 'effective env masks remote-write token'
     Assert-Contains $envFile 'KIRO_WORKER_IDLE_RECYCLE_MS=900000' 'effective env includes idle recycle duration unredacted'
     Assert-Contains $envFile 'KIRO_WORKER_IDLE_RECYCLE_MEMORY_MB=500' 'effective env includes idle recycle memory unredacted'
+    Assert-Contains $envFile 'MODEL_CATALOG_REFRESH_INTERVAL_SEC=777' 'effective env includes model catalog refresh interval unredacted'
     $manifest = Join-Path $mainRoot 'MANIFEST.txt'
     Assert-Contains $manifest 'metrics: captured' 'manifest records captured metrics'
     Assert-Contains $manifest 'capture: captured' 'manifest records captured capture'

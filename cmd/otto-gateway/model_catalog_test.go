@@ -60,7 +60,7 @@ func (f *mutableModelCatalogRuntime) RefreshModelCatalog(context.Context) (pool.
 		return f.refreshResult, f.refreshErr
 	}
 	if f.refreshModels != nil {
-		f.snapshot.Models = cloneModelInfos(f.refreshModels)
+		f.snapshot.Models = normalizeMutableRuntimeModels(f.refreshModels)
 		f.snapshot.Generation++
 		f.snapshot.LastOutcome = f.refreshResult.Outcome
 	}
@@ -75,6 +75,22 @@ func (f *mutableModelCatalogRuntime) callCounts() (snapshot, refresh, models int
 
 func cloneModelInfos(models []canonical.ModelInfo) []canonical.ModelInfo {
 	return append([]canonical.ModelInfo(nil), models...)
+}
+
+func normalizeMutableRuntimeModels(models []canonical.ModelInfo) []canonical.ModelInfo {
+	seen := make(map[string]struct{}, len(models))
+	normalized := make([]canonical.ModelInfo, 0, len(models))
+	for _, model := range models {
+		if model.ID == "" || model.ID == "auto" {
+			continue
+		}
+		if _, duplicate := seen[model.ID]; duplicate {
+			continue
+		}
+		seen[model.ID] = struct{}{}
+		normalized = append(normalized, model)
+	}
+	return normalized
 }
 
 func loadModelCapabilityRegistry(t *testing.T) *registry.Registry {
@@ -220,12 +236,13 @@ func TestAdminModelCatalogAdapter_StatePrecedence(t *testing.T) {
 func TestAdminModelCatalogAdapter_RefreshMapsBoundedResults(t *testing.T) {
 	const rawSecret = "upstream path /Users/operator and AUTH_TOKEN=secret"
 	tests := []struct {
-		name       string
-		result     pool.CatalogRefreshResult
-		err        error
-		wantCode   string
-		wantResult string
-		wantRetry  int
+		name        string
+		result      pool.CatalogRefreshResult
+		err         error
+		wantCode    string
+		wantResult  string
+		wantRetry   int
+		wantMessage string
 	}{
 		{name: "success", result: pool.CatalogRefreshResult{Outcome: pool.CatalogExpanded}, wantResult: "expanded"},
 		{
@@ -240,15 +257,19 @@ func TestAdminModelCatalogAdapter_RefreshMapsBoundedResults(t *testing.T) {
 		},
 		{
 			name: "busy", err: fmt.Errorf("outer: %w", &pool.CatalogRefreshError{
-				Kind: pool.ErrCatalogRefreshBusy, RetryAfter: time.Nanosecond,
-			}), wantCode: "catalog_refresh_busy", wantRetry: 1,
+				Kind: pool.ErrCatalogRefreshBusy, RetryAfter: 29*time.Second + time.Nanosecond,
+			}), wantCode: "catalog_refresh_busy", wantRetry: 30,
+			wantMessage: "No idle gateway worker is available for a model catalog refresh. The current catalog remains in use.",
 		},
 		{
 			name: "unavailable", err: fmt.Errorf("outer: %w", &pool.CatalogRefreshError{
-				Kind: pool.ErrCatalogRefreshUnavailable, RetryAfter: time.Second,
-			}), wantCode: "catalog_refresh_unavailable", wantRetry: 1,
+				Kind: pool.ErrCatalogRefreshUnavailable, RetryAfter: 30 * time.Second,
+			}), wantCode: "catalog_refresh_unavailable", wantRetry: 30,
 		},
-		{name: "unknown error", err: errors.New(rawSecret), wantCode: "catalog_refresh_failed"},
+		{
+			name: "unknown error", err: errors.New(rawSecret), wantCode: "catalog_refresh_failed",
+			wantMessage: "Model catalog refresh failed. The current catalog remains in use.",
+		},
 	}
 
 	reg := loadModelCapabilityRegistry(t)
@@ -258,6 +279,9 @@ func TestAdminModelCatalogAdapter_RefreshMapsBoundedResults(t *testing.T) {
 			got := (adminModelCatalogAdapter{source: runtime, reg: reg, now: time.Now}).Refresh(context.Background())
 			if got.Code != tc.wantCode || got.Outcome != tc.wantResult || got.RetryAfterSeconds != tc.wantRetry {
 				t.Fatalf("result = %#v; want code=%q outcome=%q retry=%d", got, tc.wantCode, tc.wantResult, tc.wantRetry)
+			}
+			if tc.wantMessage != "" && got.Message != tc.wantMessage {
+				t.Fatalf("message = %q; want %q", got.Message, tc.wantMessage)
 			}
 			if snapshotCalls, refreshCalls, _ := runtime.callCounts(); snapshotCalls != 0 || refreshCalls != 1 {
 				t.Fatalf("runtime calls = snapshot %d, refresh %d; want 0, 1", snapshotCalls, refreshCalls)
@@ -278,14 +302,20 @@ func TestLiveCatalogRefresh_ConvergesEveryModelSurface(t *testing.T) {
 		{ID: "claude-sonnet-5", Name: "Claude Sonnet 5"},
 		{ID: "gpt-5.6-sol", Name: "GPT 5.6 Sol"},
 	}
-	expanded := append(cloneModelInfos(initial), canonical.ModelInfo{ID: "qwen3-coder-next", Name: "Qwen3 Coder Next"})
+	expanded := append(cloneModelInfos(initial),
+		canonical.ModelInfo{ID: "auto", Name: "Synthetic duplicate must be removed"},
+		canonical.ModelInfo{ID: "Auto", Name: "Case-sensitive Auto"},
+		canonical.ModelInfo{ID: "Auto", Name: "Exact duplicate loses"},
+		canonical.ModelInfo{ID: "qwen3-coder-next", Name: "Qwen3 Coder Next"},
+		canonical.ModelInfo{ID: "qwen3-coder-next", Name: "Exact duplicate loses"},
+	)
 	runtime := &mutableModelCatalogRuntime{
 		snapshot: pool.ModelCatalogSnapshot{
 			Models: initial, Generation: 1, RefreshInterval: 15 * time.Minute, LastOutcome: pool.CatalogStartup,
 		},
 		refreshModels: expanded,
 		refreshResult: pool.CatalogRefreshResult{
-			Outcome: pool.CatalogExpanded, PreviousCount: 2, CandidateCount: 3, PublishedCount: 3,
+			Outcome: pool.CatalogExpanded, PreviousCount: 2, CandidateCount: 7, PublishedCount: 4,
 		},
 	}
 	sharedRegistry := loadModelCapabilityRegistry(t)
@@ -326,13 +356,16 @@ func TestLiveCatalogRefresh_ConvergesEveryModelSurface(t *testing.T) {
 		t.Fatalf("refresh status = %d; want 200", refreshResponse.StatusCode)
 	}
 
-	want := []string{"auto", "claude-sonnet-5", "gpt-5.6-sol", "qwen3-coder-next"}
+	want := []string{"auto", "claude-sonnet-5", "gpt-5.6-sol", "Auto", "qwen3-coder-next"}
 	responses := map[string][]string{}
 
 	var adminView admin.ModelCatalogView
 	getModelCatalogJSON(t, server, "/api/model-catalog", &adminView)
 	for _, model := range adminView.Models {
 		responses["admin"] = append(responses["admin"], model.ID)
+		if model.ID == "Auto" && model.SelectionMode != "explicit" {
+			t.Errorf("admin Auto selection_mode = %q; want explicit", model.SelectionMode)
+		}
 	}
 
 	var openAIModels struct {

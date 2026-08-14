@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -120,16 +122,61 @@ func TestModelCatalogAPI_GETNilSourceIsDisabled(t *testing.T) {
 	}
 }
 
+func TestModelCatalogAPI_GETReservesOnlyExactAutoAndForcesExplicitRows(t *testing.T) {
+	src := fakeModelCatalogSource{view: ModelCatalogView{
+		State: "ready",
+		Models: []ModelCatalogModel{
+			{ID: "auto", Name: "untrusted synthetic duplicate", SelectionMode: "explicit"},
+			{ID: "Auto", Name: "Case-sensitive upstream model", SelectionMode: "automatic"},
+			{ID: "Auto", Name: "exact duplicate loses", SelectionMode: "automatic"},
+			{ID: "gpt-5.6-sol", Name: "GPT 5.6 Sol", SelectionMode: "automatic"},
+		},
+		Refresh: ModelCatalogRefreshView{LastOutcome: "unchanged"},
+	}}
+
+	rec := serveModelCatalog(t, src, http.MethodGet, "/api/model-catalog", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+	var body ModelCatalogView
+	decodeModelCatalogJSON(t, rec, &body)
+	wantIDs := []string{"auto", "Auto", "gpt-5.6-sol"}
+	if body.Count != len(wantIDs) || len(body.Models) != len(wantIDs) {
+		t.Fatalf("count/models = %d/%d; want %d", body.Count, len(body.Models), len(wantIDs))
+	}
+	for index, wantID := range wantIDs {
+		if got := body.Models[index].ID; got != wantID {
+			t.Fatalf("models[%d].id = %q; want %q", index, got, wantID)
+		}
+		wantMode := "explicit"
+		if wantID == "auto" {
+			wantMode = "automatic"
+		}
+		if got := body.Models[index].SelectionMode; got != wantMode {
+			t.Fatalf("models[%d].selection_mode = %q; want %q", index, got, wantMode)
+		}
+	}
+}
+
 func TestModelCatalogAPI_POSTMapsRefreshResults(t *testing.T) {
 	cases := []struct {
-		code string
-		want int
+		code        string
+		want        int
+		wantMessage string
 	}{
 		{code: "", want: http.StatusOK},
 		{code: "catalog_refresh_in_progress", want: http.StatusConflict},
 		{code: "catalog_refresh_cooldown", want: http.StatusTooManyRequests},
-		{code: "catalog_refresh_busy", want: http.StatusServiceUnavailable},
-		{code: "catalog_refresh_failed", want: http.StatusBadGateway},
+		{
+			code:        "catalog_refresh_busy",
+			want:        http.StatusServiceUnavailable,
+			wantMessage: "No idle gateway worker is available for a model catalog refresh. The current catalog remains in use.",
+		},
+		{
+			code:        "catalog_refresh_failed",
+			want:        http.StatusBadGateway,
+			wantMessage: "Model catalog refresh failed. The current catalog remains in use.",
+		},
 		{code: "catalog_refresh_unavailable", want: http.StatusServiceUnavailable},
 	}
 	for _, tc := range cases {
@@ -152,6 +199,9 @@ func TestModelCatalogAPI_POSTMapsRefreshResults(t *testing.T) {
 			if tc.code != "" && body["code"] != tc.code {
 				t.Fatalf("POST code = %q; want %q", body["code"], tc.code)
 			}
+			if tc.wantMessage != "" && body["message"] != tc.wantMessage {
+				t.Fatalf("POST message = %q; want %q", body["message"], tc.wantMessage)
+			}
 			if retry := rec.Header().Get("Retry-After"); retry != "" {
 				if retry != "30" {
 					t.Fatalf("Retry-After = %q; want bounded 30 seconds", retry)
@@ -170,7 +220,15 @@ func TestModelCatalogAPI_POSTRejectsExplicitCrossOriginBrowserRequests(t *testin
 	}{
 		{name: "matching origin", headers: map[string]string{"Origin": "http://example.com"}, want: http.StatusOK},
 		{name: "nonmatching origin", headers: map[string]string{"Origin": "https://evil.example"}, want: http.StatusForbidden},
+		{name: "exact same-origin fetch metadata", headers: map[string]string{"Sec-Fetch-Site": "same-origin", "Origin": "https://public.example"}, want: http.StatusOK},
+		{name: "exact same-origin metadata without origin", headers: map[string]string{"Sec-Fetch-Site": "same-origin"}, want: http.StatusOK},
+		{name: "same-origin with malformed origin", headers: map[string]string{"Sec-Fetch-Site": "same-origin", "Origin": "not an origin"}, want: http.StatusForbidden},
+		{name: "same-site fetch metadata", headers: map[string]string{"Sec-Fetch-Site": "same-site"}, want: http.StatusForbidden},
+		{name: "same-site overrides matching origin", headers: map[string]string{"Sec-Fetch-Site": "same-site", "Origin": "http://example.com"}, want: http.StatusForbidden},
 		{name: "cross site fetch metadata", headers: map[string]string{"Sec-Fetch-Site": "cross-site"}, want: http.StatusForbidden},
+		{name: "unknown fetch metadata", headers: map[string]string{"Sec-Fetch-Site": "none"}, want: http.StatusForbidden},
+		{name: "empty fetch metadata", headers: map[string]string{"Sec-Fetch-Site": ""}, want: http.StatusForbidden},
+		{name: "non-exact fetch metadata", headers: map[string]string{"Sec-Fetch-Site": "Same-Origin"}, want: http.StatusForbidden},
 		{name: "operator without browser headers", headers: nil, want: http.StatusOK},
 	}
 	for _, tc := range cases {
@@ -183,6 +241,80 @@ func TestModelCatalogAPI_POSTRejectsExplicitCrossOriginBrowserRequests(t *testin
 				t.Fatalf("forbidden response called or exposed source: %s", rec.Body.String())
 			}
 		})
+	}
+}
+
+func TestModelCatalogAPI_POSTRejectsRepeatedBrowserMetadata(t *testing.T) {
+	calls := 0
+	h := Handler(Deps{ModelCatalog: fakeModelCatalogSource{
+		result:       ModelCatalogActionResult{Message: "refresh completed"},
+		refreshCalls: &calls,
+	}})
+	req := httptest.NewRequest(http.MethodPost, "/api/model-catalog/refresh", nil)
+	req.Header.Add("Sec-Fetch-Site", "same-origin")
+	req.Header.Add("Sec-Fetch-Site", "same-origin")
+	req.Header.Set("Origin", "http://example.com")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden || calls != 0 {
+		t.Fatalf("POST repeated Fetch Metadata status/calls = %d/%d; want 403/0", rec.Code, calls)
+	}
+}
+
+func TestModelCatalogAPI_POSTAllowsSameOriginBrowserThroughTLSHostRewritingProxy(t *testing.T) {
+	calls := 0
+	backend := httptest.NewServer(Handler(Deps{ModelCatalog: fakeModelCatalogSource{
+		result:       ModelCatalogActionResult{Message: "refresh completed"},
+		refreshCalls: &calls,
+	}}))
+	t.Cleanup(backend.Close)
+
+	backendURL, err := url.Parse(backend.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy := httputil.NewSingleHostReverseProxy(backendURL)
+	director := proxy.Director
+	proxy.Director = func(request *http.Request) {
+		director(request)
+		request.Host = backendURL.Host
+		request.Header.Del("X-Forwarded-Host")
+		request.Header.Del("X-Forwarded-Proto")
+	}
+	frontend := httptest.NewTLSServer(proxy)
+	t.Cleanup(frontend.Close)
+
+	browserRequest, err := http.NewRequest(http.MethodPost, frontend.URL+"/api/model-catalog/refresh", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	browserRequest.Header.Set("Origin", frontend.URL)
+	browserRequest.Header.Set("Sec-Fetch-Site", "same-origin")
+	browserRequest.Header.Set("X-Forwarded-Host", "untrusted.invalid")
+	browserRequest.Header.Set("X-Forwarded-Proto", "http")
+	response, err := frontend.Client().Do(browserRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusOK || calls != 1 {
+		t.Fatalf("proxied same-origin POST status/calls = %d/%d; want 200/1", response.StatusCode, calls)
+	}
+
+	fallbackRequest, err := http.NewRequest(http.MethodPost, frontend.URL+"/api/model-catalog/refresh", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fallbackRequest.Header.Set("Origin", frontend.URL)
+	fallbackRequest.Header.Set("X-Forwarded-Host", strings.TrimPrefix(frontend.URL, "https://"))
+	fallbackRequest.Header.Set("X-Forwarded-Proto", "https")
+	response, err = frontend.Client().Do(fallbackRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusForbidden || calls != 1 {
+		t.Fatalf("Origin-only proxied POST status/calls = %d/%d; want strict fallback 403/1", response.StatusCode, calls)
 	}
 }
 

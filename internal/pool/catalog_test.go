@@ -120,6 +120,61 @@ func TestCatalogStoreConfirmsShrinkAfterIdenticalSecondCandidate(t *testing.T) {
 	}
 }
 
+func TestCatalogStoreShrinkConfirmationPublishesCurrentCandidateMetadataAndOrder(t *testing.T) {
+	s := newCatalogStore(15 * time.Minute)
+	s.initialize([]canonical.ModelInfo{
+		{ID: "claude-sonnet-5", Name: "Claude Sonnet 5"},
+		{ID: "gpt-5.6-sol", Name: "GPT 5.6 Sol"},
+		{ID: "qwen3-coder-next", Name: "Qwen 3 Coder Next"},
+	}, time.Unix(100, 0))
+
+	first := []canonical.ModelInfo{
+		{ID: "claude-sonnet-5", Name: "First observation Claude"},
+		{ID: "gpt-5.6-sol", Name: "First observation GPT"},
+	}
+	if result, err := s.reconcile(first, time.Unix(200, 0)); err != nil || result.Outcome != CatalogPendingShrink {
+		t.Fatalf("first observation = %+v, %v; want pending shrink", result, err)
+	}
+
+	second := []canonical.ModelInfo{
+		{ID: "gpt-5.6-sol", Name: "Current GPT metadata"},
+		{ID: "claude-sonnet-5", Name: "Current Claude metadata"},
+	}
+	result, err := s.reconcile(second, time.Unix(300, 0))
+	if err != nil || result.Outcome != CatalogShrinkConfirmed {
+		t.Fatalf("second observation = %+v, %v; want confirmed shrink", result, err)
+	}
+	if got := s.snapshot().Models; !reflect.DeepEqual(got, second) {
+		t.Fatalf("published models = %#v; want current confirming candidate %#v", got, second)
+	}
+}
+
+func TestCatalogStoreShrinkEvidenceCannotCollideAcrossEmbeddedNULIDs(t *testing.T) {
+	s := newCatalogStore(15 * time.Minute)
+	s.initialize([]canonical.ModelInfo{
+		{ID: "a", Name: "A"},
+		{ID: "b", Name: "B"},
+		{ID: "a\x00b", Name: "A NUL B"},
+	}, time.Unix(100, 0))
+
+	first, err := s.reconcile([]canonical.ModelInfo{{ID: "a"}, {ID: "b"}}, time.Unix(200, 0))
+	if err != nil || first.Outcome != CatalogPendingShrink {
+		t.Fatalf("first observation = %+v, %v; want pending shrink", first, err)
+	}
+	second, err := s.reconcile([]canonical.ModelInfo{{ID: "a\x00b"}}, time.Unix(300, 0))
+	if err != nil || second.Outcome != CatalogPendingShrink {
+		t.Fatalf("collision observation = %+v, %v; want a different pending shrink", second, err)
+	}
+	if got := s.snapshot(); got.Generation != 1 || len(got.Models) != 3 || got.PendingRemovals != 2 {
+		t.Fatalf("snapshot after collision = %+v; want original catalog and replaced evidence", got)
+	}
+
+	third, err := s.reconcile([]canonical.ModelInfo{{ID: "a\x00b"}}, time.Unix(400, 0))
+	if err != nil || third.Outcome != CatalogShrinkConfirmed {
+		t.Fatalf("repeated exact observation = %+v, %v; want confirmed shrink", third, err)
+	}
+}
+
 func TestCatalogStoreStagesDifferentSecondShrinkCandidate(t *testing.T) {
 	s := initializedCatalogStore()
 	first, err := s.reconcile([]canonical.ModelInfo{{ID: "claude-sonnet-5", Name: "Sonnet 5"}}, time.Unix(200, 0))

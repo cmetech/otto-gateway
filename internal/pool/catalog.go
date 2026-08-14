@@ -68,9 +68,8 @@ type catalogStore struct {
 	nextAttemptAt time.Time
 	lastOutcome   CatalogOutcome
 
-	pendingCandidate   []canonical.ModelInfo
-	pendingFingerprint string
-	pendingRemovals    int
+	pendingCandidate []canonical.ModelInfo
+	pendingRemovals  int
 }
 
 func newCatalogStore(interval time.Duration) *catalogStore {
@@ -102,20 +101,27 @@ func (s *catalogStore) initialize(models []canonical.ModelInfo, at time.Time) {
 // reconcile normalizes one completed probe and atomically applies the safe
 // portion of its result. Its input is always copied before it is retained.
 func (s *catalogStore) reconcile(models []canonical.ModelInfo, at time.Time) (CatalogRefreshResult, error) {
+	return s.reconcileCompleted(models, at, at)
+}
+
+// reconcileCompleted records admission and completion independently. The
+// public snapshot's attempt time describes admission, while successful probe
+// and publication timestamps describe when the observation finished.
+func (s *catalogStore) reconcileCompleted(models []canonical.ModelInfo, attemptAt, completedAt time.Time) (CatalogRefreshResult, error) {
 	candidate, err := normalizeCatalog(models)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	previousCount := len(s.models)
-	s.lastAttemptAt = at
-	s.nextAttemptAt = nextCatalogAttempt(at, s.interval)
+	s.lastAttemptAt = attemptAt
+	s.nextAttemptAt = nextCatalogAttempt(attemptAt, s.interval)
 	if err != nil {
 		s.lastOutcome = CatalogFailed
 		return s.resultLocked(CatalogFailed, previousCount, 0), err
 	}
 
-	s.lastSuccessAt = at
+	s.lastSuccessAt = completedAt
 	publishedIDs := catalogIDs(s.models)
 	candidateIDs := catalogIDs(candidate)
 	publishedMissing := countMissing(publishedIDs, candidateIDs)
@@ -128,27 +134,28 @@ func (s *catalogStore) reconcile(models []canonical.ModelInfo, at time.Time) (Ca
 			s.lastOutcome = CatalogUnchanged
 			return s.resultLocked(CatalogUnchanged, previousCount, len(candidate)), nil
 		}
-		s.publishLocked(candidate, at)
+		s.publishLocked(candidate, completedAt)
 		s.lastOutcome = CatalogMetadataUpdated
 		return s.resultLocked(CatalogMetadataUpdated, previousCount, len(candidate)), nil
 
 	case publishedMissing == 0:
 		s.clearPendingLocked()
-		s.publishLocked(candidate, at)
+		s.publishLocked(candidate, completedAt)
 		s.lastOutcome = CatalogExpanded
 		return s.resultLocked(CatalogExpanded, previousCount, len(candidate)), nil
 
-	case candidateAdditions == 0 && s.pendingFingerprint == catalogFingerprint(candidate):
-		// The fingerprint intentionally covers only exact IDs: model metadata
-		// may legitimately change between two observations of the same set.
-		s.publishLocked(s.pendingCandidate, at)
+	case candidateAdditions == 0 && catalogIDSetEqual(s.pendingCandidate, candidate):
+		// Confirmation covers only exact IDs: model metadata and source order
+		// may legitimately change between two observations of the same set. The
+		// current confirming observation is the one that gets published.
+		s.publishLocked(candidate, completedAt)
 		s.clearPendingLocked()
 		s.lastOutcome = CatalogShrinkConfirmed
 		return s.resultLocked(CatalogShrinkConfirmed, previousCount, len(candidate)), nil
 
 	default:
 		if candidateAdditions > 0 {
-			s.publishLocked(mergeCatalogAdditions(s.models, candidate), at)
+			s.publishLocked(mergeCatalogAdditions(s.models, candidate), completedAt)
 		}
 		s.stageShrinkLocked(candidate)
 		s.lastOutcome = CatalogPendingShrink
@@ -187,13 +194,11 @@ func (s *catalogStore) publishLocked(models []canonical.ModelInfo, at time.Time)
 
 func (s *catalogStore) stageShrinkLocked(candidate []canonical.ModelInfo) {
 	s.pendingCandidate = cloneCatalog(candidate)
-	s.pendingFingerprint = catalogFingerprint(candidate)
 	s.pendingRemovals = countMissing(catalogIDs(s.models), catalogIDs(candidate))
 }
 
 func (s *catalogStore) clearPendingLocked() {
 	s.pendingCandidate = nil
-	s.pendingFingerprint = ""
 	s.pendingRemovals = 0
 }
 
@@ -285,13 +290,27 @@ func mergeCatalogAdditions(published, candidate []canonical.ModelInfo) []canonic
 	return merged
 }
 
-func catalogFingerprint(models []canonical.ModelInfo) string {
+func catalogSortedIDs(models []canonical.ModelInfo) []string {
 	ids := make([]string, 0, len(models))
 	for _, model := range models {
 		ids = append(ids, model.ID)
 	}
 	sort.Strings(ids)
-	return strings.Join(ids, "\x00")
+	return ids
+}
+
+func catalogIDSetEqual(left, right []canonical.ModelInfo) bool {
+	leftIDs := catalogSortedIDs(left)
+	rightIDs := catalogSortedIDs(right)
+	if len(leftIDs) != len(rightIDs) {
+		return false
+	}
+	for i := range leftIDs {
+		if leftIDs[i] != rightIDs[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func nextCatalogAttempt(at time.Time, interval time.Duration) time.Time {

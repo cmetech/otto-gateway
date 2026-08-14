@@ -91,7 +91,7 @@ func (a adminModelCatalogAdapter) Refresh(ctx context.Context) admin.ModelCatalo
 
 	action := admin.ModelCatalogActionResult{
 		Code:              "catalog_refresh_failed",
-		Message:           "Model catalog refresh failed.",
+		Message:           "Model catalog refresh failed. The current catalog remains in use.",
 		RetryAfterSeconds: retryAfterSeconds,
 	}
 	switch {
@@ -103,7 +103,7 @@ func (a adminModelCatalogAdapter) Refresh(ctx context.Context) admin.ModelCatalo
 		action.Message = "Model catalog refresh is temporarily rate limited."
 	case errors.Is(err, pool.ErrCatalogRefreshBusy):
 		action.Code = "catalog_refresh_busy"
-		action.Message = "No idle gateway worker is available for a model catalog refresh."
+		action.Message = "No idle gateway worker is available for a model catalog refresh. The current catalog remains in use."
 	case errors.Is(err, pool.ErrCatalogRefreshUnavailable):
 		action.Code = "catalog_refresh_unavailable"
 		action.Message = "Model catalog refresh is unavailable."

@@ -122,7 +122,7 @@ func sanitizedModelCatalogModels(source []ModelCatalogModel) []ModelCatalogModel
 	seen := map[string]struct{}{"auto": {}}
 	for _, sourceModel := range source {
 		id := strings.TrimSpace(sourceModel.ID)
-		if id == "" || strings.EqualFold(id, "auto") {
+		if id == "" || id == "auto" {
 			continue
 		}
 		if _, duplicate := seen[id]; duplicate {
@@ -133,14 +133,10 @@ func sanitizedModelCatalogModels(source []ModelCatalogModel) []ModelCatalogModel
 		if name == "" {
 			name = id
 		}
-		selectionMode := "explicit"
-		if sourceModel.SelectionMode == "automatic" {
-			selectionMode = "automatic"
-		}
 		models = append(models, ModelCatalogModel{
 			ID:            id,
 			Name:          name,
-			SelectionMode: selectionMode,
+			SelectionMode: "explicit",
 			Capabilities:  sanitizeModelCatalogCapabilities(sourceModel.Capabilities),
 		})
 	}
@@ -222,14 +218,14 @@ func sanitizeModelCatalogAction(result ModelCatalogActionResult) ModelCatalogAct
 	case "catalog_refresh_cooldown":
 		result.Message = "Model catalog refresh is temporarily rate limited."
 	case "catalog_refresh_busy":
-		result.Message = "No idle gateway worker is available for a model catalog refresh."
+		result.Message = "No idle gateway worker is available for a model catalog refresh. The current catalog remains in use."
 	case "catalog_refresh_failed":
-		result.Message = "Model catalog refresh failed."
+		result.Message = "Model catalog refresh failed. The current catalog remains in use."
 	case "catalog_refresh_unavailable":
 		result.Message = "Model catalog refresh is unavailable."
 	default:
 		result.Code = "catalog_refresh_failed"
-		result.Message = "Model catalog refresh failed."
+		result.Message = "Model catalog refresh failed. The current catalog remains in use."
 	}
 	return result
 }
@@ -260,13 +256,31 @@ func modelCatalogRefreshStatus(code string) int {
 }
 
 func rejectCrossOriginModelCatalogRequest(r *http.Request) bool {
-	if strings.EqualFold(r.Header.Get("Sec-Fetch-Site"), "cross-site") {
-		return true
+	fetchSites, hasFetchSite := modelCatalogHeaderValues(r.Header, "Sec-Fetch-Site")
+	origins, hasOrigin := modelCatalogHeaderValues(r.Header, "Origin")
+	if hasFetchSite {
+		if len(fetchSites) != 1 || fetchSites[0] != "same-origin" {
+			return true
+		}
+		// Exact same-origin Fetch Metadata is authoritative across TLS
+		// termination and host rewriting. If Origin is also present, still
+		// reject an inconsistent malformed or repeated browser signal.
+		if !hasOrigin {
+			return false
+		}
+		if len(origins) != 1 {
+			return true
+		}
+		_, ok := parseModelCatalogOrigin(origins[0])
+		return !ok
 	}
-	origin := r.Header.Get("Origin")
-	if origin == "" {
+	if !hasOrigin {
 		return false
 	}
+	if len(origins) != 1 {
+		return true
+	}
+	origin := origins[0]
 	requestOrigin, ok := requestModelCatalogOrigin(r)
 	if !ok {
 		return true
@@ -276,6 +290,21 @@ func rejectCrossOriginModelCatalogRequest(r *http.Request) bool {
 		return true
 	}
 	return false
+}
+
+func modelCatalogHeaderValues(header http.Header, name string) ([]string, bool) {
+	var combined []string
+	found := false
+	// Requests constructed directly by operator tooling can contain a
+	// non-canonical map key. Aggregate every case spelling so repeated or
+	// inconsistent browser signals are rejected by the single-value checks.
+	for key, values := range header {
+		if strings.EqualFold(key, name) {
+			combined = append(combined, values...)
+			found = true
+		}
+	}
+	return combined, found
 }
 
 // modelCatalogOrigin is the normalized comparison form of a serialized web

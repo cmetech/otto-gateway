@@ -188,6 +188,93 @@ func TestPool_CatalogRefresh_BusyDoesNotWaitForSlot(t *testing.T) {
 	}
 }
 
+func TestPool_CatalogRefresh_BusyRetryUsesRemainingManualCooldown(t *testing.T) {
+	now := time.Unix(1_250, 0)
+	fc := &fakeClient{models: twoCatalogModels()}
+	p := pool.New(pool.Config{
+		Logger:  testutil.Logger(t),
+		Size:    1,
+		Factory: &fakeClientFactory{clients: []pool.PoolClient{fc}},
+	})
+	p.SetCatalogRetryForTesting(nil)
+	p.SetCatalogNowForTesting(func() time.Time { return now })
+	if err := p.Warmup(context.Background()); err != nil {
+		t.Fatalf("Warmup: %v", err)
+	}
+	t.Cleanup(func() { _ = p.Close() })
+
+	held, ok := p.TakeSlotIfAvailable()
+	if !ok {
+		t.Fatal("failed to hold the only pool slot")
+	}
+	defer p.PutSlotBack(held)
+	baseline := fc.newSessionCount()
+
+	_, err := p.RefreshModelCatalog(context.Background())
+	var refreshErr *pool.CatalogRefreshError
+	if !errors.Is(err, pool.ErrCatalogRefreshBusy) || !errors.As(err, &refreshErr) || refreshErr.RetryAfter != 30*time.Second {
+		t.Fatalf("first busy refresh error = %#v; want busy with 30-second retry", err)
+	}
+
+	now = now.Add(29 * time.Second)
+	_, err = p.RefreshModelCatalog(context.Background())
+	if !errors.Is(err, pool.ErrCatalogRefreshCooldown) || !errors.As(err, &refreshErr) || refreshErr.RetryAfter != time.Second {
+		t.Fatalf("retry after 29 seconds = %#v; want cooldown with 1-second retry", err)
+	}
+
+	now = now.Add(time.Second)
+	_, err = p.RefreshModelCatalog(context.Background())
+	if !errors.Is(err, pool.ErrCatalogRefreshBusy) || !errors.As(err, &refreshErr) || refreshErr.RetryAfter != 30*time.Second {
+		t.Fatalf("retry at advertised boundary = %#v; want a newly admitted busy result with 30-second retry", err)
+	}
+	if got := fc.newSessionCount(); got != baseline {
+		t.Fatalf("busy retry sequence started %d probes; want 0", got-baseline)
+	}
+}
+
+func TestPool_CatalogRefresh_UnavailableAfterAdmissionUsesRemainingManualCooldown(t *testing.T) {
+	now := time.Unix(1_400, 0)
+	deadClient := &fakeClient{models: twoCatalogModels()}
+	replacement := &fakeClient{models: twoCatalogModels()}
+	p := pool.New(pool.Config{
+		Logger:  testutil.Logger(t),
+		Size:    1,
+		Factory: &fakeClientFactory{clients: []pool.PoolClient{deadClient, replacement}},
+	})
+	p.SetCatalogRetryForTesting(nil)
+	p.SetCatalogNowForTesting(func() time.Time { return now })
+	if err := p.Warmup(context.Background()); err != nil {
+		t.Fatalf("Warmup: %v", err)
+	}
+	t.Cleanup(func() { _ = p.Close() })
+
+	deadClient.fireDone()
+	deadline := time.NewTimer(catalogTestTimeout)
+	defer deadline.Stop()
+	for {
+		alive, found := p.SlotAlive("slot-0")
+		if found && !alive {
+			break
+		}
+		select {
+		case <-deadline.C:
+			t.Fatal("exit watcher did not mark the idle slot dead")
+		default:
+			runtime.Gosched()
+		}
+	}
+
+	_, err := p.RefreshModelCatalog(context.Background())
+	var refreshErr *pool.CatalogRefreshError
+	if !errors.Is(err, pool.ErrCatalogRefreshUnavailable) || !errors.As(err, &refreshErr) || refreshErr.RetryAfter != 30*time.Second {
+		t.Fatalf("dead-slot refresh error = %#v; want unavailable with 30-second retry", err)
+	}
+	_, err = p.RefreshModelCatalog(context.Background())
+	if !errors.Is(err, pool.ErrCatalogRefreshCooldown) || !errors.As(err, &refreshErr) || refreshErr.RetryAfter != 30*time.Second {
+		t.Fatalf("immediate retry error = %#v; want authoritative 30-second cooldown", err)
+	}
+}
+
 func TestPool_CatalogRefresh_SingleFlightIncludesLazyProbe(t *testing.T) {
 	var warmed atomic.Bool
 	probeEntered := make(chan struct{})
@@ -377,6 +464,49 @@ func TestPool_CatalogRefresh_PausedManualCommitsAuthoritativeCooldownTime(t *tes
 	}
 	if got := fc.newSessionCount(); got != baseline+1 {
 		t.Fatalf("manual probes = %d; want only the paused caller admitted", got-baseline)
+	}
+}
+
+func TestPool_CatalogRefresh_CompletionTimestampsDoNotReuseAdmissionTime(t *testing.T) {
+	attemptAt := time.Unix(1_900, 0)
+	completedAt := attemptAt.Add(9 * time.Second)
+	var nowNanos atomic.Int64
+	nowNanos.Store(attemptAt.UnixNano())
+	var runtimeProbe atomic.Bool
+	state := &mutableCatalog{models: twoCatalogModels()}
+	fc := &fakeClient{
+		availableModelsFn: state.get,
+		newSessionFn: func(context.Context, string) (string, error) {
+			if runtimeProbe.Load() {
+				nowNanos.Store(completedAt.UnixNano())
+			}
+			return "catalog-probe", nil
+		},
+	}
+	p := pool.New(pool.Config{
+		Logger:  testutil.Logger(t),
+		Size:    1,
+		Factory: &fakeClientFactory{clients: []pool.PoolClient{fc}},
+	})
+	p.SetCatalogRetryForTesting(nil)
+	p.SetCatalogNowForTesting(func() time.Time { return time.Unix(0, nowNanos.Load()) })
+	if err := p.Warmup(context.Background()); err != nil {
+		t.Fatalf("Warmup: %v", err)
+	}
+	t.Cleanup(func() { _ = p.Close() })
+
+	state.set(threeCatalogModels()...)
+	runtimeProbe.Store(true)
+	result, err := p.RefreshModelCatalog(context.Background())
+	if err != nil || result.Outcome != pool.CatalogExpanded {
+		t.Fatalf("refresh = %+v, %v; want expansion", result, err)
+	}
+	snapshot := p.CatalogSnapshot()
+	if !snapshot.LastAttemptAt.Equal(attemptAt) {
+		t.Fatalf("LastAttemptAt = %v; want admission time %v", snapshot.LastAttemptAt, attemptAt)
+	}
+	if !snapshot.LastSuccessAt.Equal(completedAt) || !snapshot.LastUpdatedAt.Equal(completedAt) {
+		t.Fatalf("success/update timestamps = %v/%v; want completion time %v", snapshot.LastSuccessAt, snapshot.LastUpdatedAt, completedAt)
 	}
 }
 
@@ -703,6 +833,71 @@ func TestPool_CatalogScheduler_ProductionTimingSourcePrecedesPublishedDeadline(t
 	}
 	if got := p.CatalogSnapshot().NextAttemptAt; !got.Equal(firstDeadline) {
 		t.Fatalf("NextAttemptAt = %v; want production timing deadline %v", got, firstDeadline)
+	}
+}
+
+func TestPool_CatalogScheduler_DelayedTickSkipsMissedCadenceWithoutImmediateSecondProbe(t *testing.T) {
+	startedAt := time.Unix(15_000, 0)
+	tickAt := startedAt.Add(time.Minute)
+	deliveredAt := tickAt.Add(2*time.Minute + 10*time.Second)
+	completedAt := tickAt.Add(3*time.Minute + 10*time.Second)
+	var nowNanos atomic.Int64
+	nowNanos.Store(startedAt.UnixNano())
+	var runtimeProbe atomic.Bool
+	fc := &fakeClient{
+		models: twoCatalogModels(),
+		newSessionFn: func(context.Context, string) (string, error) {
+			if runtimeProbe.Load() {
+				nowNanos.Store(completedAt.UnixNano())
+			}
+			return "catalog-probe", nil
+		},
+	}
+	ticks := make(chan time.Time)
+	resets := make(chan time.Duration, 2)
+	parked := make(chan struct{})
+	p := pool.New(pool.Config{
+		Logger:                      testutil.Logger(t),
+		Size:                        1,
+		Factory:                     &fakeClientFactory{clients: []pool.PoolClient{fc}},
+		ModelCatalogRefreshInterval: time.Minute,
+	})
+	p.SetCatalogRetryForTesting(nil)
+	p.SetCatalogNowForTesting(func() time.Time { return time.Unix(0, nowNanos.Load()) })
+	p.SetCatalogSchedulerTimerForTesting(ticks, func(delay time.Duration) { resets <- delay }, func() {})
+	p.SetCatalogSchedulerParkedForTesting(parked)
+	if err := p.Warmup(context.Background()); err != nil {
+		t.Fatalf("Warmup: %v", err)
+	}
+	t.Cleanup(func() { _ = p.Close() })
+	waitForCatalogSchedulerParked(t, parked)
+
+	baseline := fc.newSessionCount()
+	runtimeProbe.Store(true)
+	nowNanos.Store(deliveredAt.UnixNano())
+	sendCatalogTickAt(t, ticks, tickAt)
+	waitForCatalogSchedulerParked(t, parked)
+
+	snapshot := p.CatalogSnapshot()
+	wantNext := tickAt.Add(4 * time.Minute)
+	if !snapshot.NextAttemptAt.Equal(wantNext) || !snapshot.NextAttemptAt.After(completedAt) {
+		t.Fatalf("NextAttemptAt = %v; want future cadence point %v after delayed completion %v", snapshot.NextAttemptAt, wantNext, completedAt)
+	}
+	if got := fc.newSessionCount(); got != baseline+1 {
+		t.Fatalf("scheduled probes after one delayed tick = %d; want exactly 1", got-baseline)
+	}
+	select {
+	case got := <-resets:
+		if want := wantNext.Sub(completedAt); got != want {
+			t.Fatalf("production timer reset = %v; want %v until the future cadence point", got, want)
+		}
+	case <-time.After(catalogTestTimeout):
+		t.Fatal("production timer was not reset after the delayed probe")
+	}
+	select {
+	case got := <-resets:
+		t.Fatalf("production timer reset a second time without another tick: %v", got)
+	default:
 	}
 }
 

@@ -232,9 +232,11 @@ function createHarness(responses, options = {}) {
 	  selectors['[data-model-catalog-interval]'] = new Element('span');
 	  selectors['[data-model-catalog-refresh]'] = new Element('button');
 	  selectors['[data-model-catalog-body]'] = new Element('tbody');
+	  selectors['[data-model-catalog-pending]'] = new Element('p');
 	  selectors['[data-model-catalog-message]'] = new Element('p');
 	  selectors['[data-model-catalog-live]'] = new Element('p');
 	  selectors['[data-model-catalog-refresh]'].textContent = 'Refresh now';
+	  selectors['[data-model-catalog-pending]'].hidden = true;
 	  selectors['[data-model-catalog-message]'].hidden = true;
 	}
 	for (const name of [
@@ -781,6 +783,8 @@ test('model catalog groups shuffled rows and applies numeric-aware name and exac
 	catalogModel('claude-sonnet-5', 'Claude Sonnet 5'),
 	catalogModel('gpt-alpha', 'GPT Same'),
 	catalogModel('gpt-5.6-luna', 'GPT 5.6 Luna'),
+	catalogModel('gpt-a', 'GPT Code Unit Tie'),
+	catalogModel('gpt-Z', 'GPT Code Unit Tie'),
   ];
   const originalOrder = models.map((model) => model.id);
   const harness = createHarness(
@@ -810,6 +814,8 @@ test('model catalog groups shuffled rows and applies numeric-aware name and exac
 	'gpt-5.6-luna',
 	'gpt-5.6-sol',
 	'gpt-5.10-preview',
+	'gpt-Z',
+	'gpt-a',
 	'gpt-alpha',
 	'gpt-zeta',
   ]);
@@ -821,6 +827,53 @@ test('model catalog groups shuffled rows and applies numeric-aware name and exac
   );
   assert.doesNotMatch(qwenRow.children.slice(2).map(elementText).join(' '), /Unsupported/);
   assert.deepEqual(models.map((model) => model.id), originalOrder, 'rendering must not mutate the response');
+});
+
+test('model catalog renders a distinct persistent pluralized pending-removals warning with count only', async () => {
+	const refreshWithPending = (count) => ({
+	  enabled: true,
+	  interval_seconds: 900,
+	  in_progress: false,
+	  last_success_at: '2026-08-13T14:05:06Z',
+	  next_attempt_at: '2026-08-13T14:20:06Z',
+	  last_outcome: 'pending_shrink',
+	  pending_removals: count,
+	});
+	const harness = createHarness(
+	  [snapshot({ main: 'Gateway', kiro: 'Kiro' })],
+	  {
+		modelCatalog: true,
+		catalogResponses: [
+		  modelCatalog([catalogModel('gpt-published', 'GPT Published')], {
+			state: 'pending_shrink',
+			refresh: refreshWithPending(1),
+		  }),
+		  modelCatalog([catalogModel('gpt-published', 'GPT Published')], {
+			state: 'pending_shrink',
+			refresh: refreshWithPending(2),
+		  }),
+		],
+	  },
+	);
+
+	harness.start();
+	await settleAsyncWork();
+	const pending = harness.selectors['[data-model-catalog-pending]'];
+	const transient = harness.selectors['[data-model-catalog-message]'];
+	assert.equal(pending.hidden, false);
+	assert.equal(
+	  pending.textContent,
+	  '1 model removal awaits confirmation. The current catalog remains in use.',
+	);
+	assert.doesNotMatch(pending.textContent, /gpt-published/);
+	assert.notStrictEqual(pending, transient, 'pending state must not share the transient action message node');
+
+	harness.pollCatalog();
+	await settleAsyncWork();
+	assert.equal(
+	  pending.textContent,
+	  '2 model removals await confirmation. The current catalog remains in use.',
+	);
 });
 
 test('model catalog performs an isolated initial GET and poll at the configured cadence', async () => {
@@ -929,8 +982,8 @@ test('model catalog refresh errors use fixed local copy and retry cooldowns', as
 	{
 	  status: 503,
 	  code: 'catalog_refresh_busy',
-	  retry: 3,
-	  want: 'No idle gateway worker is available for a model catalog refresh.',
+	  retry: 30,
+	  want: 'No idle gateway worker is available for a model catalog refresh. The current catalog remains in use.',
 	},
 	{
 	  status: 503,
@@ -940,9 +993,15 @@ test('model catalog refresh errors use fixed local copy and retry cooldowns', as
 	},
 	{
 	  status: 502,
+	  code: 'catalog_refresh_failed',
+	  retry: 0,
+	  want: 'Model catalog refresh failed. The current catalog remains in use.',
+	},
+	{
+	  status: 502,
 	  code: 'not-a-bounded-code',
 	  retry: 0,
-	  want: 'Model catalog refresh failed.',
+	  want: 'Model catalog refresh failed. The current catalog remains in use.',
 	},
   ];
 
@@ -982,6 +1041,89 @@ test('model catalog refresh errors use fixed local copy and retry cooldowns', as
 	  assert.equal(button.disabled, false, `${tc.code} without retry should restore refresh`);
 	}
   }
+});
+
+test('model catalog failed actions invalidate older GETs and later polls preserve the action state', async () => {
+	const cases = [
+	  { status: 409, code: 'catalog_refresh_in_progress', retry: 2, want: 'A model catalog refresh is already in progress.' },
+	  { status: 429, code: 'catalog_refresh_cooldown', retry: 4, want: 'Model catalog refresh is temporarily rate limited.' },
+	  {
+		status: 503,
+		code: 'catalog_refresh_busy',
+		retry: 30,
+		want: 'No idle gateway worker is available for a model catalog refresh. The current catalog remains in use.',
+	  },
+	  {
+		status: 502,
+		code: 'catalog_refresh_failed',
+		retry: 0,
+		want: 'Model catalog refresh failed. The current catalog remains in use.',
+	  },
+	];
+
+	for (const tc of cases) {
+	  for (const staleOutcome of ['resolve', 'reject']) {
+		const stalePoll = deferredFetch();
+		const initial = modelCatalog([
+		  catalogModel('auto', 'Automatic'),
+		  catalogModel('gpt-current', 'GPT Current'),
+		]);
+		const stale = modelCatalog([
+		  catalogModel('auto', 'Automatic'),
+		  catalogModel('gpt-stale', 'GPT Stale'),
+		], {
+		  state: 'refreshing',
+		  generation: 2,
+		  refresh: {
+			enabled: true,
+			interval_seconds: 900,
+			in_progress: true,
+			last_success_at: '2026-08-13T13:00:00Z',
+			next_attempt_at: '2026-08-13T13:15:00Z',
+			last_outcome: 'unchanged',
+			pending_removals: 0,
+		  },
+		});
+		const laterPoll = modelCatalog([
+		  catalogModel('auto', 'Automatic'),
+		  catalogModel('gpt-later', 'GPT Later'),
+		], { generation: 3 });
+		const harness = createHarness(
+		  [snapshot({ main: 'Gateway', kiro: 'Kiro' })],
+		  {
+			modelCatalog: true,
+			catalogResponses: [initial, { fetchPromise: stalePoll.promise }, laterPoll],
+			refreshResponses: [{
+			  httpStatus: tc.status,
+			  body: { code: tc.code, retry_after_seconds: tc.retry, message: 'private server detail' },
+			}],
+		  },
+		);
+
+		harness.start();
+		await settleAsyncWork();
+		harness.pollCatalog();
+		harness.selectors['[data-model-catalog-refresh]'].dispatchEvent({ type: 'click' });
+		await settleAsyncWork();
+		const message = harness.selectors['[data-model-catalog-message]'];
+		const live = harness.selectors['[data-model-catalog-live]'];
+		const body = harness.selectors['[data-model-catalog-body]'];
+		assert.equal(message.textContent, tc.want, `${tc.status} ${staleOutcome}: terminal action`);
+
+		if (staleOutcome === 'resolve') stalePoll.resolve(fakeHTTPResponse(stale));
+		else stalePoll.reject(new Error('late stale poll failure'));
+		await settleAsyncWork();
+		assert.equal(message.textContent, tc.want, `${tc.status} ${staleOutcome}: stale GET must not erase action`);
+		assert.equal(live.textContent, tc.want, `${tc.status} ${staleOutcome}: stale GET must not replace announcement`);
+		assert.doesNotMatch(elementText(body), /gpt-stale/);
+
+		harness.pollCatalog();
+		await settleAsyncWork();
+		assert.match(elementText(body), /gpt-later/, `${tc.status} ${staleOutcome}: a later poll may refresh the view`);
+		assert.equal(message.textContent, tc.want, `${tc.status} ${staleOutcome}: later poll must preserve failed action`);
+		assert.equal(live.textContent, tc.want, `${tc.status} ${staleOutcome}: later poll must preserve action announcement`);
+	  }
+	}
 });
 
 test('model catalog disabled scheduling leaves manual refresh available', async () => {
@@ -1139,7 +1281,7 @@ test('model catalog initial GET failure preserves manual POST recovery', async (
 		httpStatus: 502,
 		body: { code: 'catalog_refresh_failed', message: 'private upstream detail' },
 	  },
-	  wantMessage: 'Model catalog refresh failed.',
+	  wantMessage: 'Model catalog refresh failed. The current catalog remains in use.',
 	},
   ];
 

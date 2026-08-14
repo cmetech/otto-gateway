@@ -712,6 +712,8 @@
   var modelCatalogCooldownSeconds = 0;
   var modelCatalogCooldownTimer = null;
   var modelCatalogRequestGeneration = 0;
+  var modelCatalogViewActionEpoch = 0;
+  var modelCatalogPersistentActionMessage = false;
 
   function modelCatalogURL() { return '/admin/api/model-catalog'; }
   function modelCatalogRefreshURL() { return '/admin/api/model-catalog/refresh'; }
@@ -732,7 +734,10 @@
 
   function compareModelRows(a, b) {
     var byName = modelNameCollator.compare(a.name || a.id, b.name || b.id);
-    return byName || String(a.id).localeCompare(String(b.id));
+    if (byName) return byName;
+    var leftID = String(a.id);
+    var rightID = String(b.id);
+    return leftID < rightID ? -1 : (leftID > rightID ? 1 : 0);
   }
 
   function modelCatalogState(state) {
@@ -783,6 +788,23 @@
     el.className = 'gw-model-catalog-message';
     if (tone) el.classList.add(tone);
     el.classList.toggle('is-visible', !!text);
+  }
+
+  function setModelCatalogPendingWarning(value) {
+    var el = qs('data-model-catalog-pending');
+    if (!el) return;
+    var count = Math.floor(Number(value));
+    if (!Number.isFinite(count) || count <= 0) {
+      el.textContent = '';
+      el.hidden = true;
+      el.classList.toggle('is-visible', false);
+      return;
+    }
+    el.textContent = count === 1
+      ? '1 model removal awaits confirmation. The current catalog remains in use.'
+      : count + ' model removals await confirmation. The current catalog remains in use.';
+    el.hidden = false;
+    el.classList.toggle('is-visible', true);
   }
 
   function announceModelCatalog(text) {
@@ -872,6 +894,7 @@
     );
     setModelCatalogNext(refresh);
     setText('data-model-catalog-interval', formatModelCatalogInterval(refresh.interval_seconds));
+    setModelCatalogPendingWarning(refresh.pending_removals);
 
     modelCatalogLastView = view;
     updateModelCatalogRefreshControl();
@@ -899,6 +922,7 @@
 
   function fetchModelCatalog(preserveMessage) {
     var requestGeneration = ++modelCatalogRequestGeneration;
+    var requestEpoch = modelCatalogViewActionEpoch;
     return fetch(modelCatalogURL(), {
       cache: 'no-store',
       headers: { 'Accept': 'application/json' }
@@ -908,13 +932,23 @@
         return response.json();
       })
       .then(function (view) {
-        if (requestGeneration !== modelCatalogRequestGeneration) return false;
+        if (requestGeneration !== modelCatalogRequestGeneration ||
+            requestEpoch !== modelCatalogViewActionEpoch) return false;
+        if (modelCatalogRefreshPending && !preserveMessage) return false;
         renderModelCatalog(view);
-        if (!preserveMessage) setModelCatalogMessage('', '');
+        if (!preserveMessage && !modelCatalogPersistentActionMessage) {
+          setModelCatalogMessage('', '');
+        }
         return true;
       })
       .catch(function () {
-        if (requestGeneration !== modelCatalogRequestGeneration) return false;
+        if (requestGeneration !== modelCatalogRequestGeneration ||
+            requestEpoch !== modelCatalogViewActionEpoch) return false;
+        if (modelCatalogRefreshPending && !preserveMessage) return false;
+        if (modelCatalogPersistentActionMessage) {
+          updateModelCatalogRefreshControl();
+          return false;
+        }
         var errorMessage = 'Model catalog status could not be updated. Showing the last known catalog.';
         setModelCatalogMessage(errorMessage, 'is-error');
         announceModelCatalog(errorMessage);
@@ -930,12 +964,12 @@
     case 'catalog_refresh_cooldown':
       return 'Model catalog refresh is temporarily rate limited.';
     case 'catalog_refresh_busy':
-      return 'No idle gateway worker is available for a model catalog refresh.';
+      return 'No idle gateway worker is available for a model catalog refresh. The current catalog remains in use.';
     case 'catalog_refresh_unavailable':
       return 'Model catalog refresh is unavailable.';
     case 'catalog_refresh_failed':
     default:
-      return 'Model catalog refresh failed.';
+      return 'Model catalog refresh failed. The current catalog remains in use.';
     }
   }
 
@@ -971,6 +1005,8 @@
       return Promise.resolve(false);
     }
 
+    modelCatalogViewActionEpoch++;
+    modelCatalogPersistentActionMessage = false;
     modelCatalogRefreshPending = true;
     updateModelCatalogRefreshControl();
     return fetch(modelCatalogRefreshURL(), {
@@ -984,7 +1020,9 @@
         );
       })
       .then(function (result) {
+        modelCatalogViewActionEpoch++;
         if (!result.ok) {
+          modelCatalogPersistentActionMessage = true;
           var code = typeof result.body.code === 'string' ? result.body.code : '';
           var errorMessage = modelCatalogActionMessage(code);
           setModelCatalogMessage(errorMessage, modelCatalogActionTone(code));
@@ -993,6 +1031,7 @@
           return false;
         }
 
+        modelCatalogPersistentActionMessage = false;
         var successMessage = result.body.message === 'Model catalog refresh completed.'
           ? result.body.message
           : 'Model catalog refresh completed.';
@@ -1001,7 +1040,9 @@
         return fetchModelCatalog(true);
       })
       .catch(function () {
-        var errorMessage = 'Model catalog refresh could not be requested.';
+        modelCatalogViewActionEpoch++;
+        modelCatalogPersistentActionMessage = true;
+        var errorMessage = 'Model catalog refresh could not be requested. The current catalog remains in use.';
         setModelCatalogMessage(errorMessage, 'is-error');
         announceModelCatalog(errorMessage);
         return false;

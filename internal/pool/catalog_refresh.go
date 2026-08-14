@@ -43,6 +43,25 @@ type catalogRefreshAdmission struct {
 	attemptAt time.Time
 }
 
+type catalogSchedulerTimer struct {
+	ticks <-chan time.Time
+	reset func(time.Duration)
+	stop  func()
+}
+
+func newCatalogSchedulerTimer(delay time.Duration) *catalogSchedulerTimer {
+	timer := time.NewTimer(delay)
+	return &catalogSchedulerTimer{
+		ticks: timer.C,
+		reset: func(nextDelay time.Duration) {
+			timer.Reset(nextDelay)
+		},
+		stop: func() {
+			timer.Stop()
+		},
+	}
+}
+
 // CatalogSnapshot returns a defensive view of the published model catalog and
 // refresh lifecycle.
 func (p *Pool) CatalogSnapshot() ModelCatalogSnapshot {
@@ -159,7 +178,7 @@ func (p *Pool) runCatalogRefresh(ctx context.Context, admission catalogRefreshAd
 			return result, nil
 		}
 		if admission.source == catalogRefreshManual {
-			return CatalogRefreshResult{}, &CatalogRefreshError{Kind: ErrCatalogRefreshBusy, RetryAfter: catalogBusyRetryAfter}
+			return CatalogRefreshResult{}, &CatalogRefreshError{Kind: ErrCatalogRefreshBusy, RetryAfter: p.catalogAdmissionRetryAfter(admission)}
 		}
 		return CatalogRefreshResult{}, nil
 	}
@@ -169,7 +188,7 @@ func (p *Pool) runCatalogRefresh(ctx context.Context, admission catalogRefreshAd
 	if !p.slotAlive(slot) {
 		result = p.catalog.recordRefreshOutcome(CatalogFailed, admission.attemptAt)
 		p.logCatalogRefresh(admission.source, result, time.Since(started))
-		return result, &CatalogRefreshError{Kind: ErrCatalogRefreshUnavailable, RetryAfter: catalogBusyRetryAfter}
+		return result, &CatalogRefreshError{Kind: ErrCatalogRefreshUnavailable, RetryAfter: p.catalogAdmissionRetryAfter(admission)}
 	}
 
 	probeCtx, cancel := context.WithTimeout(ctx, catalogProbeTimeout)
@@ -196,18 +215,35 @@ func (p *Pool) runCatalogRefresh(ctx context.Context, admission catalogRefreshAd
 		return result, returnedErr
 	}
 
-	result, err = p.reconcileCatalog(models, admission.attemptAt)
+	result, err = p.reconcileCatalog(models, admission.attemptAt, p.catalogNow())
 	p.logCatalogRefresh(admission.source, result, time.Since(started))
 	return result, err
+}
+
+// catalogAdmissionRetryAfter reports the authoritative remainder of the
+// cooldown started by an admitted manual action. Scheduled and lazy refreshes
+// retain the bounded busy retry used for non-operator work.
+func (p *Pool) catalogAdmissionRetryAfter(admission catalogRefreshAdmission) time.Duration {
+	if admission.source != catalogRefreshManual {
+		return catalogBusyRetryAfter
+	}
+	p.catalogManualMu.Lock()
+	err := p.manualCooldownErrorLocked(p.catalogNow())
+	p.catalogManualMu.Unlock()
+	var refreshErr *CatalogRefreshError
+	if errors.As(err, &refreshErr) && refreshErr.RetryAfter > 0 {
+		return refreshErr.RetryAfter
+	}
+	return catalogBusyRetryAfter
 }
 
 // reconcileCatalog prevents observation metadata from moving the independent
 // scheduler deadline. The read lock serializes the reconcile/restore pair
 // against a scheduled tick publishing its next deadline.
-func (p *Pool) reconcileCatalog(models []canonical.ModelInfo, at time.Time) (CatalogRefreshResult, error) {
+func (p *Pool) reconcileCatalog(models []canonical.ModelInfo, attemptAt, completedAt time.Time) (CatalogRefreshResult, error) {
 	p.catalogScheduleMu.RLock()
 	nextAttempt := p.catalogNextAttempt
-	result, err := p.catalog.reconcile(models, at)
+	result, err := p.catalog.reconcileCompleted(models, attemptAt, completedAt)
 	p.catalog.setNextAttempt(nextAttempt)
 	p.catalogScheduleMu.RUnlock()
 	return result, err
@@ -223,15 +259,20 @@ func (p *Pool) startCatalogScheduler() {
 		return
 	}
 	p.catalogSchedulerOnce.Do(func() {
-		firstDeadline := p.catalogNow().Add(p.cfg.ModelCatalogRefreshInterval)
+		startedAt := p.catalogNow()
+		firstDeadline := startedAt.Add(p.cfg.ModelCatalogRefreshInterval)
 		ticks := p.catalogRefreshTicks
-		var timer *time.Timer
+		var timer *catalogSchedulerTimer
 		if ticks == nil {
 			// A one-shot timer is created from the same absolute deadline that is
 			// published below. Creating it synchronously closes the historical gap
 			// where NextAttemptAt preceded the ticker's actual start time.
-			timer = time.NewTimer(time.Until(firstDeadline))
-			ticks = timer.C
+			factory := p.catalogSchedulerTimerFactory
+			if factory == nil {
+				factory = newCatalogSchedulerTimer
+			}
+			timer = factory(firstDeadline.Sub(startedAt))
+			ticks = timer.ticks
 			if p.catalogSchedulerTimingInitializedHook != nil {
 				p.catalogSchedulerTimingInitializedHook(firstDeadline)
 			}
@@ -242,10 +283,10 @@ func (p *Pool) startCatalogScheduler() {
 	})
 }
 
-func (p *Pool) catalogRefreshLoop(ticks <-chan time.Time, timer *time.Timer) {
+func (p *Pool) catalogRefreshLoop(ticks <-chan time.Time, timer *catalogSchedulerTimer) {
 	defer p.catalogSchedulerWG.Done()
 	if timer != nil {
-		defer timer.Stop()
+		defer timer.stop()
 	}
 	for {
 		if p.catalogSchedulerParked != nil {
@@ -260,16 +301,29 @@ func (p *Pool) catalogRefreshLoop(ticks <-chan time.Time, timer *time.Timer) {
 			if !ok {
 				return
 			}
-			nextDeadline := tickAt.Add(p.cfg.ModelCatalogRefreshInterval)
+			_, _ = p.refreshModelCatalog(context.Background(), catalogRefreshScheduled)
+			completedAt := p.catalogNow()
+			nextDeadline := nextCatalogCadenceAfter(tickAt, completedAt, p.cfg.ModelCatalogRefreshInterval)
 			p.setCatalogNextAttempt(nextDeadline)
 			if timer != nil {
-				timer.Reset(time.Until(nextDeadline))
+				timer.reset(nextDeadline.Sub(completedAt))
 			}
-			_, _ = p.refreshModelCatalog(context.Background(), catalogRefreshScheduled)
 		case <-p.closing:
 			return
 		}
 	}
+}
+
+func nextCatalogCadenceAfter(tickAt, completedAt time.Time, interval time.Duration) time.Time {
+	if interval <= 0 {
+		return time.Time{}
+	}
+	nextDeadline := tickAt.Add(interval)
+	if nextDeadline.After(completedAt) {
+		return nextDeadline
+	}
+	missed := completedAt.Sub(nextDeadline)/interval + 1
+	return nextDeadline.Add(missed * interval)
 }
 
 func (p *Pool) setCatalogNextAttempt(at time.Time) {

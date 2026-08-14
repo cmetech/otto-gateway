@@ -905,6 +905,22 @@ body {
   animation: gw-pulse 1.2s ease-in-out infinite;
 }
 
+.gw-model-catalog-pending {
+  display: none;
+  margin: 0 0 var(--gw-space-base);
+  padding: var(--gw-space-sm) var(--gw-space-md);
+  border: 1px solid var(--gw-catalog-warning-fg);
+  border-left-width: 3px;
+  border-radius: var(--gw-radius-input);
+  color: var(--gw-catalog-warning-fg);
+  background: var(--gw-catalog-warning-bg);
+  font-size: var(--gw-text-sm);
+}
+
+.gw-model-catalog-pending.is-visible {
+  display: block;
+}
+
 .gw-model-catalog-message {
   display: none;
   margin: 0 0 var(--gw-space-base);

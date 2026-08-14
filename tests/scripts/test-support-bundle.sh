@@ -377,6 +377,7 @@ run_support() {
         GW_METRICS_REMOTE_WRITE_USER="fixture-user" \
         GW_METRICS_REMOTE_WRITE_TOKEN="$SECRET_REMOTE_LITERAL" \
         GW_METRICS_REMOTE_WRITE_INTERVAL_SEC=45 \
+        MODEL_CATALOG_REFRESH_INTERVAL_SEC=777 \
         HTTP_ADDR="127.0.0.1:18080" \
         CHAT_TRACE=true \
         KIRO_WORKER_MAX_TURNS=20 \
@@ -397,6 +398,22 @@ run_support() {
     set -e
     return "$rc"
 }
+
+echo "== environment inventory parity =="
+ENV_STDOUT="$EXTRACT_DIR/env.stdout"
+ENV_STDERR="$EXTRACT_DIR/env.stderr"
+if HOME="$FAKE_ROOT/home" \
+    GW_INSTALL_DIR="$FAKE_ROOT" \
+    GW_HOME="$GW_HOME_FIXTURE" \
+    GW_ENV_FILE="$FAKE_ROOT/missing.env" \
+    GW_OVERRIDES_FILE="$FAKE_ROOT/missing-overrides.env" \
+    MODEL_CATALOG_REFRESH_INTERVAL_SEC=777 \
+    "$BASH" "$WRAPPER" env >"$ENV_STDOUT" 2>"$ENV_STDERR"; then
+    ok "gw env exits zero"
+else
+    fail_with "gw env failed: $(cat "$ENV_STDERR")"
+fi
+assert_contains "$ENV_STDOUT" 'MODEL_CATALOG_REFRESH_INTERVAL_SEC=777' "gw env includes model-catalog refresh interval"
 
 echo "== enabled support bundle =="
 MAIN_OUT="$EXTRACT_DIR/main-out"
@@ -501,6 +518,7 @@ fi
 assert_contains "$MAIN_ROOT/env/effective.env" 'GW_METRICS_REMOTE_WRITE_URL=https://metrics.example.test/api/prom/push' "effective env includes remote-write URL"
 assert_contains "$MAIN_ROOT/env/effective.env" 'GW_METRICS_REMOTE_WRITE_USER=fixture-user' "effective env includes remote-write user"
 assert_contains "$MAIN_ROOT/env/effective.env" 'GW_METRICS_REMOTE_WRITE_INTERVAL_SEC=45' "effective env includes remote-write interval"
+assert_contains "$MAIN_ROOT/env/effective.env" 'MODEL_CATALOG_REFRESH_INTERVAL_SEC=777' "effective env includes model-catalog refresh interval"
 assert_contains "$MAIN_ROOT/env/effective.env" 'GW_METRICS_REMOTE_WRITE_TOKEN=remo…(20 chars)' "effective env masks remote-write token"
 assert_contains "$MAIN_ROOT/env/effective.env" 'KIRO_WORKER_IDLE_RECYCLE_MS=900000' "effective env includes idle recycle duration unredacted"
 assert_contains "$MAIN_ROOT/env/effective.env" 'KIRO_WORKER_IDLE_RECYCLE_MEMORY_MB=500' "effective env includes idle recycle memory unredacted"
