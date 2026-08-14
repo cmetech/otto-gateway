@@ -116,7 +116,11 @@ type Deps struct {
 	Start      time.Time
 	PoolDetail PoolDetailSource
 	Registry   RegistryStatsSource
-	AcpCapture AcpCaptureSource
+	// ModelCatalog supplies the separately sanitized model-catalog dashboard
+	// projection and manual-refresh action. Nil is safe: GET reports a disabled
+	// catalog and POST reports refresh unavailable.
+	ModelCatalog ModelCatalogSource
+	AcpCapture   AcpCaptureSource
 	// Proc surfaces gateway + per-worker CPU/RSS for the dashboard perf tiles.
 	// Nil-safe: when unset, the snapshot's process fields stay zero with
 	// StatOK/ProcessStatOK false and the UI renders "n/a".
@@ -289,6 +293,10 @@ func Handler(deps Deps) http.Handler {
 
 	// GET /api/snapshot — return unified Snapshot JSON (D-05).
 	r.Get("/api/snapshot", h.snapshotHandler)
+
+	// Model catalog read and guarded manual-refresh endpoints.
+	r.Get("/api/model-catalog", h.modelCatalogHandler)
+	r.Post("/api/model-catalog/refresh", h.modelCatalogRefreshHandler)
 
 	// GET /api/acp-capture — raw kiro frame capture ring + runtime state.
 	r.Get("/api/acp-capture", h.acpCaptureHandler)
