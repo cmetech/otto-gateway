@@ -446,6 +446,42 @@ func TestLoad_PoolSize_Malformed(t *testing.T) {
 	}
 }
 
+func TestLoad_ModelCatalogRefreshInterval(t *testing.T) {
+	cases := []struct {
+		name    string
+		value   string
+		want    time.Duration
+		wantErr string
+	}{
+		{name: "default", value: "", want: 15 * time.Minute},
+		{name: "disabled", value: "0", want: 0},
+		{name: "minimum", value: "60", want: time.Minute},
+		{name: "maximum", value: "86400", want: 24 * time.Hour},
+		{name: "below minimum", value: "59", wantErr: "must be 0 or in [60,86400], got 59"},
+		{name: "above maximum", value: "86401", wantErr: "must be 0 or in [60,86400], got 86401"},
+		{name: "negative", value: "-1", wantErr: "must be 0 or in [60,86400], got -1"},
+		{name: "not integer", value: "later", wantErr: "MODEL_CATALOG_REFRESH_INTERVAL_SEC"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("MODEL_CATALOG_REFRESH_INTERVAL_SEC", tc.value)
+			cfg, err := config.Load()
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("Load error = %v; want %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if cfg.ModelCatalogRefreshInterval != tc.want {
+				t.Fatalf("interval = %v; want %v", cfg.ModelCatalogRefreshInterval, tc.want)
+			}
+		})
+	}
+}
+
 // --- KIRO_WORKER_MAX_TURNS coverage --------------------------------------
 
 func TestLoad_KiroWorkerMaxTurns(t *testing.T) {

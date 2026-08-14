@@ -147,6 +147,9 @@ type Config struct {
 	// default is 2 and the supported range is 0–6. Set-but-unparseable yields
 	// a Load() error.
 	PoolSize int
+	// ModelCatalogRefreshInterval is the pool-owned rediscovery cadence. Zero
+	// disables only scheduling; warmup, lazy healing, and manual refresh remain.
+	ModelCatalogRefreshInterval time.Duration
 	// KiroWorkerMaxTurns is the number of successful session/new calls a warm
 	// pool worker may serve before scheduled process recycling. Zero disables.
 	KiroWorkerMaxTurns            int
@@ -608,6 +611,17 @@ func Load() (Config, error) {
 	}
 	if verr := validatePoolSize("POOL_SIZE", poolSize); verr != nil {
 		errs = append(errs, verr)
+	}
+
+	modelCatalogRefreshSec, err := getEnvInt("MODEL_CATALOG_REFRESH_INTERVAL_SEC", 900)
+	if err != nil {
+		errs = append(errs, err)
+	}
+	if modelCatalogRefreshSec != 0 && (modelCatalogRefreshSec < 60 || modelCatalogRefreshSec > 86400) {
+		errs = append(errs, fmt.Errorf(
+			"MODEL_CATALOG_REFRESH_INTERVAL_SEC: must be 0 or in [60,86400], got %d",
+			modelCatalogRefreshSec,
+		))
 	}
 
 	maxWorkerTurns, err := getEnvInt("KIRO_WORKER_MAX_TURNS", 0)
@@ -1078,6 +1092,7 @@ func Load() (Config, error) {
 		AuthToken:                     authTokens,
 		AllowedIPs:                    allowedIPs,
 		PoolSize:                      poolSize,
+		ModelCatalogRefreshInterval:   time.Duration(modelCatalogRefreshSec) * time.Second,
 		KiroWorkerMaxTurns:            maxWorkerTurns,
 		KiroWorkerIdleRecycleAfter:    workerIdleRecycleAfter,
 		KiroWorkerIdleRecycleMemoryMB: workerIdleRecycleMemoryMB,
