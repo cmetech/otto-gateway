@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -11,13 +12,19 @@ import (
 )
 
 type fakeModelCatalogSource struct {
-	view   ModelCatalogView
-	result ModelCatalogActionResult
+	view         ModelCatalogView
+	result       ModelCatalogActionResult
+	refreshCalls *int
 }
 
 func (f fakeModelCatalogSource) Snapshot() ModelCatalogView { return f.view }
 
-func (f fakeModelCatalogSource) Refresh(context.Context) ModelCatalogActionResult { return f.result }
+func (f fakeModelCatalogSource) Refresh(context.Context) ModelCatalogActionResult {
+	if f.refreshCalls != nil {
+		*f.refreshCalls = *f.refreshCalls + 1
+	}
+	return f.result
+}
 
 func TestModelCatalogAPI_GETSanitizesView(t *testing.T) {
 	local := time.Date(2026, 8, 13, 15, 4, 5, 0, time.FixedZone("operator", -4*60*60))
@@ -174,6 +181,55 @@ func TestModelCatalogAPI_POSTRejectsExplicitCrossOriginBrowserRequests(t *testin
 			}
 			if tc.want == http.StatusForbidden && strings.Contains(rec.Body.String(), "refresh completed") {
 				t.Fatalf("forbidden response called or exposed source: %s", rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestModelCatalogAPI_POSTStrictlyValidatesOriginBeforeRefresh(t *testing.T) {
+	cases := []struct {
+		name      string
+		origin    string
+		host      string
+		https     bool
+		want      int
+		wantCalls int
+	}{
+		{name: "matching origin", origin: "http://example.com", host: "example.com", want: http.StatusOK, wantCalls: 1},
+		{name: "host case is canonical", origin: "HTTP://EXAMPLE.COM", host: "example.com", want: http.StatusOK, wantCalls: 1},
+		{name: "default http port is equivalent", origin: "http://example.com:80", host: "example.com", want: http.StatusOK, wantCalls: 1},
+		{name: "default https port is equivalent", origin: "https://example.com", host: "EXAMPLE.COM:443", https: true, want: http.StatusOK, wantCalls: 1},
+		{name: "non-default port", origin: "http://example.com:8080", host: "example.com", want: http.StatusForbidden},
+		{name: "same host different scheme", origin: "https://example.com", host: "example.com", want: http.StatusForbidden},
+		{name: "path", origin: "http://example.com/not-an-origin", host: "example.com", want: http.StatusForbidden},
+		{name: "bare trailing slash", origin: "http://example.com/", host: "example.com", want: http.StatusForbidden},
+		{name: "query", origin: "http://example.com?not-an-origin", host: "example.com", want: http.StatusForbidden},
+		{name: "userinfo", origin: "http://operator@example.com", host: "example.com", want: http.StatusForbidden},
+		{name: "fragment", origin: "http://example.com#not-an-origin", host: "example.com", want: http.StatusForbidden},
+		{name: "opaque", origin: "http:example.com", host: "example.com", want: http.StatusForbidden},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			src := fakeModelCatalogSource{
+				result:       ModelCatalogActionResult{Message: "refresh completed"},
+				refreshCalls: &calls,
+			}
+			h := Handler(Deps{ModelCatalog: src})
+			req := httptest.NewRequest(http.MethodPost, "/api/model-catalog/refresh", nil)
+			req.Host = tc.host
+			if tc.https {
+				req.TLS = &tls.ConnectionState{}
+			}
+			req.Header.Set("Origin", tc.origin)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+
+			if rec.Code != tc.want {
+				t.Fatalf("POST origin=%q host=%q https=%t status = %d; want %d; body=%s", tc.origin, tc.host, tc.https, rec.Code, tc.want, rec.Body.String())
+			}
+			if calls != tc.wantCalls {
+				t.Fatalf("Refresh calls = %d; want %d", calls, tc.wantCalls)
 			}
 		})
 	}

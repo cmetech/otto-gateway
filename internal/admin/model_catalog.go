@@ -267,11 +267,85 @@ func rejectCrossOriginModelCatalogRequest(r *http.Request) bool {
 	if origin == "" {
 		return false
 	}
-	parsed, err := url.Parse(origin)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.Host != r.Host {
+	requestOrigin, ok := requestModelCatalogOrigin(r)
+	if !ok {
+		return true
+	}
+	providedOrigin, ok := parseModelCatalogOrigin(origin)
+	if !ok || providedOrigin != requestOrigin {
 		return true
 	}
 	return false
+}
+
+// modelCatalogOrigin is the normalized comparison form of a serialized web
+// origin. The port is always explicit so default-port equivalence is safe.
+type modelCatalogOrigin struct {
+	scheme string
+	host   string
+	port   string
+}
+
+func requestModelCatalogOrigin(r *http.Request) (modelCatalogOrigin, bool) {
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	host, port, ok := modelCatalogHostPort(r.Host, scheme)
+	if !ok {
+		return modelCatalogOrigin{}, false
+	}
+	return modelCatalogOrigin{scheme: scheme, host: host, port: port}, true
+}
+
+// parseModelCatalogOrigin accepts only a serialized web origin. In particular,
+// it rejects a bare trailing slash because serialized Origin header values have
+// no path, along with userinfo, query, fragment, and opaque URL forms.
+func parseModelCatalogOrigin(value string) (modelCatalogOrigin, bool) {
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Opaque != "" || parsed.User != nil || parsed.Path != "" || parsed.RawPath != "" || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" {
+		return modelCatalogOrigin{}, false
+	}
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return modelCatalogOrigin{}, false
+	}
+	host, port, ok := modelCatalogHostPort(parsed.Host, scheme)
+	if !ok {
+		return modelCatalogOrigin{}, false
+	}
+	return modelCatalogOrigin{scheme: scheme, host: host, port: port}, true
+}
+
+func modelCatalogHostPort(hostport, scheme string) (host, port string, ok bool) {
+	parsed, err := url.Parse("//" + hostport)
+	if err != nil || parsed.Host != hostport || parsed.User != nil || parsed.Path != "" || parsed.RawPath != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", "", false
+	}
+	host = strings.ToLower(parsed.Hostname())
+	if host == "" {
+		return "", "", false
+	}
+	port = parsed.Port()
+	if modelCatalogHasExplicitPort(hostport) && port == "" {
+		return "", "", false
+	}
+	if port == "" {
+		if scheme == "https" {
+			port = "443"
+		} else {
+			port = "80"
+		}
+	}
+	return host, port, true
+}
+
+func modelCatalogHasExplicitPort(hostport string) bool {
+	if strings.HasPrefix(hostport, "[") {
+		closingBracket := strings.LastIndex(hostport, "]")
+		return closingBracket >= 0 && len(hostport) > closingBracket+1 && hostport[closingBracket+1] == ':'
+	}
+	return strings.Count(hostport, ":") == 1
 }
 
 func writeModelCatalogJSON(w http.ResponseWriter, status int, value any, h *handler) {
