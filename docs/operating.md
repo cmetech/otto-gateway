@@ -413,6 +413,7 @@ above — this table is the underlying contract every knob maps to.
 | `KIRO_CHAT_LOG_FILE` | `$GW_HOME/logs/kiro-chat.log` | Native Kiro log destination. The gateway creates its parent directory and passes this path to every pooled or dedicated Kiro child. |
 | `KIRO_LOG_LEVEL` | `INFO` | Native Kiro file-log level passed to every pooled and dedicated child. Supported values are `ERROR`, `WARN`, `INFO`, `DEBUG`, and `TRACE` (case-insensitive); any other non-empty value fails startup. Override it in `overrides.env` and restart. This is independent of the gateway's `DEBUG` setting. |
 | `POOL_SIZE` | `2` (binary and laptop wrapper default) | Number of warm kiro-cli subprocesses kept in the pool. Accepts `0`–`6`. The laptop wrapper template (`scripts/.env.example`, copied to `.env` by `gw init`/`upgrade-env`) uses `2`, sized for single-user laptops; shared hosts may raise it only through `6` in `overrides.env`, which `gw upgrade-env` never touches. |
+| `MODEL_CATALOG_REFRESH_INTERVAL_SEC` | `900` (15 minutes) | Scheduled rediscovery cadence for the selectable-model catalog. `0` disables scheduled refresh only; a dashboard or HTTP manual refresh remains available. Nonzero values must be `60`–`86400`; any other value fails startup. Restart after changing it. Scheduled refresh skips immediately instead of waiting when no pool worker is idle. Each probe is bounded to 10 seconds; manual refresh has a 30-second cooldown. Valid additions publish immediately, while removals require two matching valid observations of the reduced set. Empty, malformed, busy, timed-out, cancelled, or failed observations retain the current catalog. |
 | `KIRO_WORKER_MAX_TURNS` | `0` (binary default; disabled) | Successful pool-worker `session/new` calls before scheduled process recycling — bounds per-process memory/context growth independent of the context-usage-triggered session recycle. The laptop wrapper template sets `20`; shared hosts override in `overrides.env`. Accepts `0`–`10000`; negative or out-of-range values cause a boot error. Caveat: with `POOL_SIZE=1` a scheduled recycle takes the pool's only worker offline while its replacement respawns in the background, so pool status transiently reports `down`/unhealthy until the respawn completes; run `POOL_SIZE >= 2` when recycling is enabled so recycles stay invisible to callers. Concurrent scheduled recycles are serialized — at most one worker is down for maintenance at a time — so a `POOL_SIZE >= 2` pool never recycles all its workers at once (a worker crossing the threshold while a recycle is in flight defers and keeps serving). |
 | `KIRO_WORKER_IDLE_RECYCLE_MS` | `0` (binary default; disabled) | Completed-user-request idle duration before a free, user-used, high-memory pool worker becomes eligible for eager replacement. The laptop wrapper template sets `900000` (15 minutes); millisecond integers and Go duration strings are accepted. `0` is the sole disable switch, and negative durations cause a boot error. The idle and memory conditions are conjunctive: idle must be greater than or equal to this duration and direct process memory must be strictly above `KIRO_WORKER_IDLE_RECYCLE_MEMORY_MB`. |
 | `KIRO_WORKER_IDLE_RECYCLE_MEMORY_MB` | `500` (binary and laptop wrapper default) | Direct Kiro process RSS/working-set threshold in MiB. The policy samples only the direct `kiro-cli` process, not its descendant-process tree, and recycles only when the sample is strictly greater than this value; equality does not qualify. Linux and Windows support sampling. macOS reports it unavailable, so idle-memory recycling is a no-op there even when configured. Values must be positive and no greater than `1048576` MiB. Eligible workers are removed from the free queue and replaced eagerly in the background; scheduled replacements across max-turn and idle-memory reasons are serialized so at most one recycle is in flight, while deferred workers remain available and are reconsidered later. |
@@ -703,9 +704,43 @@ served from `embed.FS` (single static binary; no external runtime deps).
 |------|---------|
 | `GET /admin` | The HTML page (renders summary strip, pool slots grid, active sessions table, log tail panel) |
 | `GET /admin/api/snapshot` | Unified JSON snapshot composing pool + registry detail (polled client-side every 30s) |
+| `GET /admin/api/model-catalog` | Sanitized current model-catalog snapshot: selectable models, generation, and refresh state. |
+| `POST /admin/api/model-catalog/refresh` | Request one safe manual model-catalog refresh. A response can report that refresh is in progress, rate-limited, unavailable, or no worker is idle; the current catalog is retained in those cases. |
 | `GET /admin/logs/stream` | SSE stream for an allowlisted Gateway, boot, Kiro, or enabled chat-trace source. Emits browser-safe source status, up to 500 recent complete records on the tailer's first successful open, then live records and keepalives. |
 | `GET /admin/static/*` | Embedded CSS + JS assets |
 | `GET /admin/api/acp-capture` | Track 0 raw-frame capture ring (see [ACP raw-frame capture](#acp-raw-frame-capture-diagnostic) below) |
+
+### Inspect and refresh the model catalog
+
+Open `http://127.0.0.1:18080/admin/#model-catalog` to inspect the main-dashboard
+table. It shows the published selectable models, the last successful refresh,
+the next scheduled attempt, and the effective interval. Select **Refresh now**
+when you need to request one manual observation. It is safe to use while
+scheduled refresh is disabled; if no worker is idle, another refresh is running,
+or the manual cooldown applies, the dashboard reports the outcome and retains the
+currently published catalog.
+
+For command-line inspection or automation, use the same admin port. These
+headerless requests are supported for operator clients:
+
+```bash
+# POSIX: inspect the current sanitized snapshot, then request one refresh.
+curl -sS http://127.0.0.1:18080/admin/api/model-catalog | jq
+curl -sS -X POST http://127.0.0.1:18080/admin/api/model-catalog/refresh | jq
+```
+
+```powershell
+# PowerShell: inspect the current sanitized snapshot, then request one refresh.
+Invoke-RestMethod http://127.0.0.1:18080/admin/api/model-catalog |
+  ConvertTo-Json -Depth 8
+Invoke-RestMethod -Method Post http://127.0.0.1:18080/admin/api/model-catalog/refresh |
+  ConvertTo-Json -Depth 8
+```
+
+The service adds valid new models immediately. It removes a missing model only
+after two matching valid observations of the same reduced set, so a single bad
+observation cannot remove it. Busy, empty, malformed, timed-out, cancelled, or
+failed observations retain the current catalog.
 
 ### ACP raw-frame capture (diagnostic)
 

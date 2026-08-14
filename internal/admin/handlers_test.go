@@ -425,6 +425,61 @@ func TestAdmin_DocsEnvTable_KiroLogLevel(t *testing.T) {
 	}
 }
 
+func TestAdmin_ModelCatalogAboutAndDocs(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	get := func(t *testing.T, deps Deps, path string) string {
+		t.Helper()
+		h := Handler(deps)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s: want 200, got %d", path, rec.Code)
+		}
+		return rec.Body.String()
+	}
+
+	base := Deps{
+		Logger:                      testutil.Logger(t),
+		Version:                     "1.2.3",
+		Commit:                      "abc1234",
+		ModelCatalogRefreshInterval: 15 * time.Minute,
+	}
+	about := get(t, base, "/about")
+	for _, want := range []string{
+		"<dt>Model catalog refresh</dt><dd>15m0s",
+		`href="/admin/#model-catalog"`,
+	} {
+		if !strings.Contains(about, want) {
+			t.Errorf("/about missing %q", want)
+		}
+	}
+
+	disabled := base
+	disabled.ModelCatalogRefreshInterval = 0
+	if body := get(t, disabled, "/about"); !strings.Contains(body, "<dt>Model catalog refresh</dt><dd>disabled") {
+		t.Error("/about with zero interval missing model catalog disabled state")
+	}
+
+	docs := get(t, base, "/docs")
+	for _, want := range []string{
+		"MODEL_CATALOG_REFRESH_INTERVAL_SEC",
+		">900 (15m)<",
+		"0 disables scheduled refresh",
+		"restart",
+		"10 seconds",
+		"30 seconds",
+		"two matching valid observations",
+		"/admin/api/model-catalog",
+		"/admin/api/model-catalog/refresh",
+	} {
+		if !strings.Contains(docs, want) {
+			t.Errorf("/docs missing %q", want)
+		}
+	}
+}
+
 // TestAdmin_StaticServes verifies GET /static/css/admin.css returns 200
 // with the correct content type and expected CSS custom property.
 func TestAdmin_StaticServes(t *testing.T) {

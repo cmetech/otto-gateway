@@ -1251,6 +1251,7 @@ func newAppWithRuntimeFactories(
 		// truth for "is this knob on?").
 		HTTPAddr:                       cfg.HTTPAddr,
 		PoolSize:                       cfg.PoolSize,
+		ModelCatalogRefreshInterval:    cfg.ModelCatalogRefreshInterval,
 		SessionTTL:                     cfg.SessionTTL,
 		StreamIdleTimeoutSec:           cfg.StreamIdleTimeoutSec,
 		AuthEnabled:                    len(cfg.AuthToken) > 0,

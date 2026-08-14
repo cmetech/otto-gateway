@@ -381,6 +381,24 @@ HTTP_ADDR=:11434 ./scripts/gw restart    # take over the Ollama default port
 
 or persist via `HTTP_ADDR=127.0.0.1:11434` in your `.env`.
 
+### Inspect and refresh the live model catalog
+
+Open `http://127.0.0.1:18080/admin/#model-catalog`. The main-dashboard table
+shows the selectable models currently published by the gateway, its last
+successful refresh, its next attempt, and its effective schedule. Choose
+**Refresh now** to request a manual refresh without restarting the gateway.
+
+The default scheduled interval is 15 minutes. To change it, set
+`MODEL_CATALOG_REFRESH_INTERVAL_SEC` in `.env` or `overrides.env`, then restart:
+`0` disables scheduled refresh only, while a manual refresh remains available;
+nonzero values must be from `60` through `86400` seconds.
+
+If a worker is busy or an observation fails, the current table stays in place.
+New valid models appear immediately, but a model missing from one observation is
+not removed: removal needs two matching valid observations of the reduced set.
+Use the [operating reference](operating.md#inspect-and-refresh-the-model-catalog)
+for POSIX and PowerShell HTTP commands and the full timing behavior.
+
 ---
 
 ## Logs

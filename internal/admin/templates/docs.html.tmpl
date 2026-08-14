@@ -27,6 +27,13 @@
   </section>
 
   <section class="gw-card">
+    <h2 class="gw-h2">Model catalog refresh</h2>
+    <p>The main <a href="/admin/#model-catalog">Dashboard model catalog</a> lists the selectable models currently published by the gateway. Its interval is read at startup from <code>MODEL_CATALOG_REFRESH_INTERVAL_SEC</code>: the default is <code>900</code> seconds; <code>0</code> disables scheduled refresh only; nonzero values must be from <code>60</code> through <code>86400</code>. Restart the gateway after changing the interval. The About page shows the effective duration or <code>disabled</code>.</p>
+    <p>A scheduled refresh never waits for a busy worker: it skips immediately when no pool worker is idle. Each catalog probe is bounded to 10 seconds. A dashboard or HTTP manual refresh remains available when scheduled refresh is disabled, but a second manual request is rate-limited for 30 seconds after the prior manual refresh.</p>
+    <p>Valid newly observed models are added immediately. A missing model is removed only after two matching valid observations of the reduced set. Empty, malformed, busy, timed-out, cancelled, or failed observations retain the current catalog, so one bad observation does not remove a model.</p>
+  </section>
+
+  <section class="gw-card">
     <h2 class="gw-h2">Files &amp; paths</h2>
     <h3 class="gw-h3">Install anchors</h3>
     <dl class="gw-about-dl">
@@ -208,6 +215,8 @@ curl -sf http://127.0.0.1:18080/health/hooks | jq    # confirm PIIRedactionHook 
       <li><code>GET /admin/about</code> — About page</li>
       <li><code>GET /admin/docs</code> — This page</li>
       <li><code>GET /admin/api/snapshot</code> — Unified pool + session JSON</li>
+      <li><code>GET /admin/api/model-catalog</code> — Current sanitized model-catalog snapshot, including refresh state and schedule</li>
+      <li><code>POST /admin/api/model-catalog/refresh</code> — Request one safe manual catalog refresh; use the response outcome and retry timing when a refresh is already running, rate-limited, or no worker is idle</li>
       <li><code>GET /admin/api/acp-capture</code> — ACP capture ring JSON (404 unless <code>ACP_CAPTURE</code> wired; SENSITIVE)</li>
       <li><code>POST /admin/api/acp-capture</code> — Runtime enable/disable/clear of the capture ring (403 unless <code>ACP_CAPTURE_RUNTIME=true</code>)</li>
       <li><code>GET /admin/logs/stream?source=&lt;name&gt;</code> — SSE log tail</li>

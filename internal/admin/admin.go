@@ -189,16 +189,20 @@ type Deps struct {
 	// /admin/about page (aboutHandler builds AboutData from these). All fields
 	// are read-only snapshots taken at admin.Handler wire-up time; the admin
 	// package never mutates them and never imports internal/config (TRST-04).
-	HTTPAddr             string
-	PoolSize             int
-	SessionTTL           time.Duration
-	StreamIdleTimeoutSec int
-	AuthEnabled          bool
-	IPAllowlistEnabled   bool
-	KiroCmd              string
-	KiroArgs             []string
-	KiroCwd              string
-	KiroLogLevel         string
+	HTTPAddr string
+	PoolSize int
+	// ModelCatalogRefreshInterval is the effective rediscovery cadence captured
+	// at startup. Zero disables scheduled refresh only; manual refresh remains
+	// available through the model catalog dashboard and admin API.
+	ModelCatalogRefreshInterval time.Duration
+	SessionTTL                  time.Duration
+	StreamIdleTimeoutSec        int
+	AuthEnabled                 bool
+	IPAllowlistEnabled          bool
+	KiroCmd                     string
+	KiroArgs                    []string
+	KiroCwd                     string
+	KiroLogLevel                string
 	// KiroWorkerMaxTurns is a read-only snapshot of cfg.KiroWorkerMaxTurns
 	// (KIRO_WORKER_MAX_TURNS) — the number of successful pool-worker
 	// session/new calls before scheduled process recycling. 0 disables
@@ -412,27 +416,28 @@ func (h *handler) dashboardHandler(w http.ResponseWriter, r *http.Request) {
 // (StreamIdleDisplay, SessionTTL stringification) are substituted in
 // aboutHandler so the template stays presentation-only.
 type aboutData struct {
-	TabActive            string
-	PageTitle            string
-	Version              string
-	Commit               string
-	GatewayID            string
-	GoVersion            string
-	GOOS                 string
-	GOARCH               string
-	StartedAt            string
-	HTTPAddr             string
-	PoolSize             int
-	SessionTTL           string
-	StreamIdleTimeoutSec int
-	StreamIdleDisplay    string
-	AuthEnabled          bool
-	IPAllowlistEnabled   bool
-	Debug                bool
-	ChatTrace            bool
-	KiroCmd              string
-	KiroArgs             string
-	KiroCwd              string
+	TabActive                   string
+	PageTitle                   string
+	Version                     string
+	Commit                      string
+	GatewayID                   string
+	GoVersion                   string
+	GOOS                        string
+	GOARCH                      string
+	StartedAt                   string
+	HTTPAddr                    string
+	PoolSize                    int
+	ModelCatalogRefreshInterval string
+	SessionTTL                  string
+	StreamIdleTimeoutSec        int
+	StreamIdleDisplay           string
+	AuthEnabled                 bool
+	IPAllowlistEnabled          bool
+	Debug                       bool
+	ChatTrace                   bool
+	KiroCmd                     string
+	KiroArgs                    string
+	KiroCwd                     string
 
 	// AcpCaptureEnabled mirrors whether ACP_CAPTURE is on. Populated by
 	// aboutHandler from Deps.AcpCapture != nil — the canonical "capture
@@ -522,6 +527,10 @@ func (h *handler) aboutHandler(w http.ResponseWriter, r *http.Request) {
 	if !h.deps.Start.IsZero() {
 		startedAt = h.deps.Start.Format(time.RFC3339)
 	}
+	modelCatalogRefreshInterval := "disabled"
+	if h.deps.ModelCatalogRefreshInterval > 0 {
+		modelCatalogRefreshInterval = h.deps.ModelCatalogRefreshInterval.String()
+	}
 
 	// PII view-model assembly. EncryptActive mirrors the predicate from
 	// internal/plugin/pii (mode==encrypt OR any per-entity override is
@@ -557,29 +566,30 @@ func (h *handler) aboutHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := aboutData{
-		TabActive:            "about",
-		PageTitle:            "About",
-		Version:              h.deps.Version,
-		Commit:               h.deps.Commit,
-		GatewayID:            h.deps.GatewayID,
-		GoVersion:            runtime.Version(),
-		GOOS:                 runtime.GOOS,
-		GOARCH:               runtime.GOARCH,
-		StartedAt:            startedAt,
-		HTTPAddr:             h.deps.HTTPAddr,
-		PoolSize:             h.deps.PoolSize,
-		SessionTTL:           h.deps.SessionTTL.String(),
-		StreamIdleTimeoutSec: h.deps.StreamIdleTimeoutSec,
-		StreamIdleDisplay:    streamIdleDisplay,
-		AuthEnabled:          h.deps.AuthEnabled,
-		IPAllowlistEnabled:   h.deps.IPAllowlistEnabled,
-		Debug:                h.deps.Debug,
-		ChatTrace:            h.deps.ChatTrace,
-		AcpCaptureEnabled:    h.deps.AcpCapture != nil && h.deps.AcpCapture.Enabled(),
-		CompressionState:     h.compressionState(),
-		KiroCmd:              kiroCmd,
-		KiroArgs:             kiroArgs,
-		KiroCwd:              kiroCwd,
+		TabActive:                   "about",
+		PageTitle:                   "About",
+		Version:                     h.deps.Version,
+		Commit:                      h.deps.Commit,
+		GatewayID:                   h.deps.GatewayID,
+		GoVersion:                   runtime.Version(),
+		GOOS:                        runtime.GOOS,
+		GOARCH:                      runtime.GOARCH,
+		StartedAt:                   startedAt,
+		HTTPAddr:                    h.deps.HTTPAddr,
+		PoolSize:                    h.deps.PoolSize,
+		ModelCatalogRefreshInterval: modelCatalogRefreshInterval,
+		SessionTTL:                  h.deps.SessionTTL.String(),
+		StreamIdleTimeoutSec:        h.deps.StreamIdleTimeoutSec,
+		StreamIdleDisplay:           streamIdleDisplay,
+		AuthEnabled:                 h.deps.AuthEnabled,
+		IPAllowlistEnabled:          h.deps.IPAllowlistEnabled,
+		Debug:                       h.deps.Debug,
+		ChatTrace:                   h.deps.ChatTrace,
+		AcpCaptureEnabled:           h.deps.AcpCapture != nil && h.deps.AcpCapture.Enabled(),
+		CompressionState:            h.compressionState(),
+		KiroCmd:                     kiroCmd,
+		KiroArgs:                    kiroArgs,
+		KiroCwd:                     kiroCwd,
 
 		PIIRedactionEnabled:    h.deps.PIIRedactionEnabled,
 		PIIRedactionMode:       h.deps.PIIRedactionMode,
@@ -838,6 +848,10 @@ func (h *handler) docsHandler(w http.ResponseWriter, r *http.Request) {
 	if h.deps.StreamIdleTimeoutSec != 0 {
 		streamIdleCurrent = fmt.Sprintf("%ds", h.deps.StreamIdleTimeoutSec)
 	}
+	modelCatalogRefreshCurrent := "disabled"
+	if h.deps.ModelCatalogRefreshInterval > 0 {
+		modelCatalogRefreshCurrent = h.deps.ModelCatalogRefreshInterval.String()
+	}
 	chatTraceFileCurrent := h.deps.ChatTraceFile
 	if !h.deps.ChatTrace {
 		chatTraceFileCurrent = "(disabled — CHAT_TRACE=false)"
@@ -873,6 +887,12 @@ func (h *handler) docsHandler(w http.ResponseWriter, r *http.Request) {
 			Default:      "2",
 			Description:  "Number of warm kiro-cli subprocesses kept in the pool. Accepts 0–6.",
 			CurrentValue: strconv.Itoa(h.deps.PoolSize),
+		},
+		{
+			Name:         "MODEL_CATALOG_REFRESH_INTERVAL_SEC",
+			Default:      "900 (15m)",
+			Description:  "Scheduled model-catalog rediscovery cadence in seconds. 0 disables scheduled refresh only; nonzero values must be 60–86400. Restart after changing it. Scheduled probes skip immediately when no worker is idle; manual refresh remains available.",
+			CurrentValue: modelCatalogRefreshCurrent,
 		},
 		{Name: "SESSION_TTL_MS", Default: "1800000 (30m)", Description: "Idle stateful-session reap threshold. Accepts ms-integer (Node parity) or Go duration string.", CurrentValue: h.deps.SessionTTL.String()},
 		{Name: "STREAM_IDLE_TIMEOUT_SEC", Default: "30", Description: "Server-side idle-stream watchdog (0 disables, negative = boot error).", CurrentValue: streamIdleCurrent},
