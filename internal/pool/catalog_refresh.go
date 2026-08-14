@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"time"
+
+	"otto-gateway/internal/canonical"
 )
 
 var (
@@ -44,7 +46,11 @@ type catalogRefreshAdmission struct {
 // CatalogSnapshot returns a defensive view of the published model catalog and
 // refresh lifecycle.
 func (p *Pool) CatalogSnapshot() ModelCatalogSnapshot {
-	return p.catalog.snapshot()
+	snapshot := p.catalog.snapshot()
+	p.catalogScheduleMu.RLock()
+	snapshot.NextAttemptAt = p.catalogNextAttempt
+	p.catalogScheduleMu.RUnlock()
+	return snapshot
 }
 
 // RefreshModelCatalog performs one operator-requested refresh using an
@@ -66,39 +72,71 @@ func (p *Pool) refreshModelCatalog(ctx context.Context, source catalogRefreshSou
 // section as the closed-state decision.
 func (p *Pool) admitCatalogRefresh(source catalogRefreshSource) (catalogRefreshAdmission, error) {
 	now := p.catalogNow()
+	manualAdmissionLocked := false
 	if source == catalogRefreshManual {
 		p.catalogManualMu.Lock()
-		lastManual := p.catalogLastManual
-		p.catalogManualMu.Unlock()
-		if !lastManual.IsZero() {
-			elapsed := now.Sub(lastManual)
-			if elapsed < catalogManualCooldown {
-				retryAfter := catalogManualCooldown - elapsed
-				if retryAfter > catalogManualCooldown {
-					retryAfter = catalogManualCooldown
-				}
-				return catalogRefreshAdmission{}, &CatalogRefreshError{Kind: ErrCatalogRefreshCooldown, RetryAfter: retryAfter}
+		manualAdmissionLocked = true
+		if err := p.manualCooldownErrorLocked(now); err != nil {
+			p.catalogManualMu.Unlock()
+			return catalogRefreshAdmission{}, err
+		}
+		if p.catalogManualCooldownHook != nil {
+			// The test barrier recreates the historical stale-read window. The
+			// second check after reacquiring the admission lock is load-bearing.
+			p.catalogManualMu.Unlock()
+			manualAdmissionLocked = false
+			p.catalogManualCooldownHook()
+			p.catalogManualMu.Lock()
+			manualAdmissionLocked = true
+			if err := p.manualCooldownErrorLocked(now); err != nil {
+				p.catalogManualMu.Unlock()
+				return catalogRefreshAdmission{}, err
 			}
 		}
 	}
 	if !p.catalogProbing.CompareAndSwap(false, true) {
+		if manualAdmissionLocked {
+			p.catalogManualMu.Unlock()
+		}
 		return catalogRefreshAdmission{}, &CatalogRefreshError{Kind: ErrCatalogRefreshInProgress, RetryAfter: catalogProbeTimeout}
 	}
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
 		p.catalogProbing.Store(false)
+		if manualAdmissionLocked {
+			p.catalogManualMu.Unlock()
+		}
 		return catalogRefreshAdmission{}, &CatalogRefreshError{Kind: ErrCatalogRefreshUnavailable, RetryAfter: catalogBusyRetryAfter}
 	}
 	p.probeWG.Add(1)
 	if source == catalogRefreshManual {
-		p.catalogManualMu.Lock()
 		p.catalogLastManual = now
-		p.catalogManualMu.Unlock()
 	}
 	p.mu.Unlock()
+	if manualAdmissionLocked {
+		p.catalogManualMu.Unlock()
+	}
 	p.catalog.setInProgress(true)
 	return catalogRefreshAdmission{source: source, attemptAt: now}, nil
+}
+
+// manualCooldownErrorLocked evaluates the operator-action cooldown while the
+// caller owns catalogManualMu. The successful admission path keeps that mutex
+// held through the single-flight decision and timestamp commit.
+func (p *Pool) manualCooldownErrorLocked(now time.Time) error {
+	if p.catalogLastManual.IsZero() {
+		return nil
+	}
+	elapsed := now.Sub(p.catalogLastManual)
+	if elapsed >= catalogManualCooldown {
+		return nil
+	}
+	retryAfter := catalogManualCooldown - elapsed
+	if retryAfter > catalogManualCooldown {
+		retryAfter = catalogManualCooldown
+	}
+	return &CatalogRefreshError{Kind: ErrCatalogRefreshCooldown, RetryAfter: retryAfter}
 }
 
 func (p *Pool) runCatalogRefresh(ctx context.Context, admission catalogRefreshAdmission) (result CatalogRefreshResult, err error) {
@@ -154,8 +192,20 @@ func (p *Pool) runCatalogRefresh(ctx context.Context, admission catalogRefreshAd
 		return result, returnedErr
 	}
 
-	result, err = p.catalog.reconcile(models, admission.attemptAt)
+	result, err = p.reconcileCatalog(models, admission.attemptAt)
 	p.logCatalogRefresh(admission.source, result, time.Since(started))
+	return result, err
+}
+
+// reconcileCatalog prevents observation metadata from moving the independent
+// scheduler deadline. The read lock serializes the reconcile/restore pair
+// against a scheduled tick publishing its next deadline.
+func (p *Pool) reconcileCatalog(models []canonical.ModelInfo, at time.Time) (CatalogRefreshResult, error) {
+	p.catalogScheduleMu.RLock()
+	nextAttempt := p.catalogNextAttempt
+	result, err := p.catalog.reconcile(models, at)
+	p.catalog.setNextAttempt(nextAttempt)
+	p.catalogScheduleMu.RUnlock()
 	return result, err
 }
 
@@ -169,6 +219,7 @@ func (p *Pool) startCatalogScheduler() {
 		return
 	}
 	p.catalogSchedulerOnce.Do(func() {
+		p.setCatalogNextAttempt(p.catalogNow().Add(p.cfg.ModelCatalogRefreshInterval))
 		p.catalogSchedulerWG.Add(1)
 		go p.catalogRefreshLoop()
 	})
@@ -184,13 +235,31 @@ func (p *Pool) catalogRefreshLoop() {
 		defer ticker.Stop()
 	}
 	for {
+		if p.catalogSchedulerParked != nil {
+			select {
+			case p.catalogSchedulerParked <- struct{}{}:
+			case <-p.closing:
+				return
+			}
+		}
 		select {
-		case <-ticks:
+		case tickAt, ok := <-ticks:
+			if !ok {
+				return
+			}
+			p.setCatalogNextAttempt(tickAt.Add(p.cfg.ModelCatalogRefreshInterval))
 			_, _ = p.refreshModelCatalog(context.Background(), catalogRefreshScheduled)
 		case <-p.closing:
 			return
 		}
 	}
+}
+
+func (p *Pool) setCatalogNextAttempt(at time.Time) {
+	p.catalogScheduleMu.Lock()
+	p.catalogNextAttempt = at
+	p.catalog.setNextAttempt(at)
+	p.catalogScheduleMu.Unlock()
 }
 
 func (p *Pool) logCatalogRefresh(source catalogRefreshSource, result CatalogRefreshResult, duration time.Duration) {
@@ -215,7 +284,12 @@ func (s *catalogStore) recordRefreshOutcome(outcome CatalogOutcome, at time.Time
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.lastAttemptAt = at
-	s.nextAttemptAt = nextCatalogAttempt(at, s.interval)
 	s.lastOutcome = outcome
 	return s.resultLocked(outcome, len(s.models), 0)
+}
+
+func (s *catalogStore) setNextAttempt(at time.Time) {
+	s.mu.Lock()
+	s.nextAttemptAt = at
+	s.mu.Unlock()
 }

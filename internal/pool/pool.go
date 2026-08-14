@@ -225,8 +225,9 @@ type Pool struct {
 	catalogNow func() time.Time
 	// catalogManualMu guards the last admitted manual probe timestamp used for
 	// the operator-action cooldown.
-	catalogManualMu   sync.Mutex
-	catalogLastManual time.Time
+	catalogManualMu           sync.Mutex
+	catalogLastManual         time.Time
+	catalogManualCooldownHook func()
 
 	// catalogSchedulerOnce starts at most one refresh loop after warmup.
 	catalogSchedulerOnce sync.Once
@@ -234,8 +235,15 @@ type Pool struct {
 	catalogSchedulerLifecycleMu sync.Mutex
 	catalogSchedulerClosing     bool
 	catalogSchedulerWG          sync.WaitGroup
+	// catalogScheduleMu guards the actual next scheduler deadline published in
+	// CatalogSnapshot. Manual and lazy observations never mutate this state.
+	catalogScheduleMu  sync.RWMutex
+	catalogNextAttempt time.Time
 	// catalogRefreshTicks replaces the production ticker in tests.
 	catalogRefreshTicks <-chan time.Time
+	// catalogSchedulerParked is a test-only handshake emitted immediately
+	// before each wait for a tick or shutdown.
+	catalogSchedulerParked chan<- struct{}
 
 	// recycleWG tracks in-flight background recycle goroutines (Task 3) so
 	// Close waits them out (goleak-clean). recycleWG.Add(1) happens INSIDE

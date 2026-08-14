@@ -129,6 +129,19 @@ func (p *Pool) SetCatalogNowForTesting(now func() time.Time) {
 	p.catalogNow = now
 }
 
+// SetCatalogManualCooldownHookForTesting installs a barrier immediately after
+// a manual caller reads cooldown state and before it attempts single-flight
+// admission.
+func (p *Pool) SetCatalogManualCooldownHookForTesting(hook func()) {
+	p.catalogManualCooldownHook = hook
+}
+
+// SetCatalogSchedulerParkedForTesting installs a handshake emitted whenever
+// the scheduler reaches its wait-for-next-tick state.
+func (p *Pool) SetCatalogSchedulerParkedForTesting(parked chan<- struct{}) {
+	p.catalogSchedulerParked = parked
+}
+
 // SetSpawnErrForTesting places the recorded spawn-error fields at a
 // controlled wall-clock instant so SpawnFailing recency tests can exercise
 // both the recent (red) and stale (not-red) branches without waiting real
