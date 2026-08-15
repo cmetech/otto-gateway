@@ -682,8 +682,9 @@ func TestObserveToolCallWrappers(t *testing.T) {
 		{name: "exact hidden wrapper", text: hidden, tools: dispatcher, want: WrapperDispatcherExact},
 		{name: "narrated hidden wrapper", text: "I will look that up now.\n" + hidden, tools: dispatcher, want: WrapperDispatcherEmbedded},
 		{name: "malformed hidden wrapper", text: `{"tool_call":{"name":"deferred_lookup"}}`, tools: dispatcher, want: WrapperMalformed},
+		{name: "narrated truncated hidden wrapper", text: `I will look that up now. {"tool_call":{"name":"deferred_lookup","arguments":{"query":"example`, tools: dispatcher, want: WrapperMalformed},
 		{name: "direct offered wrapper in prose", text: `Calling now: {"tool_call":{"name":"get_weather","arguments":{"location":"Boston"}}}`, tools: direct, want: WrapperDirect},
-		{name: "documentation prose", text: "The tool_call object contains name and arguments fields.", tools: dispatcher, want: WrapperNone},
+		{name: "documentation prose", text: `The "tool_call" object contains name and arguments fields.`, tools: dispatcher, want: WrapperNone},
 		{name: "multiple hidden fragments", text: hidden + "\n" + hidden, tools: dispatcher, want: WrapperMalformed},
 	}
 

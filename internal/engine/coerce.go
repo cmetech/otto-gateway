@@ -353,6 +353,7 @@ func StripFences(text string) (string, bool) {
 // carries a tool name, arguments, or an executable canonical.ToolCall.
 type WrapperDisposition string
 
+// WrapperDisposition values are closed read-only wrapper classifications.
 const (
 	WrapperNone               WrapperDisposition = "none"
 	WrapperDirect             WrapperDisposition = "direct"
@@ -457,7 +458,7 @@ func ObserveToolCallWrappers(text string, tools []canonical.ToolSpec) WrapperDis
 	if len(scan) > maxScanBytes {
 		scan = scan[:maxScanBytes]
 	}
-	if hasWholeResponseToolCallMarker(scan) {
+	if strings.Contains(scan, `{"tool_call"`) {
 		return WrapperMalformed
 	}
 	return WrapperNone

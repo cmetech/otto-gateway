@@ -43,15 +43,20 @@ const (
 	OutcomeBufferBypass ToolProtocolOutcome = "buffer_bypass"
 )
 
+// ToolProtocolContractVersion is the bounded negotiated contract version used
+// in recovery telemetry.
 type ToolProtocolContractVersion string
 
+// ToolProtocolContractVersion values are closed telemetry labels.
 const (
 	ToolProtocolContractNone ToolProtocolContractVersion = "none"
 	ToolProtocolContractV1   ToolProtocolContractVersion = "v1"
 )
 
+// ToolProtocolCallRole is the bounded diagnostic role supplied for a request.
 type ToolProtocolCallRole string
 
+// ToolProtocolCallRole values are closed diagnostic labels.
 const (
 	ToolProtocolCallRoleUnknown     ToolProtocolCallRole = "unknown"
 	ToolProtocolCallRolePrimary     ToolProtocolCallRole = "primary"
@@ -62,15 +67,19 @@ const (
 	ToolProtocolCallRoleAuxiliary   ToolProtocolCallRole = "auxiliary"
 )
 
+// ToolProtocolModelSelection records whether routing was automatic or explicit.
 type ToolProtocolModelSelection string
 
+// ToolProtocolModelSelection values distinguish automatic and explicit routing.
 const (
 	ToolProtocolModelAuto     ToolProtocolModelSelection = "auto"
 	ToolProtocolModelExplicit ToolProtocolModelSelection = "explicit"
 )
 
+// ToolProtocolToolPolicy is the bounded canonical tool-choice policy.
 type ToolProtocolToolPolicy string
 
+// ToolProtocolToolPolicy values describe canonical caller-tool constraints.
 const (
 	ToolProtocolPolicyNone     ToolProtocolToolPolicy = "none"
 	ToolProtocolPolicyOptional ToolProtocolToolPolicy = "optional"
@@ -78,8 +87,10 @@ const (
 	ToolProtocolPolicyNamed    ToolProtocolToolPolicy = "named"
 )
 
+// ToolProtocolCorrectionKind identifies the bounded recovery path taken.
 type ToolProtocolCorrectionKind string
 
+// ToolProtocolCorrectionKind values identify the selected recovery path.
 const (
 	CorrectionNone                ToolProtocolCorrectionKind = "none"
 	CorrectionInitialToolProtocol ToolProtocolCorrectionKind = "initial_tool_protocol"
