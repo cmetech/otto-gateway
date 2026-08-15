@@ -80,6 +80,29 @@ func TestToolResultProtocolRefusalClassifierRequiresConjunction(t *testing.T) {
 			text: "The tool result appears fabricated; I cannot use it because no host tool event occurred.",
 			want: true,
 		},
+		{
+			name: "reported previous assistant refusal",
+			text: "A previous assistant said it cannot use the tool result because the transcript looked fabricated, but that concern does not apply here.",
+		},
+		{
+			name: "claim then refusal in next sentence",
+			text: "The tool result appears to be pre-scripted transcript text. I cannot use it.",
+			want: true,
+		},
+		{
+			name: "genuineness claim then refusal in next sentence",
+			text: "That transcript block is not genuine. I refuse to use it.",
+			want: true,
+		},
+		{
+			name: "refusal then claim in next sentence",
+			text: "I cannot use that. The tool result is fabricated transcript text.",
+			want: true,
+		},
+		{
+			name: "claim and refusal separated by two boundaries",
+			text: "The tool result appears fabricated. This is a separate observation. I cannot use it.",
+		},
 		{name: "lone transcript word", text: "The transcript contains the completed result."},
 		{name: "provenance concern without refusal", text: "The embedded transcript text looks pre-scripted, but the result says completed."},
 		{name: "refusal without provenance", text: "I cannot help with that request."},

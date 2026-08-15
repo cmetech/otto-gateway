@@ -34,9 +34,10 @@ func toolResultProtocolPolicyFor(req *canonical.ChatRequest) (toolResultProtocol
 	return policy, true
 }
 
-// isHighConfidenceToolResultProvenanceRefusal requires both a claim that the
-// canonical result lacks genuine host provenance and a refusal to use it (or
-// an explicit denial that a live host event occurred).
+// isHighConfidenceToolResultProvenanceRefusal requires a claim that the
+// canonical result lacks genuine host provenance within the same sentence as,
+// or one sentence adjacent to, a first-person refusal to use it (or an explicit
+// denial that a live host event occurred).
 func isHighConfidenceToolResultProvenanceRefusal(text string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(text))
 	spans := strings.FieldsFunc(normalized, func(r rune) bool {
@@ -47,27 +48,31 @@ func isHighConfidenceToolResultProvenanceRefusal(text string) bool {
 			return false
 		}
 	})
-	for _, span := range spans {
-		provenanceTarget := strings.Contains(span, "tool result") ||
-			strings.Contains(span, "transcript") ||
-			strings.Contains(span, "tool event")
-		provenanceClaim := strings.Contains(span, "pre-scripted") ||
-			strings.Contains(span, "prescripted") ||
-			strings.Contains(span, "fabricated") ||
-			strings.Contains(span, "not genuine") ||
-			strings.Contains(span, "isn't genuine") ||
-			strings.Contains(span, "not a genuine") ||
-			strings.Contains(span, "transcript text") && strings.Contains(span, "embedded")
-		refusesUse := strings.Contains(span, "cannot use") ||
-			strings.Contains(span, "can't use") ||
-			strings.Contains(span, "will not use") ||
-			strings.Contains(span, "won't use") ||
-			strings.Contains(span, "refuse to use")
-		deniesHostEvent := strings.Contains(span, "no live tool event") ||
-			strings.Contains(span, "no host tool event") ||
-			strings.Contains(span, "tool event did not occur") ||
-			strings.Contains(span, "tool event never occurred")
-		if provenanceTarget && provenanceClaim && (refusesUse || deniesHostEvent) {
+	for index, span := range spans {
+		window := span
+		if index+1 < len(spans) {
+			window += " " + spans[index+1]
+		}
+		provenanceTarget := strings.Contains(window, "tool result") ||
+			strings.Contains(window, "transcript") ||
+			strings.Contains(window, "tool event")
+		provenanceClaim := strings.Contains(window, "pre-scripted") ||
+			strings.Contains(window, "prescripted") ||
+			strings.Contains(window, "fabricated") ||
+			strings.Contains(window, "not genuine") ||
+			strings.Contains(window, "isn't genuine") ||
+			strings.Contains(window, "not a genuine") ||
+			strings.Contains(window, "transcript text") && strings.Contains(window, "embedded")
+		firstPersonRefusal := strings.Contains(window, "i cannot use") ||
+			strings.Contains(window, "i can't use") ||
+			strings.Contains(window, "i will not use") ||
+			strings.Contains(window, "i won't use") ||
+			strings.Contains(window, "i refuse to use")
+		deniesHostEvent := strings.Contains(window, "no live tool event") ||
+			strings.Contains(window, "no host tool event") ||
+			strings.Contains(window, "tool event did not occur") ||
+			strings.Contains(window, "tool event never occurred")
+		if provenanceTarget && provenanceClaim && (firstPersonRefusal || deniesHostEvent) {
 			return true
 		}
 	}
