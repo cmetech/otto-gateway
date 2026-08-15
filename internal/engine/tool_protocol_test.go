@@ -130,6 +130,60 @@ func TestClassifyToolProtocolAttempt_ConservativeRecoveryMatrix(t *testing.T) {
 	}
 }
 
+func TestClassifyToolProtocolAttempt_EmbeddedDispatcherAuthorization(t *testing.T) {
+	hidden := "I will look that up now.\n" + `{"tool_call":{"name":"deferred_lookup","arguments":{"query":"example"}}}`
+	dispatcher := toolCallDispatcher()
+	direct := canonical.ToolSpec{Name: "lookup_item"}
+	user := canonical.Message{Role: canonical.RoleUser}
+	tests := []struct {
+		name string
+		req  *canonical.ChatRequest
+		want ToolProtocolReason
+	}{
+		{
+			name: "v1 required dispatcher is correctable",
+			req:  &canonical.ChatRequest{Model: "selected", ToolContractVersion: "v1", Tools: []canonical.ToolSpec{dispatcher}, ToolChoice: &canonical.ToolChoice{Type: "required"}, Messages: []canonical.Message{user}},
+			want: ReasonEmbeddedDispatcherWrapper,
+		},
+		{
+			name: "v1 named outer dispatcher is correctable",
+			req:  &canonical.ChatRequest{Model: "selected", ToolContractVersion: "v1", Tools: []canonical.ToolSpec{dispatcher}, ToolChoice: &canonical.ToolChoice{Type: "function", Name: "tool_call"}, Messages: []canonical.Message{user}},
+			want: ReasonEmbeddedDispatcherWrapper,
+		},
+		{
+			name: "v1 optional does not gain authority",
+			req:  &canonical.ChatRequest{Model: "selected", ToolContractVersion: "v1", Tools: []canonical.ToolSpec{dispatcher}, Messages: []canonical.Message{user}},
+		},
+		{
+			name: "legacy required preserves prior classification",
+			req:  &canonical.ChatRequest{Model: "selected", Tools: []canonical.ToolSpec{dispatcher}, ToolChoice: &canonical.ToolChoice{Type: "required"}, Messages: []canonical.Message{user}},
+			want: ReasonRequiredMissing,
+		},
+		{
+			name: "named non dispatcher does not gain authority",
+			req:  &canonical.ChatRequest{Model: "selected", ToolContractVersion: "v1", Tools: []canonical.ToolSpec{dispatcher, direct}, ToolChoice: &canonical.ToolChoice{Type: "function", Name: "lookup_item"}, Messages: []canonical.Message{user}},
+			want: ReasonRequiredMissing,
+		},
+		{
+			name: "missing dispatcher cannot authorize recovery",
+			req:  &canonical.ChatRequest{Model: "selected", ToolContractVersion: "v1", Tools: []canonical.ToolSpec{direct}, ToolChoice: &canonical.ToolChoice{Type: "required"}, Messages: []canonical.Message{user}},
+			want: ReasonRequiredMissing,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			policy, eligible := toolProtocolPolicyFor(tt.req)
+			if !eligible {
+				t.Fatal("test setup produced an ineligible request")
+			}
+			if got := classifyToolProtocolAttempt(policy, attemptObservation{Text: hidden}, nil); got != tt.want {
+				t.Errorf("reason = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestCorrectiveBlocks_StaticAndSafe(t *testing.T) {
 	malicious := "user-secret arguments-secret schema-secret output-secret system-secret"
 	base := &canonical.ChatRequest{

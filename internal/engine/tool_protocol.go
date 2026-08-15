@@ -23,6 +23,8 @@ const (
 	ReasonCapabilityRefusal ToolProtocolReason = "capability_refusal"
 	// ReasonBuiltInToolDenied indicates that the model attempted a denied built-in tool.
 	ReasonBuiltInToolDenied ToolProtocolReason = "built_in_tool_denied"
+	// ReasonEmbeddedDispatcherWrapper indicates a valid deferred wrapper surrounded by forbidden prose.
+	ReasonEmbeddedDispatcherWrapper ToolProtocolReason = "embedded_dispatcher_wrapper"
 )
 
 // ToolProtocolOutcome is a bounded recovery outcome.
@@ -157,6 +159,11 @@ func classifyToolProtocolAttempt(policy toolProtocolPolicy, observation attemptO
 		if matchesPolicy(call.Name) {
 			return ""
 		}
+	}
+	if dispatcher := findToolCallDispatcher(policy.tools); policy.contractV1 && dispatcher != nil &&
+		(policy.requirement == toolProtocolRequired || policy.requirement == toolProtocolNamed && policy.namedTool == dispatcher.Name) &&
+		ObserveToolCallWrappers(observation.Text, policy.tools) == WrapperDispatcherEmbedded {
+		return ReasonEmbeddedDispatcherWrapper
 	}
 
 	if observation.Final != nil && observation.Final.ToolDenials > 0 {
