@@ -407,7 +407,7 @@ func TestIntegration_FakeEngine_NonStream_ToolCallWrapperCoerce(t *testing.T) {
 	}
 }
 
-func TestIntegration_ToolContractNonStream_DeferredWrapperUsesDispatcher(t *testing.T) {
+func TestIntegration_ToolContract_FakeEngine_NonStream_DeferredWrapperUsesDispatcher(t *testing.T) {
 	defer goleak.VerifyNone(t)
 
 	wrapperText := `{"tool_call":{"name":"lookup_records","arguments":{"group":"example-team","recursive":true,"max_groups":50,"max_projects":100}}}`
