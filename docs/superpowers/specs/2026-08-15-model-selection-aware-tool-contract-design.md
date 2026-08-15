@@ -203,7 +203,7 @@ Do not return a normal final answer.
 
 Optional, named, and prohibited policies receive equivalently bounded wording when the section is needed.
 
-The policy section must not mutate the stable system prefix or tool catalog. Its location in the dynamic request tail preserves prefix caching and ensures prior conversation content is byte-stable.
+The dynamic policy section must not mutate the system prefix or tool catalog. Its location in the dynamic request tail ensures that per-attempt v1 policy changes remain tail-only and prior conversation content stays byte-stable.
 
 The existing available-tools instructions are also clarified once, statically, to state that a deferred inner wrapper is dispatcher-compatible only when it is the complete response. This template change is deterministic and does not vary during a conversation.
 
@@ -291,6 +291,8 @@ The prompt does not copy the result, response, user request, tool name, or argum
 ## 11. Streaming and lifecycle invariants
 
 Both guards reuse bounded preflight and the existing prompt-sequence machinery:
+
+For an eligible post-tool attempt that remains within the byte and chunk ceilings, Gateway intentionally waits for the complete model response before releasing the first byte. This complete-response TTFB is the cost of classifying the response as a whole while withholding a provenance refusal until correction or typed-error selection. Eligibility is based on the canonical tool result, not on whether the continuation repeats a current tool catalog. If either ceiling is crossed, the existing fail-open replay/live handoff remains unchanged.
 
 - At most one correction per HTTP request.
 - No failed or refusal bytes reach a streaming client before correction or typed error selection.
@@ -400,7 +402,7 @@ The implementation plan must cover at least:
 18. Named OpenAI `function` policy is normalized correctly.
 19. Ollama `/api/chat` v1 tool-choice extensions normalize equivalently; `/api/generate` required/named requests fail before prompting.
 20. Diagnostic call-role values are allowlisted and cannot influence behavior.
-21. Stable system/tool prefixes and prompt-cache keys remain unchanged; only the dynamic turn policy differs.
+21. The system/tool templates change once at deployment for exactly the two approved static clarifications in Sections 8 and 9.2, invalidating their prompt-cache keys once. Thereafter those templates remain stable; per-attempt v1 policy changes occur only in the dynamic tail, while prior transcript and offered-tool order remain unchanged.
 22. No test fixture or golden file contains private connector output, credentials, internal group names, or project listings.
 
 ## 17. Security review checklist

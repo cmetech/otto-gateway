@@ -24,14 +24,14 @@ Review this exact checkout and implementation range:
 Repository:         /Users/coreyellis/code/github.com/cmetech/otto_app/otto-gateway/.worktrees/model-selection-aware-tool-contract
 Branch:             feat/model-selection-aware-tool-contract
 Base:               ff3ca5c65b545329042b88085cbb510514a7b318
-Implementation tip: a28bb6953da0d52e525933cab33d60e33b585f9d
-Review diff:         ff3ca5c..a28bb69
+Implementation tip: 0e81856c73bb328ace56ebb77f066df7db28926f
+Review diff:         ff3ca5c..0e81856
 ```
 
-The checkout HEAD may be `a28bb69` or a descendant whose only additional changes are this review
-prompt and its `docs/README.md` index entry. First verify the branch, confirm `a28bb69` is an
-ancestor, inspect `a28bb69..HEAD`, and stop with a scope error if that later range contains any
-production change or unrelated file. Review **every changed file** in `ff3ca5c..a28bb69`.
+The checkout HEAD may be `0e81856` or a descendant whose only additional changes are the review
+feedback documentation and resolved debug record. First verify the branch, confirm `0e81856` is an
+ancestor, inspect `0e81856..HEAD`, and stop with a scope error if that later range contains any
+production or test change or unrelated file. Review **every changed file** in `ff3ca5c..0e81856`.
 Planning and documentation files matter where they define behavior or a release gate, but they are
 not evidence that the implementation is correct.
 
@@ -69,7 +69,7 @@ design disagree, report the disagreement; do not silently reinterpret the design
 Before looking for bugs:
 
 1. Record the exact branch, HEAD, merge base, and starting worktree state.
-2. Confirm the implementation commits are exactly:
+2. Confirm the branch commits through the implementation tip are exactly:
 
    ```text
    4bb70a0 docs: approve model-selection-aware tool contract
@@ -82,9 +82,15 @@ Before looking for bugs:
    68d9a74 feat: recover post-tool provenance refusals once
    9d50a70 feat: expose bounded tool contract outcomes
    a28bb69 test: prove tool contract surface equivalence
+   5b11861 docs: add model tool contract adversarial review prompt
+   2bc9584 fix: preserve anthropic prohibited tool policy
+   372d6fe fix: constrain tool result provenance recovery
+   28ad252 fix: reject duplicate tool contract headers
+   45a9b86 fix: restore bounded wrapper telemetry
+   0e81856 test: label fake engine tool contract coverage
    ```
 
-3. Use `git diff --name-status ff3ca5c..a28bb69` as the authoritative inventory.
+3. Use `git diff --name-status ff3ca5c..0e81856` as the authoritative inventory.
 4. Distinguish implementation defects from pre-existing behavior by proving changed-code causality.
 5. Confirm no Hermes file or repository is included in the review range.
 
@@ -104,9 +110,10 @@ regressed.
 4. An explicitly requested model remains authoritative for every initial and corrective ACP call.
    Gateway never silently switches it to `auto`, creates a replacement auto request, or infers a
    concrete downstream model for an auto request.
-5. Initial tool-protocol recovery is eligible only for contract v1, an explicit model, offered
-   tools, and required/named policy. Optional-tool turns may return ordinary prose. Tool-less turns
-   and `tool_choice:none` remain unchanged.
+5. Inherited required/named tool-protocol recovery remains contract-independent for an explicit
+   model with offered tools. Contract v1 gates only the enhanced embedded-dispatcher-wrapper
+   behavior. Optional-tool turns may return ordinary prose. Tool-less turns and `tool_choice:none`
+   remain unchanged.
 6. An exact whole-response deferred dispatcher wrapper may surface only through an offered outer
    dispatcher tool. An unknown hidden inner wrapper surrounded by prose is never executed or
    surfaced directly.
@@ -117,9 +124,11 @@ regressed.
    request lifecycle, and at most one corrective prompt.
 9. Failed first-attempt and refusal bytes are withheld from streaming clients until Gateway has
    selected corrected output, bounded replay, or a typed terminal error.
-10. Buffer-byte and chunk ceilings retain the approved fail-open replay behavior. Cancellation,
-    client disconnect, idle timeout, prompt failure, worker death, and terminal-result errors remain
-    bounded and do not leak goroutines, sessions, slots, watchdogs, or partial bytes.
+10. Buffer-byte and chunk ceilings retain the approved fail-open replay behavior. Eligible bounded
+    post-tool guards intentionally delay first-byte delivery until complete-response classification,
+    including continuations without a current tool catalog. Cancellation, client disconnect, idle
+    timeout, prompt failure, worker death, and terminal-result errors remain bounded and do not leak
+    goroutines, sessions, slots, watchdogs, or partial bytes.
 11. PreHooks and PostHooks execute exactly once per HTTP request. The model-request counter and
     recovery observer fire once; an internal corrective prompt does not create a second external
     hook or request lifecycle.
@@ -152,9 +161,10 @@ regressed.
     Auto requests do not acquire an inferred concrete model label.
 21. Gateway does not propagate `X-Hermes-Session-Id`, treat `X-Session-Id` as provenance proof, or
     add session propagation as part of this change.
-22. Stable system/tool prefixes, prior transcript order, offered-tool order, existing direct-wrapper
-    behavior, and legacy auto routing remain unchanged except for the approved v1 tail policy and
-    host-result framing.
+22. System/tool templates change once for exactly the two approved static clarifications in design
+    Sections 8 and 9.2, then remain stable. Dynamic v1 policy is appended only at the request tail;
+    prior transcript order, offered-tool order, existing direct-wrapper behavior, and legacy auto
+    routing behavior otherwise remain unchanged, with v1 host-result framing request-scoped.
 
 ## Change map — verify, do not trust
 
@@ -162,7 +172,7 @@ regressed.
 |---|---|---|
 | Contract metadata | `internal/toolcontract`, `internal/canonical` | Parse exact request headers, carry version/call role, define bounded native errors |
 | Surface negotiation | OpenAI, Anthropic, and Ollama handlers/wire code | Echo v1, fail unknown versions before dispatch, normalize policy consistently |
-| ACP prompt construction | `internal/engine/build_acp.go` | Preserve stable prefixes; add v1 tail policy and host-framed untrusted result events |
+| ACP prompt construction | `internal/engine/build_acp.go` | Apply exactly two approved one-time static clarifications; keep dynamic v1 policy tail-only; add host-framed untrusted result events |
 | Wrapper observation | `internal/engine/coerce.go`, `tool_protocol.go` | Distinguish exact, embedded, malformed, and absent wrappers without expanding execution authority |
 | Initial recovery | `internal/engine/engine.go`, `tool_protocol.go`, preflight tests | One same-session correction with bounded capture, replay/live handoff, cleanup, and typed failure |
 | Post-tool recovery | `internal/engine/tool_result_protocol.go` and recovery tests | Classify provenance refusals, request final prose once, reject corrective tool calls |
@@ -352,8 +362,10 @@ Sensitive-content logging, request-controlled unbounded labels, or raw session i
   permissions are narrow and adapters did not acquire engine, pool, session, or policy-layer
   dependencies outside already approved seams.
 - Prove there is no environment variable, package global, or mutable singleton controlling v1.
-- Compare stable ACP system/tool prefixes and prior transcript blocks between base and feature for
-  headerless, v1-ineligible, auto, tool-less, optional, none, and post-tool cases.
+- Compare ACP system/tool templates and prior transcript blocks between base and feature for
+  headerless, v1-ineligible, auto, tool-less, optional, none, and post-tool cases. Account for
+  exactly the two approved one-time static clarifications, and reject any additional prefix drift or
+  per-attempt dynamic policy outside the request tail.
 - Inspect direct declared-wrapper behavior to ensure the new embedded-dispatcher guard did not
   remove an explicitly preserved legacy path.
 - Confirm no `X-Hermes-Session-Id` propagation, no new session registry dependency, and no claim that
@@ -399,9 +411,9 @@ unavailable tools. Do not silently substitute narrower commands.
 ```bash
 git status --short --branch
 git merge-base main HEAD
-git log --oneline --reverse ff3ca5c..a28bb69
-git diff --check ff3ca5c..a28bb69
-git diff --name-status ff3ca5c..a28bb69
+git log --oneline --reverse ff3ca5c..0e81856
+git diff --check ff3ca5c..0e81856
+git diff --name-status ff3ca5c..0e81856
 
 make fmt-check
 go vet ./...
@@ -409,7 +421,7 @@ go test ./... -count=1
 
 go test ./internal/toolcontract ./internal/canonical \
   ./internal/adapter/openai ./internal/adapter/anthropic ./internal/adapter/ollama \
-  -run 'Test.*(ToolContract|SelectedModel|Observation)' -count=1
+  -run 'Test(.*(ToolContract|SelectedModel|Observation)|Parse.*|ContractHeaderConstants)' -count=1
 
 go test ./internal/engine \
   -run 'Test.*(ToolProtocol|ToolResultProtocol|BuildBlocks_HostEvent|ObserveToolCallWrappers)' \

@@ -121,7 +121,7 @@ git commit -m "feat: negotiate tool contract across gateway surfaces"
 - Test: `internal/engine/tool_protocol_test.go`, `build_acp_test.go`
 
 - [ ] Add RED cases for OpenAI named type `function`, Anthropic named type `tool`, required/any, none, optional, tool-less, auto route, and v1/legacy eligibility.
-- [ ] Add a RED golden test proving the stable system/tool prefix is identical and only a v1 tail is appended:
+- [ ] Add a RED golden test proving the approved one-time static `[Available tools]` clarification is deterministic and all per-attempt v1 policy is appended only at the dynamic tail:
 
 ```text
 [Turn tool policy]
@@ -259,6 +259,7 @@ git commit -m "feat: frame host tool results as untrusted data"
 - [ ] Add RED eligibility tests: require v1, explicit model, and a final message containing a tool result. Exclude auto, initial decisions, legacy, and unrelated final turns.
 - [ ] Implement a conjunction-based refusal classifier requiring provenance/transcript language plus refusal-to-use language. A lone word such as “transcript” must never match.
 - [ ] Add RED recovery tests: normal answer no retry; Sonnet-style refusal one retry; corrected prose returns; corrected tool call, repeated refusal, timeout, or worker death yields the post-tool typed error.
+- [ ] Preserve intentional complete-response TTFB for eligible bounded post-tool attempts so refusal bytes remain withheld until classification. Eligibility follows the canonical tool result even when the continuation has no current tool catalog; keep the existing byte/chunk ceilings and fail-open replay/live handoff unchanged.
 - [ ] Use the existing capture/sequence lifecycle with this separate static correction:
 
 ```text
@@ -334,7 +335,7 @@ git commit -m "test: prove tool contract surface equivalence"
 
 - [ ] Run a sanitized real-Gateway comparison: stateless full transcript, stable `X-Session-Id` plus full replay, and delta-only only if an endpoint supports it. Record request role, response category, context percentage, duplication yes/no, and provenance improvement yes/no. Omit prompts, arguments, outputs, and raw session IDs.
 - [ ] Do not add session propagation. If full replay duplicates state or benefit is unproven, explicitly defer session assistance.
-- [ ] Verify v1 changes only the current tail policy/event framing and not the stable system/tool prefix, prior transcript, or tool order.
+- [ ] Verify deployment makes exactly the two approved one-time static template clarifications in design Sections 8 and 9.2; thereafter templates remain stable, all per-attempt v1 policy stays in the dynamic tail, and prior transcript/tool order remains unchanged while v1 host-event framing is request-scoped.
 - [ ] Run full verification:
 
 ```bash
