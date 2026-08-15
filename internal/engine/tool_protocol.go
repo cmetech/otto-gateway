@@ -25,6 +25,8 @@ const (
 	ReasonBuiltInToolDenied ToolProtocolReason = "built_in_tool_denied"
 	// ReasonEmbeddedDispatcherWrapper indicates a valid deferred wrapper surrounded by forbidden prose.
 	ReasonEmbeddedDispatcherWrapper ToolProtocolReason = "embedded_dispatcher_wrapper"
+	// ReasonToolResultProvenanceRefusal indicates a refusal to use a host-produced tool-result event.
+	ReasonToolResultProvenanceRefusal ToolProtocolReason = "tool_result_provenance_refusal"
 )
 
 // ToolProtocolOutcome is a bounded recovery outcome.
@@ -41,16 +43,133 @@ const (
 	OutcomeBufferBypass ToolProtocolOutcome = "buffer_bypass"
 )
 
+type ToolProtocolContractVersion string
+
+const (
+	ToolProtocolContractNone ToolProtocolContractVersion = "none"
+	ToolProtocolContractV1   ToolProtocolContractVersion = "v1"
+)
+
+type ToolProtocolCallRole string
+
+const (
+	ToolProtocolCallRoleUnknown     ToolProtocolCallRole = "unknown"
+	ToolProtocolCallRolePrimary     ToolProtocolCallRole = "primary"
+	ToolProtocolCallRolePostTool    ToolProtocolCallRole = "post_tool"
+	ToolProtocolCallRoleCorrection  ToolProtocolCallRole = "correction"
+	ToolProtocolCallRoleTitle       ToolProtocolCallRole = "title"
+	ToolProtocolCallRoleCompression ToolProtocolCallRole = "compression"
+	ToolProtocolCallRoleAuxiliary   ToolProtocolCallRole = "auxiliary"
+)
+
+type ToolProtocolModelSelection string
+
+const (
+	ToolProtocolModelAuto     ToolProtocolModelSelection = "auto"
+	ToolProtocolModelExplicit ToolProtocolModelSelection = "explicit"
+)
+
+type ToolProtocolToolPolicy string
+
+const (
+	ToolProtocolPolicyNone     ToolProtocolToolPolicy = "none"
+	ToolProtocolPolicyOptional ToolProtocolToolPolicy = "optional"
+	ToolProtocolPolicyRequired ToolProtocolToolPolicy = "required"
+	ToolProtocolPolicyNamed    ToolProtocolToolPolicy = "named"
+)
+
+type ToolProtocolCorrectionKind string
+
+const (
+	CorrectionNone                ToolProtocolCorrectionKind = "none"
+	CorrectionInitialToolProtocol ToolProtocolCorrectionKind = "initial_tool_protocol"
+	CorrectionPostToolProvenance  ToolProtocolCorrectionKind = "post_tool_provenance"
+)
+
 // ToolProtocolEvent contains only bounded recovery metadata suitable for
 // metrics. It intentionally carries no prompt, response, argument, or session
 // data.
 type ToolProtocolEvent struct {
 	Model              string
 	RequestID          string
+	ContractVersion    ToolProtocolContractVersion
+	CallRole           ToolProtocolCallRole
+	ModelSelection     ToolProtocolModelSelection
+	ToolPolicy         ToolProtocolToolPolicy
+	WrapperDisposition WrapperDisposition
+	ToolResultPresent  bool
+	CorrectionKind     ToolProtocolCorrectionKind
 	Reason             ToolProtocolReason
 	Outcome            ToolProtocolOutcome
 	CorrectiveAttempts int
 	RecommendAuto      bool
+}
+
+func enrichToolProtocolEvent(req *canonical.ChatRequest, event ToolProtocolEvent) ToolProtocolEvent {
+	event.ContractVersion = ToolProtocolContractNone
+	event.CallRole = ToolProtocolCallRoleUnknown
+	event.ModelSelection = ToolProtocolModelAuto
+	event.ToolPolicy = ToolProtocolPolicyNone
+	if event.WrapperDisposition == "" {
+		event.WrapperDisposition = WrapperNone
+	}
+	event.CorrectionKind = CorrectionNone
+	if req == nil {
+		return event
+	}
+	if req.ToolContractVersion == "v1" {
+		event.ContractVersion = ToolProtocolContractV1
+	}
+	switch req.CallRole {
+	case "primary":
+		event.CallRole = ToolProtocolCallRolePrimary
+	case "post_tool":
+		event.CallRole = ToolProtocolCallRolePostTool
+	case "correction":
+		event.CallRole = ToolProtocolCallRoleCorrection
+	case "title":
+		event.CallRole = ToolProtocolCallRoleTitle
+	case "compression":
+		event.CallRole = ToolProtocolCallRoleCompression
+	case "auxiliary":
+		event.CallRole = ToolProtocolCallRoleAuxiliary
+	}
+	if req.Model != "" && req.Model != "auto" {
+		event.ModelSelection = ToolProtocolModelExplicit
+	}
+	if len(req.Tools) > 0 {
+		event.ToolPolicy = ToolProtocolPolicyOptional
+		if req.ToolChoice != nil {
+			switch req.ToolChoice.Type {
+			case "none":
+				event.ToolPolicy = ToolProtocolPolicyNone
+			case "required", "any":
+				event.ToolPolicy = ToolProtocolPolicyRequired
+			case "tool", "function":
+				if toolOffered(req.ToolChoice.Name, req.Tools) {
+					event.ToolPolicy = ToolProtocolPolicyNamed
+				}
+			}
+		}
+	}
+	for _, message := range req.Messages {
+		if message.Role == canonical.RoleTool {
+			event.ToolResultPresent = true
+			break
+		}
+		for _, content := range message.Content {
+			if content.Kind == canonical.ContentKindToolResult && content.ToolResult != nil {
+				event.ToolResultPresent = true
+				break
+			}
+		}
+	}
+	if _, postTool := toolResultProtocolPolicyFor(req); postTool {
+		event.CorrectionKind = CorrectionPostToolProvenance
+	} else if _, initial := toolProtocolPolicyFor(req); initial {
+		event.CorrectionKind = CorrectionInitialToolProtocol
+	}
+	return event
 }
 
 type toolProtocolRequirement string

@@ -71,6 +71,19 @@ func TestRequestObservation_InvalidRequest(t *testing.T) {
 	})
 }
 
+func TestRequestObservation_ToolContractErrorUsesClosedCode(t *testing.T) {
+	adapter, observations := requestObservationAdapter(&fakeEngine{}, nil)
+	request := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/messages",
+		strings.NewReader(`{"model":"selected","max_tokens":64,"messages":[{"role":"user","content":"hello"}]}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("anthropic-version", "2023-06-01")
+	request.Header.Set("X-Otto-Tool-Contract", "private-canary")
+	adapter.ProtectedRouter().ServeHTTP(httptest.NewRecorder(), request)
+	assertAnthropicObservation(t, *observations, RequestObservation{
+		Outcome: canonical.CodeUnsupportedToolContractVersion, Stream: "unknown", SessionMode: "unknown",
+	})
+}
+
 func TestRequestObservation_NonStreamingSuccess(t *testing.T) {
 	adapter, observations := requestObservationAdapter(
 		&fakeEngine{collectResp: successfulAnthropicResponse()}, nil,

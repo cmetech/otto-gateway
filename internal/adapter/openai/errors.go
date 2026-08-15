@@ -104,7 +104,7 @@ func writeSelectedModelError(w http.ResponseWriter, err error) bool {
 }
 
 func writeUnsupportedToolContractError(w http.ResponseWriter) {
-	code := "unsupported_tool_contract_version"
+	code := canonical.CodeUnsupportedToolContractVersion
 	writeErrorWithCode(w, http.StatusBadRequest, errInvalidRequest, "The requested tool contract version is not supported.", &code)
 }
 

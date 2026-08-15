@@ -6,8 +6,6 @@ import (
 	"otto-gateway/internal/canonical"
 )
 
-const selectedModelToolResultProvenanceFailed = "selected_model_tool_result_provenance_failed"
-
 type toolResultProtocolPolicy struct {
 	tools []canonical.ToolSpec
 }

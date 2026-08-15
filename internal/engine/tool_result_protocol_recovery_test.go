@@ -11,8 +11,6 @@ import (
 	"otto-gateway/internal/canonical"
 )
 
-const toolResultProtocolFailureCode = "selected_model_tool_result_provenance_failed"
-
 func toolResultRecoveryRequest() *canonical.ChatRequest {
 	return &canonical.ChatRequest{
 		Model: "selected-model", ToolContractVersion: "v1",
@@ -38,8 +36,8 @@ func assertToolResultProtocolError(t *testing.T, err error, forbidden string) {
 	if !errors.As(err, &selected) {
 		t.Fatalf("error type = %T, want *canonical.SelectedModelError: %v", err, err)
 	}
-	if selected.Code != toolResultProtocolFailureCode {
-		t.Fatalf("selected-model error code = %q, want %q", selected.Code, toolResultProtocolFailureCode)
+	if selected.Code != canonical.CodeSelectedModelToolResultProvenanceFailed {
+		t.Fatalf("selected-model error code = %q, want %q", selected.Code, canonical.CodeSelectedModelToolResultProvenanceFailed)
 	}
 	if forbidden != "" && strings.Contains(err.Error(), forbidden) {
 		t.Fatalf("safe error exposed upstream detail %q: %q", forbidden, err.Error())

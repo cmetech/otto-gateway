@@ -72,7 +72,7 @@ func TestOllamaToolContract(t *testing.T) {
 		if eng.lastReq != nil {
 			t.Fatal("unsupported contract reached engine")
 		}
-		if got := rec.Header().Get("X-Otto-Error-Code"); got != "unsupported_tool_contract_version" {
+		if got := rec.Header().Get("X-Otto-Error-Code"); got != canonical.CodeUnsupportedToolContractVersion {
 			t.Errorf("error code header = %q", got)
 		}
 		if strings.Contains(rec.Body.String(), "private-version-canary") {
@@ -153,7 +153,7 @@ func TestOllamaV1ToolChoice(t *testing.T) {
 			if eng.lastReq != nil {
 				t.Fatal("mandatory generate tool choice reached engine")
 			}
-			if got := rec.Header().Get("X-Otto-Error-Code"); got != "mandatory_tool_choice_not_supported" {
+			if got := rec.Header().Get("X-Otto-Error-Code"); got != canonical.CodeMandatoryToolChoiceNotSupported {
 				t.Errorf("error code header = %q", got)
 			}
 			if got := rec.Header().Get("X-Otto-Tool-Contract"); got != "v1" {

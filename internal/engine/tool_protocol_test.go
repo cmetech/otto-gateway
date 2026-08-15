@@ -247,3 +247,35 @@ func TestCorrectiveBlocks_StaticAndSafe(t *testing.T) {
 		})
 	}
 }
+
+func TestToolProtocolEventMetadataUsesClosedEnums(t *testing.T) {
+	req := &canonical.ChatRequest{
+		Model: "selected-model", ToolContractVersion: "v1", CallRole: "post_tool",
+		Tools:      []canonical.ToolSpec{{Name: "lookup_item"}},
+		ToolChoice: &canonical.ToolChoice{Type: "required"},
+		Messages: []canonical.Message{{
+			Role: canonical.RoleTool, ToolCallID: "call_example",
+			Content: []canonical.ContentPart{{Kind: canonical.ContentKindText, Text: "completed"}},
+		}},
+	}
+	got := enrichToolProtocolEvent(req, ToolProtocolEvent{
+		Model: req.Model, Outcome: OutcomeCorrected,
+		WrapperDisposition: WrapperDispatcherEmbedded,
+	})
+	if got.ContractVersion != ToolProtocolContractV1 || got.CallRole != ToolProtocolCallRolePostTool ||
+		got.ModelSelection != ToolProtocolModelExplicit || got.ToolPolicy != ToolProtocolPolicyRequired ||
+		got.WrapperDisposition != WrapperDispatcherEmbedded || !got.ToolResultPresent ||
+		got.CorrectionKind != CorrectionPostToolProvenance {
+		t.Fatalf("enriched event = %#v", got)
+	}
+
+	req.Model = "auto"
+	req.ToolContractVersion = ""
+	req.CallRole = "private-canary"
+	got = enrichToolProtocolEvent(req, ToolProtocolEvent{})
+	if got.ContractVersion != ToolProtocolContractNone || got.CallRole != ToolProtocolCallRoleUnknown ||
+		got.ModelSelection != ToolProtocolModelAuto || got.WrapperDisposition != WrapperNone ||
+		got.CorrectionKind != CorrectionNone {
+		t.Fatalf("bounded auto event = %#v", got)
+	}
+}

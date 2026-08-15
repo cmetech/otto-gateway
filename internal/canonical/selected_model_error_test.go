@@ -33,6 +33,15 @@ func TestSelectedModelErrorInfo_RecognizesOnlySafeSelectedModelErrors(t *testing
 			wantCode:    "selected_model_tool_protocol_failed",
 			wantMessage: "The selected model did not produce a valid external tool call after one corrective attempt. Retry the request with model `auto`.",
 		},
+		{
+			name: "tool result provenance",
+			err: &SelectedModelError{
+				Code:  CodeSelectedModelToolResultProvenanceFailed,
+				Cause: cause,
+			},
+			wantCode:    "selected_model_tool_result_provenance_failed",
+			wantMessage: "The selected model did not produce a final answer from the host tool result after one corrective attempt.",
+		},
 	}
 
 	for _, tt := range cases {

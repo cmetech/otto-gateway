@@ -125,7 +125,7 @@ func writeToolContractError(w http.ResponseWriter, code, message string) {
 func negotiateToolContract(w http.ResponseWriter, r *http.Request) (toolcontract.Metadata, bool) {
 	metadata, err := toolcontract.Parse(r.Header.Get(toolcontract.HeaderContract), r.Header.Get(toolcontract.HeaderCallRole))
 	if err != nil {
-		writeToolContractError(w, "unsupported_tool_contract_version", "The requested tool contract version is not supported.")
+		writeToolContractError(w, canonical.CodeUnsupportedToolContractVersion, "The requested tool contract version is not supported.")
 		return toolcontract.Metadata{}, false
 	}
 	if metadata.Version == toolcontract.VersionV1 {
@@ -175,7 +175,7 @@ func (a *Adapter) handleChat(w http.ResponseWriter, r *http.Request) {
 	defer func() { a.observeRequest(observation) }()
 	contractMetadata, ok := negotiateToolContract(w, r)
 	if !ok {
-		observation.Outcome = "invalid_request"
+		observation.Outcome = canonical.CodeUnsupportedToolContractVersion
 		return
 	}
 
@@ -586,7 +586,7 @@ func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 	defer func() { a.observeRequest(observation) }()
 	contractMetadata, ok := negotiateToolContract(w, r)
 	if !ok {
-		observation.Outcome = "invalid_request"
+		observation.Outcome = canonical.CodeUnsupportedToolContractVersion
 		return
 	}
 
@@ -616,8 +616,8 @@ func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if toolChoice != nil && (toolChoice.Type == "required" || toolChoice.Type == "function") {
-			observation.Outcome = "invalid_request"
-			writeToolContractError(w, "mandatory_tool_choice_not_supported", "Mandatory tool choice is not supported by this endpoint.")
+			observation.Outcome = canonical.CodeMandatoryToolChoiceNotSupported
+			writeToolContractError(w, canonical.CodeMandatoryToolChoiceNotSupported, "Mandatory tool choice is not supported by this endpoint.")
 			return
 		}
 	}

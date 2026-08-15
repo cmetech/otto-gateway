@@ -178,7 +178,11 @@ func TestToolProtocolRecoveryObserver_LogsOneBoundedPayloadFreeRecordPerEvent(t 
 		{Model: "selected-model", RequestID: "request-first", Outcome: engine.OutcomeFirstAttempt},
 		{
 			Model: "selected-model", RequestID: "request-corrected",
-			Reason: engine.ReasonCapabilityRefusal, Outcome: engine.OutcomeCorrected,
+			ContractVersion: engine.ToolProtocolContractV1,
+			CallRole:        engine.ToolProtocolCallRolePostTool, ModelSelection: engine.ToolProtocolModelExplicit,
+			ToolPolicy: engine.ToolProtocolPolicyOptional, WrapperDisposition: engine.WrapperNone,
+			ToolResultPresent: true, CorrectionKind: engine.CorrectionPostToolProvenance,
+			Reason: engine.ReasonToolResultProvenanceRefusal, Outcome: engine.OutcomeCorrected,
 			CorrectiveAttempts: 1,
 		},
 		{
@@ -214,6 +218,19 @@ func TestToolProtocolRecoveryObserver_LogsOneBoundedPayloadFreeRecordPerEvent(t 
 		}
 		if record["reason"] != string(events[i].Reason) || record["outcome"] != string(events[i].Outcome) {
 			t.Errorf("log %d classification = (%v,%v), want (%q,%q)", i, record["reason"], record["outcome"], events[i].Reason, events[i].Outcome)
+		}
+		for key, want := range map[string]any{
+			"model_selection":     boundedToolProtocolModelSelection(events[i].ModelSelection),
+			"contract_version":    boundedToolProtocolContractVersion(events[i].ContractVersion),
+			"call_role":           boundedToolProtocolCallRole(events[i].CallRole),
+			"tool_policy":         boundedToolProtocolToolPolicy(events[i].ToolPolicy),
+			"wrapper_disposition": boundedWrapperDisposition(events[i].WrapperDisposition),
+			"tool_result_present": events[i].ToolResultPresent,
+			"correction_kind":     boundedToolProtocolCorrectionKind(events[i].CorrectionKind),
+		} {
+			if record[key] != want {
+				t.Errorf("log %d %s = %v, want %v", i, key, record[key], want)
+			}
 		}
 		if record["corrective_attempts"] != float64(events[i].CorrectiveAttempts) {
 			t.Errorf("log %d corrective_attempts = %v, want %d", i, record["corrective_attempts"], events[i].CorrectiveAttempts)

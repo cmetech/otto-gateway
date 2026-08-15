@@ -115,7 +115,7 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 	defer func() { a.observeRequest(observation) }()
 	contractMetadata, ok := negotiateToolContract(w, r)
 	if !ok {
-		observation.Outcome = "invalid_request"
+		observation.Outcome = canonical.CodeUnsupportedToolContractVersion
 		return
 	}
 
@@ -467,7 +467,7 @@ func (a *Adapter) handleCompletions(w http.ResponseWriter, r *http.Request) {
 	defer func() { a.observeRequest(observation) }()
 	contractMetadata, ok := negotiateToolContract(w, r)
 	if !ok {
-		observation.Outcome = "invalid_request"
+		observation.Outcome = canonical.CodeUnsupportedToolContractVersion
 		return
 	}
 

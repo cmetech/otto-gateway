@@ -287,6 +287,10 @@ func TestSelectedModelError_HandlerUsesJSONBeforeSSEHeaders(t *testing.T) {
 			code:    canonical.CodeSelectedModelToolProtocolFailed,
 			message: "The selected model did not produce a valid external tool call after one corrective attempt. Retry the request with model `auto`.",
 		},
+		{
+			code:    canonical.CodeSelectedModelToolResultProvenanceFailed,
+			message: "The selected model did not produce a final answer from the host tool result after one corrective attempt.",
+		},
 	} {
 		t.Run(tc.code, func(t *testing.T) {
 			eng := &fakeEngine{runErr: &canonical.SelectedModelError{

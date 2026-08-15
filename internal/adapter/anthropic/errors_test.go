@@ -26,6 +26,10 @@ func TestSelectedModelError_NativeEnvelope(t *testing.T) {
 			code:    canonical.CodeSelectedModelToolProtocolFailed,
 			message: "The selected model did not produce a valid external tool call after one corrective attempt. Retry the request with model `auto`.",
 		},
+		{
+			code:    canonical.CodeSelectedModelToolResultProvenanceFailed,
+			message: "The selected model did not produce a final answer from the host tool result after one corrective attempt.",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.code, func(t *testing.T) {
@@ -72,6 +76,7 @@ func TestSelectedModelError_ObservationUsesClosedCode(t *testing.T) {
 	for _, code := range []string{
 		canonical.CodeSelectedModelActivationFailed,
 		canonical.CodeSelectedModelToolProtocolFailed,
+		canonical.CodeSelectedModelToolResultProvenanceFailed,
 	} {
 		t.Run(code, func(t *testing.T) {
 			err := &canonical.SelectedModelError{Code: code, Cause: errors.New("raw-cause-canary")}

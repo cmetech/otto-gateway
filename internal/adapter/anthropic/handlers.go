@@ -133,7 +133,7 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 	defer func() { a.observeRequest(observation) }()
 	contractMetadata, ok := negotiateToolContract(w, r)
 	if !ok {
-		observation.Outcome = "invalid_request"
+		observation.Outcome = canonical.CodeUnsupportedToolContractVersion
 		return
 	}
 

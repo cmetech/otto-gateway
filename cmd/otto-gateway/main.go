@@ -127,6 +127,13 @@ func newToolProtocolObserver(logger *slog.Logger, gwMetrics *metrics.Metrics) fu
 		logger.Info(
 			"selected_model_tool_protocol_recovery",
 			"model", model,
+			"model_selection", boundedToolProtocolModelSelection(event.ModelSelection),
+			"contract_version", boundedToolProtocolContractVersion(event.ContractVersion),
+			"call_role", boundedToolProtocolCallRole(event.CallRole),
+			"tool_policy", boundedToolProtocolToolPolicy(event.ToolPolicy),
+			"wrapper_disposition", boundedWrapperDisposition(event.WrapperDisposition),
+			"tool_result_present", event.ToolResultPresent,
+			"correction_kind", boundedToolProtocolCorrectionKind(event.CorrectionKind),
 			"reason", boundedToolProtocolReason(event.Reason),
 			"corrective_attempts", attempts,
 			"outcome", boundedToolProtocolOutcome(event.Outcome),
@@ -140,8 +147,68 @@ func boundedToolProtocolReason(reason engine.ToolProtocolReason) string {
 	switch reason {
 	case "", engine.ReasonActivationFailed, engine.ReasonRequiredMissing,
 		engine.ReasonNamedMismatch, engine.ReasonMalformedWrapper,
-		engine.ReasonCapabilityRefusal, engine.ReasonBuiltInToolDenied:
+		engine.ReasonCapabilityRefusal, engine.ReasonBuiltInToolDenied,
+		engine.ReasonEmbeddedDispatcherWrapper, engine.ReasonToolResultProvenanceRefusal:
 		return string(reason)
+	default:
+		return "unknown"
+	}
+}
+
+func boundedToolProtocolContractVersion(value engine.ToolProtocolContractVersion) string {
+	switch value {
+	case engine.ToolProtocolContractNone, engine.ToolProtocolContractV1:
+		return string(value)
+	default:
+		return "unknown"
+	}
+}
+
+func boundedToolProtocolCallRole(value engine.ToolProtocolCallRole) string {
+	switch value {
+	case engine.ToolProtocolCallRoleUnknown, engine.ToolProtocolCallRolePrimary,
+		engine.ToolProtocolCallRolePostTool, engine.ToolProtocolCallRoleCorrection,
+		engine.ToolProtocolCallRoleTitle, engine.ToolProtocolCallRoleCompression,
+		engine.ToolProtocolCallRoleAuxiliary:
+		return string(value)
+	default:
+		return "unknown"
+	}
+}
+
+func boundedToolProtocolModelSelection(value engine.ToolProtocolModelSelection) string {
+	switch value {
+	case engine.ToolProtocolModelAuto, engine.ToolProtocolModelExplicit:
+		return string(value)
+	default:
+		return "unknown"
+	}
+}
+
+func boundedToolProtocolToolPolicy(value engine.ToolProtocolToolPolicy) string {
+	switch value {
+	case engine.ToolProtocolPolicyNone, engine.ToolProtocolPolicyOptional,
+		engine.ToolProtocolPolicyRequired, engine.ToolProtocolPolicyNamed:
+		return string(value)
+	default:
+		return "unknown"
+	}
+}
+
+func boundedWrapperDisposition(value engine.WrapperDisposition) string {
+	switch value {
+	case engine.WrapperNone, engine.WrapperDirect, engine.WrapperDispatcherExact,
+		engine.WrapperDispatcherEmbedded, engine.WrapperMalformed:
+		return string(value)
+	default:
+		return "unknown"
+	}
+}
+
+func boundedToolProtocolCorrectionKind(value engine.ToolProtocolCorrectionKind) string {
+	switch value {
+	case engine.CorrectionNone, engine.CorrectionInitialToolProtocol, engine.CorrectionPostToolProvenance:
+		return string(value)
 	default:
 		return "unknown"
 	}

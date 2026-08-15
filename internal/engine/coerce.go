@@ -457,7 +457,7 @@ func ObserveToolCallWrappers(text string, tools []canonical.ToolSpec) WrapperDis
 	if len(scan) > maxScanBytes {
 		scan = scan[:maxScanBytes]
 	}
-	if strings.Contains(scan, `"tool_call"`) {
+	if hasWholeResponseToolCallMarker(scan) {
 		return WrapperMalformed
 	}
 	return WrapperNone

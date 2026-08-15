@@ -266,7 +266,8 @@ func TestEngineRun_PromptError_CancelsSession(t *testing.T) {
 		promptErr:    errors.New("simulated prompt failure"),
 	}
 	e := newTestEngine(t, ack)
-	_, err := e.Run(context.Background(), simpleUserReq("hi", "model-x"))
+	req := simpleUserReq("hi", "model-x")
+	_, err := e.Run(context.Background(), req)
 	if err == nil {
 		t.Fatal("Run: expected error, got nil")
 	}
@@ -297,7 +298,8 @@ func TestEngineRun_SelectedModelActivationError_IsTypedSafeAndCleansUp(t *testin
 			cfg.OnToolProtocolEvent = func(event ToolProtocolEvent) { protocolEvents = append(protocolEvents, event) }
 		},
 	)
-	_, err := e.Run(context.Background(), simpleUserReq("hi", "model-x"))
+	req := simpleUserReq("hi", "model-x")
+	_, err := e.Run(context.Background(), req)
 	if err == nil {
 		t.Fatal("Run: expected error, got nil")
 	}
@@ -323,11 +325,11 @@ func TestEngineRun_SelectedModelActivationError_IsTypedSafeAndCleansUp(t *testin
 	if len(modelRequests) != 1 || modelRequests[0] != "model-x" {
 		t.Errorf("OnModelRequest calls = %v, want [model-x]", modelRequests)
 	}
-	wantEvent := ToolProtocolEvent{
+	wantEvent := enrichToolProtocolEvent(req, ToolProtocolEvent{
 		Model: "model-x", RequestID: "request-activation-1",
 		Reason: ReasonActivationFailed, Outcome: OutcomeFailed,
 		CorrectiveAttempts: 0, RecommendAuto: true,
-	}
+	})
 	if !reflect.DeepEqual(protocolEvents, []ToolProtocolEvent{wantEvent}) {
 		t.Errorf("OnToolProtocolEvent calls = %#v, want %#v", protocolEvents, []ToolProtocolEvent{wantEvent})
 	}

@@ -827,6 +827,10 @@ func TestIntegration_SelectedModelEngineRunError_PrecedesSSEHeaders(t *testing.T
 			code:    canonical.CodeSelectedModelToolProtocolFailed,
 			message: "The selected model did not produce a valid external tool call after one corrective attempt. Retry the request with model `auto`.",
 		},
+		{
+			code:    canonical.CodeSelectedModelToolResultProvenanceFailed,
+			message: "The selected model did not produce a final answer from the host tool result after one corrective attempt.",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.code, func(t *testing.T) {

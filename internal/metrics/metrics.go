@@ -188,7 +188,7 @@ func (m *Metrics) RecordToolProtocolEvent(model, reason, outcome string) string 
 
 func validToolProtocolReason(reason string) bool {
 	switch reason {
-	case "activation_failed", "required_missing", "named_mismatch", "malformed_wrapper", "capability_refusal", "built_in_tool_denied":
+	case "activation_failed", "required_missing", "named_mismatch", "malformed_wrapper", "capability_refusal", "built_in_tool_denied", "embedded_dispatcher_wrapper", "tool_result_provenance_refusal":
 		return true
 	default:
 		return false

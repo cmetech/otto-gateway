@@ -95,7 +95,7 @@ func TestOpenAIToolContract(t *testing.T) {
 		if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
 			t.Fatalf("decode error envelope: %v", err)
 		}
-		if envelope.Error.Code == nil || *envelope.Error.Code != "unsupported_tool_contract_version" {
+		if envelope.Error.Code == nil || *envelope.Error.Code != canonical.CodeUnsupportedToolContractVersion {
 			t.Errorf("error code = %v, want unsupported_tool_contract_version", envelope.Error.Code)
 		}
 		if strings.Contains(rec.Body.String(), "private-version-canary") {

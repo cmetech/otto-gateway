@@ -72,7 +72,7 @@ func TestAnthropicToolContract(t *testing.T) {
 		if eng.lastReq != nil {
 			t.Fatal("unsupported contract reached engine")
 		}
-		if got := rec.Header().Get("X-Otto-Error-Code"); got != "unsupported_tool_contract_version" {
+		if got := rec.Header().Get("X-Otto-Error-Code"); got != canonical.CodeUnsupportedToolContractVersion {
 			t.Errorf("error code header = %q", got)
 		}
 		if !strings.Contains(rec.Body.String(), `"type":"invalid_request_error"`) {

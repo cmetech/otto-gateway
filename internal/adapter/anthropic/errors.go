@@ -119,7 +119,7 @@ func writeSelectedModelError(w http.ResponseWriter, err error) bool {
 }
 
 func writeUnsupportedToolContractError(w http.ResponseWriter) {
-	w.Header().Set("X-Otto-Error-Code", "unsupported_tool_contract_version")
+	w.Header().Set("X-Otto-Error-Code", canonical.CodeUnsupportedToolContractVersion)
 	writeError(w, http.StatusBadRequest, errInvalidRequest, "The requested tool contract version is not supported.")
 }
 
