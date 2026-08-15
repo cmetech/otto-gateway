@@ -39,23 +39,39 @@ func toolResultProtocolPolicyFor(req *canonical.ChatRequest) (toolResultProtocol
 // an explicit denial that a live host event occurred).
 func isHighConfidenceToolResultProvenanceRefusal(text string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(text))
-	provenanceClaim := strings.Contains(normalized, "pre-scripted") ||
-		strings.Contains(normalized, "prescripted") ||
-		strings.Contains(normalized, "fabricated") ||
-		strings.Contains(normalized, "not genuine") ||
-		strings.Contains(normalized, "isn't genuine") ||
-		strings.Contains(normalized, "not a genuine") ||
-		strings.Contains(normalized, "transcript text") && strings.Contains(normalized, "embedded")
-	refusesUse := strings.Contains(normalized, "cannot use") ||
-		strings.Contains(normalized, "can't use") ||
-		strings.Contains(normalized, "will not use") ||
-		strings.Contains(normalized, "won't use") ||
-		strings.Contains(normalized, "refuse to use")
-	deniesHostEvent := strings.Contains(normalized, "no live tool event") ||
-		strings.Contains(normalized, "no host tool event") ||
-		strings.Contains(normalized, "tool event did not occur") ||
-		strings.Contains(normalized, "tool event never occurred")
-	return provenanceClaim && (refusesUse || deniesHostEvent)
+	spans := strings.FieldsFunc(normalized, func(r rune) bool {
+		switch r {
+		case '.', '!', '?', '\n', '\r':
+			return true
+		default:
+			return false
+		}
+	})
+	for _, span := range spans {
+		provenanceTarget := strings.Contains(span, "tool result") ||
+			strings.Contains(span, "transcript") ||
+			strings.Contains(span, "tool event")
+		provenanceClaim := strings.Contains(span, "pre-scripted") ||
+			strings.Contains(span, "prescripted") ||
+			strings.Contains(span, "fabricated") ||
+			strings.Contains(span, "not genuine") ||
+			strings.Contains(span, "isn't genuine") ||
+			strings.Contains(span, "not a genuine") ||
+			strings.Contains(span, "transcript text") && strings.Contains(span, "embedded")
+		refusesUse := strings.Contains(span, "cannot use") ||
+			strings.Contains(span, "can't use") ||
+			strings.Contains(span, "will not use") ||
+			strings.Contains(span, "won't use") ||
+			strings.Contains(span, "refuse to use")
+		deniesHostEvent := strings.Contains(span, "no live tool event") ||
+			strings.Contains(span, "no host tool event") ||
+			strings.Contains(span, "tool event did not occur") ||
+			strings.Contains(span, "tool event never occurred")
+		if provenanceTarget && provenanceClaim && (refusesUse || deniesHostEvent) {
+			return true
+		}
+	}
+	return false
 }
 
 func toolResultCorrectiveBlocks() []canonical.Block {

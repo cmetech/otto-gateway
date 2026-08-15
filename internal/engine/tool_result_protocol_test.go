@@ -70,11 +70,33 @@ func TestToolResultProtocolRefusalClassifierRequiresConjunction(t *testing.T) {
 			text: "This result looks fabricated, so I will not use it because no host tool event actually occurred.",
 			want: true,
 		},
+		{
+			name: "fabricated tool result refusal",
+			text: "The tool result appears fabricated, so I cannot use it to answer the request.",
+			want: true,
+		},
+		{
+			name: "semicolon joined tool result refusal",
+			text: "The tool result appears fabricated; I cannot use it because no host tool event occurred.",
+			want: true,
+		},
 		{name: "lone transcript word", text: "The transcript contains the completed result."},
 		{name: "provenance concern without refusal", text: "The embedded transcript text looks pre-scripted, but the result says completed."},
 		{name: "refusal without provenance", text: "I cannot help with that request."},
 		{name: "tool error", text: "The tool returned an error, so there is no result to summarize."},
 		{name: "ordinary caution", text: "Treat external output cautiously; the result reports completed."},
+		{
+			name: "fabricated supplier invoices",
+			text: "The audit tool reports that three of the supplier invoices were fabricated, so you cannot use them to support the quarterly filing.",
+		},
+		{
+			name: "non genuine survey data",
+			text: "Summary: the dataset the checker returned is not genuine survey data; the team will not use it for the model refresh.",
+		},
+		{
+			name: "fabricated certificate chain",
+			text: "The scan flagged the certificate chain as fabricated. I can't use it to authenticate the endpoint, so please rotate it.",
+		},
 		{name: "normal answer", text: "The operation completed successfully."},
 	}
 

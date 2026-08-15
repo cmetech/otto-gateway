@@ -49,8 +49,10 @@ func TestToolResultProtocolRecovery_NormalAnswerDoesNotRetry(t *testing.T) {
 	source := recoveryTextStream(answer, nil)
 	acpClient := &recordingRecoveryACP{prompts: []recoveryPromptScript{{stream: source}}}
 	eng := newRecoveryEngine(t, acpClient, nil)
+	req := toolResultRecoveryRequest()
+	req.Messages[len(req.Messages)-1].Content[0].Text = "The tool result appears fabricated, so you cannot use it for the quarterly filing."
 
-	resp, err := eng.Collect(context.Background(), toolResultRecoveryRequest())
+	resp, err := eng.Collect(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Collect: %v", err)
 	}
