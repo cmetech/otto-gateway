@@ -182,7 +182,7 @@ tdd_checkpoint:
 - timestamp: 2026-08-15T12:58:00-04:00
   checked: Commit 9d50a70, complete wrapper observation/classification code, and focused observation tests.
   found: Commit 9d50a70 changed only the final malformed observation fallback from quoted-key substring detection to `hasWholeResponseToolCallMarker`; parsed exact and balanced embedded candidates still classify, but narrated truncated JSON produces no candidate and cannot satisfy the start-of-response marker. The existing documentation observation lacks quoted `"tool_call"` text.
-  implication: F7 is a read-only wrapper-disposition telemetry regression, not a recovery eligibility, success outcome, adapter, or typed-error defect; a two-row focused test can reproduce it while guarding against broad substring false positives.
+  implication: F7 is a regression in read-only wrapper observation and never expands execution authority. Its disposition is also consumed by corrective-response validation, where malformed corrected output intentionally fails closed under the approved design; a two-row focused test can reproduce the observation gap while guarding against broad substring false positives.
 - timestamp: 2026-08-15T13:00:00-04:00
   checked: First F7 narrated/truncated fixture through `TestObserveToolCallWrappers`.
   found: The fixture truncated only closing braces after a complete string, so the bounded scanner safely repaired the braces and classified it `WrapperDispatcherEmbedded` rather than exercising the fallback.
@@ -190,15 +190,15 @@ tdd_checkpoint:
 - timestamp: 2026-08-15T13:02:00-04:00
   checked: Focused F7 RED command `go test ./internal/engine -run '^TestObserveToolCallWrappers$' -count=1` with an unclosed-string narrated wrapper and quoted documentation negative.
   found: Only `narrated_truncated_hidden_wrapper` fails: `ObserveToolCallWrappers()` returns `none`, want `malformed`; the quoted documentation case remains `WrapperNone`.
-  implication: F7 is reproducible at the read-only telemetry seam, and the test constrains GREEN to distinguish malformed wrapper-shaped syntax from benign quoted prose without changing recovery success behavior.
+  implication: F7 is reproducible at the read-only observation seam, and the test constrains GREEN to distinguish malformed wrapper-shaped syntax from benign quoted prose. Corrective-response validation intentionally consumes that malformed disposition and fails closed.
 - timestamp: 2026-08-15T13:07:00-04:00
   checked: Minimal F7 telemetry implementation and focused observer counterfactual.
   found: `ObserveToolCallWrappers` now searches only its bounded scan prefix for the object/key start `{"tool_call"`; `TestObserveToolCallWrappers` passes, including narrated truncation, quoted documentation, and embedded hidden-wrapper non-execution.
-  implication: The one-line fallback change fixes the reproduced telemetry classification without changing the executable extraction path; a dedicated combined extraction regression remains before F7 is accepted.
+  implication: The one-line fallback change fixes the reproduced observation classification without changing the executable extraction path; its malformed disposition also tightens the approved fail-closed corrective-response boundary. A dedicated combined extraction regression remains before F7 is accepted.
 - timestamp: 2026-08-15T13:09:00-04:00
   checked: Combined F7 observation and hidden-wrapper extraction verification.
   found: `go test ./internal/engine -run '^(TestObserveToolCallWrappers|TestExtractToolCallWrappers_DeferredDispatcher)$' -count=1` passes; quoted documentation remains `WrapperNone`, narrated/truncated wrapper telemetry is malformed, and narrated hidden wrappers produce zero executable calls.
-  implication: F7 is GREEN as a telemetry-only fix with the execution boundary preserved; no recovery, adapter, HTTP, or typed-error path changed.
+  implication: F7 is GREEN with the execution boundary preserved: wrapper observation remains non-executable, while corrective-response validation intentionally rejects the malformed disposition with the existing typed error.
 - timestamp: 2026-08-15T13:12:00-04:00
   checked: F1 fresh-cache RED with `GOLANGCI_LINT_CACHE=$(mktemp -d) golangci-lint run ./...` before any comment change.
   found: The command exits 1 with exactly 12 revive exported-comment findings: one `WrapperNone` constant, five exported tool-protocol enum types, five leading constants for their blocks, and `HeaderContract`.

@@ -144,3 +144,23 @@ func TestToolResultProtocolCorrectiveBlocksAreStaticAndSafe(t *testing.T) {
 		}
 	}
 }
+
+func TestCorrectedToolResultResponseRequiresNonWrapperFinalProse(t *testing.T) {
+	policy := toolResultProtocolPolicy{tools: []canonical.ToolSpec{{Name: "lookup_item"}}}
+	tests := []struct {
+		name string
+		text string
+		want bool
+	}{
+		{name: "ordinary prose", text: "The example item is available.", want: true},
+		{name: "narrated truncated wrapper", text: `The caller would send {"tool_call":{"name":"lookup_item"`, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := correctedToolResultResponseIsFinalProse(policy, attemptObservation{Text: tt.text})
+			if got != tt.want {
+				t.Fatalf("correctedToolResultResponseIsFinalProse() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
