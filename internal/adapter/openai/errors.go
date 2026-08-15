@@ -109,7 +109,7 @@ func writeUnsupportedToolContractError(w http.ResponseWriter) {
 }
 
 func negotiateToolContract(w http.ResponseWriter, r *http.Request) (toolcontract.Metadata, bool) {
-	metadata, err := toolcontract.Parse(r.Header.Get(toolcontract.HeaderContract), r.Header.Get(toolcontract.HeaderCallRole))
+	metadata, err := toolcontract.ParseHeaders(r.Header)
 	if err != nil {
 		writeUnsupportedToolContractError(w)
 		return toolcontract.Metadata{}, false

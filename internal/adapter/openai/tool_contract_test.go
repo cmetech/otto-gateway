@@ -102,4 +102,24 @@ func TestOpenAIToolContract(t *testing.T) {
 			t.Fatal("error body exposed unsupported header value")
 		}
 	})
+
+	t.Run("conflicting duplicate versions fail closed before engine", func(t *testing.T) {
+		for _, versions := range [][]string{{"v1", "v2"}, {"v2", "v1"}} {
+			eng := &fakeEngine{collectResp: response}
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"selected-model","messages":[{"role":"user","content":"hello"}]}`))
+			req.Header.Set("Content-Type", "application/json")
+			for _, version := range versions {
+				req.Header.Add("X-Otto-Tool-Contract", version)
+			}
+			rec := httptest.NewRecorder()
+			newRouter(eng).ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("versions %q: status = %d, want %d; body = %s", versions, rec.Code, http.StatusBadRequest, rec.Body.String())
+			}
+			if eng.lastReq != nil {
+				t.Errorf("versions %q: conflicting duplicate contract reached engine", versions)
+			}
+		}
+	})
 }

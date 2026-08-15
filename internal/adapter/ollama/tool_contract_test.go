@@ -79,6 +79,22 @@ func TestOllamaToolContract(t *testing.T) {
 			t.Fatal("error body exposed unsupported header value")
 		}
 	})
+
+	t.Run("conflicting duplicate versions fail closed before engine", func(t *testing.T) {
+		for _, versions := range [][]string{{"v1", "v2"}, {"v2", "v1"}} {
+			eng := &fakeEngine{resp: response}
+			rec := doPostWithHeaders(t, newTestAdapter(eng, nil), "/chat", validBody, http.Header{
+				"X-Otto-Tool-Contract": versions,
+			})
+
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("versions %q: status = %d, want %d; body = %s", versions, rec.Code, http.StatusBadRequest, rec.Body.String())
+			}
+			if eng.lastReq != nil {
+				t.Errorf("versions %q: conflicting duplicate contract reached engine", versions)
+			}
+		}
+	})
 }
 
 func TestOllamaV1ToolChoice(t *testing.T) {

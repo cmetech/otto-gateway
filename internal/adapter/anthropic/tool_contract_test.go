@@ -1,7 +1,9 @@
 package anthropic
 
 import (
+	"context"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -80,6 +82,27 @@ func TestAnthropicToolContract(t *testing.T) {
 		}
 		if strings.Contains(rec.Body.String(), "private-version-canary") {
 			t.Fatal("error body exposed unsupported header value")
+		}
+	})
+
+	t.Run("conflicting duplicate versions fail closed before engine", func(t *testing.T) {
+		for _, versions := range [][]string{{"v1", "v2"}, {"v2", "v1"}} {
+			eng := &fakeEngine{collectResp: response}
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/messages", strings.NewReader(validBody))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("anthropic-version", "2023-06-01")
+			for _, version := range versions {
+				req.Header.Add("X-Otto-Tool-Contract", version)
+			}
+			rec := httptest.NewRecorder()
+			newTestAdapter(eng).ProtectedRouter().ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("versions %q: status = %d, want %d; body = %s", versions, rec.Code, http.StatusBadRequest, rec.Body.String())
+			}
+			if eng.lastReq != nil {
+				t.Errorf("versions %q: conflicting duplicate contract reached engine", versions)
+			}
 		}
 	})
 }

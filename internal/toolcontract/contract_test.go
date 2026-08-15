@@ -2,6 +2,7 @@ package toolcontract
 
 import (
 	"errors"
+	"net/http"
 	"strings"
 	"testing"
 )
@@ -82,6 +83,62 @@ func TestParseContractUnsupportedErrorDoesNotEchoValue(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), privateValue) {
 		t.Fatalf("Parse() error exposed contract value: %q", err)
+	}
+}
+
+func TestParseHeadersRejectsDuplicateContractValues(t *testing.T) {
+	for _, versions := range [][]string{
+		{"v1", "v2"},
+		{"v2", "v1"},
+		{"v1", "v1"},
+		{"", "v1"},
+	} {
+		header := make(http.Header)
+		for _, version := range versions {
+			header.Add(HeaderContract, version)
+		}
+
+		got, err := ParseHeaders(header)
+		if !errors.Is(err, ErrUnsupportedVersion) {
+			t.Errorf("ParseHeaders(%q) error = %v, want ErrUnsupportedVersion", versions, err)
+		}
+		if got != (Metadata{}) {
+			t.Errorf("ParseHeaders(%q) metadata = %+v, want zero value", versions, got)
+		}
+	}
+}
+
+func TestParseHeadersPreservesSingleValueAndDiagnosticCallRole(t *testing.T) {
+	tests := []struct {
+		name        string
+		header      http.Header
+		wantVersion string
+		wantRole    string
+	}{
+		{name: "absent", header: make(http.Header), wantRole: "unknown"},
+		{name: "single empty", header: http.Header{HeaderContract: []string{""}}, wantRole: "unknown"},
+		{name: "single v1", header: http.Header{HeaderContract: []string{"v1"}}, wantVersion: VersionV1, wantRole: "unknown"},
+		{
+			name: "duplicate diagnostic role does not block",
+			header: http.Header{
+				HeaderContract: []string{"v1"},
+				HeaderCallRole: []string{"post_tool", "private-operation-name"},
+			},
+			wantVersion: VersionV1,
+			wantRole:    "post_tool",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseHeaders(tt.header)
+			if err != nil {
+				t.Fatalf("ParseHeaders() error = %v", err)
+			}
+			if got.Version != tt.wantVersion || got.CallRole != tt.wantRole {
+				t.Errorf("ParseHeaders() = %+v, want {Version:%q CallRole:%q}", got, tt.wantVersion, tt.wantRole)
+			}
+		})
 	}
 }
 
