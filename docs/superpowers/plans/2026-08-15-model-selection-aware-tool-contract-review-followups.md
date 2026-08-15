@@ -151,7 +151,10 @@ In `.planning/debug/resolved/model-tool-review-findings.md`, change only F7 impl
 
 ```bash
 gofmt -w internal/engine/tool_result_protocol_test.go
-go test ./internal/engine -run '^(TestCorrectedToolResultResponseRequiresNonWrapperFinalProse|TestObserveToolCallWrappers|TestStream_ProseEmbeddedHiddenWrapperDoesNotUseDispatcher)$' -count=1
+go test ./internal/engine -run '^(TestCorrectedToolResultResponseRequiresNonWrapperFinalProse|TestObserveToolCallWrappers)$' -count=1
+go test ./internal/adapter/openai -run '^TestStream_ProseEmbeddedHiddenWrapperDoesNotUseDispatcher$' -count=1
+go test ./internal/adapter/ollama -run '^TestStream_ProseEmbeddedHiddenWrapperDoesNotUseDispatcher$' -count=1
+go test ./internal/adapter/anthropic -run '^(TestSSE|TestAnthropic)_ProseEmbeddedHiddenWrapperDoesNotUseDispatcher$' -count=1
 git diff --check
 git add internal/engine/tool_result_protocol_test.go .planning/debug/resolved/model-tool-review-findings.md
 git diff --cached --check
@@ -253,7 +256,10 @@ git commit -m "test: pin static tool prompt bytes"
 
 ```bash
 go test ./internal/toolcontract -run '^(TestParse|TestContractHeaderConstants)' -count=1
-go test ./internal/engine -run '^(TestToolResultProtocol|TestCorrectedToolResultResponse|TestObserveToolCallWrappers|TestBuildBlocks_|TestStream_ProseEmbeddedHiddenWrapperDoesNotUseDispatcher)' -count=1
+go test ./internal/engine -run '^(TestToolResultProtocol|TestCorrectedToolResultResponse|TestObserveToolCallWrappers|TestBuildBlocks_)' -count=1
+go test ./internal/adapter/openai -run '^TestStream_ProseEmbeddedHiddenWrapperDoesNotUseDispatcher$' -count=1
+go test ./internal/adapter/ollama -run '^TestStream_ProseEmbeddedHiddenWrapperDoesNotUseDispatcher$' -count=1
+go test ./internal/adapter/anthropic -run '^(TestSSE|TestAnthropic)_ProseEmbeddedHiddenWrapperDoesNotUseDispatcher$' -count=1
 ```
 
 - [ ] **Step 2: Run the full gates**
