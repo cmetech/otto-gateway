@@ -295,23 +295,27 @@ func encryptedEmailToken(text string) string {
 }
 
 type hookOnceHarness struct {
-	engine       *engine.Engine
-	ctx          context.Context
-	requestID    string
-	request      *canonical.ChatRequest
-	acp          *hookOnceACP
-	compress     *compress.Hook
-	logging      *LoggingHook
-	trace        *ChatTraceHook
-	traceOutput  *bytes.Buffer
-	pre          map[string]*hookOncePre
-	post         map[string]*hookOncePost
-	restorations *int
+	engine         *engine.Engine
+	ctx            context.Context
+	requestID      string
+	request        *canonical.ChatRequest
+	acp            *hookOnceACP
+	compress       *compress.Hook
+	logging        *LoggingHook
+	trace          *ChatTraceHook
+	traceOutput    *bytes.Buffer
+	pre            map[string]*hookOncePre
+	post           map[string]*hookOncePost
+	restorations   *int
+	modelRequests  *int
+	protocolEvents *int
 }
 
 func newHookOnceHarness(t *testing.T, failCorrection bool) *hookOnceHarness {
 	t.Helper()
 	restorations := 0
+	modelRequests := 0
+	protocolEvents := 0
 	service, err := privacy.NewService(privacy.Config{
 		DefaultProfile:  privacy.ProfileStandard,
 		RequestProfiles: []privacy.Profile{privacy.ProfileStandard},
@@ -362,6 +366,12 @@ func newHookOnceHarness(t *testing.T, failCorrection bool) *hookOnceHarness {
 	eng := engine.New(engine.Config{
 		Logger: logger,
 		ACP:    acpClient,
+		OnModelRequest: func(string) {
+			modelRequests++
+		},
+		OnToolProtocolEvent: func(engine.ToolProtocolEvent) {
+			protocolEvents++
+		},
 		PreHooks: []engine.PreHook{
 			pre["trace"], pre["request_id"], pre["compression"], pre["pii"], pre["logging"],
 		},
@@ -411,6 +421,7 @@ func newHookOnceHarness(t *testing.T, failCorrection bool) *hookOnceHarness {
 		engine: eng, ctx: ctx, requestID: requestID, request: request,
 		acp: acpClient, compress: compression, logging: logging, trace: trace,
 		traceOutput: traceOutput, pre: pre, post: post, restorations: &restorations,
+		modelRequests: &modelRequests, protocolEvents: &protocolEvents,
 	}
 }
 
@@ -493,5 +504,8 @@ func assertHookOnceCounts(t *testing.T, h *hookOnceHarness, wantNilPost bool, wa
 	}
 	if h.acp.newSessions != 1 || h.acp.setModels != 1 || h.acp.sequenceBegins != 1 || h.acp.sequenceEnds != 1 {
 		t.Errorf("ACP lifecycle = sessions:%d models:%d begin:%d end:%d, want all 1", h.acp.newSessions, h.acp.setModels, h.acp.sequenceBegins, h.acp.sequenceEnds)
+	}
+	if *h.modelRequests != 1 || *h.protocolEvents != 1 {
+		t.Errorf("recovery observations = model requests:%d protocol events:%d, want both 1", *h.modelRequests, *h.protocolEvents)
 	}
 }

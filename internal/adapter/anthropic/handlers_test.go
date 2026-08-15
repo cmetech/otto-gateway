@@ -1186,8 +1186,8 @@ func TestAnthropic_CoercesToolCallWrapper(t *testing.T) {
 	}
 }
 
-func TestAnthropic_DeferredWrapperUsesDispatcher(t *testing.T) {
-	wrapperText := `{"tool_call":{"name":"gitlab_list_group_projects","arguments":{"group":"sd-macs-att-rnam-hosting","recursive":true,"max_groups":50,"max_projects":100}}}`
+func TestToolContractAnthropic_DeferredWrapperUsesDispatcher(t *testing.T) {
+	wrapperText := `{"tool_call":{"name":"lookup_records","arguments":{"group":"example-team","recursive":true,"max_groups":50,"max_projects":100}}}`
 	eng := &fakeEngine{
 		collectResp: &canonical.ChatResponse{
 			Model: "auto",
@@ -1231,11 +1231,11 @@ func TestAnthropic_DeferredWrapperUsesDispatcher(t *testing.T) {
 	if toolUse.Name != "tool_call" {
 		t.Fatalf("outer tool_use name: got %q", toolUse.Name)
 	}
-	if toolUse.Input == nil || (*toolUse.Input)["name"] != "gitlab_list_group_projects" {
+	if toolUse.Input == nil || (*toolUse.Input)["name"] != "lookup_records" {
 		t.Fatalf("inner name: got input=%v", toolUse.Input)
 	}
 	inner, ok := (*toolUse.Input)["arguments"].(map[string]any)
-	if !ok || inner["group"] != "sd-macs-att-rnam-hosting" {
+	if !ok || inner["group"] != "example-team" {
 		t.Fatalf("inner arguments: %#v", (*toolUse.Input)["arguments"])
 	}
 	if resp.StopReason == nil || *resp.StopReason != "tool_use" {
@@ -1244,7 +1244,7 @@ func TestAnthropic_DeferredWrapperUsesDispatcher(t *testing.T) {
 }
 
 func TestAnthropic_ProseEmbeddedHiddenWrapperDoesNotUseDispatcher(t *testing.T) {
-	text := `For documentation: {"tool_call":{"name":"gitlab_list_group_projects","arguments":{"group":"sd-macs-att-rnam-hosting"}}}`
+	text := `For documentation: {"tool_call":{"name":"lookup_records","arguments":{"group":"example-team"}}}`
 	eng := &fakeEngine{
 		collectResp: &canonical.ChatResponse{
 			Model: "auto",

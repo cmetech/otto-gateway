@@ -609,13 +609,13 @@ func TestStream_ProseThenFencedWriteFile_SurfacesToolCall(t *testing.T) {
 	}
 }
 
-func TestStream_DeferredWrapperUsesDispatcher(t *testing.T) {
+func TestToolContractStream_DeferredWrapperUsesDispatcher(t *testing.T) {
 	defer goleak.VerifyNone(t)
 
 	chunks := []canonical.Chunk{
 		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "```json\n"}},
-		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: `{"tool_call":{"name":"gitlab_list_group_projects",`}},
-		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: `"arguments":{"group":"sd-macs-att-rnam-hosting","recursive":true,`}},
+		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: `{"tool_call":{"name":"lookup_records",`}},
+		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: `"arguments":{"group":"example-team","recursive":true,`}},
 		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: `"max_groups":50,"max_projects":100}}}`}},
 		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "\n```"}},
 	}
@@ -669,7 +669,7 @@ func TestStream_DeferredWrapperUsesDispatcher(t *testing.T) {
 	if err := json.Unmarshal([]byte(toolArgsJSON.String()), &outer); err != nil {
 		t.Fatalf("decode streamed dispatcher arguments: %v; arguments=%q", err, toolArgsJSON.String())
 	}
-	if outer.Name != "gitlab_list_group_projects" || outer.Arguments["group"] != "sd-macs-att-rnam-hosting" || outer.Arguments["recursive"] != true || outer.Arguments["max_groups"] != float64(50) || outer.Arguments["max_projects"] != float64(100) {
+	if outer.Name != "lookup_records" || outer.Arguments["group"] != "example-team" || outer.Arguments["recursive"] != true || outer.Arguments["max_groups"] != float64(50) || outer.Arguments["max_projects"] != float64(100) {
 		t.Fatalf("nested call changed: %+v", outer)
 	}
 	if finishReason != "tool_calls" {
@@ -683,7 +683,7 @@ func TestStream_DeferredWrapperUsesDispatcher(t *testing.T) {
 func TestStream_ProseEmbeddedHiddenWrapperDoesNotUseDispatcher(t *testing.T) {
 	defer goleak.VerifyNone(t)
 
-	text := `For documentation: {"tool_call":{"name":"gitlab_list_group_projects","arguments":{"group":"sd-macs-att-rnam-hosting"}}}`
+	text := `For documentation: {"tool_call":{"name":"lookup_records","arguments":{"group":"example-team"}}}`
 	body := driveGoldenWithReq(t,
 		[]canonical.Chunk{{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: text}}},
 		&canonical.FinalResult{StopReason: canonical.StopEndTurn},
