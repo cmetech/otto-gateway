@@ -122,8 +122,9 @@ regressed.
    than another prompt, prose leakage, direct execution, or model fallback.
 8. Initial recovery reuses one model, one ACP session, one prompt sequence, one watchdog, one
    request lifecycle, and at most one corrective prompt.
-9. Failed first-attempt and refusal bytes are withheld from streaming clients until Gateway has
-   selected corrected output, bounded replay, or a typed terminal error.
+9. First-attempt and refusal bytes are withheld from streaming clients until Gateway has selected
+   corrected output, first-attempt semantic fallback, bounded replay/live bypass, or a typed
+   operational error.
 10. Buffer-byte and chunk ceilings retain the approved fail-open replay behavior. Eligible bounded
     post-tool guards intentionally delay first-byte delivery until complete-response classification,
     including continuations without a current tool catalog. Cancellation, client disconnect, idle
@@ -142,14 +143,20 @@ regressed.
     envelopes. Ollama preserves its supported role-tool semantics. Empty and error results remain
     explicit rather than disappearing.
 15. Post-tool recovery is a separate final-answer policy. Only a high-confidence complete-response
-    provenance refusal is corrected. Ordinary prose and original legitimate tool calls pass
-    through under their existing semantics.
+    provenance refusal is corrected: its provenance target and claim must share one sentence, its
+    standalone first-person refusal or host-event denial may be at most one sentence adjacent, and
+    first-person phrases require lexical boundaries. Quoted/attributed first-person text is an
+    accepted limitation pending sanitized live-Kiro evidence. Ordinary prose and original
+    legitimate tool calls pass through under their existing semantics.
 16. The post-tool correction is static, uses the same explicit model and ACP session, never copies
     user text, model text, tool names, arguments, schemas, or tool output, and asks for final prose
     without another tool call.
-17. A corrected post-tool response must be nonempty final prose. A second refusal, malformed
-    wrapper, or corrective tool call becomes
-    `selected_model_tool_result_provenance_failed` after one correction.
+17. A corrected post-tool response must be nonempty final prose. If an in-bounds completed
+    correction is empty, repeats the refusal, contains a malformed wrapper, or emits a corrective
+    tool call, Gateway returns only the buffered first response and records
+    `fallback_first_attempt`. Prompt failure, timeout, worker death, terminal stream error, and
+    cancellation retain the typed/context error path; corrective buffer bypass retains the second
+    stream's replay/live handoff.
 18. OpenAI JSON/SSE, Anthropic JSON/SSE, and Ollama JSON/NDJSON expose behaviorally equivalent
     success and typed-error outcomes without leaking suppressed wrapper or refusal text.
 19. `unsupported_tool_contract_version`, `mandatory_tool_choice_not_supported`,
@@ -305,8 +312,11 @@ Attack the deterministic classifier with both false negatives and dangerous fals
   tool identity, arguments, schema, or connector details, and it must explicitly require prose with
   no further tool call.
 - Corrective output: ordinary prose, second refusal, empty text, malformed wrapper, exact wrapper,
-  native tool call, buffer bypass, timeout, worker death, and prompt failure.
-- Prove no refusal bytes precede corrected prose or the typed error on all streaming surfaces.
+  native tool call, buffer bypass, timeout, worker death, and prompt failure. Completed semantic
+  rejection must return the exact first response without leaking or executing the second response;
+  operational failures and buffer bypass must retain their distinct outcomes.
+- Prove no first-attempt bytes precede corrected prose, first-attempt fallback selection, bounded
+  replay/live bypass, or the typed operational error on any streaming surface.
 
 A false positive that suppresses a legitimate answer or tool call is **High**. A correction that
 executes another tool or incorporates untrusted result content is **Critical**.
@@ -322,9 +332,10 @@ on substring tests.
   `message_delta`, `message_stop`, stop reason, and native error before SSE headers.
 - Ollama JSON and NDJSON: object-shaped arguments, line boundaries, `done`, `done_reason`, and JSON
   error before NDJSON headers.
-- Exact dispatcher success, narrated-then-corrected success, second-failure typed error, auto
-  unchanged, optional prose, normal post-tool answer, corrected provenance answer, prompt-injection
-  result, and provenance terminal error in both streaming and non-streaming modes.
+- Exact dispatcher success, narrated-then-corrected success, initial second-failure typed error,
+  post-tool semantic fallback, auto unchanged, optional prose, normal post-tool answer, corrected
+  provenance answer, prompt-injection result, and provenance operational error in both streaming
+  and non-streaming modes.
 - Confirm raw wrapper, narrated text, refusal text, causes, schemas, arguments, and tool output are
   absent from error envelopes and suppressed success streams.
 - Confirm adapter reroute paths and PostHook aggregation do not double-render, double-hook, or
@@ -386,8 +397,9 @@ Assume the 3,000-plus added lines and green suite still miss the important compo
   merely absence of one canary in the final response.
 - Inspect every table-driven subtest for duplicated fixtures that make different labels exercise the
   same path without proving distinct behavior.
-- Review cap, cancellation, timeout, worker-death, prompt-failure, and corrective-failure tests for
-  deterministic synchronization. Sleeps and permissive upper bounds may hide logical races.
+- Review cap, cancellation, timeout, worker-death, prompt-failure, buffer-bypass, and semantic-
+  fallback tests for deterministic synchronization. Sleeps and permissive upper bounds may hide
+  logical races.
 - Search for skips, environment-gated live tests, cached results, overly broad regex filters, and
   assertions against mocks rather than public behavior.
 - Name the single highest-risk behavior not proved by the existing suite.

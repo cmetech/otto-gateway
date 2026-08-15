@@ -1,7 +1,7 @@
 # Model-Selection-Aware Tool Contract Pass-3 Follow-Ups
 
 **Date:** 2026-08-15
-**Status:** Approved design; pending implementation
+**Status:** Implemented; direct release-gate verification pending
 **Scope:** OTTO Gateway only
 
 ## Purpose

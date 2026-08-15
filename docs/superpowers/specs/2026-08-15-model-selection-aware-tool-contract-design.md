@@ -260,12 +260,14 @@ It is eligible only when:
 
 ### 10.2 Refusal classification
 
-The classifier is static and deterministic. A match requires a conjunction of provenance-specific claims, for example:
+The classifier is static and deterministic. A match requires:
 
-- the result is described as pre-scripted, fabricated, embedded transcript text, or not genuine; and
-- the response denies that a live or host tool event occurred, or explicitly refuses to use the result for that reason.
+- one sentence containing both a provenance target (`tool result`, `transcript`, or `tool event`) and a provenance claim (`pre-scripted`, `prescripted`, `fabricated`, `not genuine`, or the existing embedded-transcript conjunction); and
+- a first-person refusal or explicit host-event denial in that sentence or one immediately adjacent sentence.
 
-Generic caution, ordinary capability limitations, result-level errors, safety refusals, and normal final prose do not match. The classifier scans only the model response, never tool output.
+First-person phrases require lexical boundaries on both sides, so `API cannot use`, `CLI cannot use`, and `UI cannot use` do not contain the standalone phrase `I cannot use`. The provenance target and claim may not be assembled from different sentences; only the refusal or denial may be adjacent.
+
+Generic caution, ordinary capability limitations, result-level errors, safety refusals, and normal final prose do not match. The classifier scans only the model response, never tool output. Quoted or attributed first-person refusal text remains an accepted limitation until sanitized live-Kiro evidence justifies a less brittle rule.
 
 No model-based classifier or natural-language intent parser is introduced.
 
@@ -284,7 +286,8 @@ The prompt does not copy the result, response, user request, tool name, or argum
 ### 10.4 Outcome
 
 - Corrected prose is returned normally.
-- A second provenance refusal, malformed output, or corrective tool call returns `selected_model_tool_result_provenance_failed`.
+- If a completed, in-bounds correction is empty, repeats the provenance refusal, contains malformed wrapper-shaped output, or emits a corrective tool call, Gateway returns the buffered first response and records `fallback_first_attempt`. The rejected second response is neither released nor executed.
+- Corrective prompt failure, capture timeout, worker death, terminal stream error, or cancellation remains an operational failure. Corrective buffer bypass retains the existing second-stream replay/live handoff.
 - Ordinary post-tool prose passes through without retry.
 - A legitimate tool call in the original post-tool response remains governed by existing multi-tool behavior; only the provenance-refusal correction forbids a new call.
 
@@ -292,10 +295,10 @@ The prompt does not copy the result, response, user request, tool name, or argum
 
 Both guards reuse bounded preflight and the existing prompt-sequence machinery:
 
-For an eligible post-tool attempt that remains within the byte and chunk ceilings, Gateway intentionally waits for the complete model response before releasing the first byte. This complete-response TTFB is the cost of classifying the response as a whole while withholding a provenance refusal until correction or typed-error selection. Eligibility is based on the canonical tool result, not on whether the continuation repeats a current tool catalog. If either ceiling is crossed, the existing fail-open replay/live handoff remains unchanged.
+For an eligible post-tool attempt that remains within the byte and chunk ceilings, Gateway intentionally waits for the complete model response before releasing the first byte. This complete-response TTFB is the cost of classifying the response as a whole while withholding a provenance refusal until corrected output, first-attempt fallback, or typed operational error selection. Eligibility is based on the canonical tool result, not on whether the continuation repeats a current tool catalog. If either ceiling is crossed, the existing fail-open replay/live handoff remains unchanged.
 
 - At most one correction per HTTP request.
-- No failed or refusal bytes reach a streaming client before correction or typed error selection.
+- No first-attempt bytes reach a streaming client before Gateway selects corrected output, first-attempt fallback, bounded replay/live bypass, or a typed operational error.
 - Buffer and chunk-count ceilings retain fail-open replay behavior where already approved; no unbounded scan is added.
 - Cancellation and client disconnect terminate capture and correction promptly.
 - Watchdog ownership remains one per client request.
@@ -312,7 +315,7 @@ Gateway exposes protocol-native, privacy-safe errors:
 |---|---:|---|
 | `unsupported_tool_contract_version` | 400 | Nonempty contract version is unsupported |
 | `selected_model_tool_protocol_failed` | 502 | Initial explicit-model tool protocol failed after bounded recovery |
-| `selected_model_tool_result_provenance_failed` | 502 | Post-tool provenance refusal failed after bounded recovery |
+| `selected_model_tool_result_provenance_failed` | 502 | Post-tool recovery failed operationally before a completed semantic correction outcome |
 
 OpenAI, Anthropic, and Ollama render equivalent native shapes. Error messages never include model output, Kiro session details, prompts, schemas, arguments, tool output, credentials, or connector identifiers.
 
@@ -391,11 +394,11 @@ The implementation plan must cover at least:
 7. Directly declared prose wrappers preserve their explicitly justified behavior.
 8. Normal post-tool answers pass through without retry.
 9. A provenance-specific refusal receives one bounded final-answer correction.
-10. Corrected post-tool prose is returned without another tool requirement.
+10. Corrected post-tool prose is returned without another tool requirement; a completed semantic-invalid correction returns only the buffered first response.
 11. Prompt-injection text inside a tool result remains JSON-string data and is never copied into correction instructions.
 12. OpenAI and Anthropic tool-result carriers generate equivalent ACP envelopes.
 13. Streaming and non-streaming OpenAI, Anthropic, and Ollama responses and terminal errors are equivalent.
-14. Buffer bypass, cancellation, timeout, worker death, prompt failure, and corrective failure remain bounded.
+14. Buffer bypass, cancellation, timeout, worker death, and prompt failure remain bounded; completed semantic correction rejection records `fallback_first_attempt` without releasing the rejected correction.
 15. Hook and metric counts remain exactly once per client request, with a separate internal recovery outcome.
 16. A session experiment records full-replay and delta behavior without enabling header propagation.
 17. Contract absence preserves legacy behavior; v1 is echoed; unknown versions fail safely.

@@ -1,9 +1,9 @@
 ---
 slug: pass3-classifier-fallback
-status: investigating
+status: resolved
 trigger: "Address confirmed pass-3 P1/P2 classifier false positives, accept P3, and make semantic correction failures non-destructive"
-created: 2026-08-15T16:00:00-04:00
-updated: 2026-08-15T16:00:00-04:00
+created: 2026-08-15T13:45:00-04:00
+updated: 2026-08-15T14:03:33-04:00
 ---
 
 # Debug Session: pass3-classifier-fallback
@@ -24,10 +24,10 @@ DATA_END
 
 ## Current Focus
 
-hypothesis: Confirmed — sentence-pair concatenation loses subject binding, substring refusal checks lack word boundaries, and semantic correction failure discards an already buffered first response.
-test: Add strict RED classifier and recovery tests before any production change.
-expecting: P1/P2 become false; N2 adjacent refusals remain true; P3 stays a documented accepted limitation; completed semantic correction failures replay only the first response.
-next_action: Commit the approved design delta, write the implementation plan, then begin the P1/P2 RED cycle.
+hypothesis: Confirmed and resolved — sentence-pair concatenation lost subject binding, substring refusal checks lacked word boundaries, and semantic correction failure discarded an already buffered first response.
+test: Focused classifier, recovery, cancellation, buffer-bypass, and metrics tests exercise the corrected behavior and unchanged operational branches.
+expecting: P1/P2 are false; N2 adjacent refusals remain true; P3 stays a documented accepted limitation; completed semantic correction failures replay only the first response.
+next_action: Run the full direct Gateway release-gate verification without deployment or cross-repository action.
 reasoning_checkpoint:
   hypothesis: "Binding target and provenance claim to one sentence while allowing only the refusal in an adjacent sentence fixes P1 without reopening N2; bounded semantic fallback removes false-positive 502s without hiding operational failures."
   confirming_evidence:
@@ -40,19 +40,35 @@ reasoning_checkpoint:
 tdd_checkpoint:
   test_file: internal/engine/tool_result_protocol_test.go
   test_name: TestToolResultProtocolRefusalClassifierRequiresConjunction
-  status: pending
-  failure_output: ""
+  status: green
+  failure_output: "RED returned classifier=true for the P1 invoice sentence and API/CLI/UI P2 variants; GREEN passed the focused classifier and full engine package tests."
 
 ## Evidence
 
-- timestamp: 2026-08-15T16:00:00-04:00
+- timestamp: 2026-08-15T13:45:00-04:00
   checked: Exact HEAD classifier with disposable P1/P2/P3 probes.
   found: P1, API/CLI/UI P2 variants, and P3 all return true.
   implication: All three mechanisms are confirmed; P1/P2 require fixes and P3 must be recorded as an accepted limitation rather than patched with attribution heuristics.
-- timestamp: 2026-08-15T16:05:00-04:00
+- timestamp: 2026-08-15T13:47:00-04:00
   checked: `recoverToolResultProtocol` and bounded capture ownership.
   found: A fully captured first response is retained in `first.stream` as a replay stream. Operational errors and buffer bypass branch before the completed second response reaches semantic validation.
   implication: A fallback can be limited to completed, in-bounds semantic correction failures while preserving cancellation, timeout, prompt failure, worker death, and buffer-bypass behavior.
+- timestamp: 2026-08-15T14:00:00-04:00
+  checked: `go test ./internal/engine -run '^TestToolResultProtocolRefusalClassifierRequiresConjunction$' -count=1` before classifier production changes.
+  found: The focused test failed on exactly P1 and the API/CLI/UI P2 cases.
+  implication: The new fixtures reproduced the confirmed mechanisms rather than failing for setup or compilation reasons.
+- timestamp: 2026-08-15T14:01:00-04:00
+  checked: Focused classifier test and `go test ./internal/engine -count=1` after sentence binding and lexical boundaries.
+  found: Both commands passed; existing N2 sentence-order positives and the three-sentence-gap negative remained green.
+  implication: P1/P2 closed without reopening the pass-2 false-negative class.
+- timestamp: 2026-08-15T14:02:00-04:00
+  checked: Focused semantic-fallback recovery test before the engine production change.
+  found: Repeated refusal, empty correction, malformed wrapper, and corrective tool call all returned the typed post-tool error instead of the first response.
+  implication: The recovery test observed the old destructive behavior before implementation.
+- timestamp: 2026-08-15T14:03:00-04:00
+  checked: Focused recovery, cancellation, corrective buffer-bypass, engine-package, and metrics-package tests after implementation.
+  found: Semantic-invalid completed corrections returned only the first response with one fallback event; prompt error, timeout, worker death, and cancellation remained errors; corrective buffer bypass streamed the second attempt; the closed metric accepted `fallback_first_attempt`.
+  implication: The fallback is restricted to completed semantic rejection and preserves the distinct operational branches.
 
 ## Eliminated
 
@@ -63,7 +79,17 @@ tdd_checkpoint:
 
 ## Resolution
 
-root_cause: ""
-fix: ""
-verification: ""
-files_changed: []
+root_cause: "The sentence-pair classifier combined unrelated subjects and used unbounded substring checks; completed semantic rejection discarded an already bounded first response."
+fix: "Bind the provenance target and claim to one sentence, require standalone first-person refusal phrases, and replay the first response only after completed semantic correction rejection."
+verification: "Focused classifier, semantic-fallback, operational-failure, cancellation, corrective-buffer-bypass, engine-package, and metrics-package tests passed. The full direct Gateway release gate remains the next action."
+files_changed:
+  - internal/engine/tool_result_protocol.go
+  - internal/engine/tool_result_protocol_test.go
+  - internal/engine/engine.go
+  - internal/engine/tool_protocol.go
+  - internal/engine/tool_result_protocol_recovery_test.go
+  - internal/metrics/metrics.go
+  - internal/metrics/kiro_test.go
+  - docs/superpowers/specs/2026-08-15-model-selection-aware-tool-contract-design.md
+  - docs/superpowers/specs/2026-08-15-model-selection-aware-tool-contract-pass3-followups-design.md
+  - docs/reviews/2026-08-15-model-selection-aware-tool-contract-adversarial-review-prompt.md
