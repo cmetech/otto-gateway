@@ -41,6 +41,9 @@ const (
 	OutcomeFailed ToolProtocolOutcome = "failed"
 	// OutcomeBufferBypass indicates that bounded preflight failed open without retry.
 	OutcomeBufferBypass ToolProtocolOutcome = "buffer_bypass"
+	// OutcomeFallbackFirstAttempt indicates that a completed semantic correction
+	// was rejected and the bounded first attempt was returned instead.
+	OutcomeFallbackFirstAttempt ToolProtocolOutcome = "fallback_first_attempt"
 )
 
 // ToolProtocolContractVersion is the bounded negotiated contract version used

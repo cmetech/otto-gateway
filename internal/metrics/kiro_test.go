@@ -113,7 +113,7 @@ func TestMetrics_ToolProtocolEventsAcceptOnlyClosedReasonsAndOutcomes(t *testing
 		"embedded_dispatcher_wrapper",
 		"tool_result_provenance_refusal",
 	}
-	outcomes := []string{"first_attempt", "corrected", "failed", "buffer_bypass"}
+	outcomes := []string{"first_attempt", "corrected", "failed", "buffer_bypass", "fallback_first_attempt"}
 
 	for _, reason := range reasons {
 		m.RecordToolProtocolEvent("known-model", reason, "")

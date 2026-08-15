@@ -197,7 +197,7 @@ func validToolProtocolReason(reason string) bool {
 
 func validToolProtocolOutcome(outcome string) bool {
 	switch outcome {
-	case "first_attempt", "corrected", "failed", "buffer_bypass":
+	case "first_attempt", "corrected", "failed", "buffer_bypass", "fallback_first_attempt":
 		return true
 	default:
 		return false

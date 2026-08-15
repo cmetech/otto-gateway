@@ -510,7 +510,13 @@ func (e *Engine) recoverToolResultProtocol(
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return fail(1, ctxErr)
 	}
-	return fail(1, errors.New("engine: selected-model tool result correction failed"))
+	finishFullyCaptured(first.stream)
+	e.observeToolProtocol(ctx, req, ToolProtocolEvent{
+		Model: req.Model, Reason: reason, Outcome: OutcomeFallbackFirstAttempt,
+		WrapperDisposition: wrapperDisposition,
+		CorrectiveAttempts: 1,
+	})
+	return first.stream, nil
 }
 
 func (e *Engine) recoverToolProtocol(
