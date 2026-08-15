@@ -131,6 +131,11 @@ const messagesBodyCap int64 = 4 << 20
 func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 	observation := newRequestObservation()
 	defer func() { a.observeRequest(observation) }()
+	contractMetadata, ok := negotiateToolContract(w, r)
+	if !ok {
+		observation.Outcome = canonical.CodeUnsupportedToolContractVersion
+		return
+	}
 
 	// D-07: anthropic-version required.
 	if r.Header.Get("anthropic-version") == "" {
@@ -179,6 +184,8 @@ func (a *Adapter) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	req := wireToChatRequest(&wire, r, a.cfg.Logger)
+	req.ToolContractVersion = contractMetadata.Version
+	req.CallRole = contractMetadata.CallRole
 
 	// Phase 8 PLUG-03 — stamp the bearer credential onto ctx so AuthHook
 	// (canonical-layer Pre hook) can validate. The auth.Bearer chi

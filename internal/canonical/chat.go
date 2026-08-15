@@ -74,6 +74,12 @@ type ChatRequest struct {
 	// ToolChoice is the dormant Phase 6 tool-choice directive. Zero-
 	// valued in Phase 2.
 	ToolChoice *ToolChoice
+	// ToolContractVersion is the validated request-scoped tool contract.
+	// Empty preserves legacy behavior.
+	ToolContractVersion string
+	// CallRole is a bounded diagnostic role. It does not authorize tools,
+	// select models, or route sessions.
+	CallRole string
 	// MaxTokens is the soft cap on assistant output tokens. Zero
 	// means no override.
 	MaxTokens int

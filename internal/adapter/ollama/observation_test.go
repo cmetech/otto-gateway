@@ -70,6 +70,40 @@ func TestRequestObservation_InvalidRequest(t *testing.T) {
 	})
 }
 
+func TestRequestObservation_ToolContractErrorsUseClosedCodes(t *testing.T) {
+	tests := []struct {
+		name       string
+		path       string
+		body       string
+		contract   string
+		want       string
+		wantStream string
+	}{
+		{
+			name: "unsupported version", path: "/chat",
+			body:     `{"model":"selected","messages":[{"role":"user","content":"hello"}],"stream":true}`,
+			contract: "private-canary", want: canonical.CodeUnsupportedToolContractVersion, wantStream: "unknown",
+		},
+		{
+			name: "mandatory generate choice", path: "/generate",
+			body:     `{"model":"selected","prompt":"hello","stream":true,"tool_choice":"required"}`,
+			contract: "v1", want: canonical.CodeMandatoryToolChoiceNotSupported, wantStream: "true",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			adapter, observations := requestObservationAdapter(&fakeEngine{}, nil)
+			request := httptest.NewRequestWithContext(t.Context(), http.MethodPost, tt.path, strings.NewReader(tt.body))
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("X-Otto-Tool-Contract", tt.contract)
+			adapter.ProtectedRouter().ServeHTTP(httptest.NewRecorder(), request)
+			assertOllamaObservation(t, *observations, RequestObservation{
+				Outcome: tt.want, Stream: tt.wantStream, SessionMode: "unknown",
+			})
+		})
+	}
+}
+
 func TestRequestObservation_ChatAndGenerateSuccess(t *testing.T) {
 	tests := []struct {
 		name string

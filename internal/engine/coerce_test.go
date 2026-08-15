@@ -669,6 +669,44 @@ func TestExtractToolCallWrappers_DeferredDispatcher(t *testing.T) {
 	})
 }
 
+func TestObserveToolCallWrappers(t *testing.T) {
+	dispatcher := []canonical.ToolSpec{toolCallDispatcher()}
+	direct := []canonical.ToolSpec{toolCallDispatcher(), weatherTool()}
+	hidden := `{"tool_call":{"name":"deferred_lookup","arguments":{"query":"example"}}}`
+	tests := []struct {
+		name  string
+		text  string
+		tools []canonical.ToolSpec
+		want  WrapperDisposition
+	}{
+		{name: "exact hidden wrapper", text: hidden, tools: dispatcher, want: WrapperDispatcherExact},
+		{name: "narrated hidden wrapper", text: "I will look that up now.\n" + hidden, tools: dispatcher, want: WrapperDispatcherEmbedded},
+		{name: "malformed hidden wrapper", text: `{"tool_call":{"name":"deferred_lookup"}}`, tools: dispatcher, want: WrapperMalformed},
+		{name: "narrated truncated hidden wrapper", text: `I will look that up now. {"tool_call":{"name":"deferred_lookup","arguments":{"query":"example`, tools: dispatcher, want: WrapperMalformed},
+		{name: "direct offered wrapper in prose", text: `Calling now: {"tool_call":{"name":"get_weather","arguments":{"location":"Boston"}}}`, tools: direct, want: WrapperDirect},
+		{name: "documentation prose", text: `The "tool_call" object contains name and arguments fields.`, tools: dispatcher, want: WrapperNone},
+		{name: "multiple hidden fragments", text: hidden + "\n" + hidden, tools: dispatcher, want: WrapperMalformed},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ObserveToolCallWrappers(tt.text, tt.tools); got != tt.want {
+				t.Errorf("ObserveToolCallWrappers() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+
+	t.Run("embedded hidden observation cannot surface a call", func(t *testing.T) {
+		text := "I will look that up now.\n" + hidden
+		if got := ObserveToolCallWrappers(text, dispatcher); got != WrapperDispatcherEmbedded {
+			t.Fatalf("disposition = %q, want %q", got, WrapperDispatcherEmbedded)
+		}
+		if calls := ExtractToolCallWrappers(text, dispatcher); len(calls) != 0 {
+			t.Fatalf("read-only observation made hidden prose executable: %+v", calls)
+		}
+	})
+}
+
 // ExampleCoerceToolCall is a runnable godoc example (TRST-07). The
 // Output block is validated by `go test -run Example`. No suffix
 // (CoerceToolCall is exported, so the Go test framework expects the

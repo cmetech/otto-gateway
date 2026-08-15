@@ -46,6 +46,8 @@ func classifyRequestError(err error) string {
 			return canonical.CodeSelectedModelActivationFailed
 		case canonical.CodeSelectedModelToolProtocolFailed:
 			return canonical.CodeSelectedModelToolProtocolFailed
+		case canonical.CodeSelectedModelToolResultProvenanceFailed:
+			return canonical.CodeSelectedModelToolResultProvenanceFailed
 		}
 	}
 	return "upstream_error"

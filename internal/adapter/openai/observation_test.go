@@ -74,6 +74,18 @@ func TestRequestObservation_InvalidRequest(t *testing.T) {
 	})
 }
 
+func TestRequestObservation_ToolContractErrorUsesClosedCode(t *testing.T) {
+	adapter, observations := requestObservationsAdapter(&fakeEngine{})
+	request := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"selected","messages":[{"role":"user","content":"hello"}]}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Otto-Tool-Contract", "private-canary")
+	adapter.handleChatCompletions(httptest.NewRecorder(), request)
+	assertOpenAIObservation(t, *observations, RequestObservation{
+		Outcome: canonical.CodeUnsupportedToolContractVersion, Stream: "unknown", SessionMode: "unknown",
+	})
+}
+
 func TestRequestObservation_NonStreamingSuccess(t *testing.T) {
 	adapter, observations := requestObservationsAdapter(&fakeEngine{collectResp: successfulOpenAIResponse()})
 	invokeOpenAIHandler(t, adapter, "/v1/chat/completions",

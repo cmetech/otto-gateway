@@ -148,7 +148,7 @@ func TestSSE_CoercesToolCallWrapper_EmitsToolUseFrames(t *testing.T) {
 	}
 }
 
-func TestSSE_DeferredWrapperUsesDispatcher(t *testing.T) {
+func TestToolContractSSE_DeferredWrapperUsesDispatcher(t *testing.T) {
 	defer goleak.VerifyNone(t)
 	cf := newCountingFlusher()
 	e := newEmitter(cf)
@@ -157,8 +157,8 @@ func TestSSE_DeferredWrapperUsesDispatcher(t *testing.T) {
 	body := driveTextChunks(
 		t, e, cf, canonical.StopEndTurn,
 		"```json\n",
-		`{"tool_call":{"name":"gitlab_list_group_projects",`,
-		`"arguments":{"group":"sd-macs-att-rnam-hosting","recursive":true,`,
+		`{"tool_call":{"name":"lookup_records",`,
+		`"arguments":{"group":"example-team","recursive":true,`,
 		`"max_groups":50,"max_projects":100}}}`,
 		"\n```",
 	)
@@ -180,7 +180,7 @@ func TestSSE_DeferredWrapperUsesDispatcher(t *testing.T) {
 	if err := json.Unmarshal([]byte(strings.Join(payloads, "")), &outer); err != nil {
 		t.Fatalf("decode outer dispatcher arguments: %v; payloads=%q", err, payloads)
 	}
-	if outer.Name != "gitlab_list_group_projects" || outer.Arguments["group"] != "sd-macs-att-rnam-hosting" || outer.Arguments["recursive"] != true || outer.Arguments["max_groups"] != float64(50) || outer.Arguments["max_projects"] != float64(100) {
+	if outer.Name != "lookup_records" || outer.Arguments["group"] != "example-team" || outer.Arguments["recursive"] != true || outer.Arguments["max_groups"] != float64(50) || outer.Arguments["max_projects"] != float64(100) {
 		t.Fatalf("nested call changed: %+v", outer)
 	}
 	wantSeq := []string{"content_block_start", "content_block_delta", "content_block_stop", "message_delta", "message_stop"}
@@ -200,7 +200,7 @@ func TestSSE_ProseEmbeddedHiddenWrapperDoesNotUseDispatcher(t *testing.T) {
 	cf := newCountingFlusher()
 	e := newEmitter(cf)
 	e.tools = []canonical.ToolSpec{deferredDispatcherSpec()}
-	text := `For documentation: {"tool_call":{"name":"gitlab_list_group_projects","arguments":{"group":"sd-macs-att-rnam-hosting"}}}`
+	text := `For documentation: {"tool_call":{"name":"lookup_records","arguments":{"group":"example-team"}}}`
 
 	body := driveTextChunks(t, e, cf, canonical.StopEndTurn, text)
 	if strings.Contains(body, `"type":"tool_use"`) {

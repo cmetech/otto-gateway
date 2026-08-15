@@ -693,11 +693,11 @@ func TestStream_ProseThenFencedWrapper_SurfacesToolCall(t *testing.T) {
 	}
 }
 
-func TestStream_DeferredWrapperUsesDispatcher(t *testing.T) {
+func TestToolContractStream_DeferredWrapperUsesDispatcher(t *testing.T) {
 	chunks := []canonical.Chunk{
 		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "```json\n"}},
-		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: `{"tool_call":{"name":"gitlab_list_group_projects",`}},
-		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: `"arguments":{"group":"sd-macs-att-rnam-hosting","recursive":true,`}},
+		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: `{"tool_call":{"name":"lookup_records",`}},
+		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: `"arguments":{"group":"example-team","recursive":true,`}},
 		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: `"max_groups":50,"max_projects":100}}}`}},
 		{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: "\n```"}},
 	}
@@ -731,11 +731,11 @@ func TestStream_DeferredWrapperUsesDispatcher(t *testing.T) {
 		t.Fatalf("terminal dispatcher shape: %+v", done)
 	}
 	call := done.Message.ToolCalls[0]
-	if call.Function.Name != "tool_call" || call.Function.Arguments["name"] != "gitlab_list_group_projects" {
+	if call.Function.Name != "tool_call" || call.Function.Arguments["name"] != "lookup_records" {
 		t.Fatalf("dispatcher call changed: %+v", call)
 	}
 	inner, ok := call.Function.Arguments["arguments"].(map[string]any)
-	if !ok || inner["group"] != "sd-macs-att-rnam-hosting" || inner["recursive"] != true || inner["max_groups"] != float64(50) || inner["max_projects"] != float64(100) {
+	if !ok || inner["group"] != "example-team" || inner["recursive"] != true || inner["max_groups"] != float64(50) || inner["max_projects"] != float64(100) {
 		t.Fatalf("inner arguments changed: %#v", call.Function.Arguments["arguments"])
 	}
 	if done.Message.Content != "" || strings.Contains(w.Body.String(), `\"tool_call\"`) || strings.Contains(w.Body.String(), "```json") {
@@ -744,7 +744,7 @@ func TestStream_DeferredWrapperUsesDispatcher(t *testing.T) {
 }
 
 func TestStream_ProseEmbeddedHiddenWrapperDoesNotUseDispatcher(t *testing.T) {
-	text := `For documentation: {"tool_call":{"name":"gitlab_list_group_projects","arguments":{"group":"sd-macs-att-rnam-hosting"}}}`
+	text := `For documentation: {"tool_call":{"name":"lookup_records","arguments":{"group":"example-team"}}}`
 	w := httptest.NewRecorder()
 	run := newFakeRunHandle(
 		[]canonical.Chunk{{Kind: canonical.ChunkKindText, Text: &canonical.TextChunk{Content: text}}},

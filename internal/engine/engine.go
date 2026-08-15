@@ -276,7 +276,7 @@ func (e *Engine) Run(ctx context.Context, req *canonical.ChatRequest) (*Run, err
 		if err := e.cfg.ACP.SetModel(ctx, sid, req.Model); err != nil {
 			e.cfg.ACP.Cancel(sid)
 			runErrCleanup()
-			e.observeToolProtocol(ctx, ToolProtocolEvent{
+			e.observeToolProtocol(ctx, req, ToolProtocolEvent{
 				Model: req.Model, Reason: ReasonActivationFailed,
 				Outcome: OutcomeFailed, CorrectiveAttempts: 0, RecommendAuto: true,
 			})
@@ -287,7 +287,9 @@ func (e *Engine) Run(ctx context.Context, req *canonical.ChatRequest) (*Run, err
 		}
 	}
 
-	policy, guarded := toolProtocolPolicyFor(req)
+	policy, initialToolGuarded := toolProtocolPolicyFor(req)
+	toolResultPolicy, toolResultGuarded := toolResultProtocolPolicyFor(req)
+	guarded := initialToolGuarded || toolResultGuarded
 	var rawFinishSequence func()
 	var finishSequenceOnce sync.Once
 	finishSequence := func() {
@@ -304,12 +306,16 @@ func (e *Engine) Run(ctx context.Context, req *canonical.ChatRequest) (*Run, err
 			if beginErr != nil {
 				e.cfg.ACP.Cancel(sid)
 				runErrCleanup()
-				e.observeToolProtocol(ctx, ToolProtocolEvent{
+				e.observeToolProtocol(ctx, req, ToolProtocolEvent{
 					Model: req.Model, Outcome: OutcomeFailed,
 					CorrectiveAttempts: 0, RecommendAuto: true,
 				})
+				failureCode := canonical.CodeSelectedModelToolProtocolFailed
+				if toolResultGuarded {
+					failureCode = canonical.CodeSelectedModelToolResultProvenanceFailed
+				}
 				return nil, &canonical.SelectedModelError{
-					Code:  canonical.CodeSelectedModelToolProtocolFailed,
+					Code:  failureCode,
 					Cause: beginErr,
 				}
 			}
@@ -328,7 +334,7 @@ func (e *Engine) Run(ctx context.Context, req *canonical.ChatRequest) (*Run, err
 		e.cfg.ACP.Cancel(sid)
 		runErrCleanup()
 		if guarded {
-			e.observeToolProtocol(ctx, ToolProtocolEvent{
+			e.observeToolProtocol(ctx, req, ToolProtocolEvent{
 				Model: req.Model, Outcome: OutcomeFailed,
 				CorrectiveAttempts: 0, RecommendAuto: false,
 			})
@@ -379,9 +385,16 @@ func (e *Engine) Run(ctx context.Context, req *canonical.ChatRequest) (*Run, err
 		e.cfg.ACP.Cancel(sid)
 	})
 
-	if guarded {
+	if initialToolGuarded {
 		stream, err = e.recoverToolProtocol(
 			ctx, req, sid, stream, policy, finishSequence, stopWatchdog, runErrCleanup,
+		)
+		if err != nil {
+			return nil, err
+		}
+	} else if toolResultGuarded {
+		stream, err = e.recoverToolResultProtocol(
+			ctx, req, sid, stream, toolResultPolicy, finishSequence, stopWatchdog, runErrCleanup,
 		)
 		if err != nil {
 			return nil, err
@@ -397,6 +410,115 @@ func (e *Engine) Run(ctx context.Context, req *canonical.ChatRequest) (*Run, err
 	}, nil
 }
 
+func (e *Engine) recoverToolResultProtocol(
+	ctx context.Context,
+	req *canonical.ChatRequest,
+	sid string,
+	firstStream Stream,
+	policy toolResultProtocolPolicy,
+	finishSequence func(),
+	stopWatchdog func() bool,
+	runErrCleanup func(),
+) (Stream, error) {
+	const reason = ReasonToolResultProvenanceRefusal
+	wrapperDisposition := WrapperNone
+	fail := func(attempts int, cause error) (Stream, error) {
+		ctxErr := ctx.Err()
+		if stopWatchdog != nil {
+			stopWatchdog()
+		}
+		finishSequence()
+		e.cfg.ACP.Cancel(sid)
+		runErrCleanup()
+		e.observeToolProtocol(ctx, req, ToolProtocolEvent{
+			Model: req.Model, Reason: reason, Outcome: OutcomeFailed,
+			WrapperDisposition: wrapperDisposition,
+			CorrectiveAttempts: attempts, RecommendAuto: ctxErr == nil,
+		})
+		if ctxErr != nil {
+			return nil, fmt.Errorf("engine: selected-model tool result context: %w", ctxErr)
+		}
+		return nil, &canonical.SelectedModelError{
+			Code:  canonical.CodeSelectedModelToolResultProvenanceFailed,
+			Cause: cause,
+		}
+	}
+
+	finishFullyCaptured := func(stream Stream) {
+		if _, live := stream.(*prefixLiveStream); !live {
+			finishSequence()
+		}
+	}
+
+	// An empty capture policy deliberately prevents a tool call from ending
+	// capture early. The first response must be fully buffered to classify a
+	// provenance refusal, and a corrective tool call must be rejected before
+	// any bytes are released.
+	capturePolicy := toolProtocolPolicy{}
+	first, err := captureToolProtocolAttempt(
+		ctx, firstStream, e.cfg.StreamIdleTimeout, capturePolicy, nil, finishSequence,
+	)
+	if err != nil {
+		return fail(0, err)
+	}
+	if first.observation.BufferBypass {
+		e.observeToolProtocol(ctx, req, ToolProtocolEvent{
+			Model: req.Model, Outcome: OutcomeBufferBypass, WrapperDisposition: wrapperDisposition,
+		})
+		return first.stream, nil
+	}
+	wrapperDisposition = ObserveToolCallWrappers(first.observation.Text, policy.tools)
+	if !toolResultAttemptNeedsCorrection(policy, first.observation) {
+		finishFullyCaptured(first.stream)
+		e.observeToolProtocol(ctx, req, ToolProtocolEvent{
+			Model: req.Model, Outcome: OutcomeFirstAttempt, WrapperDisposition: wrapperDisposition,
+		})
+		return first.stream, nil
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return fail(0, ctxErr)
+	}
+
+	secondStream, err := e.cfg.ACP.Prompt(ctx, sid, toolResultCorrectiveBlocks())
+	if err != nil {
+		return fail(1, err)
+	}
+	e.cfg.Logger.Debug("engine.prompt.tool_result_corrective.sent")
+	second, err := captureToolProtocolAttempt(
+		ctx, secondStream, e.cfg.StreamIdleTimeout, capturePolicy, nil, finishSequence,
+	)
+	if err != nil {
+		return fail(1, err)
+	}
+	if second.observation.BufferBypass {
+		e.observeToolProtocol(ctx, req, ToolProtocolEvent{
+			Model: req.Model, Reason: reason, Outcome: OutcomeBufferBypass,
+			WrapperDisposition: wrapperDisposition,
+			CorrectiveAttempts: 1,
+		})
+		return second.stream, nil
+	}
+	if correctedToolResultResponseIsFinalProse(policy, second.observation) {
+		finishFullyCaptured(second.stream)
+		e.observeToolProtocol(ctx, req, ToolProtocolEvent{
+			Model: req.Model, Reason: reason, Outcome: OutcomeCorrected,
+			WrapperDisposition: wrapperDisposition,
+			CorrectiveAttempts: 1,
+		})
+		return second.stream, nil
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return fail(1, ctxErr)
+	}
+	finishFullyCaptured(first.stream)
+	e.observeToolProtocol(ctx, req, ToolProtocolEvent{
+		Model: req.Model, Reason: reason, Outcome: OutcomeFallbackFirstAttempt,
+		WrapperDisposition: wrapperDisposition,
+		CorrectiveAttempts: 1,
+	})
+	return first.stream, nil
+}
+
 func (e *Engine) recoverToolProtocol(
 	ctx context.Context,
 	req *canonical.ChatRequest,
@@ -407,6 +529,7 @@ func (e *Engine) recoverToolProtocol(
 	stopWatchdog func() bool,
 	runErrCleanup func(),
 ) (Stream, error) {
+	wrapperDisposition := WrapperNone
 	fail := func(reason ToolProtocolReason, attempts int, cause error) (Stream, error) {
 		ctxErr := ctx.Err()
 		if stopWatchdog != nil {
@@ -415,8 +538,9 @@ func (e *Engine) recoverToolProtocol(
 		finishSequence()
 		e.cfg.ACP.Cancel(sid)
 		runErrCleanup()
-		e.observeToolProtocol(ctx, ToolProtocolEvent{
+		e.observeToolProtocol(ctx, req, ToolProtocolEvent{
 			Model: req.Model, Reason: reason, Outcome: OutcomeFailed,
+			WrapperDisposition: wrapperDisposition,
 			CorrectiveAttempts: attempts, RecommendAuto: ctxErr == nil,
 		})
 		if ctxErr != nil {
@@ -441,18 +565,19 @@ func (e *Engine) recoverToolProtocol(
 		return fail("", 0, err)
 	}
 	if first.observation.BufferBypass {
-		e.observeToolProtocol(ctx, ToolProtocolEvent{
-			Model: req.Model, Outcome: OutcomeBufferBypass,
+		e.observeToolProtocol(ctx, req, ToolProtocolEvent{
+			Model: req.Model, Outcome: OutcomeBufferBypass, WrapperDisposition: wrapperDisposition,
 			CorrectiveAttempts: 0,
 		})
 		return first.stream, nil
 	}
+	wrapperDisposition = ObserveToolCallWrappers(first.observation.Text, policy.tools)
 
 	reason := classifyToolProtocolAttempt(policy, first.observation, e.cfg.ToolAliases)
 	if reason == "" {
 		finishFullyCaptured(first.stream)
-		e.observeToolProtocol(ctx, ToolProtocolEvent{
-			Model: req.Model, Outcome: OutcomeFirstAttempt,
+		e.observeToolProtocol(ctx, req, ToolProtocolEvent{
+			Model: req.Model, Outcome: OutcomeFirstAttempt, WrapperDisposition: wrapperDisposition,
 			CorrectiveAttempts: 0,
 		})
 		return first.stream, nil
@@ -473,8 +598,9 @@ func (e *Engine) recoverToolProtocol(
 		return fail(reason, 1, err)
 	}
 	if second.observation.BufferBypass {
-		e.observeToolProtocol(ctx, ToolProtocolEvent{
+		e.observeToolProtocol(ctx, req, ToolProtocolEvent{
 			Model: req.Model, Reason: reason, Outcome: OutcomeBufferBypass,
+			WrapperDisposition: wrapperDisposition,
 			CorrectiveAttempts: 1,
 		})
 		return second.stream, nil
@@ -483,8 +609,9 @@ func (e *Engine) recoverToolProtocol(
 	secondReason := classifyToolProtocolAttempt(policy, second.observation, e.cfg.ToolAliases)
 	if secondReason == "" {
 		finishFullyCaptured(second.stream)
-		e.observeToolProtocol(ctx, ToolProtocolEvent{
+		e.observeToolProtocol(ctx, req, ToolProtocolEvent{
 			Model: req.Model, Reason: reason, Outcome: OutcomeCorrected,
+			WrapperDisposition: wrapperDisposition,
 			CorrectiveAttempts: 1,
 		})
 		return second.stream, nil
@@ -495,7 +622,8 @@ func (e *Engine) recoverToolProtocol(
 	return fail(reason, 1, fmt.Errorf("engine: selected-model tool protocol: %s", secondReason))
 }
 
-func (e *Engine) observeToolProtocol(ctx context.Context, event ToolProtocolEvent) {
+func (e *Engine) observeToolProtocol(ctx context.Context, req *canonical.ChatRequest, event ToolProtocolEvent) {
+	event = enrichToolProtocolEvent(req, event)
 	if e.cfg.RequestIDFromContext != nil {
 		event.RequestID = e.cfg.RequestIDFromContext(ctx)
 	}

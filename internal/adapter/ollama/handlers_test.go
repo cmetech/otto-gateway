@@ -33,6 +33,10 @@ func TestSelectedModelError_NativeEnvelope(t *testing.T) {
 			code:    canonical.CodeSelectedModelToolProtocolFailed,
 			message: "The selected model did not produce a valid external tool call after one corrective attempt. Retry the request with model `auto`.",
 		},
+		{
+			code:    canonical.CodeSelectedModelToolResultProvenanceFailed,
+			message: "The selected model did not produce a final answer from the host tool result after one corrective attempt.",
+		},
 	}
 	endpoints := []struct {
 		name string
@@ -86,6 +90,7 @@ func TestSelectedModelError_ObservationUsesClosedCode(t *testing.T) {
 	for _, code := range []string{
 		canonical.CodeSelectedModelActivationFailed,
 		canonical.CodeSelectedModelToolProtocolFailed,
+		canonical.CodeSelectedModelToolResultProvenanceFailed,
 	} {
 		t.Run(code, func(t *testing.T) {
 			err := &canonical.SelectedModelError{Code: code, Cause: errors.New("raw-cause-canary")}
@@ -1075,8 +1080,8 @@ func TestHandleChat_NonStreaming_ToolCallWrapperCoerce(t *testing.T) {
 	}
 }
 
-func TestHandleChat_NonStreaming_DeferredWrapperUsesDispatcher(t *testing.T) {
-	wrapperText := `{"tool_call":{"name":"gitlab_list_group_projects","arguments":{"group":"sd-macs-att-rnam-hosting","recursive":true,"max_groups":50,"max_projects":100}}}`
+func TestToolContractHandleChat_NonStreaming_DeferredWrapperUsesDispatcher(t *testing.T) {
+	wrapperText := `{"tool_call":{"name":"lookup_records","arguments":{"group":"example-team","recursive":true,"max_groups":50,"max_projects":100}}}`
 	eng := &fakeEngine{
 		resp: &canonical.ChatResponse{
 			Model: "auto",
@@ -1107,11 +1112,11 @@ func TestHandleChat_NonStreaming_DeferredWrapperUsesDispatcher(t *testing.T) {
 	if call.Function.Name != "tool_call" {
 		t.Fatalf("outer name: got %q", call.Function.Name)
 	}
-	if call.Function.Arguments["name"] != "gitlab_list_group_projects" {
+	if call.Function.Arguments["name"] != "lookup_records" {
 		t.Fatalf("inner name: got %v", call.Function.Arguments["name"])
 	}
 	inner, ok := call.Function.Arguments["arguments"].(map[string]any)
-	if !ok || inner["group"] != "sd-macs-att-rnam-hosting" {
+	if !ok || inner["group"] != "example-team" {
 		t.Fatalf("inner arguments: %#v", call.Function.Arguments["arguments"])
 	}
 	if resp.Message.Content != "" {

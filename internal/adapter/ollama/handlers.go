@@ -18,6 +18,7 @@ import (
 	"otto-gateway/internal/plugin/pii"
 	"otto-gateway/internal/privacy"
 	"otto-gateway/internal/session"
+	"otto-gateway/internal/toolcontract"
 )
 
 // shortCircuitMessage extracts the user-facing error message from a
@@ -116,6 +117,23 @@ func writeSelectedModelError(w http.ResponseWriter, err error) bool {
 	return true
 }
 
+func writeToolContractError(w http.ResponseWriter, code, message string) {
+	w.Header().Set("X-Otto-Error-Code", code)
+	writeError(w, http.StatusBadRequest, message)
+}
+
+func negotiateToolContract(w http.ResponseWriter, r *http.Request) (toolcontract.Metadata, bool) {
+	metadata, err := toolcontract.ParseHeaders(r.Header)
+	if err != nil {
+		writeToolContractError(w, canonical.CodeUnsupportedToolContractVersion, "The requested tool contract version is not supported.")
+		return toolcontract.Metadata{}, false
+	}
+	if metadata.Version == toolcontract.VersionV1 {
+		w.Header().Set(toolcontract.HeaderContract, toolcontract.VersionV1)
+	}
+	return metadata, true
+}
+
 func writePrivacyReceipt(w http.ResponseWriter, ctx context.Context) {
 	privacy.SetReceiptHeader(w, ctx)
 }
@@ -155,6 +173,11 @@ const (
 func (a *Adapter) handleChat(w http.ResponseWriter, r *http.Request) {
 	observation := newRequestObservation()
 	defer func() { a.observeRequest(observation) }()
+	contractMetadata, ok := negotiateToolContract(w, r)
+	if !ok {
+		observation.Outcome = canonical.CodeUnsupportedToolContractVersion
+		return
+	}
 
 	var wire ollamaChatRequest
 	if err := decodeJSONBody(w, r, chatBodyCap, &wire); err != nil {
@@ -172,6 +195,16 @@ func (a *Adapter) handleChat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "`messages` is required and must be a non-empty array")
 		return
 	}
+	var toolChoice *canonical.ToolChoice
+	if contractMetadata.Version == toolcontract.VersionV1 {
+		var err error
+		toolChoice, err = decodeToolChoice(wire.ToolChoice)
+		if err != nil {
+			observation.Outcome = "invalid_request"
+			writeError(w, http.StatusBadRequest, "invalid tool_choice")
+			return
+		}
+	}
 
 	req, err := wireToChatRequest(&wire, r)
 	if err != nil {
@@ -179,6 +212,9 @@ func (a *Adapter) handleChat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	req.ToolContractVersion = contractMetadata.Version
+	req.CallRole = contractMetadata.CallRole
+	req.ToolChoice = toolChoice
 
 	// Phase 8 PLUG-03 — stamp the bearer credential onto ctx so AuthHook
 	// (canonical-layer Pre hook) can validate. The auth.Bearer chi
@@ -548,6 +584,11 @@ func (a *Adapter) writeSessionError(w http.ResponseWriter, err error) {
 func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 	observation := newRequestObservation()
 	defer func() { a.observeRequest(observation) }()
+	contractMetadata, ok := negotiateToolContract(w, r)
+	if !ok {
+		observation.Outcome = canonical.CodeUnsupportedToolContractVersion
+		return
+	}
 
 	var wire ollamaGenerateRequest
 	if err := decodeJSONBody(w, r, generateBodyCap, &wire); err != nil {
@@ -565,6 +606,21 @@ func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "`prompt` is required")
 		return
 	}
+	var toolChoice *canonical.ToolChoice
+	if contractMetadata.Version == toolcontract.VersionV1 {
+		var err error
+		toolChoice, err = decodeToolChoice(wire.ToolChoice)
+		if err != nil {
+			observation.Outcome = "invalid_request"
+			writeError(w, http.StatusBadRequest, "invalid tool_choice")
+			return
+		}
+		if toolChoice != nil && (toolChoice.Type == "required" || toolChoice.Type == "function") {
+			observation.Outcome = canonical.CodeMandatoryToolChoiceNotSupported
+			writeToolContractError(w, canonical.CodeMandatoryToolChoiceNotSupported, "Mandatory tool choice is not supported by this endpoint.")
+			return
+		}
+	}
 
 	req, err := wireGenerateToChatRequest(&wire, r)
 	if err != nil {
@@ -572,6 +628,9 @@ func (a *Adapter) handleGenerate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	req.ToolContractVersion = contractMetadata.Version
+	req.CallRole = contractMetadata.CallRole
+	req.ToolChoice = toolChoice
 
 	// Phase 8 PLUG-03 — stamp bearer credential onto ctx for AuthHook.
 	// See handleChat for the migration-boundary rationale (08-PATTERNS

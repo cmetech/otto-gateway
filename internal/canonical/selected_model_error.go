@@ -7,11 +7,18 @@ const (
 	CodeSelectedModelActivationFailed = "selected_model_activation_failed"
 	// CodeSelectedModelToolProtocolFailed identifies an explicit model that failed caller-tool recovery.
 	CodeSelectedModelToolProtocolFailed = "selected_model_tool_protocol_failed"
+	// CodeSelectedModelToolResultProvenanceFailed identifies an explicit model that failed post-tool final-answer recovery.
+	CodeSelectedModelToolResultProvenanceFailed = "selected_model_tool_result_provenance_failed"
+	// CodeMandatoryToolChoiceNotSupported identifies an endpoint that cannot honor mandatory tool choice.
+	CodeMandatoryToolChoiceNotSupported = "mandatory_tool_choice_not_supported"
+	// CodeUnsupportedToolContractVersion identifies a nonempty request contract version other than v1.
+	CodeUnsupportedToolContractVersion = "unsupported_tool_contract_version"
 )
 
 var selectedModelMessages = map[string]string{
-	CodeSelectedModelActivationFailed:   "The selected model could not be activated. Retry the request with model `auto`.",
-	CodeSelectedModelToolProtocolFailed: "The selected model did not produce a valid external tool call after one corrective attempt. Retry the request with model `auto`.",
+	CodeSelectedModelActivationFailed:           "The selected model could not be activated. Retry the request with model `auto`.",
+	CodeSelectedModelToolProtocolFailed:         "The selected model did not produce a valid external tool call after one corrective attempt. Retry the request with model `auto`.",
+	CodeSelectedModelToolResultProvenanceFailed: "The selected model did not produce a final answer from the host tool result after one corrective attempt.",
 }
 
 // SelectedModelError is a client-safe selected-model failure. Cause remains

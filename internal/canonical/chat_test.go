@@ -220,3 +220,28 @@ func TestChatRequest_ResourceLinks(t *testing.T) {
 		}
 	})
 }
+
+func TestChatRequestToolContractMetadata(t *testing.T) {
+	t.Run("zero value preserves legacy behavior", func(t *testing.T) {
+		var req ChatRequest
+		if req.ToolContractVersion != "" {
+			t.Errorf("ToolContractVersion = %q, want empty", req.ToolContractVersion)
+		}
+		if req.CallRole != "" {
+			t.Errorf("CallRole = %q, want empty", req.CallRole)
+		}
+	})
+
+	t.Run("request scoped metadata is retained", func(t *testing.T) {
+		req := ChatRequest{
+			ToolContractVersion: "v1",
+			CallRole:            "post_tool",
+		}
+		if req.ToolContractVersion != "v1" {
+			t.Errorf("ToolContractVersion = %q, want v1", req.ToolContractVersion)
+		}
+		if req.CallRole != "post_tool" {
+			t.Errorf("CallRole = %q, want post_tool", req.CallRole)
+		}
+	})
+}

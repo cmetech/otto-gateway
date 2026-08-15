@@ -23,6 +23,10 @@ const (
 	ReasonCapabilityRefusal ToolProtocolReason = "capability_refusal"
 	// ReasonBuiltInToolDenied indicates that the model attempted a denied built-in tool.
 	ReasonBuiltInToolDenied ToolProtocolReason = "built_in_tool_denied"
+	// ReasonEmbeddedDispatcherWrapper indicates a valid deferred wrapper surrounded by forbidden prose.
+	ReasonEmbeddedDispatcherWrapper ToolProtocolReason = "embedded_dispatcher_wrapper"
+	// ReasonToolResultProvenanceRefusal indicates a refusal to use a host-produced tool-result event.
+	ReasonToolResultProvenanceRefusal ToolProtocolReason = "tool_result_provenance_refusal"
 )
 
 // ToolProtocolOutcome is a bounded recovery outcome.
@@ -37,6 +41,63 @@ const (
 	OutcomeFailed ToolProtocolOutcome = "failed"
 	// OutcomeBufferBypass indicates that bounded preflight failed open without retry.
 	OutcomeBufferBypass ToolProtocolOutcome = "buffer_bypass"
+	// OutcomeFallbackFirstAttempt indicates that a completed semantic correction
+	// was rejected and the bounded first attempt was returned instead.
+	OutcomeFallbackFirstAttempt ToolProtocolOutcome = "fallback_first_attempt"
+)
+
+// ToolProtocolContractVersion is the bounded negotiated contract version used
+// in recovery telemetry.
+type ToolProtocolContractVersion string
+
+// ToolProtocolContractVersion values are closed telemetry labels.
+const (
+	ToolProtocolContractNone ToolProtocolContractVersion = "none"
+	ToolProtocolContractV1   ToolProtocolContractVersion = "v1"
+)
+
+// ToolProtocolCallRole is the bounded diagnostic role supplied for a request.
+type ToolProtocolCallRole string
+
+// ToolProtocolCallRole values are closed diagnostic labels.
+const (
+	ToolProtocolCallRoleUnknown     ToolProtocolCallRole = "unknown"
+	ToolProtocolCallRolePrimary     ToolProtocolCallRole = "primary"
+	ToolProtocolCallRolePostTool    ToolProtocolCallRole = "post_tool"
+	ToolProtocolCallRoleCorrection  ToolProtocolCallRole = "correction"
+	ToolProtocolCallRoleTitle       ToolProtocolCallRole = "title"
+	ToolProtocolCallRoleCompression ToolProtocolCallRole = "compression"
+	ToolProtocolCallRoleAuxiliary   ToolProtocolCallRole = "auxiliary"
+)
+
+// ToolProtocolModelSelection records whether routing was automatic or explicit.
+type ToolProtocolModelSelection string
+
+// ToolProtocolModelSelection values distinguish automatic and explicit routing.
+const (
+	ToolProtocolModelAuto     ToolProtocolModelSelection = "auto"
+	ToolProtocolModelExplicit ToolProtocolModelSelection = "explicit"
+)
+
+// ToolProtocolToolPolicy is the bounded canonical tool-choice policy.
+type ToolProtocolToolPolicy string
+
+// ToolProtocolToolPolicy values describe canonical caller-tool constraints.
+const (
+	ToolProtocolPolicyNone     ToolProtocolToolPolicy = "none"
+	ToolProtocolPolicyOptional ToolProtocolToolPolicy = "optional"
+	ToolProtocolPolicyRequired ToolProtocolToolPolicy = "required"
+	ToolProtocolPolicyNamed    ToolProtocolToolPolicy = "named"
+)
+
+// ToolProtocolCorrectionKind identifies the bounded recovery path taken.
+type ToolProtocolCorrectionKind string
+
+// ToolProtocolCorrectionKind values identify the selected recovery path.
+const (
+	CorrectionNone                ToolProtocolCorrectionKind = "none"
+	CorrectionInitialToolProtocol ToolProtocolCorrectionKind = "initial_tool_protocol"
+	CorrectionPostToolProvenance  ToolProtocolCorrectionKind = "post_tool_provenance"
 )
 
 // ToolProtocolEvent contains only bounded recovery metadata suitable for
@@ -45,10 +106,84 @@ const (
 type ToolProtocolEvent struct {
 	Model              string
 	RequestID          string
+	ContractVersion    ToolProtocolContractVersion
+	CallRole           ToolProtocolCallRole
+	ModelSelection     ToolProtocolModelSelection
+	ToolPolicy         ToolProtocolToolPolicy
+	WrapperDisposition WrapperDisposition
+	ToolResultPresent  bool
+	CorrectionKind     ToolProtocolCorrectionKind
 	Reason             ToolProtocolReason
 	Outcome            ToolProtocolOutcome
 	CorrectiveAttempts int
 	RecommendAuto      bool
+}
+
+func enrichToolProtocolEvent(req *canonical.ChatRequest, event ToolProtocolEvent) ToolProtocolEvent {
+	event.ContractVersion = ToolProtocolContractNone
+	event.CallRole = ToolProtocolCallRoleUnknown
+	event.ModelSelection = ToolProtocolModelAuto
+	event.ToolPolicy = ToolProtocolPolicyNone
+	if event.WrapperDisposition == "" {
+		event.WrapperDisposition = WrapperNone
+	}
+	event.CorrectionKind = CorrectionNone
+	if req == nil {
+		return event
+	}
+	if req.ToolContractVersion == "v1" {
+		event.ContractVersion = ToolProtocolContractV1
+	}
+	switch req.CallRole {
+	case "primary":
+		event.CallRole = ToolProtocolCallRolePrimary
+	case "post_tool":
+		event.CallRole = ToolProtocolCallRolePostTool
+	case "correction":
+		event.CallRole = ToolProtocolCallRoleCorrection
+	case "title":
+		event.CallRole = ToolProtocolCallRoleTitle
+	case "compression":
+		event.CallRole = ToolProtocolCallRoleCompression
+	case "auxiliary":
+		event.CallRole = ToolProtocolCallRoleAuxiliary
+	}
+	if req.Model != "" && req.Model != "auto" {
+		event.ModelSelection = ToolProtocolModelExplicit
+	}
+	if len(req.Tools) > 0 {
+		event.ToolPolicy = ToolProtocolPolicyOptional
+		if req.ToolChoice != nil {
+			switch req.ToolChoice.Type {
+			case "none":
+				event.ToolPolicy = ToolProtocolPolicyNone
+			case "required", "any":
+				event.ToolPolicy = ToolProtocolPolicyRequired
+			case "tool", "function":
+				if toolOffered(req.ToolChoice.Name, req.Tools) {
+					event.ToolPolicy = ToolProtocolPolicyNamed
+				}
+			}
+		}
+	}
+	for _, message := range req.Messages {
+		if message.Role == canonical.RoleTool {
+			event.ToolResultPresent = true
+			break
+		}
+		for _, content := range message.Content {
+			if content.Kind == canonical.ContentKindToolResult && content.ToolResult != nil {
+				event.ToolResultPresent = true
+				break
+			}
+		}
+	}
+	if _, postTool := toolResultProtocolPolicyFor(req); postTool {
+		event.CorrectionKind = CorrectionPostToolProvenance
+	} else if _, initial := toolProtocolPolicyFor(req); initial {
+		event.CorrectionKind = CorrectionInitialToolProtocol
+	}
+	return event
 }
 
 type toolProtocolRequirement string
@@ -63,6 +198,7 @@ type toolProtocolPolicy struct {
 	requirement toolProtocolRequirement
 	namedTool   string
 	tools       []canonical.ToolSpec
+	contractV1  bool
 }
 
 // attemptObservation is deliberately limited to the data produced by the
@@ -84,12 +220,13 @@ func toolProtocolPolicyFor(req *canonical.ChatRequest) (toolProtocolPolicy, bool
 	if req == nil {
 		return policy, false
 	}
+	policy.contractV1 = req.ToolContractVersion == "v1"
 	policy.tools = req.Tools
 	if req.ToolChoice != nil {
 		switch req.ToolChoice.Type {
 		case "required", "any":
 			policy.requirement = toolProtocolRequired
-		case "tool":
+		case "tool", "function":
 			if toolOffered(req.ToolChoice.Name, req.Tools) {
 				policy.requirement = toolProtocolNamed
 				policy.namedTool = req.ToolChoice.Name
@@ -156,6 +293,11 @@ func classifyToolProtocolAttempt(policy toolProtocolPolicy, observation attemptO
 			return ""
 		}
 	}
+	if dispatcher := findToolCallDispatcher(policy.tools); policy.contractV1 && dispatcher != nil &&
+		(policy.requirement == toolProtocolRequired || policy.requirement == toolProtocolNamed && policy.namedTool == dispatcher.Name) &&
+		ObserveToolCallWrappers(observation.Text, policy.tools) == WrapperDispatcherEmbedded {
+		return ReasonEmbeddedDispatcherWrapper
+	}
 
 	if observation.Final != nil && observation.Final.ToolDenials > 0 {
 		return ReasonBuiltInToolDenied
@@ -198,6 +340,13 @@ func isHighConfidenceToolCapabilityRefusal(text string) bool {
 // policy was constructed.
 func correctiveBlocks(policy toolProtocolPolicy) []canonical.Block {
 	message := "Use an offered external tool by emitting a valid tool call when a tool is needed. A normal final answer is acceptable if no tool is needed."
+	if policy.contractV1 && (policy.requirement == toolProtocolRequired || policy.requirement == toolProtocolNamed) {
+		message = "Your previous response attempted a tool call but violated the caller-tool protocol. Emit exactly one structured call to an offered tool. For a deferred tool, emit only the declared outer dispatcher wrapper as exact whole-response JSON: no narration, Markdown fence, waiting text, or other bytes. Do not name or execute an unoffered tool directly. A final prose answer is not acceptable on this attempt."
+		return []canonical.Block{{
+			Kind: canonical.BlockKindText,
+			Text: &canonical.TextBlock{Content: message},
+		}}
+	}
 	switch policy.requirement {
 	case toolProtocolRequired:
 		message = "Call one of the offered external tools by emitting a valid tool call. A normal final answer is not acceptable."

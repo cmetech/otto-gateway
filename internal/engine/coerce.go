@@ -349,6 +349,121 @@ func StripFences(text string) (string, bool) {
 	return t, false
 }
 
+// WrapperDisposition is a read-only structural classification. It never
+// carries a tool name, arguments, or an executable canonical.ToolCall.
+type WrapperDisposition string
+
+// WrapperDisposition values are closed read-only wrapper classifications.
+const (
+	WrapperNone               WrapperDisposition = "none"
+	WrapperDirect             WrapperDisposition = "direct"
+	WrapperDispatcherExact    WrapperDisposition = "dispatcher_exact"
+	WrapperDispatcherEmbedded WrapperDisposition = "dispatcher_embedded"
+	WrapperMalformed          WrapperDisposition = "malformed"
+)
+
+// ObserveToolCallWrappers classifies wrapper-shaped model text without
+// authorizing or constructing a tool call. Embedded scanning reuses the same
+// bounded balanced-object scanner as ExtractToolCallWrappers.
+func ObserveToolCallWrappers(text string, tools []canonical.ToolSpec) WrapperDisposition {
+	toolDeclared := func(name string) bool {
+		for _, tool := range tools {
+			if tool.Name == name {
+				return true
+			}
+		}
+		return false
+	}
+	validArguments := func(inner map[string]any) bool {
+		raw, ok := inner["arguments"]
+		if !ok {
+			return false
+		}
+		switch value := raw.(type) {
+		case map[string]any:
+			return true
+		case string:
+			var parsed map[string]any
+			return value != "" && json.Unmarshal([]byte(value), &parsed) == nil && parsed != nil
+		default:
+			return false
+		}
+	}
+	classify := func(candidates []map[string]any, embedded bool) WrapperDisposition {
+		if len(candidates) == 0 {
+			return WrapperNone
+		}
+		disposition := WrapperNone
+		wrappers := 0
+		for _, candidate := range candidates {
+			inner, ok := candidate["tool_call"].(map[string]any)
+			if !ok {
+				continue
+			}
+			wrappers++
+			name, _ := inner["name"].(string)
+			current := WrapperMalformed
+			switch {
+			case name != "" && toolDeclared(name):
+				current = WrapperDirect
+			case name != "" && validArguments(inner) && isExactToolCallEnvelope(candidate, inner) && findToolCallDispatcher(tools) != nil:
+				if embedded {
+					current = WrapperDispatcherEmbedded
+				} else {
+					current = WrapperDispatcherExact
+				}
+			}
+			if disposition == WrapperNone {
+				disposition = current
+			} else if disposition != current {
+				return WrapperMalformed
+			}
+		}
+		if wrappers == 0 {
+			return WrapperNone
+		}
+		if embedded && wrappers != 1 {
+			return WrapperMalformed
+		}
+		return disposition
+	}
+
+	var whole any
+	if len(text) <= maxScanBytes {
+		if err := json.Unmarshal([]byte(text), &whole); err != nil {
+			if stripped, ok := StripFences(text); ok {
+				_ = json.Unmarshal([]byte(stripped), &whole)
+			}
+		}
+	}
+	var wholeCandidates []map[string]any
+	switch value := whole.(type) {
+	case map[string]any:
+		wholeCandidates = append(wholeCandidates, value)
+	case []any:
+		for _, element := range value {
+			if candidate, ok := element.(map[string]any); ok {
+				wholeCandidates = append(wholeCandidates, candidate)
+			}
+		}
+	}
+	if disposition := classify(wholeCandidates, false); disposition != WrapperNone {
+		return disposition
+	}
+	if disposition := classify(extractToolCallObjects(text), true); disposition != WrapperNone {
+		return disposition
+	}
+
+	scan := text
+	if len(scan) > maxScanBytes {
+		scan = scan[:maxScanBytes]
+	}
+	if strings.Contains(scan, `{"tool_call"`) {
+		return WrapperMalformed
+	}
+	return WrapperNone
+}
+
 // ExtractToolCallWrappers finds explicit {"tool_call":{"name","arguments"}}
 // objects in text and returns canonical.ToolCalls. Directly declared wrappers
 // preserve the existing raw, fenced, and prose extraction behavior, including

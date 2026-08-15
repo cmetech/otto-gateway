@@ -79,6 +79,8 @@ components:
     in: version/**
   testutil:
     in: testutil/**
+  toolcontract:
+    in: toolcontract/**
 
 deps:
   admin:
@@ -128,6 +130,7 @@ deps:
                     # a local Summary (counter bookkeeping correct) but
                     # LoggingHook omits the `redacted` slog attr.
       - privacy  # Privacy request metadata, receipts, and native errors.
+      - toolcontract  # Request-scoped contract header validation and bounded diagnostic metadata.
   adapter_anthropic:
     anyVendorDeps: true
     mayDependOn:
@@ -155,6 +158,7 @@ deps:
       - plugin_pii  # Phase 8 D-04 / 08-05 Task 4b: same pii.Summary
                     # ctx-stamp rationale as adapter_ollama.
       - privacy  # Privacy request metadata, receipts, and native errors.
+      - toolcontract  # Request-scoped contract header validation and bounded diagnostic metadata.
   adapter_openai:
     anyVendorDeps: true
     mayDependOn:
@@ -172,6 +176,7 @@ deps:
       - plugin_pii  # Phase 8 D-04 / 08-05 Task 4b: same pii.Summary
                     # ctx-stamp rationale as adapter_ollama.
       - privacy  # Privacy request metadata, receipts, and native errors.
+      - toolcontract  # Request-scoped contract header validation and bounded diagnostic metadata.
   auth:
     anyVendorDeps: true
   canonical:
@@ -264,4 +269,6 @@ deps:
   version:
     anyVendorDeps: true
   testutil:
+    anyVendorDeps: true
+  toolcontract:
     anyVendorDeps: true

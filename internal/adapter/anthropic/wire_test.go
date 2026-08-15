@@ -586,6 +586,26 @@ func TestWireToChatRequest_ToolChoice_Auto(t *testing.T) {
 	}
 }
 
+// TestWireToChatRequest_ToolChoice_None_PreservedVerbatim verifies that the
+// Anthropic prohibited-tool policy survives wire normalization. Contract v1
+// relies on the canonical "none" value to disable tool prompting and recovery.
+func TestWireToChatRequest_ToolChoice_None_PreservedVerbatim(t *testing.T) {
+	logger, _ := captureLogger()
+	wire := &anthropicMessagesRequest{
+		Model:      "selected-model",
+		MaxTokens:  256,
+		Messages:   []anthropicWireMessage{{Role: "user", Content: json.RawMessage(`"summarize"`)}},
+		ToolChoice: json.RawMessage(`{"type":"none"}`),
+	}
+	req := wireToChatRequest(wire, newTestRequest(t, ""), logger)
+	if req.ToolChoice == nil {
+		t.Fatal("req.ToolChoice: nil; want {Type:none}")
+	}
+	if req.ToolChoice.Type != "none" || req.ToolChoice.Name != "" {
+		t.Errorf("req.ToolChoice: got %+v, want {Type:none,Name:\"\"}", req.ToolChoice)
+	}
+}
+
 // TestWireToChatRequest_ToolChoice_Any_PreservedVerbatim is the REVIEW
 // MEDIUM tool_choice coverage test. Anthropic uses 'any' where OpenAI
 // uses 'required'; this gateway preserves both losslessly in canonical
