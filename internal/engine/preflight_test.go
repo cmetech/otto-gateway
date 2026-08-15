@@ -332,6 +332,47 @@ func TestCaptureToolProtocolAttempt_CompleteBelowCapsReturnsReplay(t *testing.T)
 	}
 }
 
+func TestCaptureToolProtocolAttempt_V1EmbeddedDispatcherObservationHonorsCaps(t *testing.T) {
+	const hiddenWrapper = `{"tool_call":{"name":"deferred_lookup","arguments":{"query":"example"}}}`
+	policy := toolProtocolPolicy{
+		requirement: toolProtocolRequired,
+		tools:       []canonical.ToolSpec{toolCallDispatcher()},
+		contractV1:  true,
+	}
+
+	t.Run("complete narration is correctable", func(t *testing.T) {
+		source := recoveryTextStream("Narration.\n"+hiddenWrapper, nil)
+		capture, err := captureToolProtocolAttempt(context.Background(), source, time.Second, policy, nil, nil)
+		if err != nil {
+			t.Fatalf("capture error = %v", err)
+		}
+		if capture.observation.BufferBypass {
+			t.Fatal("bounded narration unexpectedly bypassed classification")
+		}
+		if got := classifyToolProtocolAttempt(policy, capture.observation, nil); got != ReasonEmbeddedDispatcherWrapper {
+			t.Fatalf("classification = %q, want %q", got, ReasonEmbeddedDispatcherWrapper)
+		}
+	})
+
+	t.Run("oversized narration bypasses correction", func(t *testing.T) {
+		huge := strings.Repeat("x", maxToolProtocolPreflightBytes+1)
+		source := closedPreflightStream([]canonical.Chunk{
+			textPreflightChunk(huge),
+			textPreflightChunk(hiddenWrapper),
+		}, &canonical.FinalResult{ChunkCount: 2}, nil)
+		capture, err := captureToolProtocolAttempt(context.Background(), source, time.Second, policy, nil, nil)
+		if err != nil {
+			t.Fatalf("capture error = %v", err)
+		}
+		if !capture.observation.BufferBypass {
+			t.Fatal("oversized narration did not preserve buffer bypass")
+		}
+		if got := classifyToolProtocolAttempt(policy, capture.observation, nil); got != "" {
+			t.Fatalf("bypass classification = %q, want none", got)
+		}
+	})
+}
+
 func TestCaptureToolProtocolAttempt_DecisiveMatchingNativeCallReturnsPrefixLive(t *testing.T) {
 	live := make(chan canonical.Chunk, 2)
 	live <- toolPreflightChunk("call-1", "execute", map[string]any{"command": "pwd"})

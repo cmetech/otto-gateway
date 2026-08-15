@@ -207,6 +207,13 @@ func isHighConfidenceToolCapabilityRefusal(text string) bool {
 // policy was constructed.
 func correctiveBlocks(policy toolProtocolPolicy) []canonical.Block {
 	message := "Use an offered external tool by emitting a valid tool call when a tool is needed. A normal final answer is acceptable if no tool is needed."
+	if policy.contractV1 && (policy.requirement == toolProtocolRequired || policy.requirement == toolProtocolNamed) {
+		message = "Your previous response attempted a tool call but violated the caller-tool protocol. Emit exactly one structured call to an offered tool. For a deferred tool, emit only the declared outer dispatcher wrapper as exact whole-response JSON: no narration, Markdown fence, waiting text, or other bytes. Do not name or execute an unoffered tool directly. A final prose answer is not acceptable on this attempt."
+		return []canonical.Block{{
+			Kind: canonical.BlockKindText,
+			Text: &canonical.TextBlock{Content: message},
+		}}
+	}
 	switch policy.requirement {
 	case toolProtocolRequired:
 		message = "Call one of the offered external tools by emitting a valid tool call. A normal final answer is not acceptable."

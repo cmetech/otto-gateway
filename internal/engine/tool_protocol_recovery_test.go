@@ -191,6 +191,13 @@ func recoveryRequest(model string, choice *canonical.ToolChoice) *canonical.Chat
 	}
 }
 
+func recoveryV1DispatcherRequest(model string, choice *canonical.ToolChoice) *canonical.ChatRequest {
+	req := recoveryRequest(model, choice)
+	req.ToolContractVersion = "v1"
+	req.Tools = []canonical.ToolSpec{toolCallDispatcher()}
+	return req
+}
+
 func recoveryTextStream(text string, final *canonical.FinalResult) Stream {
 	if final == nil {
 		final = &canonical.FinalResult{SessionID: "recovery-sid", ChunkCount: 1, StopReason: canonical.StopEndTurn}
@@ -396,6 +403,108 @@ func TestToolProtocolRecovery_CorrectsHighConfidenceFailuresOnce(t *testing.T) {
 				t.Fatalf("events = %#v, want %#v", got, []ToolProtocolEvent{wantEvent})
 			}
 		})
+	}
+}
+
+func TestToolProtocolRecovery_V1MandatoryNarratedDispatcherCorrectsOnce(t *testing.T) {
+	const (
+		hiddenWrapper = `{"tool_call":{"name":"deferred_lookup","arguments":{"query":"example"}}}`
+		firstOutput   = "I will look that up now.\n" + hiddenWrapper
+		wantPrompt    = "Your previous response attempted a tool call but violated the caller-tool protocol. Emit exactly one structured call to an offered tool. For a deferred tool, emit only the declared outer dispatcher wrapper as exact whole-response JSON: no narration, Markdown fence, waiting text, or other bytes. Do not name or execute an unoffered tool directly. A final prose answer is not acceptable on this attempt."
+	)
+	choice := &canonical.ToolChoice{Type: "required"}
+	acpClient := &recordingRecoveryACP{
+		sessionID: "same-v1-recovery-sid",
+		prompts: []recoveryPromptScript{
+			{stream: recoveryTextStream(firstOutput, nil)},
+			{stream: recoveryTextStream(hiddenWrapper, nil)},
+		},
+	}
+	events := &recoveryEventRecorder{}
+	eng := newRecoveryEngine(t, acpClient, events)
+
+	resp, err := eng.Collect(context.Background(), recoveryV1DispatcherRequest("selected-model", choice))
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if got := resp.Message.Content[0].Text; got != hiddenWrapper || strings.Contains(got, "I will") {
+		t.Fatalf("response text = %q, want corrected exact wrapper only", got)
+	}
+	snapshot := acpClient.snapshot()
+	if len(snapshot.promptCalls) != 2 {
+		t.Fatalf("Prompt calls = %d, want one initial and one corrective prompt", len(snapshot.promptCalls))
+	}
+	corrective := snapshot.promptCalls[1].blocks
+	if len(corrective) != 1 || corrective[0].Text == nil || corrective[0].Text.Content != wantPrompt {
+		t.Fatalf("corrective blocks = %#v, want static v1 mandatory correction", corrective)
+	}
+	if strings.Contains(corrective[0].Text.Content, firstOutput) || strings.Contains(corrective[0].Text.Content, "deferred_lookup") {
+		t.Fatalf("corrective prompt copied model output: %q", corrective[0].Text.Content)
+	}
+	if got := events.snapshot(); !reflect.DeepEqual(got, []ToolProtocolEvent{{
+		Model: "selected-model", Reason: ReasonEmbeddedDispatcherWrapper,
+		Outcome: OutcomeCorrected, CorrectiveAttempts: 1,
+	}}) {
+		t.Fatalf("events = %#v", got)
+	}
+}
+
+func TestToolProtocolRecovery_V1OptionalDocumentationProseDoesNotRetry(t *testing.T) {
+	const documentation = `The "tool_call" object contains name and arguments fields.`
+	source := recoveryTextStream(documentation, nil)
+	acpClient := &recordingRecoveryACP{prompts: []recoveryPromptScript{{stream: source}}}
+	events := &recoveryEventRecorder{}
+	eng := newRecoveryEngine(t, acpClient, events)
+
+	resp, err := eng.Collect(context.Background(), recoveryV1DispatcherRequest("selected-model", nil))
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if got := resp.Message.Content[0].Text; got != documentation {
+		t.Fatalf("response text = %q, want ordinary prose unchanged", got)
+	}
+	snapshot := acpClient.snapshot()
+	if len(snapshot.promptCalls) != 1 || len(snapshot.beginCalls) != 1 || snapshot.finishCalls != 1 {
+		t.Fatalf("lifecycle = prompts:%d begin:%d finish:%d, want no correction", len(snapshot.promptCalls), len(snapshot.beginCalls), snapshot.finishCalls)
+	}
+	if got := events.snapshot(); !reflect.DeepEqual(got, []ToolProtocolEvent{{Model: "selected-model", Outcome: OutcomeFirstAttempt}}) {
+		t.Fatalf("events = %#v", got)
+	}
+}
+
+func TestToolProtocolRecovery_V1SecondNarrationFailsAfterOneCorrection(t *testing.T) {
+	const hiddenWrapper = `{"tool_call":{"name":"deferred_lookup","arguments":{"query":"example"}}}`
+	first := "First narration.\n" + hiddenWrapper
+	second := "Second narration.\n" + hiddenWrapper
+	acpClient := &recordingRecoveryACP{prompts: []recoveryPromptScript{
+		{stream: recoveryTextStream(first, nil)},
+		{stream: recoveryTextStream(second, nil)},
+	}}
+	eng := newRecoveryEngine(t, acpClient, nil)
+
+	_, err := eng.Run(context.Background(), recoveryV1DispatcherRequest("selected-model", &canonical.ToolChoice{Type: "required"}))
+	assertSelectedProtocolError(t, err, second)
+	if got := len(acpClient.snapshot().promptCalls); got != 2 {
+		t.Fatalf("Prompt calls = %d, want exactly one correction", got)
+	}
+}
+
+func TestToolProtocolRecovery_V1AutoRequestIsNotGuarded(t *testing.T) {
+	const output = "Narration.\n" + `{"tool_call":{"name":"deferred_lookup","arguments":{"query":"example"}}}`
+	source := recoveryTextStream(output, nil)
+	acpClient := &recordingRecoveryACP{prompts: []recoveryPromptScript{{stream: source}}}
+	eng := newRecoveryEngine(t, acpClient, nil)
+
+	run, err := eng.Run(context.Background(), recoveryV1DispatcherRequest("auto", &canonical.ToolChoice{Type: "required"}))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if run.Stream() != source {
+		t.Fatal("auto request entered selected-model protocol guard")
+	}
+	snapshot := acpClient.snapshot()
+	if len(snapshot.promptCalls) != 1 || len(snapshot.beginCalls) != 0 {
+		t.Fatalf("auto lifecycle = prompts:%d begin:%d", len(snapshot.promptCalls), len(snapshot.beginCalls))
 	}
 }
 
