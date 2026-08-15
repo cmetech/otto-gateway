@@ -17,22 +17,25 @@ func TestToolProtocolPolicyFor_EligibilityAndRequirement(t *testing.T) {
 		wantEligible    bool
 		wantRequirement toolProtocolRequirement
 		wantNamedTool   string
+		wantContractV1  bool
 	}{
-		{"empty model", &canonical.ChatRequest{Tools: tools, Messages: []canonical.Message{userTurn}}, false, toolProtocolOptional, ""},
-		{"auto model", &canonical.ChatRequest{Model: "auto", Tools: tools, Messages: []canonical.Message{userTurn}}, false, toolProtocolOptional, ""},
-		{"no tools", &canonical.ChatRequest{Model: "selected", Messages: []canonical.Message{userTurn}}, false, toolProtocolOptional, ""},
-		{"assistant final turn", &canonical.ChatRequest{Model: "selected", Tools: tools, Messages: []canonical.Message{{Role: canonical.RoleAssistant}}}, false, toolProtocolOptional, ""},
-		{"role tool final turn", &canonical.ChatRequest{Model: "selected", Tools: tools, Messages: []canonical.Message{{Role: canonical.RoleTool}}}, false, toolProtocolOptional, ""},
-		{"tool result content final turn", &canonical.ChatRequest{Model: "selected", Tools: tools, Messages: []canonical.Message{{Role: canonical.RoleUser, Content: []canonical.ContentPart{{Kind: canonical.ContentKindToolResult, ToolResult: &canonical.ToolResultPart{Content: "result"}}}}}}, false, toolProtocolOptional, ""},
-		{"none", &canonical.ChatRequest{Model: "selected", Tools: tools, Messages: []canonical.Message{userTurn}, ToolChoice: &canonical.ToolChoice{Type: "none"}}, false, toolProtocolOptional, ""},
-		{"explicit optional", &canonical.ChatRequest{Model: "selected", Tools: tools, Messages: []canonical.Message{userTurn}}, true, toolProtocolOptional, ""},
-		{"nil choice", &canonical.ChatRequest{Model: "selected", Tools: tools, Messages: []canonical.Message{userTurn}, ToolChoice: nil}, true, toolProtocolOptional, ""},
-		{"auto choice", &canonical.ChatRequest{Model: "selected", Tools: tools, Messages: []canonical.Message{userTurn}, ToolChoice: &canonical.ToolChoice{Type: "auto"}}, true, toolProtocolOptional, ""},
-		{"unknown choice remains optional", &canonical.ChatRequest{Model: "selected", Tools: tools, Messages: []canonical.Message{userTurn}, ToolChoice: &canonical.ToolChoice{Type: "future"}}, true, toolProtocolOptional, ""},
-		{"required", &canonical.ChatRequest{Model: "selected", Tools: tools, Messages: []canonical.Message{userTurn}, ToolChoice: &canonical.ToolChoice{Type: "required"}}, true, toolProtocolRequired, ""},
-		{"anthropic any", &canonical.ChatRequest{Model: "selected", Tools: tools, Messages: []canonical.Message{userTurn}, ToolChoice: &canonical.ToolChoice{Type: "any"}}, true, toolProtocolRequired, ""},
-		{"validated named tool", &canonical.ChatRequest{Model: "selected", Tools: tools, Messages: []canonical.Message{userTurn}, ToolChoice: &canonical.ToolChoice{Type: "tool", Name: "get_weather"}}, true, toolProtocolNamed, "get_weather"},
-		{"unknown named tool remains optional", &canonical.ChatRequest{Model: "selected", Tools: tools, Messages: []canonical.Message{userTurn}, ToolChoice: &canonical.ToolChoice{Type: "tool", Name: "not_offered"}}, true, toolProtocolOptional, ""},
+		{"empty model", &canonical.ChatRequest{Tools: tools, Messages: []canonical.Message{userTurn}}, false, toolProtocolOptional, "", false},
+		{"auto model", &canonical.ChatRequest{Model: "auto", ToolContractVersion: "v1", Tools: tools, Messages: []canonical.Message{userTurn}}, false, toolProtocolOptional, "", true},
+		{"no tools", &canonical.ChatRequest{Model: "selected", ToolContractVersion: "v1", Messages: []canonical.Message{userTurn}}, false, toolProtocolOptional, "", true},
+		{"assistant final turn", &canonical.ChatRequest{Model: "selected", Tools: tools, Messages: []canonical.Message{{Role: canonical.RoleAssistant}}}, false, toolProtocolOptional, "", false},
+		{"role tool final turn", &canonical.ChatRequest{Model: "selected", Tools: tools, Messages: []canonical.Message{{Role: canonical.RoleTool}}}, false, toolProtocolOptional, "", false},
+		{"tool result content final turn", &canonical.ChatRequest{Model: "selected", Tools: tools, Messages: []canonical.Message{{Role: canonical.RoleUser, Content: []canonical.ContentPart{{Kind: canonical.ContentKindToolResult, ToolResult: &canonical.ToolResultPart{Content: "result"}}}}}}, false, toolProtocolOptional, "", false},
+		{"none", &canonical.ChatRequest{Model: "selected", ToolContractVersion: "v1", Tools: tools, Messages: []canonical.Message{userTurn}, ToolChoice: &canonical.ToolChoice{Type: "none"}}, false, toolProtocolOptional, "", true},
+		{"legacy explicit optional remains eligible", &canonical.ChatRequest{Model: "selected", Tools: tools, Messages: []canonical.Message{userTurn}}, true, toolProtocolOptional, "", false},
+		{"v1 explicit optional", &canonical.ChatRequest{Model: "selected", ToolContractVersion: "v1", Tools: tools, Messages: []canonical.Message{userTurn}}, true, toolProtocolOptional, "", true},
+		{"nil choice", &canonical.ChatRequest{Model: "selected", Tools: tools, Messages: []canonical.Message{userTurn}, ToolChoice: nil}, true, toolProtocolOptional, "", false},
+		{"auto choice", &canonical.ChatRequest{Model: "selected", Tools: tools, Messages: []canonical.Message{userTurn}, ToolChoice: &canonical.ToolChoice{Type: "auto"}}, true, toolProtocolOptional, "", false},
+		{"unknown choice remains optional", &canonical.ChatRequest{Model: "selected", Tools: tools, Messages: []canonical.Message{userTurn}, ToolChoice: &canonical.ToolChoice{Type: "future"}}, true, toolProtocolOptional, "", false},
+		{"required", &canonical.ChatRequest{Model: "selected", Tools: tools, Messages: []canonical.Message{userTurn}, ToolChoice: &canonical.ToolChoice{Type: "required"}}, true, toolProtocolRequired, "", false},
+		{"anthropic any", &canonical.ChatRequest{Model: "selected", Tools: tools, Messages: []canonical.Message{userTurn}, ToolChoice: &canonical.ToolChoice{Type: "any"}}, true, toolProtocolRequired, "", false},
+		{"validated anthropic named tool", &canonical.ChatRequest{Model: "selected", Tools: tools, Messages: []canonical.Message{userTurn}, ToolChoice: &canonical.ToolChoice{Type: "tool", Name: "get_weather"}}, true, toolProtocolNamed, "get_weather", false},
+		{"validated openai named function", &canonical.ChatRequest{Model: "selected", Tools: tools, Messages: []canonical.Message{userTurn}, ToolChoice: &canonical.ToolChoice{Type: "function", Name: "get_weather"}}, true, toolProtocolNamed, "get_weather", false},
+		{"unknown named tool remains optional", &canonical.ChatRequest{Model: "selected", Tools: tools, Messages: []canonical.Message{userTurn}, ToolChoice: &canonical.ToolChoice{Type: "tool", Name: "not_offered"}}, true, toolProtocolOptional, "", false},
 	}
 
 	for _, tt := range cases {
@@ -46,6 +49,9 @@ func TestToolProtocolPolicyFor_EligibilityAndRequirement(t *testing.T) {
 			}
 			if policy.namedTool != tt.wantNamedTool {
 				t.Errorf("namedTool = %q, want %q", policy.namedTool, tt.wantNamedTool)
+			}
+			if policy.contractV1 != tt.wantContractV1 {
+				t.Errorf("contractV1 = %v, want %v", policy.contractV1, tt.wantContractV1)
 			}
 		})
 	}

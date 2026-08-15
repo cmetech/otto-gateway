@@ -63,6 +63,7 @@ type toolProtocolPolicy struct {
 	requirement toolProtocolRequirement
 	namedTool   string
 	tools       []canonical.ToolSpec
+	contractV1  bool
 }
 
 // attemptObservation is deliberately limited to the data produced by the
@@ -84,12 +85,13 @@ func toolProtocolPolicyFor(req *canonical.ChatRequest) (toolProtocolPolicy, bool
 	if req == nil {
 		return policy, false
 	}
+	policy.contractV1 = req.ToolContractVersion == "v1"
 	policy.tools = req.Tools
 	if req.ToolChoice != nil {
 		switch req.ToolChoice.Type {
 		case "required", "any":
 			policy.requirement = toolProtocolRequired
-		case "tool":
+		case "tool", "function":
 			if toolOffered(req.ToolChoice.Name, req.Tools) {
 				policy.requirement = toolProtocolNamed
 				policy.namedTool = req.ToolChoice.Name

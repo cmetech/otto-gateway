@@ -166,6 +166,7 @@ func buildBlocks(req *canonical.ChatRequest) []canonical.Block {
 				string(toolsJSON),
 			)
 		}
+		b.WriteString("A deferred dispatcher wrapper is valid only when it is the complete response with no narration or fence.\n\n")
 	}
 
 	for _, m := range req.Messages {
@@ -213,6 +214,9 @@ func buildBlocks(req *canonical.ChatRequest) []canonical.Block {
 			}
 		}
 	}
+	if policy := turnToolPolicy(req); policy != "" {
+		fmt.Fprintf(&b, "[Turn tool policy]\n%s\n\n", policy)
+	}
 
 	text := strings.TrimRight(b.String(), "\n")
 	out := []canonical.Block{
@@ -247,6 +251,36 @@ func buildBlocks(req *canonical.ChatRequest) []canonical.Block {
 	}
 
 	return out
+}
+
+func turnToolPolicy(req *canonical.ChatRequest) string {
+	if req == nil || req.ToolContractVersion != "v1" || req.Model == "" || req.Model == "auto" || len(req.Tools) == 0 || len(req.Messages) == 0 {
+		return ""
+	}
+	last := req.Messages[len(req.Messages)-1]
+	if last.Role != canonical.RoleUser {
+		return ""
+	}
+	for _, content := range last.Content {
+		if content.Kind == canonical.ContentKindToolResult {
+			return ""
+		}
+	}
+
+	if req.ToolChoice != nil {
+		switch req.ToolChoice.Type {
+		case "none":
+			return "Do not emit a caller tool call on this attempt. Return ordinary final prose."
+		case "required", "any":
+			return "This attempt requires one structured call to an offered tool. A deferred dispatcher wrapper must be the exact whole response with no narration or fence."
+		case "tool", "function":
+			if toolOffered(req.ToolChoice.Name, req.Tools) {
+				return "This attempt requires one structured call to the selected offered tool. A deferred dispatcher wrapper must be the exact whole response with no narration or fence."
+			}
+		}
+	}
+
+	return "A caller tool call is optional on this attempt. If you call a deferred tool, its dispatcher wrapper must be the exact whole response with no narration or fence. Ordinary final prose is allowed."
 }
 
 // appendAssistantToolCalls renders an assistant turn's prior tool calls
