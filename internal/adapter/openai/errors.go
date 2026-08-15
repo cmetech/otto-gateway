@@ -6,6 +6,7 @@ import (
 
 	"otto-gateway/internal/canonical"
 	"otto-gateway/internal/privacy"
+	"otto-gateway/internal/toolcontract"
 )
 
 // OpenAI error envelope per docs.openai.com/api-reference/errors and
@@ -100,6 +101,23 @@ func writeSelectedModelError(w http.ResponseWriter, err error) bool {
 	}
 	writeErrorWithCode(w, http.StatusBadGateway, errAPI, message, &code)
 	return true
+}
+
+func writeUnsupportedToolContractError(w http.ResponseWriter) {
+	code := "unsupported_tool_contract_version"
+	writeErrorWithCode(w, http.StatusBadRequest, errInvalidRequest, "The requested tool contract version is not supported.", &code)
+}
+
+func negotiateToolContract(w http.ResponseWriter, r *http.Request) (toolcontract.Metadata, bool) {
+	metadata, err := toolcontract.Parse(r.Header.Get(toolcontract.HeaderContract), r.Header.Get(toolcontract.HeaderCallRole))
+	if err != nil {
+		writeUnsupportedToolContractError(w)
+		return toolcontract.Metadata{}, false
+	}
+	if metadata.Version == toolcontract.VersionV1 {
+		w.Header().Set(toolcontract.HeaderContract, toolcontract.VersionV1)
+	}
+	return metadata, true
 }
 
 // writeJSON writes Content-Type: application/json + status 200 + the

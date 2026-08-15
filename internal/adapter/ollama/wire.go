@@ -57,14 +57,15 @@ func decodeFormat(raw json.RawMessage) (*canonical.Format, error) {
 // not 400 on their presence. Format and Options use json.RawMessage as
 // forward-design seams (Format also accepts a bare string like "json").
 type ollamaChatRequest struct {
-	Model     string           `json:"model"`
-	Messages  []ollamaMessage  `json:"messages"`
-	Tools     []ollamaToolSpec `json:"tools,omitempty"`
-	Format    json.RawMessage  `json:"format,omitempty"`
-	Stream    *bool            `json:"stream,omitempty"`
-	Think     bool             `json:"think,omitempty"`
-	KeepAlive json.RawMessage  `json:"keep_alive,omitempty"` // accepted-and-ignored
-	Options   json.RawMessage  `json:"options,omitempty"`    // accepted-and-ignored
+	Model      string           `json:"model"`
+	Messages   []ollamaMessage  `json:"messages"`
+	Tools      []ollamaToolSpec `json:"tools,omitempty"`
+	ToolChoice json.RawMessage  `json:"tool_choice,omitempty"`
+	Format     json.RawMessage  `json:"format,omitempty"`
+	Stream     *bool            `json:"stream,omitempty"`
+	Think      bool             `json:"think,omitempty"`
+	KeepAlive  json.RawMessage  `json:"keep_alive,omitempty"` // accepted-and-ignored
+	Options    json.RawMessage  `json:"options,omitempty"`    // accepted-and-ignored
 }
 
 // ollamaMessage mirrors one entry of /api/chat messages[]. Content is a
@@ -102,6 +103,38 @@ type ollamaToolCall struct {
 type ollamaToolCallFunction struct {
 	Name      string         `json:"name"`
 	Arguments map[string]any `json:"arguments"`
+}
+
+type ollamaToolChoiceObject struct {
+	Type     string                          `json:"type"`
+	Function *ollamaToolChoiceObjectFunction `json:"function,omitempty"`
+}
+
+type ollamaToolChoiceObjectFunction struct {
+	Name string `json:"name"`
+}
+
+func decodeToolChoice(raw json.RawMessage) (*canonical.ToolChoice, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, nil
+	}
+
+	var choice string
+	if err := json.Unmarshal(raw, &choice); err == nil {
+		switch choice {
+		case "auto", "required", "none":
+			return &canonical.ToolChoice{Type: choice}, nil
+		default:
+			return nil, fmt.Errorf("ollama: unsupported tool_choice string")
+		}
+	}
+
+	var object ollamaToolChoiceObject
+	if err := json.Unmarshal(raw, &object); err == nil && object.Type == "function" && object.Function != nil && object.Function.Name != "" {
+		return &canonical.ToolChoice{Type: object.Type, Name: object.Function.Name}, nil
+	}
+
+	return nil, fmt.Errorf("ollama: invalid tool_choice")
 }
 
 // ollamaChatResponse is the Ollama /api/chat response shape (RESEARCH.md
@@ -152,17 +185,18 @@ type ollamaChatResponseMessage struct {
 // (single-turn variant of /api/chat). Suffix/Raw/KeepAlive/Options are
 // accepted-and-ignored (LangFlow may set them).
 type ollamaGenerateRequest struct {
-	Model     string          `json:"model"`
-	Prompt    string          `json:"prompt"`
-	System    string          `json:"system,omitempty"`
-	Images    []string        `json:"images,omitempty"`
-	Format    json.RawMessage `json:"format,omitempty"`
-	Stream    *bool           `json:"stream,omitempty"`
-	Think     bool            `json:"think,omitempty"`
-	Suffix    string          `json:"suffix,omitempty"`     // accepted-and-ignored
-	Raw       bool            `json:"raw,omitempty"`        // accepted-and-ignored
-	KeepAlive json.RawMessage `json:"keep_alive,omitempty"` // accepted-and-ignored
-	Options   json.RawMessage `json:"options,omitempty"`    // accepted-and-ignored
+	Model      string          `json:"model"`
+	Prompt     string          `json:"prompt"`
+	System     string          `json:"system,omitempty"`
+	Images     []string        `json:"images,omitempty"`
+	Format     json.RawMessage `json:"format,omitempty"`
+	ToolChoice json.RawMessage `json:"tool_choice,omitempty"`
+	Stream     *bool           `json:"stream,omitempty"`
+	Think      bool            `json:"think,omitempty"`
+	Suffix     string          `json:"suffix,omitempty"`     // accepted-and-ignored
+	Raw        bool            `json:"raw,omitempty"`        // accepted-and-ignored
+	KeepAlive  json.RawMessage `json:"keep_alive,omitempty"` // accepted-and-ignored
+	Options    json.RawMessage `json:"options,omitempty"`    // accepted-and-ignored
 }
 
 // ollamaGenerateResponse mirrors /api/generate — same envelope as

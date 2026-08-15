@@ -7,6 +7,7 @@ import (
 
 	"otto-gateway/internal/canonical"
 	"otto-gateway/internal/privacy"
+	"otto-gateway/internal/toolcontract"
 )
 
 // Anthropic error envelope per docs.anthropic.com/en/api/errors and
@@ -115,6 +116,23 @@ func writeSelectedModelError(w http.ResponseWriter, err error) bool {
 	w.Header().Set("X-Otto-Error-Code", code)
 	writeError(w, http.StatusBadGateway, errAPI, message)
 	return true
+}
+
+func writeUnsupportedToolContractError(w http.ResponseWriter) {
+	w.Header().Set("X-Otto-Error-Code", "unsupported_tool_contract_version")
+	writeError(w, http.StatusBadRequest, errInvalidRequest, "The requested tool contract version is not supported.")
+}
+
+func negotiateToolContract(w http.ResponseWriter, r *http.Request) (toolcontract.Metadata, bool) {
+	metadata, err := toolcontract.Parse(r.Header.Get(toolcontract.HeaderContract), r.Header.Get(toolcontract.HeaderCallRole))
+	if err != nil {
+		writeUnsupportedToolContractError(w)
+		return toolcontract.Metadata{}, false
+	}
+	if metadata.Version == toolcontract.VersionV1 {
+		w.Header().Set(toolcontract.HeaderContract, toolcontract.VersionV1)
+	}
+	return metadata, true
 }
 
 // writeSSEError writes a mid-stream SSE error frame:

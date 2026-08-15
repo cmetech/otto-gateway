@@ -113,6 +113,11 @@ func stampPrivacyContext(ctx context.Context, w http.ResponseWriter, r *http.Req
 func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	observation := newRequestObservation()
 	defer func() { a.observeRequest(observation) }()
+	contractMetadata, ok := negotiateToolContract(w, r)
+	if !ok {
+		observation.Outcome = "invalid_request"
+		return
+	}
 
 	var wire chatCompletionRequest
 	if err := decodeJSONBody(w, r, chatBodyCap, &wire); err != nil {
@@ -136,6 +141,8 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 	}
 
 	req := wireToChatRequest(&wire, r)
+	req.ToolContractVersion = contractMetadata.Version
+	req.CallRole = contractMetadata.CallRole
 	// Audit openai-empty-messages-after-decode-not-rejected: an inbound
 	// payload like {"messages":[{"role":"user","content":[]}]} has
 	// len(wire.Messages) == 1 but decodeMessageContent returns "" for
@@ -458,6 +465,11 @@ func (a *Adapter) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 func (a *Adapter) handleCompletions(w http.ResponseWriter, r *http.Request) {
 	observation := newRequestObservation()
 	defer func() { a.observeRequest(observation) }()
+	contractMetadata, ok := negotiateToolContract(w, r)
+	if !ok {
+		observation.Outcome = "invalid_request"
+		return
+	}
 
 	var wire completionWireRequest
 	if err := decodeJSONBody(w, r, chatBodyCap, &wire); err != nil {
@@ -488,10 +500,12 @@ func (a *Adapter) handleCompletions(w http.ResponseWriter, r *http.Request) {
 	// the model-suffix split must be applied here directly too.
 	baseModel, compressDir := compress.SplitCompressDirective(wire.Model)
 	req := &canonical.ChatRequest{
-		Model:              baseModel,
-		Messages:           msgs,
-		Stream:             false,
-		WorkingDirOverride: r.Header.Get("X-Working-Dir"),
+		Model:               baseModel,
+		Messages:            msgs,
+		Stream:              false,
+		WorkingDirOverride:  r.Header.Get("X-Working-Dir"),
+		ToolContractVersion: contractMetadata.Version,
+		CallRole:            contractMetadata.CallRole,
 	}
 	if compressDir != nil {
 		req.Metadata = map[string]any{compress.MetadataKey: *compressDir}
