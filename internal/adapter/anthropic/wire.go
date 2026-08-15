@@ -141,7 +141,7 @@ type anthropicToolSpec struct {
 }
 
 // anthropicToolChoiceObject is the object form of Anthropic's
-// tool_choice wire value. Anthropic's spec accepts {type:"auto"|"any"|"tool", name?}.
+// tool_choice wire value. Anthropic's spec accepts {type:"auto"|"any"|"none"|"tool", name?}.
 // The Name field is only populated when Type == "tool".
 type anthropicToolChoiceObject struct {
 	Type string `json:"type"`
@@ -272,6 +272,7 @@ func wireToChatRequest(w *anthropicMessagesRequest, r *http.Request, logger *slo
 	//     losslessly at the boundary. Cross-surface semantic mapping (any
 	//     vs required) is engine/hook concern, not adapter. See
 	//     TestWireToChatRequest_ToolChoice_Any_PreservedVerbatim.)
+	//   - {type:"none"}            -> {Type:"none"}
 	//   - {type:"tool",name:"X"}   -> {Type:"tool",Name:"X"}
 	//   - empty / absent / unknown shape (numeric, etc.) -> nil
 	//     (accept-and-ignore per D-10 permissive decode).
@@ -292,6 +293,7 @@ func wireToChatRequest(w *anthropicMessagesRequest, r *http.Request, logger *slo
 // values (accept-and-ignore). Recognized object shapes:
 //   - {"type":"auto"}            -> &{Type:"auto"}
 //   - {"type":"any"}             -> &{Type:"any"}   (NOT mapped to "required")
+//   - {"type":"none"}            -> &{Type:"none"}
 //   - {"type":"tool","name":"X"} -> &{Type:"tool", Name:"X"}
 func decodeAnthropicToolChoice(raw json.RawMessage) *canonical.ToolChoice {
 	if len(raw) == 0 {
@@ -302,7 +304,7 @@ func decodeAnthropicToolChoice(raw json.RawMessage) *canonical.ToolChoice {
 		return nil
 	}
 	switch obj.Type {
-	case "auto", "any":
+	case "auto", "any", "none":
 		return &canonical.ToolChoice{Type: obj.Type}
 	case "tool":
 		return &canonical.ToolChoice{Type: "tool", Name: obj.Name}
