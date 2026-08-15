@@ -5,6 +5,7 @@ package engine
 import (
 	"encoding/base64"
 	"encoding/json"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -105,6 +106,42 @@ func TestBuildBlocks_StablePrefixWithV1ToolPolicy(t *testing.T) {
 	}
 	if !strings.Contains(legacyPrompt, "A deferred dispatcher wrapper is valid only when it is the complete response with no narration or fence.") {
 		t.Errorf("static available-tools instructions lack exact-response dispatcher rule: %q", legacyPrompt)
+	}
+}
+
+func TestBuildBlocks_LegacyPromptLiteralGoldenAndV1Tail(t *testing.T) {
+	legacy := &canonical.ChatRequest{
+		Model:  "selected",
+		System: "You are the host assistant.",
+		Tools: []canonical.ToolSpec{{
+			Name:        "lookup_item",
+			Description: "Looks up a sanitized item.",
+			Parameters:  map[string]any{"type": "object"},
+		}},
+		ToolChoice: &canonical.ToolChoice{Type: "required"},
+		Messages: []canonical.Message{{
+			Role: canonical.RoleUser,
+			Content: []canonical.ContentPart{{
+				Kind: canonical.ContentKindText,
+				Text: "Find the example item.",
+			}},
+		}},
+	}
+	wantBytes, err := os.ReadFile("testdata/build_blocks_legacy_tools.golden")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantLegacy := strings.TrimSuffix(string(wantBytes), "\n")
+	gotLegacy := buildBlocks(legacy)[0].Text.Content
+	if gotLegacy != wantLegacy {
+		t.Fatalf("legacy prompt differs from literal golden\n got: %q\nwant: %q", gotLegacy, wantLegacy)
+	}
+
+	v1 := *legacy
+	v1.ToolContractVersion = "v1"
+	const wantTail = "\n\n[Turn tool policy]\nThis attempt requires one structured call to an offered tool. A deferred dispatcher wrapper must be the exact whole response with no narration or fence."
+	if got := buildBlocks(&v1)[0].Text.Content; got != wantLegacy+wantTail {
+		t.Fatalf("v1 prompt differs from literal legacy golden plus policy tail\n got: %q\nwant: %q", got, wantLegacy+wantTail)
 	}
 }
 
