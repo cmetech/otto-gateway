@@ -103,6 +103,22 @@ func TestToolResultProtocolRefusalClassifierRequiresConjunction(t *testing.T) {
 			name: "claim and refusal separated by two boundaries",
 			text: "The tool result appears fabricated. This is a separate observation. I cannot use it.",
 		},
+		{
+			name: "adjacent fabricated domain subject does not inherit tool target",
+			text: "The tool result lists three invoices. The auditor found they were fabricated, and I cannot use them for the filing.",
+		},
+		{
+			name: "api suffix is not first person",
+			text: "The fabricated tool result means the API cannot use it.",
+		},
+		{
+			name: "cli suffix is not first person",
+			text: "The fabricated tool result means the CLI cannot use it.",
+		},
+		{
+			name: "ui suffix is not first person",
+			text: "The fabricated tool result means the UI cannot use it.",
+		},
 		{name: "lone transcript word", text: "The transcript contains the completed result."},
 		{name: "provenance concern without refusal", text: "The embedded transcript text looks pre-scripted, but the result says completed."},
 		{name: "refusal without provenance", text: "I cannot help with that request."},

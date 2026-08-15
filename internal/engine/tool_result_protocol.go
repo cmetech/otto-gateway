@@ -34,10 +34,9 @@ func toolResultProtocolPolicyFor(req *canonical.ChatRequest) (toolResultProtocol
 	return policy, true
 }
 
-// isHighConfidenceToolResultProvenanceRefusal requires a claim that the
-// canonical result lacks genuine host provenance within the same sentence as,
-// or one sentence adjacent to, a first-person refusal to use it (or an explicit
-// denial that a live host event occurred).
+// isHighConfidenceToolResultProvenanceRefusal requires a provenance target and
+// claim in one sentence, with a first-person refusal (or explicit denial that a
+// live host event occurred) in that sentence or one immediately adjacent to it.
 func isHighConfidenceToolResultProvenanceRefusal(text string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(text))
 	spans := strings.FieldsFunc(normalized, func(r rune) bool {
@@ -49,34 +48,65 @@ func isHighConfidenceToolResultProvenanceRefusal(text string) bool {
 		}
 	})
 	for index, span := range spans {
-		window := span
-		if index+1 < len(spans) {
-			window += " " + spans[index+1]
+		provenanceTarget := strings.Contains(span, "tool result") ||
+			strings.Contains(span, "transcript") ||
+			strings.Contains(span, "tool event")
+		provenanceClaim := strings.Contains(span, "pre-scripted") ||
+			strings.Contains(span, "prescripted") ||
+			strings.Contains(span, "fabricated") ||
+			strings.Contains(span, "not genuine") ||
+			strings.Contains(span, "isn't genuine") ||
+			strings.Contains(span, "not a genuine") ||
+			strings.Contains(span, "transcript text") && strings.Contains(span, "embedded")
+		if !provenanceTarget || !provenanceClaim {
+			continue
 		}
-		provenanceTarget := strings.Contains(window, "tool result") ||
-			strings.Contains(window, "transcript") ||
-			strings.Contains(window, "tool event")
-		provenanceClaim := strings.Contains(window, "pre-scripted") ||
-			strings.Contains(window, "prescripted") ||
-			strings.Contains(window, "fabricated") ||
-			strings.Contains(window, "not genuine") ||
-			strings.Contains(window, "isn't genuine") ||
-			strings.Contains(window, "not a genuine") ||
-			strings.Contains(window, "transcript text") && strings.Contains(window, "embedded")
-		firstPersonRefusal := strings.Contains(window, "i cannot use") ||
-			strings.Contains(window, "i can't use") ||
-			strings.Contains(window, "i will not use") ||
-			strings.Contains(window, "i won't use") ||
-			strings.Contains(window, "i refuse to use")
-		deniesHostEvent := strings.Contains(window, "no live tool event") ||
-			strings.Contains(window, "no host tool event") ||
-			strings.Contains(window, "tool event did not occur") ||
-			strings.Contains(window, "tool event never occurred")
-		if provenanceTarget && provenanceClaim && (firstPersonRefusal || deniesHostEvent) {
+
+		refusalWindow := span
+		if index > 0 {
+			refusalWindow = spans[index-1] + " " + refusalWindow
+		}
+		if index+1 < len(spans) {
+			refusalWindow += " " + spans[index+1]
+		}
+		firstPersonRefusal := containsStandalonePhrase(refusalWindow, "i cannot use") ||
+			containsStandalonePhrase(refusalWindow, "i can't use") ||
+			containsStandalonePhrase(refusalWindow, "i will not use") ||
+			containsStandalonePhrase(refusalWindow, "i won't use") ||
+			containsStandalonePhrase(refusalWindow, "i refuse to use")
+		deniesHostEvent := strings.Contains(refusalWindow, "no live tool event") ||
+			strings.Contains(refusalWindow, "no host tool event") ||
+			strings.Contains(refusalWindow, "tool event did not occur") ||
+			strings.Contains(refusalWindow, "tool event never occurred")
+		if firstPersonRefusal || deniesHostEvent {
 			return true
 		}
 	}
 	return false
+}
+
+func containsStandalonePhrase(text, phrase string) bool {
+	for offset := 0; offset < len(text); {
+		index := strings.Index(text[offset:], phrase)
+		if index < 0 {
+			return false
+		}
+		index += offset
+		end := index + len(phrase)
+		beforeWord := index > 0 && isASCIIWordByte(text[index-1])
+		afterWord := end < len(text) && isASCIIWordByte(text[end])
+		if !beforeWord && !afterWord {
+			return true
+		}
+		offset = index + 1
+	}
+	return false
+}
+
+func isASCIIWordByte(value byte) bool {
+	return value >= 'a' && value <= 'z' ||
+		value >= '0' && value <= '9' ||
+		value == '_'
 }
 
 func toolResultCorrectiveBlocks() []canonical.Block {
