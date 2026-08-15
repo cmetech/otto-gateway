@@ -41,10 +41,21 @@ first** — it is the spec of record.
 
 ### `superpowers/specs/`
 
+- **`2026-08-15-model-selection-aware-tool-contract-design.md`** —
+  defines the versioned, request-scoped Hermes/Gateway contract for mandatory
+  tool decisions, safe recovery of narrated deferred wrappers, host-attested
+  occurrence versus untrusted tool-result content, and explicit-model
+  post-tool provenance recovery.
 - **`2026-07-23-computer-use-reliability-and-deferred-tray-design.md`** —
   records the deferred Cua Driver tray lifecycle proposal, the proven Windows
   readiness/update pitfalls, and the active Hermes tool/skill reliability and
   packaging recommendations.
+
+### `superpowers/plans/`
+
+- **`2026-08-15-model-selection-aware-tool-contract.md`** —
+  test-first implementation sequence for the approved request-scoped contract,
+  including Gateway-first deployment and the Hermes release gate.
 
 ### Planning handoffs
 
