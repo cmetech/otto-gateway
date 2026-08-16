@@ -65,6 +65,9 @@ dist/
 .bg-shell/
 .otto/
 
+# Local Superpowers brainstorming and subagent workspace state.
+.superpowers/
+
 # E2E artifacts (generated; the SDK source files + pnpm-lock.yaml stay tracked)
 tests/e2e/reports/
 tests/e2e/sdk/node_modules/
