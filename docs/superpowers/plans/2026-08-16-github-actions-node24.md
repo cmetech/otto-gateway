@@ -118,15 +118,14 @@ git commit -m "ci: upgrade official actions to Node 24"
 
 ---
 
-### Task 2: Verify, push, and publish v3.6.1
+### Task 2: Verify the isolated implementation branch
 
 **Files:**
 - Verify only; no source files should change.
-- External outputs: updated `main`, annotated `v3.6.1` tag, GitHub Release assets.
 
 **Interfaces:**
-- Consumes: Task 1's verified workflow commit on `main`.
-- Produces: successful GitHub Actions release run and published `v3.6.1` release.
+- Consumes: Task 1's workflow commit on the isolated feature branch.
+- Produces: current-session verification evidence for final branch review.
 
 - [ ] **Step 1: Run complete local verification**
 
@@ -142,7 +141,34 @@ Expected: 29 JavaScript tests pass, all Go packages pass, the build exits 0,
 there are no whitespace errors, and only the pre-existing untracked
 `.superpowers/` directory appears in status.
 
-- [ ] **Step 2: Push the verified main branch**
+- [ ] **Step 2: Inspect branch identity and the complete scoped diff**
+
+```bash
+git branch --show-current
+git log --oneline 480e14f..HEAD
+git diff --check 480e14f..HEAD
+git diff --stat 480e14f..HEAD
+git diff 480e14f..HEAD -- .github/workflows/ci.yml .github/workflows/release.yml
+```
+
+Expected: the branch is `ci/node24-actions`; the only implementation changes
+are the approved action-major substitutions in the two workflow files.
+
+- [ ] **Step 3: Record verification without an empty commit**
+
+Report every command and result from Steps 1-2. If verification does not change
+tracked files, do not create an empty commit.
+
+---
+
+## Post-review integration and v3.6.1 release
+
+Run this section only after Tasks 1-2 and the broad whole-branch review are
+clean. Use the finishing-development-branch workflow to merge
+`ci/node24-actions` into `main` and re-run `go test ./...` on the merged tree
+before continuing.
+
+- [ ] **Step 1: Push the verified main branch**
 
 ```bash
 git branch --show-current
@@ -153,7 +179,7 @@ git ls-remote --heads origin main
 
 Expected: the current branch is `main` and the local/remote main SHAs match.
 
-- [ ] **Step 3: Guard and create the annotated release tag**
+- [ ] **Step 2: Guard and create the annotated release tag**
 
 ```bash
 test -z "$(git tag -l v3.6.1)"
@@ -165,7 +191,7 @@ git show -s --format='%H %s' v3.6.1
 
 Expected: the tag points to the same verified commit pushed in Step 2.
 
-- [ ] **Step 4: Discover and monitor the tag-triggered release run**
+- [ ] **Step 3: Discover and monitor the tag-triggered release run**
 
 ```bash
 release_run_id=""
@@ -181,7 +207,7 @@ gh run watch "$release_run_id" -R cmetech/otto-gateway --exit-status
 
 Expected: `build-macos`, `build-linux`, and `publish` all complete successfully.
 
-- [ ] **Step 5: Confirm the published release and exact assets**
+- [ ] **Step 4: Confirm the published release and exact assets**
 
 ```bash
 gh release view v3.6.1 -R cmetech/otto-gateway \
@@ -199,7 +225,7 @@ otto_gateway-linux-amd64-v3.6.1.tar.gz
 otto_gateway-windows-amd64-v3.6.1.zip
 ```
 
-- [ ] **Step 6: Prove the Node 20 annotations are gone**
+- [ ] **Step 5: Prove the Node 20 annotations are gone**
 
 ```bash
 release_run_id=$(gh run list -R cmetech/otto-gateway --workflow release.yml \
@@ -218,7 +244,7 @@ test -z "$(printf '%s' "$annotation_text" | rg 'Node.js 20 is deprecated' || tru
 Expected: exit 0; none of the three release jobs emits the Node.js 20
 deprecation annotation.
 
-- [ ] **Step 7: Report release evidence**
+- [ ] **Step 6: Report release evidence**
 
 Report the implementation commit, pushed main SHA, tag SHA/target, workflow URL
 and conclusion, release URL, five asset names, and annotation result. Do not
