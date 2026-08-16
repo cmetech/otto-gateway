@@ -226,6 +226,36 @@ function createHarness(responses, options = {}) {
     '[data-slot-grid]': slotGrid,
     '[data-slot-grid-empty]': slotGridEmpty,
   };
+	if (options.acpCapture) {
+	  const section = new Element('section');
+	  const pill = new Element('span');
+	  const count = new Element('span');
+	  const controls = new Element('span');
+	  const note = new Element('p');
+	  const toggle = new Element('button');
+	  const toggleLabel = new Element('span');
+	  const clear = new Element('button');
+	  const copy = new Element('button');
+	  const copyLabel = new Element('span');
+	  const acpSelectors = {
+		'[data-acp-capture-pill]': pill,
+		'[data-acp-capture-count]': count,
+		'[data-acp-capture-controls]': controls,
+		'[data-acp-capture-note]': note,
+		'[data-acp-capture-toggle]': toggle,
+		'[data-acp-capture-clear]': clear,
+		'[data-acp-capture-copy]': copy,
+		'[data-acp-capture-copy-label]': copyLabel,
+	  };
+	  section.querySelector = (selector) => acpSelectors[selector] || null;
+	  toggle.querySelector = (selector) => (
+		selector === '[data-acp-capture-toggle-label]' ? toggleLabel : null
+	  );
+	  copy.querySelector = (selector) => (
+		selector === '[data-acp-capture-copy-label]' ? copyLabel : null
+	  );
+	  Object.assign(selectors, acpSelectors, { '[data-acp-capture]': section });
+	}
 	if (options.modelCatalog) {
 	  selectors['[data-model-catalog-state]'] = new Element('span');
 	  selectors['[data-model-catalog-count]'] = new Element('span');
@@ -254,6 +284,8 @@ function createHarness(responses, options = {}) {
 	const fetchCalls = [];
 	const catalogResponses = (options.catalogResponses || []).slice();
 	const refreshResponses = (options.refreshResponses || []).slice();
+	const acpResponses = (options.acpResponses || []).slice();
+	const clipboardWrites = [];
 
   class FakeEventSource {
     constructor(url) {
@@ -308,7 +340,7 @@ function createHarness(responses, options = {}) {
     },
     document,
     encodeURIComponent,
-    fetch(url, requestOptions = {}) {
+	fetch(url, requestOptions = {}) {
 	  fetchCalls.push({ url, options: requestOptions });
 	  let queue;
 	  let label;
@@ -321,6 +353,9 @@ function createHarness(responses, options = {}) {
 	  } else if (url === '/admin/api/model-catalog/refresh') {
 		queue = refreshResponses;
 		label = 'model catalog refresh';
+	  } else if (url === '/admin/api/acp-capture' || url === '/admin/api/acp-capture?pretty=1') {
+		queue = acpResponses;
+		label = 'ACP capture';
 	  } else {
 		throw new Error(`unexpected fetch URL ${url}`);
 	  }
@@ -335,24 +370,35 @@ function createHarness(responses, options = {}) {
 		json: () => entry.jsonError
 		  ? Promise.reject(new Error('invalid JSON'))
 		  : Promise.resolve(Object.hasOwn(entry, 'body') ? entry.body : entry),
+		text: () => Promise.resolve(entry.text),
 	  });
     },
     setInterval(callback, delay) {
       intervals.push({ callback, delay });
       return intervals.length;
     },
-    setTimeout(callback, delay) {
+	setTimeout(callback, delay) {
       const timeout = { id: timeouts.length + 1, callback, delay, active: true };
       timeouts.push(timeout);
       return timeout.id;
-    },
-    window: { GW_ADMIN_CONFIG: { pollMs: 4321 } },
+	},
+	navigator: {
+	  clipboard: options.clipboardUnavailable ? undefined : {
+		writeText(text) {
+		  if (options.clipboardError) return Promise.reject(new Error(options.clipboardError));
+		  clipboardWrites.push(text);
+		  return Promise.resolve();
+		},
+	  },
+	},
+	window: { GW_ADMIN_CONFIG: { pollMs: 4321 } },
   };
 
   const script = fs.readFileSync(path.join(__dirname, 'static', 'js', 'admin.js'), 'utf8');
   vm.runInNewContext(script, context, { filename: 'admin.js' });
 
   return {
+	clipboardWrites,
     eventSources,
 	fetchCalls,
 	intervals,
@@ -392,6 +438,80 @@ async function settleSnapshot() {
 async function settleAsyncWork() {
   for (let i = 0; i < 24; i++) await Promise.resolve();
 }
+
+const captureState = {
+  enabled: true,
+  allowRuntimeToggle: true,
+  count: 1,
+  size: 100,
+  frames: [],
+};
+
+test('ACP Copy Messages copies the full pretty response unchanged and resets feedback', async () => {
+  const pretty = '{\n  "enabled": true,\n  "frames": []\n}\n';
+  const harness = createHarness(
+    [snapshot({ main: 'Gateway', kiro: 'Kiro' })],
+    { acpCapture: true, acpResponses: [{ body: captureState }, { text: pretty }] },
+  );
+  harness.start();
+  await settleAsyncWork();
+
+  const button = harness.selectors['[data-acp-capture-copy]'];
+  const label = harness.selectors['[data-acp-capture-copy-label]'];
+  button.dispatchEvent({ type: 'click' });
+  assert.equal(button.disabled, true);
+  assert.equal(label.textContent, 'Copying…');
+  await settleAsyncWork();
+
+  assert.deepEqual(harness.clipboardWrites, [pretty]);
+  assert.equal(button.disabled, false);
+  assert.equal(label.textContent, 'Copied');
+  const copyCall = harness.fetchCalls.find((call) => call.url.endsWith('?pretty=1'));
+  assert.equal(copyCall.options.headers.Accept, 'application/json');
+
+  harness.runTimeout(2000);
+  assert.equal(label.textContent, 'Copy Messages');
+});
+
+test('ACP Copy Messages reports bounded fetch and clipboard failures', async () => {
+  const cases = [
+    {
+      name: 'HTTP failure',
+      options: { acpResponses: [{ body: captureState }, { httpStatus: 503, text: 'unavailable' }] },
+    },
+    {
+      name: 'clipboard rejection',
+      options: {
+        acpResponses: [{ body: captureState }, { text: '{\n  "frames": []\n}\n' }],
+        clipboardError: 'permission denied',
+      },
+    },
+    {
+      name: 'Clipboard API unavailable',
+      options: { acpResponses: [{ body: captureState }], clipboardUnavailable: true },
+    },
+  ];
+
+  for (const tc of cases) {
+    const harness = createHarness(
+      [snapshot({ main: 'Gateway', kiro: 'Kiro' })],
+      { acpCapture: true, ...tc.options },
+    );
+    harness.start();
+    await settleAsyncWork();
+
+    const button = harness.selectors['[data-acp-capture-copy]'];
+    const label = harness.selectors['[data-acp-capture-copy-label]'];
+    button.dispatchEvent({ type: 'click' });
+    await settleAsyncWork();
+
+    assert.equal(label.textContent, 'Copy failed', tc.name);
+    assert.equal(button.disabled, false, tc.name);
+    assert.deepEqual(harness.clipboardWrites, [], tc.name);
+    harness.runTimeout(2000);
+    assert.equal(label.textContent, 'Copy Messages', tc.name);
+  }
+});
 
 test('gateway PID hydrates the dedicated overview header', async () => {
   const harness = createHarness([snapshot({ main: 'Gateway', kiro: 'Kiro' })]);

@@ -175,6 +175,28 @@ func TestAdmin_PageHandler(t *testing.T) {
 	}
 }
 
+func TestAdmin_PageHandler_ACPCopyMessagesScaffold(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	h := Handler(Deps{Logger: testutil.Logger(t)})
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /: want 200, got %d", rec.Code)
+	}
+	for _, want := range []string{
+		"data-acp-capture-copy",
+		"data-acp-capture-copy-label",
+		"Copy Messages",
+	} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Errorf("page HTML missing ACP copy control %q", want)
+		}
+	}
+}
+
 func TestAdmin_PageHandler_ModelCatalogScaffold(t *testing.T) {
 	defer goleak.VerifyNone(t)
 

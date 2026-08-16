@@ -1760,6 +1760,50 @@
     return '/admin/api/acp-capture';
   }
 
+  var acpCopyResetTimer = null;
+
+  function setAcpCopyLabel(button, text) {
+    var label = button.querySelector('[data-acp-capture-copy-label]');
+    if (label) label.textContent = text;
+  }
+
+  function finishAcpCopy(button, text) {
+    button.disabled = false;
+    setAcpCopyLabel(button, text);
+    if (acpCopyResetTimer) clearTimeout(acpCopyResetTimer);
+    acpCopyResetTimer = setTimeout(function () {
+      setAcpCopyLabel(button, 'Copy Messages');
+      acpCopyResetTimer = null;
+    }, 2000);
+  }
+
+  function copyAcpCapture(button) {
+    if (acpCopyResetTimer) {
+      clearTimeout(acpCopyResetTimer);
+      acpCopyResetTimer = null;
+    }
+    button.disabled = true;
+    setAcpCopyLabel(button, 'Copying…');
+
+    if (!navigator.clipboard || typeof navigator.clipboard.writeText !== 'function') {
+      finishAcpCopy(button, 'Copy failed');
+      return;
+    }
+
+    fetch(acpCaptureUrl() + '?pretty=1', {
+      headers: { 'Accept': 'application/json' }
+    })
+      .then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.text();
+      })
+      .then(function (body) { return navigator.clipboard.writeText(body); })
+      .then(
+        function () { finishAcpCopy(button, 'Copied'); },
+        function () { finishAcpCopy(button, 'Copy failed'); }
+      );
+  }
+
   function renderAcpCapture(state) {
     var section = document.querySelector('[data-acp-capture]');
     if (!section) return;
@@ -1823,11 +1867,13 @@
     if (!section) return;
     var toggle = section.querySelector('[data-acp-capture-toggle]');
     var clear = section.querySelector('[data-acp-capture-clear]');
+    var copy = section.querySelector('[data-acp-capture-copy]');
     if (toggle) toggle.addEventListener('click', function () {
       var capturing = toggle.classList.contains('is-on');
       postAcpCapture(capturing ? 'disable' : 'enable');
     });
     if (clear) clear.addEventListener('click', function () { postAcpCapture('clear'); });
+    if (copy) copy.addEventListener('click', function () { copyAcpCapture(copy); });
     fetchAcpCapture();
     // Refresh the frame count alongside the existing snapshot cadence.
     setInterval(fetchAcpCapture, 30000);
