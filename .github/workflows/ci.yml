@@ -154,7 +154,7 @@ jobs:
           cache: true
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VERSION }}
 
@@ -189,7 +189,7 @@ jobs:
       # `golangci-lint run ./...` directly; this action covers that
       # invocation without re-installing the binary.
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v7
+        uses: golangci/golangci-lint-action@v9
         with:
           version: ${{ env.GOLANGCI_LINT_VERSION }}
           args: --timeout=5m
@@ -268,7 +268,7 @@ jobs:
       # developer's local mac run is the same command CI runs. Re-linting the
       # OS-agnostic packages lint-test-arch already covered is the cheap price.
       - name: golangci-lint (darwin)
-        uses: golangci/golangci-lint-action@v7
+        uses: golangci/golangci-lint-action@v9
         with:
           version: ${{ env.GOLANGCI_LINT_VERSION }}
           args: --timeout=5m

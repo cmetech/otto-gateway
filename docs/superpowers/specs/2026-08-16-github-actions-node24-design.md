@@ -10,19 +10,21 @@ and tagged releases, then prove the updated release pipeline by publishing
 
 ## Scope
 
-Update every use of the four affected official actions in
+Update every use of the six affected action families in
 `.github/workflows/ci.yml` and `.github/workflows/release.yml`:
 
 | Action | Current | Target |
 |---|---:|---:|
 | `actions/checkout` | `v4` | `v7` |
 | `actions/setup-go` | `v5` | `v7` |
+| `actions/setup-node` | `v4` | `v7` |
 | `actions/upload-artifact` | `v4` | `v7` |
 | `actions/download-artifact` | `v4` | `v8` |
+| `golangci/golangci-lint-action` | `v7` | `v9` |
 
-These target majors are the current stable majors published by the official
-`actions/*` repositories on 2026-08-16. Their action metadata declares the
-Node 24 runtime.
+The target majors are the current stable releases selected for this change on
+2026-08-16. The upstream action metadata for all six target references declares
+the Node 24 runtime.
 
 No job topology, triggers, permissions, runner labels, inputs, artifact names,
 retention policy, packaging commands, or publishing commands will change.
@@ -38,14 +40,16 @@ The release pipeline should retain that secure default. The existing release
 jobs download artifacts produced in the same workflow run, so no compatibility
 override is expected or desired.
 
-All runners are GitHub-hosted (`ubuntu-latest` and `macos-latest`), so no
-self-hosted runner upgrade is required for Node 24 action execution.
+All runners are GitHub-hosted (`ubuntu-latest`, `macos-latest`, and
+`windows-latest`), so no self-hosted runner upgrade is required for Node 24
+action execution.
 
 ## Verification
 
 Before push:
 
-1. Confirm no affected legacy references remain in either workflow.
+1. Confirm no affected legacy references remain in either workflow and that
+   every target action reference has its expected count.
 2. Validate both workflow files parse as YAML.
 3. Run `node --test internal/admin/admin_js_test.js`.
 4. Run `go test ./...`.
@@ -54,14 +58,17 @@ Before push:
 
 After the verified commit is pushed to `main`:
 
-1. Create annotated tag `v3.6.1` at the verified `main` commit with message
+1. Identify the CI run for the exact pushed `main` commit, wait for it to
+   complete successfully, and inspect every CI job annotation for the absence
+   of Node.js 20 deprecation warnings.
+2. Create annotated tag `v3.6.1` at that verified `main` commit with message
    `Release v3.6.1`.
-2. Push the tag to the configured remotes.
-3. Monitor the tag-triggered `release` workflow through completion.
-4. Confirm the macOS build, Linux/Windows build, and publish jobs succeed.
-5. Confirm the GitHub Release is neither draft nor prerelease and contains the
+3. Push the tag to the configured remotes.
+4. Monitor the tag-triggered `release` workflow through completion.
+5. Confirm the macOS build, Linux/Windows build, and publish jobs succeed.
+6. Confirm the GitHub Release is neither draft nor prerelease and contains the
    four platform archives plus `SHA256SUMS-v3.6.1.txt`.
-6. Inspect all three job annotations and confirm there are no Node.js 20
+7. Inspect all three release-job annotations and confirm there are no Node.js 20
    deprecation warnings.
 
 ## Failure Handling
@@ -74,6 +81,7 @@ published release tag automatically.
 ## Out of Scope
 
 - Changing workflow triggers, permissions, job structure, or packaging logic.
-- Updating unrelated third-party actions.
+- Updating third-party actions other than the in-scope
+  `golangci/golangci-lint-action` upgrade.
 - Pinning action dependencies to commit SHAs.
 - Suppressing digest verification or deprecation warnings.
