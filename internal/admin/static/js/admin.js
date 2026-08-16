@@ -588,6 +588,8 @@
   // ---------------------------------------------------------------------------
 
   function renderSummary(snap) {
+    setText('data-gateway-pid', snap.gateway_pid > 0 ? String(snap.gateway_pid) : '—');
+
     // Status pill.
     updatePill(snap.status);
 

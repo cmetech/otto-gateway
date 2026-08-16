@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"os"
 	"time"
 )
 
@@ -23,6 +24,7 @@ type Snapshot struct {
 	Commit          string            `json:"commit"`
 	Debug           bool              `json:"debug"`
 	ChatTrace       bool              `json:"chat_trace"`
+	GatewayPID      int               `json:"gateway_pid"`
 	UptimeSeconds   float64           `json:"uptime_seconds"`
 	GeneratedAt     time.Time         `json:"generated_at"`
 	Pool            SnapshotPool      `json:"pool"`
@@ -181,6 +183,7 @@ type ProcSampler interface {
 //	  "commit": "...",
 //	  "debug": true|false,
 //	  "chat_trace": true|false,
+//	  "gateway_pid": 12345,
 //	  "uptime_seconds": 123.4,
 //	  "generated_at": "2026-05-27T19:00:00Z",
 //	  "pool": {"size": N, "alive": A, "busy": B, "slots": [...]},
@@ -199,6 +202,7 @@ func (h *handler) snapshotHandler(w http.ResponseWriter, r *http.Request) {
 		Commit:        h.deps.Commit,
 		Debug:         h.deps.Debug,
 		ChatTrace:     h.deps.ChatTrace,
+		GatewayPID:    os.Getpid(),
 		UptimeSeconds: time.Since(h.deps.Start).Seconds(),
 		GeneratedAt:   time.Now().UTC(),
 	}

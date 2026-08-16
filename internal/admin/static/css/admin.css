@@ -161,6 +161,28 @@ body {
   gap: var(--gw-space-lg);
 }
 
+.gw-summary-header {
+  flex: 0 0 100%;
+  display: flex;
+  align-items: baseline;
+  gap: var(--gw-space-sm);
+  padding-bottom: var(--gw-space-sm);
+  border-bottom: 1px solid var(--gw-border);
+}
+
+.gw-summary-header-label {
+  color: var(--gw-fg-muted);
+  font-size: var(--gw-text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.gw-summary-header-value {
+  color: var(--gw-fg);
+  font-family: var(--gw-font-mono);
+  font-size: var(--gw-text-base);
+}
+
 /* The 7 stat tiles render inside one grid wrapper: a single even row on
  * wide viewports, a 4+3 split below 1280px. This replaces bare flex-wrap,
  * which let one orphan tile (Gateway Mem) drop alone onto a second line.

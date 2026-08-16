@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -148,6 +149,9 @@ func TestAdmin_SnapshotHandler(t *testing.T) {
 	}
 	if snap.UptimeSeconds < 0 {
 		t.Errorf("uptime_seconds: got %f, want >= 0", snap.UptimeSeconds)
+	}
+	if snap.GatewayPID != os.Getpid() {
+		t.Errorf("gateway_pid: want %d, got %d", os.Getpid(), snap.GatewayPID)
 	}
 	if snap.GeneratedAt.IsZero() {
 		t.Error("generated_at: want non-zero")

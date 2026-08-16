@@ -140,12 +140,21 @@ func TestAdmin_PageHandler(t *testing.T) {
 	// both are already covered by the Pool Slots grid and Active
 	// Sessions table on the same page), so their hooks must be GONE.
 	for _, attr := range []string{
+		"data-gateway-pid",
 		"data-pill",
 		"data-uptime",
 		"data-last-updated",
 	} {
 		if !strings.Contains(body, attr) {
 			t.Errorf("body missing required attribute hook %q", attr)
+		}
+	}
+	for _, want := range []string{
+		`class="gw-summary-header"`,
+		"Gateway PID",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing gateway PID header scaffold %q", want)
 		}
 	}
 	for _, attr := range []string{

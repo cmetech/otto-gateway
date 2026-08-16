@@ -105,6 +105,7 @@ class Element {
 function snapshot(labels) {
   return {
     status: 'ok',
+	gateway_pid: 4242,
     uptime_seconds: 1,
     generated_at: '2026-07-27T12:00:00Z',
     process_stat_ok: false,
@@ -211,6 +212,7 @@ function createHarness(responses, options = {}) {
   logNewest.hidden = true;
   logViewport.appendChild(logEmpty);
   const selectors = {
+	'[data-gateway-pid]': new Element('code'),
     '[data-log-source]': sourceSelect,
     '[data-log-status]': logStatus,
     '[data-log-viewport]': logViewport,
@@ -390,6 +392,14 @@ async function settleSnapshot() {
 async function settleAsyncWork() {
   for (let i = 0; i < 24; i++) await Promise.resolve();
 }
+
+test('gateway PID hydrates the dedicated overview header', async () => {
+  const harness = createHarness([snapshot({ main: 'Gateway', kiro: 'Kiro' })]);
+  harness.start();
+  await settleSnapshot();
+
+  assert.equal(harness.selectors['[data-gateway-pid]'].textContent, '4242');
+});
 
 function catalogModel(id, name, capabilities = {}) {
   return {
