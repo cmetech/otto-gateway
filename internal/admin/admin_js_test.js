@@ -426,6 +426,9 @@ function createHarness(responses, options = {}) {
       timeout.active = false;
       timeout.callback();
     },
+    activeTimeoutCount(delay) {
+      return timeouts.filter((entry) => entry.delay === delay && entry.active).length;
+    },
   };
 }
 
@@ -469,6 +472,39 @@ test('ACP Copy Messages copies the full pretty response unchanged and resets fee
   const copyCall = harness.fetchCalls.find((call) => call.url.endsWith('?pretty=1'));
   assert.equal(copyCall.options.headers.Accept, 'application/json');
 
+  harness.runTimeout(2000);
+  assert.equal(label.textContent, 'Copy Messages');
+});
+
+test('ACP Copy Messages cancels stale reset feedback before a second copy completes', async () => {
+  const harness = createHarness(
+    [snapshot({ main: 'Gateway', kiro: 'Kiro' })],
+    {
+      acpCapture: true,
+      acpResponses: [
+        { body: captureState },
+        { text: '{\n  "frames": ["first"]\n}\n' },
+        { text: '{\n  "frames": ["second"]\n}\n' },
+      ],
+    },
+  );
+  harness.start();
+  await settleAsyncWork();
+
+  const button = harness.selectors['[data-acp-capture-copy]'];
+  const label = harness.selectors['[data-acp-capture-copy-label]'];
+  button.dispatchEvent({ type: 'click' });
+  await settleAsyncWork();
+  assert.equal(label.textContent, 'Copied');
+  assert.equal(harness.activeTimeoutCount(2000), 1, 'first copy schedules one reset');
+
+  button.dispatchEvent({ type: 'click' });
+  assert.equal(label.textContent, 'Copying…');
+  assert.equal(harness.activeTimeoutCount(2000), 0, 'second copy cancels the stale reset');
+  await settleAsyncWork();
+
+  assert.equal(label.textContent, 'Copied');
+  assert.equal(harness.activeTimeoutCount(2000), 1, 'only second copy reset remains active');
   harness.runTimeout(2000);
   assert.equal(label.textContent, 'Copy Messages');
 });

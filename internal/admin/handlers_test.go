@@ -549,6 +549,39 @@ func TestAdmin_StaticServes(t *testing.T) {
 	}
 }
 
+// TestAdmin_StaticCSS_GatewayPIDHeaderRemainsFullWidthOnMobile guards the
+// summary header's cross-axis width when the mobile strip switches to a
+// start-aligned column flex layout.
+func TestAdmin_StaticCSS_GatewayPIDHeaderRemainsFullWidthOnMobile(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	h := Handler(Deps{Logger: testutil.Logger(t)})
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/static/css/admin.css", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /static/css/admin.css: want 200, got %d", rec.Code)
+	}
+	css := rec.Body.String()
+	start := strings.Index(css, ".gw-summary-header")
+	if start < 0 {
+		t.Fatal("CSS missing .gw-summary-header")
+	}
+	open := strings.Index(css[start:], "{")
+	if open < 0 {
+		t.Fatal(".gw-summary-header missing declaration block")
+	}
+	open += start
+	closeBrace := strings.Index(css[open:], "}")
+	if closeBrace < 0 {
+		t.Fatal(".gw-summary-header has unterminated declaration block")
+	}
+	rule := css[open+1 : open+closeBrace]
+	if !strings.Contains(rule, "width: 100%;") {
+		t.Error(".gw-summary-header needs width: 100% so the PID header spans the mobile column flex cross-axis")
+	}
+}
+
 func TestAdmin_StaticCSS_ModelCatalogContrastContract(t *testing.T) {
 	defer goleak.VerifyNone(t)
 

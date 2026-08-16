@@ -130,6 +130,25 @@ func TestAdmin_SnapshotHandler(t *testing.T) {
 		t.Errorf("Cache-Control: want no-store, got %q", cacheControl)
 	}
 
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decode raw snapshot JSON: %v", err)
+	}
+	rawPID, ok := raw["gateway_pid"]
+	if !ok {
+		t.Fatal("raw snapshot JSON missing gateway_pid")
+	}
+	var gotPID int
+	if err := json.Unmarshal(rawPID, &gotPID); err != nil {
+		t.Fatalf("decode raw gateway_pid: %v", err)
+	}
+	if gotPID != os.Getpid() {
+		t.Errorf("raw gateway_pid: want %d, got %d", os.Getpid(), gotPID)
+	}
+	if _, ok := raw["GatewayPID"]; ok {
+		t.Error("raw snapshot JSON must not expose Go field name GatewayPID")
+	}
+
 	var snap Snapshot
 	if err := json.NewDecoder(rec.Body).Decode(&snap); err != nil {
 		t.Fatalf("decode Snapshot: %v", err)
